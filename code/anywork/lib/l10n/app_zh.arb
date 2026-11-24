@@ -3365,5 +3365,35 @@
       }
     }
   },
-  "acpHistorySearchEmpty": "没有匹配的外部会话"
+  "acpHistorySearchEmpty": "没有匹配的外部会话",
+  "rightSidebarCollapse": "收起右侧边栏",
+  "rightSidebarExpand": "展开右侧边栏",
+  "rightSidebarResize": "调整右侧边栏宽度；支持拖动与双击恢复默认",
+  "rightSidebarTabWorkflow": "工作流",
+  "rightSidebarTabPlan": "计划",
+  "rightSidebarTabTodo": "待办",
+  "rightSidebarTabSteps": "执行步骤",
+  "rightSidebarCloseFile": "关闭文件",
+  "fileReadingFailed": "文件读取失败：{error}",
+  "@fileReadingFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "fileReadingExpired": "文件读取资格已失效",
+  "fileReadingClosed": "文件阅读已关闭或切换",
+  "openMarkdownInSidebar": "在右侧边栏阅读",
+  "acpStepsStatusTooltip": "执行步骤 {completed}/{total}",
+  "@acpStepsStatusTooltip": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  }
 }

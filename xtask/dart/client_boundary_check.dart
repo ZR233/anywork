@@ -183,6 +183,8 @@ String _normalized(String path) => path.replaceAll('\\', '/');
 
 const _accountsRoot = 'code/anywork/lib/src/features/settings/accounts/';
 const _acpRoot = 'code/anywork/lib/src/features/conversation/acp/';
+const _conversationWorkspaceRoot =
+    'code/anywork/lib/src/features/conversation/workspace/';
 
 // Normalize package and relative imports to the same source boundary. This
 // does not resolve symbols or infer ownership from a type's name.
@@ -583,10 +585,12 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
         'Account ViewModel uses domain APIs and injected providers, not Widgets or adapters: $uri',
       );
     }
-    if (isAcpPresentation) {
+    final isSharedWorkspace = path.startsWith(_conversationWorkspaceRoot);
+    if (isAcpPresentation || isSharedWorkspace) {
       final appDependency = resolved.startsWith('code/anywork/lib/');
       final pureAppDependency =
-          _isAcpPresentation(resolved) ||
+          (isAcpPresentation && _isAcpPresentation(resolved)) ||
+          resolved.startsWith(_conversationWorkspaceRoot) ||
           resolved.startsWith('code/anywork/lib/src/l10n/') ||
           resolved.startsWith('code/anywork/lib/src/app/theme/') ||
           resolved.startsWith('code/anywork/lib/src/shared/') ||
@@ -632,7 +636,9 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
         report(
           literal.offset,
           'UI-02',
-          'ACP presentation/preview must not depend on business or platform owners: $uri',
+          isSharedWorkspace
+              ? 'Conversation workspace UI must not depend on business or platform owners: $uri'
+              : 'ACP presentation/preview must not depend on business or platform owners: $uri',
         );
       }
     }

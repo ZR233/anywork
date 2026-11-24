@@ -480,18 +480,35 @@ abstract final class StudioDriverKeys {
   static const statusPlanEntry = ValueKey<String>('status-plan-entry');
   static const planDetails = ValueKey<String>('plan-details');
   static const planDetailsScroll = ValueKey<String>('plan-details-scroll');
-  static const planDetailsClose = ValueKey<String>('plan-details-close');
-  static const planResizeHandle = ValueKey<String>('plan-resize-handle');
   static const planFeedbackInput = ValueKey<String>('plan-feedback-input');
   static const planSubmitRevision = ValueKey<String>('plan-submit-revision');
   static const planApprove = ValueKey<String>('plan-approve');
   static const planFeedbackError = ValueKey<String>('plan-feedback-error');
-  static const planDetailsReadingMode = ValueKey<String>(
-    'plan-details-reading-mode',
-  );
   static const planDetailsStatus = ValueKey<String>('plan-details-status');
-  static const planDetailsTitle = ValueKey<String>('plan-details-title');
   static const planDetailsMarkdown = ValueKey<String>('plan-details-markdown');
+  static const rightSidebar = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebar,
+  );
+  static const rightSidebarResizeHandle = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebarResizeHandle,
+  );
+  static const rightSidebarExpandMode = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebarExpandMode,
+  );
+  static const rightSidebarCollapse = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebarCollapse,
+  );
+  static const rightSidebarToggle = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebarToggle,
+  );
+  static const rightSidebarOverlayScrim = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebarOverlayScrim,
+  );
+  static const rightSidebarFileClose = ValueKey<String>(
+    StudioDriverKeyValues.rightSidebarFileClose,
+  );
+  static ValueKey<String> rightSidebarTab(String kind) =>
+      ValueKey<String>(StudioDriverKeyValues.rightSidebarTab(kind));
   static ValueKey<String> timelinePlanReceipt(String id) =>
       ValueKey<String>('timeline-plan-receipt-$id');
   static ValueKey<String> timelinePlanReceiptReply(String id) =>

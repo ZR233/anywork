@@ -19,7 +19,6 @@ class AcpConversationContentView extends StatefulWidget {
     required this.threadId,
     required this.header,
     required this.itemBuilder,
-    this.planCard,
     this.outputRevision,
     this.onInsertSlashCommand,
   });
@@ -27,7 +26,6 @@ class AcpConversationContentView extends StatefulWidget {
   final String threadId;
   final AcpTimelineHeaderViewState header;
   final IndexedWidgetBuilder itemBuilder;
-  final Widget? planCard;
   final Object? outputRevision;
   final ValueChanged<String>? onInsertSlashCommand;
 
@@ -138,7 +136,6 @@ class _AcpConversationContentViewState
   Widget build(BuildContext context) {
     final header = widget.header;
     final notices = _buildNotices(context);
-    final planCard = widget.planCard;
     final reading = header.itemCount == 0 && notices.isEmpty
         ? SelectionArea(
             child: Center(
@@ -154,47 +151,9 @@ class _AcpConversationContentViewState
         : _buildReadingList(header, notices);
 
     return LiveStatusMotionHost(
-      child: LayoutBuilder(
-        builder: (context, constraints) => Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (planCard != null)
-              _buildPlanHeader(context, constraints, planCard),
-            Expanded(key: const ValueKey('acp-reading-area'), child: reading),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPlanHeader(
-    BuildContext context,
-    BoxConstraints constraints,
-    Widget planCard,
-  ) {
-    final boundedPlan = constraints.hasBoundedHeight
-        ? ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: constraints.maxHeight <= 84.0
-                  ? constraints.maxHeight
-                  : (constraints.maxHeight * 0.55).clamp(84.0, 320.0),
-            ),
-            child: planCard,
-          )
-        : planCard;
-    return DecoratedBox(
-      key: ValueKey('acp-sticky-plan:${widget.threadId}'),
-      decoration: BoxDecoration(
-        color: context.colors.surface,
-        border: Border(
-          bottom: BorderSide(
-            color: context.colors.outlineVariant.withValues(alpha: 0.7),
-          ),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-        child: _CenteredReadingConstraint(child: boundedPlan),
+      child: KeyedSubtree(
+        key: const ValueKey('acp-reading-area'),
+        child: reading,
       ),
     );
   }
@@ -432,6 +391,7 @@ class AcpTimelineEntryView extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.onOpenMarkdownResource,
     this.padding = const EdgeInsets.only(bottom: 14),
   });
 
@@ -439,6 +399,7 @@ class AcpTimelineEntryView extends StatelessWidget {
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final void Function(String uri, String text)? onOpenMarkdownResource;
   final EdgeInsetsGeometry padding;
 
   @override
@@ -454,12 +415,14 @@ class AcpTimelineEntryView extends StatelessWidget {
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
+        onOpenMarkdownResource: onOpenMarkdownResource,
       ),
       final AcpTimelineAssistantMessage assistant => _AssistantProseBlock(
         item: assistant,
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
+        onOpenMarkdownResource: onOpenMarkdownResource,
       ),
       final AcpTimelineThoughtItem thought => _buildThoughtView(
         context,
@@ -470,6 +433,7 @@ class AcpTimelineEntryView extends StatelessWidget {
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
+        onOpenMarkdownResource: onOpenMarkdownResource,
       ),
       final AcpTimelineSessionUpdateItem update => _SessionUpdateBlock(
         item: update,
@@ -498,6 +462,7 @@ class AcpTimelineEntryView extends StatelessWidget {
                   isSafeLink: isSafeLink ?? _defaultSafeLink,
                   onOpenLink: onOpenLink,
                   imageBuilder: imageBuilder,
+                  onOpenMarkdownResource: onOpenMarkdownResource,
                   textStyle: textStyle,
                 ),
               ],
@@ -539,12 +504,14 @@ class _UserMessageBubble extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.onOpenMarkdownResource,
   });
 
   final AcpTimelineUserMessage item;
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final void Function(String uri, String text)? onOpenMarkdownResource;
 
   @override
   Widget build(BuildContext context) {
@@ -590,6 +557,7 @@ class _UserMessageBubble extends StatelessWidget {
                           isSafeLink: isSafeLink ?? _defaultSafeLink,
                           onOpenLink: onOpenLink,
                           imageBuilder: imageBuilder,
+                          onOpenMarkdownResource: onOpenMarkdownResource,
                         ),
                       ],
                     ],
@@ -619,12 +587,14 @@ class _AssistantProseBlock extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.onOpenMarkdownResource,
   });
 
   final AcpTimelineAssistantMessage item;
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final void Function(String uri, String text)? onOpenMarkdownResource;
 
   @override
   Widget build(BuildContext context) {
@@ -641,6 +611,7 @@ class _AssistantProseBlock extends StatelessWidget {
             isSafeLink: isSafeLink ?? _defaultSafeLink,
             onOpenLink: onOpenLink,
             imageBuilder: imageBuilder,
+            onOpenMarkdownResource: onOpenMarkdownResource,
           ),
         ],
         if (copyText.trim().isNotEmpty) ...[

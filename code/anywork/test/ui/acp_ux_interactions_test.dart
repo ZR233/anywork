@@ -3,6 +3,7 @@ import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_timeline_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
+import 'package:anywork/src/features/conversation/workspace/conversation_workspace.dart';
 import 'package:anywork/src/features/conversation/timeline/state/patch_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
@@ -94,7 +95,10 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
   });
 
-  testWidgets('计划卡折叠展示进行中步骤，吸顶挂载不随列表滚出视野', (tester) async {
+  testWidgets('执行步骤接入统一右侧边栏，滚动主时间线不遮挡步骤列表', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 760));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
     const plan = AcpPlanCardViewState(
       completedCount: 1,
       entries: [
@@ -116,25 +120,73 @@ void main() {
       ],
     );
 
+    var showSteps = false;
     await tester.pumpWidget(
       _zhApp(
-        SizedBox(
-          height: 520,
-          child: AcpConversationContentView(
-            threadId: 'plan-thread',
-            planCard: const AcpPlanCard(state: plan, initiallyExpanded: false),
-            header: const AcpTimelineHeaderViewState(
-              ready: true,
-              loading: false,
-              hasPlan: true,
-              hasConversationalContent: true,
-              itemCount: 40,
-            ),
-            itemBuilder: (context, index) => AcpTimelineEntryView(
-              item: AcpTimelineAssistantMessage(
-                id: 'msg-$index',
-                blocks: [AcpTextBlockPresentation(text: '内容第 $index 条')],
+        StatefulBuilder(
+          builder: (context, setState) => AcpWorkspaceView(
+            readingArea: AcpConversationContentView(
+              threadId: 'plan-thread',
+              header: const AcpTimelineHeaderViewState(
+                ready: true,
+                loading: false,
+                hasPlan: true,
+                hasConversationalContent: true,
+                itemCount: 40,
               ),
+              itemBuilder: (context, index) => AcpTimelineEntryView(
+                item: AcpTimelineAssistantMessage(
+                  id: 'msg-$index',
+                  blocks: [AcpTextBlockPresentation(text: '内容第 $index 条')],
+                ),
+              ),
+            ),
+            composerBuilder: (_, compact) => AcpConversationComposerView(
+              state: const AcpComposerViewState(
+                threadId: 'plan-thread',
+                canSend: true,
+              ),
+              compact: compact,
+              onDraftChanged: (_) {},
+              onSubmit: () {},
+              onInterrupt: () {},
+              onPickLocalAttachments: (_) async {},
+              onAddRemoteAttachment: (_) async {},
+              onRemoveAttachment: (_) {},
+            ),
+            sidebarBuilder: !showSteps
+                ? null
+                : (_, presentation) => ConversationRightSidebar(
+                    entries: [
+                      ConversationSidebarPanelEntry(
+                        kind: ConversationSidebarPanelKind.todo,
+                        icon: Icons.checklist_outlined,
+                        label: '执行步骤',
+                        builder: (_) => const AcpPlanPanel(state: plan),
+                      ),
+                    ],
+                    activeKind: ConversationSidebarPanelKind.todo,
+                    presentation: presentation,
+                    onSelectKind: (_) {},
+                    onCollapse: () => setState(() => showSteps = false),
+                  ),
+            statusBar: AcpStatusBarView(
+              status: const AcpConnectionStatusView(
+                state: AcpStatusBarViewState(
+                  phase: AcpSessionStatusPhase.running,
+                ),
+              ),
+              steps: InkWell(
+                key: const ValueKey('acp-plan-status-pill'),
+                onTap: () => setState(() => showSteps = !showSteps),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Text('1/3'),
+                ),
+              ),
+              contextUsage: const SizedBox.shrink(),
+              cost: const SizedBox.shrink(),
+              externalHistory: const SizedBox.shrink(),
             ),
           ),
         ),
@@ -142,34 +194,31 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(
-      find.byKey(const ValueKey('acp-sticky-plan:plan-thread')),
-      findsOneWidget,
-    );
-    expect(find.text('步骤二 · 正在执行 Diff 优化'), findsOneWidget);
-    expect(find.text('已完成 1 / 3'), findsOneWidget);
-    expect(find.text('步骤三 · 待开始'), findsNothing);
+    expect(find.byType(AcpPlanPanel), findsNothing);
+    expect(find.text('1/3'), findsOneWidget);
 
-    // Scroll timeline to bottom; sticky plan card stays visible at top.
-    final controller = tester
-        .widget<ListView>(find.byType(ListView))
-        .controller!;
-    controller.jumpTo(controller.position.maxScrollExtent);
+    // Open steps sidebar via status bar pill.
+    await tester.tap(find.byKey(const ValueKey('acp-plan-status-pill')));
     await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('acp-sticky-plan:plan-thread')),
-      findsOneWidget,
-    );
-    expect(find.text('步骤二 · 正在执行 Diff 优化'), findsOneWidget);
-
-    // Expand plan card: shows all steps and only High priority badge.
-    await tester.tap(find.text('步骤二 · 正在执行 Diff 优化'));
-    await tester.pumpAndSettle();
+    expect(find.byType(AcpPlanPanel), findsOneWidget);
     expect(find.text('步骤一 · 已完成'), findsOneWidget);
+    expect(find.text('步骤二 · 正在执行 Diff 优化'), findsOneWidget);
     expect(find.text('步骤三 · 待开始'), findsOneWidget);
     expect(find.text('高'), findsOneWidget);
     expect(find.text('中'), findsNothing);
     expect(find.text('低'), findsNothing);
+
+    // Scroll timeline to bottom; sidebar panel stays mounted alongside.
+    final list = tester.widget<ListView>(
+      find.descendant(
+        of: find.byKey(const ValueKey('acp-reading-area')),
+        matching: find.byType(ListView),
+      ),
+    );
+    list.controller!.jumpTo(list.controller!.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    expect(find.byType(AcpPlanPanel), findsOneWidget);
+    expect(find.text('步骤二 · 正在执行 Diff 优化'), findsOneWidget);
   });
 
   testWidgets('斜杠命令输入打开浮层，上下/回车填入草稿而不直接发送，Esc 收起', (tester) async {
@@ -567,10 +616,6 @@ void main() {
             child: AcpWorkspaceView(
               readingArea: AcpConversationContentView(
                 threadId: 'narrow-overflow-thread',
-                planCard: const AcpPlanCard(
-                  state: planState,
-                  initiallyExpanded: true,
-                ),
                 header: const AcpTimelineHeaderViewState(
                   ready: true,
                   loading: false,
@@ -584,6 +629,20 @@ void main() {
                     blocks: [AcpTextBlockPresentation(text: '窄屏自适应渲染内容。')],
                   ),
                 ),
+              ),
+              sidebarBuilder: (_, presentation) => ConversationRightSidebar(
+                entries: [
+                  ConversationSidebarPanelEntry(
+                    kind: ConversationSidebarPanelKind.todo,
+                    icon: Icons.checklist_outlined,
+                    label: '执行步骤',
+                    builder: (_) => const AcpPlanPanel(state: planState),
+                  ),
+                ],
+                activeKind: ConversationSidebarPanelKind.todo,
+                presentation: presentation,
+                onSelectKind: (_) {},
+                onCollapse: () {},
               ),
               permissionDock: AcpPermissionDock(
                 state: const AcpPermissionDockViewState(
@@ -613,13 +672,14 @@ void main() {
                 onSelectOption: (_, _) {},
                 onCancel: (_) {},
               ),
-              composer: AcpConversationComposerView(
+              composerBuilder: (_, compact) => AcpConversationComposerView(
                 state: const AcpComposerViewState(
                   threadId: 'narrow-overflow-thread',
                   canSend: true,
                   isRunning: true,
                   canInterrupt: true,
                 ),
+                compact: compact,
                 onDraftChanged: (_) {},
                 onSubmit: () {},
                 onInterrupt: () {},
@@ -644,7 +704,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byType(AcpPlanCard), findsOneWidget);
+    expect(find.byType(AcpPlanPanel), findsOneWidget);
     expect(find.byType(AcpPermissionDock), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

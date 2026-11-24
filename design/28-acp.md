@@ -253,6 +253,13 @@ set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 
 
 仅在 configOptions 缺失时消费真实旧 modes；通过正式 session/set_mode 和 current_mode_update 处理，不把 modeId 填进 configId 冒用 set_config_option。没有配置选项时沿 Agent 默认，不建设静态 ACP 模型目录、专用 effort 接口或 Native workflow 映射。Client 呈现边界见 [25](./25-frontend-state.md#2521-acp-协议内容与目录消费)。
 
+### 统一工作区与侧栏复用
+
+ACP 会话工作区（`AcpWorkspaceConnector` / `AcpWorkspaceView`）与 Native 共用 `ConversationWorkspaceShell` 与 `ConversationRightSidebar`（布局与快捷键约定见 [19](./19-studio-ui.md)）：
+- **底部全宽状态栏与右侧总开关**：`AcpStatusBarView` 始终横贯工作区底缘，右侧边栏展开至状态栏顶部，并排时将阅读区、权限审批 dock 与输入卡一并压缩到左列；最右侧统一挂载侧栏展开／收起开关（可用面板为空时隐藏）。
+- **执行步骤迁移**：对端推送的步骤列表（`AcpPlanPanel`）不再在主时间线顶部吸顶折叠展示，而是统一进入右侧边栏「执行步骤（Steps）」页签（默认并排、顶部仅以 `2px` 进度条与图标表达进度），并在状态栏左侧提供紧凑的 `已完成/总步骤` 进度药丸（`acp-plan-status-pill`）用于一键开关。
+- **Host MCP 计划与嵌入式 Markdown 资源**：`AcpWorkflowState.plan` 默认存在未初始化哨兵（`revision == 0 && document == null`），前端仅在已初始化（`revision > 0 || document != null`）时在边栏挂载只读「实施计划」页签及状态栏入口，绝不伪造空计划或 Native 确认动作；工具通知与消息中的嵌入式 Markdown 文本资源保留原协议呈现，并在本地注入只读「在侧栏打开阅读」按钮将其接入同一 `FileReadingPanel` 阅读页签。
+
 ## 28.12 Host MCP 与宿主指令
 
 Host MCP 在原领域运行时之上提供传输无关的服务。`AgentHost` / `SessionRuntime` 继续唯一拥有成员、权限、派发、报告、工作区及生命周期；`pl-studio-mcp` 的共享 handler 通过 `HostTools` 端口读取原工具目录并执行领域调用。HTTP 与 stdio 是并列入口，复用同一 handler，不互相转发。

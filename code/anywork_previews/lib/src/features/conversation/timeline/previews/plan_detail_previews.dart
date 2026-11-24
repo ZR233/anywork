@@ -9,6 +9,7 @@ import 'package:anywork/src/features/conversation/timeline/views/plan_detail_vie
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/plan_summary_card.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/workspace/conversation_workspace.dart';
 
 // The frozen sample is shared with design/prototypes/plan-workspace/plan.js.
 const _document = '''
@@ -81,14 +82,28 @@ Widget _host(
               builder: (context, constraints) => Column(
                 children: [
                   Expanded(
-                    child: PlanDetailView(
-                      identity: 'preview:$id',
-                      title: context.l10n.interactionPlanDetailsTitle,
-                      status: status,
-                      fullWidth: fullWidth,
-                      onClose: () {},
-                      onToggleReadingMode: () {},
-                      body: empty ? null : _markdown(id),
+                    child: ConversationRightSidebar(
+                      entries: [
+                        ConversationSidebarPanelEntry(
+                          kind: ConversationSidebarPanelKind.plan,
+                          icon: Icons.description_outlined,
+                          label: context.l10n.rightSidebarTabPlan,
+                          badge: PlanDetailStatusBadge(status: status),
+                          builder: (_) => PlanDetailView(
+                            identity: 'preview:$id',
+                            body: empty ? null : _markdown(id),
+                          ),
+                        ),
+                      ],
+                      activeKind: ConversationSidebarPanelKind.plan,
+                      presentation: ConversationSidebarPresentation(
+                        sideBySideFeasible: true,
+                        isOverlay: false,
+                        isExpandedFull: fullWidth,
+                      ),
+                      onSelectKind: (_) {},
+                      onToggleLayoutMode: () {},
+                      onCollapse: () {},
                     ),
                   ),
                   if (confirm) ...[

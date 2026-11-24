@@ -8341,4 +8341,48 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpHistorySearchEmpty => 'No matching external sessions';
+
+  @override
+  String get rightSidebarCollapse => 'Collapse right sidebar';
+
+  @override
+  String get rightSidebarExpand => 'Expand right sidebar';
+
+  @override
+  String get rightSidebarResize =>
+      'Resize right sidebar; drag or double-tap to reset';
+
+  @override
+  String get rightSidebarTabWorkflow => 'Workflow';
+
+  @override
+  String get rightSidebarTabPlan => 'Plan';
+
+  @override
+  String get rightSidebarTabTodo => 'Todo';
+
+  @override
+  String get rightSidebarTabSteps => 'Steps';
+
+  @override
+  String get rightSidebarCloseFile => 'Close file';
+
+  @override
+  String fileReadingFailed(String error) {
+    return 'Failed to read file: $error';
+  }
+
+  @override
+  String get fileReadingExpired => 'File reading session expired';
+
+  @override
+  String get fileReadingClosed => 'File reading closed or switched';
+
+  @override
+  String get openMarkdownInSidebar => 'Read in right sidebar';
+
+  @override
+  String acpStepsStatusTooltip(int completed, int total) {
+    return 'Execution steps $completed/$total';
+  }
 }

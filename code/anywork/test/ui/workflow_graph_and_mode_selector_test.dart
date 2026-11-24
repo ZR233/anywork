@@ -7,7 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/state/tool_presentati
 import 'package:anywork/src/features/conversation/timeline/tools/items/plan/plan_transition_tool_item.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_adapter.dart';
-import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/features/conversation/workspace/conversation_workspace.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/features/status/workflow_graph_panel.dart';
 import 'package:anywork/src/features/todo/todo_panel.dart';
@@ -194,39 +194,62 @@ void main() {
     await tester.pumpWidget(
       acpTestApp(
         StatefulBuilder(
-          builder: (context, setState) => StudioWorkspaceBody(
-            readingArea: const SizedBox.expand(),
-            footer: SizedBox(
-              height: 44,
-              child: Row(
-                children: [
-                  WorkflowStatusPill(
-                    stateTitle: '规划',
-                    modeName: '自动',
-                    expanded: showWorkflow,
-                    onTap: () => setState(() {
-                      showWorkflow = !showWorkflow;
-                      if (showWorkflow) showTodo = false;
-                    }),
-                  ),
-                ],
+          builder: (context, setState) {
+            final entries = <ConversationSidebarPanelEntry>[
+              ConversationSidebarPanelEntry(
+                kind: ConversationSidebarPanelKind.workflow,
+                icon: Icons.account_tree_outlined,
+                label: '工作流',
+                builder: (_) => WorkflowGraphPanel(graph: graph, run: run),
               ),
-            ),
-            todoPanel: showTodo
-                ? TodoPanel(
-                    key: const ValueKey('todo-side-panel'),
-                    todo: todo,
-                    onClose: () => setState(() => showTodo = false),
-                  )
-                : null,
-            workflowPanel: showWorkflow
-                ? WorkflowGraphPanel(
-                    graph: graph,
-                    run: run,
-                    onClose: () => setState(() => showWorkflow = false),
-                  )
-                : null,
-          ),
+              ConversationSidebarPanelEntry(
+                kind: ConversationSidebarPanelKind.todo,
+                icon: Icons.checklist_outlined,
+                label: '待办',
+                builder: (_) => TodoPanel(todo: todo),
+              ),
+            ];
+            final activeKind = showWorkflow
+                ? ConversationSidebarPanelKind.workflow
+                : ConversationSidebarPanelKind.todo;
+            final showSidebar = showWorkflow || showTodo;
+            return ConversationWorkspaceShell(
+              readingArea: const SizedBox.expand(),
+              footerDockBuilder: (_, _) => const SizedBox.shrink(),
+              statusBar: SizedBox(
+                height: 44,
+                child: Row(
+                  children: [
+                    WorkflowStatusPill(
+                      stateTitle: '规划',
+                      modeName: '自动',
+                      expanded: showWorkflow,
+                      onTap: () => setState(() {
+                        showWorkflow = !showWorkflow;
+                        if (showWorkflow) showTodo = false;
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+              sidebarBuilder: !showSidebar
+                  ? null
+                  : (_, presentation) => ConversationRightSidebar(
+                      entries: entries,
+                      activeKind: activeKind,
+                      presentation: presentation,
+                      onSelectKind: (kind) => setState(() {
+                        showWorkflow =
+                            kind == ConversationSidebarPanelKind.workflow;
+                        showTodo = kind == ConversationSidebarPanelKind.todo;
+                      }),
+                      onCollapse: () => setState(() {
+                        showWorkflow = false;
+                        showTodo = false;
+                      }),
+                    ),
+            );
+          },
         ),
       ),
     );
@@ -268,7 +291,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byKey(const ValueKey('workflow-graph-panel-close')));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarCollapse));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('workflow-graph-panel')), findsNothing);
   });

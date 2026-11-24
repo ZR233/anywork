@@ -117,13 +117,11 @@ class WorkflowStatusPill extends StatelessWidget {
 /// live current/visited/forced/final state highlights.
 class WorkflowGraphPanel extends StatefulWidget {
   const WorkflowGraphPanel({
-    required this.onClose,
     this.graph,
     this.run,
     this.loading = false,
     this.error,
     this.onRetry,
-    this.inDrawer = false,
     super.key,
   });
 
@@ -132,8 +130,6 @@ class WorkflowGraphPanel extends StatefulWidget {
   final bool loading;
   final Object? error;
   final VoidCallback? onRetry;
-  final VoidCallback onClose;
-  final bool inDrawer;
 
   @override
   State<WorkflowGraphPanel> createState() => _WorkflowGraphPanelState();
@@ -468,80 +464,10 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final graph = widget.graph;
-    final run = widget.run;
-    final rawModeId = run?.modeId ?? graph?.modeId ?? '';
-    final modeName = (run?.modeDisplayName.trim().isNotEmpty == true)
-        ? run!.modeDisplayName.trim()
-        : (graph?.modeDisplayName.trim().isNotEmpty == true)
-        ? graph!.modeDisplayName.trim()
-        : (rawModeId.isEmpty ? '' : context.workflowModeLabel(rawModeId));
-    final currentTitle = run == null
-        ? null
-        : (run.currentStateTitle.trim().isNotEmpty
-              ? run.currentStateTitle.trim()
-              : context.workflowStateLabel(run.currentStateId));
-
     return Material(
       key: const ValueKey('workflow-graph-panel'),
-      color: context.colors.surfaceContainer,
-      shape: widget.inDrawer
-          ? null
-          : Border(left: BorderSide(color: context.colors.outlineVariant)),
-      child: SafeArea(
-        left: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ListTile(
-              dense: true,
-              leading: Icon(
-                Icons.account_tree_outlined,
-                color: context.colors.primary,
-              ),
-              title: Text(
-                context.l10n.workflowGraphPanelTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleSmall
-                    ?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              subtitle: (modeName.isNotEmpty || currentTitle != null)
-                  ? Text(
-                      [
-                        if (modeName.isNotEmpty) modeName,
-                        ?currentTitle,
-                      ].join(' · '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: context.text.labelSmall?.copyWith(
-                        color: context.colors.onSurfaceVariant,
-                      ),
-                    )
-                  : null,
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (graph != null && graph.states.isNotEmpty)
-                    IconButton(
-                      tooltip: context.l10n.modeEditorFitView,
-                      icon: const Icon(Icons.fit_screen_outlined, size: 18),
-                      onPressed: () => _controller.fitToView(),
-                    ),
-                  IconButton(
-                    key: const ValueKey('workflow-graph-panel-close'),
-                    tooltip: context.l10n.workflowGraphPanelCloseTooltip,
-                    icon: const Icon(Icons.chevron_right),
-                    onPressed: widget.onClose,
-                  ),
-                ],
-              ),
-            ),
-            Divider(height: 1, color: context.colors.outlineVariant),
-            Expanded(child: _buildBody(context)),
-          ],
-        ),
-      ),
+      color: context.colors.surfaceContainerLowest,
+      child: _buildBody(context),
     );
   }
 
@@ -588,32 +514,61 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
       );
     }
     final theme = _theme(context);
-    return ClipRect(
-      // vyuh_node_flow still reads the SDK Material theme.
-      // ignore: deprecated_member_use
-      child: MaterialUiCompatibilityBridge(
-        child: RepaintBoundary(
-          child: NodeFlowEditor<_RuntimeNodeData, _RuntimeEdgeData>(
-            controller: _controller,
-            theme: theme,
-            behavior: NodeFlowBehavior.inspect,
-            nodeBuilder: _buildNodeContent,
-            portBuilder: (context, node, port) => PortWidget<_RuntimeNodeData>(
-              port: port,
-              theme: theme.portTheme,
-              controller: _controller,
-              nodeId: node.id,
-              isOutput: port.type != PortType.input,
-              nodeBounds: node.getBounds(),
-              isConnected: _controller.connections.any(
-                (c) =>
-                    (c.sourceNodeId == node.id && c.sourcePortId == port.id) ||
-                    (c.targetNodeId == node.id && c.targetPortId == port.id),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ClipRect(
+            // vyuh_node_flow still reads the SDK Material theme.
+            // ignore: deprecated_member_use
+            child: MaterialUiCompatibilityBridge(
+              child: RepaintBoundary(
+                child: NodeFlowEditor<_RuntimeNodeData, _RuntimeEdgeData>(
+                  controller: _controller,
+                  theme: theme,
+                  behavior: NodeFlowBehavior.inspect,
+                  nodeBuilder: _buildNodeContent,
+                  portBuilder: (context, node, port) =>
+                      PortWidget<_RuntimeNodeData>(
+                        port: port,
+                        theme: theme.portTheme,
+                        controller: _controller,
+                        nodeId: node.id,
+                        isOutput: port.type != PortType.input,
+                        nodeBounds: node.getBounds(),
+                        isConnected: _controller.connections.any(
+                          (c) =>
+                              (c.sourceNodeId == node.id &&
+                                  c.sourcePortId == port.id) ||
+                              (c.targetNodeId == node.id &&
+                                  c.targetPortId == port.id),
+                        ),
+                      ),
+                ),
               ),
             ),
           ),
         ),
-      ),
+        Positioned(
+          right: 12,
+          bottom: 12,
+          child: Material(
+            color: context.colors.surfaceContainerLowest.withValues(
+              alpha: 0.92,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(StudioRadii.sm),
+              side: BorderSide(color: context.colors.outlineVariant),
+            ),
+            child: IconButton(
+              key: const ValueKey('workflow-graph-fit-view'),
+              visualDensity: VisualDensity.compact,
+              tooltip: context.l10n.modeEditorFitView,
+              icon: const Icon(Icons.fit_screen_outlined, size: 18),
+              onPressed: () => _controller.fitToView(),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -681,16 +636,9 @@ final class _RuntimeEdgeData {
 /// Native thread connector loading the runtime workflow graph snapshot and
 /// combining it with inline or deferred live [WorkflowRunView] state.
 class ThreadWorkflowGraphPanelConnector extends ConsumerStatefulWidget {
-  const ThreadWorkflowGraphPanelConnector({
-    required this.threadId,
-    required this.onClose,
-    this.inDrawer = false,
-    super.key,
-  });
+  const ThreadWorkflowGraphPanelConnector({required this.threadId, super.key});
 
   final String threadId;
-  final VoidCallback onClose;
-  final bool inDrawer;
 
   @override
   ConsumerState<ThreadWorkflowGraphPanelConnector> createState() =>
@@ -865,8 +813,6 @@ class _ThreadWorkflowGraphPanelConnectorState
       loading: _loadingGraph || _loadingRun,
       error: _graphError,
       onRetry: () => unawaited(_syncGraph(force: true)),
-      onClose: widget.onClose,
-      inDrawer: widget.inDrawer,
     );
   }
 }
@@ -874,16 +820,9 @@ class _ThreadWorkflowGraphPanelConnectorState
 /// ACP thread connector reading the workflow snapshot directly from
 /// [acpConversationStateProvider], falling back to `getThreadWorkflowGraph`.
 class AcpWorkflowGraphPanelConnector extends ConsumerStatefulWidget {
-  const AcpWorkflowGraphPanelConnector({
-    required this.threadId,
-    required this.onClose,
-    this.inDrawer = false,
-    super.key,
-  });
+  const AcpWorkflowGraphPanelConnector({required this.threadId, super.key});
 
   final String threadId;
-  final VoidCallback onClose;
-  final bool inDrawer;
 
   @override
   ConsumerState<AcpWorkflowGraphPanelConnector> createState() =>
@@ -961,8 +900,6 @@ class _AcpWorkflowGraphPanelConnectorState
       loading: graph == null && _loadingFallback,
       error: graph == null ? _fallbackError : null,
       onRetry: () => unawaited(_ensureFallbackIfNeeded(force: true)),
-      onClose: widget.onClose,
-      inDrawer: widget.inDrawer,
     );
   }
 }

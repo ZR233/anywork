@@ -31,76 +31,6 @@ class _ConversationDirectoryUnavailable extends ConsumerWidget {
   }
 }
 
-/// 会话阅读区域与输入栏的组合。
-///
-/// 阅读布局（并排 / 全宽 / 窄窗）只替换 [readingArea]；[footer] 始终是同一个子位置，
-/// 因此布局切换、窗口跨阈值与计划详情关开都不会重建反馈栏的 State（草稿、错误与
-/// 在途决定锁）。这条契约由 `test/ui/plan_feedback_lifecycle_test.dart` 直接
-/// 挂上真实 `PlanConfirmationDock` 断言。
-class StudioWorkspaceBody extends StatelessWidget {
-  const StudioWorkspaceBody({
-    required this.readingArea,
-    required this.footer,
-    this.readingAction,
-    this.overlays = const [],
-    this.todoPanel,
-    this.workflowPanel,
-    super.key,
-  });
-
-  final Widget readingArea;
-  final Widget footer;
-  final Widget? readingAction;
-
-  /// 覆盖在阅读区域上的瞬态提示（失败条、加载遮罩）；它们不参与布局分配。
-  final List<Widget> overlays;
-
-  /// 右侧 Todo 侧栏；计划详情打开或工作流面板展开时让位。
-  final Widget? todoPanel;
-
-  /// 右侧纵向工作流图侧栏；与 [todoPanel] 互斥。
-  final Widget? workflowPanel;
-
-  static const _todoPanelWidth = 304.0;
-  static const _workflowPanelWidth = 360.0;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            children: [
-              Expanded(
-                child: Stack(
-                  children: [
-                    Positioned.fill(child: readingArea),
-                    for (final overlay in overlays)
-                      if (_fillsReadingArea(overlay))
-                        Positioned.fill(child: overlay)
-                      else
-                        Positioned(top: 0, left: 0, right: 0, child: overlay),
-                  ],
-                ),
-              ),
-              ?readingAction,
-              footer,
-            ],
-          ),
-        ),
-        if (todoPanel case final panel?)
-          SizedBox(width: _todoPanelWidth, child: panel)
-        else if (workflowPanel case final panel?)
-          SizedBox(width: _workflowPanelWidth, child: panel),
-      ],
-    );
-  }
-
-  /// 加载遮罩铺满阅读区域，行内失败条只贴上边缘。
-  static bool _fillsReadingArea(Widget overlay) =>
-      overlay.key == const ValueKey('agent-workspace-loading');
-}
-
 class _ReadingErrorBanner extends StatelessWidget {
   const _ReadingErrorBanner({required this.message, required this.onRetry});
 
@@ -141,27 +71,19 @@ class AgentWorkspacePane extends ConsumerStatefulWidget {
   ConsumerState<AgentWorkspacePane> createState() => _AgentWorkspacePaneState();
 }
 
-enum _ActiveEndDrawer { todo, workflow }
-
 class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
-  static const _todoPanelWidth = 304.0;
-  static const _workflowPanelWidth = 360.0;
+  final Map<String, ConversationSidebarState<FileReadingRequest>>
+  _sidebarByThread = {};
+  double? _sidebarCustomWidth;
+  final GlobalKey _timelineHostKey = GlobalKey(debugLabel: 'timeline-host');
 
-  static const _minimumTimelineWidth = 560.0;
-
-  /// footer 的高度上限 = 窗口高度 − 时间线**最小可视高度**。
-  ///
-  /// 这里刻意不用固定比例（例如半屏）：固定比例在矮窗口会把 composer 与状态栏之后的
-  /// 剩余高度压到几像素，展开详情退化成「假展开」（实测 640×600 只剩 8.5px）。改为
-  /// 先给时间线留出随窗口缩放的最小可视高度，再把其余高度交给 footer。
-  static const _minimumTimelineHeight = 96.0;
-  static const _maximumTimelineReserve = 200.0;
-  static const _timelineReserveFraction = 0.3;
-
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
-  final Map<String, bool> _todoExpandedByThread = {};
-  final Map<String, bool> _workflowExpandedByThread = {};
-  _ActiveEndDrawer _activeEndDrawer = _ActiveEndDrawer.todo;
+  @override
+  void didUpdateWidget(covariant AgentWorkspacePane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.threadId != oldWidget.threadId) {
+      _sidebarByThread[oldWidget.threadId]?.closeFile();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -203,183 +125,280 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             threadSessionStoreProvider(threadId)
                 .select((state) => state.businessRefs?.plan),
           );
+    final workflowRun = ref.watch(
+      statusBarViewProvider(threadId).select((value) => value?.workflowRun),
+    );
+    final hasWorkflow =
+        workflowRun != null ||
+        workspace.runtime.deferredField('workflow') != null;
     return _DeferredTodoPanel(
       threadId: threadId,
       runtime: workspace.runtime,
       inline: workspace.todo,
-      builder: (todo) => LayoutBuilder(
-        builder: (context, constraints) {
-          final pendingPlan = workspace.activeInteraction?.planConfirmation;
-          final referencedPlan = _referencedPlanPresentation(planHead);
-          // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
-          // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
-          final presentedPlan = pendingPlan != null
-              ? _WorkspacePlanPresentation.fromPending(pendingPlan)
-              : referencedPlan;
-          final todoInDrawer =
-              constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
-          final workflowInDrawer =
-              constraints.maxWidth <
-              _workflowPanelWidth + _minimumTimelineWidth;
-          final footerMaxHeight = constraints.hasBoundedHeight
-              ? _footerMaxHeight(constraints.maxHeight)
-              : null;
-          final timelineDisplay = ref
-              .watch(timelineViewModelProvider(threadId))
-              .asData
-              ?.value;
-          return _WorkspaceReading(
-            threadId: threadId,
-            pendingPlan: pendingPlan,
-            presentedPlan: presentedPlan,
-            builder: (context, readingArea, readingOpen, onOpenPlan) {
-              final todoExpanded =
-                  !readingOpen && (_todoExpandedByThread[threadId] ?? false);
-              final workflowExpanded =
-                  !todoExpanded &&
-                  (_workflowExpandedByThread[threadId] ?? false);
-              final workflowDrawer = workflowInDrawer
-                  ? Drawer(
-                      width: _workflowPanelWidth,
-                      backgroundColor: context.colors.surfaceContainer,
-                      child: ThreadWorkflowGraphPanelConnector(
-                        threadId: threadId,
-                        inDrawer: true,
-                        onClose: () =>
-                            _scaffoldKey.currentState?.closeEndDrawer(),
-                      ),
-                    )
-                  : null;
-              final todoDrawer = !readingOpen && todoInDrawer && todo != null
-                  ? Drawer(
-                      width: 328,
-                      backgroundColor: context.colors.surfaceContainer,
-                      child: TodoPanel(
-                        key: const ValueKey('todo-drawer-panel'),
-                        todo: todo,
-                        inDrawer: true,
-                        onClose: () =>
-                            _scaffoldKey.currentState?.closeEndDrawer(),
-                      ),
-                    )
-                  : null;
-              final endDrawer = _activeEndDrawer == _ActiveEndDrawer.workflow
-                  ? workflowDrawer ?? todoDrawer
-                  : todoDrawer ?? workflowDrawer;
-              return Scaffold(
-                key: _scaffoldKey,
-                backgroundColor: context.colors.surface,
-                endDrawerEnableOpenDragGesture: false,
-                endDrawer: endDrawer,
-                body: Column(
-                  children: [
-                    // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
-                    // 便于用户直接开始交互或在失败后重试。
-                    if (widget.needsOpen) _OpenThreadBanner(threadId: threadId),
-                    Expanded(
-                      child: StudioWorkspaceBody(
-                        readingArea: readingArea,
-                        readingAction: const ReturnToLatestButton(),
-                        overlays: [
-                          if (workspace.loadError case final error?)
-                            _ReadingErrorBanner(
-                              message: error,
-                              onRetry: () => _retryThreadLoad(threadId),
-                            ),
-                          if (workspace.isLoading)
-                            StudioWorkspaceLoading(
-                              key: const ValueKey('agent-workspace-loading'),
-                              hasContent:
-                                  timelineDisplay != null &&
-                                  timelineDisplay.threadId == threadId &&
-                                  timelineDisplay.generation > 0,
-                            ),
-                        ],
-                        footer: _AdaptiveFooter(
-                          threadId: threadId,
-                          maxHeight: footerMaxHeight,
-                          scrollPlan: pendingPlan != null,
-                          showTodo: !readingOpen && todo != null,
-                          todoExpanded: !readingOpen && todoExpanded,
-                          onToggleTodo: readingOpen || todo == null
-                              ? null
-                              : () {
-                                  if (todoInDrawer) {
-                                    setState(() {
-                                      _activeEndDrawer = _ActiveEndDrawer.todo;
-                                      _workflowExpandedByThread[threadId] =
-                                          false;
-                                    });
-                                    _scaffoldKey.currentState?.openEndDrawer();
-                                  } else {
-                                    setState(() {
-                                      final next = !todoExpanded;
-                                      _todoExpandedByThread[threadId] = next;
-                                      if (next) {
-                                        _workflowExpandedByThread[threadId] =
-                                            false;
-                                      }
-                                    });
-                                  }
-                                },
-                          workflowExpanded:
-                              !workflowInDrawer && workflowExpanded,
-                          onToggleWorkflow: () {
-                            if (workflowInDrawer) {
-                              setState(() {
-                                _activeEndDrawer = _ActiveEndDrawer.workflow;
-                                _todoExpandedByThread[threadId] = false;
-                              });
-                              _scaffoldKey.currentState?.openEndDrawer();
-                            } else {
-                              setState(() {
-                                final next = !workflowExpanded;
-                                _workflowExpandedByThread[threadId] = next;
-                                if (next) {
-                                  _todoExpandedByThread[threadId] = false;
-                                }
-                              });
-                            }
-                          },
-                          showPlanEntry:
-                              pendingPlan == null && referencedPlan != null,
-                          onOpenPlan:
-                              pendingPlan != null || referencedPlan == null
-                              ? null
-                              : onOpenPlan,
-                        ),
-                        // Todo 与工作流图面板互斥；计划详情在左侧阅读区展示，不阻塞工作流图开关。
-                        todoPanel:
-                            !readingOpen &&
-                                !todoInDrawer &&
-                                todo != null &&
-                                todoExpanded
-                            ? TodoPanel(
-                                key: const ValueKey('todo-side-panel'),
-                                todo: todo,
-                                onClose: () => setState(
-                                  () => _todoExpandedByThread[threadId] = false,
-                                ),
-                              )
-                            : null,
-                        workflowPanel: !workflowInDrawer && workflowExpanded
-                            ? ThreadWorkflowGraphPanelConnector(
-                                threadId: threadId,
-                                onClose: () => setState(
-                                  () => _workflowExpandedByThread[threadId] =
-                                      false,
-                                ),
-                              )
-                            : null,
+      builder: (todo) {
+        final pendingPlan = workspace.activeInteraction?.planConfirmation;
+        final referencedPlan = _referencedPlanPresentation(planHead);
+        // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
+        // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
+        final presentedPlan = pendingPlan != null
+            ? _WorkspacePlanPresentation.fromPending(pendingPlan)
+            : referencedPlan;
+        final sidebar = _sidebarByThread.putIfAbsent(
+          threadId,
+          ConversationSidebarState<FileReadingRequest>.new,
+        );
+        // 同步接收输入，不排队首帧回调，避免旧交互的延迟展开覆盖新选择。
+        sidebar.observePlan(
+          identity: presentedPlan?.identity,
+          pending: pendingPlan != null,
+        );
+
+        final l10n = context.l10n;
+        final timelineDisplay = ref
+            .watch(timelineViewModelProvider(threadId))
+            .asData
+            ?.value;
+        final entries = <ConversationSidebarPanelEntry>[
+          if (hasWorkflow)
+            ConversationSidebarPanelEntry(
+              kind: ConversationSidebarPanelKind.workflow,
+              icon: Icons.account_tree_outlined,
+              label: l10n.rightSidebarTabWorkflow,
+              tooltip: l10n.workflowGraphPanelTitle,
+              defaultWidthBuilder: (w) => (w * 0.36).clamp(360.0, 440.0),
+              builder: (_) =>
+                  ThreadWorkflowGraphPanelConnector(threadId: threadId),
+            ),
+          if (presentedPlan != null)
+            ConversationSidebarPanelEntry(
+              kind: ConversationSidebarPanelKind.plan,
+              icon: Icons.description_outlined,
+              label: l10n.rightSidebarTabPlan,
+              tooltip: l10n.interactionPlanDetailsTitle,
+              badge: PlanDetailStatusBadge(
+                status: planHead == null
+                    ? presentedPlan.status
+                    : planDetailStatusFromRuntime(planHead.phase),
+              ),
+              defaultLayoutMode: pendingPlan != null
+                  ? ConversationSidebarLayoutMode.expanded
+                  : ConversationSidebarLayoutMode.split,
+              expandedDockBehavior: pendingPlan != null
+                  ? ConversationExpandedDockBehavior.keepFooterBelow
+                  : ConversationExpandedDockBehavior.coverAll,
+              defaultWidthBuilder: (w) => (w * 0.48).clamp(360.0, 620.0),
+              builder: (_) => PlanDetailConnector(
+                threadId: threadId,
+                identity: presentedPlan.identity,
+              ),
+            ),
+          if (sidebar.file case final file?)
+            ConversationSidebarPanelEntry(
+              kind: ConversationSidebarPanelKind.file,
+              icon: Icons.article_outlined,
+              label: file.filename,
+              tooltip: file.filename,
+              onDismiss: () {
+                final remaining = [
+                  if (hasWorkflow) ConversationSidebarPanelKind.workflow,
+                  if (presentedPlan != null) ConversationSidebarPanelKind.plan,
+                  if (todo != null) ConversationSidebarPanelKind.todo,
+                ];
+                setState(
+                  () => sidebar.closeFile(remainingAvailable: remaining),
+                );
+              },
+              defaultWidthBuilder: (w) => (w * 0.48).clamp(360.0, 620.0),
+              builder: (_) => FileReadingPanel(request: file),
+            ),
+          if (todo != null)
+            ConversationSidebarPanelEntry(
+              kind: ConversationSidebarPanelKind.todo,
+              icon: Icons.checklist_outlined,
+              label: l10n.rightSidebarTabTodo,
+              tooltip: todo.explanation?.trim().isNotEmpty == true
+                  ? todo.explanation!.trim()
+                  : l10n.timelineTodoListFallback,
+              badge: _TodoCountBadge(
+                completed: todo.items
+                    .where((item) => item.status == 'completed')
+                    .length,
+                total: todo.items.length,
+              ),
+              defaultWidthBuilder: (w) => (w * 0.34).clamp(340.0, 420.0),
+              builder: (_) => TodoPanel(todo: todo),
+            ),
+        ];
+        sidebar.reconcileAvailable({for (final entry in entries) entry.kind});
+
+        final activeEntry = sidebar.isOpen && entries.isNotEmpty
+            ? entries.firstWhere(
+                (entry) => entry.kind == sidebar.activeKind,
+                orElse: () => entries.first,
+              )
+            : null;
+        final activeLayoutMode = activeEntry == null
+            ? ConversationSidebarLayoutMode.split
+            : sidebar.layoutModeFor(
+                activeEntry.kind,
+                defaultMode: activeEntry.defaultLayoutMode,
+              );
+        final availableOrder = [for (final entry in entries) entry.kind];
+
+        final readingArea = KeyedSubtree(
+          key: _timelineHostKey,
+          child: FileReadingScope(
+            onOpen: (request) {
+              if (!request.isActive()) return;
+              final conversations = ref
+                  .read(anyworkClientProvider)
+                  .conversations;
+              final session = conversations.existingSession(threadId);
+              final timeline = ref.read(appGraphProvider).timeline;
+              final content = timeline.lease(threadId);
+              setState(() {
+                // A document is a shell-local demand, not a borrow from a virtual
+                // timeline row. Scrolling that row away must not retire the panel.
+                sidebar.openFile(
+                  FileReadingRequest(
+                    identity: request.identity,
+                    filename: request.filename,
+                    readBytes: request.readBytes,
+                    isActive: () =>
+                        mounted &&
+                        widget.threadId == threadId &&
+                        conversations.visibleThreadId.value == threadId &&
+                        identical(
+                          conversations.existingSession(threadId),
+                          session,
+                        ) &&
+                        content != null &&
+                        !content.isRetired &&
+                        identical(timeline.lease(threadId), content),
+                  ),
+                );
+              });
+            },
+            child: TimelineConnector(
+              threadId: threadId,
+              planConfirmation: pendingPlan,
+              planExpanded: sidebar.isPanelOpen(
+                ConversationSidebarPanelKind.plan,
+              ),
+              onPlanToggle: pendingPlan == null
+                  ? null
+                  : () => setState(
+                      () => sidebar.togglePanel(
+                        ConversationSidebarPanelKind.plan,
+                        defaultMode: ConversationSidebarLayoutMode.expanded,
                       ),
                     ),
-                  ],
+            ),
+          ),
+        );
+
+        return ConversationWorkspaceShell(
+          topBanner: widget.needsOpen
+              ? _OpenThreadBanner(threadId: threadId)
+              : null,
+          readingArea: readingArea,
+          readingAction: const ReturnToLatestButton(),
+          overlays: [
+            if (workspace.loadError case final error?)
+              _ReadingErrorBanner(
+                message: error,
+                onRetry: () => _retryThreadLoad(threadId),
+              ),
+            if (workspace.isLoading)
+              StudioWorkspaceLoading(
+                key: const ValueKey('agent-workspace-loading'),
+                hasContent:
+                    timelineDisplay != null &&
+                    timelineDisplay.threadId == threadId &&
+                    timelineDisplay.generation > 0,
+              ),
+          ],
+          scrollFooter: pendingPlan != null,
+          footerDockBuilder: (context, compact) => _Footer(
+            threadId: threadId,
+            compact: compact,
+            contentKey: StudioDriverKeys.workspaceFooterScroll,
+          ),
+          sidebarBuilder: activeEntry == null
+              ? null
+              : (context, presentation) => ConversationRightSidebar(
+                  entries: entries,
+                  activeKind: activeEntry.kind,
+                  presentation: presentation,
+                  onSelectKind: (kind) {
+                    final target = entries.firstWhere(
+                      (entry) => entry.kind == kind,
+                    );
+                    setState(
+                      () => sidebar.openPanel(
+                        kind,
+                        defaultMode: target.defaultLayoutMode,
+                      ),
+                    );
+                  },
+                  onToggleLayoutMode: () => setState(
+                    () => sidebar.toggleLayoutMode(
+                      activeEntry.kind,
+                      defaultMode: activeEntry.defaultLayoutMode,
+                    ),
+                  ),
+                  onCollapse: () => setState(sidebar.collapse),
                 ),
-              );
-            },
-          );
-        },
-      ),
+          sidebarExpanded:
+              activeEntry != null &&
+              activeLayoutMode == ConversationSidebarLayoutMode.expanded,
+          expandedDockBehavior:
+              activeEntry?.expandedDockBehavior ??
+              ConversationExpandedDockBehavior.coverAll,
+          sidebarCustomWidth: _sidebarCustomWidth,
+          sidebarDefaultWidthBuilder: activeEntry?.defaultWidthBuilder,
+          onSidebarWidthChanged: (width) => _sidebarCustomWidth = width,
+          onCollapseSidebar: () => setState(sidebar.collapse),
+          statusBar: ThreadStatusConnector(
+            threadId: threadId,
+            showTodo: todo != null,
+            todoExpanded: sidebar.isPanelOpen(
+              ConversationSidebarPanelKind.todo,
+            ),
+            onToggleTodo: todo == null
+                ? null
+                : () => setState(
+                    () =>
+                        sidebar.togglePanel(ConversationSidebarPanelKind.todo),
+                  ),
+            workflowExpanded: sidebar.isPanelOpen(
+              ConversationSidebarPanelKind.workflow,
+            ),
+            onToggleWorkflow: () => setState(
+              () => sidebar.togglePanel(ConversationSidebarPanelKind.workflow),
+            ),
+            showPlanEntry: pendingPlan == null && referencedPlan != null,
+            planExpanded: sidebar.isPanelOpen(
+              ConversationSidebarPanelKind.plan,
+            ),
+            onOpenPlan: pendingPlan != null || referencedPlan == null
+                ? null
+                : () => setState(
+                    () => sidebar.togglePanel(
+                      ConversationSidebarPanelKind.plan,
+                      defaultMode: ConversationSidebarLayoutMode.split,
+                    ),
+                  ),
+            hasSidebarPanels: entries.isNotEmpty,
+            sidebarOpen: sidebar.isOpen,
+            onToggleSidebar: entries.isEmpty
+                ? null
+                : () => setState(
+                    () => sidebar.toggleSidebar(availableOrder: availableOrder),
+                  ),
+          ),
+        );
+      },
     );
   }
 
@@ -398,92 +417,43 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
     }
     return _WorkspacePlanPresentation.fromHead(plan);
   }
-
-  /// footer 可用高度上限：先给时间线留下最小可视高度，剩余高度交给 footer。
-  double _footerMaxHeight(double viewportHeight) {
-    final reserve = (viewportHeight * _timelineReserveFraction)
-        .clamp(_minimumTimelineHeight, _maximumTimelineReserve)
-        .toDouble();
-    final available = viewportHeight - reserve;
-    return available > 0 ? available : 0;
-  }
 }
 
-/// footer 预算低于该值时启用紧凑布局：让 composer 适度收起留白与输入行数（保留操作），
-/// 把省下的高度让给展开详情，同时避免矮窗口 `RenderFlex` 溢出。
-const _compactFooterBudget = 400.0;
-
-/// 使用 workspace 的高度预算。常规 composer 保持输入区完整可见、只压缩活动条；
-/// Plan 的完整确认表单允许区内滚动，让短窗和大字下的两项决定仍可到达。
-class _AdaptiveFooter extends StatelessWidget {
-  const _AdaptiveFooter({
-    required this.threadId,
-    required this.maxHeight,
-    required this.scrollPlan,
-    required this.showTodo,
-    required this.todoExpanded,
-    required this.onToggleTodo,
-    this.workflowExpanded = false,
-    this.onToggleWorkflow,
-    this.showPlanEntry = false,
-    this.onOpenPlan,
+class _WorkspacePlanPresentation {
+  const _WorkspacePlanPresentation({
+    required this.identity,
+    required this.status,
   });
 
-  final String threadId;
-  final double? maxHeight;
-  final bool scrollPlan;
-  final bool showTodo;
-  final bool todoExpanded;
-  final VoidCallback? onToggleTodo;
-  final bool workflowExpanded;
-  final VoidCallback? onToggleWorkflow;
-  final bool showPlanEntry;
-  final VoidCallback? onOpenPlan;
+  factory _WorkspacePlanPresentation.fromPending(PlanConfirmationView plan) {
+    return _WorkspacePlanPresentation(
+      identity: 'interaction:${plan.interactionId}',
+      status: PlanDetailStatus.awaitingConfirmation,
+    );
+  }
+
+  factory _WorkspacePlanPresentation.fromHead(CurrentPlanHead plan) {
+    return _WorkspacePlanPresentation(
+      identity: 'plan:${plan.revision}',
+      status: planDetailStatusFromRuntime(plan.phase),
+    );
+  }
+
+  final String identity;
+  final PlanDetailStatus status;
+}
+
+class _TodoCountBadge extends StatelessWidget {
+  const _TodoCountBadge({required this.completed, required this.total});
+
+  final int completed;
+  final int total;
 
   @override
   Widget build(BuildContext context) {
-    if (maxHeight == null) {
-      return _Footer(
-        threadId: threadId,
-        showTodo: showTodo,
-        todoExpanded: todoExpanded,
-        onToggleTodo: onToggleTodo,
-        workflowExpanded: workflowExpanded,
-        onToggleWorkflow: onToggleWorkflow,
-        showPlanEntry: showPlanEntry,
-        onOpenPlan: onOpenPlan,
-        compact: false,
-        contentKey: StudioDriverKeys.workspaceFooterScroll,
-      );
-    }
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maxHeight!),
-      child: LayoutBuilder(
-        // ConstrainedBox 已把窗口预算收成有界 maxHeight，这里据此决定紧凑与否，避免在
-        // composer 里再读一次窗口尺寸形成第二套事实源。
-        builder: (context, constraints) {
-          final footer = _Footer(
-            threadId: threadId,
-            showTodo: showTodo,
-            todoExpanded: todoExpanded,
-            onToggleTodo: onToggleTodo,
-            workflowExpanded: workflowExpanded,
-            onToggleWorkflow: onToggleWorkflow,
-            showPlanEntry: showPlanEntry,
-            onOpenPlan: onOpenPlan,
-            compact: constraints.maxHeight < _compactFooterBudget,
-            contentKey: StudioDriverKeys.workspaceFooterScroll,
-          );
-          return scrollPlan
-              ? SingleChildScrollView(
-                  key: const ValueKey('plan-workspace-footer-scroll'),
-                  primary: false,
-                  child: footer,
-                )
-              : footer;
-        },
-      ),
-    );
+    final allDone = total > 0 && completed == total;
+    final tone = allDone ? StudioTone.success : StudioTone.brand;
+    return StudioPill(label: '$completed/$total', tone: tone);
   }
 }
 

@@ -14786,6 +14786,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No matching external sessions'**
   String get acpHistorySearchEmpty;
+
+  /// No description provided for @rightSidebarCollapse.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse right sidebar'**
+  String get rightSidebarCollapse;
+
+  /// No description provided for @rightSidebarExpand.
+  ///
+  /// In en, this message translates to:
+  /// **'Expand right sidebar'**
+  String get rightSidebarExpand;
+
+  /// No description provided for @rightSidebarResize.
+  ///
+  /// In en, this message translates to:
+  /// **'Resize right sidebar; drag or double-tap to reset'**
+  String get rightSidebarResize;
+
+  /// No description provided for @rightSidebarTabWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow'**
+  String get rightSidebarTabWorkflow;
+
+  /// No description provided for @rightSidebarTabPlan.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan'**
+  String get rightSidebarTabPlan;
+
+  /// No description provided for @rightSidebarTabTodo.
+  ///
+  /// In en, this message translates to:
+  /// **'Todo'**
+  String get rightSidebarTabTodo;
+
+  /// No description provided for @rightSidebarTabSteps.
+  ///
+  /// In en, this message translates to:
+  /// **'Steps'**
+  String get rightSidebarTabSteps;
+
+  /// No description provided for @rightSidebarCloseFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Close file'**
+  String get rightSidebarCloseFile;
+
+  /// No description provided for @fileReadingFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to read file: {error}'**
+  String fileReadingFailed(String error);
+
+  /// No description provided for @fileReadingExpired.
+  ///
+  /// In en, this message translates to:
+  /// **'File reading session expired'**
+  String get fileReadingExpired;
+
+  /// No description provided for @fileReadingClosed.
+  ///
+  /// In en, this message translates to:
+  /// **'File reading closed or switched'**
+  String get fileReadingClosed;
+
+  /// No description provided for @openMarkdownInSidebar.
+  ///
+  /// In en, this message translates to:
+  /// **'Read in right sidebar'**
+  String get openMarkdownInSidebar;
+
+  /// No description provided for @acpStepsStatusTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution steps {completed}/{total}'**
+  String acpStepsStatusTooltip(int completed, int total);
 }
 
 class _AppLocalizationsDelegate

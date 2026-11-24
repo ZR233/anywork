@@ -85,6 +85,8 @@ Widget _threadStatusBarPreview({VoidCallback? onOpenPlan}) => MaterialApp(
           onToggleTodo: () {},
           showPlanEntry: true,
           onOpenPlan: onOpenPlan ?? () {},
+          hasSidebarPanels: true,
+          onToggleSidebar: () {},
         ),
       ],
     ),

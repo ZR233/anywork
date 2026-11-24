@@ -17,8 +17,24 @@ class SessionHeader extends ConsumerWidget {
         : project.isStandalone
         ? thread?.workspacePath ?? ''
         : project.name.trim();
+    final isNative = thread?.backend is NativeAgentBackendView;
+    final subtitleParts = <String>[
+      if (projectLabel.isNotEmpty) projectLabel,
+      if (thread != null && isNative) ...[
+        thread.workspaceMode == ThreadWorkspaceMode.worktree
+            ? context.l10n.composerWorkspaceModeWorktree
+            : context.l10n.composerWorkspaceModeLocal,
+        context.delegationSummary(
+          DelegationSettingsView(
+            mode: thread.delegationMode,
+            preference: thread.delegationPreference,
+          ),
+        ),
+      ],
+    ];
+    final subtitle = subtitleParts.join(' · ');
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final title = Column(
@@ -33,25 +49,23 @@ class SessionHeader extends ConsumerWidget {
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              if (thread != null && thread.backend is NativeAgentBackendView)
-                Tooltip(
-                  message: context.l10n.delegationFrozen,
-                  child: Text(
-                    '${thread.workspaceMode == ThreadWorkspaceMode.worktree ? context.l10n.composerWorkspaceModeWorktree : context.l10n.composerWorkspaceModeLocal} · ${context.delegationSummary(DelegationSettingsView(mode: thread.delegationMode, preference: thread.delegationPreference))}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                ),
-              if (thread != null && projectLabel.isNotEmpty) ...[
-                const SizedBox(height: 4),
+              if (thread != null && subtitle.isNotEmpty) ...[
+                const SizedBox(height: 2),
                 Tooltip(
                   richMessage: TextSpan(
-                    text: thread.workspacePath,
-                    style: const TextStyle(fontFamily: studioCodeFontFamily),
+                    children: [
+                      TextSpan(
+                        text: thread.workspacePath,
+                        style: const TextStyle(
+                          fontFamily: studioCodeFontFamily,
+                        ),
+                      ),
+                      if (isNative)
+                        TextSpan(text: '\n${context.l10n.delegationFrozen}'),
+                    ],
                   ),
                   child: Text(
-                    projectLabel,
+                    subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: context.text.bodySmall?.copyWith(
@@ -480,25 +494,11 @@ const double _headerActionsWidthFraction = 0.7;
 class _Footer extends StatelessWidget {
   const _Footer({
     required this.threadId,
-    required this.showTodo,
-    required this.todoExpanded,
-    required this.onToggleTodo,
-    this.workflowExpanded = false,
-    this.onToggleWorkflow,
-    this.showPlanEntry = false,
-    this.onOpenPlan,
     required this.compact,
     this.contentKey,
   });
 
   final String threadId;
-  final bool showTodo;
-  final bool todoExpanded;
-  final VoidCallback? onToggleTodo;
-  final bool workflowExpanded;
-  final VoidCallback? onToggleWorkflow;
-  final bool showPlanEntry;
-  final VoidCallback? onOpenPlan;
 
   /// 矮窗口紧凑布局：只收缩 composer 的留白与输入行数，不隐藏任何操作。
   final bool compact;
@@ -515,13 +515,8 @@ class _Footer extends StatelessWidget {
         children: [
           // 固定在输入区上方：滚历史时依旧可见，且与 Timeline 解耦。
           //
-          // 活动条是整条 footer 里**唯一**可伸缩的部分：`Flexible` 把输入区与状态栏
-          // 布局之后的实际剩余高度交给它，因此展开详情只能压缩自己，不可能把输入区
-          // 顶出窗口。输入区与状态栏保持自身固有高度，始终完整可见。
-          //
-          // footer 的总预算由 [AgentWorkspacePane] 按「窗口高度 − 时间线最小可视高度」
-          // 给出；矮窗口时 [compact] 只收起 composer 留白与输入行数，让展开详情保留可读
-          // 高度，同时不隐藏任何操作按钮。
+          // 活动条是整条 footer 里**唯一**可伸缩的部分：`Flexible` 把输入区布局之后
+          // 的实际剩余高度交给它，因此展开详情只能压缩自己，不可能把输入区顶出窗口。
           Flexible(
             fit: FlexFit.loose,
             child: LiveStatusBar(threadId: threadId),
@@ -529,16 +524,6 @@ class _Footer extends StatelessWidget {
           Composer(
             target: ComposerTarget.thread(threadId: threadId),
             compact: compact,
-          ),
-          ThreadStatusConnector(
-            threadId: threadId,
-            showTodo: showTodo,
-            todoExpanded: todoExpanded,
-            onToggleTodo: onToggleTodo,
-            workflowExpanded: workflowExpanded,
-            onToggleWorkflow: onToggleWorkflow,
-            showPlanEntry: showPlanEntry,
-            onOpenPlan: onOpenPlan,
           ),
         ],
       ),

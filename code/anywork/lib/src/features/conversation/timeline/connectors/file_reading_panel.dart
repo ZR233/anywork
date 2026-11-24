@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../views/markdown_document_body.dart';
 import '../widgets/timeline_markdown.dart';
@@ -40,18 +41,18 @@ class FileReadingScope extends InheritedWidget {
       onOpen != oldWidget.onOpen;
 }
 
+class _FileReadingExpiredException implements Exception {
+  const _FileReadingExpiredException();
+}
+
+class _FileReadingClosedException implements Exception {
+  const _FileReadingClosedException();
+}
+
 class FileReadingPanel extends ConsumerStatefulWidget {
-  const FileReadingPanel({
-    super.key,
-    required this.request,
-    required this.onClose,
-    this.onToggleReadingMode,
-    this.fullWidth = false,
-  });
+  const FileReadingPanel({super.key, required this.request});
+
   final FileReadingRequest request;
-  final VoidCallback onClose;
-  final VoidCallback? onToggleReadingMode;
-  final bool fullWidth;
 
   @override
   ConsumerState<FileReadingPanel> createState() => _FileReadingPanelState();
@@ -77,10 +78,10 @@ class _FileReadingPanelState extends ConsumerState<FileReadingPanel> {
     final attempt = ++_attempt;
     final request = widget.request;
     _text = () async {
-      if (!request.isActive()) throw StateError('文件读取资格已失效');
+      if (!request.isActive()) throw const _FileReadingExpiredException();
       final bytes = await request.readBytes();
       if (!mounted || attempt != _attempt || !request.isActive()) {
-        throw StateError('文件阅读已关闭或切换');
+        throw const _FileReadingClosedException();
       }
       return utf8.decode(bytes);
     }();
@@ -93,29 +94,33 @@ class _FileReadingPanelState extends ConsumerState<FileReadingPanel> {
     super.dispose();
   }
 
+  String _formatError(BuildContext context, Object error) {
+    final l10n = context.l10n;
+    if (error is _FileReadingExpiredException) return l10n.fileReadingExpired;
+    if (error is _FileReadingClosedException) return l10n.fileReadingClosed;
+    return l10n.fileReadingFailed('$error');
+  }
+
   @override
   Widget build(BuildContext context) => FutureBuilder<String>(
     key: ValueKey(widget.request.identity),
     future: _text,
     builder: (context, snapshot) => FileDocumentView(
       identity: widget.request.identity,
-      filename: widget.request.filename,
-      onClose: widget.onClose,
-      onToggleReadingMode: widget.onToggleReadingMode,
-      fullWidth: widget.fullWidth,
       body: snapshot.connectionState != ConnectionState.done
           ? const Center(child: CircularProgressIndicator())
           : snapshot.hasError
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('文件读取失败：${snapshot.error}'),
+                Text(_formatError(context, snapshot.error!)),
+                const SizedBox(height: 8),
                 TextButton.icon(
                   onPressed: widget.request.isActive()
                       ? () => setState(_start)
                       : null,
                   icon: const Icon(Icons.refresh),
-                  label: const Text('重试'),
+                  label: Text(context.l10n.sidebarRetry),
                 ),
               ],
             )
@@ -143,23 +148,16 @@ class _FileReadingPanelState extends ConsumerState<FileReadingPanel> {
   );
 }
 
-/// The same quiet document surface as Plan, without Plan status or decisions.
+/// Pure document reading surface shared across Plan and Markdown files.
 class FileDocumentView extends StatefulWidget {
   const FileDocumentView({
     super.key,
     required this.identity,
-    required this.filename,
     required this.body,
-    required this.onClose,
-    this.onToggleReadingMode,
-    this.fullWidth = false,
   });
+
   final Object identity;
-  final String filename;
   final Widget body;
-  final VoidCallback onClose;
-  final VoidCallback? onToggleReadingMode;
-  final bool fullWidth;
 
   @override
   State<FileDocumentView> createState() => _FileDocumentViewState();
@@ -183,78 +181,22 @@ class _FileDocumentViewState extends State<FileDocumentView> {
   }
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final header = Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 8, 8),
-        child: Row(
-          children: [
-            const Icon(Icons.article_outlined),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Tooltip(
-                message: widget.filename,
-                child: Text(
-                  widget.filename,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-            ),
-            if (widget.onToggleReadingMode != null)
-              IconButton(
-                tooltip: widget.fullWidth ? '恢复分栏' : '展开阅读',
-                onPressed: widget.onToggleReadingMode,
-                icon: Icon(
-                  widget.fullWidth
-                      ? Icons.vertical_split_outlined
-                      : Icons.open_in_full,
-                ),
-              ),
-            IconButton(
-              tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
-              onPressed: widget.onClose,
-              icon: const Icon(Icons.close),
-            ),
-          ],
-        ),
-      );
-      final body = MarkdownDocumentBody(child: widget.body);
-      Widget scroll(Widget child) => Scrollbar(
-        controller: _scroll,
-        child: SingleChildScrollView(
-          key: const ValueKey('file-reading-scroll'),
+  Widget build(BuildContext context) {
+    final body = MarkdownDocumentBody(child: widget.body);
+    return Material(
+      key: const ValueKey('file-reading-panel'),
+      color: Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: SelectionArea(
+        child: Scrollbar(
           controller: _scroll,
-          primary: false,
-          child: child,
+          child: SingleChildScrollView(
+            key: const ValueKey('file-reading-scroll'),
+            controller: _scroll,
+            primary: false,
+            child: body,
+          ),
         ),
-      );
-      return Material(
-        key: const ValueKey('file-reading-panel'),
-        color: Theme.of(context).colorScheme.surfaceContainerLowest,
-        child: SelectionArea(
-          child: constraints.maxHeight < 260
-              ? scroll(
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SelectionContainer.disabled(child: header),
-                      const Divider(height: 1),
-                      body,
-                    ],
-                  ),
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SelectionContainer.disabled(child: header),
-                    const Divider(height: 1),
-                    Expanded(child: scroll(body)),
-                  ],
-                ),
-        ),
-      );
-    },
-  );
+      ),
+    );
+  }
 }

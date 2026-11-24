@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
@@ -9,6 +10,7 @@ import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
+import '../conversation/workspace/conversation_workspace.dart';
 import '../../shared/studio_driver_keys.dart';
 
 import 'package:anywork_client/conversation.dart'
@@ -32,7 +34,11 @@ class ThreadStatusConnector extends ConsumerWidget {
     this.workflowExpanded = false,
     this.onToggleWorkflow,
     this.showPlanEntry = false,
+    this.planExpanded = false,
     this.onOpenPlan,
+    this.hasSidebarPanels = false,
+    this.sidebarOpen = false,
+    this.onToggleSidebar,
   });
 
   final String threadId;
@@ -42,7 +48,11 @@ class ThreadStatusConnector extends ConsumerWidget {
   final bool workflowExpanded;
   final VoidCallback? onToggleWorkflow;
   final bool showPlanEntry;
+  final bool planExpanded;
   final VoidCallback? onOpenPlan;
+  final bool hasSidebarPanels;
+  final bool sidebarOpen;
+  final VoidCallback? onToggleSidebar;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -66,7 +76,11 @@ class ThreadStatusConnector extends ConsumerWidget {
       todoExpanded: todoExpanded,
       onToggleTodo: onToggleTodo,
       showPlanEntry: showPlanEntry,
+      planExpanded: planExpanded,
       onOpenPlan: onOpenPlan,
+      hasSidebarPanels: hasSidebarPanels,
+      sidebarOpen: sidebarOpen,
+      onToggleSidebar: onToggleSidebar,
     );
   }
 }
@@ -84,7 +98,11 @@ class ThreadStatusBar extends StatelessWidget {
     this.todoExpanded = false,
     this.onToggleTodo,
     this.showPlanEntry = false,
+    this.planExpanded = false,
     this.onOpenPlan,
+    this.hasSidebarPanels = false,
+    this.sidebarOpen = false,
+    this.onToggleSidebar,
   });
 
   final StatusBarView status;
@@ -96,7 +114,11 @@ class ThreadStatusBar extends StatelessWidget {
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
   final bool showPlanEntry;
+  final bool planExpanded;
   final VoidCallback? onOpenPlan;
+  final bool hasSidebarPanels;
+  final bool sidebarOpen;
+  final VoidCallback? onToggleSidebar;
 
   @override
   Widget build(BuildContext context) {
@@ -115,52 +137,144 @@ class ThreadStatusBar extends StatelessWidget {
         ? context.l10n.agentRoleRetired
         : context.roleLabel(row.role);
     return DecoratedBox(
-      decoration: BoxDecoration(color: context.colors.surface),
+      decoration: BoxDecoration(
+        color: context.colors.surfaceContainerLow,
+        border: Border(top: BorderSide(color: context.colors.outlineVariant)),
+      ),
       child: SizedBox(
         width: double.infinity,
         height: 38,
         // No width thresholds hide entries. Extremely narrow windows can scroll
         // the compact strip, retaining keyboard and pointer access.
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              if (showTodo)
-                IconButton(
-                  key: const ValueKey('todo-open-button'),
-                  tooltip: context.l10n.timelineTodoListFallback,
-                  visualDensity: VisualDensity.compact,
-                  iconSize: 18,
-                  icon: Icon(
-                    todoExpanded ? Icons.checklist : Icons.checklist_outlined,
-                  ),
-                  onPressed: onToggleTodo,
-                ),
-              StatusBarItem(
-                icon: Icons.account_tree_outlined,
-                label:
-                    '$role · ${row.title} · ${context.threadStatusLabel(backend.status)}',
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minWidth: math.max(0, constraints.maxWidth - 16),
               ),
-              if (row.isChildRow)
-                StatusBarItem(
-                  icon: Icons.smart_toy_outlined,
-                  label:
-                      route?.unavailableReason ??
-                      route?.modelId ??
-                      context.l10n.settingsNotAvailable,
-                ),
-              ?workflowReadout,
-              contextReadout,
-              throughputReadout,
-              startedItemsEntry,
-              if (hasEffort || showPlanEntry)
-                _StatusOverflow(
-                  effort: hasEffort ? route?.effort : null,
-                  showPlanEntry: showPlanEntry,
-                  onOpenPlan: onOpenPlan,
-                ),
-            ],
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (showTodo)
+                        IconButton(
+                          key: const ValueKey('todo-open-button'),
+                          tooltip: context.l10n.timelineTodoListFallback,
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 18,
+                          icon: Icon(
+                            todoExpanded
+                                ? Icons.checklist
+                                : Icons.checklist_outlined,
+                            color: todoExpanded
+                                ? context.colors.primary
+                                : context.colors.onSurfaceVariant,
+                          ),
+                          onPressed: onToggleTodo,
+                        ),
+                      StatusBarItem(
+                        icon: Icons.account_tree_outlined,
+                        label:
+                            '$role · ${row.title} · ${context.threadStatusLabel(backend.status)}',
+                      ),
+                      if (row.isChildRow)
+                        StatusBarItem(
+                          icon: Icons.smart_toy_outlined,
+                          label:
+                              route?.unavailableReason ??
+                              route?.modelId ??
+                              context.l10n.settingsNotAvailable,
+                        ),
+                      if (workflowReadout case final workflow?) ...[
+                        const SizedBox(width: 4),
+                        workflow,
+                      ],
+                      if (showPlanEntry) ...[
+                        const SizedBox(width: 6),
+                        _StatusPlanPill(
+                          expanded: planExpanded,
+                          onTap: onOpenPlan,
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(width: 12),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      contextReadout,
+                      throughputReadout,
+                      startedItemsEntry,
+                      if (hasEffort) _StatusOverflow(effort: route?.effort),
+                      ConversationSidebarToggleButton(
+                        available: hasSidebarPanels,
+                        expanded: sidebarOpen,
+                        onPressed: onToggleSidebar,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusPlanPill extends StatelessWidget {
+  const _StatusPlanPill({required this.expanded, this.onTap});
+
+  final bool expanded;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fgColor = expanded
+        ? context.colors.primary
+        : context.colors.onSurfaceVariant;
+    final bgColor = expanded
+        ? context.colors.primaryContainer.withValues(alpha: 0.45)
+        : Colors.transparent;
+    final borderColor = expanded
+        ? context.colors.primary.withValues(alpha: 0.55)
+        : context.colors.outlineVariant.withValues(alpha: 0.65);
+    return Tooltip(
+      message: context.l10n.statusPlanEntry,
+      child: Material(
+        color: bgColor,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(StudioRadii.sm),
+          side: BorderSide(color: borderColor),
+        ),
+        child: InkWell(
+          key: StudioDriverKeys.statusPlanEntry,
+          borderRadius: BorderRadius.circular(StudioRadii.sm),
+          onTap: onTap,
+          child: SizedBox(
+            height: 26,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.description_outlined, size: 14, color: fgColor),
+                  const SizedBox(width: 5),
+                  Text(
+                    context.l10n.rightSidebarTabPlan,
+                    style: context.text.labelSmall?.copyWith(
+                      color: fgColor,
+                      fontWeight: expanded ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -404,14 +518,8 @@ class WorkflowStatusReadout extends StatelessWidget {
 }
 
 class _StatusOverflow extends StatefulWidget {
-  const _StatusOverflow({
-    required this.effort,
-    required this.showPlanEntry,
-    this.onOpenPlan,
-  });
+  const _StatusOverflow({required this.effort});
   final String? effort;
-  final bool showPlanEntry;
-  final VoidCallback? onOpenPlan;
 
   @override
   State<_StatusOverflow> createState() => _StatusOverflowState();
@@ -435,12 +543,6 @@ class _StatusOverflowState extends State<_StatusOverflow> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Text('${context.l10n.statusReasoningEffort}: $effort'),
-        ),
-      if (widget.showPlanEntry)
-        MenuItemButton(
-          key: StudioDriverKeys.statusPlanEntry,
-          onPressed: widget.onOpenPlan,
-          child: Text(context.l10n.statusPlanEntry),
         ),
     ],
     builder: (context, controller, child) => IconButton(

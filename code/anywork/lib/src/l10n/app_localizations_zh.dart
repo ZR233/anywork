@@ -7866,4 +7866,47 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpHistorySearchEmpty => '没有匹配的外部会话';
+
+  @override
+  String get rightSidebarCollapse => '收起右侧边栏';
+
+  @override
+  String get rightSidebarExpand => '展开右侧边栏';
+
+  @override
+  String get rightSidebarResize => '调整右侧边栏宽度；支持拖动与双击恢复默认';
+
+  @override
+  String get rightSidebarTabWorkflow => '工作流';
+
+  @override
+  String get rightSidebarTabPlan => '计划';
+
+  @override
+  String get rightSidebarTabTodo => '待办';
+
+  @override
+  String get rightSidebarTabSteps => '执行步骤';
+
+  @override
+  String get rightSidebarCloseFile => '关闭文件';
+
+  @override
+  String fileReadingFailed(String error) {
+    return '文件读取失败：$error';
+  }
+
+  @override
+  String get fileReadingExpired => '文件读取资格已失效';
+
+  @override
+  String get fileReadingClosed => '文件阅读已关闭或切换';
+
+  @override
+  String get openMarkdownInSidebar => '在右侧边栏阅读';
+
+  @override
+  String acpStepsStatusTooltip(int completed, int total) {
+    return '执行步骤 $completed/$total';
+  }
 }

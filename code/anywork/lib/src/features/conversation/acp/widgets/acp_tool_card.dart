@@ -14,6 +14,7 @@ class AcpToolCard extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.onOpenMarkdownResource,
   });
 
   final AcpTimelineToolCallItem item;
@@ -21,6 +22,7 @@ class AcpToolCard extends StatelessWidget {
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final void Function(String uri, String text)? onOpenMarkdownResource;
 
   @override
   Widget build(BuildContext context) {
@@ -43,6 +45,7 @@ class AcpToolCard extends StatelessWidget {
                   isSafeLink: safeLink,
                   onOpenLink: onOpenLink,
                   imageBuilder: imageBuilder,
+                  onOpenMarkdownResource: onOpenMarkdownResource,
                 ),
             ],
       child: TimelineToolItemView(

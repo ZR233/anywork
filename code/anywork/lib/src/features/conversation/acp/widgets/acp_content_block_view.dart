@@ -34,6 +34,7 @@ class AcpContentBlockView extends StatelessWidget {
     this.isSafeLink = _defaultIsSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.onOpenMarkdownResource,
     this.textStyle,
   });
 
@@ -42,6 +43,7 @@ class AcpContentBlockView extends StatelessWidget {
   final bool Function(String url) isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final void Function(String uri, String text)? onOpenMarkdownResource;
   final TextStyle? textStyle;
 
   @override
@@ -96,7 +98,12 @@ class AcpContentBlockView extends StatelessWidget {
       :final text,
       :final mimeType,
     ) =>
-      _AcpEmbeddedTextResource(uri: uri, text: text, mimeType: mimeType),
+      _AcpEmbeddedTextResource(
+        uri: uri,
+        text: text,
+        mimeType: mimeType,
+        onOpenMarkdown: onOpenMarkdownResource,
+      ),
     AcpBlobResourceBlockPresentation(
       :final uri,
       :final mimeType,
@@ -296,20 +303,31 @@ class _AcpResourceCard extends StatelessWidget {
   }
 }
 
+bool _isMarkdownResource(String uri, String? mimeType) {
+  final mime = mimeType?.trim().toLowerCase();
+  if (mime == 'text/markdown' || mime == 'text/x-markdown') return true;
+  final cleanPath = uri.split('?').first.split('#').first.toLowerCase();
+  return cleanPath.endsWith('.md') || cleanPath.endsWith('.markdown');
+}
+
 class _AcpEmbeddedTextResource extends StatelessWidget {
   const _AcpEmbeddedTextResource({
     required this.uri,
     required this.text,
     this.mimeType,
+    this.onOpenMarkdown,
   });
 
   final String uri;
   final String text;
   final String? mimeType;
+  final void Function(String uri, String text)? onOpenMarkdown;
 
   @override
   Widget build(BuildContext context) {
-    return TimelineActivityDisclosure(
+    final canOpenMarkdown =
+        onOpenMarkdown != null && _isMarkdownResource(uri, mimeType);
+    final disclosure = TimelineActivityDisclosure(
       childrenPadding: const EdgeInsetsDirectional.only(top: 4, bottom: 4),
       titleBuilder: (context, expanded) => TimelineActivityRow(
         icon: Icons.description_outlined,
@@ -325,6 +343,25 @@ class _AcpEmbeddedTextResource extends StatelessWidget {
           language: mimeType ?? uri,
           horizontalScroll: false,
           backgroundColor: context.colors.surfaceContainerLowest,
+        ),
+      ],
+    );
+    if (!canOpenMarkdown) return disclosure;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: disclosure),
+        const SizedBox(width: 4),
+        IconButton(
+          key: ValueKey('acp-open-markdown:$uri'),
+          visualDensity: VisualDensity.compact,
+          iconSize: 17,
+          tooltip: context.l10n.openMarkdownInSidebar,
+          onPressed: () => onOpenMarkdown!(uri, text),
+          icon: Icon(
+            Icons.chrome_reader_mode_outlined,
+            color: context.colors.primary,
+          ),
         ),
       ],
     );

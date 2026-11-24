@@ -165,6 +165,13 @@ void main() {
       rule: 'UI-02',
     ),
     (
+      name:
+          'Conversation workspace UI cannot import Riverpod or business owners',
+      path: 'code/anywork/lib/src/features/conversation/workspace/fixture.dart',
+      source: "import 'package:flutter_riverpod/flutter_riverpod.dart';",
+      rule: 'UI-02',
+    ),
+    (
       name: 'ACP Widget cannot import Riverpod or ViewModels',
       path: '${_acpFeature}widgets/fixture.dart',
       source: "import '../view_models/acp_session_view_model.dart';",
@@ -462,6 +469,7 @@ import '../../../../shared/studio_chrome.dart';
 import '../state/fixture.dart';
 import '../../composer/state/start_backend_view_state.dart';
 import '../../composer/views/start_model_selector_view.dart';
+import '../../workspace/conversation_workspace.dart';
 ''',
         ),
         (

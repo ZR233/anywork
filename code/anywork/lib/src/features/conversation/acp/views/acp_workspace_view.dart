@@ -1,88 +1,61 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../composer/views/composer_dock_view.dart';
+import '../../workspace/conversation_workspace.dart';
 
-/// Pure ACP workspace shell layout combining the centered reading stream,
-/// docked permission/composer stack (`1040px`), `38px` status bar, and an
-/// optional `360px` right-side workflow graph panel while preserving a minimum
-/// visible reading budget on short desktop windows.
+/// 复用统一会话工作区壳的 ACP 工作区视图：
+/// 底部状态栏全宽贯穿，右侧可收缩边栏向下延伸至状态栏顶部并将主时间线与输入区
+/// 压缩至左侧列，跨折叠 / 并排 / 全宽 / 窄窗浮层切换时保持子状态不变。
 class AcpWorkspaceView extends StatelessWidget {
   const AcpWorkspaceView({
     super.key,
     required this.readingArea,
-    required this.composer,
+    required this.composerBuilder,
     required this.statusBar,
     this.permissionDock,
-    this.sidePanel,
+    this.sidebarBuilder,
+    this.sidebarExpanded = false,
+    this.expandedDockBehavior = ConversationExpandedDockBehavior.coverAll,
+    this.sidebarCustomWidth,
+    this.sidebarDefaultWidthBuilder,
+    this.onSidebarWidthChanged,
+    this.onCollapseSidebar,
   });
 
   final Widget readingArea;
   final Widget? permissionDock;
-  final Widget composer;
+  final Widget Function(BuildContext context, bool compact) composerBuilder;
   final Widget statusBar;
-  final Widget? sidePanel;
-
-  static const double _minimumReadingReserve = 96.0;
-  static const double _maximumReadingReserve = 200.0;
-  static const double _readingReserveFraction = 0.28;
-  static const double sidePanelWidth = 360.0;
-
-  double _footerMaxHeight(double viewportHeight) {
-    final reserve = (viewportHeight * _readingReserveFraction)
-        .clamp(_minimumReadingReserve, _maximumReadingReserve)
-        .toDouble();
-    final available = viewportHeight - reserve;
-    return available > 0 ? available : 0;
-  }
+  final Widget? Function(
+    BuildContext context,
+    ConversationSidebarPresentation presentation,
+  )?
+  sidebarBuilder;
+  final bool sidebarExpanded;
+  final ConversationExpandedDockBehavior expandedDockBehavior;
+  final double? sidebarCustomWidth;
+  final double Function(double containerWidth)? sidebarDefaultWidthBuilder;
+  final ValueChanged<double?>? onSidebarWidthChanged;
+  final VoidCallback? onCollapseSidebar;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact =
-            constraints.hasBoundedHeight && constraints.maxHeight < 600;
-        final footer = Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ComposerDockView(
-              compact: compact,
-              additionalDiagnostics: const [],
-              childInteractions: permissionDock,
-              content: composer,
-            ),
-            statusBar,
-          ],
-        );
-
-        final boundedFooter = constraints.hasBoundedHeight
-            ? ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: _footerMaxHeight(constraints.maxHeight),
-                ),
-                child: SingleChildScrollView(child: footer),
-              )
-            : footer;
-
-        final mainColumn = Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: readingArea),
-            boundedFooter,
-          ],
-        );
-
-        if (sidePanel == null) {
-          return mainColumn;
-        }
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: mainColumn),
-            SizedBox(width: sidePanelWidth, child: sidePanel),
-          ],
-        );
-      },
+    return ConversationWorkspaceShell(
+      readingArea: readingArea,
+      footerDockBuilder: (context, compact) => ComposerDockView(
+        compact: compact,
+        additionalDiagnostics: const [],
+        childInteractions: permissionDock,
+        content: composerBuilder(context, compact),
+      ),
+      statusBar: statusBar,
+      sidebarBuilder: sidebarBuilder,
+      sidebarExpanded: sidebarExpanded,
+      expandedDockBehavior: expandedDockBehavior,
+      sidebarCustomWidth: sidebarCustomWidth,
+      sidebarDefaultWidthBuilder: sidebarDefaultWidthBuilder,
+      onSidebarWidthChanged: onSidebarWidthChanged,
+      onCollapseSidebar: onCollapseSidebar,
     );
   }
 }

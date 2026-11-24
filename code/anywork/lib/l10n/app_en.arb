@@ -4014,5 +4014,35 @@
       }
     }
   },
-  "acpHistorySearchEmpty": "No matching external sessions"
+  "acpHistorySearchEmpty": "No matching external sessions",
+  "rightSidebarCollapse": "Collapse right sidebar",
+  "rightSidebarExpand": "Expand right sidebar",
+  "rightSidebarResize": "Resize right sidebar; drag or double-tap to reset",
+  "rightSidebarTabWorkflow": "Workflow",
+  "rightSidebarTabPlan": "Plan",
+  "rightSidebarTabTodo": "Todo",
+  "rightSidebarTabSteps": "Steps",
+  "rightSidebarCloseFile": "Close file",
+  "fileReadingFailed": "Failed to read file: {error}",
+  "@fileReadingFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "fileReadingExpired": "File reading session expired",
+  "fileReadingClosed": "File reading closed or switched",
+  "openMarkdownInSidebar": "Read in right sidebar",
+  "acpStepsStatusTooltip": "Execution steps {completed}/{total}",
+  "@acpStepsStatusTooltip": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  }
 }
