@@ -254,8 +254,10 @@ mod tests {
 
     #[test]
     fn identity_exhaustion_does_not_overwrite_the_active_generation() {
-        let mut registry = RetainedTaskRegistry::<u8, (), ()>::default();
-        registry.next_id = u64::MAX;
+        let mut registry = RetainedTaskRegistry::<u8, (), ()> {
+            next_id: u64::MAX,
+            ..Default::default()
+        };
         assert!(registry.allocate_id().is_none());
         assert!(registry.is_empty());
     }

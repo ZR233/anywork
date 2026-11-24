@@ -4,8 +4,7 @@ mod state;
 
 pub use state::*;
 
-use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::{future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 use crate::StateError;
 use anyhow::{Context, Result};
@@ -15,6 +14,7 @@ use futures::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::{MissedTickBehavior, interval};
 
 use crate::studio::ids::unix_seconds;
 use pl_studio_update::STUDIO_VERSION;
@@ -732,6 +732,34 @@ fn rejected_selection(message: &str) -> StudioUpdatePreparationResult {
     }
 }
 
+const CHECK_INTERVAL: Duration = Duration::from_secs(20 * 60);
+
+/// The callback owns and joins its current round, including after cancellation.
+/// Only the process stop signal ends scheduling; failures cannot escape a tick.
+async fn schedule<F, Fut>(stop: &StudioUpdateCancellation, mut round: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut ticks = interval(CHECK_INTERVAL);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.cancelled() => return,
+            _ = ticks.tick() => {}
+        }
+        // Include callback construction in the unwind boundary as well as polling.
+        if AssertUnwindSafe(async { round().await })
+            .catch_unwind()
+            .await
+            .is_err()
+        {
+            tracing::error!("Studio update scheduling round panicked; continuing next interval");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,38 +1301,5 @@ mod tests {
                 .await
                 .is_err()
         );
-    }
-}
-
-use std::future::Future;
-use std::time::Duration;
-
-use tokio::time::{MissedTickBehavior, interval};
-
-const CHECK_INTERVAL: Duration = Duration::from_secs(20 * 60);
-
-/// The callback owns and joins its current round, including after cancellation.
-/// Only the process stop signal ends scheduling; failures cannot escape a tick.
-async fn schedule<F, Fut>(stop: &StudioUpdateCancellation, mut round: F)
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = ()>,
-{
-    let mut ticks = interval(CHECK_INTERVAL);
-    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            biased;
-            _ = stop.cancelled() => return,
-            _ = ticks.tick() => {}
-        }
-        // Include callback construction in the unwind boundary as well as polling.
-        if AssertUnwindSafe(async { round().await })
-            .catch_unwind()
-            .await
-            .is_err()
-        {
-            tracing::error!("Studio update scheduling round panicked; continuing next interval");
-        }
     }
 }

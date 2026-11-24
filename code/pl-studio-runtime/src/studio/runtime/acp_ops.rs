@@ -403,16 +403,18 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_join_waiter_does_not_detach_handle() {
-        let task = Arc::new(RetainedTask::running(tokio::spawn(
-            std::future::pending::<()>(),
-        )));
-        let waiting = task.join();
-        tokio::pin!(waiting);
-        let _ = tokio::time::timeout(Duration::from_millis(20), &mut waiting).await;
-        drop(waiting);
+        let (release, held) = tokio::sync::oneshot::channel();
+        let task = RetainedTask::running(tokio::spawn(async move { held.await.unwrap() }));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), task.join())
+                .await
+                .is_err()
+        );
         assert_eq!(task.running_handle_retained(), Some(true));
         assert!(task.try_reap().await.is_none());
         assert_eq!(task.running_handle_retained(), Some(true));
+        release.send(()).unwrap();
+        assert!(matches!(task.join().await, RetainedJoin::Observed(Ok(()))));
     }
 
     #[tokio::test]

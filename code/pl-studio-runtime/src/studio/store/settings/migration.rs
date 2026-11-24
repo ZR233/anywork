@@ -250,7 +250,7 @@ mod tests {
         let loaded = crate::toml_schema::load::<SettingsV1, SettingsDocument>(
             path,
             &content,
-            &migrator().expect("valid chain"),
+            migrator().expect("valid chain"),
             ENTITY,
             VERSION_KEY,
         )
@@ -263,7 +263,7 @@ mod tests {
         let reloaded = crate::toml_schema::load::<SettingsV1, SettingsDocument>(
             path,
             &encoded,
-            &migrator().expect("valid chain"),
+            migrator().expect("valid chain"),
             ENTITY,
             VERSION_KEY,
         )
@@ -283,7 +283,7 @@ mod tests {
             let loaded = crate::toml_schema::load::<SettingsV1, SettingsDocument>(
                 std::path::Path::new("settings.toml"),
                 &content,
-                &migrator().expect("valid chain"),
+                migrator().expect("valid chain"),
                 ENTITY,
                 VERSION_KEY,
             );

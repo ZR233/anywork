@@ -543,9 +543,7 @@ mod tests {
             db,
             1,
             "usage-1",
-            Some("accounting"),
-            Some("accounting:session"),
-            1,
+            Some(("accounting", "accounting:session")),
             &usage_payload(database_id),
             "anywork.accounting/1",
         )
@@ -564,8 +562,6 @@ mod tests {
             2,
             "tool-1",
             None,
-            None,
-            0,
             r#"{"contract":"anywork.event/1","type":"tool"}"#,
             "anywork.event/1",
         )
@@ -584,8 +580,6 @@ mod tests {
             3,
             "chat-1",
             None,
-            None,
-            0,
             &usage_payload(database_id).replace("usage-1", "chat-1"),
             "anywork.event/1",
         )
@@ -597,12 +591,12 @@ mod tests {
         db: &impl ConnectionTrait,
         seq: i64,
         event_id: &str,
-        row_scope: Option<&str>,
-        row_key: Option<&str>,
-        is_anchor: i64,
+        anchor: Option<(&str, &str)>,
         payload_json: &str,
         payload_schema: &str,
     ) -> Result<()> {
+        let (row_scope, row_key) = anchor.unzip();
+        let is_anchor = i64::from(anchor.is_some());
         db.execute_raw(statement(
             "INSERT INTO history_events(
                 seq,event_id,kind,timeline_role,recorded_at,row_scope,row_key,is_anchor,

@@ -923,7 +923,7 @@ mod tests {
 
         let again = owner.reconcile_run_for_turn().await?;
         assert!(again.is_some());
-        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert!(!updates.has_changed().expect("workflow watch"));
         assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
 
         let current = owner.workflow_current_json().await?;
@@ -946,7 +946,7 @@ mod tests {
             )
             .await?;
         assert_eq!(rejected["accepted"], false);
-        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert!(!updates.has_changed().expect("workflow watch"));
         assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
 
         let rejected_plan = owner
@@ -955,7 +955,7 @@ mod tests {
         assert!(!rejected_plan.accepted);
         assert_eq!(owner.snapshot().plan.expect("plan").revision, 0);
         assert!(!dir.path().join(PLAN_FILE_NAME).exists());
-        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert!(!updates.has_changed().expect("workflow watch"));
         Ok(())
     }
 
@@ -1005,7 +1005,7 @@ mod tests {
         );
         assert_eq!(owner.snapshot().plan.expect("plan").revision, 0);
         assert!(!dir.path().join(PLAN_FILE_NAME).exists());
-        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert!(!updates.has_changed().expect("workflow watch"));
         drop(restore);
         Ok(())
     }
@@ -1043,7 +1043,7 @@ mod tests {
             owner.snapshot().run.expect("run").current_state_id,
             before_state
         );
-        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert!(!updates.has_changed().expect("workflow watch"));
 
         owner.persist_release.notify_one();
         timeout(Duration::from_secs(5), updates.changed())
