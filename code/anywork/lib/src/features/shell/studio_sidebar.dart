@@ -125,7 +125,13 @@ class _SidebarState extends ConsumerState<_Sidebar> {
           ? l10n.sidebarDeleteSessionResultFailed(row.title, reason)
           : l10n.sidebarArchiveSessionResultFailed(row.title, reason);
     }
-    messenger.showSnackBar(SnackBar(content: Text(message)));
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        showCloseIcon: true,
+        duration: Duration(seconds: failure == null ? 5 : 8),
+      ),
+    );
   }
 
   @override

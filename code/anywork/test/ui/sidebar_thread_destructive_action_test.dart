@@ -395,7 +395,16 @@ void main() {
           () => find.text(message).evaluate().isNotEmpty,
           'show the actual cleanup outcome',
         );
-        expect(find.byType(SnackBar), findsOneWidget);
+        final snackBar = find.byType(SnackBar);
+        expect(snackBar, findsOneWidget);
+        final close = find.descendant(
+          of: snackBar,
+          matching: find.byTooltip(
+            MaterialLocalizations.of(tester.element(snackBar))
+                .closeButtonTooltip,
+          ),
+        );
+        expect(close, findsOneWidget);
         expect(transport.requests, [
           '${deleting ? 'delete' : 'archive'}:$_target',
         ]);
@@ -413,6 +422,18 @@ void main() {
           await tester.tapAt(const Offset(650, 450));
           await _pumpOverlayTransition(tester);
         }
+
+        await _pumpOverlayTransition(tester);
+        if (deleting && !succeeds) {
+          await tester.tap(close);
+        } else {
+          await tester.pump(Duration(seconds: succeeds ? 4 : 7));
+          expect(snackBar, findsOneWidget);
+          await tester.pump(const Duration(seconds: 1));
+        }
+        await _pumpOverlayTransition(tester);
+        expect(snackBar, findsNothing);
+        expect(client.selection.state.selectedThreadId, _alternate);
       },
     );
   }
