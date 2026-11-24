@@ -542,25 +542,14 @@ impl BotStateStore {
         message_id: &str,
         worker_id: &str,
     ) -> Result<ClaimLease, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
         let db = self.db().await?;
         let now = unix_seconds();
+        let fence = InboundClaimFence::new(bot_id, chat_id, message_id, worker_id, now);
         let renewed = db
-            .execute_raw(statement(
+            .execute_raw(fence.statement(
                 "UPDATE inbound_work
-                 SET claimed_at=?, updated_at=?
-                 WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                   AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                vec![
-                    now.into(),
-                    now.into(),
-                    identity.into(),
-                    bot_id.to_string().into(),
-                    chat_id.to_string().into(),
-                    message_id.to_string().into(),
-                    worker_id.to_string().into(),
-                    now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS).into(),
-                ],
+                 SET claimed_at=?, updated_at=?",
+                vec![now.into(), now.into()],
             ))
             .await
             .map_err(storage)?;
@@ -580,26 +569,14 @@ impl BotStateStore {
         worker_id: &str,
         watch_input: &str,
     ) -> Result<MarkOutcome, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
         let db = self.db().await?;
         let now = unix_seconds();
-        let lease_cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
+        let fence = InboundClaimFence::new(bot_id, chat_id, message_id, worker_id, now);
         let updated = db
-            .execute_raw(statement(
+            .execute_raw(fence.statement(
                 "UPDATE inbound_work
-                 SET watch_input=?, updated_at=?
-                 WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                   AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                vec![
-                    watch_input.to_string().into(),
-                    now.into(),
-                    identity.into(),
-                    bot_id.to_string().into(),
-                    chat_id.to_string().into(),
-                    message_id.to_string().into(),
-                    worker_id.to_string().into(),
-                    lease_cutoff.into(),
-                ],
+                 SET watch_input=?, updated_at=?",
+                vec![watch_input.to_string().into(), now.into()],
             ))
             .await
             .map_err(storage)?;
@@ -623,28 +600,17 @@ impl BotStateStore {
         worker_id: &str,
         finish: WorkFinish<'_>,
     ) -> Result<MarkOutcome, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
         let db = self.db().await?;
         let now = unix_seconds();
-        let lease_cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
+        let fence = InboundClaimFence::new(bot_id, chat_id, message_id, worker_id, now);
         match finish {
             WorkFinish::Completed => {
                 let updated = db
-                    .execute_raw(statement(
+                    .execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='completed', diagnostic='', claimed_by='', claimed_at=0,
-                             attempt_count=0, next_attempt_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
+                             attempt_count=0, next_attempt_at=0, updated_at=?",
+                        vec![now.into()],
                     ))
                     .await
                     .map_err(storage)?;
@@ -652,22 +618,12 @@ impl BotStateStore {
             }
             WorkFinish::Interrupted => {
                 let updated = db
-                    .execute_raw(statement(
+                    .execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='pending',
                              diagnostic='runtime stopped before a local terminal fact',
-                             claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
+                             claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?",
+                        vec![now.into()],
                     ))
                     .await
                     .map_err(storage)?;
@@ -675,20 +631,12 @@ impl BotStateStore {
             }
             WorkFinish::NeedsAttention(diagnostic) => {
                 let updated = db
-                    .execute_raw(statement(
+                    .execute_raw(fence.statement(
                         "UPDATE inbound_work
-                         SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                         SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?",
                         vec![
                             diagnostic.to_string().into(),
                             now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
                         ],
                     ))
                     .await
@@ -698,19 +646,9 @@ impl BotStateStore {
             WorkFinish::Retryable(diagnostic) => {
                 let tx = db.begin().await.map_err(storage)?;
                 let row = tx
-                    .query_one_raw(statement(
-                        "SELECT attempt_count FROM inbound_work
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            identity.clone().into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
+                    .query_one_raw(
+                        fence.statement("SELECT attempt_count FROM inbound_work", vec![]),
+                    )
                     .await
                     .map_err(storage)?;
                 let attempt_count = match row {
@@ -722,47 +660,31 @@ impl BotStateStore {
                 };
                 let next_count = attempt_count.saturating_add(1);
                 let updated = if next_count >= INBOUND_RETRY_BUDGET {
-                    tx.execute_raw(statement(
+                    tx.execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='needs_attention',
                              diagnostic=?,
-                             claimed_by='', claimed_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                             claimed_by='', claimed_at=0, updated_at=?",
                         vec![
                             format!(
                                 "recovery budget exhausted after {INBOUND_RETRY_BUDGET} failures: {diagnostic}"
                             )
                             .into(),
                             now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
                         ],
                     ))
                     .await
                     .map_err(storage)?
                 } else {
-                    tx.execute_raw(statement(
+                    tx.execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='failed', diagnostic=?, claimed_by='', claimed_at=0,
-                             attempt_count=?, next_attempt_at=?, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                             attempt_count=?, next_attempt_at=?, updated_at=?",
                         vec![
                             diagnostic.to_string().into(),
                             next_count.into(),
                             now.saturating_add(retry_backoff_seconds(next_count)).into(),
                             now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
                         ],
                     ))
                     .await
@@ -1604,6 +1526,36 @@ impl BotStateStore {
         .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(())
+    }
+}
+
+struct InboundClaimFence {
+    values: [Value; 6],
+}
+
+impl InboundClaimFence {
+    fn new(bot_id: &str, chat_id: &str, message_id: &str, worker_id: &str, now: i64) -> Self {
+        Self {
+            values: [
+                inbound_identity(bot_id, chat_id, message_id).into(),
+                bot_id.to_owned().into(),
+                chat_id.to_owned().into(),
+                message_id.to_owned().into(),
+                worker_id.to_owned().into(),
+                now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS).into(),
+            ],
+        }
+    }
+
+    fn statement(&self, sql: &str, mut values: Vec<Value>) -> Statement {
+        values.extend_from_slice(&self.values);
+        statement(
+            &format!(
+                "{sql} WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=? \
+                 AND claimed_by=? AND status='claimed' AND claimed_at>?"
+            ),
+            values,
+        )
     }
 }
 
