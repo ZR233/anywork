@@ -126,12 +126,14 @@ mod tests {
             };
             let item = ExecutionItem::new(
                 id.into(),
-                THREAD.into(),
-                "turn".into(),
-                ordinal,
-                1,
-                started,
-                ended,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: ordinal,
+                    revision: 1,
+                    created_at: started,
+                    updated_at: ended,
+                },
                 state,
             );
             let mut draft = crate::studio::runtime::chat_item::completion_draft(

@@ -19,12 +19,14 @@ pub(in crate::studio::storage::history) fn decode(
     let old: LegacyExecutionItem = serde_json::from_slice(bytes)?;
     Ok(ExecutionItem::new(
         old.id,
-        old.thread_id,
-        old.turn_id,
-        old.ordinal,
-        old.revision,
-        old.created_at,
-        old.updated_at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(old.thread_id),
+            turn_id: std::borrow::Cow::Owned(old.turn_id),
+            ordinal: old.ordinal,
+            revision: old.revision,
+            created_at: old.created_at,
+            updated_at: old.updated_at,
+        },
         old.state,
     ))
 }

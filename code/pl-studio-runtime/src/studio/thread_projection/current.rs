@@ -885,12 +885,14 @@ impl CurrentState {
                 };
                 let item = crate::ExecutionItem::new(
                     id.clone(),
-                    saved.thread_id.clone(),
-                    call.source_turn_id.clone(),
-                    0,
-                    0,
-                    0,
-                    0,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Owned(saved.thread_id.clone()),
+                        turn_id: std::borrow::Cow::Owned(call.source_turn_id.clone()),
+                        ordinal: 0,
+                        revision: 0,
+                        created_at: 0,
+                        updated_at: 0,
+                    },
                     shape,
                 );
                 let mut atom = crate::studio::runtime::chat_item::atom(&item);

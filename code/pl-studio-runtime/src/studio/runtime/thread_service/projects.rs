@@ -3913,15 +3913,17 @@ mod standalone_tests {
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
                 let project = runtime.open_project(&workspace).await?;
                 let (delta, session, agent) = DirectoryDelta::register_session(
-                    "delete-cold".into(),
-                    &project.id,
-                    "cold",
-                    crate::mode::ThreadModeId::auto(),
-                    crate::ThreadWorkspaceMode::Local,
-                    dunce::canonicalize(&workspace)?
-                        .to_string_lossy()
-                        .into_owned(),
-                    crate::config::ROOT_AGENT_ROUTE_KEY,
+                    crate::studio::store::directory::SessionDirectoryUpsert {
+                        session_id: "delete-cold".into(),
+                        workspace_id: &project.id,
+                        title: "cold",
+                        mode: crate::mode::ThreadModeId::auto(),
+                        workspace_mode: crate::ThreadWorkspaceMode::Local,
+                        workspace_path: dunce::canonicalize(&workspace)?
+                            .to_string_lossy()
+                            .into_owned(),
+                        role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                    },
                 );
                 runtime
                     .agent_facility
@@ -4627,13 +4629,15 @@ mod standalone_tests {
                     .await?;
                 let root = if root_owned {
                     let (delta, session, agent) = DirectoryDelta::register_session(
-                        "owned-root".into(),
-                        &project.id,
-                        "owned",
-                        crate::mode::ThreadModeId::auto(),
-                        crate::ThreadWorkspaceMode::Worktree,
-                        identity.root.clone(),
-                        crate::config::ROOT_AGENT_ROUTE_KEY,
+                        crate::studio::store::directory::SessionDirectoryUpsert {
+                            session_id: "owned-root".into(),
+                            workspace_id: &project.id,
+                            title: "owned",
+                            mode: crate::mode::ThreadModeId::auto(),
+                            workspace_mode: crate::ThreadWorkspaceMode::Worktree,
+                            workspace_path: identity.root.clone(),
+                            role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                        },
                     );
                     runtime
                         .agent_facility
@@ -4938,13 +4942,15 @@ mod standalone_tests {
                     .await?;
                 let root = if root_owned {
                     let (delta, session, agent) = DirectoryDelta::register_session(
-                        "owned-root".into(),
-                        &project.id,
-                        "owned",
-                        crate::mode::ThreadModeId::auto(),
-                        crate::ThreadWorkspaceMode::Worktree,
-                        identity.root.clone(),
-                        crate::config::ROOT_AGENT_ROUTE_KEY,
+                        crate::studio::store::directory::SessionDirectoryUpsert {
+                            session_id: "owned-root".into(),
+                            workspace_id: &project.id,
+                            title: "owned",
+                            mode: crate::mode::ThreadModeId::auto(),
+                            workspace_mode: crate::ThreadWorkspaceMode::Worktree,
+                            workspace_path: identity.root.clone(),
+                            role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                        },
                     );
                     runtime
                         .agent_facility
@@ -5610,13 +5616,15 @@ mod standalone_tests {
                     let project = runtime.open_project(&workspace).await?;
                     // Publish only directory identity: the original preparation never attached storage.
                     let (delta, session, agent) = DirectoryDelta::register_session(
-                        "private-root".into(),
-                        &project.id,
-                        "root",
-                        crate::mode::ThreadModeId::auto(),
-                        crate::ThreadWorkspaceMode::Local,
-                        workspace.to_string_lossy().into_owned(),
-                        crate::config::ROOT_AGENT_ROUTE_KEY,
+                        crate::studio::store::directory::SessionDirectoryUpsert {
+                            session_id: "private-root".into(),
+                            workspace_id: &project.id,
+                            title: "root",
+                            mode: crate::mode::ThreadModeId::auto(),
+                            workspace_mode: crate::ThreadWorkspaceMode::Local,
+                            workspace_path: workspace.to_string_lossy().into_owned(),
+                            role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                        },
                     );
                     runtime
                         .agent_facility

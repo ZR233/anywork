@@ -1200,12 +1200,14 @@ impl Fact {
     fn placeholder(&self, id: &str, thread_id: &str) -> ExecutionItem {
         ExecutionItem::new(
             id.to_owned(),
-            thread_id.to_owned(),
-            self.turn_id.clone(),
-            self.ordinal,
-            self.revision,
-            self.created_at,
-            self.created_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
+                turn_id: std::borrow::Cow::Owned(self.turn_id.clone()),
+                ordinal: self.ordinal,
+                revision: self.revision,
+                created_at: self.created_at,
+                updated_at: self.created_at,
+            },
             ExecutionShape::Raw(ThreadRawItem::stored(
                 Vec::new(),
                 "This item's body is no longer resident in the live window.",
@@ -2673,12 +2675,14 @@ impl LiveProjection {
                 id.clone(),
                 ExecutionItem::new(
                     id,
-                    thread_id.to_owned(),
-                    turn_id.to_owned(),
-                    ordinal,
-                    revision,
-                    committed_at,
-                    committed_at,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
+                        turn_id: std::borrow::Cow::Owned(turn_id.to_owned()),
+                        ordinal: ordinal,
+                        revision: revision,
+                        created_at: committed_at,
+                        updated_at: committed_at,
+                    },
                     state,
                 ),
             ));

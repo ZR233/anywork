@@ -30,6 +30,18 @@ pub(in crate::studio) struct DirectoryDelta {
     pub(in crate::studio) project_removals: Vec<ProjectRemoval>,
 }
 
+/// Facts required to register one session and its root member together.
+#[derive(Debug, Clone)]
+pub(in crate::studio) struct SessionDirectoryUpsert<'a> {
+    pub(in crate::studio) session_id: String,
+    pub(in crate::studio) workspace_id: &'a str,
+    pub(in crate::studio) title: &'a str,
+    pub(in crate::studio) mode: ThreadModeId,
+    pub(in crate::studio) workspace_mode: ThreadWorkspaceMode,
+    pub(in crate::studio) workspace_path: String,
+    pub(in crate::studio) role: &'a str,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct UnregisteredChildFault {
     pub(in crate::studio) agent_id: String,
@@ -48,16 +60,18 @@ impl DirectoryDelta {
     }
 
     /// 注册一个新会话：会话事实与主成员事实一次提交，Thread ID 原字节保留。
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::studio) fn register_session(
-        session_id: String,
-        workspace_id: &str,
-        title: &str,
-        mode: ThreadModeId,
-        workspace_mode: ThreadWorkspaceMode,
-        workspace_path: String,
-        role: &str,
+        upsert: SessionDirectoryUpsert<'_>,
     ) -> (Self, SessionDirectoryRecord, AgentDirectoryRecord) {
+        let SessionDirectoryUpsert {
+            session_id,
+            workspace_id,
+            title,
+            mode,
+            workspace_mode,
+            workspace_path,
+            role,
+        } = upsert;
         let now = unix_seconds();
         let session = SessionDirectoryRecord {
             session_id: session_id.clone(),

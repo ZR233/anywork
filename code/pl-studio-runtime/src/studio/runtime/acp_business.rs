@@ -1897,13 +1897,15 @@ mod tests {
         );
         let (_, mut native_session, mut native) =
             crate::studio::store::directory::DirectoryDelta::register_session(
-                "native-neighbor".into(),
-                &fixture.workspace.id,
-                "Native neighbor",
-                crate::mode::ThreadModeId::auto(),
-                crate::ThreadWorkspaceMode::Local,
-                fixture.workspace.path.clone(),
-                crate::config::ROOT_AGENT_ROUTE_KEY,
+                crate::studio::store::directory::SessionDirectoryUpsert {
+                    session_id: "native-neighbor".into(),
+                    workspace_id: &fixture.workspace.id,
+                    title: "Native neighbor",
+                    mode: crate::mode::ThreadModeId::auto(),
+                    workspace_mode: crate::ThreadWorkspaceMode::Local,
+                    workspace_path: fixture.workspace.path.clone(),
+                    role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                },
             );
         native_session.session_id = "native-session".into();
         // Cross-namespace collision: this neighbor Agent is not the ACP Thread.

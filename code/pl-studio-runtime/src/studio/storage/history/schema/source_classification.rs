@@ -481,12 +481,14 @@ mod tests {
             };
             let item = ExecutionItem::new(
                 format!("atom-{seq}"),
-                THREAD.into(),
-                "turn".into(),
-                seq,
-                1,
-                1,
-                2,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: seq,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 2,
+                },
                 state,
             );
             if seq != 7 {
@@ -528,12 +530,14 @@ mod tests {
         }
         let item = ExecutionItem::new(
             "active-agent".into(),
-            THREAD.into(),
-            "turn".into(),
-            completions + 1,
-            1,
-            1,
-            2,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: completions + 1,
+                revision: 1,
+                created_at: 1,
+                updated_at: 2,
+            },
             agent(true),
         );
         store.upsert_item(&transaction, 9, item.clone()).await?;

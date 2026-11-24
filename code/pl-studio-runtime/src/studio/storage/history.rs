@@ -1516,12 +1516,14 @@ impl HistoryStore {
                     .unwrap_or(value.turn.updated_at);
                 return Ok(Some(ExecutionItem::new(
                     item_id.into(),
-                    self.state.thread_id.clone(),
-                    id.into(),
-                    value.turn_order,
-                    value.updated_effect.unwrap_or(value.turn.revision),
-                    started,
-                    value.turn.updated_at,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Owned(self.state.thread_id.clone()),
+                        turn_id: std::borrow::Cow::Owned(id.into()),
+                        ordinal: value.turn_order,
+                        revision: value.updated_effect.unwrap_or(value.turn.revision),
+                        created_at: started,
+                        updated_at: value.turn.updated_at,
+                    },
                     ExecutionShape::Turn(
                         crate::ThreadTurnItem::new(value.turn.state)
                             .with_input_id(value.turn.input_id),
@@ -1556,14 +1558,16 @@ impl HistoryStore {
                 state.deliveries = vec![delivery].into();
             }
             let projected = crate::studio::thread_projection::tools::project_tool_call(
-                &self.state.thread_id,
                 &state,
-                &saved.task.turn_id,
                 call,
-                ordinal,
-                created,
-                life.last_write_seq,
-                life.finished_at.unwrap_or(created),
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed(self.state.thread_id.as_str()),
+                    turn_id: std::borrow::Cow::Borrowed(saved.task.turn_id.as_str()),
+                    ordinal,
+                    created_at: created,
+                    revision: life.last_write_seq,
+                    updated_at: life.finished_at.unwrap_or(created),
+                },
             )?;
             return match projected.into_iter().find(|item| item.id == item_id) {
                 Some(item) => self.restore_tool_receipt(item).await.map(Some),
@@ -3780,12 +3784,14 @@ mod storage_fault_tests {
         let terminal = |id: &str, ordinal: u64| {
             ExecutionItem::new(
                 order::turn_id(id),
-                "child".into(),
-                id.into(),
-                ordinal,
-                1,
-                1,
-                1,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("child"),
+                    turn_id: std::borrow::Cow::Owned(id.into()),
+                    ordinal: ordinal,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 1,
+                },
                 ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
                     crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
                 ))),
@@ -4137,12 +4143,14 @@ mod storage_fault_tests {
             items.push(item);
             items.push(ExecutionItem::new(
                 crate::studio::thread_projection::order::turn_id(&turn_id),
-                "migration".into(),
-                turn_id,
-                ordinal + 1,
-                1,
-                7,
-                8,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("migration"),
+                    turn_id: std::borrow::Cow::Owned(turn_id),
+                    ordinal: ordinal + 1,
+                    revision: 1,
+                    created_at: 7,
+                    updated_at: 8,
+                },
                 ExecutionShape::Turn(
                     crate::ThreadTurnItem::new(crate::TurnState::Completed(
                         crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
@@ -4578,12 +4586,14 @@ mod storage_fault_tests {
         for sequence in 1..=5 {
             let terminal = ExecutionItem::new(
                 format!("turn:{sequence}"),
-                "child".into(),
-                sequence.to_string(),
-                sequence,
-                1,
-                1,
-                1,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("child"),
+                    turn_id: std::borrow::Cow::Owned(sequence.to_string()),
+                    ordinal: sequence,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 1,
+                },
                 ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
                     crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
                 ))),
@@ -4697,12 +4707,14 @@ mod storage_fault_tests {
         ) -> Result<()> {
             let terminal = ExecutionItem::new(
                 "turn:original".into(),
-                "child-报告".into(),
-                "original".into(),
-                1,
-                1,
-                1,
-                1,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("child-报告"),
+                    turn_id: std::borrow::Cow::Borrowed("original"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 1,
+                },
                 ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
                     crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
                 ))),
@@ -6247,12 +6259,14 @@ mod storage_fault_tests {
     fn question_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ExecutionItem {
         ExecutionItem::new(
             order::tool_id(call_id),
-            thread_id.into(),
-            "turn-qa".into(),
-            ordinal,
-            3,
-            111,
-            222,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn-qa"),
+                ordinal: ordinal,
+                revision: 3,
+                created_at: 111,
+                updated_at: 222,
+            },
             ExecutionShape::Tool(crate::ThreadToolItem::new(
                 crate::ThreadToolInvocation::new(
                     call_id.into(),
@@ -6312,12 +6326,14 @@ mod storage_fault_tests {
     fn plan_tool_item(call_id: &str, thread_id: &str, ordinal: u64) -> ExecutionItem {
         ExecutionItem::new(
             order::tool_id(call_id),
-            thread_id.into(),
-            "turn-plan".into(),
-            ordinal,
-            3,
-            111,
-            222,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn-plan"),
+                ordinal: ordinal,
+                revision: 3,
+                created_at: 111,
+                updated_at: 222,
+            },
             ExecutionShape::Tool(crate::ThreadToolItem::new(
                 crate::ThreadToolInvocation::new(
                     call_id.into(),

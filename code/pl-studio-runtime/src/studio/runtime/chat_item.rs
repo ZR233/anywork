@@ -740,12 +740,14 @@ mod tests {
         ] {
             let item = ExecutionItem::new(
                 "active".into(),
-                "thread".into(),
-                "turn".into(),
-                1,
-                1,
-                10,
-                11,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 10,
+                    updated_at: 11,
+                },
                 state,
             );
             assert!(completion_draft(&item, 1, "database", None).is_err());
@@ -778,12 +780,14 @@ mod tests {
             assert_eq!(encoded["data"]["state"]["kind"], kind);
             let item = ExecutionItem::new(
                 "active".into(),
-                "thread".into(),
-                "turn".into(),
-                1,
-                1,
-                10,
-                11,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 10,
+                    updated_at: 11,
+                },
                 state,
             );
             assert!(completion_draft(&item, 1, "database", None).is_err());
@@ -811,12 +815,14 @@ mod tests {
         let tool_item = |state, wait| {
             ExecutionItem::new(
                 "tool:4:call".into(),
-                "thread".into(),
-                "turn".into(),
-                7,
-                1,
-                10,
-                11,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 7,
+                    revision: 1,
+                    created_at: 10,
+                    updated_at: 11,
+                },
                 ExecutionShape::Tool(
                     ThreadToolItem::new(
                         ThreadToolInvocation::new("call".into(), "wait".into(), "{}".into()),
@@ -918,12 +924,14 @@ mod tests {
             let tool_item = |state, user_input| {
                 ExecutionItem::new(
                     "tool:4:call".into(),
-                    "thread".into(),
-                    "turn".into(),
-                    7,
-                    1,
-                    10,
-                    11,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Borrowed("thread"),
+                        turn_id: std::borrow::Cow::Borrowed("turn"),
+                        ordinal: 7,
+                        revision: 1,
+                        created_at: 10,
+                        updated_at: 11,
+                    },
                     ExecutionShape::Tool(
                         ThreadToolItem::new(
                             ThreadToolInvocation::new("call".into(), name.into(), "{}".into()),
@@ -1014,12 +1022,14 @@ mod tests {
     fn text(id: &str, body: String) -> ExecutionItem {
         ExecutionItem::new(
             id.into(),
-            "thread".into(),
-            "turn:a:b".into(),
-            1,
-            1,
-            10,
-            11,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn:a:b"),
+                ordinal: 1,
+                revision: 1,
+                created_at: 10,
+                updated_at: 11,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 body,
@@ -1099,12 +1109,14 @@ mod tests {
     -> Result<()> {
         let item = ExecutionItem::new(
             "tool:4:call".into(),
-            "thread".into(),
-            "turn".into(),
-            7,
-            1,
-            10,
-            11,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 7,
+                revision: 1,
+                created_at: 10,
+                updated_at: 11,
+            },
             ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new("call".into(), "arbitrary".into(), "{}".into()),
                 ThreadToolState::Running(crate::RunningThreadTool::new(String::new())),
@@ -1169,12 +1181,14 @@ mod tests {
                     .with_presentation_contract(contract.map(str::to_owned));
             let item = ExecutionItem::new(
                 "tool".into(),
-                "thread".into(),
-                "turn".into(),
-                1,
-                1,
-                10,
-                11,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 10,
+                    updated_at: 11,
+                },
                 ExecutionShape::Tool(ThreadToolItem::new(
                     invocation,
                     ThreadToolState::Succeeded(crate::SucceededThreadTool::new(

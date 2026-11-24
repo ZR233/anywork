@@ -53,12 +53,14 @@ pub(in crate::studio) fn accepted_input_draft(
     };
     let item = ExecutionItem::new(
         record.input.id.clone(),
-        thread.id.clone(),
-        String::new(),
-        record.ordinal,
-        record.accepted_sequence,
-        timestamp,
-        timestamp,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+            turn_id: std::borrow::Cow::Owned(String::new()),
+            ordinal: record.ordinal,
+            revision: record.accepted_sequence,
+            created_at: timestamp,
+            updated_at: timestamp,
+        },
         state,
     );
     freeze_accepted(
@@ -113,12 +115,14 @@ pub(in crate::studio) fn accepted_inbox_draft(
     };
     let item = ExecutionItem::new(
         id,
-        thread.id.clone(),
-        String::new(),
-        record.sequence,
-        accepted_at.effect_seq,
-        timestamp,
-        timestamp,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+            turn_id: std::borrow::Cow::Owned(String::new()),
+            ordinal: record.sequence,
+            revision: accepted_at.effect_seq,
+            created_at: timestamp,
+            updated_at: timestamp,
+        },
         state,
     );
     freeze_accepted(

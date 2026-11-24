@@ -94,12 +94,14 @@ pub(super) fn project(
             let fields = BTreeMap::from([(field.clone(), block.clone())]);
             let item = ExecutionItem::new(
                 id.clone(),
-                thread.id.clone(),
-                attempt.turn_id.clone(),
-                0,
-                part.version().max(1),
-                0,
-                0,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal: 0,
+                    revision: part.version().max(1),
+                    created_at: 0,
+                    updated_at: 0,
+                },
                 shape,
             );
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
@@ -132,12 +134,14 @@ pub(super) fn project(
             ));
             let item = ExecutionItem::new(
                 id.clone(),
-                thread.id.clone(),
-                attempt.turn_id.clone(),
-                0,
-                1,
-                0,
-                0,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal: 0,
+                    revision: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
                 shape,
             );
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
@@ -347,14 +351,16 @@ pub(super) fn task_tool_item(
         ));
     }
     let items = super::super::tools::project_tool_call(
-        &thread.id,
         state,
-        &task.turn_id,
         invocation,
-        task.started_sequence.unwrap_or(0),
-        0,
-        task.revision.max(1),
-        0,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Borrowed(thread.id.as_str()),
+            turn_id: std::borrow::Cow::Borrowed(task.turn_id.as_str()),
+            ordinal: task.started_sequence.unwrap_or(0),
+            created_at: 0,
+            revision: task.revision.max(1),
+            updated_at: 0,
+        },
     )?;
     Ok(items
         .into_iter()

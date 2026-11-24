@@ -212,17 +212,26 @@ fn turn_event(
     Ok(event)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+struct BatchWriteContext<'a> {
+    recorded_at: i64,
+    anchor: bool,
+    database_id: &'a str,
+}
+
 fn source_event(
     source: &crate::history::HistorySourceHead,
     continuation_payload: Option<Vec<u8>>,
     entity_override: Option<&str>,
     run_override: Option<String>,
     turn_override: Option<String>,
-    recorded_at: i64,
-    anchor: bool,
-    database_id: &str,
+    context: BatchWriteContext<'_>,
 ) -> Result<HistoryEvent> {
+    let BatchWriteContext {
+        recorded_at,
+        anchor,
+        database_id,
+    } = context;
     let identity = serde_json::to_string(&source.source)?;
     let ended = matches!(&source.lifecycle, crate::ChatSourceLifecycle::Ended { .. });
     let mut event = HistoryEvent::new(
@@ -282,17 +291,19 @@ fn run_event(run: &str, recorded_at: i64) -> Result<HistoryEvent> {
     Ok(event)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn delivery_event(
     thread_id: &str,
     prefix: &str,
     message_id: &str,
     payload: String,
     run: pl_core::thread::current::RuntimeEpoch,
-    recorded_at: i64,
-    anchor: bool,
-    database_id: &str,
+    context: BatchWriteContext<'_>,
 ) -> Result<HistoryEvent> {
+    let BatchWriteContext {
+        recorded_at,
+        anchor,
+        database_id,
+    } = context;
     let kind = match prefix {
         "parent_report" => HistoryEventKind::ParentReportRecorded,
         _ => HistoryEventKind::ReviewDeliveryRecorded,
@@ -546,9 +557,11 @@ async fn prepare_basic_events(
             &report.id,
             serde_json::to_string(report)?,
             prepared.run_id,
-            recorded_at,
-            false,
-            database_id,
+            BatchWriteContext {
+                recorded_at,
+                anchor: false,
+                database_id,
+            },
         )?);
     }
     for fact in prepared.review_delivery.iter() {
@@ -558,9 +571,11 @@ async fn prepare_basic_events(
             &fact.message.id,
             serde_json::to_string(fact)?,
             prepared.run_id,
-            recorded_at,
-            false,
-            database_id,
+            BatchWriteContext {
+                recorded_at,
+                anchor: false,
+                database_id,
+            },
         )?);
     }
     for fact in prepared.retained_resources.iter() {
@@ -615,9 +630,11 @@ async fn prepare_basic_events(
             entity_override,
             run_override,
             turn_override,
-            recorded_at,
-            anchor,
-            database_id,
+            BatchWriteContext {
+                recorded_at,
+                anchor,
+                database_id,
+            },
         )?;
         events.push(event);
     }

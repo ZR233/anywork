@@ -171,12 +171,14 @@ mod tests {
             let original = state.clone();
             let item = ExecutionItem::new(
                 format!("item-{index}"),
-                "thread".into(),
-                "turn".into(),
-                1,
-                1,
-                1,
-                7,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 7,
+                },
                 state,
             );
             let metadata = atom(&item);

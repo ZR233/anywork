@@ -467,13 +467,15 @@ mod startup_fault_tests {
         );
         let (thread_delta, _, _) =
             crate::studio::store::directory::DirectoryDelta::register_session(
-                "cold".into(),
-                "project-cold",
-                "cold",
-                crate::mode::ThreadModeId::auto(),
-                crate::ThreadWorkspaceMode::Local,
-                "/tmp/project-cold".into(),
-                crate::config::ROOT_AGENT_ROUTE_KEY,
+                crate::studio::store::directory::SessionDirectoryUpsert {
+                    session_id: "cold".into(),
+                    workspace_id: "project-cold",
+                    title: "cold",
+                    mode: crate::mode::ThreadModeId::auto(),
+                    workspace_mode: crate::ThreadWorkspaceMode::Local,
+                    workspace_path: "/tmp/project-cold".into(),
+                    role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                },
             );
         delta.session_upserts = thread_delta.session_upserts;
         delta.agent_upserts = thread_delta.agent_upserts;
