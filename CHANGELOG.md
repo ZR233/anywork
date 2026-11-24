@@ -13,6 +13,34 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.49.0](https://github.com/ZR233/anywork/compare/v6.48.0...v6.49.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 内置工作模式仅保留 mode.auto，移除 mode.simple 与 mode.task。
+
+### Features
+
+* **model:** 新增原生 Gemini REST 协议支持并拆分协议公共层 ([#551](https://github.com/ZR233/anywork/issues/551)) ([ea7a8f9](https://github.com/ZR233/anywork/commit/ea7a8f9b301f7c30e64f15a0c8da8d0c5d5c4c6e))
+* **studio:** 优化 ACP 会话的 Diff、斜杠命令、计划栏与消息交互 ([#553](https://github.com/ZR233/anywork/issues/553)) ([dd4f0d7](https://github.com/ZR233/anywork/commit/dd4f0d7b90e4ce0203ca633dec937f32dcb3d59b))
+* **studio:** 支持文件直显和按需下载 ([#547](https://github.com/ZR233/anywork/issues/547)) ([febb2f6](https://github.com/ZR233/anywork/commit/febb2f644a2a0e906f332723777dffbc4eec9ccb))
+
+
+### Bug Fixes
+
+* **studio:** 修复主智能体收尾时漏交子任务评价 ([#554](https://github.com/ZR233/anywork/issues/554)) ([9295b12](https://github.com/ZR233/anywork/commit/9295b12121920ec209a8414599fc0a989b8c8afd))
+* **studio:** 归档和删除会话时立即切换并提示结果 ([#552](https://github.com/ZR233/anywork/issues/552)) ([9584a3c](https://github.com/ZR233/anywork/commit/9584a3c3b6f3606ca0385c0ceffed2c8b48045b8))
+* **studio:** 按实际读写目标校验会话与配置更新 ([#550](https://github.com/ZR233/anywork/issues/550)) ([057d413](https://github.com/ZR233/anywork/commit/057d413bbeb310d59b20155bc1a3a37aa3911f8c))
+* **studio:** 统一时间线的最新跟随 ([#555](https://github.com/ZR233/anywork/issues/555)) ([65ebe10](https://github.com/ZR233/anywork/commit/65ebe1004c1fec6e33a7b87ecb80e02f66d2d4b3))
+* **studio:** 自动答复 ACP Host MCP 权限请求 ([#558](https://github.com/ZR233/anywork/issues/558)) ([dd3c680](https://github.com/ZR233/anywork/commit/dd3c6809736600bd9696dd14b5c453c26c7cf141))
+
+
+### Refactoring
+
+* **studio:** 重构时间线错误展示并直接呈现错误信息 ([#548](https://github.com/ZR233/anywork/issues/548)) ([6e2ff0c](https://github.com/ZR233/anywork/commit/6e2ff0c45bb21f7fbed11d5a37164e0272808eb7))
+* **studio:** 重构自动工作流引擎、独立 Plan 工具与 ACP/状态栏工作流图 ([#556](https://github.com/ZR233/anywork/issues/556)) ([4b6ae43](https://github.com/ZR233/anywork/commit/4b6ae43521aaddf33c24aa2b466ac4d1801f86f9))
+
 ## [6.48.0](https://github.com/ZR233/anywork/compare/v6.47.0...v6.48.0) (2026-11-23)
 
 
