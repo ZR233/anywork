@@ -32,8 +32,9 @@ When editing a Mode, Agent Profile or ACP account through Studio, open its curre
 
 `<studio-home>` is the running application's configuration root, resolved in order:
 `--studio-home <absolute path>`, `ANYWORK_HOME` (nonempty absolute path), then
-the platform user's `.anywork` directory. On Windows the default is
-`%USERPROFILE%\.anywork`; on Unix it is `$HOME/.anywork`.
+the platform user's `.anywork` directory. Windows uses the system Profile known folder,
+typically `%USERPROFILE%\.anywork`. Linux and macOS use `$HOME/.anywork` when `HOME`
+is present and nonempty, otherwise they use the current user's system home directory.
 An isolated application may use a different root. Confirm the running instance's
 root before writing; the default path alone is not evidence of the active root.
 

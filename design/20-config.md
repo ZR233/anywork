@@ -8,7 +8,7 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 
 `anywork` 使用独立的产品身份，默认仅访问 `~/.anywork` 数据根目录，操作系统凭据服务名固定为 `anywork`，产品环境变量前缀为 `ANYWORK_`。显式指定的数据根目录遵循命令行参数与环境变量优先级。
 
-主配置文件固定为 `~/.anywork/config.toml`（Windows 下为 `%USERPROFILE%\.anywork\config.toml`）。会话、产品数据库与调试日志的数据布局由 [存储契约](./17-studio-storage.md) 统一定义。用户自定义智能体模板单独保存于 `~/.anywork/agents/*.toml`。配置结构版本号以代码常量为准。
+主配置默认位于用户主目录的 `.anywork/config.toml`。Windows 使用系统用户配置文件目录，Linux 与 macOS 优先使用非空 `HOME`，否则查询系统用户主目录。会话、产品数据库与调试日志的数据布局由 [存储契约](./17-studio-storage.md) 统一定义。用户自定义智能体模板单独保存于 `~/.anywork/agents/*.toml`。配置结构版本号以代码常量为准。
 
 非交互式命令行必须显式提供 Studio home，固定采用 `Strict` 启动与 environment-only 凭据策略：已有主配置缺失或无效时失败，不自动默认初始化或备份重置；未完成启动恢复仅只读报告。配置加载器在迁移接续前核对必需主配置，接续后再次读取，不允许文件消失后转入默认分支。需要系统凭据或旧密钥迁移的输入不以临时内存确认成功。下文默认初始化、系统凭据优先及交互恢复描述适用于既有交互宿主；命令行完整契约见 [29.3](./29-cli-harbor.md#293-严格启动与凭据)。
 

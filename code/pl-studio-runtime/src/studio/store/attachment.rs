@@ -240,10 +240,7 @@ fn resolve_attachment_host_path(
         .and_then(|name| name.to_str())
         .context("missing resource digest")?;
     anyhow::ensure!(
-        hash.len() == 64
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        crate::studio::paths::is_sha256_hex(hash),
         "invalid resource digest"
     );
     Ok(resolved)

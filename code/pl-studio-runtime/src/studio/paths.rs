@@ -342,18 +342,28 @@ pub fn default_db_path() -> Result<PathBuf> {
     Ok(StudioPaths::resolve(None)?.database())
 }
 
-fn user_home_dir() -> Result<PathBuf> {
-    #[cfg(windows)]
-    const HOME_VARS: &[&str] = &["USERPROFILE", "HOME"];
-    #[cfg(not(windows))]
-    const HOME_VARS: &[&str] = &["HOME", "USERPROFILE"];
-
-    HOME_VARS
-        .iter()
-        .filter_map(std::env::var_os)
-        .map(PathBuf::from)
-        .find(|path| !path.as_os_str().is_empty())
+pub(crate) fn user_home_dir() -> Result<PathBuf> {
+    dirs::home_dir()
+        .filter(|path| !path.as_os_str().is_empty())
         .context("could not resolve user home directory")
+}
+
+/// Validates the lowercase SHA-256 representation used for canonical storage names.
+pub(crate) fn is_sha256_hex(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// SQLite uses the full database name as the prefix for its WAL and SHM sidecars.
+pub(crate) fn sqlite_family_paths(database: &Path) -> [PathBuf; 3] {
+    let [wal, shm] = ["-wal", "-shm"].map(|suffix| {
+        let mut path = database.as_os_str().to_os_string();
+        path.push(suffix);
+        PathBuf::from(path)
+    });
+    [database.to_path_buf(), wal, shm]
 }
 
 fn validate_studio_home(path: PathBuf, source: &str) -> Result<PathBuf> {

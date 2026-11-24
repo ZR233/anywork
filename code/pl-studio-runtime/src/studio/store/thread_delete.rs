@@ -1,11 +1,10 @@
 //! A permanent deletion owns its frozen scope until the canonical directory commit.
 use anyhow::{Context, Result, ensure};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, decode_object, load_object, put_object},
+    object::{PersistedStudioObject, checked_bump_revision, list_objects, load_object, put_object},
     thread_preparation::{PreparationBinding, PreparationIdentity},
 };
 
@@ -52,11 +51,7 @@ pub(in crate::studio) struct ThreadDeleteOperation {
 
 impl ThreadDeleteOperation {
     pub fn changed(&mut self) -> Result<()> {
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .context("delete revision exhausted")?;
-        Ok(())
+        checked_bump_revision(&mut self.revision, "delete")
     }
 }
 
@@ -277,15 +272,7 @@ impl StudioStore {
     pub(in crate::studio) async fn thread_deletes_on(
         db: &impl sea_orm::ConnectionTrait,
     ) -> Result<Vec<ThreadDeleteOperation>> {
-        use crate::studio::entity::studio_object;
-        studio_object::Entity::find()
-            .filter(studio_object::Column::OwnerKind.eq(ThreadDeleteOperation::OWNER_KIND))
-            .filter(studio_object::Column::ObjectKind.eq(ThreadDeleteOperation::OBJECT_KIND))
-            .all(db)
-            .await?
-            .into_iter()
-            .map(decode_object::<ThreadDeleteOperation>)
-            .collect()
+        list_objects(db).await
     }
     pub(in crate::studio) async fn save_thread_delete(
         &self,

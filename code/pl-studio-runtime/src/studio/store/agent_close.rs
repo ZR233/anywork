@@ -3,7 +3,10 @@ use pl_tool::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup};
 mod migration;
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, decode_object, load_object, put_object},
+    object::{
+        PersistedStudioObject, checked_bump_revision, decode_object, list_objects, load_object,
+        put_object,
+    },
 };
 use crate::studio::agent_host::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
@@ -48,11 +51,7 @@ pub(crate) struct AgentCloseRecord {
 
 impl AgentCloseRecord {
     pub(crate) fn changed(&mut self) -> Result<()> {
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .context("agent close revision exhausted")?;
-        Ok(())
+        checked_bump_revision(&mut self.revision, "agent close")
     }
 
     pub(crate) fn result(&self) -> AgentCloseResult {
@@ -229,14 +228,7 @@ impl StudioStore {
     }
 
     pub(crate) async fn agent_closes(&self) -> Result<Vec<AgentCloseRecord>> {
-        use crate::studio::entity::studio_object;
-        studio_object::Entity::find()
-            .filter(studio_object::Column::ObjectKind.eq(AgentCloseRecord::OBJECT_KIND))
-            .all(self.database())
-            .await?
-            .into_iter()
-            .map(decode_object::<AgentCloseRecord>)
-            .collect()
+        list_objects(self.database()).await
     }
 
     /// An unpublished old candidate never grants deletion; its source is left untouched.

@@ -9,7 +9,9 @@ use sea_orm::{
 
 use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
 use crate::studio::catalog::CatalogStore;
-use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
+use crate::studio::paths::{
+    SqliteFileMode, StudioPaths, default_db_path, sqlite_family_paths, sqlite_file_options,
+};
 use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
@@ -593,7 +595,7 @@ async fn resolve_configured_database_path(path: &Path) -> Result<PathBuf> {
 }
 
 async fn database_family_exists(path: &Path) -> Result<bool> {
-    for member in database_family_paths(path) {
+    for member in sqlite_family_paths(path) {
         if tokio::fs::try_exists(member).await? {
             return Ok(true);
         }
@@ -617,20 +619,6 @@ fn validate_database_family_member(path: &Path, expected_parent: &Path) -> Resul
     Ok(())
 }
 
-fn database_family_paths(path: &Path) -> [PathBuf; 3] {
-    [
-        path.to_path_buf(),
-        sidecar_path(path, "-wal"),
-        sidecar_path(path, "-shm"),
-    ]
-}
-
-fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(suffix);
-    PathBuf::from(value)
-}
-
 #[cfg(test)]
 mod major_version_storage_tests {
     use super::*;
@@ -647,7 +635,7 @@ mod major_version_storage_tests {
             } else {
                 paths.database()
             };
-            for member in database_family_paths(&path) {
+            for member in sqlite_family_paths(&path) {
                 if member.exists() {
                     tokio::fs::remove_file(member).await?;
                 }
@@ -659,11 +647,7 @@ mod major_version_storage_tests {
                     .err()
                     .context("missing database must not be recreated")?;
                 assert!(format!("{error:#}").contains("is missing on an existing installation"));
-                assert!(
-                    database_family_paths(&path)
-                        .iter()
-                        .all(|path| !path.exists())
-                );
+                assert!(sqlite_family_paths(&path).iter().all(|path| !path.exists()));
                 assert_eq!(tokio::fs::read(paths.catalog_file()).await?, catalog);
             }
         }

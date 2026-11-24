@@ -194,7 +194,7 @@ pub(super) fn verify(
         let Some(dir_name) = entry_path.file_name().and_then(|name| name.to_str()) else {
             return Err(PrepareFailure::InstallationInvalid);
         };
-        if !is_hex_storage_key(dir_name) {
+        if !crate::studio::paths::is_sha256_hex(dir_name) {
             return Err(PrepareFailure::InstallationInvalid);
         }
         let receipt = archive::read_receipt(&root, &entry_path).map_err(map_install_failure)?;
@@ -261,13 +261,6 @@ pub(super) fn verify(
         installation_id: receipt.installation_id,
         release: receipt.release,
     })
-}
-
-fn is_hex_storage_key(name: &str) -> bool {
-    name.len() == 64
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// 安装失败分类到前置验证类别的穷尽映射。

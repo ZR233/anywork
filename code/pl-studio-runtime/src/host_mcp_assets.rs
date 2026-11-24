@@ -6,6 +6,8 @@ use std::{
     sync::Arc,
 };
 
+use crate::executable_assets::{BundleMetadata, load_bundled_archive};
+
 /// Origin of the standalone `pl-studio-mcp` executable. Bundled never uses PATH.
 #[derive(Debug, Clone)]
 pub enum HostMcpSource {
@@ -15,9 +17,6 @@ pub enum HostMcpSource {
     External,
 }
 
-const ARCHIVE: &str = "pl-studio-mcp.zst";
-const METADATA: &str = "pl-studio-mcp.metadata.json";
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Metadata {
@@ -25,33 +24,17 @@ struct Metadata {
     sha256: String,
 }
 
-fn load_bundled(root: &Path, target: &str) -> Result<Arc<[u8]>, String> {
-    let directory = root.join(target);
-    let archive_path = directory.join(ARCHIVE);
-    let metadata_path = directory.join(METADATA);
-    let archive = fs::read(&archive_path)
-        .map_err(|error| format!("read Host MCP {}: {error}", archive_path.display()))?;
-    let metadata: Metadata =
-        serde_json::from_slice(&fs::read(&metadata_path).map_err(|error| {
-            format!(
-                "read Host MCP metadata {}: {error}",
-                metadata_path.display()
-            )
-        })?)
-        .map_err(|error| {
-            format!(
-                "parse Host MCP metadata {}: {error}",
-                metadata_path.display()
-            )
-        })?;
-    if metadata.target != target {
-        return Err(format!(
-            "Host MCP metadata {} declares target '{}', expected '{target}'",
-            metadata_path.display(),
-            metadata.target
-        ));
+impl BundleMetadata for Metadata {
+    const STEM: &'static str = "pl-studio-mcp";
+    const DESCRIPTION: &'static str = "Host MCP";
+
+    fn target(&self) -> &str {
+        &self.target
     }
-    crate::executable_assets::decompress_verified(&archive_path, &archive, &metadata.sha256)
+
+    fn sha256(&self) -> &str {
+        &self.sha256
+    }
 }
 
 /// Strong executable-image lease. ACP must retain this until its entire process
@@ -102,7 +85,7 @@ fn executable_bytes(source: &HostMcpSource) -> crate::Result<Arc<[u8]>> {
     let target = host_target()?;
     let bytes = match source {
         HostMcpSource::Bundled(root) => {
-            load_bundled(root, target).map_err(crate::PureError::ConfigError)?
+            load_bundled_archive::<Metadata>(root, target).map_err(crate::PureError::ConfigError)?
         }
         HostMcpSource::External => {
             let executable = which::which("pl-studio-mcp").map_err(|error| {
@@ -245,6 +228,9 @@ fn materialize_host_mcp(source: &HostMcpSource) -> crate::Result<HostMcpAsset> {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    const ARCHIVE: &str = "pl-studio-mcp.zst";
+    const METADATA: &str = "pl-studio-mcp.metadata.json";
 
     fn bundle(root: &Path, executable: &[u8]) -> PathBuf {
         let directory = root.join(host_target().unwrap());

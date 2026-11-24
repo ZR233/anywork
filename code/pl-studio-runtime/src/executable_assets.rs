@@ -1,8 +1,48 @@
 //! Stateless executable resource helpers shared by worker and Host MCP assets.
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "linux")]
-use std::fs;
-use std::{path::Path, sync::Arc};
+use std::{fs, path::Path, sync::Arc};
+
+pub(crate) trait BundleMetadata: DeserializeOwned {
+    const STEM: &'static str;
+    const DESCRIPTION: &'static str;
+
+    fn target(&self) -> &str;
+    fn sha256(&self) -> &str;
+
+    fn validate(&self, _path: &Path) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+pub(crate) fn load_bundled_archive<M: BundleMetadata>(
+    root: &Path,
+    target: &str,
+) -> Result<Arc<[u8]>, String> {
+    let directory = root.join(target);
+    let archive_path = directory.join(format!("{}.zst", M::STEM));
+    let metadata_path = directory.join(format!("{}.metadata.json", M::STEM));
+    let label = M::DESCRIPTION;
+    let archive = fs::read(&archive_path)
+        .map_err(|error| format!("read {label} {}: {error}", archive_path.display()))?;
+    let metadata_bytes = fs::read(&metadata_path)
+        .map_err(|error| format!("read {label} metadata {}: {error}", metadata_path.display()))?;
+    let metadata: M = serde_json::from_slice(&metadata_bytes).map_err(|error| {
+        format!(
+            "parse {label} metadata {}: {error}",
+            metadata_path.display()
+        )
+    })?;
+    if metadata.target() != target {
+        return Err(format!(
+            "{label} metadata {} declares target '{}', expected '{target}'",
+            metadata_path.display(),
+            metadata.target(),
+        ));
+    }
+    metadata.validate(&metadata_path)?;
+    decompress_verified(&archive_path, &archive, metadata.sha256())
+}
 
 pub(crate) fn decompress_verified(
     archive_path: &Path,

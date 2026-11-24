@@ -364,10 +364,7 @@ fn validate_mcp_resource_path(relative_path: &str) -> Result<()> {
         anyhow::bail!("invalid MCP migration resource path `{relative_path}`");
     };
     ensure!(
-        stem.len() == 64
-            && stem
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        crate::studio::paths::is_sha256_hex(stem),
         "invalid MCP migration resource filename `{file_name}`"
     );
     Ok(())

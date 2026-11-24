@@ -2,11 +2,22 @@
 
 use anyhow::{Context, Result, bail};
 use pl_core::context::content_hash;
-use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait, IntoActiveModel};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
+    QueryFilter,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::thread_preparation::PreparationObjectError;
 use crate::studio::entity::studio_object;
+
+pub(in crate::studio) fn checked_bump_revision(revision: &mut u64, kind: &str) -> Result<()> {
+    *revision = revision
+        .checked_add(1)
+        .with_context(|| format!("{kind} revision exhausted"))?;
+    Ok(())
+}
 
 /// A bounded domain value that can be reconstructed from `studio_objects`.
 pub(in crate::studio) trait PersistedStudioObject: Sized {
@@ -155,15 +166,31 @@ pub(in crate::studio) async fn list_deletion_aux<T>(db: &impl ConnectionTrait) -
 where
     T: PersistedStudioObject,
 {
-    use sea_orm::{ColumnTrait, QueryFilter};
-    Ok(studio_object::Entity::find()
-        .filter(studio_object::Column::OwnerKind.eq(T::OWNER_KIND))
-        .filter(studio_object::Column::ObjectKind.eq(T::OBJECT_KIND))
-        .all(db)
+    Ok(list_object_rows::<T>(db)
         .await?
         .into_iter()
         .filter_map(decode_deletion_aux::<T>)
         .collect())
+}
+
+pub(in crate::studio) async fn list_objects<T: PersistedStudioObject>(
+    db: &impl ConnectionTrait,
+) -> Result<Vec<T>> {
+    list_object_rows::<T>(db)
+        .await?
+        .into_iter()
+        .map(decode_object::<T>)
+        .collect()
+}
+
+async fn list_object_rows<T: PersistedStudioObject>(
+    db: &impl ConnectionTrait,
+) -> Result<Vec<studio_object::Model>> {
+    Ok(studio_object::Entity::find()
+        .filter(studio_object::Column::OwnerKind.eq(T::OWNER_KIND))
+        .filter(studio_object::Column::ObjectKind.eq(T::OBJECT_KIND))
+        .all(db)
+        .await?)
 }
 
 fn decode_deletion_aux<T: PersistedStudioObject>(row: studio_object::Model) -> Option<T> {
@@ -185,21 +212,9 @@ fn decode_deletion_aux<T: PersistedStudioObject>(row: studio_object::Model) -> O
             let reason = if parse.is_some() {
                 "aux_json"
             } else {
-                match error.to_string().as_str() {
-                    "preparation identity mismatch" => "preparation_identity",
-                    "cyclic preparation identity" => "preparation_cycle",
-                    "preparation retirement precedes producer ACK" => "preparation_retirement_ack",
-                    "preparation stop precedes save ACK" => "preparation_save_ack",
-                    "deletion stop ACK is missing" => "preparation_deletion_ack",
-                    "attached obligation cannot be unattached" => "preparation_attachment",
-                    "missing storage incarnation" => "preparation_incarnation",
-                    "preparation save does not match its original closed receipt" => {
-                        "preparation_closed_receipt"
-                    }
-                    "private save has no original storage obligation" => "preparation_storage",
-                    "temp cleanup precedes original resource retirement" => "preparation_cleanup",
-                    _ => reason,
-                }
+                error
+                    .downcast_ref::<PreparationObjectError>()
+                    .map_or(reason, PreparationObjectError::reason)
             };
             tracing::warn!(
                 stage = "read_aux",

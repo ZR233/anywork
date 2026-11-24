@@ -75,12 +75,7 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
         let legacy_digest = body
             .body_id
             .strip_prefix("legacy:v24:body:")
-            .filter(|digest| {
-                digest.len() == 64
-                    && digest
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            });
+            .filter(|digest| crate::studio::paths::is_sha256_hex(digest));
         if (runtime_uuid.is_none() && legacy_digest.is_none())
             || body.owner_event_id.is_empty()
             || body.body_key.is_empty()
