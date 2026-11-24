@@ -13,14 +13,13 @@
 mod schema;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::ThreadStatus;
 use anyhow::{Result, ensure};
 use version_migrate::Versioned;
 
 use super::records::{AgentDirectoryRecord, SessionDirectoryRecord};
-use super::toml_store::{self, RevisionedDocument};
+use super::toml_store::{self, RevisionedDocument, RevisionedTomlStore};
 use crate::toml_schema;
 
 /// `catalog.toml` 的持久化文档。
@@ -51,46 +50,37 @@ impl RevisionedDocument for CatalogDocument {
 /// CAS 语义；读路径返回缓存克隆，不读取会话状态。
 #[derive(Clone)]
 pub(in crate::studio) struct CatalogStore {
-    path: PathBuf,
-    inner: Arc<Mutex<CatalogDocument>>,
+    store: RevisionedTomlStore<CatalogDocument>,
 }
 
 impl CatalogStore {
     /// 从磁盘加载（缺失时为带 revision 1 的空目录）。
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
-        let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => {
+        let document = toml_store::load_document(
+            path.clone(),
+            || CatalogDocument {
+                revision: 1,
+                sessions: Vec::new(),
+                agents: Vec::new(),
+            },
+            |path, content| async move {
                 let loaded = schema::load_document(&path, &content)?;
                 ensure!(
                     loaded.source_version >= 5,
                     "retired catalog ownership requires explicit storage migration"
                 );
-                if loaded.migrated {
-                    let bytes = toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)?;
-                    let path = path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        pl_tool::workspace::write_file_atomically(&path, bytes.as_bytes())
-                    })
-                    .await??;
-                }
-                loaded.document
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => CatalogDocument {
-                revision: 1,
-                sessions: Vec::new(),
-                agents: Vec::new(),
+                toml_store::persist_migrated(&path, loaded).await
             },
-            Err(error) => return Err(error.into()),
-        };
+        )
+        .await?;
         Ok(Self {
-            path,
-            inner: Arc::new(Mutex::new(document)),
+            store: RevisionedTomlStore::new(path, document),
         })
     }
 
     /// 全部会话记录的稳定快照（按 `(last_user_message_at ?? created_at, session_id)` 降序）。
     pub(in crate::studio) fn sessions(&self) -> Vec<SessionDirectoryRecord> {
-        let mut sessions = self.lock().sessions.clone();
+        let mut sessions = self.store.lock().sessions.clone();
         sessions.sort_by(|left, right| {
             right
                 .directory_sort_time()
@@ -101,7 +91,8 @@ impl CatalogStore {
     }
 
     pub(in crate::studio) fn archived_session_ids(&self) -> std::collections::HashSet<String> {
-        self.lock()
+        self.store
+            .lock()
             .sessions
             .iter()
             .filter(|session| session.archived)
@@ -113,7 +104,8 @@ impl CatalogStore {
         &self,
         session_id: &str,
     ) -> Option<SessionDirectoryRecord> {
-        self.lock()
+        self.store
+            .lock()
             .sessions
             .iter()
             .find(|session| session.session_id == session_id)
@@ -121,7 +113,8 @@ impl CatalogStore {
     }
 
     pub(in crate::studio) fn get_agent(&self, agent_id: &str) -> Option<AgentDirectoryRecord> {
-        self.lock()
+        self.store
+            .lock()
             .agents
             .iter()
             .find(|agent| agent.agent_id == agent_id)
@@ -133,7 +126,8 @@ impl CatalogStore {
         &self,
         thread_id: &str,
     ) -> Option<AgentDirectoryRecord> {
-        self.lock()
+        self.store
+            .lock()
             .agents
             .iter()
             .find(|agent| agent.thread_id == thread_id)
@@ -161,7 +155,7 @@ impl CatalogStore {
     }
 
     pub(in crate::studio) fn agents(&self) -> Vec<AgentDirectoryRecord> {
-        self.lock().agents.clone()
+        self.store.lock().agents.clone()
     }
 
     /// 幂等写入/替换一个会话记录；内容不变时不推进 revision，也不落盘。
@@ -280,11 +274,9 @@ impl CatalogStore {
         &self,
         delta: crate::studio::store::directory::DirectoryDelta,
     ) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
         let now = crate::studio::ids::unix_seconds();
-        tokio::task::spawn_blocking(move || {
-            toml_store::mutate_document(&inner, &path, |document| {
+        self.store
+            .mutate(|document| {
                 let previous = document.clone();
                 for mut session in delta.session_upserts {
                     if let Some(existing) = document
@@ -376,33 +368,21 @@ impl CatalogStore {
                 schema::validate(document)?;
                 Ok(*document != previous)
             })
-        })
-        .await?
+            .await
     }
 
     /// 把当前内存文档写入 canonical 文件；文件已存在时不覆盖。
     ///
     /// 新安装启动时确保 `catalog.toml` 存在，以便后续缺失被识别为数据丢失。
     pub(in crate::studio) async fn persist_if_absent(&self) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || toml_store::persist_if_absent(&inner, &path)).await?
+        self.store.persist_if_absent().await
     }
 
     async fn mutate_document(
         &self,
         change: impl FnOnce(&mut CatalogDocument) -> bool + Send + 'static,
     ) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            toml_store::mutate_document(&inner, &path, |document| Ok(change(document)))
-        })
-        .await?
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, CatalogDocument> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        self.store.mutate(|document| Ok(change(document))).await
     }
 
     #[cfg(test)]
@@ -421,7 +401,7 @@ impl CatalogStore {
 
     #[cfg(test)]
     pub(in crate::studio) fn test_hold_document(&self) -> impl Drop + '_ {
-        self.lock()
+        self.store.lock()
     }
 }
 
