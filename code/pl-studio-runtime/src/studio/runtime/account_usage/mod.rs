@@ -22,6 +22,9 @@ use crate::config::{ConfigRuntime, ConfigRuntimeSnapshot};
 use crate::studio::ids::unix_seconds;
 use crate::studio::store::settings::payload::KEY as CACHE_KEY;
 
+use super::acp_ops::retained_output;
+use super::task_registry::RetainedTaskRegistry;
+
 #[derive(Clone)]
 pub(crate) struct AccountUsageRuntime {
     store: StudioStore,
@@ -43,47 +46,35 @@ struct UsageState {
 }
 
 #[derive(Default)]
-struct UsageTasks {
-    closing: bool,
-    next_id: u64,
-    active: BTreeMap<AccountId, u64>,
-    retained: BTreeMap<u64, Arc<UsageTask>>,
+struct UsageTasks(RetainedTaskRegistry<AccountId, u64, Result<()>>);
+
+impl Default for UsageTasks {
+    fn default() -> Self {
+        Self(RetainedTaskRegistry::default())
+    }
 }
 
-struct UsageTask {
-    query_revision: u64,
-    cancel: CancellationToken,
-    join: tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
-    outcome: Mutex<Option<Result<(), String>>>,
+impl std::ops::Deref for UsageTasks {
+    type Target = RetainedTaskRegistry<AccountId, u64, Result<()>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-impl UsageTask {
-    fn finished(&self) -> bool {
-        self.join
-            .try_lock()
-            .is_ok_and(|slot| slot.as_ref().is_none_or(|task| task.is_finished()))
+impl std::ops::DerefMut for UsageTasks {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
+}
 
-    async fn wait(&self) -> Result<()> {
-        let mut slot = self.join.lock().await;
-        if let Some(task) = slot.as_mut() {
-            let result = match task.await {
-                Ok(result) => result.map_err(|error| format!("{error:#}")),
-                Err(error) => Err(format!("account usage task failed: {error}")),
-            };
-            slot.take();
-            *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
-        }
-        match self
-            .outcome
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            Some(Err(error)) => Err(anyhow!("{error}")),
-            _ => Ok(()),
-        }
-    }
+async fn wait_usage(task: &super::acp_ops::RetainedTask<Result<()>>) -> Result<()> {
+    retained_output(
+        task.join().await,
+        |result| result.map_err(|error| format!("{error:#}")),
+        |error| format!("account usage task failed: {error}"),
+    )
+    .map_err(|error| anyhow!(error))
 }
 
 struct UsageConfigObserver {
@@ -132,10 +123,8 @@ impl crate::config::SettingsCommitObserver for UsageConfigObserver {
         drop(state);
         if let Some(tasks) = self.tasks.upgrade() {
             let tasks = tasks.lock().unwrap_or_else(PoisonError::into_inner);
-            for (id, key) in &tasks.active {
-                if let Some(task) = tasks.retained.get(key)
-                    && snapshot.usage_query_revision(id) != Some(task.query_revision)
-                {
+            for (id, task) in tasks.active_pairs() {
+                if snapshot.usage_query_revision(id) != Some(task.payload) {
                     task.cancel.cancel();
                 }
             }
@@ -190,17 +179,15 @@ impl AccountUsageRuntime {
         let finished = {
             let tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
             tasks
-                .retained
-                .iter()
-                .filter(|(_, task)| task.finished())
-                .map(|(key, task)| (*key, Arc::clone(task)))
+                .finished_ids()
+                .into_iter()
+                .filter_map(|key| tasks.task(key).map(|task| (key, task)))
                 .collect::<Vec<_>>()
         };
         for (key, task) in finished {
-            let outcome = task.wait().await;
+            let outcome = wait_usage(&task).await;
             let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
-            tasks.retained.remove(&key);
-            tasks.active.retain(|_, active| *active != key);
+            tasks.remove(key);
             if outcome.is_err() {
                 tracing::warn!(
                     "a completed usage operation failed; its typed failure remains observable"
@@ -227,30 +214,21 @@ impl AccountUsageRuntime {
                 return Ok(());
             }
             let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
-            if tasks.closing {
+            if tasks.is_closing() {
                 return Err(stopped());
             }
             if let Some(task) = tasks
-                .active
                 .get(&id)
-                .and_then(|key| tasks.retained.get(key))
-                && task.query_revision == revision
-                && !task.finished()
+                .filter(|task| task.payload == revision && !task.task.finished())
             {
-                Arc::clone(task)
+                Arc::clone(&task.task)
             } else {
-                if let Some(old) = tasks
-                    .active
-                    .get(&id)
-                    .and_then(|key| tasks.retained.get(key))
-                {
+                if let Some(old) = tasks.get(&id) {
                     old.cancel.cancel();
                 }
-                tasks.next_id = tasks
-                    .next_id
-                    .checked_add(1)
+                let key = tasks
+                    .allocate_id()
                     .ok_or_else(|| anyhow!("usage operation identity exhausted"))?;
-                let key = tasks.next_id;
                 let cancel = CancellationToken::new();
                 let worker_cancel = cancel.clone();
                 let runtime = self.clone();
@@ -275,18 +253,11 @@ impl AccountUsageRuntime {
                     }
                     result
                 });
-                let task = Arc::new(UsageTask {
-                    query_revision: revision,
-                    cancel,
-                    join: tokio::sync::Mutex::new(Some(join)),
-                    outcome: Mutex::new(None),
-                });
-                tasks.retained.insert(key, Arc::clone(&task));
-                tasks.active.insert(id, key);
+                let task = tasks.retain(key, id, revision, cancel, join);
                 task
             }
         };
-        task.wait().await
+        wait_usage(&task).await
     }
 
     async fn run_check(
@@ -358,25 +329,17 @@ impl AccountUsageRuntime {
 
     pub(crate) fn request_close(&self) {
         let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
-        tasks.closing = true;
-        for task in tasks.retained.values() {
-            task.cancel.cancel();
-        }
+        let _ = tasks.begin_close();
     }
 
     pub(crate) async fn close(&self) -> Result<()> {
-        self.request_close();
-        let retained = self
-            .tasks
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retained
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let retained = {
+            let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
+            tasks.begin_close()
+        };
         let mut failure = None;
         for task in retained {
-            if let Err(error) = task.wait().await {
+            if let Err(error) = wait_usage(&task).await {
                 failure.get_or_insert(error);
             }
         }
@@ -384,8 +347,7 @@ impl AccountUsageRuntime {
             return Err(error);
         }
         let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
-        tasks.active.clear();
-        tasks.retained.clear();
+        tasks.clear();
         Ok(())
     }
 }

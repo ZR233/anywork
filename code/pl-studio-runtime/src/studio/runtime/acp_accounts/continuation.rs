@@ -3,8 +3,9 @@
 use crate::{AcpAuthMethodKind, AcpAuthState, ContinueAcpAuthRequest, StudioErrorCode};
 use anyhow::Result;
 
-use super::admission::{AcpAccountAcceptance, AcpAccountRuntime, MAX_ACCEPTED_STARTS};
-use super::mapping::{acp_error, ensure_operation_id};
+use super::super::acp_ops::{LedgerCheck, RetainedTask};
+use super::admission::{AcpAccountAcceptance, AcpAccountRuntime};
+use super::mapping::{acp_error, ensure_operation_id, ledger_rejection};
 use super::registry::{AcceptedAction, AcceptedIntent};
 
 impl AcpAccountRuntime {
@@ -62,25 +63,21 @@ impl AcpAccountRuntime {
                         false,
                     ));
                 }
-                if let Some(recorded) = registry.accepted.get(&request.operation_id) {
-                    if recorded != &intent {
-                        return Err(acp_error(
-                            StudioErrorCode::Conflict,
-                            "该 operationId 已绑定另一个 ACP 认证意图",
-                            false,
-                        ));
+                match registry
+                    .accepted
+                    .check_or_replay(&request.operation_id, &intent)
+                {
+                    Err(error) => return Err(ledger_rejection(error)),
+                    Ok(LedgerCheck::Replay(_)) => {
+                        return Ok(AcpAccountAcceptance {
+                            snapshot: registry.snapshot(),
+                            changed: false,
+                        });
                     }
-                    return Ok(AcpAccountAcceptance {
-                        snapshot: registry.snapshot(),
-                        changed: false,
-                    });
+                    Ok(LedgerCheck::Fresh) => {}
                 }
-                if registry.accepted.len() >= MAX_ACCEPTED_STARTS {
-                    return Err(acp_error(
-                        StudioErrorCode::Overloaded,
-                        "已受理的 ACP 认证操作身份过多，请重启运行时后重试",
-                        true,
-                    ));
+                if let Err(error) = registry.accepted.ensure_capacity() {
+                    return Err(ledger_rejection(error));
                 }
                 let Some(operation) = slot.operation.as_ref() else {
                     return Err(acp_error(
@@ -135,7 +132,10 @@ impl AcpAccountRuntime {
                     operation_id: request.target_operation_id,
                     method_id: request.method_id,
                 };
-                registry.accepted.insert(request.operation_id, intent);
+                registry
+                    .accepted
+                    .record(request.operation_id, intent)
+                    .expect("ACP auth identity capacity was checked under this lock");
                 registry.bump();
                 let snapshot = registry.snapshot();
                 drop(registry);
@@ -319,7 +319,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 cancel: CancellationToken::new(),
                 cancel_requested: false.into(),
                 authentication: sender,
-                join: tokio::sync::Mutex::new(None),
+                join: RetainedTask::empty(),
             });
             slot.operation = Some(operation.clone());
             slot.state = AcpAuthState::Required {
@@ -459,7 +459,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 cancel: CancellationToken::new(),
                 cancel_requested: false.into(),
                 authentication: sender,
-                join: tokio::sync::Mutex::new(None),
+                join: RetainedTask::empty(),
             });
             slot.operation = Some(operation.clone());
             operation
@@ -467,7 +467,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         let (cancel_seen, cancellation) = tokio::sync::oneshot::channel();
         let (finish, finishing) = tokio::sync::oneshot::channel();
         let token = operation.cancel.clone();
-        *operation.join.lock().await = Some(tokio::spawn(async move {
+        operation.join.install(tokio::spawn(async move {
             token.cancelled().await;
             let _ = cancel_seen.send(());
             let _ = finishing.await;
@@ -481,10 +481,10 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         // Model the outer shutdown coordinator exhausting its budget. Cancelling
         // the wait must retain ownership, so a later shutdown can still join it.
         drop(first_wait);
-        assert!(operation.join.try_lock()?.is_some());
+        assert_eq!(operation.join.running_handle_retained(), Some(true));
         finish.send(()).expect("owned task is still waiting");
         runtime.acp_accounts.cancel_and_join().await?;
-        assert!(operation.join.lock().await.is_none());
+        assert!(operation.join.slot_is_empty().await);
         runtime.acp_accounts.inner.complete_operation(
             "account",
             1,

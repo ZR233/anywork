@@ -11,16 +11,26 @@ use std::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use super::acp_ops::{RetainedJoin, RetainedTask};
+use super::task_registry::RetainedTaskRegistry;
+
 #[derive(Clone)]
 pub(crate) struct ChatGptAuthRuntime {
-    inner: Arc<Mutex<Registry>>,
+    inner: Arc<Mutex<LoginRegistry>>,
     updates: watch::Sender<()>,
 }
 
-#[derive(Default)]
-struct Registry {
-    closing: bool,
-    operations: BTreeMap<String, Operation>,
+type LoginRegistry = RetainedTaskRegistry<String, Operation, ()>;
+
+fn retain_login(
+    registry: &mut LoginRegistry,
+    generation: u64,
+    id: String,
+    operation: Operation,
+    task: Arc<RetainedTask<()>>,
+) {
+    let cancel = operation.cancellation.clone();
+    registry.retain_task(generation, id, operation, cancel, task);
 }
 
 struct Operation {
@@ -30,12 +40,6 @@ struct Operation {
     claimed: bool,
     cancellation: CancellationToken,
     done: watch::Receiver<bool>,
-    task: Arc<tokio::sync::Mutex<LoginTask>>,
-}
-
-struct LoginTask {
-    handle: Option<tokio::task::JoinHandle<()>>,
-    outcome: Option<Result<(), ()>>,
 }
 
 pub(super) struct LoginClaim {
@@ -46,7 +50,7 @@ pub(super) struct LoginClaim {
 impl ChatGptAuthRuntime {
     pub(crate) fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Registry::default())),
+            inner: Arc::new(Mutex::new(LoginRegistry::default())),
             updates: watch::channel(()).0,
         }
     }
@@ -61,7 +65,6 @@ impl ChatGptAuthRuntime {
             .lock()
             .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?;
         registry
-            .operations
             .get(login_id)
             .map(|operation| operation.snapshot.clone())
             .ok_or_else(|| StudioError::invalid_argument("Unknown ChatGPT login").into())
@@ -85,7 +88,6 @@ impl ChatGptAuthRuntime {
                 editor_id,
             } => {
                 let operation = registry
-                    .operations
                     .get_mut(login_id)
                     .ok_or_else(|| StudioError::invalid_argument("Unknown ChatGPT login"))?;
                 if operation.snapshot.editor_id != *editor_id
@@ -115,14 +117,12 @@ impl ChatGptAuthRuntime {
         let result = save(selected)?;
         if let AccountAuthenticationIntent::ChatGpt { login_id, .. } = intent {
             let operation = registry
-                .operations
                 .get_mut(login_id)
                 .expect("claim lock retains operation");
             operation.claimed = true;
             operation.record = None;
         } else if matches!(intent, AccountAuthenticationIntent::ApiKey) {
             for operation in registry
-                .operations
                 .values_mut()
                 .filter(|operation| operation.snapshot.account_id == account_id)
             {
@@ -136,9 +136,8 @@ impl ChatGptAuthRuntime {
 
     pub(crate) fn signal_cancel(&self) {
         let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        registry.closing = true;
-        for operation in registry.operations.values_mut() {
-            operation.cancellation.cancel();
+        registry.begin_close();
+        for operation in registry.values_mut() {
             operation.record = None;
         }
     }
@@ -149,7 +148,6 @@ impl ChatGptAuthRuntime {
             .inner
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .operations
             .keys()
             .cloned()
             .collect::<Vec<_>>();
@@ -162,19 +160,26 @@ impl ChatGptAuthRuntime {
                 .inner
                 .lock()
                 .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?;
-            registry
-                .operations
-                .iter_mut()
-                .filter_map(|(id, operation)| {
-                    if operation.snapshot.account_id != account_id {
-                        return None;
-                    }
-                    operation.cancellation.cancel();
-                    operation.record = None;
-                    operation.claimed = true;
-                    Some(id.clone())
-                })
+            let ids = registry
+                .keys()
+                .cloned()
                 .collect::<Vec<_>>()
+                .into_iter()
+                .filter(|id| {
+                    registry
+                        .get(id)
+                        .is_some_and(|operation| operation.snapshot.account_id == account_id)
+                })
+                .collect::<Vec<_>>();
+            for id in &ids {
+                let Some(operation) = registry.get_mut(id) else {
+                    continue;
+                };
+                operation.cancellation.cancel();
+                operation.record = None;
+                operation.claimed = true;
+            }
+            ids
         };
         self.join_operations(ids).await
     }
@@ -194,7 +199,6 @@ impl ChatGptAuthRuntime {
             .inner
             .lock()
             .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?
-            .operations
             .get(id)
             .ok_or_else(|| StudioError::invalid_argument("Unknown ChatGPT login"))?
             .done
@@ -208,26 +212,23 @@ impl ChatGptAuthRuntime {
             .inner
             .lock()
             .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?
-            .operations
             .get(id)
             .map(|operation| Arc::clone(&operation.task));
-        if let Some(task) = task {
-            let mut task = task.lock().await;
-            if let Some(handle) = task.handle.as_mut() {
-                // The registry retains the handle if this join waiter is cancelled.
-                task.outcome = Some(handle.await.map_err(|_| ()));
-                task.handle = None;
-            }
-            if task.outcome == Some(Err(())) {
-                return Err(StudioError::invalid_argument("ChatGPT login worker failed").into());
-            }
+        if let Some(task) = task
+            && matches!(
+                task.join().await,
+                RetainedJoin::Observed(Err(_)) | RetainedJoin::Settled(Err(_))
+            )
+        {
+            // Cancellation drops only this waiter. The registry keeps the handle.
+            return Err(StudioError::invalid_argument("ChatGPT login worker failed").into());
         }
         Ok(())
     }
 
     fn publish(&self, id: &str, phase: ChatGptLoginPhase, url: Option<String>) {
         let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(operation) = registry.operations.get_mut(id)
+        if let Some(operation) = registry.get_mut(id)
             && !operation.cancellation.is_cancelled()
         {
             operation.snapshot.revision += 1;
@@ -260,7 +261,7 @@ impl ChatGptAuthRuntime {
             } => Some(result),
         };
         let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(operation) = registry.operations.get_mut(&id) {
+        if let Some(operation) = registry.get_mut(&id) {
             operation.snapshot.revision += 1;
             operation.snapshot.authorization_url = None;
             let result = if operation.cancellation.is_cancelled() {
@@ -358,7 +359,7 @@ impl StudioRuntime {
             .inner
             .lock()
             .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?;
-        if let Some(operation) = registry.operations.get(&input.login_id) {
+        if let Some(operation) = registry.get(&input.login_id) {
             if operation.snapshot.editor_id != input.editor_id
                 || operation.snapshot.account_id != input.account_id
             {
@@ -376,11 +377,10 @@ impl StudioRuntime {
                 snapshot,
             });
         }
-        if registry.closing || registry.operations.len() >= 4096 {
+        if registry.is_closing() || registry.len() >= 4096 {
             return Err(StudioError::invalid_argument("ChatGPT login admission is closed").into());
         }
         if registry
-            .operations
             .values()
             .filter(|operation| !*operation.done.borrow())
             .count()
@@ -388,7 +388,7 @@ impl StudioRuntime {
         {
             return Err(StudioError::invalid_argument("Too many active ChatGPT logins").into());
         }
-        if registry.operations.values().any(|operation| {
+        if registry.values().any(|operation| {
             operation.snapshot.editor_id == input.editor_id && !*operation.done.borrow()
         }) {
             return Err(StudioError::invalid_argument(
@@ -398,13 +398,15 @@ impl StudioRuntime {
         }
         // A new intent invalidates all unclaimed results of this editor.
         for operation in registry
-            .operations
             .values_mut()
             .filter(|operation| operation.snapshot.editor_id == input.editor_id)
         {
             operation.record = None;
             operation.claimed = true;
         }
+        let generation = registry
+            .allocate_id()
+            .ok_or_else(|| StudioError::invalid_argument("ChatGPT login identity exhausted"))?;
         let cancellation = CancellationToken::new();
         let (done, receiver) = watch::channel(false);
         let snapshot = ChatGptLoginSnapshot {
@@ -438,7 +440,7 @@ impl StudioRuntime {
                     .inner
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                if let Some(operation) = registry.operations.get_mut(&login_id) {
+                if let Some(operation) = registry.get_mut(&login_id) {
                     operation.snapshot.revision += 1;
                     operation.snapshot.phase = ChatGptLoginPhase::Failed;
                     operation.snapshot.authorization_url = None;
@@ -452,7 +454,9 @@ impl StudioRuntime {
             }
             done.send_replace(true);
         });
-        registry.operations.insert(
+        retain_login(
+            &mut registry,
+            generation,
             input.login_id.clone(),
             Operation {
                 account_revision,
@@ -461,11 +465,8 @@ impl StudioRuntime {
                 claimed: false,
                 cancellation,
                 done: receiver,
-                task: Arc::new(tokio::sync::Mutex::new(LoginTask {
-                    handle: Some(task),
-                    outcome: None,
-                })),
             },
+            Arc::new(RetainedTask::running(task)),
         );
         self.chatgpt_auth.updates.send_replace(());
         Ok(ChatGptLoginCommandReply {
@@ -488,7 +489,6 @@ impl StudioRuntime {
                 .lock()
                 .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?;
             let operation = registry
-                .operations
                 .get_mut(&input.login_id)
                 .ok_or_else(|| StudioError::invalid_argument("Unknown ChatGPT login"))?;
             if operation.snapshot.editor_id != input.editor_id
@@ -511,7 +511,6 @@ impl StudioRuntime {
                 .lock()
                 .map_err(|_| StudioError::invalid_argument("Login owner is unavailable"))?;
             let operation = registry
-                .operations
                 .get_mut(&input.login_id)
                 .expect("retained operation");
             if operation.snapshot.phase != ChatGptLoginPhase::Cancelled {
@@ -535,6 +534,7 @@ impl StudioRuntime {
 
 #[cfg(test)]
 mod tests {
+    use super::retain_login;
     use super::*;
     use pl_model::config::AccountId;
 
@@ -542,12 +542,14 @@ mod tests {
         owner: &ChatGptAuthRuntime,
         id: &str,
         handle: tokio::task::JoinHandle<()>,
-    ) -> Arc<tokio::sync::Mutex<LoginTask>> {
-        let task = Arc::new(tokio::sync::Mutex::new(LoginTask {
-            handle: Some(handle),
-            outcome: None,
-        }));
-        owner.inner.lock().unwrap().operations.insert(
+    ) -> Arc<RetainedTask<()>> {
+        let task = Arc::new(RetainedTask::running(handle));
+        let cancellation = CancellationToken::new();
+        let mut registry = owner.inner.lock().unwrap();
+        let generation = registry.allocate_id().expect("login identity");
+        retain_login(
+            &mut registry,
+            generation,
             id.into(),
             Operation {
                 account_revision: None,
@@ -564,10 +566,10 @@ mod tests {
                 },
                 record: None,
                 claimed: false,
-                cancellation: CancellationToken::new(),
+                cancellation,
                 done: watch::channel(true).1,
-                task: task.clone(),
             },
+            Arc::clone(&task),
         );
         task
     }
@@ -588,7 +590,7 @@ mod tests {
             tokio::pin!(first);
             assert!(futures::poll!(first.as_mut()).is_pending());
         }
-        assert!(task.try_lock().unwrap().handle.is_some());
+        assert_eq!(task.running_handle_retained(), Some(true));
         let failed = owned_task(
             &owner,
             "a-failed",
@@ -598,10 +600,10 @@ mod tests {
         );
         release.send(()).unwrap();
         assert!(owner.close().await.is_err());
-        assert!(failed.lock().await.handle.is_none());
-        let task = task.lock().await;
-        assert!(task.handle.is_none());
-        assert_eq!(task.outcome, Some(Ok(())));
+        assert!(failed.slot_is_empty().await);
+        assert!(failed.observed().is_some_and(|result| result.is_err()));
+        assert!(task.slot_is_empty().await);
+        assert_eq!(task.observed(), Some(Ok(())));
     }
 
     fn completed(runtime: &StudioRuntime, login_id: &str, account_id: &str) {
@@ -651,27 +653,23 @@ mod tests {
                 account_id: account_id.into(),
             })
             .unwrap();
-        runtime
-            .chatgpt_auth
-            .inner
-            .lock()
-            .unwrap()
-            .operations
-            .insert(
-                login_id.into(),
-                Operation {
-                    account_revision,
-                    snapshot,
-                    record: Some(record),
-                    claimed: false,
-                    cancellation: CancellationToken::new(),
-                    done: watch::channel(true).1,
-                    task: Arc::new(tokio::sync::Mutex::new(LoginTask {
-                        handle: None,
-                        outcome: Some(Ok(())),
-                    })),
-                },
-            );
+        let cancellation = CancellationToken::new();
+        let mut registry = runtime.chatgpt_auth.inner.lock().unwrap();
+        let generation = registry.allocate_id().expect("login identity");
+        retain_login(
+            &mut registry,
+            generation,
+            login_id.into(),
+            Operation {
+                account_revision,
+                snapshot,
+                record: Some(record),
+                claimed: false,
+                cancellation,
+                done: watch::channel(true).1,
+            },
+            Arc::new(RetainedTask::empty()),
+        );
     }
 
     fn patch(
@@ -839,9 +837,24 @@ mod tests {
             "{failed:?}"
         );
         assert_eq!(calls.get(), 2);
-        assert!(!runtime.chatgpt_auth.inner.lock().unwrap().operations["save-login"].claimed);
         assert!(
-            runtime.chatgpt_auth.inner.lock().unwrap().operations["save-login"]
+            !runtime
+                .chatgpt_auth
+                .inner
+                .lock()
+                .unwrap()
+                .get("save-login")
+                .unwrap()
+                .claimed
+        );
+        assert!(
+            runtime
+                .chatgpt_auth
+                .inner
+                .lock()
+                .unwrap()
+                .get("save-login")
+                .unwrap()
                 .record
                 .is_some()
         );
