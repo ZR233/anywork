@@ -6,7 +6,7 @@ use crate::studio::worktree::{
         WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLeaseState,
     },
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use std::path::Path;
 
 impl StudioThreadFactory {
@@ -121,30 +121,14 @@ impl StudioThreadFactory {
                 );
             }
             WorkspaceEndpoint::Ssh { .. } => {
-                let profile = self
-                    .services
-                    .ssh_manager
-                    .list_servers()
-                    .await
-                    .into_iter()
-                    .find(|entry| {
-                        WorkspaceEndpoint::from_profile(Some(&entry.profile)) == identity.endpoint
-                    })
-                    .context("frozen cleanup SSH endpoint is not configured")?
-                    .profile;
-                let host = self
-                    .services
-                    .ssh_manager
-                    .open_workspace_binding(
-                        &profile.alias,
-                        container.to_string_lossy().into_owned(),
-                    )
-                    .await?;
-                ensure!(
-                    WorkspaceEndpoint::from_profile(Some(&host.profile)) == identity.endpoint
-                        && host.files().canonical_path() == container.to_string_lossy(),
-                    "execution cleanup endpoint or canonical container changed"
-                );
+                let host = super::ssh_binding::open_frozen_workspace(
+                    &self.services.ssh_manager,
+                    &identity.endpoint,
+                    &container.to_string_lossy(),
+                    "frozen cleanup SSH endpoint is not configured",
+                    "execution cleanup endpoint or canonical container changed",
+                )
+                .await?;
                 let path = source.to_string_lossy().into_owned();
                 if host
                     .files()

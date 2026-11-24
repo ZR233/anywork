@@ -459,19 +459,16 @@ impl StudioThreadFactory {
             let root_str = root.to_str().ok_or_else(|| {
                 ThreadAssemblyError::Identity("LSP workspace path is not UTF-8".into())
             })?;
-            let host = pl_lsp::host::ExecutorLspHost::new(executor.clone(), root_str)
+            let host = self
+                .lsp_host_binding(&execution, remote.is_some())
                 .map_err(|error| resource_error("bind LSP executor", error))?;
-            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = Some(Arc::new(host));
-            let defaults = remote
-                .is_none()
-                .then(|| self.services.store.paths().home().join("lsp/host"));
             lsp_lease = if let Some(lease) = previous {
-                if let Err(error) = lease.refresh_configuration(host, defaults).await {
+                if let Err(error) = host.refresh(&lease).await {
                     tracing::warn!(%error, thread_id, "LSP directory refresh failed");
                 }
                 Some(lease)
             } else {
-                match lsp.acquire_workspace(&root, host, defaults).await {
+                match host.acquire(&lsp, &workspace).await {
                     Ok(lease) => Some(lease),
                     Err(error) => {
                         tracing::warn!(%error, thread_id, "LSP directory acquisition failed");

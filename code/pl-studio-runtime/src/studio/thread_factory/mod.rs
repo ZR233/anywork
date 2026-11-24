@@ -10,6 +10,7 @@ mod close_child;
 mod errors;
 mod execution_admission;
 mod execution_cleanup;
+mod lsp_binding;
 pub(crate) mod mcp;
 mod mcp_reconnect_tool;
 mod mcp_refresh_tool;
@@ -21,6 +22,7 @@ pub(in crate::studio) use worktree_close::removal_definitely_refused as worktree
 
 mod root_resources;
 mod session_files;
+mod ssh_binding;
 mod thread_seed;
 mod thread_tools;
 pub(crate) mod tool_bindings;
