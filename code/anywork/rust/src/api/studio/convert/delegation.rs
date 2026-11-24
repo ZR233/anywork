@@ -106,59 +106,6 @@ impl From<pl_studio_runtime::AgentTaskCategory> for BridgeAgentTaskCategory {
     }
 }
 
-impl From<BridgeDelegationModelCapability> for pl_studio_runtime::DelegationModelCapability {
-    fn from(value: BridgeDelegationModelCapability) -> Self {
-        match value {
-            BridgeDelegationModelCapability::ToolCalling => Self::ToolCalling,
-            BridgeDelegationModelCapability::ParallelToolCalls => Self::ParallelToolCalls,
-            BridgeDelegationModelCapability::Reasoning => Self::Reasoning,
-            BridgeDelegationModelCapability::ImageInput => Self::ImageInput,
-            BridgeDelegationModelCapability::AudioInput => Self::AudioInput,
-            BridgeDelegationModelCapability::VideoInput => Self::VideoInput,
-            BridgeDelegationModelCapability::FileInput => Self::FileInput,
-            BridgeDelegationModelCapability::CustomTools => Self::CustomTools,
-            BridgeDelegationModelCapability::FreeformTools => Self::FreeformTools,
-            BridgeDelegationModelCapability::WebSearch => Self::WebSearch,
-            BridgeDelegationModelCapability::Streaming => Self::Streaming,
-        }
-    }
-}
-
-impl From<BridgeListDelegationModelsRequest> for pl_studio_runtime::ListDelegationModelsRequest {
-    fn from(value: BridgeListDelegationModelsRequest) -> Self {
-        Self {
-            capabilities: value.capabilities.into_iter().map(Into::into).collect(),
-            account_id: value.account_id,
-            billing_kind: value.billing_kind.map(Into::into),
-            min_context_window: value.min_context_window,
-        }
-    }
-}
-
-impl From<pl_studio_runtime::DelegationModelList> for BridgeDelegationModelList {
-    fn from(value: pl_studio_runtime::DelegationModelList) -> Self {
-        Self {
-            models: value
-                .models
-                .into_iter()
-                .map(|model| BridgeDelegationModelListItem {
-                    account_id: model.account_id,
-                    account_name: model.account_name,
-                    model_id: model.model_id,
-                    display_name: model.display_name,
-                    summary: model.summary,
-                    task_suitability: model.task_suitability.into_iter().map(Into::into).collect(),
-                    context_window: model.context_window,
-                    capabilities: model.capabilities.into(),
-                    reasoning_efforts: model.reasoning_efforts,
-                    billing_kind: model.billing_kind.into(),
-                })
-                .collect(),
-            catalog_revision: value.catalog_revision,
-        }
-    }
-}
-
 impl From<pl_studio_runtime::DelegationModelDetail> for BridgeDelegationModelDetail {
     fn from(value: pl_studio_runtime::DelegationModelDetail) -> Self {
         Self {

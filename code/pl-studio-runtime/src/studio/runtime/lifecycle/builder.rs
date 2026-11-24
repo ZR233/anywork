@@ -50,11 +50,7 @@ impl StudioRuntime {
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;
-        let account_usage = AccountUsageRuntime::new(
-            store.clone(),
-            config_runtime.clone(),
-            product_events.clone(),
-        );
+        let account_usage = AccountUsageRuntime::new(store.clone(), config_runtime.clone());
         // ACP 认证 owner 只持有身份与操作事实；构造期不启动任何外部程序，只把当前配置的
         // 连接身份登记为 `Unchecked`。
         let acp_accounts = super::super::acp_accounts::AcpAccountRuntime::new(

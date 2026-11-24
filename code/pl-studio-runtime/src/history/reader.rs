@@ -1216,36 +1216,6 @@ impl HistoryReader {
         .await
     }
 
-    pub async fn review_finish_call(
-        &self,
-        turn_id: String,
-        cut: Option<HistoryCut>,
-    ) -> Result<bool> {
-        if turn_id.is_empty() {
-            return Err(HistoryError::InvalidDemand("empty turn identity".into()));
-        }
-        self.run(move |reader| async move {
-            let snapshot = reader.snapshot().await?;
-            let through = match cut {
-                Some(cut) => {
-                    let pos = reader.inner.codec.through(&cut)?;
-                    if pos > snapshot.head {
-                        return Err(HistoryError::InvalidCursor);
-                    }
-                    pos
-                }
-                None => snapshot.head,
-            };
-            let found = snapshot.pending.finish(&turn_id, through).is_some()
-                || db::review_finish(&snapshot.tx, &turn_id, through)
-                    .await?
-                    .is_some();
-            snapshot.tx.commit().await?;
-            Ok(found)
-        })
-        .await
-    }
-
     pub fn request_close(&self) {
         {
             let mut reader = self

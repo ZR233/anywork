@@ -10,13 +10,6 @@ import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// Reads local reference data only; never performs paid inference or writes evaluations.
-Future<BridgeDelegationModelList> listDelegationModels({
-  required BridgeListDelegationModelsRequest request,
-}) => RustLib.instance.api.crateApiStudioHandlersDelegationListDelegationModels(
-  request: request,
-);
-
 /// Reads one exact account member, preserving typed not-found/stale failures.
 Future<BridgeDelegationModelDetail> getDelegationModel({
   required BridgeGetDelegationModelRequest request,

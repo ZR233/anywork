@@ -419,7 +419,6 @@ final class _DemoThreadObservation implements ThreadObservationHandle {
 
 class DemoStudioTransport extends StudioTransport
     implements
-        PersistenceQueueReader,
         AccountFeedPort,
         AccountConfigurationPort,
         AccountModelsPort,
@@ -840,9 +839,7 @@ class DemoStudioTransport extends StudioTransport
           ? AccountUsagePhase.unsupported
           : AccountUsagePhase.missingCredential,
     );
-    _publishProductPayload(
-      AccountUsageStateChangedPayload(_demoAccountUsageState()),
-    );
+    _notifyAccountObservations((target) => target is AccountUsageTarget);
     return _readAccountDomain(const AccountUsageTarget()) as AccountUsageFrame;
   }
 
@@ -1636,17 +1633,6 @@ class DemoStudioTransport extends StudioTransport
     );
   }
 
-  AccountUsageStateSnapshot _demoAccountUsageState() {
-    final accounts = _accounts ?? [_demoDefaultAccount()];
-    final usages = [for (final account in accounts) _demoAccountUsage(account)];
-    return AccountUsageStateSnapshot.fromState(
-      state: _demoReadyResource(
-        _accountUsageRevision,
-        AccountUsageStateData(configFingerprint: 'demo', usages: usages),
-      ),
-    );
-  }
-
   SessionCostsStateView _demoSessionCosts(String rootThreadId) =>
       SessionCostsStateView(
         rootThreadId: rootThreadId,
@@ -2424,7 +2410,7 @@ class DemoStudioTransport extends StudioTransport
     AcpAuthSnapshotView snapshot, {
     CommitDisposition disposition = CommitDisposition.applied,
   }) {
-    _publishProductPayload(AcpAuthStateChangedPayload(snapshot));
+    _notifyAccountObservations((target) => target is AcpAuthTarget);
     return AcpAuthCommandReply(
       receipt: _demoReceipt(
         operationId,
@@ -2627,9 +2613,7 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     _acpInstallRevision += 1;
-    _publishProductPayload(
-      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
-    );
+    _notifyAccountObservations((target) => target is AcpInstallTarget);
   }
 
   AcpInstallCommandReply _demoInstallReply(
@@ -2775,9 +2759,7 @@ class DemoStudioTransport extends StudioTransport
     final latest = _demoInstallRelease();
     _acpInstallUpdates[provider] = const AcpInstallUpdateCheckingState();
     _acpInstallRevision += 1;
-    _publishProductPayload(
-      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
-    );
+    _notifyAccountObservations((target) => target is AcpInstallTarget);
     final reply = _demoInstallReply(operationId, provider);
     _acpInstallUpdates[provider] = currentInstalled == latest.version
         ? AcpInstallUpdateUpToDateState(
@@ -2789,9 +2771,7 @@ class DemoStudioTransport extends StudioTransport
             latest: latest,
           );
     _acpInstallRevision += 1;
-    _publishProductPayload(
-      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
-    );
+    _notifyAccountObservations((target) => target is AcpInstallTarget);
     return reply;
   }
 
@@ -2822,14 +2802,6 @@ class DemoStudioTransport extends StudioTransport
     );
     return _demoInstallReply(operationId, provider);
   }
-
-  @override
-  Future<AgentProfilesStateView> readAgentProfilesState() async =>
-      readAgentProfilesStateSync();
-
-  @override
-  Future<List<AgentProfileView>> readAgentProfiles() async =>
-      _demoAgentProfilesSync();
 
   @override
   Future<SettingsCommandReply> setSystemAgentEnabled({
@@ -3876,18 +3848,6 @@ class DemoStudioTransport extends StudioTransport
     int faultGeneration,
   ) async => const PersistenceQueueSnapshot.empty();
 
-  /// demo 是纯内存实现，没有异步持久化队列，因此队列压力恒为空的 canonical 观测。
-  @override
-  Future<PersistenceQueueStateView> readPersistenceQueueState() async =>
-      const PersistenceQueueStateView(
-        revision: 0,
-        queue: PersistenceQueueSnapshot.empty(),
-      );
-
-  @override
-  Future<PersistenceQueueSnapshot> readPersistenceQueue() async =>
-      const PersistenceQueueSnapshot.empty();
-
   /// Demo counterpart of the production field mutation endpoint.
   ///
   /// The demo must obey the same contract as the Bridge: one command changes
@@ -4694,22 +4654,31 @@ class DemoStudioTransport extends StudioTransport
     return _DemoProductTopicPort(entry);
   }
 
+  void _notifyAccountObservations(
+    bool Function(AccountObservationTarget target) matches,
+  ) {
+    if (_runtimeExiting) return;
+    for (final entry in _accountObservations.entries.toList()) {
+      if (matches(entry.value)) entry.key.notify();
+    }
+  }
+
   /// 把一个 owner 事实发布给该 topic 的已登记 receiver；无接收者时不缓冲。
   void _publishProductPayload(ProductTopicEventPayload payload) {
     if (_runtimeExiting) return;
-    for (final entry in _accountObservations.entries.toList()) {
-      final source = switch (entry.value) {
+    _notifyAccountObservations((target) {
+      final source = switch (target) {
         AccountSummariesTarget() ||
         AccountDetailTarget() => const SettingsConfigTopic(),
         AccountModelsTarget() => const ModelCatalogTopic(),
-        AccountUsageTarget() => const AccountUsageTopic(),
-        AcpAuthTarget() => const AcpAuthTopic(),
-        AcpInstallTarget() => const AcpInstallTopic(),
-        AcpLocalDetectionTarget() => const AcpLocalDetectionTopic(),
         ChatGptLoginTarget() => const SettingsConfigTopic(),
+        AccountUsageTarget() ||
+        AcpAuthTarget() ||
+        AcpInstallTarget() ||
+        AcpLocalDetectionTarget() => null,
       };
-      if (source == payload.topic) entry.key.notify();
-    }
+      return source == payload.topic;
+    });
     final sinks = _topicSinks[payload.topic];
     if (sinks == null || sinks.isEmpty) return;
     for (final sink in List.of(sinks)) {
@@ -4766,7 +4735,6 @@ class DemoStudioTransport extends StudioTransport
       ThreadModeCatalogTopic() => ThreadModeCatalogBaseline(
         _demoThreadModeCatalog(),
       ),
-      AccountUsageTopic() => AccountUsageBaseline(_demoAccountUsageState()),
       SessionCostsTopic(:final rootThreadId) => SessionCostsBaseline(
         _demoSessionCosts(rootThreadId),
       ),
@@ -4777,11 +4745,6 @@ class DemoStudioTransport extends StudioTransport
       ),
       AgentProfilesTopic() => AgentProfilesBaseline(
         readAgentProfilesStateSync(),
-      ),
-      AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
-      AcpInstallTopic() => AcpInstallBaseline(_demoInstallSnapshot()),
-      AcpLocalDetectionTopic() => const AcpLocalDetectionBaseline(
-        AcpLocalDetectionSnapshotView.idle(),
       ),
       BotsTopic() => BotsBaseline(_demoBotsState()),
       ChildInteractionsTopic(:final hostThreadId) => ChildInteractionsBaseline(
@@ -4801,15 +4764,11 @@ class DemoStudioTransport extends StudioTransport
       LspBaseline(:final state) => state.revision,
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
-      AccountUsageBaseline(:final state) => state.revision,
       SessionCostsBaseline(:final state) => state.revision,
       UpdaterBaseline(:final state) => state.revision,
       PersistenceBaseline(:final state) => state.revision,
       PersistenceQueueBaseline(:final state) => state.revision,
       AgentProfilesBaseline(:final state) => state.revision,
-      AcpAuthBaseline(:final state) => state.revision,
-      AcpInstallBaseline(:final state) => state.revision,
-      AcpLocalDetectionBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
       ChildInteractionsBaseline(:final state) => state.state.revision,
     };
@@ -6240,13 +6199,6 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<DelegationModelList> listDelegationModels(
-    ListDelegationModelsRequest request,
-  ) => Future.error(
-    UnsupportedError('Qualified delegation lists require the native Runtime'),
-  );
-
-  @override
   Future<DelegationModelDetail> getDelegationModel(
     DelegationModelKey key,
   ) async {
@@ -6476,10 +6428,6 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) async =>
-      _demoThreadMcp(threadId);
-
-  @override
   Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
     required String threadId,
     String? serverId,
@@ -6600,9 +6548,6 @@ class DemoStudioTransport extends StudioTransport
       _bots[index] = next;
     }
   }
-
-  @override
-  Future<BotsStateSnapshot> readBots() async => _demoBotsState();
 
   @override
   Future<BotsCommandReply> saveBot(SaveBotRequest request) async {

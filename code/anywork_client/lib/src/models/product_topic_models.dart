@@ -1,8 +1,5 @@
 import 'collection_equality.dart';
 
-import 'acp_models.dart';
-import 'acp_install_models.dart';
-import 'acp_local_detection_models.dart';
 import 'agent_profile_models.dart';
 import 'bot_models.dart';
 import 'command_receipts.dart' show ChildInteractionSummary;
@@ -153,16 +150,6 @@ final class ThreadModeCatalogTopic extends ProductTopic {
   int get hashCode => 0x0109;
 }
 
-final class AccountUsageTopic extends ProductTopic {
-  const AccountUsageTopic();
-
-  @override
-  bool operator ==(Object other) => other is AccountUsageTopic;
-
-  @override
-  int get hashCode => 0x0110;
-}
-
 final class SessionCostsTopic extends ProductTopic {
   const SessionCostsTopic({required this.rootThreadId});
 
@@ -216,19 +203,6 @@ final class AgentProfilesTopic extends ProductTopic {
   int get hashCode => 0x0116;
 }
 
-/// ACP 认证观察：独立版本域，与配置修订和目录修订互不替代。
-///
-/// 只读查询、订阅与页面进入都不启动外部程序；检查、登录与取消是显式命令。
-final class AcpAuthTopic extends ProductTopic {
-  const AcpAuthTopic();
-
-  @override
-  bool operator ==(Object other) => other is AcpAuthTopic;
-
-  @override
-  int get hashCode => 0x0118;
-}
-
 final class BotsTopic extends ProductTopic {
   const BotsTopic();
 
@@ -237,27 +211,6 @@ final class BotsTopic extends ProductTopic {
 
   @override
   int get hashCode => 0x0119;
-}
-
-/// ACP 官方 server 准备观察：独立版本域，与认证、配置和目录修订互不替代。
-///
-/// 只读查询与订阅都不联网；开始、取消是显式命令。
-final class AcpLocalDetectionTopic extends ProductTopic {
-  const AcpLocalDetectionTopic();
-  @override
-  bool operator ==(Object other) => other is AcpLocalDetectionTopic;
-  @override
-  int get hashCode => 0x011d;
-}
-
-final class AcpInstallTopic extends ProductTopic {
-  const AcpInstallTopic();
-
-  @override
-  bool operator ==(Object other) => other is AcpInstallTopic;
-
-  @override
-  int get hashCode => 0x011a;
 }
 
 /// 根可见子任务待决交互：按宿主主会话作用域的事件域。
@@ -356,12 +309,6 @@ final class ThreadModeCatalogBaseline extends ProductTopicBaselineState {
   final ThreadModeCatalogView state;
 }
 
-final class AccountUsageBaseline extends ProductTopicBaselineState {
-  const AccountUsageBaseline(this.state);
-
-  final AccountUsageStateSnapshot state;
-}
-
 final class SessionCostsBaseline extends ProductTopicBaselineState {
   const SessionCostsBaseline(this.state);
 
@@ -392,27 +339,10 @@ final class AgentProfilesBaseline extends ProductTopicBaselineState {
   final AgentProfilesStateView state;
 }
 
-final class AcpAuthBaseline extends ProductTopicBaselineState {
-  const AcpAuthBaseline(this.state);
-
-  final AcpAuthSnapshotView state;
-}
-
 final class BotsBaseline extends ProductTopicBaselineState {
   const BotsBaseline(this.state);
 
   final BotsStateSnapshot state;
-}
-
-final class AcpLocalDetectionBaseline extends ProductTopicBaselineState {
-  const AcpLocalDetectionBaseline(this.state);
-  final AcpLocalDetectionSnapshotView state;
-}
-
-final class AcpInstallBaseline extends ProductTopicBaselineState {
-  const AcpInstallBaseline(this.state);
-
-  final AcpInstallSnapshotView state;
 }
 
 final class ChildInteractionsBaseline extends ProductTopicBaselineState {
@@ -545,7 +475,6 @@ sealed class ProductTopicEventPayload {
       workspaceId: state.workspaceId,
     ),
     ThreadModeCatalogChangedPayload() => const ThreadModeCatalogTopic(),
-    AccountUsageStateChangedPayload() => const AccountUsageTopic(),
     SessionCostsChangedPayload(:final state) => SessionCostsTopic(
       rootThreadId: state.rootThreadId,
     ),
@@ -553,10 +482,7 @@ sealed class ProductTopicEventPayload {
     PersistenceStateChangedPayload() => const PersistenceTopic(),
     PersistenceQueueStateChangedPayload() => const PersistenceQueueTopic(),
     AgentProfilesStateChangedPayload() => const AgentProfilesTopic(),
-    AcpAuthStateChangedPayload() => const AcpAuthTopic(),
     BotsStateChangedPayload() => const BotsTopic(),
-    AcpInstallStateChangedPayload() => const AcpInstallTopic(),
-    AcpLocalDetectionStateChangedPayload() => const AcpLocalDetectionTopic(),
     ChildInteractionsChangedPayload(:final state) => ChildInteractionsTopic(
       hostThreadId: state.hostThreadId,
     ),
@@ -643,12 +569,6 @@ final class ThreadModeCatalogChangedPayload extends ProductTopicEventPayload {
   final ThreadModeCatalogView state;
 }
 
-final class AccountUsageStateChangedPayload extends ProductTopicEventPayload {
-  const AccountUsageStateChangedPayload(this.state);
-
-  final AccountUsageStateSnapshot state;
-}
-
 /// 单个 root 会话的作用域费用事实；`cost == null` 是显式清除，不是零费用。
 final class SessionCostsChangedPayload extends ProductTopicEventPayload {
   const SessionCostsChangedPayload(this.state);
@@ -681,28 +601,10 @@ final class AgentProfilesStateChangedPayload extends ProductTopicEventPayload {
   final AgentProfilesStateView state;
 }
 
-final class AcpAuthStateChangedPayload extends ProductTopicEventPayload {
-  const AcpAuthStateChangedPayload(this.state);
-
-  final AcpAuthSnapshotView state;
-}
-
 final class BotsStateChangedPayload extends ProductTopicEventPayload {
   const BotsStateChangedPayload(this.state);
 
   final BotsStateSnapshot state;
-}
-
-final class AcpLocalDetectionStateChangedPayload
-    extends ProductTopicEventPayload {
-  const AcpLocalDetectionStateChangedPayload(this.state);
-  final AcpLocalDetectionSnapshotView state;
-}
-
-final class AcpInstallStateChangedPayload extends ProductTopicEventPayload {
-  const AcpInstallStateChangedPayload(this.state);
-
-  final AcpInstallSnapshotView state;
 }
 
 /// 一个宿主主会话当前的子任务待决交互完整集合。

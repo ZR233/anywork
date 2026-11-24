@@ -71,14 +71,6 @@ pub async fn delete_mcp_document(
     Ok(receipt.into())
 }
 
-pub async fn read_thread_mcp(
-    thread_id: String,
-) -> Result<BridgeThreadMcpStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    let snapshot = bridge.studio.read_thread_mcp(&thread_id).await?;
-    Ok(snapshot.into())
-}
-
 pub async fn reconnect_thread_mcp(
     input: BridgeReconnectThreadMcpInput,
 ) -> Result<BridgeThreadMcpStateSnapshot, BridgeError> {

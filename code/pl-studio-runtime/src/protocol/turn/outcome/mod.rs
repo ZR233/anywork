@@ -49,16 +49,4 @@ impl TurnOutcome {
             Self::Completed(_) | Self::Cancelled(_) | Self::BudgetLimited(_) => None,
         }
     }
-
-    pub fn is_completed(&self) -> bool {
-        matches!(self, Self::Completed(_))
-    }
-
-    pub fn is_interaction_boundary(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed(outcome)
-                if outcome.completion() == TurnCompletion::InteractionRequested
-        )
-    }
 }

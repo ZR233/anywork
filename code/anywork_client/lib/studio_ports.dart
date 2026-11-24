@@ -77,20 +77,7 @@ abstract interface class CommandTransport {
   Future<List<ChildInteractionSummary>> readChildInteractions(String threadId);
 }
 
-/// 按需读取进程级持久化队列压力的可选能力。
-///
-/// 队列压力（排队操作数、字节、最老待保存年龄、在途字节与最近错误）是诊断观测，不是权威
-/// 会话状态。实现本能力的 API 从后端持久化协调器读取真实值；未实现该能力的 API（例如测试
-/// 替身）不提供该观测，调用方据此显示为未知，而不是编造本地推算值。
-///
-/// `readPersistenceQueueState` 返回 typed wrapper（发布 revision + 时间基线）；
-/// `readPersistenceQueue` 是旧 raw 观测的兼容视图，仅解包 wrapper，不另立事实源。
-abstract interface class PersistenceQueueReader {
-  Future<PersistenceQueueStateView> readPersistenceQueueState();
-
-  Future<PersistenceQueueSnapshot> readPersistenceQueue();
-}
-
+/// `readPersistenceQueue` 兼容接口已从 Client ports 移除，降级诊断请直接使用 bridge。
 /// Shutdown results retain resource identities until all scopes are merged.
 /// Non-resource transport failures remain separate typed shutdown issues.
 final class DartResourceCloseResult {
@@ -142,14 +129,6 @@ abstract class StudioTransport
 
   Future<RecoveryStateSnapshot> retryRecovery();
 
-  /// 配置级 Agent Profiles 的 canonical 资源快照（含 revision 与逐文件诊断）。
-  Future<AgentProfilesStateView> readAgentProfilesState();
-
-  /// 兼容视图：从 [readAgentProfilesState] 解包 Profile 列表。
-  ///
-  /// 设置页已由 AgentProfiles topic 驱动；本方法仅供尚未迁移的一次性读取，
-  /// 不是第二事实源。
-  Future<List<AgentProfileView>> readAgentProfiles();
   Future<SettingsCommandReply> setSystemAgentEnabled({
     required OperationId operationId,
     required String profileId,
@@ -164,6 +143,7 @@ abstract class StudioTransport
     required String ownerThreadId,
     required int expectedLeaseRevision,
   });
+  @override
   Future<StudioBootstrap> readBootstrap();
   Future<SessionDirectoryRow> restoreThread(String threadId);
   Future<WorkflowRuntimeGraphSnapshotView?> getThreadWorkflowGraph(
@@ -297,36 +277,6 @@ abstract class StudioTransport
     StudioExitIntent intent = StudioExitIntent.exit,
   });
 
-  Future<SubmitPromptReceipt> submitPrompt(
-    String threadId,
-    StudioPromptInput input, {
-    required int expectedModelRouteRevision,
-  });
-  Future<List<AttachmentDraftView>> admitAttachmentDrafts(
-    AttachmentAdmissionContext context,
-    List<AttachmentDraftSource> sources,
-  );
-  Future<bool> removeAttachmentDraft(String draftId);
-  Future<Uint8List> readAttachmentDraft(String draftId);
-  Future<Uint8List> readThreadAttachment(String threadId, String attachmentId);
-  Future<StopThreadCommandReply> stopThread(
-    String threadId,
-    String executionId, {
-    required OperationId operationId,
-  });
-  Future<ContinueThreadCommandReply> continueThread(
-    String threadId,
-    String continuationId, {
-    required int expectedModelRouteRevision,
-    required OperationId operationId,
-  });
-  Future<ContinuationOperationView> readContinuationOperation(
-    String threadId,
-    String operationId,
-    String expectedContinuationToken,
-  );
-  Future<List<ChildInteractionSummary>> readChildInteractions(String threadId);
-
   /// 在一个宿主会话名义下决议交互。
   ///
   /// 主会话决议自己的交互时 [hostThreadId] 就是该会话；主会话转交子任务问题时它仍是主会话，
@@ -342,10 +292,6 @@ abstract class StudioTransport
     PermissionMode mode, {
     required OperationId operationId,
   });
-  Future<DelegationModelList> listDelegationModels(
-    ListDelegationModelsRequest request,
-  );
-  Future<DelegationModelDetail> getDelegationModel(DelegationModelKey key);
   Future<SettingsCommandReply> applySettingsField(
     SettingsFieldCommand command, {
     required OperationId operationId,
@@ -377,7 +323,6 @@ abstract class StudioTransport
     required McpDocumentRef document,
     required int expectedRevision,
   });
-  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId);
   Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
     required String threadId,
     String? serverId,
@@ -393,7 +338,6 @@ abstract class StudioTransport
   Future<LspStateSnapshot> resetLspServer(String workspaceId, String serverId);
   Future<LspStateSnapshot> resetLspWorkspace(String workspaceId);
 
-  Future<BotsStateSnapshot> readBots();
   Future<BotsCommandReply> saveBot(SaveBotRequest request);
   Future<BotsCommandReply> startBotRegistration(
     StartBotRegistrationRequest request,

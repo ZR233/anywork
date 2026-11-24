@@ -152,9 +152,6 @@ impl StudioRuntime {
             StudioProductTopic::ThreadModeCatalog => StudioProductBaselineState::ThreadModeCatalog(
                 Box::new(self.read_thread_mode_catalog()),
             ),
-            StudioProductTopic::AccountUsage => StudioProductBaselineState::AccountUsage(Box::new(
-                self.read_account_usage_state().await,
-            )),
             StudioProductTopic::AcpAuth => {
                 StudioProductBaselineState::AcpAuth(Box::new(self.acp_accounts.read_state()))
             }

@@ -11,9 +11,7 @@ import '../types/error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// 当前 canonical 安装快照；纯读取，不联网。
-Future<BridgeAcpInstallSnapshot> readAcpInstallState() =>
-    RustLib.instance.api.crateApiStudioHandlersAcpInstallReadAcpInstallState();
+// These functions are ignored because they are not marked as `pub`: `bridge_acp_install_reply`
 
 /// 受理一次官方 server 准备；不保存账号、不启动认证。
 Future<BridgeAcpInstallCommandReply> startAcpInstall({
@@ -35,7 +33,7 @@ Future<BridgeAcpInstallCommandReply> cancelAcpInstall({
   targetOperationId: targetOperationId,
 );
 
-/// 触发一次受管 server 新版本检查（仅支持 `1.x` 范围；同步受理后后台执行并推送到 `acpInstall`）。
+/// 触发一次受管 server 新版本检查（仅支持 `1.x` 范围；同步受理后后台执行并推送到 Account Observation）。
 Future<BridgeAcpInstallCommandReply> checkAcpInstallUpdate({
   required String operationId,
   required BridgeAcpProvider provider,

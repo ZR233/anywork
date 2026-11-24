@@ -3,21 +3,8 @@
 use pl_studio_runtime::{CancelAcpLocalDetectionRequest, StartAcpLocalDetectionRequest};
 
 use crate::api::studio::bridge_runtime::active_bridge;
-use crate::api::studio::convert::acp_detection::{
-    bridge_acp_local_detection_reply, bridge_acp_local_detection_snapshot,
-};
-use crate::api::studio::types::{
-    BridgeAcpLocalDetectionCommandReply, BridgeAcpLocalDetectionSnapshot, BridgeError,
-};
-
-/// 纯读取当前检测状态；不启动探测。
-pub async fn read_acp_local_detection_state() -> Result<BridgeAcpLocalDetectionSnapshot, BridgeError>
-{
-    let bridge = active_bridge().await?;
-    Ok(bridge_acp_local_detection_snapshot(
-        bridge.studio.read_acp_local_detection_state(),
-    ))
-}
+use crate::api::studio::convert::acp_detection::bridge_acp_local_detection_reply;
+use crate::api::studio::types::{BridgeAcpLocalDetectionCommandReply, BridgeError};
 
 /// 显式受理检测；不等待后台进程完成。
 pub async fn start_acp_local_detection(

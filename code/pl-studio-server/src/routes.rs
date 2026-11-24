@@ -261,7 +261,6 @@ pub(crate) fn parse_product_topic(
             workspace_id: query.workspace_id.clone().unwrap_or_default(),
         },
         "threadModeCatalog" => StudioProductTopic::ThreadModeCatalog,
-        "accountUsage" => StudioProductTopic::AccountUsage,
         "acpAuth" => StudioProductTopic::AcpAuth,
         "acpInstall" => StudioProductTopic::AcpInstall,
         "acpLocalDetection" => StudioProductTopic::AcpLocalDetection,

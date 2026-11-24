@@ -7,12 +7,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
-    StudioAgentProfilesStateSnapshot, StudioChildInteractionsState, StudioLspStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot, StudioProductEventKind,
-    StudioProjectDirectoryState, StudioRecoveryStateSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot, StudioThreadDirectoryPage,
-    StudioUpdateStateSnapshot,
+    PersistenceStateSnapshot, StudioAgentDirectoryState, StudioAgentProfilesStateSnapshot,
+    StudioChildInteractionsState, StudioLspStateSnapshot, StudioModelCatalogStateSnapshot,
+    StudioPersistenceQueueStateSnapshot, StudioProductEventKind, StudioProjectDirectoryState,
+    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
+    StudioSkillsStateSnapshot, StudioThreadDirectoryPage, StudioUpdateStateSnapshot,
 };
 use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
@@ -37,7 +36,6 @@ pub enum StudioProductTopic {
     Lsp,
     Skills { workspace_id: String },
     ThreadModeCatalog,
-    AccountUsage,
     AcpAuth,
     AcpInstall,
     AcpLocalDetection,
@@ -108,7 +106,6 @@ impl StudioProductTopic {
                 workspace_id: state.workspace_id.clone(),
             },
             StudioProductEventKind::ThreadModeCatalogChanged(_) => Self::ThreadModeCatalog,
-            StudioProductEventKind::AccountUsageStateChanged(_) => Self::AccountUsage,
             StudioProductEventKind::AcpAuthStateChanged(_) => Self::AcpAuth,
             StudioProductEventKind::AcpInstallStateChanged(_) => Self::AcpInstall,
             StudioProductEventKind::AcpLocalDetectionStateChanged(_) => Self::AcpLocalDetection,
@@ -160,7 +157,6 @@ pub enum StudioProductBaselineState {
     Lsp(Box<StudioLspStateSnapshot>),
     Skills(Box<StudioSkillsStateSnapshot>),
     ThreadModeCatalog(Box<crate::mode::ThreadModeCatalogSnapshot>),
-    AccountUsage(Box<AccountUsageStateSnapshot>),
     AcpAuth(Box<crate::AcpAuthSnapshot>),
     AcpInstall(Box<crate::AcpInstallSnapshot>),
     AcpLocalDetection(Box<crate::AcpLocalDetectionSnapshot>),
@@ -190,7 +186,6 @@ impl StudioProductBaselineState {
             Self::Lsp(state) => revision_of(&state.state),
             Self::Skills(state) => revision_of(&state.state),
             Self::ThreadModeCatalog(state) => state.revision,
-            Self::AccountUsage(state) => revision_of(&state.state),
             Self::AcpAuth(state) => state.revision,
             Self::AcpInstall(state) => state.revision,
             Self::AcpLocalDetection(state) => state.revision,

@@ -14,9 +14,8 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `busy`, `new`, `next_metadata`, `next_threads`, `open_thread`, `open_threads`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeDirectoryObservationInner`, `DirectoryObservation`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `request_close`
+// These functions are ignored because they are not marked as `pub`: `open_thread`, `open_threads`
+// These functions are ignored (category: IgnoreBecauseNotAllowedOwner): `close`, `close`, `next`, `next`, `request_close`, `request_close`
 
 Future<BridgeThreadsObservation> openThreadsObservation({
   required BridgeThreadDirectoryQuery query,

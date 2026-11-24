@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::super::StudioRuntime;
-use super::super::{AccountUsageStateSnapshot, StudioUpdateStateSnapshot};
+use super::super::StudioUpdateStateSnapshot;
 
 impl StudioRuntime {
     /// Desktop startup input, before bootstrap or any update command is admitted.
@@ -17,11 +17,7 @@ impl StudioRuntime {
         self.updater.abort_installation().await
     }
 
-    pub async fn read_account_usage_state(&self) -> AccountUsageStateSnapshot {
-        self.account_usage.read().await
-    }
-
-    pub async fn check_account_usage(&self, account_id: &str) -> Result<AccountUsageStateSnapshot> {
+    pub async fn check_account_usage(&self, account_id: &str) -> Result<()> {
         self.account_usage.check(account_id).await
     }
 

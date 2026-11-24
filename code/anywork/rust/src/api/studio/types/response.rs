@@ -27,7 +27,6 @@ pub struct BridgeStudioStateSnapshot {
     pub lsp: BridgeLspStateSnapshot,
     pub skills_by_project: Vec<BridgeSkillsStateSnapshot>,
     pub thread_mode_catalog: BridgeThreadModeCatalogSnapshot,
-    pub account_usage: BridgeAccountUsageStateSnapshot,
     pub session_costs: Vec<BridgeSessionCostsState>,
     pub updater: BridgeUpdaterStateSnapshot,
     pub persistence: BridgePersistenceStateSnapshot,
@@ -521,38 +520,6 @@ pub struct BridgeThreadModeDescriptor {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeAccountUsageStateSnapshot {
-    Uninitialized(BridgeUninitializedResource),
-    Loading(BridgeLoadingResource),
-    Ready {
-        resource: BridgeReadyResource,
-        value: BridgeAccountUsageStateData,
-    },
-    Refreshing {
-        resource: BridgeRefreshingResource,
-        value: BridgeAccountUsageStateData,
-    },
-    Stale {
-        resource: BridgeStaleResource,
-        value: BridgeAccountUsageStateData,
-    },
-    Degraded {
-        resource: BridgeDegradedResource,
-        value: BridgeAccountUsageStateData,
-    },
-    Failed(BridgeFailedResource),
-    Stopped(BridgeStoppedResource),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BridgeAccountUsageStateData {
-    pub config_fingerprint: String,
-    pub usages: Vec<AccountUsageDto>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDto {
@@ -600,94 +567,6 @@ pub struct DeleteThreadResult {
     pub deleted_root_id: String,
     pub deleted_thread_ids: Vec<String>,
     pub next_root: Option<super::BridgeSessionDirectoryRow>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountUsagesResponse {
-    pub usages: Vec<AccountUsageDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountUsageDto {
-    pub account_id: String,
-    pub revision: u64,
-    pub updated_at: i64,
-    pub state: BridgeAccountUsageState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeAccountUsageState {
-    Unsupported,
-    MissingCredential {
-        message: String,
-    },
-    Ready {
-        data: BridgeAccountUsageData,
-    },
-    Failed {
-        error: super::runtime::BridgeStateError,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BridgeAccountUsageData {
-    DeepSeekBalance(DeepSeekBalanceDto),
-    Subscription(SubscriptionUsageDto),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeepSeekBalanceDto {
-    pub is_available: bool,
-    pub balances: Vec<DeepSeekBalanceInfoDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeepSeekBalanceInfoDto {
-    pub currency: String,
-    pub total_balance: String,
-    pub granted_balance: String,
-    pub topped_up_balance: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionUsageDto {
-    pub level: Option<String>,
-    pub limits: Vec<SubscriptionQuotaLimitDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionQuotaLimitDto {
-    pub window: String,
-    pub label: String,
-    pub percentage: f64,
-    pub current_value: Option<f64>,
-    pub total: Option<f64>,
-    pub remaining: Option<f64>,
-    pub next_reset_at: Option<i64>,
-    pub usage_details: Vec<SubscriptionUsageDetailDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubscriptionUsageDetailDto {
-    pub name: String,
-    pub current_value: Option<f64>,
-    pub total: Option<f64>,
-    pub percentage: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillsResponse {
-    pub skills: Vec<SkillSummaryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

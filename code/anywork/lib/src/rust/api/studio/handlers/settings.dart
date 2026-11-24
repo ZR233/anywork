@@ -17,13 +17,6 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 Future<BridgeAccountCatalogSnapshot> loadAccountCatalog() =>
     RustLib.instance.api.crateApiStudioHandlersSettingsLoadAccountCatalog();
 
-Future<BridgeWebSearchSettingsDto> readWebSearchSettings() =>
-    RustLib.instance.api.crateApiStudioHandlersSettingsReadWebSearchSettings();
-
-Future<BridgeDeepSeekWebSearchSettingsDto> readDeepseekWebSearchSettings() =>
-    RustLib.instance.api
-        .crateApiStudioHandlersSettingsReadDeepseekWebSearchSettings();
-
 /// Applies one typed settings field/resource mutation. Sibling values are
 /// resolved by the runtime from its canonical desired configuration.
 Future<BridgeSettingsCommandReply> applySettingsField({
@@ -71,12 +64,6 @@ Future<BridgeSettingsCommandReply> setAccountBillingKind({
   operationId: operationId,
   accountId: accountId,
   billingKind: billingKind,
-);
-
-Future<BridgeSettingsStateResponse> reloadSettingsFromDisk({
-  required BigInt expectedSettingsRevision,
-}) => RustLib.instance.api.crateApiStudioHandlersSettingsReloadSettingsFromDisk(
-  expectedSettingsRevision: expectedSettingsRevision,
 );
 
 Future<BridgeSettingsCommandReply> saveRuntimePermissionMode({

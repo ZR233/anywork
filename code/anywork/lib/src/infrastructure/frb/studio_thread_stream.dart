@@ -438,9 +438,7 @@ StudioTurnFailureView _turnFailureFromFrb(frb.BridgeTurnFailureDto value) {
 ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
   final usage = value.usage;
   final estimatedCosts = usage.estimatedCosts
-      .map(
-        (cost) => RuntimeCostView(currency: cost.currency, amount: cost.amount),
-      )
+      .map(_runtimeCostFromFrb)
       .toList(growable: false);
   final costLabel = formatRuntimeCosts(estimatedCosts);
   return ThreadRuntimeView(
@@ -521,10 +519,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     ),
     estimatedCosts: estimatedCosts,
     estimatedCacheSavings: usage.estimatedCacheSavings
-        .map(
-          (cost) =>
-              RuntimeCostView(currency: cost.currency, amount: cost.amount),
-        )
+        .map(_runtimeCostFromFrb)
         .toList(growable: false),
     hasUnpricedUsage: usage.hasUnpricedUsage,
     hasIncompleteUsage: usage.hasIncompleteUsage,
@@ -771,28 +766,8 @@ StudioFailureReason? _failureReasonFromDetails(String? detailsJson) {
 }
 
 /// 传输中立错误码到领域错误码的完整映射；每个桥变体都必须显式落位。
-StudioFailureCode _studioFailureCode(frb.BridgeErrorCode code) {
-  return switch (code) {
-    frb.BridgeErrorCode.notInitialized => StudioFailureCode.notInitialized,
-    frb.BridgeErrorCode.runtimeStopped => StudioFailureCode.runtimeStopped,
-    frb.BridgeErrorCode.instanceBusy => StudioFailureCode.instanceBusy,
-    frb.BridgeErrorCode.invalidArgument => StudioFailureCode.invalidArgument,
-    frb.BridgeErrorCode.notFound => StudioFailureCode.notFound,
-    frb.BridgeErrorCode.busy => StudioFailureCode.busy,
-    frb.BridgeErrorCode.conflict => StudioFailureCode.conflict,
-    frb.BridgeErrorCode.staleRevision => StudioFailureCode.staleRevision,
-    frb.BridgeErrorCode.permissionDenied => StudioFailureCode.permissionDenied,
-    frb.BridgeErrorCode.cancelled => StudioFailureCode.cancelled,
-    frb.BridgeErrorCode.cancellationTooLate =>
-      StudioFailureCode.cancellationTooLate,
-    frb.BridgeErrorCode.overloaded => StudioFailureCode.overloaded,
-    frb.BridgeErrorCode.unavailable => StudioFailureCode.unavailable,
-    frb.BridgeErrorCode.protocol => StudioFailureCode.protocol,
-    frb.BridgeErrorCode.storage => StudioFailureCode.storage,
-    frb.BridgeErrorCode.update => StudioFailureCode.update,
-    frb.BridgeErrorCode.internal => StudioFailureCode.internal,
-  };
-}
+StudioFailureCode _studioFailureCode(frb.BridgeErrorCode code) =>
+    studioFailureCodeFromBridge(code);
 
 frb.BridgeInteractionResolution _interactionResolutionFromDomain(
   InteractionResolutionCommand resolution,

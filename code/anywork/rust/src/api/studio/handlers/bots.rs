@@ -1,26 +1,19 @@
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::runtime::{
-    bridge_bots_command_reply, bridge_bots_state, bridge_conversation_page,
-    bridge_conversation_thread_reply, bridge_message_page, bridge_send_result,
-    protocol_cancel_registration, protocol_create_thread, protocol_list_conversations,
-    protocol_read_messages, protocol_retry_connection, protocol_save_bot, protocol_send_message,
-    protocol_set_enabled, protocol_set_trusted_chat, protocol_set_trusted_user,
-    protocol_start_registration,
+    bridge_bots_command_reply, bridge_conversation_page, bridge_conversation_thread_reply,
+    bridge_message_page, bridge_send_result, protocol_cancel_registration, protocol_create_thread,
+    protocol_list_conversations, protocol_read_messages, protocol_retry_connection,
+    protocol_save_bot, protocol_send_message, protocol_set_enabled, protocol_set_trusted_chat,
+    protocol_set_trusted_user, protocol_start_registration,
 };
 use crate::api::studio::types::{
     BridgeBotConversationPage, BridgeBotConversationThreadReply, BridgeBotMessagePage,
-    BridgeBotSendResult, BridgeBotsCommandReply, BridgeBotsStateSnapshot,
-    BridgeCancelBotRegistrationRequest, BridgeCreateBotConversationThreadRequest, BridgeError,
-    BridgeListBotConversationsRequest, BridgeReadBotMessagesRequest,
-    BridgeRetryBotConnectionRequest, BridgeSaveBotRequest, BridgeSendBotMessageRequest,
-    BridgeSetBotEnabledRequest, BridgeSetBotTrustedChatRequest, BridgeSetBotTrustedUserRequest,
-    BridgeStartBotRegistrationRequest,
+    BridgeBotSendResult, BridgeBotsCommandReply, BridgeCancelBotRegistrationRequest,
+    BridgeCreateBotConversationThreadRequest, BridgeError, BridgeListBotConversationsRequest,
+    BridgeReadBotMessagesRequest, BridgeRetryBotConnectionRequest, BridgeSaveBotRequest,
+    BridgeSendBotMessageRequest, BridgeSetBotEnabledRequest, BridgeSetBotTrustedChatRequest,
+    BridgeSetBotTrustedUserRequest, BridgeStartBotRegistrationRequest,
 };
-
-pub async fn read_bots() -> Result<BridgeBotsStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(bridge_bots_state(bridge.studio.read_bots().await?))
-}
 
 pub async fn save_bot(
     request: BridgeSaveBotRequest,

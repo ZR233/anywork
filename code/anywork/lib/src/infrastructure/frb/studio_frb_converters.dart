@@ -131,12 +131,6 @@ ProductTopicEventPayload _productPayloadFromFrb(
   return switch (payload) {
     frb.BridgeProductEventPayload_ProjectDirectoryChanged(:final field0) =>
       ProjectDirectoryChangedPayload(_projectDirectoryFromFrb(field0)),
-    frb.BridgeProductEventPayload_ThreadDirectoryChanged(:final field0) =>
-      ThreadDirectoryChangedPayload(
-        revision: field0.revision.toInt(),
-        upserted: field0.upserted.map(_sessionDirectoryRowFromFrb).toList(),
-        removed: field0.removed.toList(),
-      ),
     frb.BridgeProductEventPayload_AgentDirectoryChanged(:final field0) =>
       AgentDirectoryChangedPayload(_agentDirectoryFromFrb(field0)),
     frb.BridgeProductEventPayload_SettingsConfigStateChanged(:final field0) =>
@@ -157,8 +151,6 @@ ProductTopicEventPayload _productPayloadFromFrb(
       SkillsStateChangedPayload(_skillsStateFromFrb(field0)),
     frb.BridgeProductEventPayload_ThreadModeCatalogChanged(:final field0) =>
       ThreadModeCatalogChangedPayload(_threadModeCatalogFromFrb(field0)),
-    frb.BridgeProductEventPayload_AccountUsageStateChanged(:final field0) =>
-      AccountUsageStateChangedPayload(_accountUsageStateFromFrb(field0)),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
       SessionCostsChangedPayload(_sessionCostsStateFromFrb(field0)),
     frb.BridgeProductEventPayload_ChildInteractionsChanged(:final field0) =>
@@ -173,16 +165,6 @@ ProductTopicEventPayload _productPayloadFromFrb(
       ),
     frb.BridgeProductEventPayload_AgentProfilesStateChanged(:final field0) =>
       AgentProfilesStateChangedPayload(_agentProfilesStateFromFrb(field0)),
-    frb.BridgeProductEventPayload_AcpAuthStateChanged(:final field0) =>
-      AcpAuthStateChangedPayload(_acpAuthSnapshotFromFrb(field0)),
-    frb.BridgeProductEventPayload_AcpLocalDetectionStateChanged(
-      :final field0,
-    ) =>
-      AcpLocalDetectionStateChangedPayload(
-        _acpLocalDetectionSnapshotFromFrb(field0),
-      ),
-    frb.BridgeProductEventPayload_AcpInstallStateChanged(:final field0) =>
-      AcpInstallStateChangedPayload(_acpInstallSnapshotFromFrb(field0)),
     frb.BridgeProductEventPayload_BotsStateChanged(:final field0) =>
       BotsStateChangedPayload(_botsStateFromFrb(field0)),
   };
@@ -238,8 +220,6 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
   return switch (topic) {
     frb_topic_types.BridgeProductTopic_ProjectDirectory() =>
       const ProjectDirectoryTopic(),
-    frb_topic_types.BridgeProductTopic_ThreadDirectory() =>
-      const ThreadDirectoryTopic(),
     frb_topic_types.BridgeProductTopic_AgentDirectory() =>
       const AgentDirectoryTopic(),
     frb_topic_types.BridgeProductTopic_SettingsConfig() =>
@@ -258,8 +238,6 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
       SkillsTopic(workspaceId: workspaceId),
     frb_topic_types.BridgeProductTopic_ThreadModeCatalog() =>
       const ThreadModeCatalogTopic(),
-    frb_topic_types.BridgeProductTopic_AccountUsage() =>
-      const AccountUsageTopic(),
     frb_topic_types.BridgeProductTopic_SessionCosts(:final rootThreadId) =>
       SessionCostsTopic(rootThreadId: rootThreadId),
     frb_topic_types.BridgeProductTopic_ChildInteractions(:final hostThreadId) =>
@@ -271,10 +249,6 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
       const PersistenceQueueTopic(),
     frb_topic_types.BridgeProductTopic_AgentProfiles() =>
       const AgentProfilesTopic(),
-    frb_topic_types.BridgeProductTopic_AcpAuth() => const AcpAuthTopic(),
-    frb_topic_types.BridgeProductTopic_AcpLocalDetection() =>
-      const AcpLocalDetectionTopic(),
-    frb_topic_types.BridgeProductTopic_AcpInstall() => const AcpInstallTopic(),
     frb_topic_types.BridgeProductTopic_Bots() => const BotsTopic(),
   };
 }
@@ -285,8 +259,6 @@ ProductTopic _productPayloadTopicFromBridge(
   return switch (payload) {
     frb.BridgeProductEventPayload_ProjectDirectoryChanged() =>
       const ProjectDirectoryTopic(),
-    frb.BridgeProductEventPayload_ThreadDirectoryChanged() =>
-      const ThreadDirectoryTopic(),
     frb.BridgeProductEventPayload_AgentDirectoryChanged() =>
       const AgentDirectoryTopic(),
     frb.BridgeProductEventPayload_SettingsConfigStateChanged() =>
@@ -306,8 +278,6 @@ ProductTopic _productPayloadTopicFromBridge(
       SkillsTopic(workspaceId: field0.workspaceId),
     frb.BridgeProductEventPayload_ThreadModeCatalogChanged() =>
       const ThreadModeCatalogTopic(),
-    frb.BridgeProductEventPayload_AccountUsageStateChanged() =>
-      const AccountUsageTopic(),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
       SessionCostsTopic(rootThreadId: field0.rootThreadId),
     frb.BridgeProductEventPayload_ChildInteractionsChanged(:final field0) =>
@@ -319,11 +289,6 @@ ProductTopic _productPayloadTopicFromBridge(
       const PersistenceQueueTopic(),
     frb.BridgeProductEventPayload_AgentProfilesStateChanged() =>
       const AgentProfilesTopic(),
-    frb.BridgeProductEventPayload_AcpAuthStateChanged() => const AcpAuthTopic(),
-    frb.BridgeProductEventPayload_AcpLocalDetectionStateChanged() =>
-      const AcpLocalDetectionTopic(),
-    frb.BridgeProductEventPayload_AcpInstallStateChanged() =>
-      const AcpInstallTopic(),
     frb.BridgeProductEventPayload_BotsStateChanged() => const BotsTopic(),
   };
 }
@@ -332,8 +297,9 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
   return switch (topic) {
     ProjectDirectoryTopic() =>
       const frb_topic_types.BridgeProductTopic.projectDirectory(),
-    ThreadDirectoryTopic() =>
-      const frb_topic_types.BridgeProductTopic.threadDirectory(),
+    ThreadDirectoryTopic() => throw UnsupportedError(
+      'ThreadDirectoryTopic uses the dedicated directory observation feed',
+    ),
     AgentDirectoryTopic() =>
       const frb_topic_types.BridgeProductTopic.agentDirectory(),
     SettingsConfigTopic() =>
@@ -354,8 +320,6 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
       frb_topic_types.BridgeProductTopic.skills(workspaceId: workspaceId),
     ThreadModeCatalogTopic() =>
       const frb_topic_types.BridgeProductTopic.threadModeCatalog(),
-    AccountUsageTopic() =>
-      const frb_topic_types.BridgeProductTopic.accountUsage(),
     SessionCostsTopic(:final rootThreadId) =>
       frb_topic_types.BridgeProductTopic.sessionCosts(
         rootThreadId: rootThreadId,
@@ -371,10 +335,6 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
       const frb_topic_types.BridgeProductTopic.persistenceQueue(),
     AgentProfilesTopic() =>
       const frb_topic_types.BridgeProductTopic.agentProfiles(),
-    AcpAuthTopic() => const frb_topic_types.BridgeProductTopic.acpAuth(),
-    AcpLocalDetectionTopic() =>
-      const frb_topic_types.BridgeProductTopic.acpLocalDetection(),
-    AcpInstallTopic() => const frb_topic_types.BridgeProductTopic.acpInstall(),
     BotsTopic() => const frb_topic_types.BridgeProductTopic.bots(),
   };
 }
@@ -385,8 +345,6 @@ ProductTopicBaselineState _productBaselineFromFrb(
   return switch (baseline) {
     frb_topic_types.BridgeProductBaseline_ProjectDirectory(:final field0) =>
       ProjectDirectoryBaseline(_projectDirectoryFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_ThreadDirectory(:final field0) =>
-      ThreadDirectoryBaseline(_threadDirectoryPageFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_AgentDirectory(:final field0) =>
       AgentDirectoryBaseline(_agentDirectoryFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_SettingsConfig(:final field0) =>
@@ -408,8 +366,6 @@ ProductTopicBaselineState _productBaselineFromFrb(
       SkillsBaseline(_skillsStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_ThreadModeCatalog(:final field0) =>
       ThreadModeCatalogBaseline(_threadModeCatalogFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_AccountUsage(:final field0) =>
-      AccountUsageBaseline(_accountUsageStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_SessionCosts(:final field0) =>
       SessionCostsBaseline(_sessionCostsStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_ChildInteractions(:final field0) =>
@@ -422,12 +378,6 @@ ProductTopicBaselineState _productBaselineFromFrb(
       PersistenceQueueBaseline(_persistenceQueueStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_AgentProfiles(:final field0) =>
       AgentProfilesBaseline(_agentProfilesStateFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_AcpAuth(:final field0) =>
-      AcpAuthBaseline(_acpAuthSnapshotFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_AcpLocalDetection(:final field0) =>
-      AcpLocalDetectionBaseline(_acpLocalDetectionSnapshotFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_AcpInstall(:final field0) =>
-      AcpInstallBaseline(_acpInstallSnapshotFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Bots(:final field0) => BotsBaseline(
       _botsStateFromFrb(field0),
     ),
@@ -1026,6 +976,16 @@ ChildInteractionSummary _childInteractionFromFrb(
 }
 
 /// 单个 root 会话的作用域费用状态；`cost == null` 是显式清除。
+RuntimeCostView _runtimeCostFromFrb(frb.BridgeRuntimeCostAmount value) =>
+    RuntimeCostView(currency: value.currency, amount: value.amount);
+
+ResourceStamp _resourceStampFromFrb(frb_command.BridgeResourceStamp value) =>
+    ResourceStamp(
+      resourceKey: value.resourceKey,
+      ownerEpoch: value.ownerEpoch,
+      revision: value.revision.toInt(),
+    );
+
 SessionCostsStateView _sessionCostsStateFromFrb(
   frb.BridgeSessionCostsState value,
 ) {
@@ -1047,17 +1007,14 @@ SessionCostsStateView _sessionCostsStateFromFrb(
                   purpose: cost.purpose,
                   estimatedCosts: [
                     for (final estimate in cost.estimatedCosts)
-                      RuntimeCostView(
-                        currency: estimate.currency,
-                        amount: estimate.amount,
-                      ),
+                      _runtimeCostFromFrb(estimate),
                   ],
                   hasUnpricedUsage: cost.hasUnpricedUsage,
                 ),
             ],
             estimatedCosts: [
               for (final cost in value.cost!.estimatedCosts)
-                RuntimeCostView(currency: cost.currency, amount: cost.amount),
+                _runtimeCostFromFrb(cost),
             ],
             hasUnpricedUsage: value.cost!.hasUnpricedUsage,
           ),
@@ -1225,11 +1182,7 @@ ThreadDirectoryFrame _threadDirectoryFrameFromFrb(
     before: value.window.before,
     limit: value.window.limit,
   ),
-  stamp: ResourceStamp(
-    resourceKey: value.stamp.resourceKey,
-    ownerEpoch: value.stamp.ownerEpoch,
-    revision: value.stamp.revision.toInt(),
-  ),
+  stamp: _resourceStampFromFrb(value.stamp),
   threadIds: value.threadIds,
   nextCursor: value.nextCursor,
 );
@@ -1238,11 +1191,7 @@ ThreadMetadataFrame _threadMetadataFrameFromFrb(
   frb_directory_types.BridgeThreadMetadataFrame value,
 ) => ThreadMetadataFrame(
   threadId: value.threadId,
-  stamp: ResourceStamp(
-    resourceKey: value.stamp.resourceKey,
-    ownerEpoch: value.stamp.ownerEpoch,
-    revision: value.stamp.revision.toInt(),
-  ),
+  stamp: _resourceStampFromFrb(value.stamp),
   row: value.row == null ? null : _sessionDirectoryRowFromFrb(value.row!),
 );
 
@@ -1310,63 +1259,7 @@ RecoveryStateSnapshot _recoveryStateFromFrb(
 LspStateSnapshot _lspStateFromFrb(frb.BridgeLspStateSnapshot snapshot) {
   LspStateData convert(frb.BridgeLspStateData data) => LspStateData(
     activeServers: data.health.activeLspServers,
-    servers: [
-      for (final server in data.health.lspServers)
-        LspServerStateView(
-          id: server.id,
-          displayName: server.displayName,
-          configurationPath: server.configurationPath,
-          phase: server.phase,
-          state: switch (server.state) {
-            frb.BridgeLspServerState_Checking(:final message) =>
-              LspCheckingState(message: message),
-            frb.BridgeLspServerState_Available(
-              :final checkedAt,
-              :final diagnosticCount,
-              :final activity,
-            ) =>
-              LspAvailableState(
-                checkedAt: checkedAt.toInt(),
-                diagnosticCount: diagnosticCount.toInt(),
-                activity: switch (activity) {
-                  frb.BridgeLspActivity_Idle() => const LspIdleActivity(),
-                  frb.BridgeLspActivity_Busy(
-                    :final title,
-                    :final message,
-                    :final percentage,
-                  ) =>
-                    LspBusyActivity(
-                      title: title,
-                      message: message,
-                      percentage: percentage,
-                    ),
-                  frb.BridgeLspActivity_Indexing(
-                    :final title,
-                    :final message,
-                    :final percentage,
-                  ) =>
-                    LspIndexingActivity(
-                      title: title,
-                      message: message,
-                      percentage: percentage,
-                    ),
-                },
-              ),
-            frb.BridgeLspServerState_Unavailable(
-              :final checkedAt,
-              :final error,
-            ) =>
-              LspUnavailableState(
-                checkedAt: checkedAt.toInt(),
-                code: error.code,
-                message: error.message,
-                retryable: error.retryable,
-              ),
-            frb.BridgeLspServerState_Disabled(:final message) =>
-              LspDisabledState(message: message),
-          },
-        ),
-    ],
+    servers: data.health.lspServers.map(_lspServerFromFrb).toList(),
   );
   return LspStateSnapshot.fromState(
     state: switch (snapshot) {
@@ -1399,10 +1292,10 @@ ThreadLspStateSnapshot _threadLspStateFromFrb(
   threadId: snapshot.threadId,
   revision: snapshot.revision.toInt(),
   bindingId: snapshot.bindingId,
-  servers: snapshot.servers.map(_threadLspServerFromFrb).toList(),
+  servers: snapshot.servers.map(_lspServerFromFrb).toList(),
 );
 
-LspServerStateView _threadLspServerFromFrb(frb.BridgeLspServerDto server) =>
+LspServerStateView _lspServerFromFrb(frb.BridgeLspServerDto server) =>
     LspServerStateView(
       id: server.id,
       displayName: server.displayName,
@@ -1715,48 +1608,6 @@ SkillSummaryView _skillSummaryFromFrb(frb.SkillSummaryDto skill) {
   );
 }
 
-AccountUsageStateSnapshot _accountUsageStateFromFrb(
-  frb.BridgeAccountUsageStateSnapshot snapshot,
-) {
-  AccountUsageStateData convert(frb.BridgeAccountUsageStateData data) =>
-      AccountUsageStateData(
-        configFingerprint: data.configFingerprint,
-        usages: data.usages.map(_accountUsageFromFrb).toList(),
-      );
-  return AccountUsageStateSnapshot.fromState(
-    state: switch (snapshot) {
-      frb.BridgeAccountUsageStateSnapshot_Uninitialized(:final field0) =>
-        _uninitializedResource(field0),
-      frb.BridgeAccountUsageStateSnapshot_Loading(:final field0) =>
-        _loadingResource(field0),
-      frb.BridgeAccountUsageStateSnapshot_Ready(
-        :final resource,
-        :final value,
-      ) =>
-        _readyResource(resource, convert(value)),
-      frb.BridgeAccountUsageStateSnapshot_Refreshing(
-        :final resource,
-        :final value,
-      ) =>
-        _refreshingResource(resource, convert(value)),
-      frb.BridgeAccountUsageStateSnapshot_Stale(
-        :final resource,
-        :final value,
-      ) =>
-        _staleResource(resource, convert(value)),
-      frb.BridgeAccountUsageStateSnapshot_Degraded(
-        :final resource,
-        :final value,
-      ) =>
-        _degradedResource(resource, convert(value)),
-      frb.BridgeAccountUsageStateSnapshot_Failed(:final field0) =>
-        _failedResource(field0),
-      frb.BridgeAccountUsageStateSnapshot_Stopped(:final field0) =>
-        _stoppedResource(field0),
-    },
-  );
-}
-
 UpdaterStateSnapshot updaterStateFromFrb(
   frb.BridgeUpdaterStateSnapshot snapshot,
 ) => UpdaterStateSnapshot(
@@ -1925,76 +1776,6 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
   );
 }
 
-AccountUsageView _accountUsageFromFrb(frb.AccountUsageDto usage) {
-  return AccountUsageView(
-    accountId: usage.accountId,
-    revision: usage.revision.toInt(),
-    updatedAt: _frbInt(usage.updatedAt),
-    state: switch (usage.state) {
-      frb.BridgeAccountUsageState_Unsupported() =>
-        const UnsupportedAccountUsageView(),
-      frb.BridgeAccountUsageState_MissingCredential(:final message) =>
-        MissingCredentialAccountUsageView(message: message),
-      frb.BridgeAccountUsageState_Failed(:final error) =>
-        FailedAccountUsageView(
-          code: error.code,
-          message: error.message,
-          retryable: error.retryable,
-        ),
-      frb.BridgeAccountUsageState_Ready(:final data) => ReadyAccountUsageView(
-        data: switch (data) {
-          frb.BridgeAccountUsageData_DeepSeekBalance(:final field0) =>
-            DeepSeekBalanceAccountUsageView(
-              balance: DeepSeekBalanceUsageView(
-                isAvailable: field0.isAvailable,
-                balances: field0.balances
-                    .map(
-                      (item) => DeepSeekBalanceInfoView(
-                        currency: item.currency,
-                        totalBalance: item.totalBalance,
-                        grantedBalance: item.grantedBalance,
-                        toppedUpBalance: item.toppedUpBalance,
-                      ),
-                    )
-                    .where((item) => item.currency.isNotEmpty)
-                    .toList(),
-              ),
-            ),
-          frb.BridgeAccountUsageData_Subscription(:final field0) =>
-            SubscriptionAccountUsageView(
-              codingPlan: SubscriptionUsageView(
-                level: field0.level,
-                limits: field0.limits
-                    .map(
-                      (item) => SubscriptionQuotaLimitView(
-                        window: item.window.isEmpty ? 'other' : item.window,
-                        label: item.label,
-                        percentage: item.percentage,
-                        currentValue: item.currentValue,
-                        total: item.total,
-                        remaining: item.remaining,
-                        nextResetAt: _frbNullableInt(item.nextResetAt),
-                        usageDetails: item.usageDetails
-                            .map(
-                              (detail) => SubscriptionUsageDetailView(
-                                name: detail.name,
-                                currentValue: detail.currentValue,
-                                total: detail.total,
-                                percentage: detail.percentage,
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
-        },
-      ),
-    },
-  );
-}
-
 StudioCommandReceipt _commandReceiptFromFrb(
   frb_command.BridgeStudioCommandReceipt value,
 ) => StudioCommandReceipt(
@@ -2003,14 +1784,7 @@ StudioCommandReceipt _commandReceiptFromFrb(
     frb_command.BridgeCommandDisposition.applied => CommitDisposition.applied,
     frb_command.BridgeCommandDisposition.noChange => CommitDisposition.noChange,
   },
-  targets: [
-    for (final target in value.targets)
-      ResourceStamp(
-        resourceKey: target.resourceKey,
-        ownerEpoch: target.ownerEpoch,
-        revision: target.revision.toInt(),
-      ),
-  ],
+  targets: [for (final target in value.targets) _resourceStampFromFrb(target)],
   effect: switch (value.effect) {
     frb_command.BridgeCommandEffectPoint.immediate => EffectPoint.immediate,
     frb_command.BridgeCommandEffectPoint.nextTurn => EffectPoint.nextTurn,

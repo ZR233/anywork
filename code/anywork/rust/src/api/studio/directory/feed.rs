@@ -5,10 +5,11 @@ use crate::api::studio::subscription::{
     factory::BridgeObservationFactory,
 };
 use crate::api::studio::types::BridgeError;
-use pl_lifecycle::{Managed, ManagedResource};
+use crate::pull_observation::{ManagedPullObservation, PullObservationSource};
+use pl_lifecycle::Managed;
 use pl_studio_runtime::{ThreadMetadataObservation, ThreadsObservation};
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio_util::sync::CancellationToken;
+
+const DIRECTORY_BUSY_MESSAGE: &str = "A directory observation next read is already in flight";
 
 pub async fn open_threads_observation(
     query: BridgeThreadDirectoryQuery,
@@ -36,9 +37,10 @@ impl BridgeObservationFactory {
             .scope
             .open("directoryObservations", move |shutdown| async move {
                 let observation = source.observe_threads(query.into(), window.into())?;
-                Ok(BridgeDirectoryObservationInner::new(
-                    DirectoryObservation::Threads(observation),
+                Ok(ManagedPullObservation::new(
+                    observation,
                     shutdown,
+                    DIRECTORY_BUSY_MESSAGE,
                 ))
             })
             .await
@@ -55,9 +57,10 @@ impl BridgeObservationFactory {
             .scope
             .open("directoryObservations", move |shutdown| async move {
                 let observation = source.observe_thread(thread_id)?;
-                Ok(BridgeDirectoryObservationInner::new(
-                    DirectoryObservation::Metadata(observation),
+                Ok(ManagedPullObservation::new(
+                    observation,
                     shutdown,
+                    DIRECTORY_BUSY_MESSAGE,
                 ))
             })
             .await
@@ -66,106 +69,49 @@ impl BridgeObservationFactory {
     }
 }
 
-pub struct BridgeThreadsObservation {
-    inner: Managed<BridgeDirectoryObservationInner>,
-}
+impl PullObservationSource for ThreadsObservation {
+    type Frame = BridgeThreadDirectoryFrame;
 
-pub struct BridgeThreadObservation {
-    inner: Managed<BridgeDirectoryObservationInner>,
-}
-
-enum DirectoryObservation {
-    Threads(ThreadsObservation),
-    Metadata(ThreadMetadataObservation),
-}
-
-pub(crate) struct BridgeDirectoryObservationInner {
-    observation: DirectoryObservation,
-    shutdown: CancellationToken,
-    closing: AtomicBool,
-    next_gate: tokio::sync::Mutex<()>,
-}
-
-impl BridgeDirectoryObservationInner {
-    fn new(observation: DirectoryObservation, shutdown: CancellationToken) -> Self {
-        Self {
-            observation,
-            shutdown,
-            closing: AtomicBool::new(false),
-            next_gate: tokio::sync::Mutex::new(()),
-        }
+    async fn next(&self) -> Result<Option<Self::Frame>, BridgeError> {
+        Ok(self.next().await?.map(convert::directory_frame))
     }
-
-    async fn next_threads(&self) -> Result<Option<BridgeThreadDirectoryFrame>, BridgeError> {
-        if self.closing.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        let _next = self.next_gate.try_lock().map_err(|_| busy())?;
-        if self.closing.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        let DirectoryObservation::Threads(observation) = &self.observation else {
-            return Err(BridgeError::runtime_stopped());
-        };
-        tokio::select! {
-            biased;
-            _ = self.shutdown.cancelled() => { self.request_close(); Ok(None) },
-            next = observation.next() => Ok(next?.map(convert::directory_frame)),
-        }
-    }
-
-    async fn next_metadata(&self) -> Result<Option<BridgeThreadMetadataFrame>, BridgeError> {
-        if self.closing.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        let _next = self.next_gate.try_lock().map_err(|_| busy())?;
-        if self.closing.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        let DirectoryObservation::Metadata(observation) = &self.observation else {
-            return Err(BridgeError::runtime_stopped());
-        };
-        tokio::select! {
-            biased;
-            _ = self.shutdown.cancelled() => { self.request_close(); Ok(None) },
-            next = observation.next() => Ok(next?.map(convert::metadata_frame)),
-        }
-    }
-}
-
-impl ManagedResource for BridgeDirectoryObservationInner {
-    type Error = BridgeError;
 
     fn request_close(&self) {
-        self.closing.store(true, Ordering::Release);
-        match &self.observation {
-            DirectoryObservation::Threads(observation) => observation.request_close(),
-            DirectoryObservation::Metadata(observation) => observation.request_close(),
-        }
+        self.request_close();
     }
 
     async fn close(&self) -> Result<(), BridgeError> {
-        self.request_close();
-        match &self.observation {
-            DirectoryObservation::Threads(observation) => observation.close().await?,
-            DirectoryObservation::Metadata(observation) => observation.close().await?,
-        }
-        let _next = self.next_gate.lock().await;
-        Ok(())
+        Ok(self.close().await?)
     }
 }
 
-fn busy() -> BridgeError {
-    BridgeError::from(pl_studio_runtime::StudioError::new(
-        pl_studio_runtime::StudioErrorCode::Busy,
-        "A directory observation next read is already in flight",
-        true,
-    ))
+impl PullObservationSource for ThreadMetadataObservation {
+    type Frame = BridgeThreadMetadataFrame;
+
+    async fn next(&self) -> Result<Option<Self::Frame>, BridgeError> {
+        Ok(self.next().await?.map(convert::metadata_frame))
+    }
+
+    fn request_close(&self) {
+        self.request_close();
+    }
+
+    async fn close(&self) -> Result<(), BridgeError> {
+        Ok(self.close().await?)
+    }
+}
+
+pub struct BridgeThreadsObservation {
+    inner: Managed<ManagedPullObservation<ThreadsObservation>>,
+}
+
+pub struct BridgeThreadObservation {
+    inner: Managed<ManagedPullObservation<ThreadMetadataObservation>>,
 }
 
 impl BridgeThreadsObservation {
     pub async fn next(&self) -> Result<Option<BridgeThreadDirectoryFrame>, BridgeError> {
-        self.inner.get().next_threads().await
+        self.inner.get().next().await
     }
 
     #[flutter_rust_bridge::frb(sync)]
@@ -180,7 +126,7 @@ impl BridgeThreadsObservation {
 
 impl BridgeThreadObservation {
     pub async fn next(&self) -> Result<Option<BridgeThreadMetadataFrame>, BridgeError> {
-        self.inner.get().next_metadata().await
+        self.inner.get().next().await
     }
 
     #[flutter_rust_bridge::frb(sync)]

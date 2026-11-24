@@ -8,8 +8,6 @@ import '../../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types/acp.dart';
-import 'types/acp_detection.dart';
-import 'types/acp_install.dart';
 import 'types/agent_profile.dart';
 import 'types/bots.dart';
 import 'types/chatgpt_auth.dart';
@@ -27,7 +25,7 @@ import 'types/thread_stream.dart';
 import 'types/updater.dart';
 
 // These functions are ignored because they are not marked as `pub`: `attach_sink`, `child`, `close_startup_scope`, `prepare_startup_scope`, `prepare`, `send_or_cancel`, `shutdown_progress_scope`, `startup_child_scope`, `wait_startup_scope`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `StartupScopes`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `BridgeSubscriptionReceiver`, `StartupScopes`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `close`, `fmt`, `request_close`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeEventSubscription>>

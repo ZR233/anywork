@@ -1,12 +1,5 @@
 part of 'studio_api.dart';
 
-ResourceStamp _accountStampFromFrb(frb_command.BridgeResourceStamp stamp) =>
-    ResourceStamp(
-      resourceKey: stamp.resourceKey,
-      ownerEpoch: stamp.ownerEpoch,
-      revision: stamp.revision.toInt(),
-    );
-
 AccountIdentity _accountIdentityFromFrb(
   frb_accounts.BridgeAccountIdentity identity,
 ) => switch (identity) {
@@ -111,7 +104,7 @@ AccountDomainFrame _accountFrameFromFrb(
     :final acpDiagnostics,
   ) =>
     AccountSummariesFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       [
         for (final account in accounts)
           AccountSummary(
@@ -163,7 +156,7 @@ AccountDomainFrame _accountFrameFromFrb(
     :final account,
   ) =>
     AccountDetailFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       _accountIdentityFromFrb(identity),
       switch (account) {
         null => null,
@@ -182,13 +175,13 @@ AccountDomainFrame _accountFrameFromFrb(
     :final catalog,
   ) =>
     AccountModelsFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       NativeAccountIdentity(accountId),
       catalog == null ? null : _accountModelCatalogFromFrb(catalog),
     ),
   frb_accounts.BridgeAccountDomainFrame_Usage(:final stamp, :final accounts) =>
     AccountUsageFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       accounts.map(_usageObservationFromFrb),
     ),
   frb_accounts.BridgeAccountDomainFrame_AcpAuth(
@@ -196,7 +189,7 @@ AccountDomainFrame _accountFrameFromFrb(
     :final snapshot,
   ) =>
     AcpAuthFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       _acpAuthSnapshotFromFrb(snapshot),
     ),
   frb_accounts.BridgeAccountDomainFrame_AcpInstall(
@@ -204,7 +197,7 @@ AccountDomainFrame _accountFrameFromFrb(
     :final snapshot,
   ) =>
     AcpInstallFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       _acpInstallSnapshotFromFrb(snapshot),
     ),
   frb_accounts.BridgeAccountDomainFrame_AcpLocalDetection(
@@ -212,7 +205,7 @@ AccountDomainFrame _accountFrameFromFrb(
     :final snapshot,
   ) =>
     AcpLocalDetectionFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       _acpLocalDetectionSnapshotFromFrb(snapshot),
     ),
   frb_accounts.BridgeAccountDomainFrame_ChatGptLogin(
@@ -220,7 +213,7 @@ AccountDomainFrame _accountFrameFromFrb(
     :final snapshot,
   ) =>
     ChatGptLoginFrame(
-      _accountStampFromFrb(stamp),
+      _resourceStampFromFrb(stamp),
       _chatGptLoginSnapshotFromFrb(snapshot),
     ),
 };
@@ -317,7 +310,7 @@ ChatGptLoginSnapshot _chatGptLoginSnapshotFromFrb(
 ChatGptLoginCommandReply _chatGptLoginCommandReplyFromFrb(
   frb_chatgpt.BridgeChatGptLoginCommandReply value,
 ) => ChatGptLoginCommandReply(
-  stamp: _accountStampFromFrb(value.stamp),
+  stamp: _resourceStampFromFrb(value.stamp),
   snapshot: _chatGptLoginSnapshotFromFrb(value.snapshot),
 );
 

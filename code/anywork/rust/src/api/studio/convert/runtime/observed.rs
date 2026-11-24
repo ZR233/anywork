@@ -4,9 +4,7 @@ use crate::api::studio::convert::thread_stream::bridge_session_row;
 use pl_studio_runtime::ObservedResource;
 use pl_studio_runtime::*;
 
-use crate::api::studio::convert::settings::{
-    account_usage_dto, bridge_model_catalog_account, bridge_settings,
-};
+use crate::api::studio::convert::settings::{bridge_model_catalog_account, bridge_settings};
 use crate::api::studio::types::*;
 
 use super::{
@@ -308,17 +306,4 @@ fn skill_summary(skill: pl_studio_runtime::SkillMetadata) -> SkillSummaryDto {
             }
         },
     }
-}
-
-pub(crate) fn bridge_account_usage_state(
-    state: ObservedResource<AccountUsageStateData>,
-) -> BridgeAccountUsageStateSnapshot {
-    concrete_observed!(
-        state,
-        |data| BridgeAccountUsageStateData {
-            config_fingerprint: data.config_fingerprint,
-            usages: data.usages.into_iter().map(account_usage_dto).collect(),
-        },
-        BridgeAccountUsageStateSnapshot
-    )
 }

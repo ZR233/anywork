@@ -4,14 +4,12 @@ use pl_studio_runtime::{
     StudioProductEventKind,
 };
 
-use crate::api::studio::convert::thread_stream::bridge_session_row;
-
 use super::runtime::{
-    bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_bots_state,
-    bridge_lsp_state, bridge_model_catalog_state, bridge_persistence_queue_state,
-    bridge_persistence_state, bridge_project_directory, bridge_recovery_state,
-    bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
-    bridge_thread_mode_catalog, bridge_update_state,
+    bridge_agent_directory, bridge_agent_profiles, bridge_bots_state, bridge_lsp_state,
+    bridge_model_catalog_state, bridge_persistence_queue_state, bridge_persistence_state,
+    bridge_project_directory, bridge_recovery_state, bridge_session_costs_state,
+    bridge_settings_config_state, bridge_skills_state, bridge_thread_mode_catalog,
+    bridge_update_state,
 };
 use crate::api::studio::types::*;
 
@@ -28,13 +26,10 @@ pub(crate) fn bridge_product_event(
                     state.state,
                 ))
             }
-            StudioProductEventKind::ThreadDirectoryChanged(state) => {
-                BridgeProductEventPayload::ThreadDirectoryChanged(BridgeThreadDirectoryDelta {
-                    revision: state.revision,
-                    updated_at: state.updated_at,
-                    upserted: state.upserted.into_iter().map(bridge_session_row).collect(),
-                    removed: state.removed,
-                })
+            StudioProductEventKind::ThreadDirectoryChanged(_) => {
+                anyhow::bail!(
+                    "thread directory events use the dedicated directory observation feed"
+                )
             }
             StudioProductEventKind::AgentDirectoryChanged(state) => {
                 BridgeProductEventPayload::AgentDirectoryChanged(bridge_agent_directory(
@@ -74,25 +69,10 @@ pub(crate) fn bridge_product_event(
                     state,
                 ))
             }
-            StudioProductEventKind::AccountUsageStateChanged(state) => {
-                BridgeProductEventPayload::AccountUsageStateChanged(bridge_account_usage_state(
-                    state.state,
-                ))
-            }
-            StudioProductEventKind::AcpAuthStateChanged(state) => {
-                BridgeProductEventPayload::AcpAuthStateChanged(Box::new(
-                    super::acp::bridge_acp_auth_snapshot(*state),
-                ))
-            }
-            StudioProductEventKind::AcpInstallStateChanged(state) => {
-                BridgeProductEventPayload::AcpInstallStateChanged(Box::new(
-                    super::acp_install::bridge_acp_install_snapshot(*state),
-                ))
-            }
-            StudioProductEventKind::AcpLocalDetectionStateChanged(state) => {
-                BridgeProductEventPayload::AcpLocalDetectionStateChanged(Box::new(
-                    super::acp_detection::bridge_acp_local_detection_snapshot(*state),
-                ))
+            StudioProductEventKind::AcpAuthStateChanged(_)
+            | StudioProductEventKind::AcpInstallStateChanged(_)
+            | StudioProductEventKind::AcpLocalDetectionStateChanged(_) => {
+                anyhow::bail!("account and ACP events use the dedicated account observation feed")
             }
             StudioProductEventKind::ModelPerformanceStateChanged(_) => {
                 anyhow::bail!("model performance events use the dedicated statistics feed")
@@ -141,10 +121,8 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::ProjectDirectory(state) => {
             BridgeProductBaseline::ProjectDirectory(bridge_project_directory(state.state))
         }
-        StudioProductBaselineState::ThreadDirectory(state) => {
-            BridgeProductBaseline::ThreadDirectory(super::runtime::bridge_thread_directory_page(
-                state.state,
-            ))
+        StudioProductBaselineState::ThreadDirectory(_) => {
+            anyhow::bail!("thread directory baselines use the dedicated directory observation feed")
         }
         StudioProductBaselineState::AgentDirectory(state) => {
             BridgeProductBaseline::AgentDirectory(bridge_agent_directory(state.state))
@@ -176,19 +154,10 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::ThreadModeCatalog(state) => {
             BridgeProductBaseline::ThreadModeCatalog(bridge_thread_mode_catalog(*state))
         }
-        StudioProductBaselineState::AccountUsage(state) => {
-            BridgeProductBaseline::AccountUsage(bridge_account_usage_state(state.state))
-        }
-        StudioProductBaselineState::AcpAuth(state) => {
-            BridgeProductBaseline::AcpAuth(Box::new(super::acp::bridge_acp_auth_snapshot(*state)))
-        }
-        StudioProductBaselineState::AcpInstall(state) => BridgeProductBaseline::AcpInstall(
-            Box::new(super::acp_install::bridge_acp_install_snapshot(*state)),
-        ),
-        StudioProductBaselineState::AcpLocalDetection(state) => {
-            BridgeProductBaseline::AcpLocalDetection(Box::new(
-                super::acp_detection::bridge_acp_local_detection_snapshot(*state),
-            ))
+        StudioProductBaselineState::AcpAuth(_)
+        | StudioProductBaselineState::AcpInstall(_)
+        | StudioProductBaselineState::AcpLocalDetection(_) => {
+            anyhow::bail!("account and ACP baselines use the dedicated account observation feed")
         }
         StudioProductBaselineState::ModelPerformance(_) => {
             anyhow::bail!("model performance baselines use the dedicated statistics feed")

@@ -15,6 +15,8 @@ import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These functions are ignored because they are not marked as `pub`: `bridge_acp_auth_reply`
+
 /// 读取 ACP 接入模板目录；纯读取默认值，不启动程序。
 Future<BridgeAcpAccountCatalog> loadAcpAccountCatalog() =>
     RustLib.instance.api.crateApiStudioHandlersAcpLoadAcpAccountCatalog();
@@ -40,10 +42,6 @@ Future<BridgeSettingsCommandReply> removeAcpAccount({
   accountId: accountId,
   expectedDocumentRevision: expectedDocumentRevision,
 );
-
-/// 当前 canonical ACP 认证快照；纯读取，不启动程序。
-Future<BridgeAcpAuthSnapshot> readAcpAuthState() =>
-    RustLib.instance.api.crateApiStudioHandlersAcpReadAcpAuthState();
 
 /// 受理一次 ACP 检查或登录操作。
 Future<BridgeAcpAuthCommandReply> startAcpAuth({

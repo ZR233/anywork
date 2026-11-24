@@ -1,8 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../app/theme/studio_tokens.dart';
-import '../../domain/models/studio_models.dart';
-import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_chrome.dart';
 
 class SettingsReadout extends StatelessWidget {
@@ -31,34 +29,6 @@ class SettingsReadout extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class SettingsAccountStatusChip extends StatelessWidget {
-  const SettingsAccountStatusChip({
-    super.key,
-    required this.account,
-    this.usage,
-  });
-
-  final AccountSettingsView account;
-  final AccountUsageView? usage;
-
-  @override
-  Widget build(BuildContext context) {
-    if (usage?.state is FailedAccountUsageView) {
-      return StudioPill(
-        icon: Icons.error_outline,
-        label: context.l10n.settingsUsageFailed,
-        tone: StudioTone.error,
-      );
-    }
-    final configured = account.status == 'ready';
-    return StudioPill(
-      icon: configured ? Icons.key_outlined : Icons.error_outline,
-      label: context.accountStatusLabel(account.status),
-      tone: configured ? StudioTone.neutral : StudioTone.warning,
     );
   }
 }

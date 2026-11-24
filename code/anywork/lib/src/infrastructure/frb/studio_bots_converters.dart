@@ -263,13 +263,7 @@ BotsCommandReply _botsCommandReplyFromFrb(
   return BotsCommandReply(
     snapshot: _botsStateFromFrb(value.snapshot),
     receipt: _commandReceiptFromFrb(value.receipt),
-    stamp: value.stamp == null
-        ? null
-        : ResourceStamp(
-            resourceKey: value.stamp!.resourceKey,
-            ownerEpoch: value.stamp!.ownerEpoch,
-            revision: value.stamp!.revision.toInt(),
-          ),
+    stamp: value.stamp == null ? null : _resourceStampFromFrb(value.stamp!),
   );
 }
 

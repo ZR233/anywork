@@ -32,9 +32,6 @@ final class _BotsTransport implements StudioTransport {
   }
 
   @override
-  Future<BotsStateSnapshot> readBots() async => snapshot;
-
-  @override
   Future<BotsCommandReply> saveBot(SaveBotRequest request) async {
     snapshot = BotsStateSnapshot(
       revision: snapshot.revision + 1,

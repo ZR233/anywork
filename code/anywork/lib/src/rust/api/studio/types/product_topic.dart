@@ -5,8 +5,6 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
-import 'acp_detection.dart';
-import 'acp_install.dart';
 import 'agent_profile.dart';
 import 'bots.dart';
 import 'chatgpt_auth.dart';
@@ -110,9 +108,6 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.projectDirectory(
     BridgeProjectDirectoryState field0,
   ) = BridgeProductBaseline_ProjectDirectory;
-  const factory BridgeProductBaseline.threadDirectory(
-    BridgeThreadDirectoryPage field0,
-  ) = BridgeProductBaseline_ThreadDirectory;
   const factory BridgeProductBaseline.agentDirectory(
     BridgeAgentDirectoryState field0,
   ) = BridgeProductBaseline_AgentDirectory;
@@ -141,17 +136,6 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.threadModeCatalog(
     BridgeThreadModeCatalogSnapshot field0,
   ) = BridgeProductBaseline_ThreadModeCatalog;
-  const factory BridgeProductBaseline.accountUsage(
-    BridgeAccountUsageStateSnapshot field0,
-  ) = BridgeProductBaseline_AccountUsage;
-  const factory BridgeProductBaseline.acpAuth(BridgeAcpAuthSnapshot field0) =
-      BridgeProductBaseline_AcpAuth;
-  const factory BridgeProductBaseline.acpInstall(
-    BridgeAcpInstallSnapshot field0,
-  ) = BridgeProductBaseline_AcpInstall;
-  const factory BridgeProductBaseline.acpLocalDetection(
-    BridgeAcpLocalDetectionSnapshot field0,
-  ) = BridgeProductBaseline_AcpLocalDetection;
   const factory BridgeProductBaseline.sessionCosts(
     BridgeSessionCostsState field0,
   ) = BridgeProductBaseline_SessionCosts;
@@ -180,8 +164,6 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
 
   const factory BridgeProductTopic.projectDirectory() =
       BridgeProductTopic_ProjectDirectory;
-  const factory BridgeProductTopic.threadDirectory() =
-      BridgeProductTopic_ThreadDirectory;
   const factory BridgeProductTopic.agentDirectory() =
       BridgeProductTopic_AgentDirectory;
   const factory BridgeProductTopic.settingsConfig() =
@@ -200,12 +182,6 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_Skills;
   const factory BridgeProductTopic.threadModeCatalog() =
       BridgeProductTopic_ThreadModeCatalog;
-  const factory BridgeProductTopic.accountUsage() =
-      BridgeProductTopic_AccountUsage;
-  const factory BridgeProductTopic.acpAuth() = BridgeProductTopic_AcpAuth;
-  const factory BridgeProductTopic.acpInstall() = BridgeProductTopic_AcpInstall;
-  const factory BridgeProductTopic.acpLocalDetection() =
-      BridgeProductTopic_AcpLocalDetection;
   const factory BridgeProductTopic.sessionCosts({
     required String rootThreadId,
   }) = BridgeProductTopic_SessionCosts;

@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use crate::PermissionMode;
 use crate::account_usage::account_usage_query_kind;
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
-use crate::first_run::AccountTemplateKind;
 
 use super::StudioRuntime;
 
@@ -76,9 +75,8 @@ impl StudioRuntime {
     pub fn load_account_catalog(&self) -> Result<crate::AccountCatalogSnapshot> {
         let mut snapshot = pl_model::config::builtin_account_catalog()?.snapshot()?;
         for template in &mut snapshot.templates {
-            template.supports_usage_query = Some(
-                account_usage_query_kind(AccountTemplateKind::from_key(&template.id)?).is_some(),
-            );
+            template.supports_usage_query =
+                Some(account_usage_query_kind(Some(template.id.as_str())).is_some());
         }
         // Keep the PL base revision in the hash input: it also covers transport profiles
         // that are not represented by the catalog DTO itself.

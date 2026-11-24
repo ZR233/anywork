@@ -351,7 +351,6 @@ final class _FrbAccountDomainObservation
 class FrbStudioTransport
     implements
         StudioTransport,
-        PersistenceQueueReader,
         AccountFeedPort,
         AccountConfigurationPort,
         AccountModelsPort,
@@ -373,36 +372,54 @@ class FrbStudioTransport
     return _recoveryStateFromFrb(await _bridgeCall(frb.retryRecovery));
   }
 
+  Future<ClientAcquisition<_FrbRawPull<H, T>>> _openPullObservation<H, F, T>({
+    required String scopeName,
+    required ClientResourceId resourceId,
+    required Future<H> Function() open,
+    required Future<F?> Function(H handle) next,
+    required T Function(F frame) mapFrame,
+    required void Function(H handle) requestClose,
+    required Future<void> Function(H handle) close,
+    required void Function(H handle) dispose,
+  }) async {
+    final entry = contentScope.open<_FrbRawPull<H, T>>(scopeName, (
+      operation,
+    ) async {
+      await _ensureReady();
+      final handle = await _bridgeCall(open);
+      return _FrbRawPull(
+        operation.resourceId,
+        handle,
+        (handle) async {
+          final frame = await next(handle);
+          return frame == null ? null : mapFrame(frame);
+        },
+        requestClose,
+        close,
+        dispose,
+      );
+    }, identity: resourceId);
+    await entry.ready;
+    return entry;
+  }
+
   @override
   Future<AccountDomainObservation> openAccountObservation(
     AccountObservationTarget target, {
     required ClientResourceId resourceId,
   }) async {
-    final entry = contentScope
-        .open<
-          _FrbRawPull<
-            frb_account_feed.BridgeAccountObservation,
-            AccountDomainFrame
-          >
-        >('account-observation', (operation) async {
-          await _ensureReady();
-          final handle = await _bridgeCall(
-            () => frb_account_feed.openAccountObservation(
-              target: _accountTargetToFrb(target),
-            ),
-          );
-          return _FrbRawPull(
-            operation.resourceId,
-            handle,
-            (handle) async {
-              final frame = await handle.next();
-              return frame == null ? null : _accountFrameFromFrb(frame);
-            },
-            (handle) => handle.requestClose(),
-            (handle) => handle.close(),
-            (handle) => handle.dispose(),
-          );
-        }, identity: resourceId);
+    final entry = await _openPullObservation(
+      scopeName: 'account-observation',
+      resourceId: resourceId,
+      open: () => frb_account_feed.openAccountObservation(
+        target: _accountTargetToFrb(target),
+      ),
+      next: (handle) => handle.next(),
+      mapFrame: _accountFrameFromFrb,
+      requestClose: (handle) => handle.requestClose(),
+      close: (handle) => handle.close(),
+      dispose: (handle) => handle.dispose(),
+    );
     return _FrbAccountDomainObservation(entry, await entry.ready);
   }
 
@@ -593,10 +610,12 @@ class FrbStudioTransport
     return frame;
   }
 
-  AccountCatalogView? _accountCatalogCache;
-  Future<AccountCatalogView>? _accountCatalogFuture;
-  AcpAccountCatalogView? _acpCatalogCache;
-  Future<AcpAccountCatalogView>? _acpCatalogFuture;
+  late final _accountCatalogCache = _SingleFlightCache<AccountCatalogView>(
+    (catalog) => catalog.isUsable,
+  );
+  late final _acpCatalogCache = _SingleFlightCache<AcpAccountCatalogView>(
+    (catalog) => catalog.isUsable,
+  );
 
   Future<void> _ensureReady() async {
     await runtime.ensureReady();
@@ -648,60 +667,18 @@ class FrbStudioTransport
       runtime.finishShutdownDiagnostics();
 
   @override
-  Future<AccountCatalogView> loadAccountCatalog() async {
-    final cached = _accountCatalogCache;
-    if (cached != null) return cached;
-    final inFlight = _accountCatalogFuture;
-    if (inFlight != null) return inFlight;
-    final future = _loadAccountCatalog();
-    _accountCatalogFuture = future;
-    try {
-      return await future;
-    } finally {
-      if (identical(_accountCatalogFuture, future)) {
-        _accountCatalogFuture = null;
-      }
-    }
-  }
-
-  Future<AccountCatalogView> _loadAccountCatalog() async {
-    await _ensureReady();
-    final catalog = accountCatalogFromFrb(
-      await _bridgeCall(frb.loadAccountCatalog),
-    );
-    if (catalog.isUsable) {
-      _accountCatalogCache = catalog;
-    }
-    return catalog;
-  }
+  Future<AccountCatalogView> loadAccountCatalog() =>
+      _accountCatalogCache.getOrLoad(() async {
+        await _ensureReady();
+        return accountCatalogFromFrb(await _bridgeCall(frb.loadAccountCatalog));
+      });
 
   @override
-  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async {
-    final cached = _acpCatalogCache;
-    if (cached != null) return cached;
-    final inFlight = _acpCatalogFuture;
-    if (inFlight != null) return inFlight;
-    final future = _loadAcpAccountCatalog();
-    _acpCatalogFuture = future;
-    try {
-      return await future;
-    } finally {
-      if (identical(_acpCatalogFuture, future)) {
-        _acpCatalogFuture = null;
-      }
-    }
-  }
-
-  Future<AcpAccountCatalogView> _loadAcpAccountCatalog() async {
-    await _ensureReady();
-    final catalog = _acpCatalogFromFrb(
-      await _bridgeCall(frb.loadAcpAccountCatalog),
-    );
-    if (catalog.isUsable) {
-      _acpCatalogCache = catalog;
-    }
-    return catalog;
-  }
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() =>
+      _acpCatalogCache.getOrLoad(() async {
+        await _ensureReady();
+        return _acpCatalogFromFrb(await _bridgeCall(frb.loadAcpAccountCatalog));
+      });
 
   @override
   Future<AcpLocalDetectionCommandReply> startAcpLocalDetection({
@@ -878,19 +855,6 @@ class FrbStudioTransport
   }
 
   @override
-  Future<AgentProfilesStateView> readAgentProfilesState() async {
-    await _ensureReady();
-    return _agentProfilesStateFromFrb(
-      await _bridgeCall(frb.readAgentProfilesState),
-    );
-  }
-
-  @override
-  Future<List<AgentProfileView>> readAgentProfiles() async {
-    return (await readAgentProfilesState()).data.profiles;
-  }
-
-  @override
   Future<SettingsCommandReply> setSystemAgentEnabled({
     required OperationId operationId,
     required String profileId,
@@ -976,49 +940,36 @@ class FrbStudioTransport
     DirectoryWindow window, {
     required ClientResourceId resourceId,
   }) async {
-    final entry = contentScope
-        .open<
-          _FrbRawPull<
-            frb_directory_feed.BridgeThreadsObservation,
-            ThreadDirectoryFrame
-          >
-        >('thread-directory', (operation) async {
-          await _ensureReady();
-          final handle = await _bridgeCall(
-            () => frb_directory_feed.openThreadsObservation(
-              query: frb_directory_types.BridgeThreadDirectoryQuery(
-                workspaceId: query.workspaceId,
-                search: query.search,
-                archived: query.archived,
-                filter: switch (query.filter) {
-                  DirectoryFilter.all =>
-                    frb_directory_types.BridgeThreadDirectoryFilter.all,
-                  DirectoryFilter.running =>
-                    frb_directory_types.BridgeThreadDirectoryFilter.running,
-                  DirectoryFilter.attention =>
-                    frb_directory_types.BridgeThreadDirectoryFilter.attention,
-                },
-                threadIds: query.threadIds,
-                excludedThreadIds: query.excludedThreadIds,
-              ),
-              window: frb_directory_types.BridgeThreadDirectoryWindow(
-                before: window.before,
-                limit: window.limit,
-              ),
-            ),
-          );
-          return _FrbRawPull(
-            operation.resourceId,
-            handle,
-            (handle) async {
-              final frame = await handle.next();
-              return frame == null ? null : _threadDirectoryFrameFromFrb(frame);
-            },
-            (handle) => handle.requestClose(),
-            (handle) => handle.close(),
-            (handle) => handle.dispose(),
-          );
-        }, identity: resourceId);
+    final entry = await _openPullObservation(
+      scopeName: 'thread-directory',
+      resourceId: resourceId,
+      open: () => frb_directory_feed.openThreadsObservation(
+        query: frb_directory_types.BridgeThreadDirectoryQuery(
+          workspaceId: query.workspaceId,
+          search: query.search,
+          archived: query.archived,
+          filter: switch (query.filter) {
+            DirectoryFilter.all =>
+              frb_directory_types.BridgeThreadDirectoryFilter.all,
+            DirectoryFilter.running =>
+              frb_directory_types.BridgeThreadDirectoryFilter.running,
+            DirectoryFilter.attention =>
+              frb_directory_types.BridgeThreadDirectoryFilter.attention,
+          },
+          threadIds: query.threadIds,
+          excludedThreadIds: query.excludedThreadIds,
+        ),
+        window: frb_directory_types.BridgeThreadDirectoryWindow(
+          before: window.before,
+          limit: window.limit,
+        ),
+      ),
+      next: (handle) => handle.next(),
+      mapFrame: _threadDirectoryFrameFromFrb,
+      requestClose: (handle) => handle.requestClose(),
+      close: (handle) => handle.close(),
+      dispose: (handle) => handle.dispose(),
+    );
     return _FrbThreadsObservation(entry, await entry.ready);
   }
 
@@ -1027,29 +978,16 @@ class FrbStudioTransport
     String threadId, {
     required ClientResourceId resourceId,
   }) async {
-    final entry = contentScope
-        .open<
-          _FrbRawPull<
-            frb_directory_feed.BridgeThreadObservation,
-            ThreadMetadataFrame
-          >
-        >('thread-metadata', (operation) async {
-          await _ensureReady();
-          final handle = await _bridgeCall(
-            () => frb_directory_feed.openThreadObservation(threadId: threadId),
-          );
-          return _FrbRawPull(
-            operation.resourceId,
-            handle,
-            (handle) async {
-              final frame = await handle.next();
-              return frame == null ? null : _threadMetadataFrameFromFrb(frame);
-            },
-            (handle) => handle.requestClose(),
-            (handle) => handle.close(),
-            (handle) => handle.dispose(),
-          );
-        }, identity: resourceId);
+    final entry = await _openPullObservation(
+      scopeName: 'thread-metadata',
+      resourceId: resourceId,
+      open: () => frb_directory_feed.openThreadObservation(threadId: threadId),
+      next: (handle) => handle.next(),
+      mapFrame: _threadMetadataFrameFromFrb,
+      requestClose: (handle) => handle.requestClose(),
+      close: (handle) => handle.close(),
+      dispose: (handle) => handle.dispose(),
+    );
     return _FrbThreadObservation(entry, await entry.ready);
   }
 
@@ -1151,45 +1089,22 @@ class FrbStudioTransport
         ),
       ),
     );
-    return SshConnectionView(
-      alias: snapshot.alias,
-      state: snapshot.state,
-      helperVersion: snapshot.helperVersion,
-      architecture: snapshot.architecture,
-      errorCode: snapshot.errorCode,
-      errorMessage: snapshot.errorMessage,
-    );
+    return _sshConnectionFromFrb(snapshot);
   }
 
   @override
   Future<SshConnectionView> testSshConnection(String alias) async {
     await _ensureReady();
-    final snapshot = await _bridgeCall(
-      () => frb_ssh.testSshConnection(alias: alias),
-    );
-    return SshConnectionView(
-      alias: snapshot.alias,
-      state: snapshot.state,
-      helperVersion: snapshot.helperVersion,
-      architecture: snapshot.architecture,
-      errorCode: snapshot.errorCode,
-      errorMessage: snapshot.errorMessage,
+    return _sshConnectionFromFrb(
+      await _bridgeCall(() => frb_ssh.testSshConnection(alias: alias)),
     );
   }
 
   @override
   Future<SshConnectionView> reconnectSshServer(String alias) async {
     await _ensureReady();
-    final snapshot = await _bridgeCall(
-      () => frb_ssh.reconnectSshServer(alias: alias),
-    );
-    return SshConnectionView(
-      alias: snapshot.alias,
-      state: snapshot.state,
-      helperVersion: snapshot.helperVersion,
-      architecture: snapshot.architecture,
-      errorCode: snapshot.errorCode,
-      errorMessage: snapshot.errorMessage,
+    return _sshConnectionFromFrb(
+      await _bridgeCall(() => frb_ssh.reconnectSshServer(alias: alias)),
     );
   }
 
@@ -1370,19 +1285,6 @@ class FrbStudioTransport
         ),
       ),
     );
-  }
-
-  @override
-  Future<PersistenceQueueStateView> readPersistenceQueueState() async {
-    await _ensureReady();
-    return _persistenceQueueStateFromFrb(
-      await _bridgeCall(frb.readPersistenceQueue),
-    );
-  }
-
-  @override
-  Future<PersistenceQueueSnapshot> readPersistenceQueue() async {
-    return (await readPersistenceQueueState()).queue;
   }
 
   @override
@@ -2096,20 +1998,6 @@ class FrbStudioTransport
   }
 
   @override
-  Future<DelegationModelList> listDelegationModels(
-    ListDelegationModelsRequest request,
-  ) async {
-    await _ensureReady();
-    return _delegationListFromFrb(
-      await _bridgeCall(
-        () => frb.listDelegationModels(
-          request: _delegationListRequestToFrb(request),
-        ),
-      ),
-    );
-  }
-
-  @override
   Future<DelegationModelDetail> getDelegationModel(
     DelegationModelKey key,
   ) async {
@@ -2291,14 +2179,6 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) async {
-    await _ensureReady();
-    return _threadMcpStateFromFrb(
-      await _bridgeCall(() => frb.readThreadMcp(threadId: threadId)),
-    );
-  }
-
-  @override
   Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
     required String threadId,
     String? serverId,
@@ -2386,12 +2266,6 @@ class FrbStudioTransport
         ),
       ),
     );
-  }
-
-  @override
-  Future<BotsStateSnapshot> readBots() async {
-    await _ensureReady();
-    return _botsStateFromFrb(await _bridgeCall(frb_bots.readBots));
   }
 
   @override
@@ -2621,4 +2495,45 @@ StudioShutdownReport _shutdownReportFromFrb(
         const DrainedStudioPendingPersistence(),
     },
   );
+}
+
+SshConnectionView _sshConnectionFromFrb(
+  frb_ssh_types.SshConnectionSnapshotDto snapshot,
+) => SshConnectionView(
+  alias: snapshot.alias,
+  state: snapshot.state,
+  helperVersion: snapshot.helperVersion,
+  architecture: snapshot.architecture,
+  errorCode: snapshot.errorCode,
+  errorMessage: snapshot.errorMessage,
+);
+
+final class _SingleFlightCache<T> {
+  _SingleFlightCache(this._isUsable);
+
+  final bool Function(T value) _isUsable;
+  T? _cached;
+  Future<T>? _inFlight;
+
+  Future<T> getOrLoad(Future<T> Function() load) async {
+    final cached = _cached;
+    if (cached != null) return cached;
+    final inFlight = _inFlight;
+    if (inFlight != null) return inFlight;
+    final future = () async {
+      final loaded = await load();
+      if (_isUsable(loaded)) {
+        _cached = loaded;
+      }
+      return loaded;
+    }();
+    _inFlight = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_inFlight, future)) {
+        _inFlight = null;
+      }
+    }
+  }
 }

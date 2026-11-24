@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BridgeModelCapabilities, BridgeModelDescriptor};
+use super::BridgeModelDescriptor;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -55,54 +55,10 @@ pub enum BridgeAgentTaskCategory {
     General,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeDelegationModelCapability {
-    ToolCalling,
-    ParallelToolCalls,
-    Reasoning,
-    ImageInput,
-    AudioInput,
-    VideoInput,
-    FileInput,
-    CustomTools,
-    FreeformTools,
-    WebSearch,
-    Streaming,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeListDelegationModelsRequest {
-    pub capabilities: Vec<BridgeDelegationModelCapability>,
-    pub account_id: Option<String>,
-    pub billing_kind: Option<BridgeBillingKind>,
-    pub min_context_window: Option<u64>,
-}
-
 #[derive(Debug, Clone)]
 pub struct BridgeGetDelegationModelRequest {
     pub account_id: String,
     pub model_id: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeDelegationModelList {
-    pub models: Vec<BridgeDelegationModelListItem>,
-    pub catalog_revision: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeDelegationModelListItem {
-    pub account_id: String,
-    pub account_name: String,
-    pub model_id: String,
-    pub display_name: String,
-    pub summary: Option<String>,
-    pub task_suitability: Vec<BridgeAgentTaskCategory>,
-    pub context_window: Option<u64>,
-    pub capabilities: BridgeModelCapabilities,
-    pub reasoning_efforts: Vec<String>,
-    pub billing_kind: BridgeBillingKind,
 }
 
 #[derive(Debug, Clone)]

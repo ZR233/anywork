@@ -3,7 +3,7 @@
 use super::{
     BridgeCacheUsageSummary, BridgeChatAtomKind, BridgeChatAtomLifecycle, BridgeChatContentRole,
     BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState, BridgeChatTerminalOutcome,
-    BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeReadDemand, BridgeThreadActivityKind,
+    BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeThreadActivityKind,
     BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope, BridgeThreadSnapshot,
     BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation, BridgeTurnPhase,
 };
@@ -468,5 +468,3 @@ pub struct BridgeOpenCurrentReader {
     pub current_protocol_version: u32,
     pub current_owner_id: String,
 }
-
-pub type BridgeCurrentReadDemand = BridgeReadDemand;

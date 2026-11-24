@@ -501,7 +501,7 @@ pub async fn archive_project(workspace_id: String) -> Result<Option<ProjectDto>,
 
 /// Changes a Project display name, preserving its path and connection.
 pub async fn rename_project(workspace_id: String, name: String) -> Result<ProjectDto, BridgeError> {
-    let bridge = super::super::bridge_runtime::active_bridge().await?;
+    let bridge = active_bridge().await?;
     Ok(bridge
         .studio
         .rename_project(&workspace_id, &name)
@@ -796,14 +796,6 @@ fn bridge_startup_stage(
         Source::Ready => Target::Ready,
         Source::Failed => Target::Failed,
     }
-}
-
-pub async fn read_recovery_state()
--> Result<super::super::types::BridgeRecoveryStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(super::super::convert::runtime::bridge_recovery_state(
-        bridge.studio.read_recovery_state().state,
-    ))
 }
 
 pub async fn retry_recovery()

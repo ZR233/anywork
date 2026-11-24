@@ -3,9 +3,8 @@ use crate::{ObservedResource, SessionDirectoryRow};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
-    StudioAgentDirectoryEntry, StudioLspHealth, StudioRecoveryIssue, StudioUpdateStateSnapshot,
-    WorkspaceRecord,
+    PersistenceStateSnapshot, SkillsStateSnapshot, StudioAgentDirectoryEntry, StudioLspHealth,
+    StudioRecoveryIssue, StudioUpdateStateSnapshot, WorkspaceRecord,
 };
 use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
@@ -38,7 +37,6 @@ pub enum StudioProductEventKind {
     LspStateChanged(StudioLspStateSnapshot),
     SkillsStateChanged(StudioSkillsStateSnapshot),
     ThreadModeCatalogChanged(ThreadModeCatalogSnapshot),
-    AccountUsageStateChanged(AccountUsageStateSnapshot),
     AcpAuthStateChanged(Box<crate::AcpAuthSnapshot>),
     AcpInstallStateChanged(Box<crate::AcpInstallSnapshot>),
     AcpLocalDetectionStateChanged(Box<crate::AcpLocalDetectionSnapshot>),
@@ -268,7 +266,6 @@ pub struct StudioStateSnapshot {
     pub lsp: StudioLspStateSnapshot,
     pub skills_by_project: Vec<StudioSkillsStateSnapshot>,
     pub thread_mode_catalog: ThreadModeCatalogSnapshot,
-    pub account_usage: AccountUsageStateSnapshot,
     pub session_costs: Vec<StudioSessionCostsState>,
     pub updater: StudioUpdateStateSnapshot,
     pub persistence: PersistenceStateSnapshot,

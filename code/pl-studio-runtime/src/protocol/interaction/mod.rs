@@ -291,25 +291,6 @@ impl InteractionRequest {
         }))
     }
 
-    /// 比较不受 lifecycle 变化影响的请求 identity 与 payload。
-    pub fn same_request(&self, other: &Self) -> bool {
-        self.interaction_id == other.interaction_id
-            && self.scope == other.scope
-            && self.continuation == other.continuation
-            && self.created_at == other.created_at
-            && match (&self.content, &other.content) {
-                (InteractionContent::UserInput(left), InteractionContent::UserInput(right)) => {
-                    left.questions() == right.questions()
-                }
-                (
-                    InteractionContent::ToolApproval(left),
-                    InteractionContent::ToolApproval(right),
-                ) => left.request() == right.request(),
-                (InteractionContent::UserInput(_), InteractionContent::ToolApproval(_))
-                | (InteractionContent::ToolApproval(_), InteractionContent::UserInput(_)) => false,
-            }
-    }
-
     pub fn decide(
         &self,
         command: InteractionCommand,

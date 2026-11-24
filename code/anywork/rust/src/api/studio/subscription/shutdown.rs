@@ -1,8 +1,8 @@
 //! 关机进度订阅：与 runtime 生命周期共享同一次 shutdown 序列。
 
 use super::{
-    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, error::open_error,
-    shutdown_progress_scope, task::OwnedTaskSlot,
+    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind,
+    BridgeSubscriptionReceiver, error::open_error, shutdown_progress_scope, task::OwnedTaskSlot,
 };
 use crate::api::studio::bridge_runtime::current_bridge;
 use crate::api::studio::types::{BridgeError, BridgeShutdownProgress};
@@ -37,9 +37,9 @@ pub async fn subscribe_shutdown_progress() -> Result<BridgeEventSubscription, Br
                 cancel,
                 producer_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
                 sink_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
-                product_topic_receiver: tokio::sync::Mutex::new(None),
-                shutdown_receiver: tokio::sync::Mutex::new(Some(events)),
-                startup_receiver: tokio::sync::Mutex::new(None),
+                receiver: tokio::sync::Mutex::new(Some(BridgeSubscriptionReceiver::Shutdown(
+                    events,
+                ))),
             })
         })
         .await
@@ -60,11 +60,19 @@ impl BridgeEventSubscription {
         sink: StreamSink<BridgeShutdownProgress>,
     ) -> Result<(), BridgeError> {
         let inner = self.inner.get();
-        let mut events = inner.shutdown_receiver.lock().await.take().ok_or_else(|| {
-            BridgeError::invalid_argument(
-                "shutdown stream can only be opened once on a shutdown subscription",
-            )
-        })?;
+        if !matches!(inner.kind, BridgeSubscriptionKind::Shutdown) {
+            return Err(BridgeError::invalid_argument(
+                "non-shutdown subscription cannot open a shutdown stream",
+            ));
+        }
+        let mut events = match inner.receiver.lock().await.take() {
+            Some(BridgeSubscriptionReceiver::Shutdown(events)) => events,
+            _ => {
+                return Err(BridgeError::invalid_argument(
+                    "shutdown stream can only be opened once on a shutdown subscription",
+                ));
+            }
+        };
         let cancel = inner.cancel.clone();
         inner.attach_sink(async move {
             loop {

@@ -1,74 +1,32 @@
-use std::collections::BTreeMap;
 use std::time::Duration;
 
-mod state;
-
-pub use state::{
-    AccountUsageState, FailedAccountUsage, MissingCredentialAccountUsage, ReadyAccountUsage,
-    UnsupportedAccountUsage,
-};
-
-use crate::{PureError, StateError};
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use pl_model::config::AccountConfig;
 use pl_model::protocol::ProtocolEndpoint;
 use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config_editor::account_template_kind;
-use crate::first_run::AccountTemplateKind;
+use crate::PureError;
+use crate::protocol::{
+    AccountMoneyBalance, AccountQuota, AccountQuotaDetail, AccountQuotaWindow, AccountUsageFailure,
+    AccountUsageFailureCode, AccountUsageValue,
+};
 use crate::studio::unix_seconds;
-use pl_model::config::AccountConfig;
-use serde::{Deserialize, Serialize};
 
 const ZHIPU_TOKEN_LIMIT_TYPE: &str = "TOKENS_LIMIT";
 const ZHIPU_TIME_LIMIT_TYPE: &str = "TIME_LIMIT";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DeepSeekBalanceUsage {
-    pub is_available: bool,
-    pub balances: Vec<DeepSeekBalanceInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeepSeekBalanceInfo {
-    pub currency: String,
-    pub total_balance: String,
-    pub granted_balance: String,
-    pub topped_up_balance: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SubscriptionUsage {
-    pub level: Option<String>,
-    pub limits: Vec<SubscriptionQuotaLimit>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SubscriptionQuotaLimit {
-    pub window: SubscriptionQuotaWindow,
-    pub percentage: f64,
-    pub current_value: Option<f64>,
-    pub total: Option<f64>,
-    pub remaining: Option<f64>,
-    pub next_reset_at: Option<i64>,
-    pub usage_details: Vec<SubscriptionUsageDetail>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SubscriptionQuotaWindow {
-    FiveHour,
-    Weekly,
-    McpMonthly,
-    Other(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SubscriptionUsageDetail {
-    pub name: String,
-    pub current_value: Option<f64>,
-    pub total: Option<f64>,
-    pub percentage: Option<f64>,
+#[derive(Debug, Clone)]
+pub(crate) enum AccountUsageQueryOutcome {
+    Ready {
+        checked_at: i64,
+        value: AccountUsageValue,
+    },
+    Unsupported,
+    MissingCredential,
+    Failed(AccountUsageFailure),
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,7 +85,7 @@ struct ZhipuQuotaLimitResponse {
     usage_details: Option<Value>,
 }
 
-async fn query_deepseek_balance(info: &ProtocolEndpoint) -> crate::Result<DeepSeekBalanceUsage> {
+async fn query_deepseek_balance(info: &ProtocolEndpoint) -> crate::Result<AccountUsageValue> {
     let token = required_token(info)?;
     let url = endpoint_url(&info.base_url, "/user/balance")?;
     let response = reqwest_client()?
@@ -148,7 +106,7 @@ async fn query_deepseek_balance(info: &ProtocolEndpoint) -> crate::Result<DeepSe
 
 async fn query_zhipu_coding_plan_usage(
     info: &ProtocolEndpoint,
-) -> crate::Result<SubscriptionUsage> {
+) -> crate::Result<AccountUsageValue> {
     let token = required_token(info)?;
     let url = endpoint_url(&info.base_url, "/api/monitor/usage/quota/limit")?;
     let mut headers = HeaderMap::new();
@@ -174,24 +132,24 @@ async fn query_zhipu_coding_plan_usage(
     parse_zhipu_coding_plan_usage(&body)
 }
 
-fn parse_deepseek_balance(body: &str) -> crate::Result<DeepSeekBalanceUsage> {
+fn parse_deepseek_balance(body: &str) -> crate::Result<AccountUsageValue> {
     let response: DeepSeekBalanceResponse = serde_json::from_str(body)?;
-    Ok(DeepSeekBalanceUsage {
-        is_available: response.is_available,
+    Ok(AccountUsageValue::Balance {
+        available: response.is_available,
         balances: response
             .balance_infos
             .into_iter()
-            .map(|balance| DeepSeekBalanceInfo {
+            .map(|balance| AccountMoneyBalance {
                 currency: balance.currency,
-                total_balance: balance.total_balance,
-                granted_balance: balance.granted_balance,
-                topped_up_balance: balance.topped_up_balance,
+                total: balance.total_balance,
+                granted: balance.granted_balance,
+                topped_up: balance.topped_up_balance,
             })
             .collect(),
     })
 }
 
-fn parse_zhipu_coding_plan_usage(body: &str) -> crate::Result<SubscriptionUsage> {
+fn parse_zhipu_coding_plan_usage(body: &str) -> crate::Result<AccountUsageValue> {
     let envelope: ZhipuEnvelope = serde_json::from_str(body)?;
     if matches!(envelope.success, Some(false)) {
         let message = envelope
@@ -210,26 +168,26 @@ fn parse_zhipu_coding_plan_usage(body: &str) -> crate::Result<SubscriptionUsage>
     let data = envelope.data.ok_or_else(|| {
         PureError::HttpError("Zhipu Coding Plan quota response missing data".into())
     })?;
-    Ok(SubscriptionUsage {
+    Ok(AccountUsageValue::Subscription {
         level: data.level,
-        limits: data.limits.into_iter().map(zhipu_quota_limit).collect(),
+        quotas: data.limits.into_iter().map(zhipu_quota_limit).collect(),
     })
 }
 
-fn zhipu_quota_limit(limit: ZhipuQuotaLimitResponse) -> SubscriptionQuotaLimit {
+fn zhipu_quota_limit(limit: ZhipuQuotaLimitResponse) -> AccountQuota {
     let total = limit.usage;
-    let current_value = limit.current_value;
-    SubscriptionQuotaLimit {
+    let used = limit.current_value;
+    AccountQuota {
         window: zhipu_quota_window(&limit),
         percentage: limit.percentage.unwrap_or(0.0),
-        current_value,
+        used,
         total,
-        remaining: match (total, current_value) {
+        remaining: match (total, used) {
             (Some(total), Some(current)) => Some((total - current).max(0.0)),
             _ => None,
         },
-        next_reset_at: limit.next_reset_time.map(|value| value / 1_000),
-        usage_details: limit
+        reset_at: limit.next_reset_time.map(|value| value / 1_000),
+        details: limit
             .usage_details
             .as_ref()
             .map(zhipu_tool_usage_details)
@@ -237,24 +195,24 @@ fn zhipu_quota_limit(limit: ZhipuQuotaLimitResponse) -> SubscriptionQuotaLimit {
     }
 }
 
-fn zhipu_quota_window(limit: &ZhipuQuotaLimitResponse) -> SubscriptionQuotaWindow {
+fn zhipu_quota_window(limit: &ZhipuQuotaLimitResponse) -> AccountQuotaWindow {
     match (limit.limit_type.as_str(), limit.unit, limit.number) {
-        (ZHIPU_TOKEN_LIMIT_TYPE, Some(3), Some(5)) => SubscriptionQuotaWindow::FiveHour,
-        (ZHIPU_TOKEN_LIMIT_TYPE, Some(6), Some(1)) => SubscriptionQuotaWindow::Weekly,
-        (ZHIPU_TIME_LIMIT_TYPE, _, _) => SubscriptionQuotaWindow::McpMonthly,
-        _ => SubscriptionQuotaWindow::Other(limit.limit_type.clone()),
+        (ZHIPU_TOKEN_LIMIT_TYPE, Some(3), Some(5)) => AccountQuotaWindow::FiveHour,
+        (ZHIPU_TOKEN_LIMIT_TYPE, Some(6), Some(1)) => AccountQuotaWindow::Weekly,
+        (ZHIPU_TIME_LIMIT_TYPE, _, _) => AccountQuotaWindow::McpMonthly,
+        _ => AccountQuotaWindow::Other(limit.limit_type.clone()),
     }
 }
 
-fn zhipu_tool_usage_details(value: &Value) -> Vec<SubscriptionUsageDetail> {
+fn zhipu_tool_usage_details(value: &Value) -> Vec<AccountQuotaDetail> {
     match value {
         Value::Array(items) => items.iter().filter_map(zhipu_tool_usage_detail).collect(),
         Value::Object(map) => map
             .iter()
             .map(|(name, value)| {
-                zhipu_tool_usage_detail(value).unwrap_or_else(|| SubscriptionUsageDetail {
+                zhipu_tool_usage_detail(value).unwrap_or_else(|| AccountQuotaDetail {
                     name: humanize_tool_name(name),
-                    current_value: value.as_f64(),
+                    used: value.as_f64(),
                     total: None,
                     percentage: None,
                 })
@@ -264,7 +222,7 @@ fn zhipu_tool_usage_details(value: &Value) -> Vec<SubscriptionUsageDetail> {
     }
 }
 
-fn zhipu_tool_usage_detail(value: &Value) -> Option<SubscriptionUsageDetail> {
+fn zhipu_tool_usage_detail(value: &Value) -> Option<AccountQuotaDetail> {
     let object = value.as_object()?;
     let name = first_string(
         object,
@@ -278,9 +236,9 @@ fn zhipu_tool_usage_detail(value: &Value) -> Option<SubscriptionUsageDetail> {
             "serviceName",
         ],
     )?;
-    Some(SubscriptionUsageDetail {
+    Some(AccountQuotaDetail {
         name: humanize_tool_name(&name),
-        current_value: first_number(object, &["currentValue", "current", "count", "used"]),
+        used: first_number(object, &["currentValue", "current", "count", "used"]),
         total: first_number(object, &["total", "limit", "quota", "usage"]),
         percentage: first_number(object, &["percentage", "percent"]),
     })
@@ -363,218 +321,45 @@ fn http_error(error: reqwest::Error) -> PureError {
     PureError::HttpError(error.to_string())
 }
 
-pub fn zhipu_limit_by_window(
-    limits: &[SubscriptionQuotaLimit],
-) -> BTreeMap<&'static str, &SubscriptionQuotaLimit> {
-    limits
-        .iter()
-        .filter_map(|limit| {
-            let key = match limit.window {
-                SubscriptionQuotaWindow::FiveHour => "five_hour",
-                SubscriptionQuotaWindow::Weekly => "weekly",
-                SubscriptionQuotaWindow::McpMonthly => "mcp_monthly",
-                SubscriptionQuotaWindow::Other(_) => return None,
-            };
-            Some((key, limit))
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountUsageRecord {
-    account_id: String,
-    revision: u64,
-    updated_at: i64,
-    last_operation_id: String,
-    state: AccountUsageState,
-}
-
-impl AccountUsageRecord {
-    /// Read-only adapter for the current owner's richer per-account state.
-    pub(crate) fn from_projection(
-        account_id: String,
-        revision: u64,
-        updated_at: i64,
-        operation_id: String,
-        state: AccountUsageState,
-    ) -> Self {
-        Self {
-            account_id,
-            revision,
-            updated_at,
-            last_operation_id: operation_id,
-            state,
-        }
-    }
-
-    pub fn new(account_id: impl Into<String>) -> Self {
-        Self {
-            account_id: account_id.into(),
-            revision: 0,
-            updated_at: 0,
-            last_operation_id: String::new(),
-            state: AccountUsageState::unsupported(),
-        }
-    }
-
-    pub fn account_id(&self) -> &str {
-        &self.account_id
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    pub fn updated_at(&self) -> i64 {
-        self.updated_at
-    }
-
-    pub fn state(&self) -> &AccountUsageState {
-        &self.state
-    }
-
-    pub fn decide(
-        &self,
-        command: AccountUsageCommand,
-    ) -> Result<AccountUsageTransitionDecision, AccountUsageTransitionError> {
-        let AccountUsageCommand::Observe {
-            expected_revision,
-            operation_id,
-            observed_at,
-            state,
-        } = command;
-        if expected_revision != self.revision {
-            return Err(AccountUsageTransitionError::StaleRevision {
-                account_id: self.account_id.clone(),
-                expected: expected_revision,
-                actual: self.revision,
-            });
-        }
-        if operation_id == self.last_operation_id {
-            if observed_at == self.updated_at && state == self.state {
-                return Ok(AccountUsageTransitionDecision {
-                    next_state: self.clone(),
-                    changed: false,
-                });
-            }
-            return Err(AccountUsageTransitionError::OperationConflict {
-                account_id: self.account_id.clone(),
-                operation_id,
-            });
-        }
-        Ok(AccountUsageTransitionDecision {
-            next_state: Self {
-                account_id: self.account_id.clone(),
-                revision: self.revision.saturating_add(1),
-                updated_at: observed_at,
-                last_operation_id: operation_id,
-                state,
-            },
-            changed: true,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum AccountUsageCommand {
-    Observe {
-        expected_revision: u64,
-        operation_id: String,
-        observed_at: i64,
-        state: AccountUsageState,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AccountUsageTransitionDecision {
-    pub next_state: AccountUsageRecord,
-    pub changed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AccountUsageTransitionError {
-    #[error("account usage {account_id} revision is stale: expected {expected}, actual {actual}")]
-    StaleRevision {
-        account_id: String,
-        expected: u64,
-        actual: u64,
-    },
-    #[error("account usage {account_id} operation {operation_id} conflicts with prior payload")]
-    OperationConflict {
-        account_id: String,
-        operation_id: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum AccountUsageData {
-    DeepSeekBalance(DeepSeekBalanceUsage),
-    Subscription(SubscriptionUsage),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AccountUsageQueryKind {
     DeepSeek,
     Subscription,
 }
 
-pub(crate) fn account_usage_query_kind(
-    template: Option<AccountTemplateKind>,
-) -> Option<AccountUsageQueryKind> {
-    match template.as_ref().map(AccountTemplateKind::key) {
-        Some("deepseek") => Some(AccountUsageQueryKind::DeepSeek),
-        Some("zhipu-coding-plan") => Some(AccountUsageQueryKind::Subscription),
-        Some(_) | None => None,
+pub(crate) fn account_usage_query_kind(template_id: Option<&str>) -> Option<AccountUsageQueryKind> {
+    let normalized = template_id?.trim().replace('_', "-");
+    match normalized.as_str() {
+        "deepseek" => Some(AccountUsageQueryKind::DeepSeek),
+        "zhipu-coding-plan" => Some(AccountUsageQueryKind::Subscription),
+        _ => None,
     }
 }
 
-pub(crate) async fn query_account_usage(
-    record: AccountUsageRecord,
-    provider: AccountConfig,
-    operation_id: String,
-) -> Result<AccountUsageRecord, AccountUsageTransitionError> {
-    let state = if provider.authentication == crate::AccountAuthenticationMethod::ChatGpt {
-        query_chatgpt_usage(&provider).await
-    } else {
-        match account_template_kind(&provider).map(account_usage_query_kind) {
-            Ok(Some(AccountUsageQueryKind::DeepSeek)) => {
-                account_usage_data(provider, query_deepseek).await
-            }
-            Ok(Some(AccountUsageQueryKind::Subscription)) => {
-                account_usage_data(provider, query_zhipu).await
-            }
-            Ok(None) => AccountUsageState::unsupported(),
-            Err(error) => AccountUsageState::failed(StateError {
-                code: "accountUsageConfigurationFailed".to_string(),
-                message: error.to_string(),
-                retryable: false,
-            }),
+pub(crate) async fn query_account_usage(provider: AccountConfig) -> AccountUsageQueryOutcome {
+    if provider.authentication == crate::AccountAuthenticationMethod::ChatGpt {
+        return query_chatgpt_usage(&provider).await;
+    }
+    match account_usage_query_kind(provider.template_id().map(|id| id.as_str())) {
+        Some(AccountUsageQueryKind::DeepSeek) => account_usage_data(provider, query_deepseek).await,
+        Some(AccountUsageQueryKind::Subscription) => {
+            account_usage_data(provider, query_zhipu).await
         }
-    };
-    record
-        .decide(AccountUsageCommand::Observe {
-            expected_revision: record.revision(),
-            operation_id,
-            observed_at: unix_seconds(),
-            state,
-        })
-        .map(|decision| decision.next_state)
+        None => AccountUsageQueryOutcome::Unsupported,
+    }
 }
 
-async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageState {
+async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageQueryOutcome {
     use pl_model_openai::codex_usage::CodexUsageError;
     let Some(session) = &provider.chatgpt_session else {
-        return AccountUsageState::missing_credential("ChatGPT sign-in is required");
+        return AccountUsageQueryOutcome::MissingCredential;
     };
     let result = match pl_model_openai::codex_usage::query_usage(session).await {
         Ok(usage) => usage,
-        Err(CodexUsageError::Unsupported) => return AccountUsageState::unsupported(),
+        Err(CodexUsageError::Unsupported) => return AccountUsageQueryOutcome::Unsupported,
         Err(error) => {
-            return AccountUsageState::failed(StateError {
-                code: "accountUsageQueryFailed".into(),
-                message: error.to_string(),
+            return AccountUsageQueryOutcome::Failed(AccountUsageFailure {
+                code: AccountUsageFailureCode::Query,
                 retryable: matches!(
                     error,
                     CodexUsageError::Network
@@ -585,82 +370,76 @@ async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageState {
             });
         }
     };
-    AccountUsageState::ready(AccountUsageData::Subscription(SubscriptionUsage {
-        level: result.plan_type,
-        limits: result
-            .windows
-            .into_iter()
-            .map(|window| SubscriptionQuotaLimit {
-                window: if window.name == "Codex" {
-                    match window.duration_seconds {
-                        18_000 => SubscriptionQuotaWindow::FiveHour,
-                        604_800 => SubscriptionQuotaWindow::Weekly,
-                        seconds => SubscriptionQuotaWindow::Other(format!("Codex · {seconds}s")),
-                    }
-                } else {
-                    SubscriptionQuotaWindow::Other(format!(
-                        "{} · {}s",
-                        window.name, window.duration_seconds
-                    ))
-                },
-                percentage: window.used_percent,
-                current_value: None,
-                total: None,
-                remaining: None,
-                next_reset_at: window.reset_at,
-                usage_details: Vec::new(),
-            })
-            .collect(),
-    }))
+    AccountUsageQueryOutcome::Ready {
+        checked_at: unix_seconds(),
+        value: AccountUsageValue::Subscription {
+            level: result.plan_type,
+            quotas: result
+                .windows
+                .into_iter()
+                .map(|window| AccountQuota {
+                    window: if window.name == "Codex" {
+                        match window.duration_seconds {
+                            18_000 => AccountQuotaWindow::FiveHour,
+                            604_800 => AccountQuotaWindow::Weekly,
+                            seconds => AccountQuotaWindow::Other(format!("Codex · {seconds}s")),
+                        }
+                    } else {
+                        AccountQuotaWindow::Other(format!(
+                            "{} · {}s",
+                            window.name, window.duration_seconds
+                        ))
+                    },
+                    percentage: window.used_percent,
+                    used: None,
+                    total: None,
+                    remaining: None,
+                    reset_at: window.reset_at,
+                    details: Vec::new(),
+                })
+                .collect(),
+        },
+    }
 }
 
-type AccountUsageQueryFuture = BoxFuture<'static, crate::Result<AccountUsageData>>;
+type AccountUsageQueryFuture = BoxFuture<'static, crate::Result<AccountUsageValue>>;
 
 async fn account_usage_data(
     provider: AccountConfig,
-    query: impl FnOnce(pl_model::protocol::ProtocolEndpoint) -> AccountUsageQueryFuture,
-) -> AccountUsageState {
+    query: impl FnOnce(ProtocolEndpoint) -> AccountUsageQueryFuture,
+) -> AccountUsageQueryOutcome {
     if provider
         .resolved_bearer_token()
         .as_ref()
         .is_none_or(|token| token.trim().is_empty())
     {
-        return AccountUsageState::missing_credential("account API key is not configured");
+        return AccountUsageQueryOutcome::MissingCredential;
     }
     let info = match provider.to_endpoint() {
         Ok(info) => info,
-        Err(error) => {
-            return AccountUsageState::failed(StateError {
-                code: "accountUsageConfigurationFailed".to_string(),
-                message: error.to_string(),
+        Err(_) => {
+            return AccountUsageQueryOutcome::Failed(AccountUsageFailure {
+                code: AccountUsageFailureCode::Configuration,
                 retryable: false,
             });
         }
     };
     match query(info).await {
-        Ok(data) => AccountUsageState::ready(data),
-        Err(error) => AccountUsageState::failed(StateError {
-            code: "accountUsageQueryFailed".to_string(),
-            message: error.to_string(),
+        Ok(value) => AccountUsageQueryOutcome::Ready {
+            checked_at: unix_seconds(),
+            value,
+        },
+        Err(_) => AccountUsageQueryOutcome::Failed(AccountUsageFailure {
+            code: AccountUsageFailureCode::Query,
             retryable: true,
         }),
     }
 }
 
-fn query_deepseek(info: pl_model::protocol::ProtocolEndpoint) -> AccountUsageQueryFuture {
-    async move {
-        query_deepseek_balance(&info)
-            .await
-            .map(AccountUsageData::DeepSeekBalance)
-    }
-    .boxed()
+fn query_deepseek(info: ProtocolEndpoint) -> AccountUsageQueryFuture {
+    async move { query_deepseek_balance(&info).await }.boxed()
 }
 
-fn query_zhipu(info: pl_model::protocol::ProtocolEndpoint) -> AccountUsageQueryFuture {
-    async move {
-        query_zhipu_coding_plan_usage(&info)
-            .await
-            .map(AccountUsageData::Subscription)
-    }
-    .boxed()
+fn query_zhipu(info: ProtocolEndpoint) -> AccountUsageQueryFuture {
+    async move { query_zhipu_coding_plan_usage(&info).await }.boxed()
 }

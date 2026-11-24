@@ -93,7 +93,7 @@ Studio 装配完成及有效配置提交后，为每个已启用的 ACP 账户�
 
 ## 28.6 安装操作、进度观察与终态收束
 
-客户端通过 `read_acp_install_state` 读取独立安装与更新快照，通过 `start_acp_install`、`cancel_acp_install` 与 `check_acp_install_update` 提交显式准备/升级、取消或检查更新意图。命令调用快速返回操作回执与权威快照，耗时的网络下载与磁盘解压不持有 `Settings` 提交锁，也不占用 `acpAuth` 认证状态。安装状态主题为 `acpInstall`，回执资源名为 `acp-install`，拥有独立的修订版本号与运行时所有者纪元（Owner Epoch）；其中 `AcpInstallEntry` 同时交付当前 `state`、已安装并校验通过的最高版本 `installed` 以及版本检查态 `update`。
+客户端通过账号领域观察（`AccountObservation` `acpInstall` 目标）订阅并读取独立安装与更新快照，通过 `start_acp_install`、`cancel_acp_install` 与 `check_acp_install_update` 提交显式准备/升级、取消或检查更新意图。命令调用快速返回操作回执与权威快照，耗时的网络下载与磁盘解压不持有 `Settings` 提交锁，也不占用 `acpAuth` 认证状态。安装领域回执资源名为 `acp-install`，拥有独立的修订版本号与运行时所有者纪元（Owner Epoch）；其中 `AcpInstallEntry` 同时交付当前 `state`、已安装并校验通过的最高版本 `installed` 以及版本检查态 `update`。
 
 安装状态机包含：`未准备`、`解析官方发行`、`等待资产锁`、`下载中`、`校验中`、`解压中`、`发布中`、`收束中`、`就绪`、`取消中`、`已取消`与`失败`。当前重试次数与下载字节进度对外可观察（进度汇报实际已处理字节数与可选总字节数，当服务端未返回总长度时不伪造百分比）。已有缓存校验、全新下载与同大版本在线升级走同一操作链；`就绪`状态携带安装身份、版本／平台、只读诊断程序路径、来源信任级别、准备完成时间戳及是否复用已有安装标记（固定 `argv` 保留在内部启动边界，不进入账号编辑或保存 DTO）。所有已受理操作的终态均保留 `operationId` 供前端草稿与迟到回执关联；安装`就绪`不代表账号已保存或已通过认证。
 

@@ -5,8 +5,6 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
-import 'acp_detection.dart';
-import 'acp_install.dart';
 import 'agent_profile.dart';
 import 'bots.dart';
 import 'chatgpt_auth.dart';
@@ -26,7 +24,7 @@ import 'thread_stream.dart';
 import 'updater.dart';
 part 'event.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`
 
 /// Flutter Bridge 的 Studio 产品事件信封。
 ///
@@ -69,11 +67,6 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.projectDirectoryChanged(
     BridgeProjectDirectoryState field0,
   ) = BridgeProductEventPayload_ProjectDirectoryChanged;
-
-  /// Thread directory 增量：GUI 按身份合并进分页窗口，未加载条目的增量忽略。
-  const factory BridgeProductEventPayload.threadDirectoryChanged(
-    BridgeThreadDirectoryDelta field0,
-  ) = BridgeProductEventPayload_ThreadDirectoryChanged;
   const factory BridgeProductEventPayload.agentDirectoryChanged(
     BridgeAgentDirectoryState field0,
   ) = BridgeProductEventPayload_AgentDirectoryChanged;
@@ -104,18 +97,6 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.threadModeCatalogChanged(
     BridgeThreadModeCatalogSnapshot field0,
   ) = BridgeProductEventPayload_ThreadModeCatalogChanged;
-  const factory BridgeProductEventPayload.accountUsageStateChanged(
-    BridgeAccountUsageStateSnapshot field0,
-  ) = BridgeProductEventPayload_AccountUsageStateChanged;
-  const factory BridgeProductEventPayload.acpAuthStateChanged(
-    BridgeAcpAuthSnapshot field0,
-  ) = BridgeProductEventPayload_AcpAuthStateChanged;
-  const factory BridgeProductEventPayload.acpInstallStateChanged(
-    BridgeAcpInstallSnapshot field0,
-  ) = BridgeProductEventPayload_AcpInstallStateChanged;
-  const factory BridgeProductEventPayload.acpLocalDetectionStateChanged(
-    BridgeAcpLocalDetectionSnapshot field0,
-  ) = BridgeProductEventPayload_AcpLocalDetectionStateChanged;
   const factory BridgeProductEventPayload.sessionCostsChanged(
     BridgeSessionCostsState field0,
   ) = BridgeProductEventPayload_SessionCostsChanged;
@@ -158,36 +139,4 @@ sealed class BridgeShutdownProgress with _$BridgeShutdownProgress {
       BridgeShutdownProgress_StoppingLsp;
   const factory BridgeShutdownProgress.stopped() =
       BridgeShutdownProgress_Stopped;
-}
-
-/// Thread directory 增量事件 payload。
-class BridgeThreadDirectoryDelta {
-  final BigInt revision;
-  final PlatformInt64 updatedAt;
-  final List<BridgeSessionDirectoryRow> upserted;
-  final List<String> removed;
-
-  const BridgeThreadDirectoryDelta({
-    required this.revision,
-    required this.updatedAt,
-    required this.upserted,
-    required this.removed,
-  });
-
-  @override
-  int get hashCode =>
-      revision.hashCode ^
-      updatedAt.hashCode ^
-      upserted.hashCode ^
-      removed.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadDirectoryDelta &&
-          runtimeType == other.runtimeType &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          upserted == other.upserted &&
-          removed == other.removed;
 }

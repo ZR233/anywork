@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'settings.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAgentEvaluation {
   final String agentId;
@@ -144,20 +144,6 @@ enum BridgeBillingKind { metered, subscription, noCharge, unknown }
 
 enum BridgeDelegationMode { profile, automatic }
 
-enum BridgeDelegationModelCapability {
-  toolCalling,
-  parallelToolCalls,
-  reasoning,
-  imageInput,
-  audioInput,
-  videoInput,
-  fileInput,
-  customTools,
-  freeformTools,
-  webSearch,
-  streaming,
-}
-
 class BridgeDelegationModelDetail {
   final String accountId;
   final String accountName;
@@ -213,82 +199,6 @@ class BridgeDelegationModelDetail {
           recentEvaluations == other.recentEvaluations;
 }
 
-class BridgeDelegationModelList {
-  final List<BridgeDelegationModelListItem> models;
-  final BigInt catalogRevision;
-
-  const BridgeDelegationModelList({
-    required this.models,
-    required this.catalogRevision,
-  });
-
-  @override
-  int get hashCode => models.hashCode ^ catalogRevision.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDelegationModelList &&
-          runtimeType == other.runtimeType &&
-          models == other.models &&
-          catalogRevision == other.catalogRevision;
-}
-
-class BridgeDelegationModelListItem {
-  final String accountId;
-  final String accountName;
-  final String modelId;
-  final String displayName;
-  final String? summary;
-  final List<BridgeAgentTaskCategory> taskSuitability;
-  final BigInt? contextWindow;
-  final BridgeModelCapabilities capabilities;
-  final List<String> reasoningEfforts;
-  final BridgeBillingKind billingKind;
-
-  const BridgeDelegationModelListItem({
-    required this.accountId,
-    required this.accountName,
-    required this.modelId,
-    required this.displayName,
-    this.summary,
-    required this.taskSuitability,
-    this.contextWindow,
-    required this.capabilities,
-    required this.reasoningEfforts,
-    required this.billingKind,
-  });
-
-  @override
-  int get hashCode =>
-      accountId.hashCode ^
-      accountName.hashCode ^
-      modelId.hashCode ^
-      displayName.hashCode ^
-      summary.hashCode ^
-      taskSuitability.hashCode ^
-      contextWindow.hashCode ^
-      capabilities.hashCode ^
-      reasoningEfforts.hashCode ^
-      billingKind.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDelegationModelListItem &&
-          runtimeType == other.runtimeType &&
-          accountId == other.accountId &&
-          accountName == other.accountName &&
-          modelId == other.modelId &&
-          displayName == other.displayName &&
-          summary == other.summary &&
-          taskSuitability == other.taskSuitability &&
-          contextWindow == other.contextWindow &&
-          capabilities == other.capabilities &&
-          reasoningEfforts == other.reasoningEfforts &&
-          billingKind == other.billingKind;
-}
-
 enum BridgeDelegationPreference { economy, balanced, fast }
 
 class BridgeDelegationSettings {
@@ -331,37 +241,6 @@ class BridgeGetDelegationModelRequest {
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
           modelId == other.modelId;
-}
-
-class BridgeListDelegationModelsRequest {
-  final List<BridgeDelegationModelCapability> capabilities;
-  final String? accountId;
-  final BridgeBillingKind? billingKind;
-  final BigInt? minContextWindow;
-
-  const BridgeListDelegationModelsRequest({
-    required this.capabilities,
-    this.accountId,
-    this.billingKind,
-    this.minContextWindow,
-  });
-
-  @override
-  int get hashCode =>
-      capabilities.hashCode ^
-      accountId.hashCode ^
-      billingKind.hashCode ^
-      minContextWindow.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeListDelegationModelsRequest &&
-          runtimeType == other.runtimeType &&
-          capabilities == other.capabilities &&
-          accountId == other.accountId &&
-          billingKind == other.billingKind &&
-          minContextWindow == other.minContextWindow;
 }
 
 class BridgeLocalModelPerformanceSummary {

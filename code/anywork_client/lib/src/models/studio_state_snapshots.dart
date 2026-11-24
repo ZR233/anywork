@@ -507,40 +507,6 @@ class SkillsStateSnapshot extends ObservedStateSnapshot<SkillsStateData> {
   List<SkillSummaryView> get summaries => _data.summaries;
 }
 
-class AccountUsageStateData {
-  const AccountUsageStateData({
-    this.configFingerprint = '',
-    this.usages = const [],
-  });
-  final String configFingerprint;
-  final List<AccountUsageView> usages;
-}
-
-class AccountUsageStateSnapshot
-    extends ObservedStateSnapshot<AccountUsageStateData> {
-  AccountUsageStateSnapshot({
-    String configFingerprint = '',
-    List<AccountUsageView> usages = const [],
-    int revision = 0,
-  }) : state = ReadyObservedResource<AccountUsageStateData>(
-         revision: revision,
-         updatedAt: 0,
-         lastCheckedAt: null,
-         value: AccountUsageStateData(
-           configFingerprint: configFingerprint,
-           usages: usages,
-         ),
-       );
-
-  const AccountUsageStateSnapshot.fromState({required this.state});
-  @override
-  final ObservedResource<AccountUsageStateData> state;
-  AccountUsageStateData get _data =>
-      state.value ?? const AccountUsageStateData();
-  String get configFingerprint => _data.configFingerprint;
-  List<AccountUsageView> get usages => _data.usages;
-}
-
 sealed class UpdaterActivity {
   const UpdaterActivity();
 

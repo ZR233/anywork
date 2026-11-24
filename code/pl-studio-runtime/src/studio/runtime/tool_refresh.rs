@@ -123,7 +123,6 @@ impl CatalogSources {
             | StudioProductEventKind::AgentDirectoryChanged(_)
             | StudioProductEventKind::SettingsConfigStateChanged(_)
             | StudioProductEventKind::RecoveryStateChanged(_)
-            | StudioProductEventKind::AccountUsageStateChanged(_)
             | StudioProductEventKind::ModelPerformanceStateChanged(_)
             | StudioProductEventKind::SessionCostsChanged(_)
             | StudioProductEventKind::UpdaterStateChanged(_)

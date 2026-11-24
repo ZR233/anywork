@@ -22,8 +22,4 @@ impl BudgetLimitedTurnOutcome {
     pub fn rollover(&self) -> &TurnRolloverOutcome {
         &self.rollover
     }
-
-    pub fn replace_rollover(&mut self, rollover: TurnRolloverOutcome) {
-        self.rollover = rollover;
-    }
 }

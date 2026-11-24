@@ -378,19 +378,6 @@ impl ConfigStore {
         Ok(())
     }
 
-    pub fn init_default(&self) -> Result<StudioConfig> {
-        if !self.config_absent()? {
-            return Err(PureError::ConfigError(format!(
-                "config already exists: {}",
-                self.paths.config_file().display()
-            )));
-        }
-        super::mcp_resource::ensure_default_host_builtins_if_fresh(&self.paths)?;
-        let config = StudioConfig::default_config()?;
-        self.save(&config)?;
-        Ok(config)
-    }
-
     fn hydrate_credentials(&self, config: &mut StudioConfig) -> Result<()> {
         if self.environment_only {
             for account in config.models.accounts.values_mut() {

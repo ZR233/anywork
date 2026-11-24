@@ -89,27 +89,31 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
     if (stopping) throw _conversationClosedFailure;
   }
 
-  Future<HistoryCut> capture() => FrbStudioTransport._bridgeCall(() async {
+  Future<T> _guardedCall<R, T>(
+    Future<R> Function() call,
+    T Function(R value) map,
+  ) => FrbStudioTransport._bridgeCall(() async {
     _checkOpen();
-    final value = await history.capture();
+    final value = await call();
     _checkOpen();
-    return _historyCutFromFrb(value);
+    return map(value);
   });
+
+  Future<HistoryCut> capture() =>
+      _guardedCall(history.capture, _historyCutFromFrb);
 
   Future<HistoryTimelinePage> timelinePage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.timelinePage(
+  }) => _guardedCall(
+    () => history.timelinePage(
       cut: cut == null ? null : _historyCutToFrb(cut),
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyTimelinePageFromFrb(value);
-  });
+    ),
+    _historyTimelinePageFromFrb,
+  );
 
   Future<HistoryWorkRangePage> workRangePage({
     int? afterSeq,
@@ -117,126 +121,104 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.workRangePage(
+  }) => _guardedCall(
+    () => history.workRangePage(
       afterSeq: afterSeq == null ? null : BigInt.from(afterSeq),
       beforeSeq: beforeSeq == null ? null : BigInt.from(beforeSeq),
       cut: cut == null ? null : _historyCutToFrb(cut),
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyWorkRangePageFromFrb(value);
-  });
+    ),
+    _historyWorkRangePageFromFrb,
+  );
 
   Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.turnsPage(
+  }) => _guardedCall(
+    () => history.turnsPage(
       cut: cut == null ? null : _historyCutToFrb(cut),
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyBusinessPageFromFrb(value);
-  });
+    ),
+    _historyBusinessPageFromFrb,
+  );
 
   Future<HistoryEventsPage> eventsPage({
     required HistoryEventsQuery query,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.eventsPage(
+  }) => _guardedCall(
+    () => history.eventsPage(
       query: _historyEventsQueryToFrb(query),
       cut: cut == null ? null : _historyCutToFrb(cut),
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyEventsPageFromFrb(value);
-  });
+    ),
+    _historyEventsPageFromFrb,
+  );
 
   Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.readEvent(
+  }) => _guardedCall(
+    () => history.readEvent(
       eventId: eventId,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyEventRecordFromFrb(value);
-  });
+    ),
+    _historyEventRecordFromFrb,
+  );
 
   Future<HistoryBodyPage> listBodies({
     required String eventId,
     String? cursor,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.listBodies(
+  }) => _guardedCall(
+    () => history.listBodies(
       eventId: eventId,
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyBodyPageFromFrb(value);
-  });
+    ),
+    _historyBodyPageFromFrb,
+  );
 
   Future<HistoryBodyWindow> readBody({
     required HistoryEventBodyRef reference,
     required int offset,
     required int maxBytes,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.readBody(
+  }) => _guardedCall(
+    () => history.readBody(
       reference: _historyBodyRefToFrb(reference),
       offset: BigInt.from(offset),
       maxBytes: maxBytes,
-    );
-    _checkOpen();
-    return _historyBodyWindowFromFrb(value);
-  });
+    ),
+    _historyBodyWindowFromFrb,
+  );
 
-  Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
-      FrbStudioTransport._bridgeCall(() async {
-        _checkOpen();
-        final value = await history.accounting(
-          cut: cut == null ? null : _historyCutToFrb(cut),
-        );
-        _checkOpen();
-        return _historyAccountingFromFrb(value);
-      });
+  Future<HistoryAccounting?> accounting({HistoryCut? cut}) => _guardedCall(
+    () => history.accounting(cut: cut == null ? null : _historyCutToFrb(cut)),
+    _historyAccountingFromFrb,
+  );
 
   Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await history.costsPage(
+  }) => _guardedCall(
+    () => history.costsPage(
       cut: cut == null ? null : _historyCutToFrb(cut),
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _historyBusinessPageFromFrb(value);
-  });
+    ),
+    _historyBusinessPageFromFrb,
+  );
 
-  Future<HistoryCut> waitChanged(HistoryCut after) =>
-      FrbStudioTransport._bridgeCall(() async {
-        _checkOpen();
-        final value = await history.waitChanged(after: _historyCutToFrb(after));
-        _checkOpen();
-        return _historyCutFromFrb(value);
-      });
+  Future<HistoryCut> waitChanged(HistoryCut after) => _guardedCall(
+    () => history.waitChanged(after: _historyCutToFrb(after)),
+    _historyCutFromFrb,
+  );
 
   @override
   void requestNativeClose() => history.requestClose();
@@ -308,13 +290,20 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
     if (stopping) throw _conversationClosedFailure;
   }
 
-  Future<CurrentView> snapshot(ReadDemand demand) =>
-      FrbStudioTransport._bridgeCall(() async {
-        _checkOpen();
-        final value = await current.snapshot(demand: _readDemandToFrb(demand));
-        _checkOpen();
-        return _currentViewFromFrb(value);
-      });
+  Future<T> _guardedCall<R, T>(
+    Future<R> Function() call,
+    T Function(R value) map,
+  ) => FrbStudioTransport._bridgeCall(() async {
+    _checkOpen();
+    final value = await call();
+    _checkOpen();
+    return map(value);
+  });
+
+  Future<CurrentView> snapshot(ReadDemand demand) => _guardedCall(
+    () => current.snapshot(demand: _readDemandToFrb(demand)),
+    _currentViewFromFrb,
+  );
 
   Future<CurrentWatch> watch({
     CurrentRevision? after,
@@ -352,29 +341,25 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
     required CurrentCollectionRef reference,
     String? continuation,
     required ReadDemand demand,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await current.pageCollection(
+  }) => _guardedCall(
+    () => current.pageCollection(
       reference: _currentCollectionRefToFrb(reference),
       continuation: continuation,
       demand: _readDemandToFrb(demand),
-    );
-    _checkOpen();
-    return _currentCollectionPageFromFrb(value);
-  });
+    ),
+    _currentCollectionPageFromFrb,
+  );
 
   Future<ContentWindow> readBody({
     required CurrentContentRef reference,
     required ContentRange range,
-  }) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await current.readBody(
+  }) => _guardedCall(
+    () => current.readBody(
       reference: _currentContentRefToFrb(reference),
       range: _contentRangeToFrb(range),
-    );
-    _checkOpen();
-    return _contentWindowFromFrb(value);
-  });
+    ),
+    _contentWindowFromFrb,
+  );
 
   Future<CurrentBodyWatch> watchBody({
     required CurrentContentRef reference,
@@ -421,21 +406,18 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
   }
 }
 
-final class _FrbCurrentWatch implements CurrentWatch {
-  _FrbCurrentWatch(this._entry) {
+abstract class _FrbPullStreamWatch<H, T> {
+  _FrbPullStreamWatch(this._entry) {
     _output = StreamController(onListen: _start, onCancel: requestClose);
   }
-  final ClientAcquisition<
-    _FrbRawPull<frb_timeline.BridgeCurrentWatch, CurrentFrame>
-  >
-  _entry;
-  late final StreamController<CurrentFrame> _output;
+
+  final ClientAcquisition<_FrbRawPull<H, T>> _entry;
+  late final StreamController<T> _output;
   Future<void>? _pumping;
   bool _started = false;
   bool _closed = false;
 
-  @override
-  Stream<CurrentFrame> get frames => _output.stream;
+  Stream<T> get _stream => _output.stream;
 
   void _start() {
     if (_started || _closed) return;
@@ -447,10 +429,10 @@ final class _FrbCurrentWatch implements CurrentWatch {
         try {
           final raw = await _entry.ready;
           while (!_closed) {
-            final frame = await raw.next();
+            final item = await raw.next();
             if (_closed) return;
-            if (frame == null) break;
-            _output.add(frame);
+            if (item == null) break;
+            _output.add(item);
           }
           await _endOutput();
         } catch (error, stack) {
@@ -468,14 +450,12 @@ final class _FrbCurrentWatch implements CurrentWatch {
     if (!_output.isClosed) await _output.close();
   }
 
-  @override
   void requestClose() {
     if (_closed) return;
     _closed = true;
     _entry.requestClose();
   }
 
-  @override
   Future<void> close() async {
     requestClose();
     try {
@@ -487,68 +467,21 @@ final class _FrbCurrentWatch implements CurrentWatch {
   }
 }
 
-final class _FrbCurrentBodyWatch implements CurrentBodyWatch {
-  _FrbCurrentBodyWatch(this._entry) {
-    _output = StreamController(onListen: _start, onCancel: requestClose);
-  }
-  final ClientAcquisition<
-    _FrbRawPull<frb_timeline.BridgeCurrentBodyWatch, ContentWindow>
-  >
-  _entry;
-  late final StreamController<ContentWindow> _output;
-  Future<void>? _pumping;
-  bool _started = false;
-  bool _closed = false;
+final class _FrbCurrentWatch
+    extends _FrbPullStreamWatch<frb_timeline.BridgeCurrentWatch, CurrentFrame>
+    implements CurrentWatch {
+  _FrbCurrentWatch(super.entry);
 
   @override
-  Stream<ContentWindow> get windows => _output.stream;
+  Stream<CurrentFrame> get frames => _stream;
+}
 
-  void _start() {
-    if (_started || _closed) return;
-    _started = true;
-    final completion = Completer<void>();
-    _pumping = completion.future;
-    completion.complete(
-      Future<void>.sync(() async {
-        try {
-          final raw = await _entry.ready;
-          while (!_closed) {
-            final window = await raw.next();
-            if (_closed) return;
-            if (window == null) break;
-            _output.add(window);
-          }
-          await _endOutput();
-        } catch (error, stack) {
-          if (!_closed) {
-            _output.addError(_studioFailure(error), stack);
-            requestClose();
-          }
-          await _endOutput();
-        }
-      }),
-    );
-  }
-
-  Future<void> _endOutput() async {
-    if (!_output.isClosed) await _output.close();
-  }
+final class _FrbCurrentBodyWatch
+    extends
+        _FrbPullStreamWatch<frb_timeline.BridgeCurrentBodyWatch, ContentWindow>
+    implements CurrentBodyWatch {
+  _FrbCurrentBodyWatch(super.entry);
 
   @override
-  void requestClose() {
-    if (_closed) return;
-    _closed = true;
-    _entry.requestClose();
-  }
-
-  @override
-  Future<void> close() async {
-    requestClose();
-    try {
-      await _entry.close();
-    } finally {
-      await _pumping;
-      await _endOutput();
-    }
-  }
+  Stream<ContentWindow> get windows => _stream;
 }

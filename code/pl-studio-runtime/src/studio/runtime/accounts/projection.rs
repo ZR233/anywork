@@ -42,7 +42,7 @@ pub(super) fn read(
                             .as_ref()
                             .is_some_and(|info| info.codex.is_some())
                             || account_usage_query_kind(
-                                crate::config_editor::account_template_kind(account)?,
+                                account.template_id().map(|id| id.as_str()),
                             )
                             .is_some();
                         accounts.push(AccountSummary {

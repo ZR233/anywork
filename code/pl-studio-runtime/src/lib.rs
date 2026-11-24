@@ -27,7 +27,6 @@ mod compaction;
 pub mod config;
 mod config_editor;
 mod error_mapping;
-mod first_run;
 pub mod history;
 mod instruction;
 mod protocol;
@@ -61,31 +60,20 @@ pub use config::{
     STUDIO_CONFIG_SCHEMA_VERSION, ScopedEffectiveMcpServer, StudioConfig, StudioUiConfig,
     UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
 };
-pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
+pub use config_editor::{AccountEdit, AccountModelEdit};
 pub use error_mapping::{studio_error_from_anyhow, studio_error_from_anyhow_ref};
-pub use first_run::{
-    AccountTemplateKind, FirstRunAccountDraft, FirstRunConfigDraft, FirstRunModelDraft,
-};
 pub use host_mcp_assets::HostMcpSource;
 pub use protocol::*;
 
-pub use account_usage::{
-    AccountUsageCommand, AccountUsageData, AccountUsageRecord, AccountUsageState,
-    AccountUsageTransitionDecision, AccountUsageTransitionError, DeepSeekBalanceInfo,
-    DeepSeekBalanceUsage, FailedAccountUsage, MissingCredentialAccountUsage, ReadyAccountUsage,
-    SubscriptionQuotaLimit, SubscriptionQuotaWindow, SubscriptionUsage, SubscriptionUsageDetail,
-    UnsupportedAccountUsage, zhipu_limit_by_window,
-};
 pub use studio::{
-    AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, CurrentBodyWatch,
-    CurrentReader, CurrentWatch, DisplayDownloadOutcome, DisplayDownloadRequest, PersistenceState,
-    PersistenceStateSnapshot, ProductEventBus, ProductTopicReceiver, ProductTopicRecvError,
-    ProductTopicTryRecvError, SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate,
-    SshServerRuntimeEntry, StudioDatabaseError, StudioHostKind, StudioInstance,
-    StudioInstanceLease, StudioProductTopicSubscription, StudioReadyUpdate, StudioRecoveryImpact,
-    StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
-    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
-    StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
+    AttachmentRecord, CurrentBodyWatch, CurrentReader, CurrentWatch, DisplayDownloadOutcome,
+    DisplayDownloadRequest, PersistenceState, PersistenceStateSnapshot, ProductEventBus,
+    ProductTopicReceiver, ProductTopicRecvError, ProductTopicTryRecvError, SkillSearchResult,
+    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
+    StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
+    StudioReadyUpdate, StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
+    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
     StudioStartupError, StudioStartupErrorKind, StudioStartupPolicy, StudioStartupRecovery,
     StudioStore, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,

@@ -15,8 +15,17 @@ use crate::api::studio::convert::acp::{
 use crate::api::studio::convert::commands::{command_receipt, settings_command_reply};
 use crate::api::studio::types::{
     BridgeAcpAccountCatalog, BridgeAcpAccountUpdate, BridgeAcpAuthAction,
-    BridgeAcpAuthCommandReply, BridgeAcpAuthSnapshot, BridgeError, BridgeSettingsCommandReply,
+    BridgeAcpAuthCommandReply, BridgeError, BridgeSettingsCommandReply,
 };
+
+fn bridge_acp_auth_reply(
+    reply: pl_studio_runtime::AcpAuthCommandReply,
+) -> BridgeAcpAuthCommandReply {
+    BridgeAcpAuthCommandReply {
+        receipt: command_receipt(reply.receipt),
+        snapshot: bridge_acp_auth_snapshot(reply.snapshot),
+    }
+}
 
 /// 读取 ACP 接入模板目录；纯读取默认值，不启动程序。
 pub fn load_acp_account_catalog() -> Result<BridgeAcpAccountCatalog, BridgeError> {
@@ -53,14 +62,6 @@ pub async fn remove_acp_account(
     )?))
 }
 
-/// 当前 canonical ACP 认证快照；纯读取，不启动程序。
-pub async fn read_acp_auth_state() -> Result<BridgeAcpAuthSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(bridge_acp_auth_snapshot(
-        bridge.studio.read_acp_auth_state(),
-    ))
-}
-
 /// 受理一次 ACP 检查或登录操作。
 pub async fn start_acp_auth(
     operation_id: String,
@@ -69,16 +70,14 @@ pub async fn start_acp_auth(
     action: BridgeAcpAuthAction,
 ) -> Result<BridgeAcpAuthCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    let reply = bridge.studio.start_acp_auth(StartAcpAuthRequest {
-        operation_id,
-        account_id,
-        expected_connection_revision,
-        action: protocol_auth_action(action),
-    })?;
-    Ok(BridgeAcpAuthCommandReply {
-        receipt: command_receipt(reply.receipt),
-        snapshot: bridge_acp_auth_snapshot(reply.snapshot),
-    })
+    Ok(bridge_acp_auth_reply(bridge.studio.start_acp_auth(
+        StartAcpAuthRequest {
+            operation_id,
+            account_id,
+            expected_connection_revision,
+            action: protocol_auth_action(action),
+        },
+    )?))
 }
 
 /// 在原连接上继续 ACP 登录。
@@ -90,17 +89,15 @@ pub async fn continue_acp_auth(
     method_id: String,
 ) -> Result<BridgeAcpAuthCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    let reply = bridge.studio.continue_acp_auth(ContinueAcpAuthRequest {
-        operation_id,
-        account_id,
-        expected_connection_revision,
-        target_operation_id,
-        method_id,
-    })?;
-    Ok(BridgeAcpAuthCommandReply {
-        receipt: command_receipt(reply.receipt),
-        snapshot: bridge_acp_auth_snapshot(reply.snapshot),
-    })
+    Ok(bridge_acp_auth_reply(bridge.studio.continue_acp_auth(
+        ContinueAcpAuthRequest {
+            operation_id,
+            account_id,
+            expected_connection_revision,
+            target_operation_id,
+            method_id,
+        },
+    )?))
 }
 
 /// 取消当前 ACP 认证操作。
@@ -110,13 +107,11 @@ pub async fn cancel_acp_auth(
     target_operation_id: String,
 ) -> Result<BridgeAcpAuthCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
-    let reply = bridge.studio.cancel_acp_auth(CancelAcpAuthRequest {
-        operation_id,
-        account_id,
-        target_operation_id,
-    })?;
-    Ok(BridgeAcpAuthCommandReply {
-        receipt: command_receipt(reply.receipt),
-        snapshot: bridge_acp_auth_snapshot(reply.snapshot),
-    })
+    Ok(bridge_acp_auth_reply(bridge.studio.cancel_acp_auth(
+        CancelAcpAuthRequest {
+            operation_id,
+            account_id,
+            target_operation_id,
+        },
+    )?))
 }

@@ -20,39 +20,7 @@ import 'thread_stream.dart';
 import 'updater.dart';
 part 'response.freezed.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AccountUsagesResponse`, `SkillsResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
-
-class AccountUsageDto {
-  final String accountId;
-  final BigInt revision;
-  final PlatformInt64 updatedAt;
-  final BridgeAccountUsageState state;
-
-  const AccountUsageDto({
-    required this.accountId,
-    required this.revision,
-    required this.updatedAt,
-    required this.state,
-  });
-
-  @override
-  int get hashCode =>
-      accountId.hashCode ^
-      revision.hashCode ^
-      updatedAt.hashCode ^
-      state.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is AccountUsageDto &&
-          runtimeType == other.runtimeType &&
-          accountId == other.accountId &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          state == other.state;
-}
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class ArchiveThreadResult {
   final String archivedRootId;
@@ -77,91 +45,6 @@ class ArchiveThreadResult {
           archivedRootId == other.archivedRootId &&
           removedThreadIds == other.removedThreadIds &&
           nextRoot == other.nextRoot;
-}
-
-@freezed
-sealed class BridgeAccountUsageData with _$BridgeAccountUsageData {
-  const BridgeAccountUsageData._();
-
-  const factory BridgeAccountUsageData.deepSeekBalance(
-    DeepSeekBalanceDto field0,
-  ) = BridgeAccountUsageData_DeepSeekBalance;
-  const factory BridgeAccountUsageData.subscription(
-    SubscriptionUsageDto field0,
-  ) = BridgeAccountUsageData_Subscription;
-}
-
-@freezed
-sealed class BridgeAccountUsageState with _$BridgeAccountUsageState {
-  const BridgeAccountUsageState._();
-
-  const factory BridgeAccountUsageState.unsupported() =
-      BridgeAccountUsageState_Unsupported;
-  const factory BridgeAccountUsageState.missingCredential({
-    required String message,
-  }) = BridgeAccountUsageState_MissingCredential;
-  const factory BridgeAccountUsageState.ready({
-    required BridgeAccountUsageData data,
-  }) = BridgeAccountUsageState_Ready;
-  const factory BridgeAccountUsageState.failed({
-    required BridgeStateError error,
-  }) = BridgeAccountUsageState_Failed;
-}
-
-class BridgeAccountUsageStateData {
-  final String configFingerprint;
-  final List<AccountUsageDto> usages;
-
-  const BridgeAccountUsageStateData({
-    required this.configFingerprint,
-    required this.usages,
-  });
-
-  @override
-  int get hashCode => configFingerprint.hashCode ^ usages.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeAccountUsageStateData &&
-          runtimeType == other.runtimeType &&
-          configFingerprint == other.configFingerprint &&
-          usages == other.usages;
-}
-
-@freezed
-sealed class BridgeAccountUsageStateSnapshot
-    with _$BridgeAccountUsageStateSnapshot {
-  const BridgeAccountUsageStateSnapshot._();
-
-  const factory BridgeAccountUsageStateSnapshot.uninitialized(
-    BridgeUninitializedResource field0,
-  ) = BridgeAccountUsageStateSnapshot_Uninitialized;
-  const factory BridgeAccountUsageStateSnapshot.loading(
-    BridgeLoadingResource field0,
-  ) = BridgeAccountUsageStateSnapshot_Loading;
-  const factory BridgeAccountUsageStateSnapshot.ready({
-    required BridgeReadyResource resource,
-    required BridgeAccountUsageStateData value,
-  }) = BridgeAccountUsageStateSnapshot_Ready;
-  const factory BridgeAccountUsageStateSnapshot.refreshing({
-    required BridgeRefreshingResource resource,
-    required BridgeAccountUsageStateData value,
-  }) = BridgeAccountUsageStateSnapshot_Refreshing;
-  const factory BridgeAccountUsageStateSnapshot.stale({
-    required BridgeStaleResource resource,
-    required BridgeAccountUsageStateData value,
-  }) = BridgeAccountUsageStateSnapshot_Stale;
-  const factory BridgeAccountUsageStateSnapshot.degraded({
-    required BridgeDegradedResource resource,
-    required BridgeAccountUsageStateData value,
-  }) = BridgeAccountUsageStateSnapshot_Degraded;
-  const factory BridgeAccountUsageStateSnapshot.failed(
-    BridgeFailedResource field0,
-  ) = BridgeAccountUsageStateSnapshot_Failed;
-  const factory BridgeAccountUsageStateSnapshot.stopped(
-    BridgeStoppedResource field0,
-  ) = BridgeAccountUsageStateSnapshot_Stopped;
 }
 
 class BridgeAgentDirectoryData {
@@ -1043,7 +926,6 @@ class BridgeStudioStateSnapshot {
   final BridgeLspStateSnapshot lsp;
   final List<BridgeSkillsStateSnapshot> skillsByProject;
   final BridgeThreadModeCatalogSnapshot threadModeCatalog;
-  final BridgeAccountUsageStateSnapshot accountUsage;
   final List<BridgeSessionCostsState> sessionCosts;
   final BridgeUpdaterStateSnapshot updater;
   final BridgePersistenceStateSnapshot persistence;
@@ -1063,7 +945,6 @@ class BridgeStudioStateSnapshot {
     required this.lsp,
     required this.skillsByProject,
     required this.threadModeCatalog,
-    required this.accountUsage,
     required this.sessionCosts,
     required this.updater,
     required this.persistence,
@@ -1085,7 +966,6 @@ class BridgeStudioStateSnapshot {
       lsp.hashCode ^
       skillsByProject.hashCode ^
       threadModeCatalog.hashCode ^
-      accountUsage.hashCode ^
       sessionCosts.hashCode ^
       updater.hashCode ^
       persistence.hashCode ^
@@ -1109,7 +989,6 @@ class BridgeStudioStateSnapshot {
           lsp == other.lsp &&
           skillsByProject == other.skillsByProject &&
           threadModeCatalog == other.threadModeCatalog &&
-          accountUsage == other.accountUsage &&
           sessionCosts == other.sessionCosts &&
           updater == other.updater &&
           persistence == other.persistence &&
@@ -1299,55 +1178,6 @@ class BridgeThreadPersistenceSnapshot {
 
 enum BridgeWorkspaceKind { project, standalone }
 
-class DeepSeekBalanceDto {
-  final bool isAvailable;
-  final List<DeepSeekBalanceInfoDto> balances;
-
-  const DeepSeekBalanceDto({required this.isAvailable, required this.balances});
-
-  @override
-  int get hashCode => isAvailable.hashCode ^ balances.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DeepSeekBalanceDto &&
-          runtimeType == other.runtimeType &&
-          isAvailable == other.isAvailable &&
-          balances == other.balances;
-}
-
-class DeepSeekBalanceInfoDto {
-  final String currency;
-  final String totalBalance;
-  final String grantedBalance;
-  final String toppedUpBalance;
-
-  const DeepSeekBalanceInfoDto({
-    required this.currency,
-    required this.totalBalance,
-    required this.grantedBalance,
-    required this.toppedUpBalance,
-  });
-
-  @override
-  int get hashCode =>
-      currency.hashCode ^
-      totalBalance.hashCode ^
-      grantedBalance.hashCode ^
-      toppedUpBalance.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DeepSeekBalanceInfoDto &&
-          runtimeType == other.runtimeType &&
-          currency == other.currency &&
-          totalBalance == other.totalBalance &&
-          grantedBalance == other.grantedBalance &&
-          toppedUpBalance == other.toppedUpBalance;
-}
-
 class DeleteThreadResult {
   final String deletedRootId;
   final List<String> deletedThreadIds;
@@ -1532,100 +1362,4 @@ class SubmitPromptResponse {
           threadId == other.threadId &&
           inputId == other.inputId &&
           revision == other.revision;
-}
-
-class SubscriptionQuotaLimitDto {
-  final String window;
-  final String label;
-  final double percentage;
-  final double? currentValue;
-  final double? total;
-  final double? remaining;
-  final PlatformInt64? nextResetAt;
-  final List<SubscriptionUsageDetailDto> usageDetails;
-
-  const SubscriptionQuotaLimitDto({
-    required this.window,
-    required this.label,
-    required this.percentage,
-    this.currentValue,
-    this.total,
-    this.remaining,
-    this.nextResetAt,
-    required this.usageDetails,
-  });
-
-  @override
-  int get hashCode =>
-      window.hashCode ^
-      label.hashCode ^
-      percentage.hashCode ^
-      currentValue.hashCode ^
-      total.hashCode ^
-      remaining.hashCode ^
-      nextResetAt.hashCode ^
-      usageDetails.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SubscriptionQuotaLimitDto &&
-          runtimeType == other.runtimeType &&
-          window == other.window &&
-          label == other.label &&
-          percentage == other.percentage &&
-          currentValue == other.currentValue &&
-          total == other.total &&
-          remaining == other.remaining &&
-          nextResetAt == other.nextResetAt &&
-          usageDetails == other.usageDetails;
-}
-
-class SubscriptionUsageDetailDto {
-  final String name;
-  final double? currentValue;
-  final double? total;
-  final double? percentage;
-
-  const SubscriptionUsageDetailDto({
-    required this.name,
-    this.currentValue,
-    this.total,
-    this.percentage,
-  });
-
-  @override
-  int get hashCode =>
-      name.hashCode ^
-      currentValue.hashCode ^
-      total.hashCode ^
-      percentage.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SubscriptionUsageDetailDto &&
-          runtimeType == other.runtimeType &&
-          name == other.name &&
-          currentValue == other.currentValue &&
-          total == other.total &&
-          percentage == other.percentage;
-}
-
-class SubscriptionUsageDto {
-  final String? level;
-  final List<SubscriptionQuotaLimitDto> limits;
-
-  const SubscriptionUsageDto({this.level, required this.limits});
-
-  @override
-  int get hashCode => level.hashCode ^ limits.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SubscriptionUsageDto &&
-          runtimeType == other.runtimeType &&
-          level == other.level &&
-          limits == other.limits;
 }

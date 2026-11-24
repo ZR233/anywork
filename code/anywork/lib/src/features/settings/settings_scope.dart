@@ -77,11 +77,7 @@ final settingsTopicSyncProvider = Provider.autoDispose
         SkillsTopic(:final workspaceId) => ref.watch(
           skillsStoreProvider(workspaceId).select((state) => state.sync),
         ),
-        ModelCatalogTopic() ||
-        AccountUsageTopic() ||
-        AcpAuthTopic() ||
-        AcpLocalDetectionTopic() ||
-        AcpInstallTopic() => throw ArgumentError.value(
+        ModelCatalogTopic() => throw ArgumentError.value(
           topic,
           'topic',
           'Account domains use repository observations, not settings topics',

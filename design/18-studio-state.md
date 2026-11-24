@@ -24,7 +24,7 @@ Studio 遵循命令查询分离原则：查询只读取所有者已发布的权�
 
 ### 启动聚合快照与会话工作区状态
 
-服务端启动快照聚合 `projectDirectory`、`threadDirectory`、`agentDirectory`、`modeCatalog`、`settings`、`recovery`、MCP/LSP、`accountUsage`、模型统计、根会话费用、`agentProfiles`、持久化队列与更新器（`updater`）状态。会话工作区（`ThreadWorkspace`）的当前状态、待处理交互、`ThreadRuntimeView`、工作流和 Plan 投影来自 Current；History 页面与正文不进入工作区轻量状态。客户端只用聚合快照做一次性 typed bootstrap 并拆入各自只读模型，正常命令成功后不重读聚合状态。每个运行实例拥有独立 `owner epoch`，引导快照与 ResourceStamp 引用同一 epoch。
+服务端启动快照聚合 `projectDirectory`、`threadDirectory`、`agentDirectory`、`modeCatalog`、`settings`、`recovery`、MCP/LSP、模型统计、根会话费用、`agentProfiles`、持久化队列与更新器（`updater`）状态。会话工作区（`ThreadWorkspace`）的当前状态、待处理交互、`ThreadRuntimeView`、工作流和 Plan 投影来自 Current；History 页面与正文不进入工作区轻量状态。客户端只用聚合快照做一次性 typed bootstrap 并拆入各自只读模型，正常命令成功后不重读聚合状态。每个运行实例拥有独立 `owner epoch`，引导快照与 ResourceStamp 引用同一 epoch。
 
 FRB 的 `readThreadSnapshot` 与 HTTP 单会话快照都打开 `CurrentReader` 并复用同一 State assembler，只返回有界 metadata 和 deferred 引用；需要正文或集合时再按 reference/range 读取。该查询不重新 project 全数组、不等待 History usage、不安装第二个执行 owner。
 

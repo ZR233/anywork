@@ -2,11 +2,10 @@ use std::path::{Path, PathBuf};
 
 use crate::{AttachmentModality, ThreadAttachment};
 use anyhow::{Context, Result, bail};
-use base64::Engine;
 use image::GenericImageView;
 
 use crate::studio::ids::{new_id, unix_seconds};
-use crate::studio::records::{AttachmentRecord, MaterializedAttachment};
+use crate::studio::records::AttachmentRecord;
 use crate::studio::store::StudioStore;
 
 mod catalog_schema;
@@ -97,23 +96,6 @@ impl StudioStore {
         Ok(reference)
     }
 
-    pub async fn materialize_thread_attachments(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<MaterializedAttachment>> {
-        let records = self.list_thread_attachments(thread_id).await?;
-        self.materialize_attachment_records(records).await
-    }
-
-    pub async fn materialize_attachments(
-        &self,
-        thread_id: &str,
-        attachment_ids: &[String],
-    ) -> Result<Vec<MaterializedAttachment>> {
-        let records = self.load_attachments(thread_id, attachment_ids).await?;
-        self.materialize_attachment_records(records).await
-    }
-
     pub(crate) async fn read_attachment_bytes(
         &self,
         thread_id: &str,
@@ -133,37 +115,6 @@ impl StudioStore {
     fn attachment_host_path(&self, record: &AttachmentRecord) -> Result<PathBuf> {
         let session = self.registered_session_paths(&record.thread_id)?;
         resolve_attachment_host_path(&session, &record.blob_relative_path)
-    }
-
-    async fn materialize_attachment_records(
-        &self,
-        records: Vec<AttachmentRecord>,
-    ) -> Result<Vec<MaterializedAttachment>> {
-        let mut materialized = Vec::with_capacity(records.len());
-        for record in records {
-            let bytes = tokio::fs::read(self.attachment_host_path(&record)?)
-                .await
-                .with_context(|| {
-                    let id = &record.id;
-                    format!("failed to read attachment {id}")
-                })?;
-            materialized.push(MaterializedAttachment {
-                attachment_id: record.id,
-                modality: match record.modality {
-                    crate::StudioAttachmentModality::Image => crate::AttachmentModality::Image,
-                    crate::StudioAttachmentModality::Video => crate::AttachmentModality::Video,
-                    crate::StudioAttachmentModality::File => crate::AttachmentModality::File,
-                },
-                media_type: record.media_type,
-                filename: record.filename,
-                data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                byte_size: record.byte_size,
-                width: record.width,
-                height: record.height,
-                initial_remote_url: None,
-            });
-        }
-        Ok(materialized)
     }
 
     pub(crate) async fn promote_attachment_drafts(

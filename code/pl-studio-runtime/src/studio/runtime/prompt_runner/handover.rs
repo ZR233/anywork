@@ -15,7 +15,7 @@ impl StudioRuntime {
     ///
     /// A main session decides its own questions; a child's questions are decided through its direct
     /// parent. Callers use this to name the hosting session instead of guessing it from a chat body.
-    pub async fn interaction_host_thread(&self, thread_id: &str) -> Result<String> {
+    pub(crate) async fn interaction_host_thread(&self, thread_id: &str) -> Result<String> {
         let record = self.read_owned_thread(thread_id).await?;
         Ok(record.parent_thread_id.unwrap_or(record.id))
     }

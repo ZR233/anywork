@@ -1,8 +1,6 @@
-//! Studio built-in MCP directory, credential selection and persisted enablement.
-use crate::{PureError, Result};
+//! Studio built-in MCP directory and credential selection.
 use pl_tool::approval::ToolEffect;
 use pl_tool::mcp::config::*;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub const ZHIPU_SEARCH_MCP_ID: &str = "zhipu_search";
 pub const ZHIPU_READER_MCP_ID: &str = "zhipu_reader";
@@ -79,55 +77,6 @@ const ZHIPU_CREDENTIAL: BuiltinMcpCredentialSource = BuiltinMcpCredentialSource:
     template_ids: &["zhipu-coding-plan"],
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct BuiltinMcpServerState {
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub enabled: bool,
-}
-
-impl Default for BuiltinMcpServerState {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-pub fn validate_mcp_servers(servers: &BTreeMap<String, McpServerConfig>) -> Result<()> {
-    for (server_id, server) in servers {
-        if is_builtin_mcp_server_id(server_id) {
-            return Err(PureError::ConfigError(format!(
-                "mcp server id '{server_id}' is reserved for a built-in server"
-            )));
-        }
-        server.validate(server_id)?;
-    }
-    Ok(())
-}
-
-pub fn validate_builtin_mcp_server_states(
-    states: &BTreeMap<String, BuiltinMcpServerState>,
-) -> Result<()> {
-    for server_id in states.keys() {
-        if !is_builtin_mcp_server_id(server_id) {
-            return Err(PureError::ConfigError(format!(
-                "unknown built-in mcp server id: {server_id}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-pub fn active_mcp_server_names(
-    user_servers: &BTreeMap<String, McpServerConfig>,
-    builtin_states: &BTreeMap<String, BuiltinMcpServerState>,
-    models: &pl_model::config::AgentModelConfig,
-) -> Vec<String> {
-    effective_mcp_servers(user_servers, builtin_states, models)
-        .into_iter()
-        .filter(|(_, server)| server.status_kind == McpServerStatusKind::Enabled)
-        .map(|(server_id, _)| server_id)
-        .collect()
-}
-
 pub fn builtin_mcp_server_ids() -> Vec<&'static str> {
     BUILTIN_MCP_SERVERS
         .iter()
@@ -139,98 +88,6 @@ pub fn is_builtin_mcp_server_id(server_id: &str) -> bool {
     BUILTIN_MCP_SERVERS
         .iter()
         .any(|definition| definition.id == server_id)
-}
-
-pub fn effective_mcp_servers(
-    user_servers: &BTreeMap<String, McpServerConfig>,
-    builtin_states: &BTreeMap<String, BuiltinMcpServerState>,
-    models: &pl_model::config::AgentModelConfig,
-) -> BTreeMap<String, EffectiveMcpServerConfig> {
-    let mut servers = BTreeMap::new();
-    for (server_id, server) in user_servers {
-        let status_kind = if server.enabled {
-            McpServerStatusKind::Enabled
-        } else {
-            McpServerStatusKind::Disabled
-        };
-        servers.insert(
-            server_id.clone(),
-            EffectiveMcpServerConfig {
-                id: server_id.clone(),
-                config: server.clone(),
-                source_kind: McpServerSourceKind::User,
-                source_label: "User".to_string(),
-                source_detail: None,
-                status_kind,
-                status_message: None,
-                mutation_policy: McpServerMutationPolicy::UserEditable,
-                bearer_token: None,
-                tool_effect: None,
-                execution_context: pl_tool::mcp::config::McpExecutionContext::Host,
-            },
-        );
-    }
-
-    for definition in BUILTIN_MCP_SERVERS {
-        let token = definition.credential.resolve(models);
-        let builtin_enabled = builtin_states
-            .get(definition.id)
-            .is_none_or(|state| state.enabled);
-        let status_kind = if !builtin_enabled {
-            McpServerStatusKind::Disabled
-        } else if token.is_some() {
-            McpServerStatusKind::Enabled
-        } else {
-            McpServerStatusKind::MissingCredential
-        };
-        let mut config = definition.config(token.as_deref());
-        config.enabled = builtin_enabled;
-        servers.insert(
-            definition.id.to_string(),
-            EffectiveMcpServerConfig {
-                id: definition.id.to_string(),
-                config,
-                source_kind: McpServerSourceKind::BuiltIn,
-                source_label: "Built-in".to_string(),
-                source_detail: Some(definition.source_detail.to_string()),
-                status_kind,
-                status_message: match status_kind {
-                    McpServerStatusKind::Enabled => {
-                        Some("Using the configured Zhipu Coding Plan account token".to_string())
-                    }
-                    McpServerStatusKind::MissingCredential => Some(
-                        "Configure a Zhipu Coding Plan account token to enable this server"
-                            .to_string(),
-                    ),
-                    McpServerStatusKind::Disabled => None,
-                },
-                mutation_policy: McpServerMutationPolicy::LockedIdentity,
-                bearer_token: token,
-                tool_effect: definition.tool_effect,
-                execution_context: pl_tool::mcp::config::McpExecutionContext::Host,
-            },
-        );
-    }
-
-    servers
-}
-
-pub fn normalize_builtin_mcp_server_states(
-    states: &mut BTreeMap<String, BuiltinMcpServerState>,
-    models: &pl_model::config::AgentModelConfig,
-) {
-    states.retain(|server_id, _| is_builtin_mcp_server_id(server_id));
-    for definition in BUILTIN_MCP_SERVERS {
-        if definition.credential.resolve(models).is_some() {
-            states
-                .entry(definition.id.to_string())
-                .or_insert(BuiltinMcpServerState { enabled: true });
-        }
-    }
-}
-
-pub fn zhipu_coding_plan_token(models: &pl_model::config::AgentModelConfig) -> Option<String> {
-    ZHIPU_CREDENTIAL.resolve(models)
 }
 
 pub fn build_builtin_effective_config(
@@ -346,14 +203,6 @@ impl BuiltinMcpServerDefinition {
             disabled_tools: Vec::new(),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
 }
 
 #[cfg(test)]

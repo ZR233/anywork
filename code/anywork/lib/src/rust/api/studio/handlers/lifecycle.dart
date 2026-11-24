@@ -130,8 +130,5 @@ Future<ProjectDto> renameProject({
   name: name,
 );
 
-Future<BridgeRecoveryStateSnapshot> readRecoveryState() =>
-    RustLib.instance.api.crateApiStudioHandlersLifecycleReadRecoveryState();
-
 Future<BridgeRecoveryStateSnapshot> retryRecovery() =>
     RustLib.instance.api.crateApiStudioHandlersLifecycleRetryRecovery();

@@ -76,14 +76,6 @@ impl ChatScope {
     pub fn parent_id(&self) -> Option<&str> {
         self.parent_id.as_deref()
     }
-
-    pub fn is_valid(&self) -> bool {
-        self.query_class().is_none_or(|value| !value.is_empty())
-            && self
-                .parent_id
-                .as_ref()
-                .is_none_or(|value| !value.is_empty())
-    }
 }
 
 /// 稳定引用存储身份，而非某个页面的当前选择；读取权限由原 read lease 核验。

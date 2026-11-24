@@ -78,7 +78,6 @@ impl StudioRuntime {
             lsp,
             skills_by_project,
             thread_mode_catalog: self.read_thread_mode_catalog(),
-            account_usage: self.read_account_usage_state().await,
             session_costs,
             updater: self.read_update_state().await,
             persistence: self.agent_facility.product_events.persistence_state(),
@@ -123,7 +122,7 @@ impl StudioRuntime {
     }
 
     /// Reads the current process-wide Thread Mode catalog.
-    pub fn read_thread_mode_catalog(&self) -> crate::mode::ThreadModeCatalogSnapshot {
+    pub(crate) fn read_thread_mode_catalog(&self) -> crate::mode::ThreadModeCatalogSnapshot {
         self.config_runtime.read_thread_mode_catalog()
     }
 }

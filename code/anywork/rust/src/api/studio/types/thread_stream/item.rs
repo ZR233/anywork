@@ -1,15 +1,4 @@
-//! Typed attachment and wait leaves retained by the state domain.
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeThreadAttachment {
-    pub id: String,
-    pub modality: crate::api::studio::types::BridgeAttachmentModality,
-    pub media_type: String,
-    pub filename: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub byte_size: u64,
-}
+//! Typed wait leaves retained by the state domain.
 
 /// Shared typed wait/sleep presentation mirrored from the protocol DTO.
 #[derive(Debug, Clone, PartialEq, Eq)]

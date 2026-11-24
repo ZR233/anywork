@@ -1,21 +1,8 @@
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::commands::settings_command_reply;
-use crate::api::studio::convert::runtime::bridge_agent_profiles;
 use crate::api::studio::types::{
-    BridgeAgentBinding, BridgeAgentProfilesStateSnapshot, BridgeAgentWorkspaceMode, BridgeError,
-    BridgeSettingsCommandReply,
+    BridgeAgentBinding, BridgeAgentWorkspaceMode, BridgeError, BridgeSettingsCommandReply,
 };
-
-/// 读取配置 owner 已发布的 Agent Profiles 资源快照（完整配置与逐文件诊断）。
-///
-/// 纯缓存读取，不扫描文件；外部手改 Profile 后需要显式 reload 设置。
-pub async fn read_agent_profiles_state() -> Result<BridgeAgentProfilesStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    let snapshot = bridge.studio.read_agent_profiles_state()?;
-    Ok(BridgeAgentProfilesStateSnapshot {
-        state: bridge_agent_profiles(snapshot.state),
-    })
-}
 
 /// Enables or disables an immutable built-in Agent Profile.
 pub async fn set_system_agent_enabled(
