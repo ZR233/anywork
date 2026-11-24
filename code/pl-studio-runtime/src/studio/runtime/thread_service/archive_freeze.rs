@@ -196,7 +196,7 @@ impl StudioRuntime {
                 if deletion.phase == crate::studio::store::thread_delete::DeletePhase::Published {
                     continue;
                 }
-                let overlaps = match &scope {
+                let overlaps = match scope {
                     ArchiveScope::Thread(root) => *root == deletion.root_id,
                     ArchiveScope::Workspace(workspace) => deletion
                         .members
@@ -326,7 +326,7 @@ impl StudioRuntime {
             self.store.thread_preparations().await?
         };
         for record in preparations {
-            let in_scope = match &scope {
+            let in_scope = match scope {
                 ArchiveScope::Thread(root) => record.identity.root_id == *root,
                 ArchiveScope::Workspace(workspace) => record.identity.workspace_id == *workspace,
             };
@@ -438,7 +438,7 @@ impl StudioRuntime {
             .filter(|operation| operation.phase != ArchivePhase::Published)
             .map(|operation| operation.members.clone())
             .unwrap_or_default();
-        for identity in &admitted {
+        for identity in admitted {
             if purpose == ArchivePurpose::Delete {
                 // A durable deletion already owns every admitted identity. Recreating a lost
                 // preparation would discard its frozen binding and invent a new obligation.
@@ -600,7 +600,7 @@ impl StudioRuntime {
             .iter()
             .map(|member| member.identity.clone())
             .collect::<Vec<_>>();
-        for identity in &admitted {
+        for identity in admitted {
             if !members
                 .iter()
                 .any(|member| member.thread_id == identity.thread_id)
@@ -727,7 +727,7 @@ impl StudioRuntime {
     async fn assemble_frozen_archive(
         &self,
         scope: ArchiveScope,
-        mut previous: Option<ThreadArchiveOperation>,
+        previous: Option<ThreadArchiveOperation>,
         missing_delete_progress: bool,
         members: Vec<ArchiveMember>,
         private_members: Vec<PrivateArchiveMember>,

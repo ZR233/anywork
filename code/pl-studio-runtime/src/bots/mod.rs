@@ -22,6 +22,7 @@ mod send;
 mod storage;
 mod workspace;
 
+pub(crate) use archive::BotArchiveGuard;
 pub(crate) use config::load_config;
 pub(crate) use config::validate_bot_id;
 pub(crate) use host::StudioBotSessionHost;

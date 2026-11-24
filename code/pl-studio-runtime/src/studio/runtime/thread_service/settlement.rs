@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::bots::archive::BotArchiveGuard;
+use crate::bots::BotArchiveGuard;
 use crate::session::SessionRuntime;
 use crate::thread_assembler::ArchiveScopeSeal;
 
