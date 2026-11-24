@@ -2740,11 +2740,9 @@ mod mode_migration_tests {
     async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Result<()> {
         use crate::studio::{StudioStore, paths::StudioPaths, storage::calls::CallsStore};
         use sea_orm::{DatabaseBackend, Statement};
+        // Schema 26 has no session_checkpoint, so the old future-checkpoint fault is not copied.
         for family in ["product", "history", "calls"] {
-            for fault in ["format", "migration", "missing_table", "checkpoint"] {
-                if fault == "checkpoint" && family != "history" {
-                    continue;
-                }
+            for fault in ["format", "migration", "missing_table"] {
                 let directory = tempfile::tempdir()?;
                 let paths = StudioPaths::resolve(Some(directory.path().to_path_buf()))?;
                 let path = match family {
@@ -2757,35 +2755,28 @@ mod mode_migration_tests {
                         "product" => StudioStore::open(&path).await?.close().await?,
                         "calls" => CallsStore::prepare(&path).await?.close().await?,
                         _ => {
-                            let history = HistoryStore::open(&path, "adoption").await?;
-                            if generation == 0 {
-                                crate::studio::storage::history::persist_completed(
-                                    &history,
-                                    1,
-                                    &[],
-                                )
-                                .await?;
-                            } else {
-                                history.prepare_activation().await?;
-                            }
+                            crate::history::HistoryStore::open(
+                                &path,
+                                "adoption",
+                                crate::history::HistoryLimits::default(),
+                            )
+                            .await?
+                            .close()
+                            .await?;
                         }
                     }
-                    if generation == 0 {
+                    if generation == 0 && family != "history" {
                         let db = raw_database(&path).await?;
-                        if family == "history" {
-                            restore_pre_timeline_history_fixture(&db, 8).await?;
-                        } else {
-                            if family == "calls" {
-                                // Restore the published v8 shape, before fence retirement and request tiers.
-                                db.execute_unprepared(
-                                    "ALTER TABLE performance_samples DROP COLUMN requested_service_tier;
-                                     ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
-                                     UPDATE calls_meta SET schema_version=8 WHERE id=1;",
-                                )
-                                .await?;
-                            }
-                            db.execute_unprepared("DROP TABLE seaql_migrations").await?;
+                        if family == "calls" {
+                            // Restore the published v8 shape, before fence retirement and request tiers.
+                            db.execute_unprepared(
+                                "ALTER TABLE performance_samples DROP COLUMN requested_service_tier;
+                                 ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
+                                 UPDATE calls_meta SET schema_version=8 WHERE id=1;",
+                            )
+                            .await?;
                         }
+                        db.execute_unprepared("DROP TABLE seaql_migrations").await?;
                         db.close().await?;
                     }
                 }
@@ -2806,22 +2797,14 @@ mod mode_migration_tests {
                     db.execute_unprepared(match family {
                         "product" => "DROP TABLE seaql_migrations; DROP TABLE studio_objects",
                         "calls" => "DROP TABLE seaql_migrations; DROP TABLE call_usage_summary",
-                        _ => "DROP TABLE execution_lifecycle",
+                        _ => "DROP TABLE history_events",
                     })
                     .await?;
-                } else if fault == "checkpoint" {
-                    let mut checkpoint =
-                        ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default())?;
-                    checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION + 1;
-                    let payload = serde_json::to_string(&checkpoint)?;
-                    db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
-                    "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash) VALUES(1,0,0,0,?,?)",
-                    vec![payload.clone().into(), pl_core::context::content_hash(payload.as_bytes()).into()])).await?;
                 } else {
                     db.execute_unprepared(match family {
                         "product" => "PRAGMA user_version=999",
                         "calls" => "UPDATE calls_meta SET schema_version=999",
-                        _ => "UPDATE history_meta SET schema_version=999",
+                        _ => "UPDATE history_store_meta SET schema_version=999",
                     })
                     .await?;
                 }
@@ -2830,14 +2813,13 @@ mod mode_migration_tests {
                 let failure = match family {
                     "product" => StudioStore::open(&path).await.map(|_| ()),
                     "calls" => CallsStore::prepare(&path).await.map(|_| ()),
-                    _ => {
-                        async {
-                            let history = HistoryStore::open(&path, "adoption").await?;
-                            history.prepare_activation().await?;
-                            history.checkpoint().await.map(|_| ())
-                        }
-                        .await
-                    }
+                    _ => crate::history::HistoryStore::open(
+                        &path,
+                        "adoption",
+                        crate::history::HistoryLimits::default(),
+                    )
+                    .await
+                    .map(|_| ()),
                 };
                 assert!(failure.is_err(), "future {family} {fault} was accepted");
                 assert_eq!(
