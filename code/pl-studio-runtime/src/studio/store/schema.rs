@@ -57,18 +57,11 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
         !pending.is_empty() || version == STUDIO_DATABASE_SCHEMA_VERSION,
         "Studio format conflicts with completed migrations; existing data preserved"
     );
-    for row in db
-        .query_all_raw(Statement::from_string(
-            DatabaseBackend::Sqlite,
-            "PRAGMA quick_check",
-        ))
-        .await?
-    {
-        ensure!(
-            row.try_get_by_index::<String>(0)? == "ok",
-            "Studio database integrity check failed"
-        );
-    }
+    crate::studio::storage::sqlite_util::preflight_sqlite(
+        db,
+        "Studio database integrity check failed",
+    )
+    .await?;
     Ok(())
 }
 
