@@ -39,13 +39,13 @@ impl StudioThreadFactory {
         &self,
         id: &str,
         project: &crate::studio::WorkspaceRecord,
-    ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease> {
+    ) -> Result<crate::studio::worktree::worktree_lease::WorktreeLease> {
         ensure!(
             project.kind != crate::WorkspaceKind::Standalone,
             "standalone sessions only support local workspaces"
         );
         self.services.worktrees.mark_creating(id);
-        crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
+        crate::studio::worktree::workspace_preparation::create_root_session_worktree(
             &self.services.store,
             &self.services.worktrees,
             &self.services.ssh_manager,
@@ -58,7 +58,7 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) async fn confirm_acp_worktree(
         &self,
-        lease: &crate::studio::agent_host::worktree_lease::WorktreeLease,
+        lease: &crate::studio::worktree::worktree_lease::WorktreeLease,
         usage: &crate::studio::WorkspaceUsageLease,
         admission: &impl crate::thread_assembler::WorkspaceBindingAdmission,
     ) -> Result<()> {
@@ -70,7 +70,7 @@ impl StudioThreadFactory {
     }
 
     pub(in crate::studio) async fn preserve_acp_draft_worktree(&self, id: &str) -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        use crate::studio::worktree::worktree_lease::WorktreeLeaseState;
         if let Some(lease) = self.services.worktrees.get(id)
             && lease.state != WorktreeLeaseState::Cleaned
         {
@@ -175,8 +175,8 @@ impl StudioThreadFactory {
             "ACP workspace preparation cancelled"
         );
         let identity = if let Some(remote) = &remote {
-            let identity = crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
-                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
+            let identity = crate::studio::worktree::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::worktree::worktree_lease::WorkspaceEndpoint::from_profile(Some(
                     &remote.profile,
                 )),
                 remote.files().canonical_path().into(),

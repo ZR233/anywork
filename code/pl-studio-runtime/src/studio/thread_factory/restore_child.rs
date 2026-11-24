@@ -165,7 +165,7 @@ impl StudioThreadFactory {
         let root = tokio::task::spawn_blocking(move || {
             Ok::<_, anyhow::Error>(match bot_root {
                 Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                None => crate::studio::worktree::workspace_preparation::resolved_project_root(
                     &project_copy,
                 )?,
             })
@@ -173,7 +173,7 @@ impl StudioThreadFactory {
         .await?
         .map_err(|error| resource_error("resolve restored session workspace", error))?;
         let session_root =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
@@ -345,7 +345,7 @@ impl StudioThreadFactory {
         receipt: &crate::AgentWorktreeSnapshot,
         thread: &crate::studio::ThreadRecord,
         project: &crate::studio::WorkspaceRecord,
-    ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease, ThreadAssemblyError> {
+    ) -> Result<crate::studio::worktree::worktree_lease::WorktreeLease, ThreadAssemblyError> {
         let child_id = &thread.id;
         let missing = |reason: &str| ThreadAssemblyError::Workspace {
             thread_id: child_id.clone(),
@@ -363,8 +363,8 @@ impl StudioThreadFactory {
         // underneath the owner.
         if matches!(
             lease.state,
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseState::CleanupRequested
-                | crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned
+            crate::studio::worktree::worktree_lease::WorktreeLeaseState::CleanupRequested
+                | crate::studio::worktree::worktree_lease::WorktreeLeaseState::Cleaned
         ) {
             return Err(missing(
                 "the saved child worktree is cleaned or cleanup is in progress",
@@ -378,7 +378,7 @@ impl StudioThreadFactory {
         verify_worktree_declarations(&lease, receipt, thread, project, &repository_root).map_err(
             |error| resource_error("validate restored child worktree declarations", error),
         )?;
-        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+        let manager = crate::studio::worktree::workspace_preparation::manager_from_lease(
             &self.services.store,
             &self.services.ssh_manager,
             &lease,
@@ -405,9 +405,9 @@ impl StudioThreadFactory {
         project: &crate::studio::WorkspaceRecord,
     ) -> Result<(PathBuf, crate::agent::worktree::WorktreeManager), ThreadAssemblyError> {
         let project_root =
-            crate::studio::agent_host::workspace_preparation::resolved_project_root(project)
+            crate::studio::worktree::workspace_preparation::resolved_project_root(project)
                 .map_err(|error| resource_error("resolve restored child project root", error))?;
-        crate::studio::agent_host::workspace_preparation::repository_manager(
+        crate::studio::worktree::workspace_preparation::repository_manager(
             &self.services.ssh_manager,
             project.ssh_alias.as_deref(),
             &project_root,

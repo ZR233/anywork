@@ -9,8 +9,8 @@ use super::{StudioThreadFactory, errors::resource_error};
 use crate::Thread;
 use crate::studio::{
     agent_close::state_error,
-    agent_host::workspace_preparation,
     store::agent_close::{AgentCloseRecord, OwnedWorktreeBinding},
+    worktree::workspace_preparation,
 };
 use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
@@ -313,7 +313,7 @@ impl StudioThreadFactory {
         let worktree = if let Some(lease) = self.services.worktrees.get(id) {
             ensure!(
                 lease.owner_kind
-                    == crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child
+                    == crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind::Child
                     && lease.root_thread_id == member.root_thread_id
                     && lease.workspace_id == member.session.workspace_id,
                 "ACP child does not own this worktree"
@@ -457,7 +457,7 @@ impl StudioThreadFactory {
         thread: &crate::Thread,
         assignment: &crate::AgentWorkspaceAssignmentSnapshot,
     ) -> Result<(), ThreadAssemblyError> {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind;
+        use crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind;
         let lease = self.services.worktrees.get(&thread.id);
         if assignment.mode != crate::AgentWorkspaceMode::Worktree {
             // In particular a reviewer never owns the worktree named by its review assignment.

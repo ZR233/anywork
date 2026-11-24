@@ -42,7 +42,7 @@ pub(crate) struct LspProjectionBinding<'a> {
 #[derive(Clone)]
 pub(in crate::studio) struct StudioThreadServices {
     pub store: StudioStore,
-    pub worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    pub worktrees: crate::studio::worktree::worktree_lease::WorktreeLeaseOwner,
     pub recovery: crate::studio::StudioRecoveryRegistry,
     pub product_events: ProductEventBus,
     pub config_runtime: crate::config::ConfigRuntime,
@@ -381,9 +381,9 @@ mod review_archive_tests {
     //! Archive admission while a real factory binding is in flight.
     use crate::studio::{
         StudioStore,
-        agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         storage_fault_test_support::close_factory,
         store::directory::{DirectoryDelta, ProjectDirectoryRecord},
+        worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     };
     use crate::thread_assembler::{
         SessionRuntime, StudioActivationFactory, StudioThreadSpec, ThreadActivation,
@@ -442,7 +442,7 @@ mod review_archive_tests {
     async fn check_sealed_factory_binding() -> anyhow::Result<()> {
         use crate::{
             agent::worktree::{WorktreeManager, WorktreeOwnership},
-            studio::agent_host::worktree_lease::{
+            studio::worktree::worktree_lease::{
                 WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
             },
         };
@@ -538,7 +538,7 @@ mod review_archive_tests {
         );
         assert_eq!(factory.services.worktrees.get("root"), Some(lease.clone()));
         assert_eq!(
-            crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            crate::studio::worktree::worktree_lease::load_leases(&store).await?,
             vec![lease]
         );
         assert!(owner.thread("root").is_none(), "no owner may be published");

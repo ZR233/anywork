@@ -1396,7 +1396,7 @@ impl AgentControlHost for AgentHost {
 }
 
 impl SessionRuntime {
-    fn agent_host(
+    fn worktree(
         &self,
         caller: &crate::AgentThreadIdentity,
         resources: AgentHostResources,
@@ -1434,7 +1434,7 @@ impl SessionRuntime {
         profiles: &crate::config::AgentProfilesSnapshot,
         selection: crate::DelegationSettings,
     ) -> Result<AgentHost, ThreadAssemblyError> {
-        self.agent_host(
+        self.worktree(
             caller,
             AgentHostResources::Acp(Arc::downgrade(resources)),
             profiles,
@@ -1449,7 +1449,7 @@ impl SessionRuntime {
         profiles: &crate::config::AgentProfilesSnapshot,
         selection: crate::DelegationSettings,
     ) -> Result<AgentHost, ThreadAssemblyError> {
-        self.agent_host(
+        self.worktree(
             caller,
             AgentHostResources::Native(Arc::downgrade(resources)),
             profiles,

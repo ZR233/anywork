@@ -33,7 +33,7 @@ pub(super) const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone)]
 pub(super) enum StudioMutation {
     Delta(DirectoryDelta),
-    WorktreeLease(crate::studio::agent_host::worktree_lease::WorktreeLease),
+    WorktreeLease(crate::studio::worktree::worktree_lease::WorktreeLease),
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +90,7 @@ pub(super) fn queue_directory(ticket: u64, delta: DirectoryDelta) -> QueuedMutat
 
 pub(super) fn queue_worktree_lease(
     ticket: u64,
-    lease: crate::studio::agent_host::worktree_lease::WorktreeLease,
+    lease: crate::studio::worktree::worktree_lease::WorktreeLease,
 ) -> QueuedMutation {
     QueuedMutation::new(ticket, Box::new(StudioMutation::WorktreeLease(lease)))
 }

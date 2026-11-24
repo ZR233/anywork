@@ -1,5 +1,4 @@
 pub(crate) mod agent_close;
-mod agent_host;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub mod benchmark;
@@ -22,6 +21,7 @@ mod runtime_lock;
 mod runtime_state;
 pub(crate) mod startup;
 pub(crate) mod storage;
+mod worktree;
 
 pub(crate) mod store;
 pub(crate) mod thread;
@@ -30,7 +30,6 @@ pub(crate) mod thread_projection;
 mod toml_store;
 pub(crate) mod workspace_receipt;
 
-pub use agent_host::worktree_lease::WorkspaceUsageLease;
 pub(crate) use ids::{content_owner_key, new_id, unix_seconds};
 pub use instance::{StudioInstance, StudioInstanceLease};
 pub(crate) use paths::StudioPaths;
@@ -52,6 +51,7 @@ pub use runtime_state::*;
 pub use startup::{StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery};
 pub(crate) use storage::thread_writer::{HistoryChannel, ThreadStorageBinding};
 pub use store::{StudioDatabaseError, StudioStore};
+pub use worktree::worktree_lease::WorkspaceUsageLease;
 
 pub(crate) use thread_factory::StudioThreadFactory;
 

@@ -2,7 +2,7 @@
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::studio::{
     WorkspaceRecord,
-    agent_host::worktree_lease::{
+    worktree::worktree_lease::{
         WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
     },
 };
@@ -124,7 +124,7 @@ impl StudioThreadFactory {
         project: &WorkspaceRecord,
         root: &Path,
     ) -> Result<WorkspaceIdentity> {
-        crate::studio::agent_host::worktree_lease::resolve_physical_workspace(
+        crate::studio::worktree::worktree_lease::resolve_physical_workspace(
             &self.services.ssh_manager,
             project,
             root,

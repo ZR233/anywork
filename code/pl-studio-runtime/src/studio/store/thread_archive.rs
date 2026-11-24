@@ -9,8 +9,8 @@ use super::{
     StudioStore,
     object::{PersistedStudioObject, checked_bump_revision, list_objects, load_object, put_object},
 };
-use crate::studio::agent_host::worktree_lease::WorkspaceIdentity;
-use crate::studio::agent_host::worktree_lease::WorktreeLease;
+use crate::studio::worktree::worktree_lease::WorkspaceIdentity;
+use crate::studio::worktree::worktree_lease::WorktreeLease;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

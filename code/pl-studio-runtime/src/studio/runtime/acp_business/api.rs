@@ -1163,8 +1163,7 @@ impl StudioRuntime {
             )
         };
         if let Some(lease) = self.agent_facility.worktrees.get(&target.thread_id)
-            && lease.state
-                == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Preserved
+            && lease.state == crate::studio::worktree::worktree_lease::WorktreeLeaseState::Preserved
         {
             self.publish_worktree_recovery(Some("unused ACP draft worktree retained"), &lease)
                 .await;

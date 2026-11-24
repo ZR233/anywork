@@ -2,7 +2,7 @@
 use super::StudioThreadFactory;
 use crate::studio::{
     WorkspaceRecord,
-    agent_host::{
+    worktree::{
         workspace_preparation,
         worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseState},
     },

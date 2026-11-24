@@ -8,7 +8,7 @@ use super::{
         put_object,
     },
 };
-use crate::studio::agent_host::worktree_lease::{
+use crate::studio::worktree::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
 };
 use anyhow::{Result, ensure};

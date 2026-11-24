@@ -13,13 +13,13 @@ use super::super::StudioRuntime;
 use super::archive::ArchivePurpose;
 use crate::studio::store::object::{list_deletion_aux, load_deletion_aux};
 use crate::studio::{
-    agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     records::DirectoryMember,
     store::thread_archive::{
         ArchiveMember, ArchivePhase, ArchiveScope, PrivateArchiveMember, ThreadArchiveOperation,
     },
     store::thread_delete::ThreadDeleteOperation,
     store::thread_preparation::{PreparationBinding, PreparationDisposition, PreparationIdentity},
+    worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
 };
 
 fn merge_removal_root(
@@ -762,7 +762,7 @@ impl StudioRuntime {
                 continue;
             }
             if let Some(lease) = self.agent_facility.worktrees.get(id) {
-                let identity = crate::studio::agent_host::workspace_preparation::cleanup_identity(
+                let identity = crate::studio::worktree::workspace_preparation::cleanup_identity(
                     &self.store,
                     &lease,
                 )

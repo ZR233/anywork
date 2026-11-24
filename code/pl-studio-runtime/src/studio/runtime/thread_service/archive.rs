@@ -6,12 +6,12 @@ use pl_tool::workspace::{SessionFiles, SessionTempBackend, path_safety};
 
 use super::super::StudioRuntime;
 use crate::studio::{
-    agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     records::DirectoryMember,
     store::thread_archive::{
         ArchiveMember, ArchivePhase, ArchiveScope, PrivateArchiveMember, ThreadArchiveOperation,
     },
     store::thread_preparation::{PreparationBinding, PreparationIdentity, PreparationSave},
+    worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -404,7 +404,7 @@ fn execution_removed_with_worktree(
     operation.worktrees.iter().any(|worktree| {
         (worktree.cleaned
             || worktree.lease.state
-                == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned)
+                == crate::studio::worktree::worktree_lease::WorktreeLeaseState::Cleaned)
             && identity.within(&worktree.identity)
     })
 }

@@ -231,7 +231,7 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
         // Every raw family copy has completed before this may open or checkpoint SQLite.
         let store = StudioStore::prepare_layout_database(database).await?;
         let relocated = async {
-            crate::studio::agent_host::worktree_lease::migrate_bot_identities(
+            crate::studio::worktree::worktree_lease::migrate_bot_identities(
                 store.database(),
                 &mut journal.bot_roots,
             )

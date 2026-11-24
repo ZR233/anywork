@@ -279,7 +279,7 @@ struct StudioExternalRuntimes {
 
 #[derive(Clone)]
 struct StudioAgentFacility {
-    worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    worktrees: crate::studio::worktree::worktree_lease::WorktreeLeaseOwner,
     product_events: ProductEventBus,
     /// agent framework 的 write-behind writer 句柄；framework 被 take 后关机仍能排空。
     persistence: std::sync::Arc<

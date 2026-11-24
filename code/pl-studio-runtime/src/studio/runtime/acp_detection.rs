@@ -1077,7 +1077,7 @@ mod publication_tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::worktree::ThreadWriteBehindWriter;
     use crate::studio::{ProductEventBus, StudioStore};
 
     #[tokio::test]

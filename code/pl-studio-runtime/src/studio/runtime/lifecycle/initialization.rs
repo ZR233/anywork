@@ -313,7 +313,7 @@ impl StudioRuntime {
             ),
             timed_step(
                 "prepare_resource_ownership",
-                crate::studio::agent_host::worktree_lease::load_leases(&self.store)
+                crate::studio::worktree::worktree_lease::load_leases(&self.store)
             ),
             timed_step("prepare_remote_configuration", self.hydrate_ssh_servers()),
             timed_step("prepare_system_skills", self.skills.refresh_system_skills())

@@ -559,12 +559,12 @@ mod standalone_tests {
     async fn archive_private_preparation_failed_retirement_survives_restart_and_preserves_delivery()
     -> Result<()> {
         use crate::studio::{
-            agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
             storage_fault_test_support::close_factory,
             store::{
                 thread_archive::{ArchivePhase, ArchiveScope},
                 thread_preparation::{PreparationBinding, PreparationIdentity},
             },
+            worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         };
         use sea_orm::ConnectionTrait;
         let temp = tempfile::tempdir()?;
@@ -2457,7 +2457,6 @@ mod standalone_tests {
         use super::*;
         use crate::{
             studio::{
-                agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
                 storage_fault_test_support::{ThreadStorageSink, close_factory},
                 store::{
                     thread_archive::{ArchivePhase, ArchiveScope},
@@ -2466,6 +2465,7 @@ mod standalone_tests {
                         PreparationSave, ThreadPreparationRecord,
                     },
                 },
+                worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
             },
             thread_assembler::{
                 ChildThreadRequest, StudioChildFactory, StudioChildResources, StudioThreadSpec,
@@ -3479,12 +3479,12 @@ mod standalone_tests {
         //! Real lifecycle deletion, independent of UI/FRB and without external model requests.
         use super::*;
         use crate::studio::{
-            agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
             storage_fault_test_support::{ThreadStorageSink, spawn_live_projection_for_thread},
             store::{
                 directory::DirectoryDelta, thread_delete::DeletePhase,
                 thread_preparation::PreparationIdentity,
             },
+            worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         };
         use pl_core::thread::ThreadHandle;
         use pl_tool::workspace::SessionFiles;
@@ -4577,10 +4577,10 @@ mod standalone_tests {
                     ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
                 },
                 studio::{
-                    agent_host::worktree_lease::{
+                    store::thread_archive::{ArchivePhase, ArchiveScope},
+                    worktree::worktree_lease::{
                         WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
                     },
-                    store::thread_archive::{ArchivePhase, ArchiveScope},
                 },
             };
             for root_owned in [true, false] {
@@ -4890,10 +4890,10 @@ mod standalone_tests {
                     ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
                 },
                 studio::{
-                    agent_host::worktree_lease::{
+                    store::thread_archive::ArchiveScope,
+                    worktree::worktree_lease::{
                         WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
                     },
-                    store::thread_archive::ArchiveScope,
                 },
             };
             for root_owned in [true, false] {
@@ -6151,7 +6151,7 @@ mod standalone_tests {
                         ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager,
                         WorktreeOwnership,
                     },
-                    studio::agent_host::worktree_lease::{
+                    studio::worktree::worktree_lease::{
                         WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
                     },
                 };

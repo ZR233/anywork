@@ -263,7 +263,15 @@ impl StudioRuntime {
         }
         for thread_id in candidates {
             if self.residency.is_pinned(&thread_id)
-                || self.agent_facility.worktrees.get(&thread_id).is_some_and(|lease| lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned) {
+                || self
+                    .agent_facility
+                    .worktrees
+                    .get(&thread_id)
+                    .is_some_and(|lease| {
+                        lease.state
+                            != crate::studio::worktree::worktree_lease::WorktreeLeaseState::Cleaned
+                    })
+            {
                 continue;
             }
             // Eviction retains the full resource/storage close state. Keep that state out of

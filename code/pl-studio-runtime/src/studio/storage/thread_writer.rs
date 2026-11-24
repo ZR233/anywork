@@ -3601,7 +3601,7 @@ pub(crate) mod storage_fault_tests {
         pub(crate) config: crate::config::ConfigRuntime,
         pub(crate) events: crate::studio::ProductEventBus,
         store: StudioStore,
-        worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+        worktrees: crate::studio::worktree::worktree_lease::WorktreeLeaseOwner,
     }
 
     impl CloseFactoryFixture {
@@ -3610,7 +3610,7 @@ pub(crate) mod storage_fault_tests {
             id: &str,
             root: &std::path::Path,
         ) -> Result<crate::thread_assembler::WorkspacePreparationOwner> {
-            use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+            use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
             let usage = self
                 .worktrees
                 .reserve_workspace(id, WorkspaceEndpoint::Local)?;
@@ -3673,7 +3673,7 @@ pub(crate) mod storage_fault_tests {
         let bots =
             crate::bots::BotRuntime::new(store.paths().clone(), config.clone(), events.clone())?;
         let worktrees =
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
+            crate::studio::worktree::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let factory = StudioThreadFactory::new(StudioThreadServices {
             store: store.clone(),
             worktrees: worktrees.clone(),

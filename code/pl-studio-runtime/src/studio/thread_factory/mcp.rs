@@ -2412,7 +2412,7 @@ pub(crate) mod tests {
         use super::super::tool_bindings::ToolBinding;
         use crate::StudioProductEventKind;
         use crate::session::session_close_tests::member;
-        use crate::studio::agent_host::worktree_lease::WorkspaceEndpoint;
+        use crate::studio::worktree::worktree_lease::WorkspaceEndpoint;
         use pl_provider_fixture::{FixtureServer, MCP_KEY, MCP_PATH};
 
         let peer = FixtureServer::start(Vec::new()).await?;

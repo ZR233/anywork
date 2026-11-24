@@ -1166,7 +1166,7 @@ mod tests {
 
     #[tokio::test]
     async fn closing_worktree_draft_preserves_checkout_and_exposes_recovery() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        use crate::studio::worktree::worktree_lease::WorktreeLeaseState;
         let fixture = Fixture::new("config").await?;
         for args in [
             vec!["init", "--quiet"],
@@ -2185,7 +2185,7 @@ mod tests {
         assert_eq!(member.root_thread_id, root.agent.thread_id);
         assert_ne!(member.root_thread_id, member.session.session_id);
         let (physical, _) =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &fixture.runtime.store,
                 &fixture.runtime.agent_facility.worktrees,
                 &fixture.runtime.ssh_manager,

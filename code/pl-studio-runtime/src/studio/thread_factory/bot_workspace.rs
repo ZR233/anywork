@@ -1,6 +1,6 @@
 //! Bot execution admission is read-only and precedes migration, tools, worktrees and model opening.
 use super::{StudioThreadFactory, errors::resource_error};
-use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
 use crate::thread_assembler::{ChildThreadRequest, ThreadAssemblyError};
 use crate::{AgentWorkspaceMode, ThreadWorkspaceMode};
 use std::path::Path;

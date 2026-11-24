@@ -1,6 +1,6 @@
 //! Failed unpublished preparation retains uncertain worktrees and its real cleanup owner.
 use super::StudioThreadFactory;
-use crate::studio::agent_host::{
+use crate::studio::worktree::{
     workspace_preparation,
     worktree_lease::{
         WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLeaseState,

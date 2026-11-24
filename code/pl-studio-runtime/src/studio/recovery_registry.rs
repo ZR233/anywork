@@ -107,8 +107,8 @@ pub struct StudioRecoveryIssue {
     pub worktree: Option<StudioWorktreeRecoveryPreview>,
 }
 
-use crate::studio::agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseOwnerKind};
 use crate::studio::ids::unix_seconds;
+use crate::studio::worktree::worktree_lease::{WorktreeLease, WorktreeLeaseOwnerKind};
 use crate::{ObservedResource, ObservedResourceCommand, StateError, StateOperation};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -498,7 +498,7 @@ impl Default for StudioRecoveryRegistry {
 #[cfg(test)]
 mod binding_confirmation_tests {
     use super::*;
-    use crate::studio::agent_host::worktree_lease::{WorktreeLeaseOwnerKind, WorktreeLeaseState};
+    use crate::studio::worktree::worktree_lease::{WorktreeLeaseOwnerKind, WorktreeLeaseState};
     use crate::{
         StudioRecoveryImpact, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
         StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,

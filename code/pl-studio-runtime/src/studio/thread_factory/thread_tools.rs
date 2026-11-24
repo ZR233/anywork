@@ -12,7 +12,7 @@ use pl_tool::workspace::ToolWorkspace;
 use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
-    pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
+    pub workspace_usage: crate::studio::worktree::worktree_lease::WorkspaceUsageLease,
     pub thread_id: &'a str,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
@@ -233,8 +233,8 @@ impl StudioThreadFactory {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
         let identity = match &remote {
-            Some(host) => crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
-                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
+            Some(host) => crate::studio::worktree::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::worktree::worktree_lease::WorkspaceEndpoint::from_profile(Some(
                     &host.profile,
                 )),
                 host.files().canonical_path().into(),

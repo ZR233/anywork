@@ -8,13 +8,13 @@ use tracing::Instrument;
 use super::super::{DeleteThreadCommandReply, StudioDeleteThreadResult, StudioRuntime};
 use super::threads::{next_project_root, sort_project_roots};
 use crate::studio::{
-    agent_host::worktree_lease::WorkspaceEndpoint,
     store::{
         directory::DirectoryDelta,
         thread_archive::{ArchiveScope, ThreadArchiveOperation},
         thread_delete::{DeleteMember, DeletePhase, ThreadDeleteOperation},
         thread_preparation::{PreparationBinding, PreparationIdentity},
     },
+    worktree::worktree_lease::WorkspaceEndpoint,
 };
 
 impl StudioRuntime {
@@ -472,7 +472,7 @@ impl StudioRuntime {
         operation: &mut ThreadDeleteOperation,
         index: usize,
         remote_hosts: &mut Vec<(
-            crate::studio::agent_host::worktree_lease::WorkspaceIdentity,
+            crate::studio::worktree::worktree_lease::WorkspaceIdentity,
             pl_tool::remote::SshWorkspaceBinding,
         )>,
     ) -> Result<()> {

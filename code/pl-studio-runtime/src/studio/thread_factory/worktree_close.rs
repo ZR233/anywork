@@ -8,8 +8,8 @@ use crate::{
     },
     studio::{
         agent_close::state_error,
-        agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         store::agent_close::{AgentCloseGitGrant, AgentCloseRecord, OwnedWorktreeBinding},
+        worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     },
 };
 use anyhow::{Context, Result, ensure};
@@ -264,7 +264,7 @@ impl StudioThreadFactory {
     }
 
     async fn settle_closed_worktree(&self, id: &str) -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        use crate::studio::worktree::worktree_lease::WorktreeLeaseState;
         let mut lease = self
             .services
             .worktrees

@@ -19,7 +19,7 @@ use super::worker::supervise_writer;
 
 #[cfg(test)]
 pub(super) struct LeaseAckGate {
-    pub(super) state: crate::studio::agent_host::worktree_lease::WorktreeLeaseState,
+    pub(super) state: crate::studio::worktree::worktree_lease::WorktreeLeaseState,
     pub(super) entered: tokio::sync::oneshot::Sender<()>,
     pub(super) release: tokio::sync::oneshot::Receiver<()>,
 }
@@ -170,7 +170,7 @@ impl ThreadWriteBehindWriter {
 
     pub(in crate::studio) fn record_worktree_lease(
         &self,
-        lease: crate::studio::agent_host::worktree_lease::WorktreeLease,
+        lease: crate::studio::worktree::worktree_lease::WorktreeLease,
     ) -> u64 {
         self.ensure_task();
         let mut queue = self.lock_queue_shared();
@@ -363,7 +363,7 @@ mod storage_fault_tests {
         WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeManager, WorktreeOwnership,
         WorktreeStatus,
     };
-    use crate::studio::agent_host::worktree_lease::{
+    use crate::studio::worktree::worktree_lease::{
         WorktreeLease, WorktreeLeaseOwner, WorktreeLeaseOwnerKind, WorktreeLeaseState,
     };
     use anyhow::{Context, Result};
@@ -475,7 +475,7 @@ mod storage_fault_tests {
         );
         assert!(writer.saved_watermark() < ticket);
         assert!(
-            crate::studio::agent_host::worktree_lease::load_leases(&store)
+            crate::studio::worktree::worktree_lease::load_leases(&store)
                 .await?
                 .is_empty()
         );
@@ -487,7 +487,7 @@ mod storage_fault_tests {
         settled(&writer, 65).await?;
         assert_eq!(writer.pending_commit_count(), 0);
         assert!(
-            crate::studio::agent_host::worktree_lease::load_leases(&store)
+            crate::studio::worktree::worktree_lease::load_leases(&store)
                 .await?
                 .iter()
                 .any(|lease| lease.owner_thread_id == "boundary")
@@ -609,7 +609,7 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn verified_binding_confirmation_requires_exact_lease_and_execution_use() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -718,7 +718,7 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn verified_binding_and_active_reentry_wait_for_the_exact_ack() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -758,7 +758,7 @@ mod storage_fault_tests {
         assert_eq!(reentry.await?, active);
         assert!(owner.is_durable(&active));
         assert_eq!(
-            crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            crate::studio::worktree::worktree_lease::load_leases(&store).await?,
             vec![active]
         );
         writer.shutdown().await?;
@@ -767,7 +767,7 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn hydrated_ssh_worktree_cleanup_uses_only_its_saved_physical_binding() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{
+        use crate::studio::worktree::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, load_leases,
         };
         for has_binding in [true, false] {
@@ -860,7 +860,7 @@ mod storage_fault_tests {
     }
 
     async fn check_hydrated_active_binding(conflict: bool) -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{
+        use crate::studio::worktree::worktree_lease::{
             WorkspaceEndpoint, WorkspaceIdentity, load_leases,
         };
         let temp = tempfile::tempdir()?;
@@ -955,7 +955,7 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn verified_binding_rechecks_retirement_after_the_write_ack() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -1004,7 +1004,7 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn verified_binding_propagates_the_writer_failure_without_acknowledging() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -1040,7 +1040,7 @@ mod storage_fault_tests {
         let admitted = owner.get(&prepared.owner_thread_id).unwrap();
         assert!(!owner.is_durable(&admitted));
         assert_eq!(
-            crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            crate::studio::worktree::worktree_lease::load_leases(&store).await?,
             vec![conflicting]
         );
         assert!(writer.shutdown().await.is_err());
@@ -1049,7 +1049,7 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn failed_session_retention_follows_only_the_original_confirmed_binding() -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+        use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -1136,7 +1136,7 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn cleaned_reentry_waits_for_its_completion_commit_and_ack() -> Result<()> {
         use crate::agent::worktree::WorktreeCleanupPolicy;
-        use crate::studio::agent_host::workspace_preparation::cleanup_workspace;
+        use crate::studio::worktree::workspace_preparation::cleanup_workspace;
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());

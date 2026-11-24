@@ -19,8 +19,8 @@ pub(in crate::studio) struct PreparedChildWorkspace {
     pub workspace_usage: crate::studio::WorkspaceUsageLease,
     pub assignment: crate::AgentWorkspaceAssignmentSnapshot,
     pub workspace: ToolWorkspace,
-    pub worktree: Option<crate::studio::agent_host::workspace_preparation::PreparedWorktree>,
-    pub _creation: crate::studio::agent_host::worktree_lease::WorktreeCreationGuard,
+    pub worktree: Option<crate::studio::worktree::workspace_preparation::PreparedWorktree>,
+    pub _creation: crate::studio::worktree::worktree_lease::WorktreeCreationGuard,
 }
 
 impl StudioThreadFactory {
@@ -134,7 +134,7 @@ impl StudioThreadFactory {
                 None => {
                     let project = project.clone();
                     tokio::task::spawn_blocking(move || {
-                        crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                        crate::studio::worktree::workspace_preparation::resolved_project_root(
                             &project,
                         )
                     })
@@ -145,7 +145,7 @@ impl StudioThreadFactory {
             }
         };
         let (session_root, _) =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
@@ -207,10 +207,10 @@ impl StudioThreadFactory {
         let (assignment, worktree) = if let Some(assignment) = reviewed {
             (assignment, None)
         } else {
-            crate::studio::agent_host::workspace_preparation::prepare_workspace(
+            crate::studio::worktree::workspace_preparation::prepare_workspace(
                 &self.services.worktrees,
                 &self.services.ssh_manager,
-                crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
+                crate::studio::worktree::workspace_preparation::WorkspacePreparation {
                     store: &self.services.store,
                     usage: &workspace_usage,
                     project: &project,
@@ -500,7 +500,7 @@ impl StudioChildResources for StudioThreadFactory {
         };
         // 会话自身 worktree 只由显式 Recovery 清理，不随 Thread 关闭删除。
         if lease.owner_kind
-            != crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child
+            != crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind::Child
         {
             return Ok(());
         }

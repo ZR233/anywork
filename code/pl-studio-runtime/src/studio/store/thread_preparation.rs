@@ -3,7 +3,7 @@ use super::{
     StudioStore,
     object::{PersistedStudioObject, checked_bump_revision, list_objects, load_object, put_object},
 };
-use crate::studio::agent_host::worktree_lease::WorkspaceIdentity;
+use crate::studio::worktree::worktree_lease::WorkspaceIdentity;
 use anyhow::{Context, Result, ensure};
 use sea_orm::TransactionTrait;
 use serde::{Deserialize, Serialize};

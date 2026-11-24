@@ -5,11 +5,11 @@ use super::super::StudioRuntime;
 use crate::{
     agent::worktree::{WorktreeCleanupPolicy, WorktreeHandle},
     studio::{
-        agent_host::{
+        store::thread_archive::ThreadArchiveOperation,
+        worktree::{
             workspace_preparation::{cleanup_identity, manager_from_lease},
             worktree_lease::WorktreeLeaseState,
         },
-        store::thread_archive::ThreadArchiveOperation,
     },
 };
 
@@ -69,7 +69,7 @@ impl StudioRuntime {
         );
         current.validate_identity()?;
         if entry.identity.endpoint
-            == crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::Local
+            == crate::studio::worktree::worktree_lease::WorkspaceEndpoint::Local
         {
             let home = self.store.paths().home().to_owned();
             let home = tokio::task::spawn_blocking(move || dunce::canonicalize(home)).await??;

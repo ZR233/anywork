@@ -138,7 +138,7 @@ fn has_document_chain_error(error: &anyhow::Error) -> bool {
 
 fn is_session_layout_migration(error: &anyhow::Error) -> bool {
     error.is::<crate::studio::store::SessionLayoutMigrationFailed>()
-        || error.is::<crate::studio::agent_host::worktree_lease::WorktreeLeaseMigrationFailed>()
+        || error.is::<crate::studio::worktree::worktree_lease::WorktreeLeaseMigrationFailed>()
         || error
             .chain()
             .any(|cause| cause.is::<crate::studio::store::SessionLayoutMigrationFailed>())

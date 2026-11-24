@@ -46,7 +46,7 @@ impl StudioRuntime {
 #[cfg(test)]
 mod projection {
     use crate::config::{ConfigPaths, ConfigRuntime, ConfigStore, StudioConfig};
-    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::worktree::ThreadWriteBehindWriter;
     use crate::studio::{ProductEventBus, StudioStore};
     use crate::thread_assembler::delegation_models::DelegationModels;
     use crate::{

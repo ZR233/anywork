@@ -60,7 +60,7 @@ impl StudioRuntime {
         }
         let ssh_manager = std::sync::Arc::new(ssh_manager);
         let worktrees =
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
+            crate::studio::worktree::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;
         let account_usage = AccountUsageRuntime::new(store.clone(), config_runtime.clone());
         // ACP 认证 owner 只持有身份与操作事实；构造期不启动任何外部程序，只把当前配置的

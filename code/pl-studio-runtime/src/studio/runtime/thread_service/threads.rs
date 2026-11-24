@@ -246,7 +246,7 @@ impl StudioRuntime {
             // 直到 owner Thread 目录事实提交（或失败 settle 并发布）之后才清除。
             self.agent_facility.worktrees.mark_creating(&thread_id);
             let created =
-                crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
+                crate::studio::worktree::workspace_preparation::create_root_session_worktree(
                     &self.store,
                     &self.agent_facility.worktrees,
                     &self.ssh_manager,
@@ -697,7 +697,7 @@ impl StudioRuntime {
     /// 不依赖下一次启动审计；保留写入失败返回调用方，与原创建错误一起保留。
     async fn preserve_session_worktree(
         &self,
-        lease: Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
+        lease: Option<crate::studio::worktree::worktree_lease::WorktreeLease>,
         reason: Option<&str>,
     ) -> Result<()> {
         let Some(lease) = lease else {
@@ -718,7 +718,7 @@ impl StudioRuntime {
     /// 顺序固定为「调用方已完成 settle → 清除标记 → 发布」：清除标记使并发的周期审计也能
     /// 把该资源算作需要人工处置，避免审计的 `replace` 与本次显式发布互相覆盖导致条目丢失。
     async fn settle_session_worktree_failure(&self, thread_id: &str, reason: Option<&str>) {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        use crate::studio::worktree::worktree_lease::WorktreeLeaseState;
         self.agent_facility.worktrees.clear_creating(thread_id);
         let Some(lease) = self.agent_facility.worktrees.get(thread_id) else {
             return;
@@ -732,7 +732,7 @@ impl StudioRuntime {
     /// 会话 worktree 的创建窗口结束：owner Thread 目录事实已提交（或失败路径已自行清除）。
     fn clear_creating_session_worktree(
         &self,
-        lease: &Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
+        lease: &Option<crate::studio::worktree::worktree_lease::WorktreeLease>,
     ) {
         if let Some(lease) = lease {
             self.agent_facility

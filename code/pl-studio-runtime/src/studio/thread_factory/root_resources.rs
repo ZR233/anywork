@@ -114,8 +114,8 @@ impl StudioThreadFactory {
                 .await?
                 .map_err(|error| resource_error("resolve managed bot directory", error))?;
             let planned = canonical_parent.join("workspace");
-            let identity = crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
-                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::Local,
+            let identity = crate::studio::worktree::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::worktree::worktree_lease::WorkspaceEndpoint::Local,
                 planned.to_string_lossy().into_owned(),
             )
             .map_err(Self::workspace_usage_error)?;
@@ -395,7 +395,7 @@ impl StudioThreadFactory {
         let canonical_project_root = tokio::task::spawn_blocking(move || {
             let project_root = match bot_root {
                 Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                None => crate::studio::worktree::workspace_preparation::resolved_project_root(
                     &project_copy,
                 )?,
             };
@@ -404,7 +404,7 @@ impl StudioThreadFactory {
         .await?
         .map_err(|error| resource_error("resolve root workspace", error))?;
         let (root, verified_lease) =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
