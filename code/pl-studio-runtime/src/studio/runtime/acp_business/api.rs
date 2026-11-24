@@ -21,6 +21,7 @@ pub struct AcpSessionOpen {
     pub observation: Option<AcpSessionObservation>,
     pub completion: AcpSessionCompletion,
     pub info_snapshot: Option<AcpSessionInfoSnapshot>,
+    pub workflow_state: Option<AcpWorkflowStateSnapshot>,
 }
 
 /// Immutable leases of existing service owners; never holds a StudioRuntime or SessionTable.
@@ -31,6 +32,7 @@ pub(crate) struct AcpBusinessOwner {
     store: crate::studio::StudioStore,
     events: crate::studio::ProductEventBus,
     connections: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
+    thread_modes: crate::mode::ThreadModeManager,
 }
 
 struct MemberOpen {
@@ -61,14 +63,18 @@ impl PendingOpen {
             .opening
             .await
             .context("ACP preparation stopped before observation")??;
+        let workflow_state = self.resources.workflow_snapshot();
+        let workflow_updates = self.resources.subscribe_workflow();
         Ok(AcpSessionOpen {
             target: self.target,
             observation: Some(AcpSessionObservation::new(
                 observer,
                 self.resources.completion.clone(),
+                workflow_updates,
             )),
             completion: self.resources.completion.clone(),
             info_snapshot: None,
+            workflow_state,
         })
     }
 }
@@ -204,6 +210,7 @@ impl AcpBusinessOwner {
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
         connections: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
+        thread_modes: crate::mode::ThreadModeManager,
     ) -> Self {
         Self {
             factory,
@@ -211,6 +218,7 @@ impl AcpBusinessOwner {
             store,
             events,
             connections,
+            thread_modes,
         }
     }
 
@@ -238,6 +246,11 @@ impl AcpBusinessOwner {
             publication: published,
         };
         let draft = matches!(&intent, AcpOpenIntent::Draft { .. });
+        let requested_mode = match &intent {
+            AcpOpenIntent::Draft { mode, .. } => mode.clone(),
+            _ => None,
+        };
+        let is_root = identity.parent_agent_id.is_none();
         let resources = AcpResources::new(project.id.clone(), completion.clone(), draft);
         if identity.parent_agent_id.is_some() && previous.is_none() {
             resources.begin_initial_configuration();
@@ -254,6 +267,8 @@ impl AcpBusinessOwner {
         let events = self.events.clone();
         let connections = self.connections.clone();
         let config = self.config.clone();
+        let store = self.store.clone();
+        let thread_modes = self.thread_modes.clone();
         let calls = self.store.calls().clone();
         let sample_thread_id = thread_id.clone();
         let sample_generation = resources.generation.clone();
@@ -384,6 +399,21 @@ impl AcpBusinessOwner {
                             return Err(workspace_error);
                         }
                     };
+                    let res_dir = store
+                        .session_resources_dir_for(&project.id, &thread_id)
+                        .map_err(|error| projection::preparation(&error.to_string()))?;
+                    let wp_owner = super::AcpWorkflowPlanOwner::load_or_init(
+                        thread_id.clone(),
+                        is_root,
+                        res_dir,
+                        thread_modes,
+                        requested_mode,
+                    )
+                    .await
+                    .map_err(|error| projection::preparation(&error.to_string()))?;
+                    resources
+                        .retain_workflow_plan(wp_owner)
+                        .map_err(|error| projection::preparation(&error.to_string()))?;
                     let intent = match intent {
                         AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => sdk::Open::New,
                         AcpOpenIntent::Load { session_id: id } => sdk::Open::Load(id.into()),
@@ -610,13 +640,20 @@ impl StudioRuntime {
                         .and_then(|snapshot| projection::info_snapshot(&snapshot)),
                     Err(_) => None,
                 };
+                let workflow_state = acp.workflow_snapshot();
+                let workflow_updates = acp.subscribe_workflow();
                 return Ok(AcpSessionOpen {
                     target: target(&session, &agent, &acp),
                     observation: acp.take_observation().await.map(|observer| {
-                        AcpSessionObservation::new(observer, acp.completion.clone())
+                        AcpSessionObservation::new(
+                            observer,
+                            acp.completion.clone(),
+                            workflow_updates,
+                        )
                     }),
                     completion: acp.completion.clone(),
                     info_snapshot,
+                    workflow_state,
                 });
             }
             let id = match &request.intent {
@@ -652,6 +689,7 @@ impl StudioRuntime {
                     workspace_mode,
                     delegation_mode,
                     delegation_preference,
+                    mode: _,
                 } => (
                     *workspace_mode,
                     delegation_mode.unwrap_or(delegation.mode),
@@ -724,6 +762,7 @@ impl StudioRuntime {
             self.store.clone(),
             self.agent_facility.product_events.clone(),
             self.acp_accounts.clone(),
+            self.thread_modes.clone(),
         );
         let cwd = match &previous {
             Some(agent) => match &agent.backend {
@@ -873,12 +912,25 @@ impl StudioRuntime {
         &self,
         target: AcpSessionTarget,
         run: AcpRunId,
-        content: Vec<ContentBlock>,
+        mut content: Vec<ContentBlock>,
     ) -> Result<AcpRunId, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
         resources
             .ensure_input_ready()
             .map_err(projection::failure)?;
+        if let Some(wp) = resources.workflow_plan.get()
+            && let Some(host_state) = wp
+                .reconcile_run_for_turn()
+                .await
+                .map_err(|error| projection::preparation(&error.to_string()))?
+        {
+            content.insert(
+                0,
+                ContentBlock::Text(sdk::schema::TextContent::new(host_state).annotations(
+                    sdk::schema::Annotations::new().audience(vec![sdk::schema::Role::Assistant]),
+                )),
+            );
+        }
         resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?
@@ -942,6 +994,41 @@ impl StudioRuntime {
             .await
             .map_err(projection::failure)
     }
+    pub async fn set_acp_thread_mode(
+        &self,
+        target: AcpSessionTarget,
+        mode_id: crate::mode::ThreadModeId,
+    ) -> Result<AcpWorkflowStateSnapshot, AcpBusinessFailure> {
+        let resources = self.business_resources(&target)?;
+        resources
+            .ensure_input_ready()
+            .map_err(projection::failure)?;
+        let snapshot = resources
+            .session()
+            .map_err(|_| projection::failure(sdk::Error::NotReady))?
+            .snapshot()
+            .await
+            .map_err(projection::failure)?;
+        if snapshot.closing || !snapshot.ready || snapshot.active_run.is_some() {
+            return Err(projection::failure(sdk::Error::Busy));
+        }
+        let wp = resources
+            .workflow_plan
+            .get()
+            .ok_or_else(|| projection::preparation("ACP workflow owner is unavailable"))?;
+        let normalized = if matches!(mode_id.as_str(), "mode.simple" | "mode.task") {
+            crate::mode::ThreadModeId::auto()
+        } else {
+            mode_id
+        };
+        let catalog = self.thread_modes.snapshot();
+        let registered = catalog
+            .mode(&normalized)
+            .ok_or_else(|| projection::failure(sdk::Error::InvalidOption))?;
+        wp.set_mode(normalized, &registered)
+            .await
+            .map_err(|error| projection::preparation(&error.to_string()))
+    }
     pub async fn answer_acp_permission(
         &self,
         target: AcpSessionTarget,
@@ -1001,12 +1088,13 @@ impl StudioRuntime {
         target: AcpSessionTarget,
     ) -> Result<AcpBusinessSnapshot, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
+        let workflow_state = resources.workflow_snapshot();
         resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?
             .snapshot()
             .await
-            .map(|snapshot| projection::snapshot(target, snapshot))
+            .map(|snapshot| projection::snapshot(target, snapshot, workflow_state))
             .map_err(projection::failure)
     }
     pub(in crate::studio::runtime) async fn acp_prompt_capabilities_for_thread(
@@ -1099,13 +1187,26 @@ impl StudioRuntime {
 
 async fn submit_acp_prompt(
     resources: &AcpResources,
-    content: Vec<ContentBlock>,
+    mut content: Vec<ContentBlock>,
 ) -> Result<sdk::RunId, AcpBusinessFailure> {
     resources
         .ensure_input_ready()
         .map_err(projection::failure)?;
     if !resources.association_published().await {
         return Err(projection::failure(sdk::Error::NotReady));
+    }
+    if let Some(wp) = resources.workflow_plan.get()
+        && let Some(host_state) = wp
+            .reconcile_run_for_turn()
+            .await
+            .map_err(|error| projection::preparation(&error.to_string()))?
+    {
+        content.insert(
+            0,
+            ContentBlock::Text(sdk::schema::TextContent::new(host_state).annotations(
+                sdk::schema::Annotations::new().audience(vec![sdk::schema::Role::Assistant]),
+            )),
+        );
     }
     resources
         .session()

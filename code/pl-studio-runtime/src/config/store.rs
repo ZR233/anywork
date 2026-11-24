@@ -525,7 +525,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV34::from_config(&persisted)
+    super::document_migration::MainV35::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -1078,7 +1078,7 @@ mod tests {
         let reviewer = crate::config::AgentRoleId::new("reviewer").unwrap();
         config.models.routes.insert(
             reviewer.clone(),
-            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+            config.mode_model_routes[&ThreadModeId::auto()].clone(),
         );
         let second_id = AccountId::new("second").unwrap();
         let mut second = config.models.accounts[&AccountId::new("deepseek").unwrap()].clone();
@@ -1483,7 +1483,7 @@ mod tests {
         let explorer = crate::config::AgentRoleId::new("explorer").unwrap();
         config.models.routes.insert(
             explorer,
-            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+            config.mode_model_routes[&ThreadModeId::auto()].clone(),
         );
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
@@ -1623,7 +1623,7 @@ mod tests {
         let explorer = crate::config::AgentRoleId::new("explorer").unwrap();
         config.models.routes.insert(
             explorer,
-            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+            config.mode_model_routes[&ThreadModeId::auto()].clone(),
         );
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
@@ -1663,7 +1663,7 @@ mod tests {
     #[test]
     fn cli_loader_accepts_gemini_protocol_account_in_current_schema() {
         let directory = tempfile::tempdir().unwrap();
-        let toml = r#"schema_version = 34
+        let toml = r#"schema_version = 35
 
 [models.accounts.vertex]
 template = "vertex-ai"
@@ -1680,12 +1680,7 @@ source = "template_defaults"
 source = "bundled"
 catalog = "vertex-ai"
 
-[mode_model_routes."mode.simple"]
-account_id = "vertex"
-model_id = "gemini-3.7-flash"
-effort = "medium"
-
-[mode_model_routes."mode.task"]
+[mode_model_routes."mode.auto"]
 account_id = "vertex"
 model_id = "gemini-3.7-flash"
 effort = "medium"
@@ -1694,7 +1689,7 @@ effort = "medium"
         fs::write(cli.paths.config_file(), toml).unwrap();
         let loaded = cli
             .load_for_startup()
-            .expect("schema 34 gemini config loads");
+            .expect("schema 35 gemini config loads");
         assert_eq!(
             loaded.models.accounts[&AccountId::new("vertex").unwrap()]
                 .protocol

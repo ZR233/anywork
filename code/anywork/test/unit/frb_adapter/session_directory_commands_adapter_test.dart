@@ -18,7 +18,7 @@ b.BridgeSessionDirectoryRow _row({bool native = false, String? parent}) =>
       threadId: 'thread',
       workspaceId: 'workspace',
       title: 'directory title',
-      mode: native && parent == null ? 'mode.simple' : null,
+      mode: native && parent == null ? 'mode.auto' : null,
       delegationMode: d.BridgeDelegationMode.profile,
       delegationPreference: d.BridgeDelegationPreference.economy,
       workspaceMode: 'worktree',
@@ -273,7 +273,7 @@ void main() {
   test('existing directory mapper preserves Native root mode and never supplies a child default', () async {
     api.row = _row(native: true);
     final root = await transport.restoreThread('native-root');
-    expect(root.mode, ThreadModeId.simple);
+    expect(root.mode, ThreadModeId.auto);
     expect(
       (root.backend as NativeAgentBackendView).status,
       ThreadStatusView.running,

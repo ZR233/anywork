@@ -430,6 +430,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -988,6 +994,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-tool-plan"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "pl-agent-tool",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "pl-tool-search"
 version = "0.1.0"
 dependencies = [
@@ -1030,6 +1049,7 @@ dependencies = [
  "pl-tool-mcp",
  "pl-tool-media",
  "pl-tool-media-support",
+ "pl-tool-plan",
  "pl-tool-search",
  "pl-tool-skill",
  "serde_json",

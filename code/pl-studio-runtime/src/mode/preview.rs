@@ -63,6 +63,7 @@ pub fn preview_workflow(
                 expected_revision: state.revision,
                 expected_state_id: run.current_state_id.clone(),
                 target_state_id: target.clone(),
+                force: false,
                 completion: CompletionInput {
                     reason: request.reason.clone(),
                     summary: "工作流隔离预演".into(),

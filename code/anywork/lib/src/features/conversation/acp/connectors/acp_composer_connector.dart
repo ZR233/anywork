@@ -10,7 +10,11 @@ import '../../../../platform/desktop_drop_adapter.dart';
 import '../../../../platform/dropped_attachments.dart';
 import '../../../../platform/dropped_file.dart';
 import '../../../../platform/file_picking.dart';
+import '../../../../presentation/providers/mode_catalog_store.dart';
+import '../../../../shared/composer_configuration_bar.dart';
+import '../../../status/session_selectors.dart';
 import '../view_models/acp_composer_view_model.dart';
+import '../view_models/acp_session_view_model.dart';
 import '../views/acp_conversation_composer_view.dart';
 import 'acp_configuration_connector.dart';
 
@@ -123,6 +127,58 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
     final provider = acpComposerViewModelProvider(threadId);
     final state = ref.watch(provider);
     final notifier = ref.read(provider.notifier);
+    final isChild = ref.watch(acpChildReadOnlyViewModelProvider(threadId));
+    final session = ref.watch(
+      acpConversationStateProvider(threadId).select(
+        (value) => switch (value.value) {
+          final current? => (
+            ready: current.ready,
+            configPending: current.configPending,
+            disconnected: current.disconnected,
+            observationEnded: current.observationEnded,
+            workflowState: current.workflowState,
+          ),
+          null => null,
+        },
+      ),
+    );
+    final workflowState = session?.workflowState;
+    final modeCatalog =
+        ref.watch(modeCatalogStoreProvider).value ??
+        const ThreadModeCatalogView(modes: []);
+    final currentMode = ThreadModeId.fromId(
+      workflowState?.modeId ?? ThreadModeId.auto.id,
+    );
+    final canSwitchMode =
+        isChild == false &&
+        !state.isRunning &&
+        !state.submitting &&
+        !state.interrupting &&
+        session != null &&
+        session.ready &&
+        !session.configPending &&
+        !session.disconnected &&
+        !session.observationEnded;
+    final inlineModeSelector = SessionModeSelector(
+      catalog: modeCatalog,
+      mode: currentMode,
+      snapshotDisplayName: workflowState?.modeDisplayName,
+      enabled: canSwitchMode,
+      onSelected: (mode) => unawaited(notifier.setThreadMode(mode.id)),
+    );
+    final modeEntry = ComposerConfigurationEntry(
+      id: 'acp-mode',
+      inline: inlineModeSelector,
+      measureInlineWidth: inlineModeSelector.measureInlineWidth,
+      menuItem: SessionModeSelector(
+        inMenu: true,
+        catalog: modeCatalog,
+        mode: currentMode,
+        snapshotDisplayName: workflowState?.modeDisplayName,
+        enabled: canSwitchMode,
+        onSelected: (mode) => unawaited(notifier.setThreadMode(mode.id)),
+      ),
+    );
 
     return DesktopFileDropTarget(
       enabled: state.canAttach,
@@ -136,7 +192,10 @@ class _AcpComposerConnectorState extends ConsumerState<AcpComposerConnector> {
         state: state,
         compact: widget.compact,
         dragging: _dragging && state.canAttach,
-        configurationBar: AcpConfigurationConnector(threadId: threadId),
+        configurationBar: AcpConfigurationConnector(
+          threadId: threadId,
+          leadingEntries: [modeEntry],
+        ),
         onDraftChanged: notifier.updateDraft,
         onSubmit: () => unawaited(notifier.submit()),
         onInterrupt: () => unawaited(notifier.interrupt()),

@@ -36,6 +36,47 @@ pub(in crate::studio) fn project_cold_runtime(
     project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
 }
 
+pub(crate) fn workflow_graph_from_definition(
+    definition: &crate::mode::ThreadModeDefinition,
+    mode_deleted: bool,
+) -> Option<crate::workflow_tool::WorkflowRuntimeGraphSnapshot> {
+    let graph = definition.workflow.as_ref()?;
+    Some(crate::workflow_tool::WorkflowRuntimeGraphSnapshot {
+        mode_id: definition.id.clone(),
+        mode_display_name: definition.display_name.clone(),
+        mode_deleted,
+        initial_state_id: graph.initial_state_id.clone(),
+        states: graph
+            .states
+            .iter()
+            .map(|s| crate::workflow_tool::WorkflowRuntimeGraphState {
+                id: s.id.clone(),
+                title: s.title.clone(),
+                kind: s.kind,
+                instructions: s.instructions.clone(),
+            })
+            .collect(),
+        edges: graph
+            .transitions
+            .iter()
+            .enumerate()
+            .map(|(idx, e)| crate::workflow_tool::WorkflowRuntimeGraphEdge {
+                id: format!("{}:{idx}->{}", e.source_state_id, e.target_state_id),
+                source_state_id: e.source_state_id.clone(),
+                target_state_id: e.target_state_id.clone(),
+                guard: e.guard.clone(),
+            })
+            .collect(),
+    })
+}
+
+pub(crate) fn workflow_graph_from_saved_mode(
+    saved: &crate::mode::SavedThreadMode,
+    mode_deleted: bool,
+) -> Option<crate::workflow_tool::WorkflowRuntimeGraphSnapshot> {
+    workflow_graph_from_definition(&saved.definition, mode_deleted)
+}
+
 fn project_with_mode(
     thread_id: &str,
     state: &ThreadSnapshot,

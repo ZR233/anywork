@@ -3,8 +3,9 @@ import 'package:material_ui/material_ui.dart';
 import '../../composer/views/composer_dock_view.dart';
 
 /// Pure ACP workspace shell layout combining the centered reading stream,
-/// docked permission/composer stack (`1040px`), and `38px` status bar while
-/// preserving a minimum visible reading budget on short desktop windows.
+/// docked permission/composer stack (`1040px`), `38px` status bar, and an
+/// optional `360px` right-side workflow graph panel while preserving a minimum
+/// visible reading budget on short desktop windows.
 class AcpWorkspaceView extends StatelessWidget {
   const AcpWorkspaceView({
     super.key,
@@ -12,16 +13,19 @@ class AcpWorkspaceView extends StatelessWidget {
     required this.composer,
     required this.statusBar,
     this.permissionDock,
+    this.sidePanel,
   });
 
   final Widget readingArea;
   final Widget? permissionDock;
   final Widget composer;
   final Widget statusBar;
+  final Widget? sidePanel;
 
   static const double _minimumReadingReserve = 96.0;
   static const double _maximumReadingReserve = 200.0;
   static const double _readingReserveFraction = 0.28;
+  static const double sidePanelWidth = 360.0;
 
   double _footerMaxHeight(double viewportHeight) {
     final reserve = (viewportHeight * _readingReserveFraction)
@@ -60,11 +64,22 @@ class AcpWorkspaceView extends StatelessWidget {
               )
             : footer;
 
-        return Column(
+        final mainColumn = Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(child: readingArea),
             boundedFooter,
+          ],
+        );
+
+        if (sidePanel == null) {
+          return mainColumn;
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: mainColumn),
+            SizedBox(width: sidePanelWidth, child: sidePanel),
           ],
         );
       },

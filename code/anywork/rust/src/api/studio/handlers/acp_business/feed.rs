@@ -48,6 +48,7 @@ impl Source {
                 target: opened.target,
                 has_observation,
                 info_snapshot: opened.info_snapshot.map(Box::new),
+                workflow_state: opened.workflow_state.map(Box::new),
             }),
             events,
             events_ended: false,
@@ -257,6 +258,13 @@ mod real_transport {
             let bridged_run: BridgeAcpRunId = run.into();
             ensure!(active.active_run == Some(bridged_run));
             ensure!(active.target == bridged);
+            let BridgeAcpSessionFrame::Event { event } = frame(&handle).await? else {
+                anyhow::bail!("expected workflow state update frame before closing observation");
+            };
+            ensure!(matches!(
+                *event,
+                BridgeAcpSessionEvent::WorkflowStateUpdated { .. }
+            ));
 
             // Close the actual opaque handle with a real pending recv, not a fake Source.
             let next = handle.next();
@@ -391,6 +399,7 @@ mod tests {
                 },
                 has_observation: false,
                 info_snapshot: None,
+                workflow_state: None,
             }),
             events: Box::pin(stream::empty()),
             events_ended: false,

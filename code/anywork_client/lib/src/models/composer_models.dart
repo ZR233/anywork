@@ -593,7 +593,7 @@ class StartSessionDraft {
 class StartSessionProjectDraft {
   const StartSessionProjectDraft({
     this.text = '',
-    this.mode = ThreadModeId.simple,
+    this.mode = ThreadModeId.auto,
     this.workspaceMode = ThreadWorkspaceMode.local,
     this.delegationModeOverride,
     this.delegationPreferenceOverride,

@@ -77,6 +77,7 @@ final class AcpConversationState {
     this.configOptions,
     this.modes,
     this.plan,
+    this.workflowState,
     this.latestUsage,
     this.previousContextUsed,
     this.latestCost,
@@ -113,6 +114,7 @@ final class AcpConversationState {
   final List<AcpSessionConfigOptionView>? configOptions;
   final AcpSessionModeStateView? modes;
   final AcpPlanView? plan;
+  final AcpWorkflowStateView? workflowState;
   final AcpConversationUsage? latestUsage;
   final BigInt? previousContextUsed;
   final ({double amount, String currency})? latestCost;
@@ -193,6 +195,7 @@ final class AcpConversationSession {
   List<AcpSessionConfigOptionView>? _configOptions;
   AcpSessionModeStateView? _modes;
   AcpPlanView? _plan;
+  AcpWorkflowStateView? _workflowState;
   AcpConversationUsage? _latestUsage;
   BigInt? _previousContextUsed;
   ({double amount, String currency})? _latestCost;
@@ -232,6 +235,7 @@ final class AcpConversationSession {
     configOptions: _configOptions,
     modes: _modes,
     plan: _plan,
+    workflowState: _workflowState,
     latestUsage: _latestUsage,
     previousContextUsed: _previousContextUsed,
     latestCost: _latestCost,
@@ -276,6 +280,7 @@ final class AcpConversationSession {
             :final target,
             :final hasObservation,
             :final infoSnapshot,
+            :final workflowState,
           ):
             if (_target != null) throw StateError('Duplicate ACP Accepted');
             _target = target;
@@ -285,6 +290,9 @@ final class AcpConversationSession {
             }
             if (infoSnapshot != null) {
               _applyInfoSnapshot(infoSnapshot);
+            }
+            if (workflowState != null) {
+              _workflowState = workflowState;
             }
             _accepted.complete();
           case AcpSettledFrameView(:final result):
@@ -420,6 +428,8 @@ final class AcpConversationSession {
           _sendPending = false;
           _permissions = const [];
         }
+      case AcpWorkflowStateUpdatedEventView(:final state):
+        _workflowState = state;
       case AcpGapEventView(:final gap):
         _observationGap = gap;
         _loseObservation();
@@ -472,6 +482,9 @@ final class AcpConversationSession {
     }
     switch (update) {
       case AcpUserMessageChunkView(:final chunk):
+        if (_isHiddenHostStateChunk(chunk)) {
+          break;
+        }
         final provisional = _pendingUserEcho;
         if (provisional != null) {
           // Formal user content replaces this prompt's temporary display, not
@@ -697,6 +710,31 @@ final class AcpConversationSession {
       () => _client.setMode(AcpSetModeRequestView(target: target, modeId: id)),
     );
     _modeIntent = id;
+  }
+
+  Future<AcpWorkflowStateView> setThreadMode(String modeId) async {
+    final target = _requireTarget();
+    final updated = await _client.setThreadMode(
+      AcpSetThreadModeRequestView(target: target, modeId: modeId),
+    );
+    if (!_disposing) {
+      _workflowState = updated;
+      _publish();
+    }
+    return updated;
+  }
+
+  static bool _isHiddenHostStateChunk(AcpContentChunkView chunk) {
+    final audience = chunk.content.annotations?.audience;
+    final assistantOnly =
+        audience != null &&
+        audience.contains(AcpContentRoleView.assistant) &&
+        !audience.contains(AcpContentRoleView.user);
+    if (!assistantOnly) return false;
+    if (chunk.content case AcpTextContentView(:final text)) {
+      return text.startsWith('[Studio Host State]');
+    }
+    return false;
   }
 
   Future<void> _configure(Future<void> Function() command) async {

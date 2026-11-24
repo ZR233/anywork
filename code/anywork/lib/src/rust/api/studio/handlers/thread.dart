@@ -10,6 +10,7 @@ import '../types/chatgpt_auth.dart';
 import '../types/command.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
+import '../types/mode_editor.dart';
 import '../types/presentation.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
@@ -100,3 +101,10 @@ Future<BridgeSessionDirectoryRow> restoreThread({required String threadId}) =>
     RustLib.instance.api.crateApiStudioHandlersThreadRestoreThread(
       threadId: threadId,
     );
+
+/// Loads the Thread's frozen workflow graph on demand without inflating runtime snapshots.
+Future<BridgeWorkflowRuntimeGraphSnapshot?> getThreadWorkflowGraph({
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersThreadGetThreadWorkflowGraph(
+  threadId: threadId,
+);

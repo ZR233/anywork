@@ -34,7 +34,7 @@ pub(super) fn read(
                         .transpose()?;
                     let default = desired
                         .mode_model_routes
-                        .get(&crate::mode::ThreadModeId::simple())
+                        .get(&crate::mode::ThreadModeId::auto())
                         .map(|route| &route.account_id);
                     for (id, account) in &desired.models.accounts {
                         let usage = account

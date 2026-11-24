@@ -19,6 +19,7 @@ import 'session_selectors.dart';
 import 'started_items_panel.dart';
 import 'status_bar_item.dart';
 import 'status_view.dart';
+import 'workflow_graph_panel.dart';
 
 /// The shell supplies identity and UI intentions, never domain lists.
 class ThreadStatusConnector extends ConsumerWidget {
@@ -28,6 +29,8 @@ class ThreadStatusConnector extends ConsumerWidget {
     this.showTodo = false,
     this.todoExpanded = false,
     this.onToggleTodo,
+    this.workflowExpanded = false,
+    this.onToggleWorkflow,
     this.showPlanEntry = false,
     this.onOpenPlan,
   });
@@ -36,6 +39,8 @@ class ThreadStatusConnector extends ConsumerWidget {
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool workflowExpanded;
+  final VoidCallback? onToggleWorkflow;
   final bool showPlanEntry;
   final VoidCallback? onOpenPlan;
 
@@ -54,6 +59,8 @@ class ThreadStatusConnector extends ConsumerWidget {
       workflowReadout: _DeferredWorkflowReadout(
         threadId: threadId,
         inline: status.workflowRun,
+        expanded: workflowExpanded,
+        onToggle: onToggleWorkflow,
       ),
       showTodo: showTodo,
       todoExpanded: todoExpanded,
@@ -214,10 +221,14 @@ class _DeferredWorkflowReadout extends ConsumerStatefulWidget {
   const _DeferredWorkflowReadout({
     required this.threadId,
     required this.inline,
+    this.expanded = false,
+    this.onToggle,
   });
 
   final String threadId;
   final WorkflowRunView? inline;
+  final bool expanded;
+  final VoidCallback? onToggle;
 
   @override
   ConsumerState<_DeferredWorkflowReadout> createState() =>
@@ -318,13 +329,23 @@ class _DeferredWorkflowReadoutState
         : null;
     return run == null
         ? const SizedBox.shrink()
-        : _WorkflowRuntimeConnector(run: run);
+        : _WorkflowRuntimeConnector(
+            run: run,
+            expanded: widget.expanded,
+            onToggle: widget.onToggle,
+          );
   }
 }
 
 class _WorkflowRuntimeConnector extends ConsumerWidget {
-  const _WorkflowRuntimeConnector({required this.run});
+  const _WorkflowRuntimeConnector({
+    required this.run,
+    this.expanded = false,
+    this.onToggle,
+  });
   final WorkflowRunView run;
+  final bool expanded;
+  final VoidCallback? onToggle;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -346,6 +367,8 @@ class _WorkflowRuntimeConnector extends ConsumerWidget {
         modeName: modeName,
         deleted: deleted,
         terminal: run.terminal,
+        expanded: expanded,
+        onTap: onToggle,
       ),
     );
   }
@@ -357,6 +380,8 @@ class WorkflowStatusReadout extends StatelessWidget {
     required this.modeName,
     this.deleted = false,
     this.terminal = false,
+    this.expanded = false,
+    this.onTap,
     super.key,
   });
 
@@ -364,13 +389,17 @@ class WorkflowStatusReadout extends StatelessWidget {
   final String modeName;
   final bool deleted;
   final bool terminal;
+  final bool expanded;
+  final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context) => StatusBarItem(
-    icon: terminal ? Icons.check_circle_outline : Icons.route_outlined,
-    text: stateTitle,
-    label:
-        '$modeName · $stateTitle${deleted ? ' · ${context.l10n.modeDeletedUsingSnapshot}' : ''}',
+  Widget build(BuildContext context) => WorkflowStatusPill(
+    stateTitle: stateTitle,
+    modeName: modeName,
+    deleted: deleted,
+    terminal: terminal,
+    expanded: expanded,
+    onTap: onTap,
   );
 }
 

@@ -309,7 +309,7 @@ mod migration_tests {
         let managed = factory.services.bots.workspace_root(&bot);
         assert!(!tokio::fs::try_exists(&managed).await?);
         let config = crate::config::StudioConfig::default_config()?;
-        let selector = config.mode_model_route(&crate::mode::ThreadModeId::simple())?;
+        let selector = config.mode_model_route(&crate::mode::ThreadModeId::auto())?;
         let route = config
             .models
             .resolve_route(crate::config::root_agent_route_id(), selector)?;

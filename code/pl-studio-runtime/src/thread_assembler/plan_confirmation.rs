@@ -43,7 +43,7 @@ pub enum PlanInteractionError {
     #[error("Plan state could not be decoded or frozen")]
     State(#[from] pl_core::tool::opaque::ToolError),
     #[error("Plan state transition failed")]
-    Machine(#[from] crate::plan_tool::state::AgentSessionPlanError),
+    Machine(#[from] crate::plan_tool::state::PlanValidationError),
     #[error("Plan context projection failed")]
     Context(#[from] crate::PureError),
     #[error("Plan continuation payload could not be frozen")]
@@ -199,12 +199,11 @@ fn prepare_resolution(
     projected_resolution.interaction_id = projected.interaction_id.clone();
     projected.decide(InteractionCommand::ResolveUserInput(projected_resolution))?;
     let prompt = prompt(current)?;
-    let state = decode_plan_state(&saved_plan.payload)?;
-    if state.revision != prompt.expected_plan_revision
+    let mut state = decode_plan_state(&saved_plan.payload)?;
+    if state.plan.revision != prompt.expected_plan_revision
         || state.pending_interaction_id.as_deref() != Some(current.request.id.as_str())
-        || !state.document.as_ref().is_some_and(|document| {
-            document.content_hash == prompt.plan_hash
-                && document.markdown == prompt.question.question
+        || !state.plan.document.as_ref().is_some_and(|document| {
+            document.hash == prompt.plan_hash && document.content == prompt.question.question
         })
     {
         return Err(PlanInteractionError::Identity);
@@ -215,19 +214,22 @@ fn prepare_resolution(
     let decision = crate::plan_tool::state::confirmation_decision(&answer)
         .map_err(PlanInteractionError::Answer)?;
     let payload = answer_payload(resolution)?;
-    let mut machine = crate::plan_tool::state::AgentSessionPlanMachine::new(state)?;
-    let result = machine.resolve(crate::plan_tool::state::AgentSessionPlanResolveCommand {
-        expected_revision: prompt.expected_plan_revision,
-        interaction_id: current.request.id.clone(),
-        operation_id: format!("resolve:{}", current.request.id),
-        argument_hash: pl_core::context::content_hash(payload.content().as_bytes()),
+    let mut plan = crate::plan_tool::state::Plan::from_record(state.plan)?;
+    let cmd = crate::plan_tool::state::user_resolution_command(
         decision,
-        resolved_at: crate::studio::unix_seconds(),
-    });
-    if !result.accepted {
-        return Err(PlanInteractionError::Rejected(result.code));
+        prompt.expected_plan_revision,
+        format!("resolve:{}", current.request.id),
+        pl_core::context::content_hash(payload.content().as_bytes()),
+        crate::studio::unix_seconds(),
+    );
+    let outcome = plan.transition(cmd);
+    if !outcome.accepted {
+        return Err(PlanInteractionError::Rejected(
+            crate::plan_tool::AgentSessionPlanResultCode::InvalidState,
+        ));
     }
-    let projection = crate::plan_tool::plan_model_context_section(machine.state())?;
+    state = crate::plan_tool::AgentSessionPlanState::from_plan(plan, None);
+    let projection = crate::plan_tool::plan_model_context_section(&state)?;
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Continuation<'a> {
@@ -259,7 +261,7 @@ fn prepare_resolution(
         mutations: vec![ExtensionMutation::Put {
             id: PLAN_EXTENSION.into(),
             expected_revision: Some(saved_plan.revision),
-            payload: encode_plan_state(machine.state())?,
+            payload: encode_plan_state(&state)?,
         }],
         continuation: Some(ThreadInput {
             purpose: pl_core::thread::input::InputPurpose::Message,

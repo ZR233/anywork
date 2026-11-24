@@ -1491,7 +1491,7 @@ mod tests {
         use crate::mode::ThreadModeId;
         let (_dir, runtime) = runtime();
         let mut first = runtime
-            .read_thread_mode_definition(&ThreadModeId::simple())?
+            .read_thread_mode_definition(&ThreadModeId::auto())?
             .document;
         first.definition.id = ThreadModeId::new("mode.first")?;
         let mut second = first.clone();

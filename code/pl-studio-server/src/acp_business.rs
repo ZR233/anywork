@@ -527,6 +527,7 @@ mod tests {
             observation_gap: None,
             auth_methods: vec![],
             info_snapshot: None,
+            workflow_state: None,
         };
         let value = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(value["configOptions"], configs);

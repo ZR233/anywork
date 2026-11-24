@@ -282,7 +282,7 @@ mod tests {
             thread_id: id.into(),
             workspace_id: String::new(),
             title: String::new(),
-            mode: Some(crate::mode::ThreadModeId::simple()),
+            mode: Some(crate::mode::ThreadModeId::auto()),
             workspace_mode: crate::ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),

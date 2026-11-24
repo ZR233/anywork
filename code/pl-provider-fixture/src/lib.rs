@@ -3476,8 +3476,9 @@ pub fn gui_plan_recovery_script() -> Vec<Step> {
                 &[RealtimeToolCall {
                     item_id: "plan-recovery-approve-item",
                     call_id: "plan-recovery-approve-call",
-                    name: "plan_submit",
+                    name: "plan_transition",
                     arguments: json!({
+                        "targetState": "awaitingConfirmation",
                         "expectedRevision": 0,
                         "plan": GUI_PLAN_RECOVERY_APPROVE_PLAN,
                     })
@@ -3515,8 +3516,9 @@ pub fn gui_plan_recovery_script() -> Vec<Step> {
                 &[RealtimeToolCall {
                     item_id: "plan-recovery-revise-item",
                     call_id: "plan-recovery-revise-call",
-                    name: "plan_submit",
+                    name: "plan_transition",
                     arguments: json!({
+                        "targetState": "awaitingConfirmation",
                         "expectedRevision": 0,
                         "plan": GUI_PLAN_RECOVERY_REVISE_PLAN,
                     })
@@ -3540,8 +3542,9 @@ pub fn gui_plan_recovery_script() -> Vec<Step> {
                 &[RealtimeToolCall {
                     item_id: "plan-recovery-revised-item",
                     call_id: "plan-recovery-revised-call",
-                    name: "plan_submit",
+                    name: "plan_transition",
                     arguments: json!({
+                        "targetState": "awaitingConfirmation",
                         "expectedRevision": 2,
                         "plan": GUI_PLAN_RECOVERY_REVISED_PLAN,
                     })

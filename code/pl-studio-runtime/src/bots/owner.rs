@@ -286,7 +286,7 @@ impl BotRuntime {
         })?;
         let route = settings
             .config
-            .mode_model_route(&crate::mode::ThreadModeId::simple())
+            .mode_model_route(&crate::mode::ThreadModeId::auto())
             .map_err(|error| {
                 FeishuError::new(FeishuErrorKind::Rejected, error.to_string(), false, None)
             })?;

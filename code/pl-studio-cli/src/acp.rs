@@ -296,6 +296,7 @@ async fn run_session<S: Future<Output = CancellationSignal>>(
                     workspace_mode: ThreadWorkspaceMode::Local,
                     delegation_mode: None,
                     delegation_preference: None,
+                    mode: None,
                 }
             },
         }),

@@ -427,9 +427,9 @@ void main() {
         readOnly: false,
       );
       await client.modeEditor.open('mode.custom');
-      final builtin = _document(id: 'mode.task');
+      final builtin = _document(id: 'mode.auto');
       transport.validation = ModeValidationResult(document: builtin);
-      const raw = '{"id":"mode.task"}';
+      const raw = '{"id":"mode.auto"}';
       client.modeEditor.editJson(raw);
       expect(await client.modeEditor.applyJson(), isFalse);
       expect(client.modeEditor.state.jsonText, raw);
@@ -438,7 +438,7 @@ void main() {
       client.modeEditor.discard();
       client.modeEditor.replace(builtin);
       expect(client.modeEditor.state.document!.definition.id, 'mode.custom');
-      client.modeEditor.create(id: 'mode.simple', displayName: 'overwrite');
+      client.modeEditor.create(id: 'mode.auto', displayName: 'overwrite');
       expect(client.modeEditor.state.document!.definition.id, 'mode.custom');
       expect(transport.saved, isEmpty);
     },
@@ -459,13 +459,13 @@ void main() {
   });
 
   test('built-in read-only definitions reject edits in the owner', () async {
-    final document = _document(id: 'mode.simple');
+    final document = _document(id: 'mode.auto');
     transport.snapshot = ModeDefinitionSnapshot(
       revision: 2,
       document: document,
       readOnly: true,
     );
-    await client.modeEditor.open('mode.simple');
+    await client.modeEditor.open('mode.auto');
 
     client.modeEditor.replace(
       document.copyWith(

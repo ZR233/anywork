@@ -44,6 +44,7 @@ class StudioWorkspaceBody extends StatelessWidget {
     this.readingAction,
     this.overlays = const [],
     this.todoPanel,
+    this.workflowPanel,
     super.key,
   });
 
@@ -54,10 +55,14 @@ class StudioWorkspaceBody extends StatelessWidget {
   /// 覆盖在阅读区域上的瞬态提示（失败条、加载遮罩）；它们不参与布局分配。
   final List<Widget> overlays;
 
-  /// 右侧 Todo 侧栏；计划详情打开时由调用方传 null 让位。
+  /// 右侧 Todo 侧栏；计划详情打开或工作流面板展开时让位。
   final Widget? todoPanel;
 
+  /// 右侧纵向工作流图侧栏；与 [todoPanel] 互斥。
+  final Widget? workflowPanel;
+
   static const _todoPanelWidth = 304.0;
+  static const _workflowPanelWidth = 360.0;
 
   @override
   Widget build(BuildContext context) {
@@ -84,7 +89,9 @@ class StudioWorkspaceBody extends StatelessWidget {
           ),
         ),
         if (todoPanel case final panel?)
-          SizedBox(width: _todoPanelWidth, child: panel),
+          SizedBox(width: _todoPanelWidth, child: panel)
+        else if (workflowPanel case final panel?)
+          SizedBox(width: _workflowPanelWidth, child: panel),
       ],
     );
   }
@@ -134,8 +141,11 @@ class AgentWorkspacePane extends ConsumerStatefulWidget {
   ConsumerState<AgentWorkspacePane> createState() => _AgentWorkspacePaneState();
 }
 
+enum _ActiveEndDrawer { todo, workflow }
+
 class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   static const _todoPanelWidth = 304.0;
+  static const _workflowPanelWidth = 360.0;
 
   static const _minimumTimelineWidth = 560.0;
 
@@ -150,6 +160,8 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
 
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final Map<String, bool> _todoExpandedByThread = {};
+  final Map<String, bool> _workflowExpandedByThread = {};
+  _ActiveEndDrawer _activeEndDrawer = _ActiveEndDrawer.todo;
 
   @override
   Widget build(BuildContext context) {
@@ -206,7 +218,9 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
               : referencedPlan;
           final todoInDrawer =
               constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
-          final todoExpanded = _todoExpandedByThread[threadId] ?? false;
+          final workflowInDrawer =
+              constraints.maxWidth <
+              _workflowPanelWidth + _minimumTimelineWidth;
           final footerMaxHeight = constraints.hasBoundedHeight
               ? _footerMaxHeight(constraints.maxHeight)
               : null;
@@ -219,23 +233,44 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             pendingPlan: pendingPlan,
             presentedPlan: presentedPlan,
             builder: (context, readingArea, readingOpen, onOpenPlan) {
+              final todoExpanded =
+                  !readingOpen && (_todoExpandedByThread[threadId] ?? false);
+              final workflowExpanded =
+                  !todoExpanded &&
+                  (_workflowExpandedByThread[threadId] ?? false);
+              final workflowDrawer = workflowInDrawer
+                  ? Drawer(
+                      width: _workflowPanelWidth,
+                      backgroundColor: context.colors.surfaceContainer,
+                      child: ThreadWorkflowGraphPanelConnector(
+                        threadId: threadId,
+                        inDrawer: true,
+                        onClose: () =>
+                            _scaffoldKey.currentState?.closeEndDrawer(),
+                      ),
+                    )
+                  : null;
+              final todoDrawer = !readingOpen && todoInDrawer && todo != null
+                  ? Drawer(
+                      width: 328,
+                      backgroundColor: context.colors.surfaceContainer,
+                      child: TodoPanel(
+                        key: const ValueKey('todo-drawer-panel'),
+                        todo: todo,
+                        inDrawer: true,
+                        onClose: () =>
+                            _scaffoldKey.currentState?.closeEndDrawer(),
+                      ),
+                    )
+                  : null;
+              final endDrawer = _activeEndDrawer == _ActiveEndDrawer.workflow
+                  ? workflowDrawer ?? todoDrawer
+                  : todoDrawer ?? workflowDrawer;
               return Scaffold(
                 key: _scaffoldKey,
                 backgroundColor: context.colors.surface,
                 endDrawerEnableOpenDragGesture: false,
-                endDrawer: !readingOpen && todoInDrawer && todo != null
-                    ? Drawer(
-                        width: 328,
-                        backgroundColor: context.colors.surfaceContainer,
-                        child: TodoPanel(
-                          key: const ValueKey('todo-drawer-panel'),
-                          todo: todo,
-                          inDrawer: true,
-                          onClose: () =>
-                              _scaffoldKey.currentState?.closeEndDrawer(),
-                        ),
-                      )
-                    : null,
+                endDrawer: endDrawer,
                 body: Column(
                   children: [
                     // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
@@ -270,14 +305,42 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                               ? null
                               : () {
                                   if (todoInDrawer) {
+                                    setState(() {
+                                      _activeEndDrawer = _ActiveEndDrawer.todo;
+                                      _workflowExpandedByThread[threadId] =
+                                          false;
+                                    });
                                     _scaffoldKey.currentState?.openEndDrawer();
                                   } else {
-                                    setState(
-                                      () => _todoExpandedByThread[threadId] =
-                                          !todoExpanded,
-                                    );
+                                    setState(() {
+                                      final next = !todoExpanded;
+                                      _todoExpandedByThread[threadId] = next;
+                                      if (next) {
+                                        _workflowExpandedByThread[threadId] =
+                                            false;
+                                      }
+                                    });
                                   }
                                 },
+                          workflowExpanded:
+                              !workflowInDrawer && workflowExpanded,
+                          onToggleWorkflow: () {
+                            if (workflowInDrawer) {
+                              setState(() {
+                                _activeEndDrawer = _ActiveEndDrawer.workflow;
+                                _todoExpandedByThread[threadId] = false;
+                              });
+                              _scaffoldKey.currentState?.openEndDrawer();
+                            } else {
+                              setState(() {
+                                final next = !workflowExpanded;
+                                _workflowExpandedByThread[threadId] = next;
+                                if (next) {
+                                  _todoExpandedByThread[threadId] = false;
+                                }
+                              });
+                            }
+                          },
                           showPlanEntry:
                               pendingPlan == null && referencedPlan != null,
                           onOpenPlan:
@@ -285,7 +348,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                               ? null
                               : onOpenPlan,
                         ),
-                        // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
+                        // Todo 与工作流图面板互斥；计划详情在左侧阅读区展示，不阻塞工作流图开关。
                         todoPanel:
                             !readingOpen &&
                                 !todoInDrawer &&
@@ -296,6 +359,15 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                                 todo: todo,
                                 onClose: () => setState(
                                   () => _todoExpandedByThread[threadId] = false,
+                                ),
+                              )
+                            : null,
+                        workflowPanel: !workflowInDrawer && workflowExpanded
+                            ? ThreadWorkflowGraphPanelConnector(
+                                threadId: threadId,
+                                onClose: () => setState(
+                                  () => _workflowExpandedByThread[threadId] =
+                                      false,
                                 ),
                               )
                             : null,
@@ -351,6 +423,8 @@ class _AdaptiveFooter extends StatelessWidget {
     required this.showTodo,
     required this.todoExpanded,
     required this.onToggleTodo,
+    this.workflowExpanded = false,
+    this.onToggleWorkflow,
     this.showPlanEntry = false,
     this.onOpenPlan,
   });
@@ -361,6 +435,8 @@ class _AdaptiveFooter extends StatelessWidget {
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool workflowExpanded;
+  final VoidCallback? onToggleWorkflow;
   final bool showPlanEntry;
   final VoidCallback? onOpenPlan;
 
@@ -372,6 +448,8 @@ class _AdaptiveFooter extends StatelessWidget {
         showTodo: showTodo,
         todoExpanded: todoExpanded,
         onToggleTodo: onToggleTodo,
+        workflowExpanded: workflowExpanded,
+        onToggleWorkflow: onToggleWorkflow,
         showPlanEntry: showPlanEntry,
         onOpenPlan: onOpenPlan,
         compact: false,
@@ -389,6 +467,8 @@ class _AdaptiveFooter extends StatelessWidget {
             showTodo: showTodo,
             todoExpanded: todoExpanded,
             onToggleTodo: onToggleTodo,
+            workflowExpanded: workflowExpanded,
+            onToggleWorkflow: onToggleWorkflow,
             showPlanEntry: showPlanEntry,
             onOpenPlan: onOpenPlan,
             compact: constraints.maxHeight < _compactFooterBudget,

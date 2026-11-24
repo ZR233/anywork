@@ -9,6 +9,8 @@ import '../types/acp_business.dart';
 import '../types/acp_business/content.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
+import '../types/mode_editor.dart';
+import '../types/thread_stream.dart';
 import 'acp_business/feed.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -55,6 +57,12 @@ Future<void> setAcpSessionMode({required BridgeAcpSetModeRequest request}) =>
     RustLib.instance.api.crateApiStudioHandlersAcpBusinessSetAcpSessionMode(
       request: request,
     );
+
+Future<BridgeAcpWorkflowStateSnapshot> setAcpThreadMode({
+  required BridgeAcpSetThreadModeRequest request,
+}) => RustLib.instance.api.crateApiStudioHandlersAcpBusinessSetAcpThreadMode(
+  request: request,
+);
 
 Future<void> answerAcpPermission({
   required BridgeAcpPermissionAnswerRequest request,

@@ -88,7 +88,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 34;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 35;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -206,10 +206,7 @@ impl StudioConfig {
                 accounts: BTreeMap::from([(account_id, account)]),
                 routes: BTreeMap::new(),
             },
-            mode_model_routes: BTreeMap::from([
-                (ThreadModeId::simple(), route.clone()),
-                (ThreadModeId::task(), route),
-            ]),
+            mode_model_routes: BTreeMap::from([(ThreadModeId::auto(), route)]),
             disabled_system_agents: BTreeSet::new(),
             web_search: WebSearchConfig::default(),
             deepseek_web_search: DeepSeekWebSearchConfig::default(),
@@ -256,11 +253,9 @@ impl StudioConfig {
             }
             self.models.route_availability(route)?;
         }
-        if !self.mode_model_routes.contains_key(&ThreadModeId::simple())
-            || !self.mode_model_routes.contains_key(&ThreadModeId::task())
-        {
+        if !self.mode_model_routes.contains_key(&ThreadModeId::auto()) {
             return Err(PureError::ConfigError(
-                "mode_model_routes must define mode.simple and mode.task".to_string(),
+                "mode_model_routes must define mode.auto".to_string(),
             ));
         }
         for route in self.mode_model_routes.values() {
@@ -273,10 +268,8 @@ impl StudioConfig {
     pub fn mode_model_route(&self, mode: &ThreadModeId) -> Result<&ModelRouteConfig> {
         self.mode_model_routes
             .get(mode)
-            .or_else(|| self.mode_model_routes.get(&ThreadModeId::simple()))
-            .ok_or_else(|| {
-                PureError::ConfigError("missing model route for mode.simple".to_string())
-            })
+            .or_else(|| self.mode_model_routes.get(&ThreadModeId::auto()))
+            .ok_or_else(|| PureError::ConfigError("missing model route for mode.auto".to_string()))
     }
 
     pub fn resolve_mode_model_route(

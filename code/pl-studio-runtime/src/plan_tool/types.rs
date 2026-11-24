@@ -1,8 +1,25 @@
-//! AgentSession 内固定 Plan 状态机的持久化协议。
+//! Product Plan adapters and wire projections backed by `pl-tool-plan`.
 
 use serde::{Deserialize, Serialize};
 
-/// 一份 AgentSession Plan 的封闭生命周期状态。
+pub use pl_tool_plan::{
+    MAX_FEEDBACK_BYTES, MAX_PLAN_BYTES, PLAN_CURRENT_TOOL, PLAN_HISTORY_TOOL, PLAN_NEXT_TOOL,
+    PLAN_TRANSITION_TOOL, Plan, PlanActor, PlanDocument, PlanErrorCode, PlanHistoryArgs,
+    PlanHistoryResponse, PlanNextResponse, PlanOperationReceipt, PlanRecord, PlanSnapshot,
+    PlanState, PlanTransitionArgs, PlanTransitionCommand, PlanTransitionError,
+    PlanTransitionOutcome, PlanTransitionRecord, PlanTransitionRule, content_hash,
+};
+
+pub const TOOL_PLAN_CURRENT: &str = PLAN_CURRENT_TOOL;
+pub const TOOL_PLAN_NEXT: &str = PLAN_NEXT_TOOL;
+pub const TOOL_PLAN_HISTORY: &str = PLAN_HISTORY_TOOL;
+pub const TOOL_PLAN_TRANSITION: &str = PLAN_TRANSITION_TOOL;
+/// Retained only for decoding historical timeline items/events created before unification.
+pub const TOOL_PLAN_SUBMIT: &str = "plan_submit";
+/// Retained only for decoding historical timeline items/events created before unification.
+pub const TOOL_PLAN_RESTART: &str = "plan_restart";
+
+/// OpenAPI / Studio protocol alias for [`PlanState`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentSessionPlanPhase {
@@ -24,36 +41,29 @@ impl AgentSessionPlanPhase {
     }
 }
 
-/// 能触发 Plan 状态变化的穷尽操作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentSessionPlanOperation {
-    Submit,
-    Approve,
-    RequestRevision,
-    Restart,
-}
-
-impl AgentSessionPlanOperation {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Submit => "submit",
-            Self::Approve => "approve",
-            Self::RequestRevision => "requestRevision",
-            Self::Restart => "restart",
+impl From<PlanState> for AgentSessionPlanPhase {
+    fn from(value: PlanState) -> Self {
+        match value {
+            PlanState::Drafting => Self::Drafting,
+            PlanState::AwaitingConfirmation => Self::AwaitingConfirmation,
+            PlanState::RevisionRequested => Self::RevisionRequested,
+            PlanState::Approved => Self::Approved,
         }
     }
 }
 
-/// Plan 操作由模型工具还是用户 Interaction 触发。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentSessionPlanTransitionActor {
-    Agent,
-    User,
+impl From<AgentSessionPlanPhase> for PlanState {
+    fn from(value: AgentSessionPlanPhase) -> Self {
+        match value {
+            AgentSessionPlanPhase::Drafting => Self::Drafting,
+            AgentSessionPlanPhase::AwaitingConfirmation => Self::AwaitingConfirmation,
+            AgentSessionPlanPhase::RevisionRequested => Self::RevisionRequested,
+            AgentSessionPlanPhase::Approved => Self::Approved,
+        }
+    }
 }
 
-/// 当前 Plan Markdown 文档。
+/// Product Plan Markdown document projection matching GUI runtime expectations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionPlanDocument {
@@ -62,55 +72,88 @@ pub struct AgentSessionPlanDocument {
     pub content_hash: String,
 }
 
-/// 一次成功的固定 Plan 状态转换。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSessionPlanTransitionRecord {
-    pub revision: u64,
-    pub operation: AgentSessionPlanOperation,
-    pub source_state: AgentSessionPlanPhase,
-    pub target_state: AgentSessionPlanPhase,
-    pub operation_id: String,
-    pub reason: String,
-    pub transitioned_at: i64,
+impl From<&PlanDocument> for AgentSessionPlanDocument {
+    fn from(doc: &PlanDocument) -> Self {
+        Self {
+            version: doc.revision,
+            markdown: doc.content.clone(),
+            content_hash: doc.hash.clone(),
+        }
+    }
 }
 
-/// mutation 的有界幂等回执。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Legacy & current confirmation error result codes used by Studio Interaction resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentSessionPlanOperationReceipt {
-    pub operation_id: String,
-    pub argument_hash: String,
-    pub operation_revision: u64,
+pub enum AgentSessionPlanResultCode {
+    Transitioned,
+    Approved,
+    RevisionRequested,
+    AlreadyApplied,
+    InvalidState,
+    StaleRevision,
+    OperationIdentityConflict,
+    InvalidInteraction,
+    InvalidResolution,
 }
 
-/// 与 Agent session 一起持久化的 Plan 热状态。
+/// Canonical per-agent Plan hot state persisted inside `studio.plan` extension.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionPlanState {
     #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
-    pub state: AgentSessionPlanPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub document: Option<AgentSessionPlanDocument>,
+    pub plan: PlanRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_interaction_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_revision_feedback: Option<String>,
-    #[serde(default)]
-    pub history_tail: Vec<AgentSessionPlanTransitionRecord>,
-    #[serde(default)]
-    pub archived_transition_count: u64,
-    #[serde(default)]
-    pub archived_transition_digest: String,
-    #[serde(default)]
-    pub operation_receipts: Vec<AgentSessionPlanOperationReceipt>,
-    #[serde(default)]
-    pub updated_at: i64,
 }
 
-/// Plan confirmation Interaction 与状态机 submit 命令的 typed 绑定。
+impl AgentSessionPlanState {
+    #[must_use]
+    pub fn from_plan(plan: Plan, pending_interaction_id: Option<String>) -> Self {
+        Self {
+            plan: plan.into_record(),
+            pending_interaction_id,
+        }
+    }
+
+    #[must_use]
+    pub fn with_document(
+        state: PlanState,
+        revision: u64,
+        content: impl Into<String>,
+        updated_at_ms: i64,
+    ) -> Self {
+        let content = content.into();
+        let hash = content_hash(content.as_bytes());
+        Self {
+            plan: PlanRecord {
+                state,
+                revision,
+                document: Some(PlanDocument {
+                    revision,
+                    content,
+                    hash,
+                    updated_at_ms,
+                }),
+                updated_at_ms,
+                ..Default::default()
+            },
+            pending_interaction_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.plan.revision
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> AgentSessionPlanPhase {
+        self.plan.state.into()
+    }
+}
+
+/// Plan confirmation Interaction typed binding stored in `InteractionScope`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionPlanConfirmationPurpose {
@@ -120,34 +163,7 @@ pub struct AgentSessionPlanConfirmationPurpose {
     pub plan_hash: String,
 }
 
-/// 当前状态下的一条固定可用转换。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSessionPlanAvailableTransition {
-    pub operation: AgentSessionPlanOperation,
-    pub target_state: AgentSessionPlanPhase,
-    pub actor: AgentSessionPlanTransitionActor,
-    pub condition: String,
-    pub action: String,
-}
-
-/// 工具和错误共用的 canonical Plan 投影。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSessionPlanSnapshot {
-    pub revision: u64,
-    pub state: AgentSessionPlanPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub document: Option<AgentSessionPlanDocument>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_interaction_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_revision_feedback: Option<String>,
-    pub updated_at: i64,
-    pub allowed_transitions: Vec<AgentSessionPlanAvailableTransition>,
-}
-
-/// Thread stream 向 GUI 暴露的当前 Plan 投影。
+/// Thread stream lightweight Plan projection exposed to GUI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionPlanRuntimeSnapshot {
@@ -159,55 +175,124 @@ pub struct AgentSessionPlanRuntimeSnapshot {
 }
 
 impl From<&AgentSessionPlanState> for AgentSessionPlanRuntimeSnapshot {
-    fn from(state: &AgentSessionPlanState) -> Self {
+    fn from(value: &AgentSessionPlanState) -> Self {
         Self {
-            revision: state.revision,
-            state: state.state,
-            document: state.document.clone(),
-            updated_at: state.updated_at,
+            revision: value.plan.revision,
+            state: value.plan.state.into(),
+            document: value
+                .plan
+                .document
+                .as_ref()
+                .map(AgentSessionPlanDocument::from),
+            updated_at: value.plan.updated_at_ms / 1000,
         }
     }
 }
 
-/// Plan mutation 的稳定结果码。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentSessionPlanResultCode {
-    Submitted,
-    Restarted,
-    Approved,
-    RevisionRequested,
-    AlreadyApplied,
-    InvalidState,
-    StaleRevision,
-    OperationIdentityConflict,
-    InvalidInteraction,
-    InvalidResolution,
+impl From<&PlanSnapshot> for AgentSessionPlanRuntimeSnapshot {
+    fn from(value: &PlanSnapshot) -> Self {
+        Self {
+            revision: value.revision,
+            state: value.state.into(),
+            document: value.document.as_ref().map(AgentSessionPlanDocument::from),
+            updated_at: value.updated_at_ms / 1000,
+        }
+    }
 }
 
-/// 状态拒绝时给模型的完整诊断，而不是只返回一条自然语言错误。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Legacy pre-unification persisted `studio.plan` JSON shape supported on read paths.
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentSessionPlanTransitionError {
-    pub code: AgentSessionPlanResultCode,
-    pub message: String,
-    pub attempted_operation: AgentSessionPlanOperation,
-    pub current_state: AgentSessionPlanPhase,
-    pub current_revision: u64,
-    pub allowed_transitions: Vec<AgentSessionPlanAvailableTransition>,
-    pub failed_condition: String,
-    pub recovery_actions: Vec<String>,
+pub(crate) struct LegacyAgentSessionPlanState {
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub state: AgentSessionPlanPhase,
+    #[serde(default)]
+    pub document: Option<AgentSessionPlanDocument>,
+    #[serde(default)]
+    pub pending_interaction_id: Option<String>,
+    #[serde(default)]
+    pub last_revision_feedback: Option<String>,
+    #[serde(default)]
+    pub history_tail: Vec<LegacyTransitionRecord>,
+    #[serde(default)]
+    pub archived_transition_count: u64,
+    #[serde(default)]
+    pub archived_transition_digest: String,
+    #[serde(default)]
+    pub operation_receipts: Vec<LegacyReceipt>,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
-/// Plan mutation 的统一工具响应。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentSessionPlanMutationResponse {
-    pub accepted: bool,
-    pub code: AgentSessionPlanResultCode,
-    pub operation: AgentSessionPlanOperation,
+pub(crate) struct LegacyTransitionRecord {
+    pub revision: u64,
+    pub source_state: AgentSessionPlanPhase,
+    pub target_state: AgentSessionPlanPhase,
+    pub operation_id: String,
+    pub reason: String,
+    pub transitioned_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LegacyReceipt {
+    pub operation_id: String,
+    pub argument_hash: String,
     pub operation_revision: u64,
-    pub snapshot: AgentSessionPlanSnapshot,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<AgentSessionPlanTransitionError>,
+}
+
+impl From<LegacyAgentSessionPlanState> for AgentSessionPlanState {
+    fn from(legacy: LegacyAgentSessionPlanState) -> Self {
+        let updated_at_ms = legacy.updated_at.saturating_mul(1000);
+        let history = legacy
+            .history_tail
+            .into_iter()
+            .map(|entry| PlanTransitionRecord {
+                seq: entry.revision,
+                idempotency_key: Some(entry.operation_id),
+                from_state: entry.source_state.into(),
+                to_state: entry.target_state.into(),
+                forced: false,
+                actor: PlanActor::Agent,
+                reason: Some(entry.reason),
+                feedback: None,
+                document_hash: None,
+                document_revision: None,
+                timestamp_ms: entry.transitioned_at.saturating_mul(1000),
+            })
+            .collect::<Vec<_>>();
+        let next_seq = history.last().map_or(legacy.revision, |item| item.seq);
+        Self {
+            plan: PlanRecord {
+                state: legacy.state.into(),
+                revision: legacy.revision,
+                document: legacy.document.map(|doc| PlanDocument {
+                    revision: doc.version,
+                    content: doc.markdown,
+                    hash: doc.content_hash,
+                    updated_at_ms,
+                }),
+                last_revision_feedback: legacy.last_revision_feedback,
+                history,
+                archived_transition_count: legacy.archived_transition_count,
+                archived_transition_digest: legacy.archived_transition_digest,
+                receipts: legacy
+                    .operation_receipts
+                    .into_iter()
+                    .map(|r| PlanOperationReceipt {
+                        key: r.operation_id,
+                        argument_hash: r.argument_hash,
+                        resulting_revision: r.operation_revision,
+                    })
+                    .collect(),
+                next_seq,
+                updated_at_ms,
+            },
+            pending_interaction_id: legacy.pending_interaction_id,
+        }
+    }
 }

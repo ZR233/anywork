@@ -216,6 +216,17 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     final project = state.forProject(workspaceId);
     if (project.mode == mode && state.projects.containsKey(workspaceId)) return;
     _editProject(workspaceId, project.copyWith(mode: mode));
+    final prepared = _acpPrepared[workspaceId];
+    if (prepared != null &&
+        prepared.owner.state.ready &&
+        !prepared.owner.state.openPending &&
+        prepared.owner.state.activeRun == null) {
+      unawaited(
+        prepared.owner
+            .setThreadMode(mode.id)
+            .then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+    }
   }
 
   void setAcpService(String workspaceId, String? accountId) {
@@ -391,6 +402,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           account?.acpConnectionRevision == null) {
         throw StateError('The ACP service is not available');
       }
+      final openedModeId = draft.mode.id;
       dispatched = true;
       final owner = await sessions.openConversation(
         OpenAcpSessionRequestView(
@@ -403,6 +415,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
             workspaceMode: draft.workspaceMode,
             delegationMode: draft.delegationModeOverride,
             delegationPreference: draft.delegationPreferenceOverride,
+            mode: openedModeId,
           ),
         ),
       );
@@ -420,6 +433,13 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         return;
       }
       await _waitForAcpReady(workspaceId, owner, isCurrent: current);
+      if (!current()) return;
+      final latestModeId = state.forProject(workspaceId).mode.id;
+      final reportedModeId = owner.state.workflowState?.modeId;
+      if (latestModeId != openedModeId ||
+          (reportedModeId != null && reportedModeId != latestModeId)) {
+        await owner.setThreadMode(latestModeId);
+      }
       if (_acpModeIntents[workspaceId] case final mode?) {
         if (owner.state.configOptions != null ||
             owner.state.modes?.availableModes.any(

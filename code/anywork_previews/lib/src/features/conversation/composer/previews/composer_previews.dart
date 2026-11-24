@@ -288,7 +288,7 @@ class _PreviewInputState extends State<_PreviewInput>
   SessionModeSelector _modeSelector(bool inMenu) => SessionModeSelector(
     inMenu: inMenu,
     catalog: const ThreadModeCatalogView(),
-    mode: ThreadModeId.task,
+    mode: ThreadModeId.auto,
     enabled: widget.execution == null,
     onSelected: (_) {},
   );

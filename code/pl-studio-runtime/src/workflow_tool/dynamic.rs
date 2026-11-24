@@ -63,7 +63,7 @@ pub fn decode_workflow_state(payload: &OpaquePayload) -> Result<WorkflowSessionS
 }
 
 #[derive(Debug, Clone, Copy)]
-enum WorkflowOperationKind {
+pub(crate) enum WorkflowOperationKind {
     Current,
     Next,
     Graph,
@@ -72,7 +72,7 @@ enum WorkflowOperationKind {
     Restart,
 }
 impl WorkflowOperationKind {
-    fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
+    pub(crate) fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
         let (name, description, schema) = match self {
             Self::Current => (
                 "workflow_current",
@@ -96,7 +96,7 @@ impl WorkflowOperationKind {
             ),
             Self::Transition => (
                 "workflow_transition",
-                "Complete the current workflow state and cross one direct edge using run, revision and state CAS. Call this tool alone.",
+                "Complete the current workflow state and transition along a valid edge (or set force=true to jump to any valid state ID in the graph). Call this tool alone.",
                 pl_agent_tool::typed::input_schema_for::<TransitionInput>(),
             ),
             Self::Restart => (
@@ -233,6 +233,22 @@ impl Tool for ThreadWorkflowTool {
         }
         Ok(output)
     }
+}
+
+/// Creates ToolDefinitions for all built-in workflow operations.
+pub(crate) fn workflow_tool_definitions()
+-> Result<Vec<(WorkflowOperationKind, ToolDefinition)>, pl_agent_tool::DefinitionError> {
+    [
+        WorkflowOperationKind::Current,
+        WorkflowOperationKind::Next,
+        WorkflowOperationKind::Graph,
+        WorkflowOperationKind::History,
+        WorkflowOperationKind::Transition,
+        WorkflowOperationKind::Restart,
+    ]
+    .into_iter()
+    .map(|kind| Ok((kind, kind.definition()?)))
+    .collect()
 }
 
 /// Creates Thread-owned workflow operations from a frozen product Mode.

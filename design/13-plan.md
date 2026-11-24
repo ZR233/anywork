@@ -1,65 +1,65 @@
 # 13 - 计划（Thread Plan）状态机
 
-本文是会话计划（`Plan`）聚合模型、`plan_*` 工具契约与确认界面边界的唯一权威源；任务模式（`Task Mode`）工作流状态图见 [11](./11-thread-mode.md)，通用交互（`Interaction`）模型见 [03](./03-pipeline.md)。
+本文是独立计划工具包 `pl-tool-plan`、`Plan` 状态机聚合模型、`plan_*` 工具契约与确认界面边界的唯一权威源；自动工作模式（`mode.auto`）工作流状态图见 [11](./11-thread-mode.md)，通用交互（`Interaction`）模型见 [03](./03-pipeline.md)。
 
 ## 13.1 领域边界
 
-计划状态机（`Plan`）是会话线程（`Thread`）内独立于工作模式状态图（Mode workflow）的专项聚合：工作模式状态图描述整项任务从规划、文档、实现、集成到验收的宏观阶段，而计划状态机专门管理当前根线程的一份实施计划从起草、提交待审、要求修订到正式批准的完整生命周期。工作模式状态图不能定义、覆盖或直接推进计划状态，计划工具亦不接受外部状态图输入。
+计划状态机（`Plan`）由独立工具 crate `pl-tool-plan`（`code/tools/plan`）承载，完全解耦工作流状态图与 `pl-core` / `pl-studio-*`：每个智能体（包括根智能体、子智能体以及 ACP 宿主会话）各自持有一个独立的 `Plan` 对象与完整的 4 态状态机。工作模式状态图既不约束也不能自动推进计划状态，计划工具亦不感知工作流定义或其它智能体的计划。
 
-计划内核是唯一的会话计划状态机实现：协议层类型仅保存状态快照与审计事实，所有工具调用、用户交互决议、提示词投影与宿主恢复逻辑均必须将命令交由该纯状态机裁决并应用，严禁在各适配层复制平行的状态判断逻辑。
+`pl-tool-plan` 中的 `PlanStateMachine` 是唯一的会话计划状态机实现：协议层与持久层仅保存状态快照与审计事实，所有工具调用、用户交互决议、提示词投影与宿主恢复逻辑均必须将命令交由该纯状态机裁决并应用，严禁在各适配层复制平行的状态判断逻辑。
 
 ## 13.2 固定状态与合法转换
 
-计划状态机包含以下 4 个穷尽状态及固定转换边：
+计划状态机包含以下 4 个穷尽状态及合法转换边：
 
 ```text
-drafting -> awaitingConfirmation             plan_submit（提交初稿）
-revisionRequested -> awaitingConfirmation    plan_submit（提交修订稿）
-awaitingConfirmation -> approved             用户批准（Approve）
-awaitingConfirmation -> revisionRequested    用户要求修订（Revise 并附修改意见）
-approved -> drafting                         plan_restart（开启新计划谱系）
-revisionRequested -> drafting                plan_restart（清空旧计划重新起草）
+drafting -> awaitingConfirmation             plan_transition(targetState="awaitingConfirmation")
+revisionRequested -> awaitingConfirmation    plan_transition(targetState="awaitingConfirmation")
+awaitingConfirmation -> approved             用户批准（Approve）或 force=true 强制切换
+awaitingConfirmation -> revisionRequested    用户要求修订（Revise 并附反馈）或 force=true 强制切换
+approved -> drafting                         plan_transition(targetState="drafting")
+revisionRequested -> drafting                plan_transition(targetState="drafting")
+任意状态 -> 任意目标状态（显式 force=true）      plan_transition(..., force=true)
 ```
 
 状态转换规则如下：
-- **`drafting`（起草中，初始状态）**：智能体在此状态下收集信息并调用 `plan_submit` 提交完整计划文档，进入 `awaitingConfirmation`。
-- **`awaitingConfirmation`（等待用户确认）**：此状态下严禁调用 `plan_restart` 或再次调用 `plan_submit`，防止遗留失去归属的悬空待决交互（pending `Interaction`）。
-- **`revisionRequested`（已要求修订）**：用户拒绝原计划并给出修改意见后进入该状态；智能体可直接调用 `plan_submit` 提交完整修订版，或先调用 `plan_restart` 清空旧文档。
-- **`approved`（已批准）**：表示当前计划文档已获用户正式实施授权；若后续需求发生根本变化需推倒重来，须显式调用 `plan_restart` 回到 `drafting`。
+- **`drafting`（起草中，初始状态）**：智能体在此状态下收集信息；当需要提交计划审批时调用 `plan_transition(targetState: "awaitingConfirmation", content: ...)`。
+- **`awaitingConfirmation`（等待用户确认）**：正常非强制路径下（`force: false`）禁止重复切入 `awaitingConfirmation` 或直接退回 `drafting`，须等待用户确认；确需强行重整或取消待决状态时，可显式传入 `force: true` 绕过路径规则。
+- **`revisionRequested`（已要求修订）**：用户拒绝原计划并给出修改意见后进入该状态；智能体可直接提交完整修订版切入 `awaitingConfirmation`，或先切回 `drafting` 清空/重写。
+- **`approved`（已批准）**：表示当前计划文档已获正式实施授权；若后续需求发生根本变化需推倒重来，可调用 `plan_transition(targetState: "drafting")`（或强制跳转至任意目标状态）。
 
 ## 13.3 持久化扩展、CAS 校验与冷恢复
 
-### 线程扩展与父子会话隔离
+### 会话扩展与每智能体独立 Plan 实例
 
-每个根线程通过 `studio.plan` 线程扩展保存有界的计划状态：状态修订号（`revision`）、当前生命周期状态、计划 Markdown 正文及其内容散列值、文档版本号、待决交互 ID、最近一次用户修改意见、有界转换历史以及最近的操作回执（operation receipts）。未初始化 `studio.plan` 扩展的线程等价于处于 `revision = 0` 的 `drafting` 状态（只读查询不会为物化默认值而产生写操作）。
+每个智能体线程通过 `studio.plan` 线程扩展（ACP 会话通过宿主持久化 `acp-plan.json`）保存有界的独立 `Plan` 状态：状态修订号（`revision`）、当前生命周期状态、计划 Markdown 正文及其内容散列值、文档版本号、待决交互 ID、最近一次用户修改意见、有界转换历史以及最近的操作回执（operation receipts）。未初始化的线程等价于处于 `revision = 0` 的 `drafting` 状态（只读查询不会为物化默认值而产生写操作）。
 
-计划状态严格限制在根线程内部，绝不跨线程共享：仅根线程挂载 `plan_*` 工具与用户确认界面；子智能体（`child`）拥有独立上下文，不继承父线程的计划状态机或句柄，父智能体必须将子智能体执行所需的已批准计划基线显式写入 `spawn_agent.message`。
+每个智能体（包括根线程、Native 子智能体及 ACP 根/子会话）都持有各自独立的 `Plan` 对象与 `plan_*` 工具：子智能体不再依赖父线程句柄，可独立规划与记录自身工作方案；但仅主会话根智能体在非强制切入 `awaitingConfirmation` 且启用用户交互时挂载系统确认交互。
 
 ### 比较并交换（CAS）与原子确认决议
 
 所有计划状态写操作均以当前计划修订号执行 CAS 校验：
 - **工具调用幂等**：模型工具的操作身份由 `(sessionId, turnId, callId)` 与规范参数散列值共同构成；交互决议操作身份由 `(interactionId, planRevision, resolutionHash)` 构成。完全相同的重放直接返回 `alreadyApplied`，同一操作身份携带不同参数则返回 `operationIdentityConflict`。
-- **提交与决议原子性**：`plan_submit` 在单次工具提交事务中同时写入 `awaitingConfirmation` 状态、工具执行结果以及绑定调用关联的待决确认交互。当用户在界面点击“批准”或“提交修改”时，Studio 核对交互 ID、计划修订号与文档内容散列值，由计划状态机解释 `Approve` 或 `Revise` 决议，并将「交互回答、更新后的 `studio.plan` 扩展、模型上下文快照以及续接输入（continuation input）」在一次事务中原子提交。
+- **提交与决议原子性**：主代理调用 `plan_transition`（或兼容历史回放 `plan_submit`）在非强制路径下切入 `awaitingConfirmation` 时，在单次工具提交事务中同时写入 `awaitingConfirmation` 状态、工具执行结果以及绑定调用关联的待决确认交互。当用户在界面点击“批准”或“提交修改”时，Studio 核对交互 ID、计划修订号与文档内容散列值，由 `PlanStateMachine` 解释 `Approve` 或 `Revise` 决议，并将「交互回答、更新后的 `studio.plan` 扩展、模型上下文快照以及续接输入（continuation input）」在一次事务中原子提交。
 - **隐藏续接消息（Hidden Continuation）**：计划确认交互在工具注册时预设批准/修订后的续接输入使用 `MessagePresentation = hidden`（模型参数无法覆盖该预设）。因此，确认决议后完整的 Markdown 计划问题与用户决定会作为规范的用户消息写入线程上下文并发送给模型供应商，同时结合固定注入的 `pl.plan` 上下文片段让模型精确读取已批准正文或修改意见，但不会在 GUI 时间线中重复渲染第二张用户可见的计划大卡片。
-- **冷恢复保真**：关闭桌面界面或释放线程内存资源不视为拒绝计划或取消交互。处于 `awaitingConfirmation` 的计划扩展与对应的待决交互随保存屏障一同落盘；重新打开会话时，系统直接从规范快照恢复原计划正文、修订号与待决交互入口（冷恢复过程不调用模型、不重跑 `plan_submit`、也不自动批准）。
+- **冷恢复保真**：关闭桌面界面或释放线程内存资源不视为拒绝计划或取消交互。处于 `awaitingConfirmation` 的计划扩展与对应的待决交互随保存屏障一同落盘；重新打开会话时，系统直接从规范快照恢复原计划正文、修订号与待决交互入口（冷恢复过程不调用模型、不重跑 `plan_transition`、也不自动批准）。
 
 ## 13.4 `plan_*` 工具契约
 
-根线程成套挂载以下 5 个计划工具，统一读取当前线程的 `studio.plan` 扩展快照：
+每个智能体均挂载以下 4 个收敛后的计划工具，统一由宿主适配并驱动自身的 `PlanStateMachine` 实例：
 
-- **`plan_current`（只读共存 `Read + Coexist`）**：读取当前修订号、状态、完整计划文档、待决交互、最近修改意见与当前允许的操作；在实施阶段仍可随时调用以查阅已批准的计划全文。
-- **`plan_next`（只读共存 `Read + Coexist`）**：读取当前状态下的合法直接转换边、触发主体（模型工具或用户动作）及前置条件。
+- **`plan_current`（只读共存 `Read + Coexist`）**：读取当前修订号、状态、完整计划文档、待决交互、最近修改意见与当前允许的操作。
+- **`plan_next`（只读共存 `Read + Coexist`）**：读取当前状态下的合法直接转换目标、触发主体与前置条件。
 - **`plan_history`（只读共存 `Read + Coexist`）**：读取有界的状态转换历史与归档摘要。
-- **`plan_submit`（控制独占 `AgentControl + Solo`）**：携带 `expectedRevision` 与以一级 Markdown 标题（`# `）开头的完整计划文档提交审批。这是请求用户批准实施完整计划的**唯一合法工具**——严禁使用 `request_user_input` 或普通回复文本询问“是否开始实施 / 是否批准计划”。
-- **`plan_restart`（控制独占 `AgentControl + Solo`）**：携带 `expectedRevision` 与非空原因（`reason`），从允许状态清空旧计划并重置回 `drafting`。
+- **`plan_transition`（控制独占 `AgentControl + Solo`）**：收敛替代旧双工具，携带 `expectedRevision`、`targetState`、可选 `force`（默认 `false`）、`content`（切换待确认/计划正文时提供）与可选 `reason` 完成计划状态转换。开启 `force: true` 时可无视状态路径限制切到任意目标状态。
 
-当状态、CAS 修订号或幂等身份校验被拒绝时，工具返回结构化的 `accepted: false` 响应，完整包含稳定错误码、尝试执行的操作、当前状态与修订号、最新规范快照、当前允许的全部转换及可直接执行的恢复指引（例如修订号过期时明确指示先调用 `plan_current`；处于 `awaitingConfirmation` 时重复提交则指明当前正在等待哪个交互 ID；处于 `approved` 时提交则指明须先调用 `plan_restart`）。
+当状态、CAS 修订号或幂等身份校验被拒绝时，工具返回结构化的 `accepted: false` 响应，完整包含稳定错误码、尝试执行的目标状态、当前状态与修订号、最新规范快照、非强制路径下允许切入的状态列表、全部有效状态以及可直接执行的恢复指引（例如可先调用 `plan_current`、`plan_next`，或确认必要时传 `force: true` 强制跳转）。
 
-## 13.5 与任务模式、提示词及桌面界面的协作边界
+## 13.5 与工作模式、提示词及桌面界面的协作边界
 
-### 任务模式规划阶段门控
+### 按需计划确认（与工作流解耦）
 
-在任务模式（`mode.task`）的 `planning` 阶段，根智能体可进行多轮需求澄清、计划提交与根据反馈修订，期间工作流阶段始终保持为 `planning`（状态栏同样持续显示 `planning`）。仅当 `plan_current` 的状态已变为 `approved` 后，根智能体才可将任务工作流从 `planning` 转换至 `editing_documents`。
+在 `mode.auto`（或自定义工作流）下，工作流状态推进**不再强制阻塞**于 `plan_current == approved`：复杂方案需要用户评审批准时，根智能体可随时在主会话调用 `plan_transition(targetState: "awaitingConfirmation", content: ...)` 提交计划确认；无需额外审批的简单任务或中间子计划可独立流转或完全不进入等待确认。
 
 计划批准门控的是业务实施，不是理解代码所必需的全部准备工作。在已有任务授权和实际权限内，根智能体或明确委派的执行者可以在规划阶段准备最小、可逆的项目探索环境，例如配置已安装的语言服务器、核验初始化及语义查询；不因此提前修改业务源码、共享接口、依赖或生成文件。环境配置本身就是任务交付目标时，仍须遵循该任务的实施批准边界，不能借此提前交付。
 

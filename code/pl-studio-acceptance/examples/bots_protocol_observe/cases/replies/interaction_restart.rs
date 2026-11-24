@@ -586,8 +586,9 @@ pub(crate) fn interaction_restart_model_steps() -> Vec<Step> {
                 &[RealtimeToolCall {
                     item_id: "bots-restart-plan-item",
                     call_id: "bots-restart-plan-call",
-                    name: "plan_submit",
+                    name: "plan_transition",
                     arguments: serde_json::json!({
+                        "targetState": "awaitingConfirmation",
                         "expectedRevision": 0,
                         "plan": PLAN_MD,
                     })

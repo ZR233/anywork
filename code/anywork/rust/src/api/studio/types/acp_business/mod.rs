@@ -4,7 +4,10 @@ pub mod notification;
 pub use content::*;
 pub use notification::*;
 
-use super::{BridgeAcpAuthMethod, BridgeError};
+use super::{
+    BridgeAcpAuthMethod, BridgeError, BridgePlanRuntimeSnapshot, BridgeWorkflowRun,
+    BridgeWorkflowRuntimeGraphSnapshot,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +131,7 @@ pub enum BridgeAcpOpenIntent {
         workspace_mode: BridgeAcpWorkspaceMode,
         delegation_mode: Option<super::BridgeDelegationMode>,
         delegation_preference: Option<super::BridgeDelegationPreference>,
+        mode: Option<String>,
     },
     Load {
         session_id: BridgeAcpRemoteSessionId,
@@ -170,6 +174,19 @@ pub struct BridgeAcpConfigureRequest {
 pub struct BridgeAcpSetModeRequest {
     pub target: BridgeAcpSessionTarget,
     pub mode_id: BridgeAcpModeId,
+}
+#[derive(Debug, Clone)]
+pub struct BridgeAcpSetThreadModeRequest {
+    pub target: BridgeAcpSessionTarget,
+    pub mode_id: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpWorkflowStateSnapshot {
+    pub mode_id: Option<String>,
+    pub mode_display_name: Option<String>,
+    pub run: Option<BridgeWorkflowRun>,
+    pub graph: Option<BridgeWorkflowRuntimeGraphSnapshot>,
+    pub plan: Option<BridgePlanRuntimeSnapshot>,
 }
 #[derive(Debug, Clone)]
 pub struct BridgeAcpPermissionAnswerRequest {
@@ -363,6 +380,7 @@ pub enum BridgeAcpSessionFrame {
         target: BridgeAcpSessionTarget,
         has_observation: bool,
         info_snapshot: Option<Box<BridgeAcpSessionInfoSnapshot>>,
+        workflow_state: Option<Box<BridgeAcpWorkflowStateSnapshot>>,
     },
     Settled {
         result: BridgeAcpSettlement,
@@ -414,6 +432,9 @@ pub enum BridgeAcpSessionEvent {
     Completed {
         completed: BridgeAcpCompletedRun,
     },
+    WorkflowStateUpdated {
+        state: Box<BridgeAcpWorkflowStateSnapshot>,
+    },
     Gap {
         gap: BridgeAcpObservationGap,
     },
@@ -432,6 +453,7 @@ pub struct BridgeAcpBusinessSnapshot {
     pub observation_gap: Option<BridgeAcpObservationGap>,
     pub auth_methods: Vec<BridgeAcpAuthMethod>,
     pub info_snapshot: Option<BridgeAcpSessionInfoSnapshot>,
+    pub workflow_state: Option<BridgeAcpWorkflowStateSnapshot>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeAcpBusinessClose {

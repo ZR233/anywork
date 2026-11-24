@@ -114,6 +114,7 @@ impl StudioRuntime {
             store.clone(),
             product_events.clone(),
             acp_accounts.clone(),
+            thread_modes.clone(),
         );
         let service_config = config_runtime.clone();
         let service_store = store.clone();

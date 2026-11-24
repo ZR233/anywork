@@ -17,6 +17,7 @@ class AcpStatusBarView extends StatelessWidget {
   const AcpStatusBarView({
     super.key,
     required this.status,
+    this.workflow = const SizedBox.shrink(),
     required this.contextUsage,
     required this.cost,
     this.throughput = const SizedBox.shrink(),
@@ -24,6 +25,7 @@ class AcpStatusBarView extends StatelessWidget {
   });
 
   final Widget status;
+  final Widget workflow;
   final Widget contextUsage;
   final Widget cost;
   final Widget throughput;
@@ -47,7 +49,10 @@ class AcpStatusBarView extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  status,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [status, workflow],
+                  ),
                   const SizedBox(width: 12),
                   Row(
                     mainAxisSize: MainAxisSize.min,

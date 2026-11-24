@@ -2577,7 +2577,7 @@ fn write_config_with_profile(
 ) -> Result<()> {
     let mut config = fixture_config(ready, profile)?;
     if ordinary_gui {
-        let route = config.mode_model_route(&ThreadModeId::simple())?.clone();
+        let route = config.mode_model_route(&ThreadModeId::auto())?.clone();
         config
             .models
             .routes

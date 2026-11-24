@@ -16,6 +16,8 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   Completer<void>? commitDraftResult;
   Object? commitDraftError;
   Completer<void>? modeResult;
+  Completer<void>? threadModeResult;
+  AcpWorkflowStateView? threadModeValue;
   Completer<void>? answerResult;
   Completer<void>? interruptResult;
   late AcpRunIdView run;
@@ -83,6 +85,16 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   Future<void> setMode(AcpSetModeRequestView request) async {
     record('setMode', request, null);
     await modeResult?.future;
+  }
+
+  @override
+  Future<AcpWorkflowStateView> setThreadMode(
+    AcpSetThreadModeRequestView request,
+  ) async {
+    final fallback = AcpWorkflowStateView(modeId: request.modeId);
+    final next = record('setThreadMode', request, threadModeValue ?? fallback);
+    await threadModeResult?.future;
+    return next;
   }
 
   @override

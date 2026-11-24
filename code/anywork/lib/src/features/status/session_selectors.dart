@@ -6,11 +6,13 @@ import 'package:material_ui/material_ui.dart';
 import 'package:anywork_client/studio_client.dart'
     show ModelRouteQueries, ThreadModeCatalogView;
 
+import '../../app/routing/app_route.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
+import '../settings/settings_section.dart';
 
 /// One row of a [_QuietSelectorMenu].
 class _QuietMenuItem<T> {
@@ -51,6 +53,7 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
     required this.items,
     required this.child,
     required this.menuChild,
+    this.trailingMenuChildren = const [],
     this.onSelected,
     this.enabled = true,
     this.inMenu = false,
@@ -63,6 +66,9 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
 
   /// Current rows; refreshed with every owner rebuild, including while open.
   final List<_QuietMenuItem<T>> items;
+
+  /// Additional static actions rendered after [items] when the menu is open.
+  final List<Widget> trailingMenuChildren;
 
   /// Reported with the activated row's value.
   final ValueChanged<T>? onSelected;
@@ -104,7 +110,10 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
         message: widget.tooltip,
         child: SubmenuButton(
           menuChildren: _canOpen
-              ? [for (final item in widget.items) _buildRow(context, item)]
+              ? [
+                  for (final item in widget.items) _buildRow(context, item),
+                  ...widget.trailingMenuChildren,
+                ]
               : const [],
           child: widget.menuChild,
         ),
@@ -115,7 +124,10 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
       // node on the trigger, Escape still reaches the previously focused input.
       childFocusNode: _triggerFocus,
       alignmentOffset: const Offset(6, 6),
-      menuChildren: [for (final item in widget.items) _buildRow(context, item)],
+      menuChildren: [
+        for (final item in widget.items) _buildRow(context, item),
+        ...widget.trailingMenuChildren,
+      ],
       builder: (context, controller, child) => _buildTrigger(controller),
     );
   }
@@ -309,6 +321,18 @@ class SessionModeSelector extends StatelessWidget {
               ],
             ),
           ),
+      ],
+      trailingMenuChildren: [
+        const Divider(height: 1),
+        MenuItemButton(
+          key: const ValueKey('session-mode-add'),
+          overflowAxis: Axis.vertical,
+          leadingIcon: const Icon(Icons.add_rounded, size: 18),
+          onPressed: () =>
+              const SettingsRoute(section: SettingsSection.workModes)
+                  .go(context),
+          child: Text(context.l10n.modeSelectorAddMode),
+        ),
       ],
       child: presentation.label,
     );
@@ -692,7 +716,9 @@ class ServiceTierSelector extends StatelessWidget {
 }
 
 IconData sessionModeIcon(ThreadModeId mode) {
-  return mode == ThreadModeId.simple ? Icons.flash_on : Icons.route_outlined;
+  return mode == ThreadModeId.auto
+      ? Icons.auto_awesome_outlined
+      : Icons.route_outlined;
 }
 
 ModelSelectionOption? modelForRoute(

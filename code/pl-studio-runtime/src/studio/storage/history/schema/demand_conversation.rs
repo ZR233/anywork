@@ -280,11 +280,11 @@ pub(in super::super) async fn seed_current(
         let owner = ContentOwner::Current {
             domain: "plan".into(),
             id: "document".into(),
-            revision: plan.revision,
+            revision: plan.revision(),
         };
         let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)?;
-        let document = plan.document.as_ref().map(|document| {
-            let bytes = Arc::<[u8]>::from(document.markdown.as_bytes());
+        let document = plan.plan.document.as_ref().map(|document| {
+            let bytes = Arc::<[u8]>::from(document.content.as_bytes());
             contents.push(CurrentContentWrite {
                 content: Arc::new(ChatContent {
                     descriptor: ContentDescriptor {
@@ -309,21 +309,24 @@ pub(in super::super) async fn seed_current(
             }
         });
         projection.plan = Some(CurrentPlanHead {
-            revision: plan.revision,
-            phase: plan.state,
+            revision: plan.revision(),
+            phase: plan.phase(),
             document,
         });
-        if !plan.history_tail.is_empty() {
+        if !plan.plan.history.is_empty() {
             projection.collections.push(CurrentCollectionRef {
                 database_id: identity,
                 collection: "planHistory".into(),
-                revision: plan.revision,
+                revision: plan.revision(),
             });
-            for record in &plan.history_tail {
+            for record in &plan.plan.history {
                 entries.push(CurrentEntryChange::Put(CurrentEntryWrite {
                     collection: "planHistory".into(),
-                    position: integer(record.revision)?,
-                    entry_id: record.operation_id.clone(),
+                    position: integer(record.seq)?,
+                    entry_id: record
+                        .idempotency_key
+                        .clone()
+                        .unwrap_or_else(|| record.seq.to_string()),
                     payload: Arc::from(serde_json::to_vec(record)?),
                 }));
             }

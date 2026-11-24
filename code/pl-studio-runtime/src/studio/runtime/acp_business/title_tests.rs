@@ -47,6 +47,7 @@ async fn draft(fixture: &Fixture) -> Result<AcpSessionOpen> {
             workspace_mode: ThreadWorkspaceMode::Local,
             delegation_mode: None,
             delegation_preference: None,
+            mode: None,
         })
         .await?;
     Fixture::ready(&mut open).await?;

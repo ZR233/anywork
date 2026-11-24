@@ -26,6 +26,7 @@ pl-model-auth = { workspace = true }
 pl-studio-update = { workspace = true }
 pl-studio-statistics = { workspace = true }
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
+pl-tool-plan = { workspace = true }
 criterion = { workspace = true, optional = true }
 pl-remote-helper = { workspace = true }
 pl-acp = { workspace = true }

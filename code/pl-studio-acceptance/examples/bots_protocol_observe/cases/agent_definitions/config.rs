@@ -83,7 +83,7 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     for (mode, route) in &mut config.mode_model_routes {
         *route = ModelRouteConfig {
             account_id: root.clone(),
-            model_id: if mode == &ThreadModeId::task() {
+            model_id: if mode == &ThreadModeId::auto() {
                 COMPACT_MODEL
             } else {
                 ROOT_MODEL
@@ -139,11 +139,11 @@ pub(crate) fn change_future_profiles(home: &Path) -> Result<()> {
             .routes
             .remove(&AgentRoleId::new(role.to_owned())?);
     }
-    let simple = config
+    let auto_route = config
         .mode_model_routes
-        .get_mut(&ThreadModeId::simple())
-        .context("mode.simple route missing during future default update")?;
-    simple.model_id = FUTURE_MODEL.into();
+        .get_mut(&ThreadModeId::auto())
+        .context("mode.auto route missing during future default update")?;
+    auto_route.model_id = FUTURE_MODEL.into();
     config.validate_declarations()?;
     write(home, &config)?;
     let changed = save_user_agent_profile(

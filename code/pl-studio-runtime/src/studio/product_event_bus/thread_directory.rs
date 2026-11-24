@@ -2065,7 +2065,7 @@ pub(super) mod tests {
             thread_id: id.into(),
             workspace_id: workspace_id.into(),
             title: format!("Thread {id}"),
-            mode: Some(crate::mode::ThreadModeId::simple()),
+            mode: Some(crate::mode::ThreadModeId::auto()),
             workspace_mode: crate::ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),
@@ -3332,7 +3332,11 @@ pub(super) mod tests {
                 .commit_session_update(baseline_session, requested)
                 .await?;
             events
-                .commit_observed_thread_mode("root", crate::mode::ThreadModeId::task(), 3)
+                .commit_observed_thread_mode(
+                    "root",
+                    crate::mode::ThreadModeId::new("mode.custom").unwrap(),
+                    3,
+                )
                 .await?;
             let row = events
                 .read_thread_metadata("root", "request-base")?
@@ -3340,7 +3344,10 @@ pub(super) mod tests {
                 .unwrap();
             assert_eq!(row.title, "Manual title");
             assert_eq!(row.native_status().unwrap(), crate::ThreadStatus::Running);
-            assert_eq!(row.mode, Some(crate::mode::ThreadModeId::task()));
+            assert_eq!(
+                row.mode,
+                Some(crate::mode::ThreadModeId::new("mode.custom").unwrap())
+            );
             events.writer.flush().await?;
             let session = events.store.catalog().get_session("root").unwrap();
             let agent = events.store.catalog().get_agent("root").unwrap();
@@ -3416,12 +3423,20 @@ pub(super) mod tests {
             events.record_user_message("child", 4);
             assert!(
                 events
-                    .commit_observed_thread_mode("child", crate::mode::ThreadModeId::task(), 5)
+                    .commit_observed_thread_mode(
+                        "child",
+                        crate::mode::ThreadModeId::new("mode.custom").unwrap(),
+                        5
+                    )
                     .await
                     .is_err()
             );
             events
-                .commit_observed_thread_mode("root", crate::mode::ThreadModeId::task(), 5)
+                .commit_observed_thread_mode(
+                    "root",
+                    crate::mode::ThreadModeId::new("mode.custom").unwrap(),
+                    5,
+                )
                 .await?;
             release_save.send(()).unwrap();
             commit.await?;
@@ -3521,7 +3536,7 @@ pub(super) mod tests {
             assert_eq!(saved_session.last_user_message_at, Some(4));
             assert_eq!(
                 saved_session.native_mode,
-                Some(crate::mode::ThreadModeId::task())
+                Some(crate::mode::ThreadModeId::new("mode.custom").unwrap())
             );
             Ok(())
         }
@@ -3660,7 +3675,7 @@ pub(super) mod tests {
                             HotMutation::Observed => {
                                 runtime.block_on(worker_events.commit_observed_thread_mode(
                                     &first.thread_id,
-                                    crate::mode::ThreadModeId::task(),
+                                    crate::mode::ThreadModeId::new("mode.custom").unwrap(),
                                     10,
                                 ))?;
                             }

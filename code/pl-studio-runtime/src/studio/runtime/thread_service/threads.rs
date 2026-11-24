@@ -69,7 +69,7 @@ impl StudioRuntime {
             thread_id,
             workspace_id,
             title,
-            crate::mode::ThreadModeId::simple(),
+            crate::mode::ThreadModeId::auto(),
             crate::ThreadWorkspaceMode::Local,
             workspace_path,
             crate::config::ROOT_AGENT_ROUTE_KEY,

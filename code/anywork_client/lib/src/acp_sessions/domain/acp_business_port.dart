@@ -45,6 +45,9 @@ abstract interface class AcpBusinessPort {
   Future<void> interrupt(AcpInterruptRequestView request);
   Future<void> configure(AcpConfigureRequestView request);
   Future<void> setMode(AcpSetModeRequestView request);
+  Future<AcpWorkflowStateView> setThreadMode(
+    AcpSetThreadModeRequestView request,
+  );
   Future<void> answerPermission(AcpPermissionAnswerRequestView request);
   Future<AcpListSessionsResponseView> list(AcpListRequestView request);
   Future<AcpBusinessSnapshotView> snapshot(AcpSessionTargetView target);

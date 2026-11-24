@@ -358,7 +358,7 @@ mod tests {
             "interaction-root".into(),
             &project.id,
             "root",
-            crate::mode::ThreadModeId::simple(),
+            crate::mode::ThreadModeId::auto(),
             crate::ThreadWorkspaceMode::Local,
             workspace.to_string_lossy().into_owned(),
             crate::config::ROOT_AGENT_ROUTE_KEY,

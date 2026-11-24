@@ -906,7 +906,7 @@ effort = "high"
         assert_eq!(reviewer.account_id.as_str(), "second");
         assert_eq!(reviewer.model_id, "deepseek-reasoner");
         assert_eq!(
-            migrated.mode_model_routes[&crate::mode::ThreadModeId::task()]
+            migrated.mode_model_routes[&crate::mode::ThreadModeId::auto()]
                 .account_id
                 .as_str(),
             "second"
@@ -1040,12 +1040,7 @@ effort = "high"
         assert!(
             migrated_acp
                 .mode_model_routes
-                .contains_key(&crate::mode::ThreadModeId::simple())
-        );
-        assert!(
-            migrated_acp
-                .mode_model_routes
-                .contains_key(&crate::mode::ThreadModeId::task())
+                .contains_key(&crate::mode::ThreadModeId::auto())
         );
 
         // 23 及以上不再访问旧 `provider:<id>` 命名空间：迁移只处理结构，不复制旧凭据，

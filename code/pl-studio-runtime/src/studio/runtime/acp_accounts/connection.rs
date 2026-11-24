@@ -2108,6 +2108,7 @@ mod tests {
                     workspace_mode: crate::ThreadWorkspaceMode::Local,
                     delegation_mode: None,
                     delegation_preference: None,
+                    mode: None,
                 }),
             )
             .await??;

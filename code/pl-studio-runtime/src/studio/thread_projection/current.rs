@@ -333,28 +333,29 @@ impl CurrentOwner {
         } else if let Some(record) = plan_record {
             let plan = crate::plan_tool::decode_plan_state(&record.payload)?;
             let document = plan
+                .plan
                 .document
                 .as_ref()
                 .map(|document| -> Result<_> {
                     let owner = ContentOwner::Current {
                         domain: "plan".into(),
                         id: "document".into(),
-                        revision: plan.revision,
+                        revision: plan.plan.revision,
                     };
                     let key = ChatContentKey {
                         owner: content_owner_key(&owner)?,
                         key: "document".into(),
                     };
                     let content =
-                        self.text(key, ContentBlock::from_text(&document.markdown), false)?;
+                        self.text(key, ContentBlock::from_text(&document.content), false)?;
                     let reference = content.reference.clone();
                     contents.insert(content.descriptor.key.clone(), content);
                     Ok(reference)
                 })
                 .transpose()?;
             projection.plan = Some(CurrentPlanHead {
-                revision: plan.revision,
-                phase: plan.state,
+                revision: plan.plan.revision,
+                phase: plan.phase(),
                 document,
             });
         }
@@ -1303,21 +1304,10 @@ mod tests {
 #[cfg(test)]
 mod business_tests {
     use super::*;
-    use crate::plan_tool::{
-        AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState,
-    };
+    use crate::plan_tool::{AgentSessionPlanState, PlanState};
 
     fn state(version: u64, text: &str) -> Result<ThreadSnapshot> {
-        let plan = AgentSessionPlanState {
-            revision: version,
-            state: AgentSessionPlanPhase::Approved,
-            document: Some(AgentSessionPlanDocument {
-                version,
-                markdown: text.into(),
-                content_hash: crate::canonical_content_hash(text.as_bytes()),
-            }),
-            ..Default::default()
-        };
+        let plan = AgentSessionPlanState::with_document(PlanState::Approved, version, text, 0);
         let mut state = ThreadSnapshot {
             interaction_collection_revision: 17,
             ..Default::default()

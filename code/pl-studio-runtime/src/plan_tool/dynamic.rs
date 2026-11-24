@@ -1,15 +1,14 @@
-//! Plan tool frontends over core's opaque extension and interaction transactions.
-use super::{
-    common::EmptyInput,
-    restart::PlanRestartInput,
-    submit::{PlanSubmitInput, confirmation_question},
+//! Studio adapter bridging the standalone `pl-tool-plan` tool family onto `CallContext`.
+
+use super::types::{
+    AgentSessionPlanState, LegacyAgentSessionPlanState, Plan, PlanActor, PlanHistoryArgs,
+    PlanHistoryResponse, PlanNextResponse, PlanSnapshot, PlanState, PlanTransitionArgs,
+    PlanTransitionCommand, PlanTransitionOutcome,
 };
-use crate::plan_tool::AgentSessionPlanState;
-use crate::plan_tool::state::{
-    AgentSessionPlanMachine, AgentSessionPlanOptions, AgentSessionPlanRestartCommand,
-    AgentSessionPlanSubmitCommand,
-};
+use crate::plan_tool::state::AgentSessionPlanOptions;
 use crate::thread_assembler::ThreadAssemblyError;
+use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
+use pl_agent_tool::typed::TypedTool;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -22,19 +21,18 @@ use pl_core::{
 };
 use pl_model::completion::ToolCallPolicy;
 use pl_tool::binding::prepare_registration;
-use std::sync::Arc;
+use pl_tool_plan::{PlanCurrentTool, PlanHistoryTool, PlanHost, PlanNextTool, PlanTransitionTool};
+use std::sync::{Arc, Mutex};
 
 pub const PLAN_EXTENSION: &str = "studio.plan";
 const FORMAT: &str = "pl.studio.plan";
 
 #[derive(Debug, thiserror::Error)]
 enum PlanPayloadError {
-    #[error("plan state is not initialized")]
-    Missing,
     #[error("unsupported plan payload {format} version {version}")]
     Unsupported { format: String, version: u32 },
-    #[error("invalid plan: {0}")]
-    InvalidPlan(String),
+    #[error("invalid plan host context")]
+    Context,
 }
 
 /// Encodes the complete product state for a generic Thread extension.
@@ -51,10 +49,10 @@ pub fn encode_plan_state(state: &AgentSessionPlanState) -> Result<OpaquePayload,
     .map_err(ToolError::new)
 }
 
-/// Decodes only an explicitly supported plan format; core history never calls this function.
+/// Decodes either the current `pl-tool-plan` envelope or pre-unification v1 `studio.plan` JSON.
 ///
 /// # Errors
-/// Rejects unknown payload formats, corrupt plan state and excessive content.
+/// Rejects unknown payload formats, corrupt plan state, and excessive content.
 pub fn decode_plan_state(payload: &OpaquePayload) -> Result<AgentSessionPlanState, ToolError> {
     if payload.format() != FORMAT || payload.version() != 1 {
         return Err(ToolError::new(PlanPayloadError::Unsupported {
@@ -62,7 +60,19 @@ pub fn decode_plan_state(payload: &OpaquePayload) -> Result<AgentSessionPlanStat
             version: payload.version(),
         }));
     }
-    let state = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    let state: AgentSessionPlanState = if let Ok(value) =
+        serde_json::from_str::<serde_json::Value>(payload.content())
+        && value.get("plan").is_none()
+        && (value.get("state").is_some()
+            || value.get("revision").is_some()
+            || value.get("historyTail").is_some())
+    {
+        let legacy: LegacyAgentSessionPlanState =
+            serde_json::from_value(value).map_err(ToolError::new)?;
+        legacy.into()
+    } else {
+        serde_json::from_str(payload.content()).map_err(ToolError::new)?
+    };
     crate::plan_tool::state::validate_session_state_size(&state).map_err(ToolError::new)?;
     Ok(state)
 }
@@ -73,65 +83,183 @@ pub(crate) struct PlanConfirmationPrompt {
     pub question: crate::UserQuestion,
     pub expected_plan_revision: u64,
     pub plan_hash: String,
-    /// 保存于确认请求自身；读取历史不查询当前 Plan。
+    /// Preserved inside the confirmation prompt itself so history reads remain self-contained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document_version: Option<u64>,
     pub created_at: i64,
     pub presentation: crate::MessagePresentation,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum PlanOperation {
-    Current,
-    Next,
-    History,
-    Submit,
-    Restart,
-}
-impl PlanOperation {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Current => "plan_current",
-            Self::Next => "plan_next",
-            Self::History => "plan_history",
-            Self::Submit => "plan_submit",
-            Self::Restart => "plan_restart",
-        }
-    }
-    fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
-        let (description, schema) = match self {
-            Self::Current => (
-                "Read the current Plan, state and CAS revision.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
-            ),
-            Self::Next => (
-                "Read permitted operations in the current fixed Plan state.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
-            ),
-            Self::History => (
-                "Read saved Plan transitions and archive receipts.",
-                pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
-            ),
-            Self::Submit => (
-                "Submit a complete Markdown Plan for user approval or revision. This is the only tool for asking the user to approve implementation of a complete Plan; do not first ask whether to implement through request_user_input or final text. Requires revision CAS; call this tool alone.",
-                pl_agent_tool::typed::input_schema_for::<PlanSubmitInput>(),
-            ),
-            Self::Restart => (
-                "Restart an approved or revision-requested Plan using revision CAS and a reason. Call this tool alone.",
-                pl_agent_tool::typed::input_schema_for::<PlanRestartInput>(),
-            ),
-        };
-        ToolDefinition::json(self.name(), description, schema)
+pub(crate) fn confirmation_question(plan: String) -> UserQuestion {
+    UserQuestion {
+        id: AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.to_string(),
+        header: "Plan".to_string(),
+        question: plan,
+        is_other: true,
+        is_secret: false,
+        options: Some(vec![
+            UserQuestionOption {
+                label: "Approve".to_string(),
+                description: "Approve this exact Plan and allow the task to proceed.".to_string(),
+            },
+            UserQuestionOption {
+                label: "Revise".to_string(),
+                description: "Request a revised Plan and optionally describe the changes."
+                    .to_string(),
+            },
+        ]),
     }
 }
 
-#[derive(Debug)]
-struct ThreadPlanTool {
+struct StudioPlanCallState {
+    previous: AgentSessionPlanState,
+    next: AgentSessionPlanState,
+    operation_id: String,
+    argument_hash: String,
+    interaction_id: String,
+    now_secs: i64,
+    options: AgentSessionPlanOptions,
+    interaction: Option<OpaquePayload>,
+}
+
+struct StudioPlanCallContext(Arc<Mutex<StudioPlanCallState>>);
+
+#[derive(Debug, Default)]
+struct StudioPlanHost;
+
+impl PlanHost for StudioPlanHost {
+    type Context = StudioPlanCallContext;
+    type Error = ToolError;
+
+    async fn current(&self, context: Self::Context) -> Result<PlanSnapshot, Self::Error> {
+        let guard = context
+            .0
+            .lock()
+            .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
+        let plan = Plan::from_record(guard.previous.plan.clone()).map_err(ToolError::new)?;
+        Ok(plan.snapshot())
+    }
+
+    async fn next(&self, context: Self::Context) -> Result<PlanNextResponse, Self::Error> {
+        let guard = context
+            .0
+            .lock()
+            .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
+        let plan = Plan::from_record(guard.previous.plan.clone()).map_err(ToolError::new)?;
+        Ok(plan.next())
+    }
+
+    async fn history(
+        &self,
+        args: PlanHistoryArgs,
+        context: Self::Context,
+    ) -> Result<PlanHistoryResponse, Self::Error> {
+        let guard = context
+            .0
+            .lock()
+            .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
+        let plan = Plan::from_record(guard.previous.plan.clone()).map_err(ToolError::new)?;
+        Ok(plan.history(args.limit))
+    }
+
+    async fn transition(
+        &self,
+        args: PlanTransitionArgs,
+        context: Self::Context,
+    ) -> Result<PlanTransitionOutcome, Self::Error> {
+        let mut guard = context
+            .0
+            .lock()
+            .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
+        let mut plan = Plan::from_record(guard.previous.plan.clone()).map_err(ToolError::new)?;
+        let force = args.force;
+        let idempotency_key = args
+            .idempotency_key
+            .clone()
+            .or_else(|| Some(guard.operation_id.clone()));
+        let command = PlanTransitionCommand {
+            target_state: args.target_state,
+            content: args.content,
+            feedback: args.feedback,
+            reason: args.reason,
+            force,
+            expected_revision: args.expected_revision,
+            idempotency_key,
+            argument_hash: Some(guard.argument_hash.clone()),
+            actor: PlanActor::Agent,
+            timestamp_ms: guard.now_secs.saturating_mul(1000),
+        };
+        let outcome = plan.transition(command);
+        if outcome.accepted && !outcome.replayed {
+            let mut next_state = AgentSessionPlanState {
+                plan: plan.into_record(),
+                pending_interaction_id: None,
+            };
+            if outcome.awaiting_confirmation
+                && guard.options.allow_confirmation_interaction()
+                && !force
+                && let Some(doc) = &next_state.plan.document
+            {
+                let interaction_id = guard.interaction_id.clone();
+                let prompt = PlanConfirmationPrompt {
+                    question: confirmation_question(doc.content.clone()),
+                    expected_plan_revision: next_state.plan.revision,
+                    plan_hash: doc.hash.clone(),
+                    document_version: Some(doc.revision),
+                    created_at: guard.now_secs,
+                    presentation: guard.options.submitted_plan_presentation(),
+                };
+                next_state.pending_interaction_id = Some(interaction_id);
+                guard.interaction = Some(
+                    OpaquePayload::new(
+                        super::PLAN_CONFIRMATION_FORMAT,
+                        1,
+                        serde_json::to_string(&prompt).map_err(ToolError::new)?,
+                    )
+                    .map_err(ToolError::new)?,
+                );
+            }
+            guard.next = next_state;
+        } else if outcome.snapshot.state != PlanState::AwaitingConfirmation {
+            guard.next.pending_interaction_id = None;
+        }
+        Ok(outcome)
+    }
+}
+
+struct ThreadPlanTool<T> {
+    tool: T,
     definition: ToolDefinition,
-    kind: PlanOperation,
     options: AgentSessionPlanOptions,
 }
-impl Tool for ThreadPlanTool {
+
+impl<T> ThreadPlanTool<T>
+where
+    T: TypedTool<Context = StudioPlanCallContext, Error = ToolError>,
+    T::Output: serde::Serialize,
+{
+    fn build(
+        tool: T,
+        options: AgentSessionPlanOptions,
+    ) -> Result<Self, pl_agent_tool::DefinitionError> {
+        let definition = ToolDefinition::json(
+            T::NAME,
+            T::DESCRIPTION,
+            pl_agent_tool::typed::input_schema_for::<T::Args>(),
+        )?;
+        Ok(Self {
+            tool,
+            definition,
+            options,
+        })
+    }
+}
+
+impl<T> Tool for ThreadPlanTool<T>
+where
+    T: TypedTool<Context = StudioPlanCallContext, Error = ToolError>,
+    T::Output: serde::Serialize,
+{
     type Input = OpaquePayload;
     type Context = CallContext;
     type Output = ToolOutput;
@@ -155,83 +283,36 @@ impl Tool for ThreadPlanTool {
                 version: input.version(),
             }));
         }
-        let saved = context
-            .extensions
-            .get(PLAN_EXTENSION)
-            .ok_or_else(|| ToolError::new(PlanPayloadError::Missing))?;
-        let previous = decode_plan_state(&saved.payload)?;
-        let mut machine = AgentSessionPlanMachine::new(previous.clone()).map_err(ToolError::new)?;
+        let args: T::Args =
+            pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+        let saved = context.extensions.get(PLAN_EXTENSION);
+        let expected_extension_revision = saved.map(|record| record.revision);
+        let previous = match saved {
+            Some(record) => decode_plan_state(&record.payload)?,
+            None => AgentSessionPlanState::default(),
+        };
         let operation_id = format!(
             "{}/{}/{}",
             context.thread_id, context.turn_id, context.call_id
         );
         let argument_hash = pl_core::context::content_hash(input.content().as_bytes());
-        let now = crate::studio::unix_seconds();
-        let mut interaction = None;
-        let result = match self.kind {
-            PlanOperation::Current => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                serde_json::to_value(machine.snapshot()).map_err(ToolError::new)?
-            }
-            PlanOperation::Next => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                serde_json::json!({"revision": machine.state().revision, "state": machine.state().state, "transitions": machine.available_transitions()})
-            }
-            PlanOperation::History => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                serde_json::json!({"revision":previous.revision,"state":previous.state,"history":previous.history_tail,"archivedTransitionCount":previous.archived_transition_count,"archivedTransitionDigest":previous.archived_transition_digest})
-            }
-            PlanOperation::Submit => {
-                let args: PlanSubmitInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                crate::plan_tool::state::validate_plan(&args.plan)
-                    .map_err(|error| ToolError::new(PlanPayloadError::InvalidPlan(error)))?;
-                let question = confirmation_question(args.plan.clone());
-                let plan_hash = pl_core::context::content_hash(args.plan.as_bytes());
-                let result = machine.submit(AgentSessionPlanSubmitCommand {
-                    expected_revision: args.expected_revision,
-                    plan: args.plan,
-                    interaction_id: context.interaction_id(),
-                    operation_id,
-                    argument_hash,
-                    submitted_at: now,
-                });
-                if result.accepted && machine.state() != &previous {
-                    let prompt = PlanConfirmationPrompt {
-                        question,
-                        expected_plan_revision: machine.state().revision,
-                        plan_hash,
-                        document_version: machine.state().document.as_ref().map(|doc| doc.version),
-                        created_at: now,
-                        presentation: self.options.submitted_plan_presentation(),
-                    };
-                    interaction = Some(
-                        OpaquePayload::new(
-                            super::PLAN_CONFIRMATION_FORMAT,
-                            1,
-                            serde_json::to_string(&prompt).map_err(ToolError::new)?,
-                        )
-                        .map_err(ToolError::new)?,
-                    );
-                }
-                serde_json::to_value(result).map_err(ToolError::new)?
-            }
-            PlanOperation::Restart => {
-                let args: PlanRestartInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                serde_json::to_value(machine.restart(AgentSessionPlanRestartCommand {
-                    expected_revision: args.expected_revision,
-                    reason: args.reason,
-                    operation_id,
-                    argument_hash,
-                    restarted_at: now,
-                }))
-                .map_err(ToolError::new)?
-            }
-        };
+        let interaction_id = context.interaction_id();
+        let now_secs = crate::studio::unix_seconds();
+
+        let shared = Arc::new(Mutex::new(StudioPlanCallState {
+            previous: previous.clone(),
+            next: previous.clone(),
+            operation_id,
+            argument_hash,
+            interaction_id,
+            now_secs,
+            options: self.options,
+            interaction: None,
+        }));
+        let result = self
+            .tool
+            .execute(args, StudioPlanCallContext(Arc::clone(&shared)))
+            .await?;
         let text = serde_json::to_string(&result).map_err(ToolError::new)?;
         let mut output = ToolOutput::new(
             OpaquePayload::new("pl.studio.plan-result", 1, text.clone()).map_err(ToolError::new)?,
@@ -239,59 +320,81 @@ impl Tool for ThreadPlanTool {
                 text: Arc::from(text),
             }],
         );
-        if machine.state() != &previous {
+        let mut guard = shared
+            .lock()
+            .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
+        if guard.next != previous {
             output = output.with_extension_mutations(vec![ExtensionMutation::Put {
                 id: PLAN_EXTENSION.into(),
-                expected_revision: Some(saved.revision),
-                payload: encode_plan_state(machine.state())?,
+                expected_revision: expected_extension_revision,
+                payload: encode_plan_state(&guard.next)?,
             }]);
         }
-        if let Some(prompt) = interaction {
+        if let Some(prompt) = guard.interaction.take() {
             output = output.with_interaction(prompt);
         }
         Ok(output)
     }
 }
 
-/// Registers independent Plan tools without a mutable product session handle.
+/// Registers the standalone per-agent Plan tools (`plan_current`, `plan_next`, `plan_history`,
+/// `plan_transition`) without binding them to a mutable product session handle or workflow.
 ///
 /// # Errors
 /// Returns model declaration or core registration failures.
 pub fn plan_registrations(
     options: AgentSessionPlanOptions,
 ) -> Result<Vec<Registration>, ThreadAssemblyError> {
-    [
-        PlanOperation::Current,
-        PlanOperation::Next,
-        PlanOperation::History,
-        PlanOperation::Submit,
-        PlanOperation::Restart,
-    ]
-    .into_iter()
-    .map(|kind| {
-        let definition = kind.definition()?;
-        let prepared = prepare_registration(kind.name(), &definition, ToolCallPolicy::DirectOnly)?;
-        let contract = match kind {
-            PlanOperation::Current => "builtin.plan_current@1",
-            PlanOperation::Next => "builtin.plan_next@1",
-            PlanOperation::History => "builtin.plan_history@1",
-            PlanOperation::Submit => "builtin.plan_submit@1",
-            PlanOperation::Restart => "builtin.plan_restart@1",
-        };
-        let registration = prepared
-            .attach(ToolHandle::new(ThreadPlanTool {
-                definition,
-                kind,
-                options,
-            }))
-            .with_presentation_contract(ToolPresentationContract::new(contract));
-        Ok(match kind {
-            PlanOperation::Submit => registration.with_extension_updates().with_interactions(),
-            PlanOperation::Restart => registration.with_extension_updates(),
-            PlanOperation::Current | PlanOperation::Next | PlanOperation::History => registration,
-        })
-    })
-    .collect()
+    let host = Arc::new(StudioPlanHost);
+    let r_current = register_one(
+        ThreadPlanTool::build(PlanCurrentTool::new(Arc::clone(&host)), options)?,
+        "builtin.plan_current@1",
+        false,
+        false,
+    )?;
+    let r_next = register_one(
+        ThreadPlanTool::build(PlanNextTool::new(Arc::clone(&host)), options)?,
+        "builtin.plan_next@1",
+        false,
+        false,
+    )?;
+    let r_history = register_one(
+        ThreadPlanTool::build(PlanHistoryTool::new(Arc::clone(&host)), options)?,
+        "builtin.plan_history@1",
+        false,
+        false,
+    )?;
+    let r_transition = register_one(
+        ThreadPlanTool::build(PlanTransitionTool::new(host), options)?,
+        "builtin.plan_transition@1",
+        true,
+        true,
+    )?;
+    Ok(vec![r_current, r_next, r_history, r_transition])
+}
+
+fn register_one<T>(
+    adapter: ThreadPlanTool<T>,
+    contract: &'static str,
+    extension_updates: bool,
+    interactions: bool,
+) -> Result<Registration, ThreadAssemblyError>
+where
+    T: TypedTool<Context = StudioPlanCallContext, Error = ToolError>,
+    T::Output: serde::Serialize,
+{
+    let definition = adapter.definition().clone();
+    let prepared = prepare_registration(T::NAME, &definition, ToolCallPolicy::DirectOnly)?;
+    let mut registration = prepared
+        .attach(ToolHandle::new(adapter))
+        .with_presentation_contract(ToolPresentationContract::new(contract));
+    if extension_updates {
+        registration = registration.with_extension_updates();
+    }
+    if interactions {
+        registration = registration.with_interactions();
+    }
+    Ok(registration)
 }
 
 #[cfg(test)]
@@ -302,11 +405,12 @@ mod argument_tests {
 
     #[tokio::test]
     async fn plan_adapter_retains_argument_paths_and_trailing_source() {
-        let tool = ThreadPlanTool {
-            definition: PlanOperation::Submit.definition().unwrap(),
-            kind: PlanOperation::Submit,
-            options: Default::default(),
-        };
+        let host = Arc::new(StudioPlanHost);
+        let tool = ThreadPlanTool::build(
+            PlanTransitionTool::new(host),
+            AgentSessionPlanOptions::default().with_confirmation_interaction(true),
+        )
+        .unwrap();
         let extensions = Arc::new(std::collections::BTreeMap::from([(
             PLAN_EXTENSION.into(),
             ExtensionRecord {
@@ -330,11 +434,17 @@ mod argument_tests {
         };
         for (raw, expected_path) in [
             (
-                r##"{"expectedRevision":null,"plan":"# Plan"}"##,
+                r##"{"targetState":"awaitingConfirmation","expectedRevision":"bad","content":"# Plan"}"##,
                 Some("expectedRevision"),
             ),
-            (r#"{"expectedRevision":0,"plan":7}"#, Some("plan")),
-            (r##"{"expectedRevision":0,"plan":"# Plan"} true"##, None),
+            (
+                r#"{"targetState":"awaitingConfirmation","content":7}"#,
+                Some("content"),
+            ),
+            (
+                r##"{"targetState":"awaitingConfirmation","content":"# Plan"} true"##,
+                None,
+            ),
         ] {
             let error = tool
                 .execute(

@@ -52,31 +52,135 @@ ThreadRuntimeView _emptyRuntimeView() {
   );
 }
 
-const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
-  title: '任务流程',
-  goal: '完成任务并交付可验证结果',
-  initialStateId: 'implement',
+const WorkflowDefinition _demoAutoWorkflow = WorkflowDefinition(
+  title: '自动工作流',
+  goal: '根据需求复杂度分流：简单需求直接完成，复杂需求按规划、文档、实现、集成、验收推进。',
+  initialStateId: 'triage',
   states: [
     WorkflowState(
-      id: 'implement',
-      title: '实现',
-      instructions: '完成用户请求并验证结果。',
-      completionCriteria: ['实现完成', '验证通过'],
+      id: 'triage',
+      title: '任务分流',
+      instructions: '判断需求复杂度，决定走简洁处理或正式规划。',
+      completionCriteria: ['明确任务规模'],
       kind: WorkflowStateKind.atomic,
     ),
     WorkflowState(
-      id: 'done',
-      title: '完成',
-      instructions: '汇总结果并结束任务。',
-      completionCriteria: ['结果已交付'],
+      id: 'simple',
+      title: '简洁处理',
+      instructions: '直接完成小型修改并核对；若复杂度超预期则转入规划。',
+      completionCriteria: ['完成简单处理并验证'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'planning',
+      title: '规划',
+      instructions: '拆解复杂需求、制定计划并通过 plan_transition 确认。',
+      completionCriteria: ['计划已获批准'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'editing_documents',
+      title: '编辑文档',
+      instructions: '同步设计或接口文档。',
+      completionCriteria: ['文档一致'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'working',
+      title: '实现',
+      instructions: '按计划编写并验证代码。',
+      completionCriteria: ['核心变更完成'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'integrating',
+      title: '集成',
+      instructions: '串联并验证跨模块集成。',
+      completionCriteria: ['集成测试通过'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'reviewing',
+      title: '验收',
+      instructions: '运行完整质量与行为检查。',
+      completionCriteria: ['全部门禁通过'],
+      kind: WorkflowStateKind.atomic,
+    ),
+    WorkflowState(
+      id: 'completed',
+      title: '已完成',
+      instructions: '交付结果。',
+      completionCriteria: ['已完成'],
+      kind: WorkflowStateKind.finalState,
+    ),
+    WorkflowState(
+      id: 'stopped',
+      title: '已中止',
+      instructions: '任务中止。',
+      completionCriteria: ['已中止'],
       kind: WorkflowStateKind.finalState,
     ),
   ],
   transitions: [
     WorkflowTransition(
-      sourceStateId: 'implement',
-      targetStateId: 'done',
-      guard: '实现完成且验证通过',
+      sourceStateId: 'triage',
+      targetStateId: 'simple',
+      guard: '需求简单明确',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'triage',
+      targetStateId: 'planning',
+      guard: '需要正式规划',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'simple',
+      targetStateId: 'planning',
+      guard: '复杂度超出预期，转入规划',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'simple',
+      targetStateId: 'completed',
+      guard: '简单处理已完成',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'planning',
+      targetStateId: 'editing_documents',
+      guard: '需要更新设计文档',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'planning',
+      targetStateId: 'working',
+      guard: '直接进入实现',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'editing_documents',
+      targetStateId: 'working',
+      guard: '文档更新完成',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'working',
+      targetStateId: 'integrating',
+      guard: '进入集成验证',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'integrating',
+      targetStateId: 'reviewing',
+      guard: '进入终审验收',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'reviewing',
+      targetStateId: 'completed',
+      guard: '验收通过',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'reviewing',
+      targetStateId: 'working',
+      guard: '发现问题，退回修改',
+    ),
+    WorkflowTransition(
+      sourceStateId: 'reviewing',
+      targetStateId: 'stopped',
+      guard: '终止任务',
     ),
   ],
 );
@@ -1026,25 +1130,16 @@ class DemoStudioTransport extends StudioTransport
   final _modeDocumentRevisions = <String, int>{};
   int _modeDocumentRevision(String id) =>
       _modeDocumentRevisions[id] ?? (_modeDocuments.containsKey(id) ? 1 : 0);
-  final Set<String> _readOnlyModeIds = {'mode.simple', 'mode.task'};
+  final Set<String> _readOnlyModeIds = {'mode.auto'};
   final Map<String, ModeDocument> _modeDocuments = {
-    'mode.simple': const ModeDocument(
+    'mode.auto': const ModeDocument(
       definition: ModeDefinition(
-        id: 'mode.simple',
-        displayName: '简洁',
-        description: '直接对话',
+        id: 'mode.auto',
+        displayName: '自动',
+        description: '自动评估复杂度，在简洁处理与正式工程工作流间分流或升级',
         order: 0,
-        prompt: '直接回答用户请求。',
-      ),
-    ),
-    'mode.task': const ModeDocument(
-      definition: ModeDefinition(
-        id: 'mode.task',
-        displayName: '任务',
-        description: '通过工作流完成任务',
-        order: 1,
-        prompt: '按工作流推进任务并确认阶段完成。',
-        workflow: _demoTaskWorkflow,
+        prompt: '根据用户需求复杂度选择直接完成或进入正式规划工作流。',
+        workflow: _demoAutoWorkflow,
       ),
     ),
   };
@@ -1514,7 +1609,7 @@ class DemoStudioTransport extends StudioTransport
       modeRoutes:
           _modeRoutes ??
           [
-            for (final mode in [ThreadModeId.simple, ThreadModeId.task])
+            for (final mode in [ThreadModeId.auto])
               ModeModelRouteView(
                 modeId: mode,
                 accountId: defaultAccount.id,
@@ -1629,7 +1724,7 @@ class DemoStudioTransport extends StudioTransport
     final saved =
         _modeRoutes?.where((route) => route.modeId == mode).firstOrNull ??
         _modeRoutes
-            ?.where((route) => route.modeId == ThreadModeId.simple)
+            ?.where((route) => route.modeId == ThreadModeId.auto)
             .firstOrNull;
     if (saved != null) return saved;
     final template = _accountCatalog.templates.first;
@@ -1659,9 +1754,9 @@ class DemoStudioTransport extends StudioTransport
       name: 'pure-lang',
       path: r'C:\Projects\pure-lang',
     );
-    final rootMode = _threadModes['thread-main'] ?? ThreadModeId.simple;
-    final reviewerMode = _threadModes['thread-reviewer'] ?? ThreadModeId.simple;
-    final alternateMode = _threadModes['thread-alt'] ?? ThreadModeId.simple;
+    final rootMode = _threadModes['thread-main'] ?? ThreadModeId.auto;
+    final reviewerMode = _threadModes['thread-reviewer'] ?? ThreadModeId.auto;
+    final alternateMode = _threadModes['thread-alt'] ?? ThreadModeId.auto;
     final root = StudioThread(
       id: 'thread-main',
       workspaceId: project.id,
@@ -1772,7 +1867,7 @@ class DemoStudioTransport extends StudioTransport
         id: 'thread-page-$index',
         workspaceId: workspaceId,
         title: '历史会话 ${index + 1}',
-        mode: ThreadModeId.simple,
+        mode: ThreadModeId.auto,
         delegationMode: DelegationMode.profile,
         delegationPreference: DelegationPreference.balanced,
         role: 'planner',
@@ -2008,6 +2103,39 @@ class DemoStudioTransport extends StudioTransport
       'row': row == null ? null : _demoRowWireFields(row),
     });
     return ThreadMetadataFrame(threadId: threadId, stamp: stamp, row: row);
+  }
+
+  @override
+  Future<WorkflowRuntimeGraphSnapshotView?> getThreadWorkflowGraph(
+    String threadId,
+  ) async {
+    final doc = _modeDocuments[_threadModes[threadId]?.id ?? 'mode.auto'];
+    final workflow = doc?.definition.workflow;
+    if (workflow == null || doc == null) return null;
+    return WorkflowRuntimeGraphSnapshotView(
+      modeId: doc.definition.id,
+      modeDisplayName: doc.definition.displayName,
+      modeDeleted: false,
+      initialStateId: workflow.initialStateId,
+      states: [
+        for (final s in workflow.states)
+          WorkflowRuntimeGraphStateView(
+            id: s.id,
+            title: s.title,
+            kind: s.kind,
+            instructions: s.instructions,
+          ),
+      ],
+      edges: [
+        for (var i = 0; i < workflow.transitions.length; i += 1)
+          WorkflowRuntimeGraphEdgeView(
+            id: 'e$i',
+            sourceStateId: workflow.transitions[i].sourceStateId,
+            targetStateId: workflow.transitions[i].targetStateId,
+            guard: workflow.transitions[i].guard,
+          ),
+      ],
+    );
   }
 
   @override
@@ -4176,7 +4304,7 @@ class DemoStudioTransport extends StudioTransport
               .where((candidate) => candidate.modeId == mode)
               .firstOrNull ??
           settings.modeModelRoutes
-              .where((candidate) => candidate.modeId == ThreadModeId.simple)
+              .where((candidate) => candidate.modeId == ThreadModeId.auto)
               .firstOrNull;
       final thread = workspace.thread;
       final updatedThread = thread.copyWith(

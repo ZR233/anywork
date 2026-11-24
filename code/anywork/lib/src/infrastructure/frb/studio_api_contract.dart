@@ -1062,6 +1062,17 @@ class FrbStudioTransport
   }
 
   @override
+  Future<WorkflowRuntimeGraphSnapshotView?> getThreadWorkflowGraph(
+    String threadId,
+  ) async {
+    await _ensureReady();
+    final graph = await _bridgeCall(
+      () => frb.getThreadWorkflowGraph(threadId: threadId),
+    );
+    return graph == null ? null : acp_mapper.workflowGraphFromFrb(graph);
+  }
+
+  @override
   Future<StudioProject> renameProject(String workspaceId, String name) async {
     await _ensureReady();
     return _projectFromFrb(

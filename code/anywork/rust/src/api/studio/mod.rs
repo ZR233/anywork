@@ -17,7 +17,7 @@ pub use self::directory::{
 pub use self::handlers::acp_business::{
     BridgeAcpSessionObservation, acp_session_snapshot, answer_acp_permission, close_acp_session,
     configure_acp_session, interrupt_acp_session, list_acp_sessions, open_acp_session,
-    prompt_acp_session, replace_acp_session, set_acp_session_mode,
+    prompt_acp_session, replace_acp_session, set_acp_session_mode, set_acp_thread_mode,
 };
 pub use self::handlers::file_download::{
     BridgeFileDownload, BridgeFileDownloadPhase, BridgeFileDownloadStatus, start_file_download,
@@ -34,9 +34,9 @@ pub use self::handlers::{
     continue_acp_auth, continue_thread, create_account, create_bot_conversation_thread,
     create_mcp_document, delete_mcp_document, delete_ssh_server, delete_thread,
     delete_thread_mode_definition, discover_skills, finish_shutdown_diagnostics,
-    get_delegation_model, init_app, list_bot_conversations, list_delegation_models,
-    list_ssh_servers, load_account_catalog, load_acp_account_catalog, open_project,
-    open_remote_project, prepare_standalone_workspace, prepare_startup_attempt,
+    get_delegation_model, get_thread_workflow_graph, init_app, list_bot_conversations,
+    list_delegation_models, list_ssh_servers, load_account_catalog, load_acp_account_catalog,
+    open_project, open_remote_project, prepare_standalone_workspace, prepare_startup_attempt,
     prepare_studio_update, preview_thread_mode_workflow, probe_lsp_server, read_acp_auth_state,
     read_acp_install_state, read_acp_local_detection_state, read_agent_profiles_state,
     read_attachment_draft, read_bot_messages, read_bots, read_child_interactions,

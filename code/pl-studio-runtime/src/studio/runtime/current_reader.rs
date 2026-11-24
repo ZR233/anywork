@@ -957,16 +957,12 @@ mod tests {
                 "# Approved plan\n\n{}",
                 "已批准的计划正文\n".repeat(2400)
             );
-            let plan = crate::plan_tool::AgentSessionPlanState {
-                revision: 3,
-                state: crate::plan_tool::AgentSessionPlanPhase::Approved,
-                document: Some(crate::plan_tool::AgentSessionPlanDocument {
-                    version: 3,
-                    markdown: document.clone(),
-                    content_hash: crate::canonical_content_hash(document.as_bytes()),
-                }),
-                ..Default::default()
-            };
+            let plan = crate::plan_tool::AgentSessionPlanState::with_document(
+                crate::plan_tool::PlanState::Approved,
+                3,
+                document.clone(),
+                0,
+            );
             current.state.extensions.insert(
                 crate::plan_tool::PLAN_EXTENSION.into(),
                 pl_core::thread::extensions::ExtensionRecord {

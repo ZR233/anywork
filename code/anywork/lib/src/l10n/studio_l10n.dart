@@ -9,18 +9,19 @@ extension StudioLocalizationsX on BuildContext {
   AppLocalizations get l10n => AppLocalizations.of(this);
 
   String compileModeLabel(ThreadModeId mode) {
-    if (mode == ThreadModeId.simple) return l10n.compileModeSimple;
-    if (mode == ThreadModeId.task) return l10n.compileModeTask;
+    if (mode == ThreadModeId.auto) return l10n.workflowModeAuto;
     return mode.id;
   }
 
   /// Maps a canonical workflow state id to its localized display label.
   ///
-  /// Only the built-in Task workflow phases are localized; an unknown or
-  /// future state id is returned unchanged so canonical identity is never
-  /// hidden behind a wrong translation.
+  /// Only the built-in Auto workflow phases (and legacy stopped) are localized;
+  /// an unknown or future state id is returned unchanged so canonical identity
+  /// is never hidden behind a wrong translation.
   String workflowStateLabel(String stateId) {
     return switch (stateId.trim()) {
+      'triage' => l10n.workflowStateTriage,
+      'simple' => l10n.workflowStateSimple,
       'planning' => l10n.workflowStatePlanning,
       'editing_documents' => l10n.workflowStateEditingDocuments,
       'working' => l10n.workflowStateWorking,
@@ -37,8 +38,7 @@ extension StudioLocalizationsX on BuildContext {
   /// Custom or unknown modes are returned unchanged.
   String workflowModeLabel(String modeId) {
     return switch (modeId.trim()) {
-      'mode.simple' => l10n.workflowModeSimple,
-      'mode.task' => l10n.workflowModeTask,
+      'mode.auto' || 'mode.simple' || 'mode.task' => l10n.workflowModeAuto,
       _ => modeId,
     };
   }

@@ -10,13 +10,16 @@ use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::records::thread_from_record;
 use crate::api::studio::convert::{
     settings::bridge_settings_snapshot,
-    thread_stream::{bridge_session_row, bridge_thread, runtime_snapshot},
+    thread_stream::{
+        bridge_session_row, bridge_thread, runtime_snapshot, workflow_runtime_graph_snapshot,
+    },
 };
 use crate::api::studio::types::{
     BridgeArchiveThreadCommandReply, BridgeDeleteThreadCommandReply, BridgeError,
     BridgeNewThreadStartEvent, BridgeRenameThreadCommandReply, BridgeSessionDirectoryRow,
     BridgeSetThreadModelRouteRequest, BridgeStartNewThreadRequest, BridgeThreadModeCommandReply,
-    BridgeThreadModelRouteCommandReply, StartNewThreadResponse, SubmitPromptResponse,
+    BridgeThreadModelRouteCommandReply, BridgeWorkflowRuntimeGraphSnapshot, StartNewThreadResponse,
+    SubmitPromptResponse,
 };
 use pl_studio_runtime::mode::ThreadModeId;
 
@@ -226,4 +229,16 @@ pub async fn restore_thread(thread_id: String) -> Result<BridgeSessionDirectoryR
     Ok(bridge_session_row(
         bridge.studio.restore_thread(thread_id).await?,
     ))
+}
+
+/// Loads the Thread's frozen workflow graph on demand without inflating runtime snapshots.
+pub async fn get_thread_workflow_graph(
+    thread_id: String,
+) -> Result<Option<BridgeWorkflowRuntimeGraphSnapshot>, BridgeError> {
+    let bridge = active_bridge().await?;
+    Ok(bridge
+        .studio
+        .thread_workflow_graph(&thread_id)
+        .await?
+        .map(workflow_runtime_graph_snapshot))
 }

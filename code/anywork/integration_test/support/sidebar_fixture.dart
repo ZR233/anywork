@@ -155,7 +155,7 @@ final class SidebarFixture {
   }) async {
     final stages = <ThreadPreparationStage>[];
     const route = ModeModelRouteView(
-      modeId: ThreadModeId.simple,
+      modeId: ThreadModeId.auto,
       accountId: accountId,
       modelId: modelId,
       effort: '',
@@ -196,7 +196,7 @@ final class SidebarFixture {
           text: prompt,
           attachmentDraftIds: const [],
         ),
-        mode: ThreadModeId.simple,
+        mode: ThreadModeId.auto,
         workspaceMode: workspaceMode,
         route: route,
         delegationMode: DelegationMode.profile,

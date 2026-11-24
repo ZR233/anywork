@@ -140,6 +140,13 @@ final class AcpSessionClient {
     return _port.setMode(request);
   }
 
+  Future<AcpWorkflowStateView> setThreadMode(
+    AcpSetThreadModeRequestView request,
+  ) {
+    _requireOpen();
+    return _port.setThreadMode(request);
+  }
+
   Future<void> answerPermission(AcpPermissionAnswerRequestView request) {
     _requireOpen();
     return _port.answerPermission(request);

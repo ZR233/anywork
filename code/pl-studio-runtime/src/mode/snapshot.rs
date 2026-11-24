@@ -105,11 +105,19 @@ pub(crate) fn migrate_mode_snapshot(
         return Ok(());
     }
     let id: ThreadModeId = serde_json::from_str(record.payload.content())?;
-    let registered = modes.snapshot().mode(&id).ok_or_else(|| {
-        PureError::ConfigError(format!(
-            "cannot recover saved Mode {id}: definition unavailable; original checkpoint preserved"
-        ))
-    })?;
+    let registered = modes
+        .snapshot()
+        .mode(&id)
+        .or_else(|| {
+            matches!(id.as_str(), "mode.simple" | "mode.task")
+                .then(|| modes.snapshot().mode(&ThreadModeId::auto()))
+                .flatten()
+        })
+        .ok_or_else(|| {
+            PureError::ConfigError(format!(
+                "cannot recover saved Mode {id}: definition unavailable; original checkpoint preserved"
+            ))
+        })?;
     let mut saved = SavedThreadMode::capture(&registered, None);
     let mut recovered_prompt = false;
     if let Some(record) = state.extensions.get("studio.instructions") {

@@ -254,7 +254,7 @@ async fn profile_tool_reports_frozen_mode_without_automatic_preset_routes() -> R
                             text: label.into(),
                             attachment_draft_ids: vec![],
                         },
-                        mode: "mode.simple".into(),
+                        mode: "mode.auto".into(),
                         route: NewThreadModelRoute {
                             account_id: "root-fixture".into(),
                             model_id: support::MODEL.into(),

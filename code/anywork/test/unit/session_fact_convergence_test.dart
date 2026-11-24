@@ -99,6 +99,20 @@ void main() {
       _modelFor(container, accountId, model);
 
   test('任务模式由定向元数据交付，Thread route 由状态帧交付', () async {
+    await transport.saveThreadModeDefinition(
+      const ModeDocument(
+        definition: ModeDefinition(
+          id: 'mode.custom',
+          displayName: '自定义',
+          description: '自定义模式',
+          order: 1,
+          prompt: '',
+        ),
+      ),
+      expectedRevision: 0,
+      operationId: const OperationId('seed-custom-mode-convergence'),
+    );
+    final customMode = ThreadModeId.fromId('mode.custom');
     expect(
       container
           .read(
@@ -110,8 +124,8 @@ void main() {
           .thread!
           .row
           ?.mode,
-      ThreadModeId.simple,
-      reason: 'demo fixture 的根会话默认是简洁模式',
+      ThreadModeId.auto,
+      reason: 'demo fixture 的根会话默认是自动模式',
     );
     final routeRevisionBefore = routeRevision();
     final directory = graph.client.threadDirectory.observeThread(threadId);
@@ -124,14 +138,14 @@ void main() {
       await container
           .read(anyworkClientProvider)
           .threadCommands
-          .setThreadMode(ThreadModeId.task, threadId: threadId);
+          .setThreadMode(customMode, threadId: threadId);
 
       await graph.client.conversations
           .session(threadId)
           .source
           .waitFor((s) => s.modelRoute?.revision == routeRevisionBefore + 1);
       final updated = await directory.state.waitFor(
-        (state) => state.frame?.row?.mode == ThreadModeId.task,
+        (state) => state.frame?.row?.mode == customMode,
       );
       expect(
         updated.frame!.stamp.revision,

@@ -140,7 +140,7 @@ SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
       threadId: id,
       workspaceId: 'workspace',
       title: title,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(2026),
@@ -178,7 +178,7 @@ void main() {
     const query = DirectoryQuery(archived: true);
     final window = DirectoryWindow();
     final native = _thread('native')
-        .copyWith(mode: ThreadModeId.task, archived: true);
+        .copyWith(mode: const ThreadModeId('mode.custom'), archived: true);
     const reference = AcpSessionReferenceView(
       accountId: 'definition',
       acpSessionId: 'remote-session',
@@ -213,7 +213,7 @@ void main() {
     final observedNative = nativeMetadata.state.value.frame!.row!;
     final observedAcp = acpMetadata.state.value.frame!.row!;
     final observedChild = childMetadata.state.value.frame!.row!;
-    expect(observedNative.mode, ThreadModeId.task);
+    expect(observedNative.mode, const ThreadModeId('mode.custom'));
     expect(observedAcp.mode, isNull);
     expect(
       observedAcp.backend,

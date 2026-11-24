@@ -154,7 +154,7 @@ pub(crate) mod tests {
                             text: INITIAL_PROMPT.into(),
                             attachment_draft_ids: Vec::new(),
                         },
-                        mode: ThreadModeId::simple().label().into(),
+                        mode: ThreadModeId::auto().label().into(),
                         route: NewThreadModelRoute {
                             account_id: ACCOUNT.into(),
                             model_id: MODEL.into(),

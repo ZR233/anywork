@@ -4,13 +4,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/providers/mode_catalog_store.dart';
+import '../../../../presentation/providers/start_session_controller.dart';
 import '../../../../shared/composer_configuration_bar.dart';
+import '../../../status/session_selectors.dart';
+import '../../composer/widgets/start_model_selector.dart';
 import '../view_models/acp_start_composer_view_model.dart';
 import '../views/acp_start_composer_view.dart';
-import '../../composer/widgets/start_model_selector.dart';
 import 'acp_configuration_connector.dart';
-import '../../../../presentation/providers/client_provider.dart';
-import '../../../../presentation/providers/start_session_controller.dart';
 
 import 'package:anywork_client/models.dart';
 
@@ -66,6 +68,33 @@ class _AcpStartComposerConnectorState
             value.acpPreparations[workspaceId] is AcpDraftNeedsConfiguration,
       ),
     );
+    final selectedMode = ref.watch(
+      startSessionControllerProvider.select(
+        (value) => value.forProject(workspaceId).mode,
+      ),
+    );
+    final modeCatalog =
+        ref.watch(modeCatalogStoreProvider).value ??
+        const ThreadModeCatalogView(modes: []);
+    final notifier = ref.read(provider.notifier);
+    final inlineModeSelector = SessionModeSelector(
+      catalog: modeCatalog,
+      mode: selectedMode,
+      enabled: !state.submitting,
+      onSelected: notifier.setMode,
+    );
+    final modeEntry = ComposerConfigurationEntry(
+      id: 'acp-start-mode',
+      inline: inlineModeSelector,
+      measureInlineWidth: inlineModeSelector.measureInlineWidth,
+      menuItem: SessionModeSelector(
+        inMenu: true,
+        catalog: modeCatalog,
+        mode: selectedMode,
+        enabled: !state.submitting,
+        onSelected: notifier.setMode,
+      ),
+    );
     final serviceEntry = startModelConfigurationEntry(
       id: 'start-service',
       context: context,
@@ -76,12 +105,12 @@ class _AcpStartComposerConnectorState
       state: state,
       configurationBar: state.preparedThreadId == null
           ? ComposerConfigurationBar(
-              entries: [serviceEntry],
+              entries: [modeEntry, serviceEntry],
               moreTooltip: context.l10n.acpConfigMoreLabel,
             )
           : AcpConfigurationConnector(
               threadId: state.preparedThreadId!,
-              leadingEntries: [serviceEntry],
+              leadingEntries: [modeEntry, serviceEntry],
             ),
       onRetryPreparation: needsConfiguration
           ? null

@@ -2,6 +2,8 @@ import 'dart:convert' show utf8;
 
 import '../../models/studio_enums.dart';
 import '../../models/delegation_models.dart';
+import '../../models/runtime_models.dart'
+    show PlanRuntimeView, WorkflowRunView, WorkflowRuntimeGraphSnapshotView;
 
 import '../../models/acp_models.dart' show AcpAuthMethodKindView;
 import 'acp_content.dart';
@@ -22,10 +24,12 @@ final class AcpDraftIntentView extends AcpOpenIntentView {
     required this.workspaceMode,
     this.delegationMode,
     this.delegationPreference,
+    this.mode,
   });
   final ThreadWorkspaceMode workspaceMode;
   final DelegationMode? delegationMode;
   final DelegationPreference? delegationPreference;
+  final String? mode;
 }
 
 final class AcpLoadIntentView extends AcpOpenIntentView {
@@ -460,9 +464,30 @@ final class AcpModeSetEventView extends AcpSessionEventView {
   final AcpModeId modeId;
 }
 
+final class AcpWorkflowStateView {
+  const AcpWorkflowStateView({
+    this.modeId,
+    this.modeDisplayName,
+    this.run,
+    this.graph,
+    this.plan,
+  });
+
+  final String? modeId;
+  final String? modeDisplayName;
+  final WorkflowRunView? run;
+  final WorkflowRuntimeGraphSnapshotView? graph;
+  final PlanRuntimeView? plan;
+}
+
 final class AcpCompletedEventView extends AcpSessionEventView {
   const AcpCompletedEventView(this.completed);
   final AcpCompletedRunView completed;
+}
+
+final class AcpWorkflowStateUpdatedEventView extends AcpSessionEventView {
+  const AcpWorkflowStateUpdatedEventView(this.state);
+  final AcpWorkflowStateView state;
 }
 
 final class AcpGapEventView extends AcpSessionEventView {
@@ -479,10 +504,12 @@ final class AcpAcceptedFrameView extends AcpSessionFrameView {
     required this.target,
     required this.hasObservation,
     this.infoSnapshot,
+    this.workflowState,
   });
   final AcpSessionTargetView target;
   final bool hasObservation;
   final AcpSessionInfoSnapshotView? infoSnapshot;
+  final AcpWorkflowStateView? workflowState;
 }
 
 final class AcpSettledFrameView extends AcpSessionFrameView {
@@ -508,6 +535,7 @@ final class AcpBusinessSnapshotView {
     this.lastCompleted,
     this.observationGap,
     this.infoSnapshot,
+    this.workflowState,
     Iterable<AcpBusinessAuthMethodView> authMethods = const [],
   }) : configOptions = configOptions == null
            ? null
@@ -524,6 +552,7 @@ final class AcpBusinessSnapshotView {
   final AcpCompletedRunView? lastCompleted;
   final AcpObservationGapView? observationGap;
   final AcpSessionInfoSnapshotView? infoSnapshot;
+  final AcpWorkflowStateView? workflowState;
   final List<AcpBusinessAuthMethodView> authMethods;
 }
 
@@ -604,6 +633,15 @@ final class AcpSetModeRequestView {
   const AcpSetModeRequestView({required this.target, required this.modeId});
   final AcpSessionTargetView target;
   final AcpModeId modeId;
+}
+
+final class AcpSetThreadModeRequestView {
+  const AcpSetThreadModeRequestView({
+    required this.target,
+    required this.modeId,
+  });
+  final AcpSessionTargetView target;
+  final String modeId;
 }
 
 final class AcpPermissionAnswerRequestView {

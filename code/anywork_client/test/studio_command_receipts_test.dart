@@ -516,7 +516,7 @@ const _project = StudioProject(
 );
 
 StudioThread _thread({
-  ThreadModeId mode = ThreadModeId.simple,
+  ThreadModeId mode = ThreadModeId.auto,
   String id = 'thread',
   String title = 'Thread',
 }) => StudioThread(
@@ -534,7 +534,7 @@ StudioThread _thread({
 SessionDirectoryRow _row({
   String id = 'thread',
   String title = 'Thread',
-  ThreadModeId mode = ThreadModeId.simple,
+  ThreadModeId mode = ThreadModeId.auto,
   ThreadStatusView status = ThreadStatusView.idle,
 }) => SessionDirectoryRow(
   backend: NativeAgentBackendView(
@@ -567,7 +567,7 @@ SessionDirectoryRow _childThread() => SessionDirectoryRow(
   threadId: 'child',
   workspaceId: 'project',
   title: 'Child',
-  mode: ThreadModeId.simple,
+  mode: ThreadModeId.auto,
   delegationMode: DelegationMode.profile,
   delegationPreference: DelegationPreference.balanced,
   role: 'executor',
@@ -836,7 +836,7 @@ SettingsStateSnapshot _settings(int revision) => SettingsStateSnapshot(
   ],
   modeModelRoutes: const [
     ModeModelRouteView(
-      modeId: ThreadModeId.simple,
+      modeId: ThreadModeId.auto,
       accountId: 'account',
       modelId: 'alpha',
       effort: 'medium',
@@ -3224,7 +3224,7 @@ void main() {
         final client = await _client(transport);
         final entered = transport.modes.stream.first;
         final changing = client.threadCommands.setThreadMode(
-          ThreadModeId.task,
+          const ThreadModeId('mode.custom'),
           threadId: 'thread',
         );
         final call = await entered;
@@ -3239,7 +3239,7 @@ void main() {
               .session('thread')
               .deliverWorkspace(_workspace(revision: 2));
           transport.emitThread(
-            _row(mode: ThreadModeId.task),
+            _row(mode: const ThreadModeId('mode.custom')),
             'thread',
             revision: 2,
           );
@@ -3270,7 +3270,7 @@ void main() {
             ),
           );
           transport.emitThread(
-            _row(mode: ThreadModeId.task),
+            _row(mode: const ThreadModeId('mode.custom')),
             'thread',
             revision: 2,
           );
@@ -3393,7 +3393,7 @@ void main() {
       final transport = _Transport();
       final client = await _client(transport);
       final oldAction = () => client.threadCommands.setThreadMode(
-        ThreadModeId.task,
+        const ThreadModeId('mode.custom'),
         threadId: 'thread',
       );
       client.selection.selectThread(workspaceId: 'project', threadId: 'other');
@@ -3419,7 +3419,7 @@ void main() {
     final client = await _client(transport);
     final entered = transport.modes.stream.first;
     final changing = client.threadCommands.setThreadMode(
-      ThreadModeId.task,
+      const ThreadModeId('mode.custom'),
       threadId: 'thread',
     );
     final call = await entered;
@@ -3454,7 +3454,7 @@ void main() {
       final client = await _client(transport);
       final entered = transport.modes.stream.first;
       final changing = client.threadCommands.setThreadMode(
-        ThreadModeId.task,
+        const ThreadModeId('mode.custom'),
         threadId: 'thread',
       );
       final call = await entered;
@@ -3465,7 +3465,7 @@ void main() {
       expect(settled, isFalse);
       expect(
         () => client.threadCommands.setThreadMode(
-          ThreadModeId.task,
+          const ThreadModeId('mode.custom'),
           threadId: 'thread',
         ),
         throwsStateError,

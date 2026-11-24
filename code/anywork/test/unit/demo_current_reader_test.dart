@@ -78,7 +78,7 @@ void main() {
 
       final command = transport.setThreadMode(
         threadId: 'thread-main',
-        mode: ThreadModeId.task,
+        mode: ThreadModeId.auto,
         operationId: const OperationId('demo-current-notification'),
       );
       final frame = await pending.timeout(const Duration(seconds: 2));

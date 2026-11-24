@@ -34,7 +34,10 @@ pub(in crate::studio) use live::{
 pub(crate) use presentation::{hidden, work};
 mod runtime;
 mod usage_projection;
-pub(in crate::studio) use runtime::{project_cold_runtime, project_runtime};
+pub(in crate::studio) use runtime::{
+    project_cold_runtime, project_runtime, workflow_graph_from_definition,
+    workflow_graph_from_saved_mode,
+};
 pub(in crate::studio) use usage_projection::usage_status;
 mod snapshot;
 pub(in crate::studio) use snapshot::{saved_mode, status, storage_state};

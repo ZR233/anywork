@@ -31,7 +31,7 @@ SessionDirectoryRow _row(
   workspaceId: 'project',
   title: suffix,
   mode: backend is NativeAgentBackendView && parentAgentId == null
-      ? ThreadModeId.simple
+      ? ThreadModeId.auto
       : null,
   delegationMode: DelegationMode.profile,
   delegationPreference: DelegationPreference.balanced,
@@ -176,7 +176,7 @@ void main() {
         expect(restored.backend, same(backend));
         expect(
           restored.mode,
-          backend is NativeAgentBackendView ? ThreadModeId.simple : isNull,
+          backend is NativeAgentBackendView ? ThreadModeId.auto : isNull,
         );
         expect(restored.isRootRow, isTrue);
         await metadata.release();

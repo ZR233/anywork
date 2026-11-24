@@ -361,6 +361,11 @@ impl StudioChildResources for StudioThreadFactory {
                     .map_err(|error| resource_error("freeze child Agent Profile", error))?,
             ),
             ("studio.creation-metadata".into(), request.metadata.clone()),
+            (
+                crate::plan_tool::PLAN_EXTENSION.into(),
+                crate::plan_tool::encode_plan_state(&Default::default())
+                    .map_err(|error| resource_error("freeze initial child plan state", error))?,
+            ),
         ]);
         if let Some(worktree) = worktree {
             self.confirm_worktree_binding(

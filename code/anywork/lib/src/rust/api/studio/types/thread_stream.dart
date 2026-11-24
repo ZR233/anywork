@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import 'chat.dart';
 import 'delegation.dart';
+import 'mode_editor.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
@@ -17,7 +18,7 @@ import 'thread_stream/item.dart';
 part 'thread_stream.freezed.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeTokenUsageSnapshot`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// FRB mirror of the canonical prompt cache effective-usage summary.
 class BridgeCacheUsageSummary {
@@ -1701,6 +1702,8 @@ class BridgeWorkflowRun {
   final String graphHash;
   final BridgeWorkflowRunLifecycle lifecycle;
   final String currentStateId;
+  final List<String> visitedStateIds;
+  final bool lastTransitionForced;
   final PlatformInt64 startedAt;
   final PlatformInt64 updatedAt;
   final String currentStateTitle;
@@ -1715,6 +1718,8 @@ class BridgeWorkflowRun {
     required this.graphHash,
     required this.lifecycle,
     required this.currentStateId,
+    required this.visitedStateIds,
+    required this.lastTransitionForced,
     required this.startedAt,
     required this.updatedAt,
     required this.currentStateTitle,
@@ -1731,6 +1736,8 @@ class BridgeWorkflowRun {
       graphHash.hashCode ^
       lifecycle.hashCode ^
       currentStateId.hashCode ^
+      visitedStateIds.hashCode ^
+      lastTransitionForced.hashCode ^
       startedAt.hashCode ^
       updatedAt.hashCode ^
       currentStateTitle.hashCode ^
@@ -1749,6 +1756,8 @@ class BridgeWorkflowRun {
           graphHash == other.graphHash &&
           lifecycle == other.lifecycle &&
           currentStateId == other.currentStateId &&
+          visitedStateIds == other.visitedStateIds &&
+          lastTransitionForced == other.lastTransitionForced &&
           startedAt == other.startedAt &&
           updatedAt == other.updatedAt &&
           currentStateTitle == other.currentStateTitle &&
@@ -1757,6 +1766,104 @@ class BridgeWorkflowRun {
 }
 
 enum BridgeWorkflowRunLifecycle { active, terminal }
+
+class BridgeWorkflowRuntimeGraphEdge {
+  final String id;
+  final String sourceStateId;
+  final String targetStateId;
+  final String guard;
+
+  const BridgeWorkflowRuntimeGraphEdge({
+    required this.id,
+    required this.sourceStateId,
+    required this.targetStateId,
+    required this.guard,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      sourceStateId.hashCode ^
+      targetStateId.hashCode ^
+      guard.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeWorkflowRuntimeGraphEdge &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          sourceStateId == other.sourceStateId &&
+          targetStateId == other.targetStateId &&
+          guard == other.guard;
+}
+
+class BridgeWorkflowRuntimeGraphSnapshot {
+  final String modeId;
+  final String modeDisplayName;
+  final bool modeDeleted;
+  final String initialStateId;
+  final List<BridgeWorkflowRuntimeGraphState> states;
+  final List<BridgeWorkflowRuntimeGraphEdge> edges;
+
+  const BridgeWorkflowRuntimeGraphSnapshot({
+    required this.modeId,
+    required this.modeDisplayName,
+    required this.modeDeleted,
+    required this.initialStateId,
+    required this.states,
+    required this.edges,
+  });
+
+  @override
+  int get hashCode =>
+      modeId.hashCode ^
+      modeDisplayName.hashCode ^
+      modeDeleted.hashCode ^
+      initialStateId.hashCode ^
+      states.hashCode ^
+      edges.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeWorkflowRuntimeGraphSnapshot &&
+          runtimeType == other.runtimeType &&
+          modeId == other.modeId &&
+          modeDisplayName == other.modeDisplayName &&
+          modeDeleted == other.modeDeleted &&
+          initialStateId == other.initialStateId &&
+          states == other.states &&
+          edges == other.edges;
+}
+
+class BridgeWorkflowRuntimeGraphState {
+  final String id;
+  final String title;
+  final BridgeWorkflowStateKind kind;
+  final String instructions;
+
+  const BridgeWorkflowRuntimeGraphState({
+    required this.id,
+    required this.title,
+    required this.kind,
+    required this.instructions,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ title.hashCode ^ kind.hashCode ^ instructions.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeWorkflowRuntimeGraphState &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          title == other.title &&
+          kind == other.kind &&
+          instructions == other.instructions;
+}
 
 /// 状态栏所需的 canonical Thread Mode workflow 投影。
 class BridgeWorkflowRuntimeSnapshot {

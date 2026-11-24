@@ -1,10 +1,7 @@
-//! Product Plan state machine and dynamic tools over generic Thread transactions.
-mod common;
+//! Product Plan state machine and dynamic tools powered by `pl-tool-plan`.
 mod context;
 mod dynamic;
-mod restart;
 pub mod state;
-mod submit;
 mod types;
 
 pub use types::*;
@@ -12,20 +9,16 @@ pub use types::*;
 pub use context::plan_model_context_section;
 pub(crate) use dynamic::PlanConfirmationPrompt;
 pub use dynamic::{PLAN_EXTENSION, decode_plan_state, encode_plan_state, plan_registrations};
-pub use restart::TOOL_PLAN_RESTART;
-pub use submit::TOOL_PLAN_SUBMIT;
-pub const TOOL_PLAN_CURRENT: &str = "plan_current";
-pub const TOOL_PLAN_HISTORY: &str = "plan_history";
-pub const TOOL_PLAN_NEXT: &str = "plan_next";
 pub const PLAN_CONTEXT_SECTION_ID: &str = "pl.plan";
-/// 计划确认提问载荷的格式标识：本层生产，交互投影与工具条目的历史投影共用同一解码。
+/// Format identifier for Plan confirmation requests, shared across interaction and timeline projections.
 pub(crate) const PLAN_CONFIRMATION_FORMAT: &str = "pl.studio.plan-confirmation";
-/// 计划确认回答载荷的格式标识：本层生产，交互投影与工具条目的历史投影共用同一解码。
+/// Format identifier for Plan confirmation answers.
 pub(crate) const PLAN_ANSWER_FORMAT: &str = "pl.studio.plan-answer";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan_tool::state::AgentSessionPlanOptions;
     use pl_core::{
         context::{ContextContent, OpaquePayload},
         model::{
@@ -60,15 +53,22 @@ mod tests {
                     })
                 }));
                 vec![ModelToolCall {
-                call_id: "submit-plan".into(),
-                tool_id: TOOL_PLAN_SUBMIT.into(),
-                arguments: OpaquePayload::new(
-                    "application/json", 1,
-                    serde_json::json!({"expectedRevision":0,"plan":"# 修复计划\n\n确认根因、实施修复并验证。"}).to_string(),
-                ).unwrap(),
-                presentation_contract: None,
-                rejection: None,
-            }]
+                    call_id: "transition-plan".into(),
+                    tool_id: TOOL_PLAN_TRANSITION.into(),
+                    arguments: OpaquePayload::new(
+                        "application/json",
+                        1,
+                        serde_json::json!({
+                            "targetState": "awaitingConfirmation",
+                            "expectedRevision": 0,
+                            "content": "# 修复计划\n\n确认根因、实施修复并验证。"
+                        })
+                        .to_string(),
+                    )
+                    .unwrap(),
+                    presentation_contract: None,
+                    rejection: None,
+                }]
             };
             Ok(PreparedModelCall::new(async move {
                 Ok(ModelStepOutput {
@@ -102,7 +102,12 @@ mod tests {
         )
         .unwrap();
         thread
-            .register_tools(plan_registrations(Default::default()).unwrap())
+            .register_tools(
+                plan_registrations(
+                    AgentSessionPlanOptions::default().with_confirmation_interaction(true),
+                )
+                .unwrap(),
+            )
             .await
             .unwrap();
         thread
@@ -129,14 +134,17 @@ mod tests {
         assert_eq!(completion.outcome, TurnOutcome::WaitingInteraction);
         let snapshot = thread.snapshot();
         let plan = decode_plan_state(&snapshot.extensions[PLAN_EXTENSION].payload).unwrap();
-        assert_eq!(
-            plan.state,
-            crate::plan_tool::AgentSessionPlanPhase::AwaitingConfirmation
-        );
+        assert_eq!(plan.plan.state, PlanState::AwaitingConfirmation);
         let pending = &snapshot.interactions[plan.pending_interaction_id.as_ref().unwrap()];
         assert_eq!(pending.state, InteractionState::Pending);
         assert_eq!(pending.request.turn_id, "planning-turn");
-        assert!(plan.document.unwrap().markdown.starts_with("# 修复计划"));
+        assert!(
+            plan.plan
+                .document
+                .unwrap()
+                .content
+                .starts_with("# 修复计划")
+        );
         thread.close().await.unwrap();
     }
 }

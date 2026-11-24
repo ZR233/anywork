@@ -214,7 +214,7 @@ void main() {
         'Native original draft',
       );
       expect(find.byType(StartEnvironmentView), findsOneWidget);
-      expect(find.byKey(StudioDriverKeys.sessionMode), findsNothing);
+      expect(find.byKey(StudioDriverKeys.sessionMode), findsOneWidget);
       expect(find.byKey(StudioDriverKeys.sessionSettings), findsOneWidget);
       expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsOneWidget);
       expect(tester.widget<TextButton>(_backendButton()).onPressed, isNotNull);

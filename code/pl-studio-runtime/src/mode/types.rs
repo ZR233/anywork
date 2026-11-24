@@ -15,8 +15,7 @@ use crate::workflow_tool::{WorkflowDefinition, WorkflowState, WorkflowTransition
 pub struct ThreadModeId(String);
 
 impl ThreadModeId {
-    pub const SIMPLE: &'static str = "mode.simple";
-    pub const TASK: &'static str = "mode.task";
+    pub const AUTO: &'static str = "mode.auto";
 
     pub fn new(value: impl Into<String>) -> Result<Self, crate::UnknownLabelError> {
         let canonical = value.into();
@@ -32,12 +31,8 @@ impl ThreadModeId {
         Ok(Self(canonical))
     }
 
-    pub fn simple() -> Self {
-        Self(Self::SIMPLE.to_string())
-    }
-
-    pub fn task() -> Self {
-        Self(Self::TASK.to_string())
+    pub fn auto() -> Self {
+        Self(Self::AUTO.to_string())
     }
 
     pub fn as_str(&self) -> &str {
@@ -55,7 +50,7 @@ impl ThreadModeId {
 
 impl Default for ThreadModeId {
     fn default() -> Self {
-        Self::simple()
+        Self::auto()
     }
 }
 

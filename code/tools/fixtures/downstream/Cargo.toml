@@ -19,6 +19,7 @@ search = { package = "pl-tool-search", path = "../../search" }
 media = { package = "pl-tool-media", path = "../../media" }
 skill = { package = "pl-tool-skill", path = "../../skill" }
 bots = { package = "pl-tool-bots", path = "../../bots" }
+plan = { package = "pl-tool-plan", path = "../../plan" }
 
 [dev-dependencies]
 pl-agent-tool = { path = "../../../pl-agent-tool", features = ["typed"] }

@@ -64,6 +64,8 @@ pub struct WorkflowTransitionRecord {
     pub revision: u64,
     pub source_state_id: String,
     pub target_state_id: String,
+    #[serde(default)]
+    pub forced: bool,
     pub reason: String,
     pub summary: String,
     #[serde(default)]
@@ -136,6 +138,81 @@ pub struct WorkflowSessionState {
     pub operation_receipts: Vec<WorkflowOperationReceipt>,
 }
 
+/// Summary of one valid state in the workflow graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStateBrief {
+    pub id: String,
+    pub title: String,
+    pub kind: WorkflowStateKind,
+}
+
+/// Allowed direct transition option from the current workflow state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowAllowedTransition {
+    pub target_state_id: String,
+    pub target_state_title: String,
+    pub target_kind: WorkflowStateKind,
+    pub guard: String,
+}
+
+/// Rich diagnostic payload returned when `workflow_transition` is rejected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTransitionError {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_state_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_state_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempted_target_state_id: Option<String>,
+    #[serde(default)]
+    pub allowed_transitions: Vec<WorkflowAllowedTransition>,
+    #[serde(default)]
+    pub all_states: Vec<WorkflowStateBrief>,
+    pub recovery_action: String,
+}
+
+/// Node in the deferred UI workflow graph projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRuntimeGraphState {
+    pub id: String,
+    pub title: String,
+    pub kind: WorkflowStateKind,
+    #[serde(default)]
+    pub instructions: String,
+}
+
+/// Edge in the deferred UI workflow graph projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRuntimeGraphEdge {
+    pub id: String,
+    pub source_state_id: String,
+    pub target_state_id: String,
+    pub guard: String,
+}
+
+/// Full frozen workflow graph projected on demand for session status inspection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRuntimeGraphSnapshot {
+    pub mode_id: ThreadModeId,
+    #[serde(default)]
+    pub mode_display_name: String,
+    #[serde(default)]
+    pub mode_deleted: bool,
+    pub initial_state_id: String,
+    #[serde(default)]
+    pub states: Vec<WorkflowRuntimeGraphState>,
+    #[serde(default)]
+    pub edges: Vec<WorkflowRuntimeGraphEdge>,
+}
+
 /// Thread stream 向 GUI 暴露的轻量当前 run 投影。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,6 +230,10 @@ pub struct WorkflowRuntimeRunSnapshot {
     #[serde(default)]
     pub mode_deleted: bool,
     pub current_state_id: String,
+    #[serde(default)]
+    pub visited_state_ids: Vec<String>,
+    #[serde(default)]
+    pub last_transition_forced: bool,
     pub started_at: i64,
     pub updated_at: i64,
 }
@@ -166,14 +247,28 @@ pub struct WorkflowRuntimeSnapshot {
     pub current_run: Option<WorkflowRuntimeRunSnapshot>,
 }
 
+fn push_unique_state(visited: &mut Vec<String>, state_id: &str) {
+    if !state_id.is_empty() && !visited.iter().any(|existing| existing == state_id) {
+        visited.push(state_id.to_string());
+    }
+}
+
 impl From<&WorkflowSessionState> for WorkflowRuntimeSnapshot {
     fn from(state: &WorkflowSessionState) -> Self {
         Self {
             revision: state.revision,
-            current_run: state
-                .current_run
-                .as_ref()
-                .map(|run| WorkflowRuntimeRunSnapshot {
+            current_run: state.current_run.as_ref().map(|run| {
+                let mut visited = Vec::new();
+                if let Some(first) = run.history_tail.first() {
+                    push_unique_state(&mut visited, &first.source_state_id);
+                }
+                for record in &run.history_tail {
+                    push_unique_state(&mut visited, &record.target_state_id);
+                }
+                push_unique_state(&mut visited, &run.current_state_id);
+                let last_transition_forced =
+                    run.history_tail.last().is_some_and(|record| record.forced);
+                WorkflowRuntimeRunSnapshot {
                     lineage_id: run.lineage_id.clone(),
                     run_id: run.run_id.clone(),
                     mode_id: run.mode_id.clone(),
@@ -184,9 +279,12 @@ impl From<&WorkflowSessionState> for WorkflowRuntimeSnapshot {
                     current_state_title: String::new(),
                     mode_display_name: String::new(),
                     mode_deleted: false,
+                    visited_state_ids: visited,
+                    last_transition_forced,
                     started_at: run.started_at,
                     updated_at: run.updated_at,
-                }),
+                }
+            }),
         }
     }
 }

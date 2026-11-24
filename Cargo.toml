@@ -36,6 +36,7 @@ members = [
     "code/tools/media",
     "code/tools/skill",
     "code/tools/bots",
+    "code/tools/plan",
     "code/tools/support/media",
     "code/pl-remote-helper",
     "code/pl-studio-runtime",
@@ -188,6 +189,7 @@ pl-tool-search = { path = "code/tools/search" }
 pl-tool-media = { path = "code/tools/media" }
 pl-tool-skill = { path = "code/tools/skill" }
 pl-tool-bots = { path = "code/tools/bots" }
+pl-tool-plan = { path = "code/tools/plan" }
 pl-tool-media-support = { path = "code/tools/support/media" }
 pl-remote-helper = { path = "code/pl-remote-helper" }
 pl-studio-runtime = { path = "code/pl-studio-runtime" }

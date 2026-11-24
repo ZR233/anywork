@@ -818,7 +818,7 @@ mod tests {
                     model_id: "startup-test".into(),
                     effort: None,
                 },
-                mode: pl_studio_runtime::mode::ThreadModeId::simple(),
+                mode: pl_studio_runtime::mode::ThreadModeId::auto(),
                 prompt: "must not run".into(),
                 max_model_steps: None,
                 export: None,

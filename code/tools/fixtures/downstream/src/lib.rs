@@ -9,5 +9,6 @@ pub use git;
 pub use lsp;
 pub use mcp;
 pub use media;
+pub use plan;
 pub use search;
 pub use skill;

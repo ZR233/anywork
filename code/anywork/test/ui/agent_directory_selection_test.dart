@@ -476,9 +476,9 @@ void main() {
         text: 'A new root',
         attachmentDraftIds: [],
       ),
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       route: const ModeModelRouteView(
-        modeId: ThreadModeId.simple,
+        modeId: ThreadModeId.auto,
         accountId: 'saved-account',
         modelId: 'saved-model',
         effort: 'high',

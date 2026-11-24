@@ -156,19 +156,19 @@ void main() {
   });
 
   test('mode inheritance preserves configured unavailable Agent routes', () {
-    const simple = ModeModelRouteView(
-      modeId: ThreadModeId.simple,
+    const auto = ModeModelRouteView(
+      modeId: ThreadModeId.auto,
       accountId: 'account',
       modelId: 'observed-model',
       effort: 'medium',
     );
     final route = ModelRouteQueries.startRoute(
-      routes: [simple],
+      routes: [auto],
       commands: const {},
       draft: const StartSessionDraft(),
-      mode: ThreadModeId.task,
+      mode: const ThreadModeId('mode.custom'),
     );
-    expect(route.canonical, same(simple));
+    expect(route.canonical, same(auto));
     expect(route.display!.accountId, 'account');
     expect(route.display!.modelId, 'observed-model');
     expect(route.pending, isFalse);
