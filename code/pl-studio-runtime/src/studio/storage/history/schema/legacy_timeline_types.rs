@@ -220,22 +220,6 @@ impl CurrentProjection {
     }
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-pub enum ChatEntry {
-    Item(Box<TimelineItem>),
-    Atom(Box<ChatAtom>),
-    Source(ChatSourceState),
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub enum ChatScope {
-    Main,
-    GroupMembers { reference: TimelineMembersRef },
-}
-
 #[derive(Debug)]
 pub struct FrozenCurrentProjection {
     projection: CurrentProjection,

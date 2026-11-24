@@ -10,22 +10,6 @@ use sea_orm::ConnectionTrait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[cfg(test)]
-pub(in crate::studio::storage::history) async fn read_archived(
-    db: &impl ConnectionTrait,
-) -> Result<CurrentProjection> {
-    let row = db
-        .query_one_raw(statement(
-            "SELECT payload FROM completion_boundary_archive_view_state WHERE singleton_id=1",
-            vec![],
-        ))
-        .await?
-        .context("archived current is missing")?;
-    let mut current: CurrentProjection =
-        serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
-    current.execution_present = false;
-    Ok(current)
-}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EntryPayload {

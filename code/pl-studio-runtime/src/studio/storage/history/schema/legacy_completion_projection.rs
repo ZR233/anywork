@@ -3,7 +3,7 @@ use super::legacy_timeline_types::*;
 use crate::protocol::*;
 use crate::studio::thread_projection::ProjectionError;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::result::Result;
 use std::sync::{Arc, Mutex, OnceLock};
 mod completion;
@@ -137,22 +137,15 @@ pub(in crate::studio) struct MemberChange {
     pub atom: ChatAtom,
     pub payload_bytes: Option<u64>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::studio) struct TimelineUpdate {
-    facts: Vec<ChatAtom>,
     members: Vec<MemberChange>,
     updates: Vec<TimelineItem>,
-    current: Vec<TimelineItem>,
-    recovery: Vec<u8>,
     next_position: u64,
     generation: String,
     /// Final member material moves to the original reliable batch only when its group closes.
-    #[serde(default)]
     completed_members: Vec<MemberChange>,
     /// Reliable-fact replay cuts, never serialized open accumulators.
-    #[serde(default)]
     frontier: Vec<u8>,
-    #[serde(default)]
     finished_groups: Vec<String>,
 }
 impl TimelineUpdate {
@@ -170,22 +163,6 @@ impl TimelineUpdate {
     }
     pub fn generation(&self) -> &str {
         &self.generation
-    }
-}
-impl Default for TimelineUpdate {
-    fn default() -> Self {
-        Self {
-            facts: Vec::new(),
-            members: Vec::new(),
-            updates: Vec::new(),
-            current: Vec::new(),
-            recovery: br#"{"items":[],"active":{}}"#.to_vec(),
-            next_position: 0,
-            generation: String::new(),
-            completed_members: Vec::new(),
-            frontier: Vec::new(),
-            finished_groups: Vec::new(),
-        }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,7 +243,7 @@ pub(in crate::studio) struct TimelineProjection {
     background_tail: Option<BackgroundTail>,
     updates: Vec<TimelineItem>,
     changes: Vec<MemberChange>,
-    facts: Vec<ChatAtom>,
+    observed_fact: bool,
     retained_bytes: OnceLock<u64>,
     members: Arc<Mutex<Members>>,
     finished_groups: Vec<String>,
@@ -379,7 +356,7 @@ impl TimelineProjection {
             background_tail: None,
             updates: Vec::new(),
             changes: Vec::new(),
-            facts: Vec::new(),
+            observed_fact: false,
             retained_bytes: OnceLock::new(),
             members: Arc::new(Mutex::new(Members::default())),
             finished_groups: Vec::new(),
@@ -475,7 +452,7 @@ impl TimelineProjection {
         if atom.kind == ChatAtomKind::TurnReceipt
             && outcome(&atom) == Some(ChatTerminalOutcome::Completed)
         {
-            self.facts.push(lightweight(&atom));
+            self.observed_fact = true;
             self.end_source(&atom.source);
             return Ok(());
         }
@@ -485,7 +462,7 @@ impl TimelineProjection {
         {
             // Result sources may have a frozen start in old canonical history.
             // Only the actual final result participates in the Main tail run.
-            self.facts.push(lightweight(&atom));
+            self.observed_fact = true;
             return Ok(());
         }
         if terminal
@@ -667,7 +644,7 @@ impl TimelineProjection {
             item.empty = atom.content_present == Some(false);
             item.item.admission_closed = terminal;
         }
-        self.facts.push(lightweight(&atom));
+        self.observed_fact = true;
         if item.item.kind == TimelineItemKind::WorkGroup {
             let change = MemberChange {
                 item_id: item.item.id.clone(),
@@ -707,7 +684,7 @@ impl TimelineProjection {
             atom: lightweight(&atom),
             payload_bytes,
         });
-        self.facts.push(lightweight(&atom));
+        self.observed_fact = true;
         // Within one undrained effect, publish the latest header only once.
         if let Some(item) = self
             .committed
@@ -846,34 +823,6 @@ impl TimelineProjection {
         }
         Ok(())
     }
-    pub(in crate::studio) fn current_items(&self) -> Vec<TimelineItem> {
-        let mut streams: Vec<VecDeque<u64>> = self
-            .sources
-            .values()
-            .map(|items| items.values().flatten().copied().collect())
-            .collect();
-        let mut next = BTreeSet::new();
-        for (stream, items) in streams.iter_mut().enumerate() {
-            if let Some(index) = items.pop_front() {
-                next.insert((self.items[&index].anchor, index, stream));
-            }
-        }
-        for (index, item) in &self.items {
-            if item.item.kind == TimelineItemKind::Status {
-                next.insert((item.anchor, *index, usize::MAX));
-            }
-        }
-        let mut result = Vec::with_capacity(self.items.len());
-        while let Some((_, index, stream)) = next.pop_first() {
-            result.push(self.items[&index].item.clone());
-            if stream != usize::MAX
-                && let Some(index) = streams[stream].pop_front()
-            {
-                next.insert((self.items[&index].anchor, index, stream));
-            }
-        }
-        result
-    }
     pub(in crate::studio) fn take_committed(&mut self) -> Vec<TimelineItem> {
         if !self.committed.is_empty() {
             self.retained_bytes.take();
@@ -897,17 +846,18 @@ impl TimelineProjection {
         self.recovery().map(drop)
     }
     pub(in crate::studio) fn take_update(&mut self) -> Result<TimelineUpdate, ProjectionError> {
-        let recovery = self.recovery()?;
+        self.check_recovery_budget()?;
         let mut update = self.take_changes();
-        update.current = self.current_items();
-        update.recovery = recovery;
         update.frontier = self.freeze_frontier()?;
         Ok(update)
     }
     /// Migration drains ordered deltas without freezing the unchanged full head.
     /// Its caller writes the final complete head in the same migration transaction.
     pub(in crate::studio) fn take_changes(&mut self) -> TimelineUpdate {
-        if !self.facts.is_empty() || !self.changes.is_empty() || !self.finished_groups.is_empty() {
+        if std::mem::take(&mut self.observed_fact)
+            || !self.changes.is_empty()
+            || !self.finished_groups.is_empty()
+        {
             self.retained_bytes.take();
         }
         let mut completed_members = self
@@ -926,11 +876,8 @@ impl TimelineProjection {
                 .cloned(),
         );
         TimelineUpdate {
-            facts: std::mem::take(&mut self.facts),
             members: std::mem::take(&mut self.changes),
             updates: std::mem::take(&mut self.updates),
-            current: Vec::new(),
-            recovery: Vec::new(),
             next_position: self.next_position,
             generation: self.generation.clone(),
             completed_members,

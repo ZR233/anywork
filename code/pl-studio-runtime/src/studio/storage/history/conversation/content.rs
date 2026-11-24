@@ -2,8 +2,6 @@ use super::*;
 use pl_core::chat::{
     ChatContent, ChatContentKey, ChatContents, ChatError, ContentData, ContentDescriptor,
 };
-#[cfg(test)]
-use pl_core::chat::{ContentManifestPage, ContentManifestRequest};
 use serde::{Deserialize, Serialize};
 
 pub(in crate::studio::storage::history) const CHUNK_BYTES: usize = 64 * 1024;
@@ -41,23 +39,6 @@ pub(in crate::studio::storage::history) fn manifest(bytes: &[u8]) -> Result<Mani
     let manifest: Manifest = serde_json::from_slice(bytes)?;
     integer(manifest.byte_length)?;
     Ok(manifest)
-}
-
-#[cfg(test)]
-pub(in super::super) async fn write_contents(
-    db: &impl ConnectionTrait,
-    id: &str,
-    contents: &ChatContents,
-) -> Result<()> {
-    let owner = ChatKey::new("item", id)?;
-    for (key, content) in contents {
-        ensure!(
-            key.owner == owner && *key == content.descriptor.key && !key.key.is_empty(),
-            "completion content manifest has a foreign or inconsistent owner"
-        );
-        write_content(db, content, true).await?;
-    }
-    Ok(())
 }
 
 pub(in super::super) async fn validate_content(
@@ -310,68 +291,4 @@ pub(in super::super) async fn read_contents(
         );
     }
     Ok(contents)
-}
-
-#[cfg(test)]
-pub(in super::super) async fn list_contents(
-    db: &impl ConnectionTrait,
-    request: &ContentManifestRequest,
-    budget: &dyn ChatBudget,
-) -> Result<ContentManifestPage> {
-    request.demand.validate()?;
-    let owner = ChatKey::new("item", &request.item_id)?;
-    if let Some(after) = &request.after {
-        ensure!(
-            after.owner == owner,
-            "manifest continuation has a foreign owner"
-        );
-    }
-    ensure!(
-        db.query_one_raw(statement(
-            "SELECT 1 FROM conversation_items WHERE item_id=?",
-            vec![request.item_id.clone().into()],
-        ))
-        .await?
-        .is_some(),
-        pl_core::chat::ChatError::NotFound(request.item_id.clone())
-    );
-    let mut sql = String::from(
-        "SELECT content_key,payload FROM conversation_contents WHERE owner_key=?
-            AND json_type(payload,'$.sealed') IS NOT 'false'",
-    );
-    let mut values = vec![owner.as_str().into()];
-    if let Some(after) = &request.after {
-        sql.push_str(" AND content_key>?");
-        values.push(after.key.clone().into());
-    }
-    sql.push_str(" ORDER BY content_key LIMIT ?");
-    values.push(integer(request.demand.max_items)?.into());
-    let rows = db.query_all_raw(statement(&sql, values)).await?;
-    let mut exhausted = rows.len() < request.demand.max_items;
-    let mut bytes = request.demand.max_bytes;
-    let mut entries = Vec::new();
-    for row in rows {
-        let entry = descriptor(
-            owner.as_str(),
-            row.try_get("", "content_key")?,
-            &row.try_get::<Vec<u8>>("", "payload")?,
-        )?;
-        let cost = budget.manifest_bytes(&entry);
-        if cost > bytes {
-            exhausted = false;
-            break;
-        }
-        bytes -= cost;
-        entries.push(entry);
-    }
-    ensure!(
-        exhausted || !entries.is_empty(),
-        pl_core::chat::ChatError::InvalidDemand("manifest entry cannot fit demand".into())
-    );
-    let next = if exhausted {
-        None
-    } else {
-        entries.last().map(|entry| entry.key.clone())
-    };
-    Ok(ContentManifestPage { entries, next })
 }

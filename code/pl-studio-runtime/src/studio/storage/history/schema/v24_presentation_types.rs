@@ -74,19 +74,3 @@ pub(crate) struct DisplayMemberHead {
     pub member_order: u64,
     pub record: DisplayRecord,
 }
-
-/// 仅用于导出旧格式中未被现有业务事实覆盖的原始字节，不是新的完成记录。
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct LegacyExecutionEvidence {
-    pub evidence_id: String,
-    pub record_id: String,
-    pub revision: u64,
-    pub kind: String,
-    pub source_schema: u32,
-    pub source_table: String,
-    pub source_row: serde_json::Value,
-    pub byte_length: u64,
-    pub raw_digest: String,
-}

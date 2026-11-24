@@ -4,45 +4,11 @@ use super::{HistoryStore, applied_write_seq, begin_write, integer, statement};
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextRecord, content_hash},
-    thread::{ThreadCheckpoint, journal::ContextChange},
+    thread::ThreadCheckpoint,
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
 
 impl HistoryStore {
-    /// Test-only schema-24 snapshot for migration fixtures.
-    ///
-    /// Production recovery reads `ThreadCurrent` from current.json and never calls this adapter.
-    #[cfg(test)]
-    pub(crate) async fn legacy_test_checkpoint_with_latest_turn(
-        &self,
-    ) -> Result<Option<(ThreadCheckpoint, Option<crate::Turn>)>> {
-        let connection = {
-            let _initializing = self.state.init.read().await;
-            self.read_only_connection().await?
-        };
-        let Some(connection) = connection else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        // A shared read-only connection can predate an explicit writer upgrade. Validate the
-        // current transaction's identity/schema, not a cached version or the writer fast path.
-        let (database_id, _) = super::validate_existing(&tx, &self.state.thread_id).await?;
-        ensure!(
-            database_id == connection.database_id,
-            "canonical history identity changed"
-        );
-        let result = if let Some(checkpoint) = read(&tx, &self.state.thread_id).await? {
-            let turn =
-                super::read_latest_turn_at(&tx, &self.state.thread_id, checkpoint.history_fence)
-                    .await?;
-            Some((checkpoint, turn))
-        } else {
-            None
-        };
-        tx.commit().await?;
-        Ok(result.map(|(checkpoint, turn)| (*checkpoint, turn)))
-    }
-
     /// Reads one consistent checkpoint/context/history generation without creating a database.
     pub(crate) async fn checkpoint(&self) -> Result<Option<ThreadCheckpoint>> {
         let Some(connection) = self.reader().await? else {
@@ -52,32 +18,6 @@ impl HistoryStore {
         let result = read(&tx, &self.state.thread_id).await?;
         tx.commit().await?;
         Ok(result.map(|checkpoint| *checkpoint))
-    }
-
-    /// Advances the same Migrator after the v2 TOML import boundary has finished.
-    #[cfg(test)]
-    pub(crate) async fn prepare_model_access(&self) -> Result<Option<ThreadCheckpoint>> {
-        super::schema::prepare_with_bot_root(
-            &self.writer().await?.db,
-            &self.state.thread_id,
-            super::schema::Preparation::ModelAccess,
-        )
-        .await?;
-        self.checkpoint().await
-    }
-
-    /// Marks the unreachable lifecycle names applied and runs the remaining real receipt step.
-    #[cfg(test)]
-    pub(crate) async fn prepare_execution_identity(&self) -> Result<ThreadCheckpoint> {
-        super::schema::prepare_with_bot_root(
-            &self.writer().await?.db,
-            &self.state.thread_id,
-            super::schema::Preparation::ExecutionIdentity,
-        )
-        .await?;
-        self.checkpoint()
-            .await?
-            .context("prepared checkpoint is absent")
     }
 
     /// The only import boundary for a validated, fully materialized v2 TOML checkpoint.
@@ -189,7 +129,7 @@ impl HistoryStore {
                 }
             }
             // read() proved that no checkpoint exists while this write transaction is held.
-            write(&tx, &checkpoint, None, None).await?;
+            write(&tx, &checkpoint).await?;
             // Keep this marker as migration evidence. Source TOML files and checkpoint bodies are
             // user-owned originals and are never removed by the importer.
             tx.execute_unprepared("UPDATE session_checkpoint SET legacy_cleanup=1 WHERE id=1")
@@ -207,39 +147,6 @@ impl HistoryStore {
         );
         Ok(())
     }
-}
-
-#[cfg(test)]
-pub(super) async fn verify_committed(
-    tx: &impl ConnectionTrait,
-    checkpoint: &ThreadCheckpoint,
-    watermark: i64,
-) -> Result<()> {
-    let row = tx
-        .query_one_raw(statement(
-            "SELECT revision FROM session_checkpoint WHERE id=1",
-            vec![],
-        ))
-        .await?
-        .context("durable history has no checkpoint")?;
-    ensure!(
-        row.try_get::<i64>("", "revision")? == watermark
-            && watermark >= integer(checkpoint.state_revision)?,
-        "durable checkpoint does not cover retried history"
-    );
-    if watermark == integer(checkpoint.state_revision)? {
-        // Only the durable head still represents this exact checkpoint. Earlier members of a
-        // retained frozen batch are covered by its immutable facts; later context replacements
-        // must not be compared with those earlier checkpoints.
-        let durable = read(tx, &checkpoint.thread_id)
-            .await?
-            .context("durable history has no checkpoint")?;
-        ensure!(
-            serde_json::to_value(durable.pruned()?)? == serde_json::to_value(checkpoint.pruned()?)?,
-            "retried checkpoint differs from the durable head"
-        );
-    }
-    Ok(())
 }
 
 /// Representation migrations update only the extension portion of the original JSON. Context
@@ -381,59 +288,8 @@ pub(super) async fn read_model_route_head(
     }
 }
 
-/// The transaction's singleton headers, shared by ordered history and context persistence.
-#[cfg(test)]
-pub(super) struct CommitHead {
-    pub(super) applied_write_seq: i64,
-    pub(super) context: Option<ContextHead>,
-}
-
-pub(super) struct ContextHead {
-    revision: i64,
-    count: i64,
-}
-
-#[cfg(test)]
-pub(super) async fn read_commit_head(db: &impl ConnectionTrait) -> Result<CommitHead> {
-    let row = db
-        .query_one_raw(statement(
-            "SELECT h.applied_write_seq,c.id AS checkpoint_id,c.context_revision,c.context_count
-             FROM history_meta h LEFT JOIN session_checkpoint c ON c.id=1 WHERE h.id=1",
-            vec![],
-        ))
-        .await?
-        .context("history metadata is missing")?;
-    let context = if row.try_get::<Option<i64>>("", "checkpoint_id")?.is_some() {
-        Some(ContextHead {
-            revision: row.try_get("", "context_revision")?,
-            count: row.try_get("", "context_count")?,
-        })
-    } else {
-        None
-    };
-    Ok(CommitHead {
-        applied_write_seq: row.try_get("", "applied_write_seq")?,
-        context,
-    })
-}
-
-pub(super) async fn write(
-    tx: &impl ConnectionTrait,
-    checkpoint: &ThreadCheckpoint,
-    change: Option<&ContextChange>,
-    prior: Option<&ContextHead>,
-) -> Result<()> {
-    write_context(tx, checkpoint, change, prior).await?;
-    write_head(tx, checkpoint).await
-}
-
-/// Apply the ordered context operation even when the enclosing batch defers its singleton.
-pub(super) async fn write_context(
-    tx: &impl ConnectionTrait,
-    checkpoint: &ThreadCheckpoint,
-    change: Option<&ContextChange>,
-    prior: Option<&ContextHead>,
-) -> Result<ContextHead> {
+/// Rewrites the complete legacy checkpoint within the TOML import transaction.
+async fn write(tx: &impl ConnectionTrait, checkpoint: &ThreadCheckpoint) -> Result<()> {
     ensure!(
         checkpoint.is_materialized(),
         "checkpoint still references external legacy bodies"
@@ -444,50 +300,14 @@ pub(super) async fn write_context(
         "checkpoint revision is inconsistent"
     );
     let records = &checkpoint.state.context.records;
-    let append = match (prior, change) {
-        (
-            Some(row),
-            Some(ContextChange::Append {
-                revision,
-                records: added,
-            }),
-        ) => {
-            ensure!(
-                *revision == checkpoint.state.context.revision,
-                "context append revision mismatch"
-            );
-            let count = usize::try_from(row.count)?;
-            ensure!(
-                count.checked_add(added.len()) == Some(records.len())
-                    && records[count..] == **added,
-                "context append does not match checkpoint"
-            );
-            Some((count, added.as_ref()))
-        }
-        (Some(row), None) => {
-            ensure!(
-                row.revision == integer(checkpoint.state.context.revision)?
-                    && row.count == integer(records.len())?,
-                "context changed without a mutation"
-            );
-            Some((records.len(), &[][..]))
-        }
-        _ => None,
-    };
-    let (start, changed) = match append {
-        Some(value) => value,
-        None => {
-            tx.execute_unprepared("DELETE FROM current_context").await?;
-            (0, records.as_ref())
-        }
-    };
-    for (offset, record) in changed.iter().enumerate() {
+    tx.execute_unprepared("DELETE FROM current_context").await?;
+    for (ordinal, record) in records.iter().enumerate() {
         let payload = serde_json::to_string(record)?;
         let hash = content_hash(payload.as_bytes());
         tx.execute_raw(statement(
             "INSERT INTO current_context(ordinal,record_id,payload,payload_hash) VALUES(?,?,?,?)",
             vec![
-                integer(start + offset)?.into(),
+                integer(ordinal)?.into(),
                 record.id.clone().into(),
                 payload.into(),
                 hash.into(),
@@ -495,18 +315,6 @@ pub(super) async fn write_context(
         ))
         .await?;
     }
-    Ok(ContextHead {
-        revision: integer(checkpoint.state.context.revision)?,
-        count: integer(records.len())?,
-    })
-}
-
-/// A complete checkpoint header is only visible after the owning transaction commits.
-pub(super) async fn write_head(
-    tx: &impl ConnectionTrait,
-    checkpoint: &ThreadCheckpoint,
-) -> Result<()> {
-    let records = &checkpoint.state.context.records;
     let mut metadata = checkpoint.pruned()?;
     metadata.state.context.records = Default::default();
     let payload = serde_json::to_string(&metadata)?;
@@ -533,22 +341,6 @@ pub(super) async fn read(
         Ok(serde_json::from_str(payload)?)
     })
     .await
-}
-
-/// Validated original state envelope for product reads. Context records remain with execution
-/// recovery; even a nonempty saved context is never selected or reconstructed here.
-#[cfg(test)]
-pub(super) async fn read_state_envelope(
-    tx: &impl ConnectionTrait,
-    thread_id: &str,
-) -> Result<Option<Box<ThreadCheckpoint>>> {
-    Ok(
-        read_envelope_with(tx, thread_id, ThreadCheckpoint::SCHEMA_VERSION, |payload| {
-            Ok(serde_json::from_str(payload)?)
-        })
-        .await?
-        .map(|envelope| envelope.checkpoint),
-    )
 }
 
 /// The schema step shares every hash, identity, context and fence check with ordinary reads.
@@ -690,26 +482,6 @@ async fn read_envelope_with(
     }))
 }
 
-/// Accounting is reliable state, independent from the lossy log writer.
-#[cfg(test)]
-pub(super) async fn fold_costs(
-    tx: &impl ConnectionTrait,
-    accounting: &crate::studio::thread_projection::PreparedAccounting,
-) -> Result<()> {
-    for fact in accounting.facts.iter() {
-        for cost in fact.record.accounting.estimated_costs() {
-            add_cost(
-                tx,
-                fact.record.purpose.as_deref(),
-                &cost.currency,
-                cost.amount,
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 async fn add_cost(
     tx: &impl ConnectionTrait,
     purpose: Option<&str>,
@@ -740,78 +512,4 @@ async fn add_cost(
     Ok(())
 }
 
-/// A compact absolute projection; no context or historical body is read.
-#[cfg(test)]
-pub(crate) struct SessionAccounting {
-    pub revision: u64,
-    pub purpose_costs: Vec<(Option<String>, Vec<crate::RuntimeCostAmount>)>,
-}
-
-impl HistoryStore {
-    #[cfg(test)]
-    pub(crate) async fn accounting(&self) -> Result<Option<SessionAccounting>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let result = read_accounting(&tx, &self.state.thread_id).await?;
-        tx.commit().await?;
-        Ok(result)
-    }
-}
-
-#[cfg(test)]
-pub(super) async fn read_accounting(
-    tx: &impl ConnectionTrait,
-    thread_id: &str,
-) -> Result<Option<SessionAccounting>> {
-    let Some(row) = tx
-        .query_one_raw(statement(
-            "SELECT revision,payload,payload_hash FROM session_checkpoint WHERE id=1",
-            vec![],
-        ))
-        .await?
-    else {
-        return Ok(None);
-    };
-    let payload: String = row.try_get("", "payload")?;
-    ensure!(
-        content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-        "accounting checkpoint hash mismatch"
-    );
-    let checkpoint: ThreadCheckpoint = serde_json::from_str(&payload)?;
-    ensure!(
-        checkpoint.schema_version == ThreadCheckpoint::SCHEMA_VERSION
-            && checkpoint.thread_id == thread_id,
-        "accounting checkpoint requires explicit storage preparation or has a foreign identity"
-    );
-    Ok(Some(SessionAccounting {
-        revision: checkpoint.state_revision,
-        purpose_costs: read_purpose_costs(tx).await?,
-    }))
-}
-
-#[cfg(test)]
-pub(super) async fn read_purpose_costs(
-    tx: &impl ConnectionTrait,
-) -> Result<Vec<(Option<String>, Vec<crate::RuntimeCostAmount>)>> {
-    let mut purposes =
-        std::collections::BTreeMap::<Option<String>, Vec<crate::RuntimeCostAmount>>::new();
-    for row in tx
-        .query_all_raw(statement(
-            "SELECT purpose,currency,amount FROM session_costs ORDER BY purpose,currency",
-            vec![],
-        ))
-        .await?
-    {
-        let purpose = serde_json::from_str(&row.try_get::<String>("", "purpose")?)?;
-        purposes
-            .entry(purpose)
-            .or_default()
-            .push(crate::RuntimeCostAmount {
-                currency: row.try_get("", "currency")?,
-                amount: row.try_get("", "amount")?,
-            });
-    }
-    Ok(purposes.into_iter().collect())
-}
+impl HistoryStore {}

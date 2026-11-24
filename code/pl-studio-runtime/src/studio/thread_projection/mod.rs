@@ -9,8 +9,6 @@ pub(crate) use accounting::PreparedAccounting;
 pub(in crate::studio) use accounting::merge_runtime_costs;
 pub(crate) use billing::AuxiliaryBillingReceipt;
 pub(in crate::studio) use billing::BillingFact;
-#[cfg(test)]
-pub(in crate::studio) use billing::billing_facts;
 mod activity;
 pub(in crate::studio) use activity::project_activity;
 mod completions;

@@ -30,27 +30,6 @@ pub(crate) fn decode(payload: &OpaquePayload) -> Result<DelegationSettings> {
     Ok(serde_json::from_str(payload.content())?)
 }
 
-/// Seeds delegation provenance in frozen history fixtures.
-#[cfg(test)]
-pub(crate) fn migrate(state: &mut ThreadSnapshot) -> Result<()> {
-    use pl_core::thread::extensions::ExtensionRecord;
-
-    if saved(state)?.is_none() {
-        state.extension_sequence = state
-            .extension_sequence
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("delegation extension sequence overflow"))?;
-        state.extensions.insert(
-            EXTENSION.into(),
-            ExtensionRecord {
-                revision: state.extension_sequence,
-                payload: encode(DelegationSettings::default())?,
-            },
-        );
-    }
-    Ok(())
-}
-
 pub(crate) fn profile_model(profile: &crate::AgentProfileSnapshot) -> crate::NewThreadModelRoute {
     crate::NewThreadModelRoute {
         account_id: profile.account_id.clone(),

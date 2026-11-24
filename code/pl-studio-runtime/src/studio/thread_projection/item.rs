@@ -1,6 +1,4 @@
 //! 仅用于执行投影的局部类型；旧持久 JSON 仅由 schema 的冻结解码器读取。
-#[cfg(test)]
-use crate::ThreadAttachment;
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
 
@@ -44,52 +42,6 @@ impl ExecutionItem {
             updated_at: stamp.updated_at,
             state,
         }
-    }
-
-    #[cfg(test)]
-    pub fn completed_user_message(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        text: String,
-        attachments: Vec<ThreadAttachment>,
-        completed_at: i64,
-    ) -> Self {
-        Self::completed_input_message(
-            id,
-            ItemStamp {
-                thread_id: std::borrow::Cow::Owned(thread_id),
-                turn_id: std::borrow::Cow::Owned(turn_id),
-                ordinal: 0,
-                revision: 0,
-                created_at: completed_at,
-                updated_at: completed_at,
-            },
-            ThreadTextChannel::User,
-            text,
-            attachments,
-        )
-    }
-
-    #[cfg(test)]
-    fn completed_input_message(
-        id: String,
-        stamp: ItemStamp<'_>,
-        channel: ThreadTextChannel,
-        text: String,
-        attachments: Vec<ThreadAttachment>,
-    ) -> Self {
-        let completed_at = stamp.created_at;
-        Self::new(
-            id,
-            stamp,
-            ExecutionShape::Text(ThreadTextItem::new(
-                channel,
-                text,
-                attachments,
-                ThreadContentLifecycle::completed(completed_at),
-            )),
-        )
     }
 
     pub fn state(&self) -> &ExecutionShape {

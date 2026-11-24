@@ -43,14 +43,12 @@ async fn save_completed(
     db: &impl ConnectionTrait,
     database: &str,
     update: &TimelineUpdate,
-    committed: &[PreparedTimelineItem],
+    committed: &[TimelineItem],
     effect: u64,
 ) -> Result<()> {
     for member in update.completed_members() {
         ensure!(
-            committed
-                .iter()
-                .any(|entry| entry.item.id == member.item_id)
+            committed.iter().any(|entry| entry.id == member.item_id)
                 || update
                     .updates()
                     .iter()
@@ -138,7 +136,7 @@ async fn save_completed(
     }
     // Qualify the old tail before inserting any visible separator from this delta.
     for item in update.updates() {
-        if !committed.iter().any(|entry| entry.item.id == item.id) {
+        if !committed.iter().any(|entry| entry.id == item.id) {
             let previous = db
                 .query_one_raw(statement(
                     "SELECT metadata FROM timeline_items WHERE item_id=?
@@ -167,7 +165,7 @@ async fn save_completed(
         }
     }
     for entry in committed {
-        let item = deferred_item(database, &entry.item);
+        let item = deferred_item(database, entry);
         ensure!(
             item.position.is_some() && item.admission_closed,
             "only completed display items may be persisted"
@@ -361,11 +359,7 @@ async fn replay(
                 }
             }
             projection.commit_ready()?;
-            let committed = projection
-                .take_committed()
-                .into_iter()
-                .map(|item| PreparedTimelineItem { item })
-                .collect::<Vec<_>>();
+            let committed = projection.take_committed();
             let update = projection.take_changes();
             if persist {
                 save_completed(db, database, &update, &committed, u64::try_from(cursor.0)?).await?;

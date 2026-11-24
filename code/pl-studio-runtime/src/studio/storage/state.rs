@@ -52,30 +52,6 @@ pub(crate) struct InputIdentityEntry {
     pub(crate) accepted_sequence: u64,
 }
 
-impl InputIdentityEntry {
-    #[cfg(test)]
-    pub(crate) fn new(
-        identity: pl_core::thread::input::InputIdentity,
-        accepted_sequence: u64,
-    ) -> Self {
-        Self {
-            digest: identity.digest,
-            continuation: None,
-            delivery: identity.delivery,
-            id: identity.id,
-            purpose: identity.purpose,
-            // These two are filled by the control identity write path; a plain message identity
-            // never carries them.
-            expected_model_route_revision: None,
-            continuation_admission_revision: None,
-            ordinal: identity.ordinal,
-            revision: identity.revision,
-            state: identity.state,
-            accepted_sequence,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct StateStore {
     directory: PathBuf,

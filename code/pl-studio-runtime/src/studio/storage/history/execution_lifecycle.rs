@@ -1,13 +1,9 @@
 //! 执行开始与结束的最小持久化事实；没有正文、展示分组或进度快照。
 use super::{integer, statement};
-#[cfg(test)]
-use crate::ChatActiveStatus;
 use crate::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition, ChatSourceId,
     ChatTerminalOutcome, ChatToolIdentity, ThreadTextChannel,
 };
-#[cfg(test)]
-use anyhow::Context;
 use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, QueryResult};
 
@@ -100,39 +96,6 @@ impl ExecutionLifecycle {
             outcome,
             completion_item_id: atom.completion_item_id.clone(),
             last_write_seq: effect,
-        })
-    }
-
-    /// 恢复当前执行的局部投影，没有完成原件时不生成空正文或完成项。
-    #[cfg(test)]
-    pub(in crate::studio) fn active_atom(self) -> Result<ChatAtom> {
-        ensure!(
-            self.outcome.is_none() && self.ended.is_none(),
-            "terminal lifecycle is not active"
-        );
-        Ok(ChatAtom {
-            id: self.identity,
-            completion_item_id: None,
-            completion_seq: None,
-            source: self.source,
-            source_state: None,
-            source_order: self.source_order,
-            kind: self.kind,
-            delivery: self.delivery,
-            lifecycle: ChatAtomLifecycle::Active {
-                started: self.started,
-                status: ChatActiveStatus::Running,
-            },
-            turn_id: self.turn_id,
-            attempt_id: self.attempt_id,
-            tool: self.tool,
-            wait: None,
-            text_channel: self.text_channel,
-            started_at: self.started_at,
-            finished_at: None,
-            content_present: None,
-            contents: vec![],
-            payload: None,
         })
     }
 }
@@ -294,36 +257,6 @@ pub(super) async fn read(
     .transpose()
 }
 
-/// 补充真实接纳输入或父消息的执行归属，不改原件、来源、终态或已知顺序。
-#[cfg(test)]
-pub(super) async fn bind_turn(
-    db: &impl ConnectionTrait,
-    id: &str,
-    turn: &str,
-    effect: u64,
-) -> Result<()> {
-    let Some(mut known) = read(db, id).await? else {
-        return Ok(());
-    };
-    if !matches!(
-        known.source,
-        ChatSourceId::Input { .. } | ChatSourceId::InboxMessage { .. }
-    ) {
-        return Ok(());
-    }
-    ensure!(!turn.is_empty(), "empty execution binding");
-    if let Some(existing) = known.turn_id.as_deref() {
-        ensure!(
-            existing == turn,
-            "accepted input/message has a conflicting Turn binding"
-        );
-        return Ok(());
-    }
-    known.turn_id = Some(turn.into());
-    known.last_write_seq = effect;
-    apply(db, &[known]).await
-}
-
 pub(super) async fn apply(db: &impl ConnectionTrait, facts: &[ExecutionLifecycle]) -> Result<()> {
     for fact in facts {
         let mut value = match read(db, &fact.identity).await? {
@@ -350,36 +283,4 @@ pub(super) async fn apply(db: &impl ConnectionTrait, facts: &[ExecutionLifecycle
         )).await?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-pub(super) async fn verify(db: &impl ConnectionTrait, facts: &[ExecutionLifecycle]) -> Result<()> {
-    for fact in facts {
-        let old = read(db, &fact.identity)
-            .await?
-            .context("retried lifecycle is missing")?;
-        let mut merged = old.clone();
-        merge(&mut merged, fact.clone())?;
-        ensure!(
-            merged == old,
-            "retried lifecycle differs from durable facts"
-        );
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-pub(super) async fn active(
-    db: &impl ConnectionTrait,
-    after: Option<&str>,
-    limit: usize,
-) -> Result<Vec<ChatAtom>> {
-    ensure!(
-        (1..=128).contains(&limit),
-        "active lifecycle page limit must be 1..=128"
-    );
-    db.query_all_raw(statement(
-        "SELECT * FROM execution_lifecycle INDEXED BY execution_lifecycle_active WHERE ended_effect IS NULL AND outcome IS NULL AND identity>? ORDER BY identity LIMIT ?",
-        vec![after.unwrap_or("").into(), integer(limit)?.into()],
-    )).await?.iter().map(|row| decode(row)?.active_atom()).collect()
 }

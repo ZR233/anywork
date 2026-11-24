@@ -1,8 +1,6 @@
 //! Turn 的业务索引；执行顺序不定义展示成员范围。
 use super::{integer, statement};
 use crate::{ThreadContextDisposition, Turn};
-#[cfg(test)]
-use anyhow::Context;
 use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, QueryResult};
 
@@ -113,82 +111,5 @@ pub(super) async fn apply(
             value.updated_effect.map(integer).transpose()?.into(), value.terminal_effect.map(integer).transpose()?.into(),
             serde_json::to_string(&value.turn)?.into(),serde_json::to_string(&value.context_disposition)?.into()],
     )).await?;
-    Ok(())
-}
-
-#[cfg(test)]
-pub(super) async fn latest_at(
-    db: &impl ConnectionTrait,
-    thread: &str,
-    fence: u64,
-) -> Result<Option<Turn>> {
-    ensure!(
-        u64::try_from(super::applied_write_seq(db).await?)? == fence,
-        "child history changed or does not cover the evaluation fence"
-    );
-    let row = db
-        .query_one_raw(statement(
-            "SELECT * FROM history_turns ORDER BY turn_order DESC,turn_id DESC LIMIT 1",
-            vec![],
-        ))
-        .await?;
-    let Some(row) = row else { return Ok(None) };
-    let value = decode(&row)?;
-    ensure!(
-        value.turn.thread_id == thread && value.updated_effect.is_none_or(|effect| effect <= fence),
-        "Turn does not match its committed owner or fence"
-    );
-    Ok(Some(value.turn))
-}
-
-#[cfg(test)]
-pub(super) async fn rollback(
-    db: &impl ConnectionTrait,
-    ids: &std::collections::BTreeSet<String>,
-    effect: u64,
-) -> Result<()> {
-    let effect = integer(effect)?;
-    let active = serde_json::to_string(&ThreadContextDisposition::Active)?;
-    let disposition = serde_json::to_string(&ThreadContextDisposition::RolledBack)?;
-    for id in ids {
-        let written = db
-            .execute_raw(statement(
-                "UPDATE history_turns SET updated_effect=CASE WHEN context_disposition=? THEN ? ELSE updated_effect END,
-                 context_disposition=? WHERE turn_id=? AND (context_disposition=? OR
-                 (context_disposition=? AND (updated_effect IS NULL OR updated_effect<=?)))",
-                vec![active.clone().into(), effect.into(), disposition.clone().into(), id.clone().into(),
-                    disposition.clone().into(), active.clone().into(), effect.into()],
-            ))
-            .await?;
-        if written.rows_affected() == 0 {
-            let old = read(db, id).await?.context("rolled-back Turn is missing")?;
-            ensure!(
-                old.context_disposition == ThreadContextDisposition::Active,
-                "rolled-back Turn has invalid context disposition"
-            );
-            anyhow::bail!("Turn rollback effect moved backwards");
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-pub(super) async fn verify(db: &impl ConnectionTrait, writes: &[TurnWrite]) -> Result<()> {
-    for write in writes {
-        let old = read(db, &write.turn.id)
-            .await?
-            .context("retried Turn is missing")?;
-        ensure!(
-            old.turn_order == write.turn_order
-                && old.turn == write.turn
-                && write
-                    .admitted_effect
-                    .is_none_or(|effect| old.admitted_effect == Some(effect))
-                && write
-                    .terminal_effect
-                    .is_none_or(|effect| old.terminal_effect == Some(effect)),
-            "retried Turn differs from durable evidence"
-        );
-    }
     Ok(())
 }

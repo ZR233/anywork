@@ -187,35 +187,3 @@ pub(crate) async fn apply(
     }
     Ok(())
 }
-
-/// A retried effect can observe a later saved end, but must still prove its own start/end fields.
-#[cfg(test)]
-pub(crate) async fn verify(
-    db: &impl ConnectionTrait,
-    effect: u64,
-    changes: &[ChatSourceState],
-) -> Result<()> {
-    for change in changes {
-        let value = stored(db, &change.source)
-            .await?
-            .context("retried effect is missing source lifecycle")?;
-        if let Some(start) = change.started {
-            ensure!(
-                value.started == Some(start),
-                "retried effect changed source start"
-            );
-        }
-        if let Some(end) = change.ended {
-            ensure!(
-                value.ended == Some(end),
-                "retried effect changed source end"
-            );
-        }
-        let snapshot = at_cut(change.source.clone(), value, effect);
-        ensure!(
-            snapshot == *change,
-            "retried effect changed source lifecycle"
-        );
-    }
-    Ok(())
-}
