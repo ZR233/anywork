@@ -90,6 +90,15 @@ pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Resu
             "calls", step, error,
         ));
     }
+    // v8/v10 migrations already applied on an existing file do not run again.
+    // Repeat the column fills here so a database that stopped at v10 before the
+    // fill existed still reaches the current read path.
+    backfill_requested_service_tier(db).await.map_err(|error| {
+        crate::studio::startup::migration_error("calls", "requested service tier", error)
+    })?;
+    backfill_summary_content_hash(db).await.map_err(|error| {
+        crate::studio::startup::migration_error("calls", "summary content hash", error)
+    })?;
     retry_pending_cleanup(db, root_dir).await.map_err(|error| {
         crate::studio::startup::migration_error("calls", "legacy blob cleanup", error)
     })?;
@@ -260,6 +269,78 @@ impl MigrationTrait for CallsSchema {
     }
 }
 
+#[cfg(test)]
+mod summary_hash_tests {
+    use super::*;
+
+    fn row(purpose: &str, currency: &str, amount: f64) -> SummaryHashSource {
+        SummaryHashSource {
+            root_thread_id: "root".into(),
+            purpose: purpose.into(),
+            currency: currency.into(),
+            amount,
+            has_unpriced_usage: 0,
+            revision: 0,
+            content_hash: None,
+        }
+    }
+
+    #[test]
+    fn placeholder_row_hashes_as_an_empty_projection() {
+        let projection = projection_for_summary_rows("thread", &[row("", "", 0.0)]).unwrap();
+        assert!(projection.purpose_costs.is_empty());
+        let encoded = serde_json::to_vec(&SessionUsageProjection {
+            root_thread_id: "root".into(),
+            thread_id: "thread".into(),
+            revision: 0,
+            has_unpriced_usage: false,
+            purpose_costs: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            summary_content_hash(&projection).unwrap(),
+            pl_core::context::content_hash(&encoded)
+        );
+    }
+
+    #[test]
+    fn purpose_order_follows_btree_and_currency_order_follows_insertion() {
+        let projection = projection_for_summary_rows(
+            "legacy",
+            &[
+                row("review", "EUR", 1.0),
+                row("", "USD", 4.5),
+                row("review", "USD", 2.0),
+            ],
+        )
+        .unwrap();
+        assert!(projection.purpose_costs[0].purpose.is_none());
+        assert_eq!(
+            projection.purpose_costs[0].estimated_costs[0].currency,
+            "USD"
+        );
+        assert_eq!(
+            projection.purpose_costs[1].purpose.as_deref(),
+            Some("review")
+        );
+        assert_eq!(
+            projection.purpose_costs[1].estimated_costs[0].currency,
+            "EUR"
+        );
+        assert_eq!(
+            projection.purpose_costs[1].estimated_costs[1].currency,
+            "USD"
+        );
+    }
+
+    #[test]
+    fn conflicting_roots_are_not_hashed() {
+        let mut other = row("", "USD", 1.0);
+        other.root_thread_id = "other".into();
+        assert!(projection_for_summary_rows("thread", &[row("", "USD", 1.0), other]).is_err());
+    }
+}
+
 struct LegacySummary;
 impl MigrationName for LegacySummary {
     fn name(&self) -> &str {
@@ -408,6 +489,9 @@ impl MigrationTrait for MaterialProvenance {
             .await
             .map_err(conversion)?;
         upgrade_auxiliary_usage(db).await.map_err(conversion)?;
+        backfill_summary_content_hash(db)
+            .await
+            .map_err(conversion)?;
         db.execute_unprepared(
             "CREATE INDEX IF NOT EXISTS call_usage_summary_by_thread ON call_usage_summary(thread_id,revision DESC);
              UPDATE calls_meta SET schema_version=8 WHERE id=1;"
@@ -450,15 +534,190 @@ impl MigrationTrait for RequestedServiceTier {
         Some(true)
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(
-                "ALTER TABLE performance_samples ADD COLUMN requested_service_tier TEXT;
-             UPDATE calls_meta SET schema_version=10 WHERE id=1;",
-            )
+        let db = manager.get_connection();
+        db.execute_unprepared(
+            "ALTER TABLE performance_samples ADD COLUMN requested_service_tier TEXT;",
+        )
+        .await?;
+        backfill_requested_service_tier(db)
+            .await
+            .map_err(conversion)?;
+        db.execute_unprepared("UPDATE calls_meta SET schema_version=10 WHERE id=1;")
             .await?;
         Ok(())
     }
+}
+
+async fn backfill_requested_service_tier(db: &impl ConnectionTrait) -> Result<()> {
+    db.execute_raw(statement(
+        "UPDATE performance_samples SET requested_service_tier='notApplicable' WHERE purpose=? AND requested_service_tier IS NULL",
+        vec![ACP_TEXT_ESTIMATE.to_owned().into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+struct SummaryHashSource {
+    root_thread_id: String,
+    purpose: String,
+    currency: String,
+    amount: f64,
+    has_unpriced_usage: i64,
+    revision: i64,
+    content_hash: Option<String>,
+}
+
+/// Fills projection hashes missing from rows written before the column existed.
+///
+/// Purpose order follows the writer's `BTreeMap`. Currency order follows stored
+/// insertion, not a later history page; an equal-revision mismatch fails closed.
+async fn backfill_summary_content_hash(db: &impl ConnectionTrait) -> Result<()> {
+    if db
+        .query_one_raw(statement(
+            "SELECT 1 FROM call_usage_summary WHERE content_hash IS NULL LIMIT 1",
+            vec![],
+        ))
+        .await?
+        .is_none()
+    {
+        return Ok(());
+    }
+    let rows = db
+        .query_all_raw(statement(
+            "SELECT thread_id,root_thread_id,purpose,cost_currency,amount,has_unpriced_usage,revision,content_hash
+             FROM call_usage_summary
+             WHERE thread_id IN (SELECT thread_id FROM call_usage_summary WHERE content_hash IS NULL)
+             ORDER BY thread_id, rowid",
+            vec![],
+        ))
+        .await?;
+    let mut groups: Vec<(String, Vec<SummaryHashSource>)> = Vec::new();
+    for row in rows {
+        let thread_id = row.try_get::<String>("", "thread_id")?;
+        if groups
+            .last()
+            .is_none_or(|(current, _)| current != &thread_id)
+        {
+            groups.push((thread_id.clone(), Vec::new()));
+        }
+        groups
+            .last_mut()
+            .expect("summary hash group started")
+            .1
+            .push(SummaryHashSource {
+                root_thread_id: row.try_get("", "root_thread_id")?,
+                purpose: row.try_get("", "purpose")?,
+                currency: row.try_get("", "cost_currency")?,
+                amount: row.try_get("", "amount")?,
+                has_unpriced_usage: row.try_get("", "has_unpriced_usage")?,
+                revision: row.try_get("", "revision")?,
+                content_hash: row.try_get("", "content_hash")?,
+            });
+    }
+    for (thread_id, group) in groups {
+        write_summary_content_hash(db, &thread_id, &group).await?;
+    }
+    Ok(())
+}
+
+async fn write_summary_content_hash(
+    db: &impl ConnectionTrait,
+    thread_id: &str,
+    rows: &[SummaryHashSource],
+) -> Result<()> {
+    let projection = projection_for_summary_rows(thread_id, rows)?;
+    let hash = consistent_existing_hash(rows)?.unwrap_or(summary_content_hash(&projection)?);
+    db.execute_raw(statement(
+        "UPDATE call_usage_summary SET content_hash=? WHERE thread_id=? AND content_hash IS NULL",
+        vec![hash.into(), thread_id.to_owned().into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+fn consistent_existing_hash(rows: &[SummaryHashSource]) -> Result<Option<String>> {
+    let mut known = None;
+    for row in rows {
+        let Some(hash) = &row.content_hash else {
+            continue;
+        };
+        if let Some(existing) = &known {
+            ensure!(
+                existing == hash,
+                "conflicting call summary content hash; existing data preserved"
+            );
+        } else {
+            known = Some(hash.clone());
+        }
+    }
+    Ok(known)
+}
+
+fn summary_content_hash(projection: &SessionUsageProjection) -> Result<String> {
+    Ok(pl_core::context::content_hash(&serde_json::to_vec(
+        projection,
+    )?))
+}
+
+fn projection_for_summary_rows(
+    thread_id: &str,
+    rows: &[SummaryHashSource],
+) -> Result<SessionUsageProjection> {
+    let first = rows
+        .first()
+        .context("calls summary content hash cannot be recovered; existing data preserved")?;
+    ensure!(
+        rows.iter().all(|row| {
+            row.root_thread_id == first.root_thread_id
+                && row.revision == first.revision
+                && row.has_unpriced_usage == first.has_unpriced_usage
+        }),
+        "conflicting call summary revision; existing data preserved"
+    );
+    ensure!(
+        matches!(first.has_unpriced_usage, 0 | 1),
+        "calls summary content hash cannot be recovered; existing data preserved"
+    );
+    let purpose_costs = if rows.len() == 1
+        && rows[0].purpose.is_empty()
+        && rows[0].currency.is_empty()
+        && rows[0].amount == 0.0
+    {
+        Vec::new()
+    } else {
+        let mut grouped = BTreeMap::<Option<String>, Vec<RuntimeCostAmount>>::new();
+        for row in rows {
+            grouped
+                .entry((!row.purpose.is_empty()).then(|| row.purpose.clone()))
+                .or_default()
+                .push(RuntimeCostAmount {
+                    currency: row.currency.clone(),
+                    amount: row.amount,
+                });
+        }
+        grouped
+            .into_iter()
+            .map(|(purpose, costs)| PurposeUsageProjection {
+                purpose,
+                estimated_costs: if costs.len() == 1
+                    && costs[0].currency.is_empty()
+                    && costs[0].amount == 0.0
+                {
+                    Vec::new()
+                } else {
+                    costs
+                },
+            })
+            .collect()
+    };
+    Ok(SessionUsageProjection {
+        root_thread_id: first.root_thread_id.clone(),
+        thread_id: thread_id.to_owned(),
+        revision: u64::try_from(first.revision)
+            .context("calls summary content hash cannot be recovered; existing data preserved")?,
+        has_unpriced_usage: first.has_unpriced_usage != 0,
+        purpose_costs,
+    })
 }
 
 /// Exact flat payload emitted by the retired calls aggregation migration. It is
@@ -1469,6 +1728,61 @@ mod storage_fault_tests {
         Ok(snapshot)
     }
 
+    async fn without_summary_content_hash(
+        db: &DatabaseConnection,
+        mut snapshot: BTreeMap<String, Vec<Vec<String>>>,
+    ) -> Result<BTreeMap<String, Vec<Vec<String>>>> {
+        let Some(rows) = snapshot.get_mut("call_usage_summary") else {
+            return Ok(snapshot);
+        };
+        let columns: Vec<_> = table_columns(db, "call_usage_summary")
+            .await?
+            .into_iter()
+            .collect();
+        let Some(index) = columns.iter().position(|column| column == "content_hash") else {
+            return Ok(snapshot);
+        };
+        for row in rows {
+            row[index].clear();
+        }
+        Ok(snapshot)
+    }
+
+    async fn stored_summary_hash(
+        db: &DatabaseConnection,
+        thread_id: &str,
+    ) -> Result<Option<String>> {
+        let Some(row) = db
+            .query_one_raw(statement(
+                "SELECT content_hash FROM call_usage_summary WHERE thread_id=? ORDER BY rowid LIMIT 1",
+                vec![thread_id.into()],
+            ))
+            .await?
+        else {
+            return Ok(None);
+        };
+        row.try_get("", "content_hash").map_err(Into::into)
+    }
+
+    fn expected_legacy_summary_hash(thread_id: &str) -> Result<String> {
+        let projection = SessionUsageProjection {
+            root_thread_id: "root".into(),
+            thread_id: thread_id.into(),
+            revision: 0,
+            has_unpriced_usage: false,
+            purpose_costs: vec![PurposeUsageProjection {
+                purpose: None,
+                estimated_costs: vec![RuntimeCostAmount {
+                    currency: "USD".into(),
+                    amount: 4.5,
+                }],
+            }],
+        };
+        Ok(pl_core::context::content_hash(&serde_json::to_vec(
+            &projection,
+        )?))
+    }
+
     #[tokio::test]
     async fn schema_eight_fences_and_materials_survive_retirement_and_reopen() -> Result<()> {
         for populated in [false, true] {
@@ -1477,12 +1791,28 @@ mod storage_fault_tests {
             let db = schema_eight_fixture(&path, populated).await?;
             let before = material_snapshot(&db).await?;
             let logs = log_snapshot(temp.path()).await?;
+            let current_hash = if populated {
+                stored_summary_hash(&db, "current").await?
+            } else {
+                None
+            };
             initialize(&db, temp.path()).await?;
             preflight(&db).await?;
             assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
             assert!(!table_exists(&db, "call_watermarks").await?);
             assert!(table_exists(&db, "legacy_call_fences").await?);
-            assert_eq!(material_snapshot(&db).await?, before);
+            let migrated = material_snapshot(&db).await?;
+            assert_eq!(
+                without_summary_content_hash(&db, migrated.clone()).await?,
+                without_summary_content_hash(&db, before).await?
+            );
+            if populated {
+                assert_eq!(stored_summary_hash(&db, "current").await?, current_hash);
+                assert_eq!(
+                    stored_summary_hash(&db, "legacy").await?.as_deref(),
+                    Some(expected_legacy_summary_hash("legacy")?.as_str())
+                );
+            }
             assert_eq!(log_snapshot(temp.path()).await?, logs);
             assert_eq!(
                 Migrator {
@@ -1495,7 +1825,7 @@ mod storage_fault_tests {
             );
             db.close().await?;
             let store = CallsStore::prepare(&path).await?;
-            assert_eq!(material_snapshot(&store.writer.db).await?, before);
+            assert_eq!(material_snapshot(&store.writer.db).await?, migrated);
             assert_eq!(log_snapshot(temp.path()).await?, logs);
             assert_eq!(store.admitted_ticket(), 0);
             assert_eq!(store.processed_ticket(), 0);
@@ -1581,17 +1911,35 @@ mod storage_fault_tests {
         assert_eq!(logs.len(), 2, "the fixture spans two daily segments");
         initialize(&db, temp.path()).await?;
         assert_eq!(format_version(&db).await?, 10);
-        assert_eq!(material_snapshot(&db).await?, before);
+        let migrated = material_snapshot(&db).await?;
+        assert_eq!(
+            without_summary_content_hash(&db, migrated).await?,
+            without_summary_content_hash(&db, before).await?
+        );
+        assert_eq!(
+            stored_summary_hash(&db, "thread").await?.as_deref(),
+            Some(expected_legacy_summary_hash("thread")?.as_str())
+        );
         let mut expected_columns = columns;
         expected_columns.insert("requested_service_tier".into());
         assert_eq!(
             table_columns(&db, "performance_samples").await?,
             expected_columns
         );
+        assert_eq!(
+            db.query_one_raw(statement(
+                "SELECT requested_service_tier FROM performance_samples WHERE call_id='acp'",
+                vec![],
+            ))
+            .await?
+            .context("acp sample missing")?
+            .try_get::<String>("", "requested_service_tier")?,
+            "notApplicable"
+        );
         assert!(
             db.query_one_raw(statement(
-                "SELECT 1 FROM performance_samples WHERE requested_service_tier IS NOT NULL",
-                vec![]
+                "SELECT 1 FROM performance_samples WHERE call_id<>'acp' AND requested_service_tier IS NOT NULL",
+                vec![],
             ))
             .await?
             .is_none()
