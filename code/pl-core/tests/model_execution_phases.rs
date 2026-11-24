@@ -543,7 +543,8 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for LifecycleH
         match self.end {
             CompactionEnd::Changed | CompactionEnd::RejectedReplacement => {
                 ContextPreparation::Prepared {
-                    expected_extension_sequence: request.extension_sequence,
+                    inputs: Default::default(),
+                    instruction_binding: None,
                     rejected_mutations: vec![],
                     replacement: Some(pl_core::thread::ReplaceContext {
                         expected_revision: request.committed_context.revision,

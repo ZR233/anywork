@@ -463,9 +463,7 @@ mod tests {
             ConfigRuntime::initialize(ConfigStore::new(ConfigPaths::from_config_dir(temp.path())))
                 .unwrap();
         let first = command("stable");
-        let saved = runtime
-            .save_acp_definition(runtime.read().unwrap().revision, &first, None)
-            .unwrap();
+        let saved = runtime.save_acp_definition(&first, None).unwrap();
         let entry = saved.acp.definitions["stable"].clone();
         let frozen = runtime
             .resolve_acp_definition("stable", entry.connection_revision)
@@ -473,7 +471,7 @@ mod tests {
         let mut renamed = first.clone();
         renamed.display_name = "Renamed".into();
         let renamed_state = runtime
-            .save_acp_definition(saved.revision, &renamed, Some(entry.document_revision))
+            .save_acp_definition(&renamed, Some(entry.document_revision))
             .unwrap();
         let renamed_entry = &renamed_state.acp.definitions["stable"];
         assert_eq!(renamed_entry.connection_revision, entry.connection_revision);
@@ -483,11 +481,7 @@ mod tests {
         let external = format!("# external\n{}", renamed.encode().unwrap());
         fs::write(&path, &external).unwrap();
         assert!(matches!(
-            runtime.save_acp_definition(
-                renamed_state.revision,
-                &renamed,
-                Some(renamed_entry.document_revision)
-            ),
+            runtime.save_acp_definition(&renamed, Some(renamed_entry.document_revision)),
             Err(ConfigRuntimeError::AcpDefinition(
                 AcpDefinitionError::StaleDocument
             ))
@@ -500,7 +494,6 @@ mod tests {
             .insert("SYNTHETIC_SECRET".into(), "new-value".into());
         let next = runtime
             .save_acp_definition(
-                current.revision,
                 &changed,
                 Some(current.acp.definitions["stable"].document_revision),
             )
@@ -515,17 +508,11 @@ mod tests {
         ));
         assert_eq!(frozen, first);
         let revision = next.acp.definitions["stable"].connection_revision;
-        let deleted = runtime
-            .delete_acp_definition(
-                next.revision,
-                "stable",
-                next.acp.definitions["stable"].document_revision,
-            )
+        runtime
+            .delete_acp_definition("stable", next.acp.definitions["stable"].document_revision)
             .unwrap();
         assert!(runtime.resolve_acp_definition("stable", revision).is_err());
-        let readded = runtime
-            .save_acp_definition(deleted.revision, &first, None)
-            .unwrap();
+        let readded = runtime.save_acp_definition(&first, None).unwrap();
         assert!(readded.acp.definitions["stable"].connection_revision > revision);
         assert_eq!(frozen, first);
         assert!(
@@ -610,9 +597,7 @@ mod tests {
             let b_entry = original.definitions["b"].clone();
             assert_eq!(original.diagnostics.len(), 1);
             let a = command("a");
-            let created = runtime
-                .save_acp_definition(runtime.read().unwrap().revision, &a, None)
-                .unwrap();
+            let created = runtime.save_acp_definition(&a, None).unwrap();
             let old_a_connection = created.acp.definitions["a"].connection_revision;
 
             let mut edited_b = b.clone();
@@ -635,7 +620,6 @@ mod tests {
             renamed_a.display_name = "Renamed A".into();
             let saved = runtime
                 .save_acp_definition(
-                    created.revision,
                     &renamed_a,
                     Some(created.acp.definitions["a"].document_revision),
                 )
@@ -650,11 +634,7 @@ mod tests {
             assert!(!saved.acp.definitions.contains_key("repair-later"));
             assert_eq!(runtime.read_acp_definitions(), saved.acp);
             let deleted = runtime
-                .delete_acp_definition(
-                    saved.revision,
-                    "a",
-                    saved.acp.definitions["a"].document_revision,
-                )
+                .delete_acp_definition("a", saved.acp.definitions["a"].document_revision)
                 .unwrap();
             assert_eq!(deleted.acp.definitions["b"], b_entry, "{external_change}");
             assert_eq!(deleted.acp.diagnostics, original.diagnostics);
@@ -662,15 +642,12 @@ mod tests {
             assert!(!deleted.acp.definitions.contains_key("repair-later"));
             assert!(!deleted.acp.definitions.contains_key("a"));
             assert_eq!(runtime.read_acp_definitions(), deleted.acp);
-            let readded = runtime
-                .save_acp_definition(deleted.revision, &a, None)
-                .unwrap();
+            let readded = runtime.save_acp_definition(&a, None).unwrap();
             assert!(readded.acp.definitions["a"].connection_revision > old_a_connection);
             assert_eq!(readded.acp.definitions["b"], b_entry, "{external_change}");
             assert_eq!(readded.acp.diagnostics, original.diagnostics);
             let repaired = runtime
                 .save_acp_definition(
-                    readded.revision,
                     &command("repair-later"),
                     Some(document_revision(
                         "acp/repair-later.toml",

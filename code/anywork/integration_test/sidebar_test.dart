@@ -162,7 +162,13 @@ void main() {
       'all filter restores all canonical status classes',
     );
 
-    await tester.tap(threadRow);
+    // In touch layout the center of the row can belong to a quick action.
+    final threadTitle = find.descendant(
+      of: threadRow,
+      matching: find.text(fixture.thread.title),
+    );
+    await tester.ensureVisible(threadTitle);
+    await tester.tap(threadTitle.hitTestable());
     await scene.until(
       () =>
           scene.graph.client.selection.state.selectedThreadId ==

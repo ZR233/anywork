@@ -329,7 +329,6 @@ void main() {
       BigInt? documentRevision;
       for (final name in ['Original', 'Renamed only']) {
         final reply = await transport.saveAcpAccount(
-          revision,
           AcpAccountUpdateView(
             accountId: native.identity.accountId,
             name: name,

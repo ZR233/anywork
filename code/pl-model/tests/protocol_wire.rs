@@ -1922,7 +1922,8 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for HideToolOn
                 }
         });
         pl_core::thread::context_preparation::ContextPreparation::Prepared {
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: None,
             facts: vec![],

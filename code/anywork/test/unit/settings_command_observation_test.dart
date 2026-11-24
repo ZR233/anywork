@@ -24,18 +24,13 @@ class _SettingsTransport extends RecordingDemoTransport {
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int revision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) async {
     calls.add(operationId);
     entry(operationId).complete();
     await release(operationId).future;
-    return super.applySettingsField(
-      revision,
-      command,
-      operationId: operationId,
-    );
+    return super.applySettingsField(command, operationId: operationId);
   }
 }
 

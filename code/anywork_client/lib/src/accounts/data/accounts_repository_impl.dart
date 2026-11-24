@@ -359,8 +359,10 @@ final class AccountsRepositoryImpl implements AccountsRepository {
     key: 'account:native:${command.identity.accountId}',
     draft: draft,
     targets: _targets(command.identity),
-    request: (revision, operation) =>
-        port.createAccount(revision, command, operationId: operation),
+    request: (withRevision, operation) => withRevision(
+      (revision) =>
+          port.createAccount(revision, command, operationId: operation),
+    ),
   );
   @override
   Future<OperationState> patch(
@@ -370,8 +372,10 @@ final class AccountsRepositoryImpl implements AccountsRepository {
     key: 'account:native:${command.identity.accountId}',
     draft: draft,
     targets: _targets(command.identity),
-    request: (revision, operation) =>
-        port.patchAccount(revision, command, operationId: operation),
+    request: (withRevision, operation) => withRevision(
+      (revision) =>
+          port.patchAccount(revision, command, operationId: operation),
+    ),
   );
   @override
   Future<OperationState> remove(
@@ -380,11 +384,13 @@ final class AccountsRepositoryImpl implements AccountsRepository {
   }) => mutations.run(
     key: 'account:native:${identity.accountId}',
     targets: _targets(identity),
-    request: (revision, operation) => port.removeAccount(
-      revision,
-      identity.accountId,
-      replacementAccountId: replacement?.accountId,
-      operationId: operation,
+    request: (withRevision, operation) => withRevision(
+      (revision) => port.removeAccount(
+        revision,
+        identity.accountId,
+        replacementAccountId: replacement?.accountId,
+        operationId: operation,
+      ),
     ),
   );
   @override
@@ -392,10 +398,12 @@ final class AccountsRepositoryImpl implements AccountsRepository {
       mutations.run(
         key: 'account:default',
         targets: _targets(identity, summaries: true),
-        request: (revision, operation) => port.setDefaultAccount(
-          revision,
-          identity.accountId,
-          operationId: operation,
+        request: (withRevision, operation) => withRevision(
+          (revision) => port.setDefaultAccount(
+            revision,
+            identity.accountId,
+            operationId: operation,
+          ),
         ),
       );
   @override
@@ -405,8 +413,7 @@ final class AccountsRepositoryImpl implements AccountsRepository {
   ) => mutations.run(
     key: 'account:billing:${identity.accountId}',
     targets: _targets(identity, summaries: true),
-    request: (revision, operation) => port.setAccountBillingKind(
-      revision,
+    request: (_, operation) => port.setAccountBillingKind(
       identity.accountId,
       kind,
       operationId: operation,

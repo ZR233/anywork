@@ -1051,11 +1051,10 @@ mod tests {
                 let weak = Arc::downgrade(&account);
                 drop(account);
                 if generation == 4 {
-                    fixture.runtime.config_runtime.delete_acp_definition(
-                        fixture.runtime.config_runtime.read()?.revision,
-                        "business-peer",
-                        entry.document_revision,
-                    )?;
+                    fixture
+                        .runtime
+                        .config_runtime
+                        .delete_acp_definition("business-peer", entry.document_revision)?;
                     // No later open, prepare or close call is allowed to do this cleanup for us.
                     retired(&fixture.runtime, &weak).await;
                     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -1064,11 +1063,10 @@ mod tests {
                     changed
                         .env
                         .insert("SYNTHETIC_GENERATION".into(), generation.to_string());
-                    fixture.runtime.config_runtime.save_acp_definition(
-                        fixture.runtime.config_runtime.read()?.revision,
-                        &changed,
-                        Some(entry.document_revision),
-                    )?;
+                    fixture
+                        .runtime
+                        .config_runtime
+                        .save_acp_definition(&changed, Some(entry.document_revision))?;
                     revision = fixture
                         .runtime
                         .config_runtime
@@ -1287,11 +1285,10 @@ mod tests {
                 .clone();
             let mut renamed = definition.definition.clone();
             renamed.display_name = "Only the name changed".into();
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &renamed,
-                Some(definition.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&renamed, Some(definition.document_revision))?;
             assert_eq!(
                 fixture
                     .runtime
@@ -1380,11 +1377,10 @@ mod tests {
             changed
                 .env
                 .insert("SYNTHETIC_GENERATION".into(), "two".into());
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &changed,
-                Some(definition.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&changed, Some(definition.document_revision))?;
             assert!(
                 fixture
                     .runtime
@@ -1463,11 +1459,10 @@ mod tests {
             definition.launch =
                 crate::config::AcpLaunch::Template(crate::config::AcpProvider::Antigravity);
             // Config returns while initialize is still deliberately held by the peer.
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &definition,
-                Some(entry.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&definition, Some(entry.document_revision))?;
             marker(&fixture.home.path().join("initializing")).await;
             let one = fixture.runtime.acp_accounts.connection(&definition)?;
             let two = fixture.runtime.acp_accounts.connection(&definition)?;
@@ -1617,11 +1612,10 @@ mod tests {
                 "ACP_FIXTURE_ROOT".into(),
                 other_root.to_string_lossy().into_owned(),
             );
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &definition,
-                None,
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&definition, None)?;
             let revision = fixture
                 .runtime
                 .config_runtime
@@ -1658,11 +1652,10 @@ mod tests {
             assert_ne!(first_pid, second_pid);
             let mut disabled = entry.definition;
             disabled.enabled = false;
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &disabled,
-                Some(entry.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&disabled, Some(entry.document_revision))?;
             first_owner.close().await?;
             assert!(!std::path::Path::new(&format!("/proc/{first_pid}")).exists());
             assert!(std::path::Path::new(&format!("/proc/{second_pid}")).exists());
@@ -1869,11 +1862,10 @@ mod tests {
             let mut disabled = entry.definition;
             disabled.enabled = false;
             tokio::time::pause();
-            let saved = fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &disabled,
-                Some(entry.document_revision),
-            );
+            let saved = fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&disabled, Some(entry.document_revision));
             tokio::time::advance(Duration::from_secs(120)).await;
             tokio::time::resume();
             saved?;
@@ -1905,8 +1897,7 @@ mod tests {
             invalid.launch = crate::config::AcpLaunch::Command {
                 command: fixture.home.path().join("missing-executable").to_string_lossy().into_owned(), args: vec![],
             };
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision, &invalid, Some(entry.document_revision),
+            fixture.runtime.config_runtime.save_acp_definition(&invalid, Some(entry.document_revision),
             )?;
             auth_state(&fixture.runtime, "business-peer", |account| {
                 matches!(&account.connection, AcpConnectionState::Blocked { failure } if failure.code == AcpAuthFailureCode::MissingExecutable)
@@ -1966,11 +1957,10 @@ mod tests {
             template.enabled = true;
             template.launch =
                 crate::config::AcpLaunch::Template(crate::config::AcpProvider::Antigravity);
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &template,
-                Some(entry.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&template, Some(entry.document_revision))?;
             let ready = auth_state(&fixture.runtime, "business-peer", |account| {
                 account.active_operation.is_none()
                     && matches!(account.connection, AcpConnectionState::Ready)

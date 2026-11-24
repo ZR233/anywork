@@ -180,11 +180,34 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         .await
         .expect("nested dispatch must not deadlock")
         .unwrap();
-        let effects = thread.effects().await.unwrap();
-        let deliveries = effects
-            .iter()
-            .flat_map(|effect| effect.deliveries.iter())
-            .collect::<Vec<_>>();
+        thread.flush().await.unwrap();
+        let checkpoint = thread.checkpoint(0).unwrap();
+        thread.close().await.unwrap();
+        store.shutdown().await.unwrap();
+        let reopened = pl_core::persistence::SqliteSessionStore::open(options)
+            .await
+            .unwrap();
+        let mut deliveries = Vec::new();
+        let mut before_sequence = None;
+        loop {
+            let page = reopened
+                .query_thread_effects(
+                    "lua-test",
+                    pl_core::persistence::ThreadEffectQuery {
+                        before_sequence,
+                        limit: 64,
+                    },
+                )
+                .await
+                .unwrap();
+            for effect in page.effects {
+                deliveries.extend(effect.deliveries.iter().cloned());
+            }
+            before_sequence = page.next_before_sequence;
+            if before_sequence.is_none() {
+                break;
+            }
+        }
         let child = deliveries
             .iter()
             .find(|delivery| delivery.tool_id == "child")
@@ -222,13 +245,6 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
             3
         );
         assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
-        thread.flush().await.unwrap();
-        let checkpoint = thread.checkpoint(0).unwrap();
-        thread.close().await.unwrap();
-        store.shutdown().await.unwrap();
-        let reopened = pl_core::persistence::SqliteSessionStore::open(options)
-            .await
-            .unwrap();
         let saved = ColdStore::read_tool_task(&reopened, "lua-test", &format!("task:{call_id}"))
             .await
             .unwrap()

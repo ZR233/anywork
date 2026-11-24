@@ -990,9 +990,9 @@ mod standalone_tests {
             runtime
                 .apply_settings_field(crate::UpdateSettingsFieldRequest {
                     operation_id: "pin-standalone".into(),
-                    expected_revision: runtime.config_runtime.read()?.revision,
-                    update: crate::SettingsFieldUpdate::GeneralPinnedProjectIds {
-                        value: vec![project.id.clone()],
+                    update: crate::SettingsFieldUpdate::ProjectPinned {
+                        id: project.id.clone(),
+                        value: true,
                     },
                 })
                 .await

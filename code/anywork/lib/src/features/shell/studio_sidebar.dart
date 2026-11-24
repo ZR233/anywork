@@ -322,12 +322,6 @@ Future<void> _saveSidebarPreferences(
   String? threadId,
   String? workspaceId,
 }) async {
-  final threads = [...general.pinnedThreadIds];
-  final projects = [...general.pinnedProjectIds];
-  if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
-  if (workspaceId != null && !projects.remove(workspaceId)) {
-    projects.add(workspaceId);
-  }
   final commands = ref.read(anyworkClientProvider).settingsCommands;
   // A previous width can still be in flight even when this intent equals the
   // observed snapshot. Let the Client's canonical command lane order both.
@@ -335,9 +329,19 @@ Future<void> _saveSidebarPreferences(
     await commands.applySettingsField(GeneralSidebarWidthCommand(width));
   }
   if (threadId != null) {
-    await commands.applySettingsField(GeneralPinnedThreadIdsCommand(threads));
+    await commands.applySettingsField(
+      ThreadPinnedCommand(
+        threadId,
+        !general.pinnedThreadIds.contains(threadId),
+      ),
+    );
   }
   if (workspaceId != null) {
-    await commands.applySettingsField(GeneralPinnedProjectIdsCommand(projects));
+    await commands.applySettingsField(
+      ProjectPinnedCommand(
+        workspaceId,
+        !general.pinnedProjectIds.contains(workspaceId),
+      ),
+    );
   }
 }

@@ -1619,8 +1619,7 @@ mod refresh_tests {
             calls: [(descriptor.exposed_name.clone(), "{}".into())].into(), requests: Default::default(),
         }))?);
         let current_thread = thread.as_ref().unwrap();
-        let registration = current_thread.register_tools_if_extensions(
-            current_thread.snapshot().extension_sequence, vec![tool.registration(prepared)]).await;
+        let registration = current_thread.register_tools( vec![tool.registration(prepared)]).await;
         if registration.is_ok() {
             // If registration regresses, actually try the new invocation and retain the
             // peer-call assertion below; an authorization comparison alone is insufficient.

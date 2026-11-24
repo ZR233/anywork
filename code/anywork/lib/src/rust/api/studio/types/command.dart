@@ -247,7 +247,6 @@ class BridgeSetThreadModelRouteRequest {
   final String operationId;
   final String threadId;
   final BigInt expectedModelRouteRevision;
-  final BigInt expectedSettingsRevision;
   final String accountId;
   final String modelId;
   final String? effort;
@@ -257,7 +256,6 @@ class BridgeSetThreadModelRouteRequest {
     required this.operationId,
     required this.threadId,
     required this.expectedModelRouteRevision,
-    required this.expectedSettingsRevision,
     required this.accountId,
     required this.modelId,
     this.effort,
@@ -269,7 +267,6 @@ class BridgeSetThreadModelRouteRequest {
       operationId.hashCode ^
       threadId.hashCode ^
       expectedModelRouteRevision.hashCode ^
-      expectedSettingsRevision.hashCode ^
       accountId.hashCode ^
       modelId.hashCode ^
       effort.hashCode ^
@@ -283,7 +280,6 @@ class BridgeSetThreadModelRouteRequest {
           operationId == other.operationId &&
           threadId == other.threadId &&
           expectedModelRouteRevision == other.expectedModelRouteRevision &&
-          expectedSettingsRevision == other.expectedSettingsRevision &&
           accountId == other.accountId &&
           modelId == other.modelId &&
           effort == other.effort &&

@@ -1560,7 +1560,8 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for RecoveryAt
             },
         );
         ContextPreparation::Prepared {
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             excluded_tool_ids: vec![],
             replacement: Some(pl_core::thread::ReplaceContext {

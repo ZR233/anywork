@@ -32,13 +32,11 @@ final class _RouteCall {
     this.threadId,
     this.modelId,
     this.expectedRouteRevision,
-    this.expectedSettingsRevision,
   );
   final OperationId operationId;
   final String threadId;
   final String modelId;
   final int expectedRouteRevision;
-  final int expectedSettingsRevision;
   final reply = Completer<ThreadModelRouteCommandReply>();
 }
 
@@ -81,8 +79,7 @@ final class _InteractionCall {
 }
 
 final class _SettingsCall {
-  _SettingsCall(this.revision, this.command, this.operationId);
-  final int revision;
+  _SettingsCall(this.command, this.operationId);
   final SettingsFieldCommand command;
   final OperationId operationId;
   final reply = Completer<SettingsCommandReply>();
@@ -178,11 +175,10 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int revision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) {
-    final call = _SettingsCall(revision, command, operationId);
+    final call = _SettingsCall(command, operationId);
     final index = settingsCalls.length;
     settingsCalls.add(call);
     _settingsEntered.remove(index)?.complete(call);
@@ -253,7 +249,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
@@ -264,7 +259,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
       threadId,
       modelId,
       expectedModelRouteRevision,
-      expectedSettingsRevision,
     );
     routes.add(call);
     routeCalls.add(call);
@@ -466,20 +460,13 @@ final class _RouteConflictTransport extends _Transport {
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
     String? serviceTier,
   }) async {
     attempts.add(
-      _RouteCall(
-        operationId,
-        threadId,
-        modelId,
-        expectedModelRouteRevision,
-        expectedSettingsRevision,
-      ),
+      _RouteCall(operationId, threadId, modelId, expectedModelRouteRevision),
     );
     if (attempts.length == 1) {
       throw const StudioFailure(
@@ -1479,7 +1466,7 @@ void main() {
       ),
       throwsA(same(_probeRejection)),
     );
-    expect(transport.settingsCalls.map((call) => call.revision), [1]);
+    expect(transport.settingsCalls, hasLength(1));
     expect(
       (transport.settingsCalls.single.command as InstructionUserCommand).value,
       'next-owner-input',
@@ -1492,101 +1479,34 @@ void main() {
     );
   });
 
-  test('settings owner change while acquiring CAS rejects the old read before publication or dispatch', () async {
-    final transport = _Transport();
-    final read = Completer<SettingsStateSnapshot>();
-    transport.settingsRead = () => read.future;
-    final client = await _client(transport);
-    client.applyBootstrap(
-      _bootstrap(
-        'loading-old',
-        const SettingsStateSnapshot.fromState(
-          state: UninitializedObservedResource<SettingsStateData>(updatedAt: 0),
+  test(
+    'a field patch can be sent before the settings snapshot loads',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      client.applyBootstrap(
+        _bootstrap(
+          'loading',
+          const SettingsStateSnapshot.fromState(
+            state: UninitializedObservedResource<SettingsStateData>(
+              updatedAt: 0,
+            ),
+          ),
         ),
-      ),
-    );
-    final old = client.settingsCommands.applySettingsField(
-      const InstructionUserCommand('old-owner-input'),
-    );
-    final rejected = expectLater(old, throwsStateError);
-    await transport.settingsReadEntered.future;
-    client.applyBootstrap(_bootstrap('next', _settings(1)));
-    read.complete(
-      SettingsStateSnapshot(
-        revision: 999,
-        instructions: const InstructionsSettingsView(user: 'late-old-read'),
-      ),
-    );
-    await rejected;
-    expect(transport.settingsCalls, isEmpty);
-    expect(client.settings.state.settingsRevision, 1);
-    expect(client.settings.state.canonical!.instructions.user, isEmpty);
-    expect(
-      client.settingsWrites.stamp,
-      const ResourceStamp(
-        resourceKey: 'settings',
-        ownerEpoch: 'next',
-        revision: 1,
-      ),
-    );
-    expect(
-      client.mutations.latest('settings:instructions:user')!.state.value.phase,
-      OperationPhase.rejected,
-    );
-    expect(
-      (await client.close(
+      );
+      await expectLater(
+        client.settingsCommands.applySettingsField(
+          const InstructionUserCommand('current intent'),
+        ),
+        throwsA(same(_probeRejection)),
+      );
+      expect(transport.settingsCalls, hasLength(1));
+      expect(transport.settingsReadEntered.isCompleted, isFalse);
+      await client.close(
         budget: ClientCloseBudget(const Duration(seconds: 30)),
-      )).complete,
-      isTrue,
-    );
-  });
-
-  test('settings owner change during conflict refresh does not retry or rebind the late canonical read', () async {
-    final transport = _Transport();
-    final read = Completer<SettingsStateSnapshot>();
-    transport.settingsRead = () => read.future;
-    const conflict = StudioFailure(
-      code: StudioFailureCode.staleRevision,
-      message: 'Old settings changed',
-      retryable: true,
-      correlationId: 'owner-conflict',
-    );
-    transport.settingsReply = (_) => Future.error(conflict);
-    final client = await _client(transport);
-    client.applyBootstrap(_bootstrap('old', _settings(99)));
-    final old = client.settingsCommands.applySettingsField(
-      const InstructionUserCommand('old-owner-input'),
-    );
-    final rejected = expectLater(old, throwsStateError);
-    await transport.settingsReadEntered.future;
-    client.applyBootstrap(_bootstrap('next', _settings(1)));
-    read.complete(
-      SettingsStateSnapshot(
-        revision: 100,
-        instructions: const InstructionsSettingsView(user: 'old-refresh'),
-      ),
-    );
-    await rejected;
-    expect(transport.settingsCalls.map((call) => call.revision), [99]);
-    expect(client.settings.state.settingsRevision, 1);
-    expect(client.settings.state.canonical!.instructions.user, isEmpty);
-    final operation = client.mutations
-        .latest('settings:instructions:user')!
-        .state
-        .value;
-    expect(
-      operation.phase,
-      OperationPhase.rejected,
-      reason: 'The old RPC was definitely rejected, even though its retry owner retired',
-    );
-    expect(operation.error, same(conflict));
-    expect(
-      (await client.close(
-        budget: ClientCloseBudget(const Duration(seconds: 30)),
-      )).complete,
-      isTrue,
-    );
-  });
+      );
+    },
+  );
 
   test('settings owner change joins a sent RPC but cannot apply its late response to the new owner', () async {
     final transport = _Transport()..settingsReply = (call) => call.reply.future;
@@ -1732,9 +1652,7 @@ void main() {
     runtime.seed(_settings(1));
     read.complete(_settings(100));
     await rejected;
-    expect(transport.routeCalls.map((call) => call.expectedSettingsRevision), [
-      99,
-    ]);
+    expect(transport.routeCalls, hasLength(1));
     expect(client.settings.state.settingsRevision, 1);
     final operation = client.mutations
         .latest('thread-route:thread')!
@@ -2439,7 +2357,7 @@ void main() {
         transport.attempts.first.operationId,
       );
       expect(transport.attempts.last.expectedRouteRevision, 4);
-      expect(transport.attempts.last.expectedSettingsRevision, 2);
+
       expect(session.state.modelRoute?.revision, 4);
       transport.stateBindings.first.add(
         ThreadNotificationFrame(
@@ -3170,7 +3088,7 @@ void main() {
       final y = await enteredY;
       expect(y.operationId, isNot(x.operationId));
       expect(y.expectedRouteRevision, 2);
-      expect(y.expectedSettingsRevision, 2);
+
       expect(
         client.mutations.lookup(x.operationId)!.state.value.observed,
         isTrue,

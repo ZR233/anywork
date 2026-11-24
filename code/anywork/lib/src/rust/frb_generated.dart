@@ -502,7 +502,6 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsApplySettingsField({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required SettingsFieldInput input,
   });
 
@@ -944,7 +943,6 @@ abstract class RustLibApi extends BaseApi {
 
   Future<BridgeSettingsCommandReply> crateApiStudioHandlersAcpRemoveAcpAccount({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     required BigInt expectedDocumentRevision,
   });
@@ -1015,7 +1013,6 @@ abstract class RustLibApi extends BaseApi {
 
   Future<BridgeSettingsCommandReply> crateApiStudioHandlersAcpSaveAcpAccount({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     BigInt? expectedDocumentRevision,
     required BridgeAcpAccountUpdate account,
   });
@@ -1027,7 +1024,6 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsSaveRuntimePermissionMode({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String mode,
   });
 
@@ -1045,7 +1041,7 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersAgentProfilesSaveUserAgentProfile({
     required String operationId,
-    required BigInt expectedSettingsRevision,
+    String? expectedDocumentRevision,
     required String profileId,
     required bool enabled,
     required String displayName,
@@ -1068,7 +1064,6 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsSetAccountBillingKind({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     BridgeBillingKind? billingKind,
   });
@@ -1094,7 +1089,6 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsSetAccountModelEnabled({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     required String modelId,
     required bool enabled,
@@ -1126,7 +1120,6 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersAgentProfilesSetSystemAgentEnabled({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String profileId,
     required bool enabled,
   });
@@ -3998,7 +3991,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsApplySettingsField({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required SettingsFieldInput input,
   }) {
     return handler.executeNormal(
@@ -4006,7 +3998,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_box_autoadd_settings_field_input(input, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -4020,7 +4011,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiStudioHandlersSettingsApplySettingsFieldConstMeta,
-        argValues: [operationId, expectedSettingsRevision, input],
+        argValues: [operationId, input],
         apiImpl: this,
       ),
     );
@@ -4030,7 +4021,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersSettingsApplySettingsFieldConstMeta =>
       const TaskConstMeta(
         debugName: "apply_settings_field",
-        argNames: ["operationId", "expectedSettingsRevision", "input"],
+        argNames: ["operationId", "input"],
       );
 
   @override
@@ -7518,7 +7509,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<BridgeSettingsCommandReply> crateApiStudioHandlersAcpRemoveAcpAccount({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     required BigInt expectedDocumentRevision,
   }) {
@@ -7527,7 +7517,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_String(accountId, serializer);
           sse_encode_u_64(expectedDocumentRevision, serializer);
           pdeCallFfi(
@@ -7542,12 +7531,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiStudioHandlersAcpRemoveAcpAccountConstMeta,
-        argValues: [
-          operationId,
-          expectedSettingsRevision,
-          accountId,
-          expectedDocumentRevision,
-        ],
+        argValues: [operationId, accountId, expectedDocumentRevision],
         apiImpl: this,
       ),
     );
@@ -7556,12 +7540,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiStudioHandlersAcpRemoveAcpAccountConstMeta =>
       const TaskConstMeta(
         debugName: "remove_acp_account",
-        argNames: [
-          "operationId",
-          "expectedSettingsRevision",
-          "accountId",
-          "expectedDocumentRevision",
-        ],
+        argNames: ["operationId", "accountId", "expectedDocumentRevision"],
       );
 
   @override
@@ -8034,7 +8013,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<BridgeSettingsCommandReply> crateApiStudioHandlersAcpSaveAcpAccount({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     BigInt? expectedDocumentRevision,
     required BridgeAcpAccountUpdate account,
   }) {
@@ -8043,7 +8021,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_opt_box_autoadd_u_64(expectedDocumentRevision, serializer);
           sse_encode_box_autoadd_bridge_acp_account_update(account, serializer);
           pdeCallFfi(
@@ -8058,12 +8035,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiStudioHandlersAcpSaveAcpAccountConstMeta,
-        argValues: [
-          operationId,
-          expectedSettingsRevision,
-          expectedDocumentRevision,
-          account,
-        ],
+        argValues: [operationId, expectedDocumentRevision, account],
         apiImpl: this,
       ),
     );
@@ -8072,12 +8044,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiStudioHandlersAcpSaveAcpAccountConstMeta =>
       const TaskConstMeta(
         debugName: "save_acp_account",
-        argNames: [
-          "operationId",
-          "expectedSettingsRevision",
-          "expectedDocumentRevision",
-          "account",
-        ],
+        argNames: ["operationId", "expectedDocumentRevision", "account"],
       );
 
   @override
@@ -8114,7 +8081,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsSaveRuntimePermissionMode({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String mode,
   }) {
     return handler.executeNormal(
@@ -8122,7 +8088,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_String(mode, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -8137,7 +8102,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiStudioHandlersSettingsSaveRuntimePermissionModeConstMeta,
-        argValues: [operationId, expectedSettingsRevision, mode],
+        argValues: [operationId, mode],
         apiImpl: this,
       ),
     );
@@ -8147,7 +8112,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersSettingsSaveRuntimePermissionModeConstMeta =>
       const TaskConstMeta(
         debugName: "save_runtime_permission_mode",
-        argNames: ["operationId", "expectedSettingsRevision", "mode"],
+        argNames: ["operationId", "mode"],
       );
 
   @override
@@ -8228,7 +8193,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersAgentProfilesSaveUserAgentProfile({
     required String operationId,
-    required BigInt expectedSettingsRevision,
+    String? expectedDocumentRevision,
     required String profileId,
     required bool enabled,
     required String displayName,
@@ -8242,7 +8207,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
+          sse_encode_opt_String(expectedDocumentRevision, serializer);
           sse_encode_String(profileId, serializer);
           sse_encode_bool(enabled, serializer);
           sse_encode_String(displayName, serializer);
@@ -8265,7 +8230,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             kCrateApiStudioHandlersAgentProfilesSaveUserAgentProfileConstMeta,
         argValues: [
           operationId,
-          expectedSettingsRevision,
+          expectedDocumentRevision,
           profileId,
           enabled,
           displayName,
@@ -8285,7 +8250,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         debugName: "save_user_agent_profile",
         argNames: [
           "operationId",
-          "expectedSettingsRevision",
+          "expectedDocumentRevision",
           "profileId",
           "enabled",
           "displayName",
@@ -8370,7 +8335,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsSetAccountBillingKind({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     BridgeBillingKind? billingKind,
   }) {
@@ -8379,7 +8343,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_String(accountId, serializer);
           sse_encode_opt_box_autoadd_bridge_billing_kind(
             billingKind,
@@ -8398,12 +8361,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiStudioHandlersSettingsSetAccountBillingKindConstMeta,
-        argValues: [
-          operationId,
-          expectedSettingsRevision,
-          accountId,
-          billingKind,
-        ],
+        argValues: [operationId, accountId, billingKind],
         apiImpl: this,
       ),
     );
@@ -8413,12 +8371,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersSettingsSetAccountBillingKindConstMeta =>
       const TaskConstMeta(
         debugName: "set_account_billing_kind",
-        argNames: [
-          "operationId",
-          "expectedSettingsRevision",
-          "accountId",
-          "billingKind",
-        ],
+        argNames: ["operationId", "accountId", "billingKind"],
       );
 
   @override
@@ -8540,7 +8493,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersSettingsSetAccountModelEnabled({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     required String modelId,
     required bool enabled,
@@ -8550,7 +8502,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_String(accountId, serializer);
           sse_encode_String(modelId, serializer);
           sse_encode_bool(enabled, serializer);
@@ -8567,13 +8518,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiStudioHandlersSettingsSetAccountModelEnabledConstMeta,
-        argValues: [
-          operationId,
-          expectedSettingsRevision,
-          accountId,
-          modelId,
-          enabled,
-        ],
+        argValues: [operationId, accountId, modelId, enabled],
         apiImpl: this,
       ),
     );
@@ -8583,13 +8528,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersSettingsSetAccountModelEnabledConstMeta =>
       const TaskConstMeta(
         debugName: "set_account_model_enabled",
-        argNames: [
-          "operationId",
-          "expectedSettingsRevision",
-          "accountId",
-          "modelId",
-          "enabled",
-        ],
+        argNames: ["operationId", "accountId", "modelId", "enabled"],
       );
 
   @override
@@ -8776,7 +8715,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeSettingsCommandReply>
   crateApiStudioHandlersAgentProfilesSetSystemAgentEnabled({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String profileId,
     required bool enabled,
   }) {
@@ -8785,7 +8723,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
           sse_encode_String(profileId, serializer);
           sse_encode_bool(enabled, serializer);
           pdeCallFfi(
@@ -8801,7 +8738,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiStudioHandlersAgentProfilesSetSystemAgentEnabledConstMeta,
-        argValues: [operationId, expectedSettingsRevision, profileId, enabled],
+        argValues: [operationId, profileId, enabled],
         apiImpl: this,
       ),
     );
@@ -8811,12 +8748,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersAgentProfilesSetSystemAgentEnabledConstMeta =>
       const TaskConstMeta(
         debugName: "set_system_agent_enabled",
-        argNames: [
-          "operationId",
-          "expectedSettingsRevision",
-          "profileId",
-          "enabled",
-        ],
+        argNames: ["operationId", "profileId", "enabled"],
       );
 
   @override
@@ -20077,17 +20009,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_bridge_set_thread_model_route_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return BridgeSetThreadModelRouteRequest(
       operationId: dco_decode_String(arr[0]),
       threadId: dco_decode_String(arr[1]),
       expectedModelRouteRevision: dco_decode_u_64(arr[2]),
-      expectedSettingsRevision: dco_decode_u_64(arr[3]),
-      accountId: dco_decode_String(arr[4]),
-      modelId: dco_decode_String(arr[5]),
-      effort: dco_decode_opt_String(arr[6]),
-      serviceTier: dco_decode_opt_String(arr[7]),
+      accountId: dco_decode_String(arr[3]),
+      modelId: dco_decode_String(arr[4]),
+      effort: dco_decode_opt_String(arr[5]),
+      serviceTier: dco_decode_opt_String(arr[6]),
     );
   }
 
@@ -25216,8 +25147,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           value: dco_decode_list_String(raw[1]),
         );
       case 10:
-        return SettingsFieldInput_SkillsDisabled(
-          value: dco_decode_list_String(raw[1]),
+        return SettingsFieldInput_SkillDisabled(
+          id: dco_decode_String(raw[1]),
+          value: dco_decode_bool(raw[2]),
         );
       case 11:
         return SettingsFieldInput_SkillsAutoLearnMinToolCalls(
@@ -25240,12 +25172,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           value: dco_decode_opt_box_autoadd_u_16(raw[1]),
         );
       case 16:
-        return SettingsFieldInput_GeneralPinnedThreadIds(
-          value: dco_decode_list_String(raw[1]),
+        return SettingsFieldInput_ThreadPinned(
+          id: dco_decode_String(raw[1]),
+          value: dco_decode_bool(raw[2]),
         );
       case 17:
-        return SettingsFieldInput_GeneralPinnedProjectIds(
-          value: dco_decode_list_String(raw[1]),
+        return SettingsFieldInput_ProjectPinned(
+          id: dco_decode_String(raw[1]),
+          value: dco_decode_bool(raw[2]),
         );
       case 18:
         return SettingsFieldInput_WebSearchMode(
@@ -38408,7 +38342,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_operationId = sse_decode_String(deserializer);
     var var_threadId = sse_decode_String(deserializer);
     var var_expectedModelRouteRevision = sse_decode_u_64(deserializer);
-    var var_expectedSettingsRevision = sse_decode_u_64(deserializer);
     var var_accountId = sse_decode_String(deserializer);
     var var_modelId = sse_decode_String(deserializer);
     var var_effort = sse_decode_opt_String(deserializer);
@@ -38417,7 +38350,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       operationId: var_operationId,
       threadId: var_threadId,
       expectedModelRouteRevision: var_expectedModelRouteRevision,
-      expectedSettingsRevision: var_expectedSettingsRevision,
       accountId: var_accountId,
       modelId: var_modelId,
       effort: var_effort,
@@ -45648,8 +45580,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_value = sse_decode_list_String(deserializer);
         return SettingsFieldInput_SkillsExternalDirs(value: var_value);
       case 10:
-        var var_value = sse_decode_list_String(deserializer);
-        return SettingsFieldInput_SkillsDisabled(value: var_value);
+        var var_id = sse_decode_String(deserializer);
+        var var_value = sse_decode_bool(deserializer);
+        return SettingsFieldInput_SkillDisabled(id: var_id, value: var_value);
       case 11:
         var var_value = sse_decode_u_32(deserializer);
         return SettingsFieldInput_SkillsAutoLearnMinToolCalls(value: var_value);
@@ -45666,11 +45599,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_value = sse_decode_opt_box_autoadd_u_16(deserializer);
         return SettingsFieldInput_GeneralSidebarWidth(value: var_value);
       case 16:
-        var var_value = sse_decode_list_String(deserializer);
-        return SettingsFieldInput_GeneralPinnedThreadIds(value: var_value);
+        var var_id = sse_decode_String(deserializer);
+        var var_value = sse_decode_bool(deserializer);
+        return SettingsFieldInput_ThreadPinned(id: var_id, value: var_value);
       case 17:
-        var var_value = sse_decode_list_String(deserializer);
-        return SettingsFieldInput_GeneralPinnedProjectIds(value: var_value);
+        var var_id = sse_decode_String(deserializer);
+        var var_value = sse_decode_bool(deserializer);
+        return SettingsFieldInput_ProjectPinned(id: var_id, value: var_value);
       case 18:
         var var_value = sse_decode_String(deserializer);
         return SettingsFieldInput_WebSearchMode(value: var_value);
@@ -57069,7 +57004,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.operationId, serializer);
     sse_encode_String(self.threadId, serializer);
     sse_encode_u_64(self.expectedModelRouteRevision, serializer);
-    sse_encode_u_64(self.expectedSettingsRevision, serializer);
     sse_encode_String(self.accountId, serializer);
     sse_encode_String(self.modelId, serializer);
     sse_encode_opt_String(self.effort, serializer);
@@ -63058,9 +62992,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case SettingsFieldInput_SkillsExternalDirs(value: final value):
         sse_encode_i_32(9, serializer);
         sse_encode_list_String(value, serializer);
-      case SettingsFieldInput_SkillsDisabled(value: final value):
+      case SettingsFieldInput_SkillDisabled(id: final id, value: final value):
         sse_encode_i_32(10, serializer);
-        sse_encode_list_String(value, serializer);
+        sse_encode_String(id, serializer);
+        sse_encode_bool(value, serializer);
       case SettingsFieldInput_SkillsAutoLearnMinToolCalls(value: final value):
         sse_encode_i_32(11, serializer);
         sse_encode_u_32(value, serializer);
@@ -63076,12 +63011,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case SettingsFieldInput_GeneralSidebarWidth(value: final value):
         sse_encode_i_32(15, serializer);
         sse_encode_opt_box_autoadd_u_16(value, serializer);
-      case SettingsFieldInput_GeneralPinnedThreadIds(value: final value):
+      case SettingsFieldInput_ThreadPinned(id: final id, value: final value):
         sse_encode_i_32(16, serializer);
-        sse_encode_list_String(value, serializer);
-      case SettingsFieldInput_GeneralPinnedProjectIds(value: final value):
+        sse_encode_String(id, serializer);
+        sse_encode_bool(value, serializer);
+      case SettingsFieldInput_ProjectPinned(id: final id, value: final value):
         sse_encode_i_32(17, serializer);
-        sse_encode_list_String(value, serializer);
+        sse_encode_String(id, serializer);
+        sse_encode_bool(value, serializer);
       case SettingsFieldInput_WebSearchMode(value: final value):
         sse_encode_i_32(18, serializer);
         sse_encode_String(value, serializer);

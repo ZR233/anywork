@@ -9,8 +9,14 @@ import 'agent_workspace_mode_label.dart';
 import 'settings_common.dart';
 
 class AgentProfileDialog extends StatefulWidget {
-  const AgentProfileDialog({super.key, this.profile, required this.accounts});
+  const AgentProfileDialog({
+    super.key,
+    this.profile,
+    required this.accounts,
+    required this.onSave,
+  });
 
+  final Future<void> Function(AgentProfileDraft) onSave;
   final AgentProfileView? profile;
   final List<ModelSelectionAccount> accounts;
 
@@ -19,6 +25,8 @@ class AgentProfileDialog extends StatefulWidget {
 }
 
 class _AgentProfileDialogState extends State<AgentProfileDialog> {
+  bool _saving = false;
+  String? _error;
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _id;
   late final TextEditingController _displayName;
@@ -81,7 +89,7 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    return SettingsFormDialog(
+    final dialog = SettingsFormDialog(
       title: Text(
         widget.profile == null
             ? l10n.settingsAgentProfileAddTitle
@@ -95,6 +103,13 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (_error case final message?)
+                  Text(
+                    message,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
                 _field(
                   _id,
                   l10n.settingsAgentProfileIdField,
@@ -264,11 +279,12 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
         ),
         FilledButton(
           key: const ValueKey('agent-profile-save'),
-          onPressed: _save,
+          onPressed: _saving ? null : _save,
           child: Text(l10n.settingsAgentProfileSave),
         ),
       ],
     );
+    return AbsorbPointer(absorbing: _saving, child: dialog);
   }
 
   Widget _field(
@@ -294,32 +310,45 @@ class _AgentProfileDialogState extends State<AgentProfileDialog> {
     );
   }
 
-  void _save() {
+  Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    Navigator.pop(
-      context,
-      AgentProfileDraft(
-        definition: AgentDefinitionView(
-          definitionId: _id.text.trim(),
-          displayName: _displayName.text.trim(),
-          description: _description.text.trim(),
-          whenToUse: _whenToUse.text.trim(),
-          source: widget.profile?.definition.source ?? '',
-          revision: widget.profile?.definition.revision ?? '',
-          contentHash: widget.profile?.definition.contentHash ?? '',
-        ),
-        binding: NativeAgentBindingView(
-          route: NewThreadModelRoute(
-            accountId: _accountId,
-            modelId: _model,
-            effort: _effort,
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await widget.onSave(
+        AgentProfileDraft(
+          definition: AgentDefinitionView(
+            definitionId: _id.text.trim(),
+            displayName: _displayName.text.trim(),
+            description: _description.text.trim(),
+            whenToUse: _whenToUse.text.trim(),
+            source: widget.profile?.definition.source ?? '',
+            revision: widget.profile?.definition.revision ?? '',
+            contentHash: widget.profile?.definition.contentHash ?? '',
           ),
-          systemInstructions: _instructions.text.trim(),
+          binding: NativeAgentBindingView(
+            route: NewThreadModelRoute(
+              accountId: _accountId,
+              modelId: _model,
+              effort: _effort,
+            ),
+            systemInstructions: _instructions.text.trim(),
+          ),
+          enabled: _enabled,
+          workspaceMode: _workspaceMode,
         ),
-        enabled: _enabled,
-        workspaceMode: _workspaceMode,
-      ),
-    );
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _error = error.toString();
+        });
+      }
+    }
   }
 
   List<AccountModelView> _modelsFor(String accountId) =>

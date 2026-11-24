@@ -97,7 +97,6 @@ final class _AcpTransport extends AccountsTestTransport {
 
   @override
   Future<SettingsCommandReply> saveAcpAccount(
-    int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
     required BigInt? expectedDocumentRevision,
@@ -136,7 +135,6 @@ final class _AcpTransport extends AccountsTestTransport {
 
   @override
   Future<SettingsCommandReply> removeAcpAccount(
-    int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
     required BigInt expectedDocumentRevision,

@@ -169,7 +169,6 @@ pub(super) enum MailboxCommand {
         oneshot::Sender<Result<task::TaskCancellationReceipt, ThreadError>>,
     ),
     Register(
-        Option<u64>,
         crate::tool::opaque::RegistrationBatch,
         oneshot::Sender<Result<(), ThreadError>>,
     ),
@@ -568,23 +567,12 @@ impl Owner {
             MailboxCommand::CancelTask(id, reply) => {
                 let _ = reply.send(self.cancel_task(&id));
             }
-            MailboxCommand::Register(expected, tools, reply) => {
+            MailboxCommand::Register(tools, reply) => {
                 let tools = tools.take().unwrap_or_default();
                 self.tools.retain_candidates(&tools);
                 let result = if self.state.lifecycle == ThreadLifecycle::Open
                     && !self.interrupt.is_closing()
                 {
-                    if let Some(expected) = expected
-                        && expected != self.state.extension_sequence
-                    {
-                        drop(tools);
-                        self.publish_snapshot();
-                        let _ = reply.send(Err(ThreadError::ExtensionSequenceConflict {
-                            expected,
-                            actual: self.state.extension_sequence,
-                        }));
-                        return;
-                    }
                     let result = self
                         .tools
                         .replace(tools)

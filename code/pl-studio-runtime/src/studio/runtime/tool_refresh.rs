@@ -15,6 +15,7 @@ impl CatalogSources {
         &self,
         project: Option<&crate::studio::WorkspaceRecord>,
         thread_id: &str,
+        child: bool,
     ) -> Self {
         let key = project
             .and_then(|project| project.ssh_alias.as_ref())
@@ -22,6 +23,7 @@ impl CatalogSources {
         let mcp_ssh_key = project
             .and_then(|project| project.ssh_alias.as_ref())
             .map(|server| format!("mcp-catalog:ssh:{server}"));
+        let thread_lsp_key = format!("thread-lsp:{thread_id}");
         let thread_mcp_key = format!("thread-mcp:{thread_id}");
         let skill_key = project.map(|project| format!("skills:{}", project.id));
         let project_key = project.map(|project| format!("project:{}", project.id));
@@ -35,6 +37,10 @@ impl CatalogSources {
                         mcp_ssh_key.as_ref() == Some(name)
                     } else if name.starts_with("thread-mcp:") {
                         *name == &thread_mcp_key
+                    } else if name.starts_with("thread-lsp:") {
+                        *name == &thread_lsp_key
+                    } else if name.as_str() == "agent-profiles" {
+                        !child
                     } else if name.starts_with("skills:") {
                         skill_key.as_ref() == Some(name)
                     } else if name.starts_with("project:") {
@@ -90,9 +96,8 @@ impl CatalogSources {
                         .collect::<Vec<_>>()
                 })),
             )),
-            StudioProductEventKind::ThreadModeCatalogChanged(value) => {
-                Some(("modes".into(), serde_json::json!(value)))
-            }
+            // Tool registration consumes the Mode frozen in this Thread; the next turn adopts catalog edits.
+            StudioProductEventKind::ThreadModeCatalogChanged(_) => None,
             StudioProductEventKind::ModelCatalogStateChanged(value) => Some((
                 "model-catalogs".into(),
                 model_catalog_witness(value.as_ref()),
@@ -196,10 +201,10 @@ impl StudioRuntime {
                 if stopping.is_cancelled() {
                     break;
                 }
-                sources.0.insert(
-                    "settings".into(),
-                    settings.borrow_and_update().revision.to_string(),
-                );
+                settings.borrow_and_update();
+                if let Ok(revision) = runtime.config_runtime.native_runtime_revision() {
+                    sources.0.insert("settings".into(), revision.to_string());
+                }
                 profiles.borrow_and_update();
                 let profile_generation = match runtime.config_runtime.agent_profiles_snapshot() {
                     Ok(snapshot) => snapshot.revision.to_string(),
@@ -231,7 +236,11 @@ impl StudioRuntime {
                 });
                 for (id, thread) in active {
                     let project = runtime.thread_factory.tool_project(&id);
-                    let selected = sources.for_project(project.as_ref(), &id);
+                    let child = thread
+                        .snapshot()
+                        .extensions
+                        .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION);
+                    let selected = sources.for_project(project.as_ref(), &id, child);
                     if let Some((_, updates)) = workers.get(&id) {
                         updates.send_if_modified(|previous| {
                             if previous.0 == selected.0 {
@@ -357,9 +366,7 @@ impl StudioRuntime {
             if snapshot.lifecycle != ThreadLifecycle::Open {
                 continue;
             }
-            let project = self.thread_factory.tool_project(&id);
-            let fingerprint =
-                catalog_fingerprint(&sources.for_project(project.as_ref(), &id), &snapshot);
+            let fingerprint = catalog_fingerprint(sources, &snapshot);
             if attempted.get(&id).is_some_and(|(previous, key)| {
                 previous.same_instance(&thread) && key == &fingerprint
             }) {

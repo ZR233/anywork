@@ -20,18 +20,14 @@ pub async fn read_agent_profiles_state() -> Result<BridgeAgentProfilesStateSnaps
 /// Enables or disables an immutable built-in Agent Profile.
 pub async fn set_system_agent_enabled(
     operation_id: String,
-    expected_settings_revision: u64,
     profile_id: String,
     enabled: bool,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(
-        bridge.studio.set_system_agent_enabled(
-            operation_id,
-            expected_settings_revision,
-            &profile_id,
-            enabled,
-        )?,
+        bridge
+            .studio
+            .set_system_agent_enabled(operation_id, &profile_id, enabled)?,
     ))
 }
 
@@ -39,7 +35,7 @@ pub async fn set_system_agent_enabled(
 #[allow(clippy::too_many_arguments)]
 pub async fn save_user_agent_profile(
     operation_id: String,
-    expected_settings_revision: u64,
+    expected_document_revision: Option<String>,
     profile_id: String,
     enabled: bool,
     display_name: String,
@@ -67,7 +63,7 @@ pub async fn save_user_agent_profile(
     Ok(settings_command_reply(
         bridge.studio.save_user_agent_profile(
             operation_id,
-            expected_settings_revision,
+            expected_document_revision.as_deref(),
             &profile_id,
             &profile,
         )?,
