@@ -82,16 +82,16 @@ impl ModelCallBinding {
     pub(super) fn capture(runtime: &ModelRuntime, purpose: &str) -> Self {
         Self {
             account_id: runtime.account_id().to_owned(),
-            model_id: runtime.model().model_id.clone(),
+            model_id: runtime.model().base.slug.clone(),
             protocol: runtime.endpoint().protocol.clone(),
-            wire_api: runtime.model().binding.transport.protocol,
+            wire_api: runtime.model().extra.binding.transport.protocol,
             isolation: crate::runtime::binding_cache_namespace(
                 runtime.account_id(),
                 runtime.endpoint(),
             ),
             purpose: purpose.to_owned(),
             context_window: runtime.context().context_window,
-            max_context_window: runtime.model().max_context_window,
+            max_context_window: runtime.context().context_window,
             auto_compact_limit: runtime.context().auto_compact_limit,
         }
     }
@@ -269,6 +269,9 @@ pub struct ModelRequestReceipt {
     pub reasoning: Option<crate::completion::ReasoningConfig>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u64>,
+    /// Frozen request grouping key; absent in historical receipts.
+    #[serde(default)]
+    pub requested_service_tier: Option<String>,
     /// Hashes of the normalized request; independent of the stable account cache hint.
     #[serde(default)]
     pub prompt: Option<crate::runtime::ThreadPromptSnapshot>,
@@ -310,6 +313,7 @@ pub fn model_response_receipt(
 }
 
 pub(super) fn request_metadata(
+    runtime: &ModelRuntime,
     binding: &ModelCallBinding,
     request: &crate::completion::CompletionRequest,
     prompt: Option<&crate::runtime::ThreadPromptSnapshot>,
@@ -324,6 +328,7 @@ pub(super) fn request_metadata(
         reasoning: &'a Option<crate::completion::ReasoningConfig>,
         temperature: Option<f32>,
         max_tokens: Option<u64>,
+        requested_service_tier: String,
         prompt: Option<&'a crate::runtime::ThreadPromptSnapshot>,
     }
     let content = serde_json::to_string(&RequestMetadata {
@@ -334,6 +339,13 @@ pub(super) fn request_metadata(
         reasoning: &request.reasoning,
         temperature: request.temperature,
         max_tokens: request.max_tokens,
+        requested_service_tier: match request.service_tier.as_deref() {
+            Some(id) => format!("tier:{id}"),
+            None if pl_model_openai_wire::service_tiers::has_selectable_tier(runtime.model()) => {
+                "standard".into()
+            }
+            None => "notApplicable".into(),
+        },
         prompt,
     })
     .map_err(|source| {

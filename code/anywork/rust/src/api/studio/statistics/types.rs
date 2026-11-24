@@ -67,6 +67,7 @@ pub struct BridgeStatisticsSummary {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStatisticsEffortSummary {
     pub effort: Option<String>,
+    pub requested_service_tier: Option<String>,
     pub sample_count: u64,
     pub completion_tokens: u64,
     pub total_ttft_millis: u64,
@@ -95,6 +96,7 @@ pub struct BridgeStatisticsSample {
     pub reported_model: Option<String>,
     pub model_match_state: BridgeStatisticsModelMatchState,
     pub effort: Option<String>,
+    pub requested_service_tier: Option<String>,
     pub completion_tokens: Option<u64>,
     pub ttft_millis: Option<u64>,
     pub decode_millis: Option<u64>,

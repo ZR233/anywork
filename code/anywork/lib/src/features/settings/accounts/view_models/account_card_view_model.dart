@@ -22,6 +22,8 @@ class AccountCardViewModel extends _$AccountCardViewModel {
   late AcpService _acp;
   AccountStrings _strings = const AccountStrings.empty();
   AccountDemand? _demand;
+  AccountDemand? _installDemand;
+  Observation? _installObservation;
   Object _generation = Object();
   Object _readScope = Object();
   String? _epoch;
@@ -31,6 +33,9 @@ class AccountCardViewModel extends _$AccountCardViewModel {
   bool _active = true;
   String? _authEpoch;
   bool _authStale = false;
+  String? _verifiedServerVersion;
+  bool _checkingUpdate = false;
+  String? _upgradeError;
   String? _refreshError;
   AccountActionPresentation? _action;
   final List<Observation> _observations = [];
@@ -42,6 +47,9 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     _active = true;
     _readScope = Object();
     _initialStarted = false;
+    _verifiedServerVersion = null;
+    _checkingUpdate = false;
+    _upgradeError = null;
     _generation = Object();
     _refreshError = null;
     _action = null;
@@ -50,8 +58,9 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     _usage = ref.read(accountUsageRepositoryProvider);
     _acp = ref.read(acpServiceProvider);
     final source = _accounts.state.value;
+    final initialAccount = source.account(domainIdentity(key));
     _epoch = source.stamp?.ownerEpoch;
-    _revision = _queryRevision(source.account(domainIdentity(key)));
+    _revision = _queryRevision(initialAccount);
     _stale = source.stale;
     _authEpoch = _acp.auth.value.stamp?.ownerEpoch;
     _authStale = _acp.auth.value.stale;
@@ -66,6 +75,7 @@ class AccountCardViewModel extends _$AccountCardViewModel {
       ]);
     } else {
       _observations.add(_acp.auth.watch((_) => _authChanged()));
+      _syncInstallSubscription(initialAccount);
     }
     ref.onDispose(cancellationForCurrentObservation());
     scheduleMicrotask(() {
@@ -74,10 +84,16 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     return _derive();
   }
 
+  bool _canQueryAcpUsage(AccountSummary? account) =>
+      account != null &&
+      account.acpEnabled == true &&
+      account.capabilities.queryUsage &&
+      account.acpConnectionRevision != null;
+
   int? _queryRevision(AccountSummary? account) =>
       _key.kind == AccountKind.native
       ? account?.usageQueryRevision
-      : account?.acpConnectionRevision;
+      : (_canQueryAcpUsage(account) ? account?.acpConnectionRevision : null);
 
   void setStrings(AccountStrings strings) {
     _strings = strings;
@@ -91,6 +107,11 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     _active = false;
     final demand = _demand;
     _demand = null;
+    final installDemand = _installDemand;
+    _installDemand = null;
+    final installObservation = _installObservation;
+    _installObservation = null;
+    installObservation?.cancel();
     final observations = _observations.toList();
     _observations.clear();
     for (final observation in observations) {
@@ -100,6 +121,23 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     // All remaining work therefore uses only this retired scope's captures.
     _revokeRefreshes();
     releaseAccountDemand(demand);
+    releaseAccountDemand(installDemand);
+  }
+
+  void _syncInstallSubscription(AccountSummary? account) {
+    if (_key.kind == AccountKind.acp && account?.acpTemplate != null) {
+      _installDemand ??= _acp.observeInstall();
+      _installObservation ??= _acp.install.watch((_) {
+        if (!ref.mounted || !_active) return;
+        _publish();
+      });
+    } else if (_installDemand != null || _installObservation != null) {
+      final demand = _installDemand;
+      _installDemand = null;
+      _installObservation?.cancel();
+      _installObservation = null;
+      releaseAccountDemand(demand);
+    }
   }
 
   /// Whether this observation lease is still accepting work. This is not UI state.
@@ -156,6 +194,29 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     }
     _authEpoch = epoch ?? _authEpoch;
     _authStale = resource.stale;
+    final source = _accounts.state.value;
+    final summary = source.account(domainIdentity(_key));
+    final revision = summary?.acpConnectionRevision;
+    if (!resource.stale && revision != null) {
+      final row = resource.value?.account(
+        _key.id,
+        connectionRevision: revision,
+      );
+      final runningVersion = switch (row?.state) {
+        AcpVerifiedState(:final server) ||
+        AcpRequiredState(:final server) => server?.version,
+        _ => null,
+      };
+      if (row?.connection is AcpConnectionReadyState &&
+          row?.state is AcpVerifiedState &&
+          runningVersion != null) {
+        if (_verifiedServerVersion != null &&
+            _verifiedServerVersion != runningVersion) {
+          _initialStarted = false;
+        }
+        _verifiedServerVersion = runningVersion;
+      }
+    }
     _publish();
     _startInitialRefresh();
   }
@@ -172,12 +233,71 @@ class AccountCardViewModel extends _$AccountCardViewModel {
         (source.loaded && summary == null)) {
       _revokeRefreshes();
       _refreshError = null;
+      _verifiedServerVersion = null;
     }
     _epoch = epoch ?? _epoch;
     _revision = revision;
     _stale = source.stale;
+    _syncInstallSubscription(summary);
     _publish();
     _startInitialRefresh();
+  }
+
+  Future<void> upgrade() async {
+    final account = _accounts.state.value.account(domainIdentity(_key));
+    final template = account?.acpTemplate;
+    if (!ref.mounted || !_active || template == null) return;
+    final lifetime = ref;
+    final generation = _generation;
+    _upgradeError = null;
+    _publish();
+    try {
+      await _acp.prepare(template);
+    } catch (error) {
+      if (_ownsRefresh(lifetime, generation)) {
+        _upgradeError = safeAccountError(error, _strings);
+        _publish();
+      }
+    }
+  }
+
+  Future<void> cancelUpgrade() async {
+    final account = _accounts.state.value.account(domainIdentity(_key));
+    final template = account?.acpTemplate;
+    if (!ref.mounted || !_active || template == null) return;
+    final lifetime = ref;
+    final generation = _generation;
+    try {
+      await _acp.cancelPreparation(template);
+    } catch (error) {
+      if (_ownsRefresh(lifetime, generation)) {
+        _upgradeError = safeAccountError(error, _strings);
+        _publish();
+      }
+    }
+  }
+
+  Future<void> checkUpdate() async {
+    final account = _accounts.state.value.account(domainIdentity(_key));
+    final template = account?.acpTemplate;
+    if (!ref.mounted || !_active || template == null || _checkingUpdate) return;
+    final lifetime = ref;
+    final generation = _generation;
+    _checkingUpdate = true;
+    _upgradeError = null;
+    _publish();
+    try {
+      await _acp.checkUpdate(template);
+    } catch (error) {
+      if (_ownsRefresh(lifetime, generation)) {
+        _upgradeError = safeAccountError(error, _strings);
+      }
+    } finally {
+      if (_ownsRefresh(lifetime, generation)) {
+        _checkingUpdate = false;
+        _publish();
+      }
+    }
   }
 
   void _startInitialRefresh() {
@@ -196,6 +316,15 @@ class AccountCardViewModel extends _$AccountCardViewModel {
       if (!auth.loaded ||
           auth.stale ||
           auth.stamp?.ownerEpoch != source.stamp?.ownerEpoch) {
+        return;
+      }
+      final row = auth.value?.account(
+        _key.id,
+        connectionRevision: account.acpConnectionRevision!,
+      );
+      if (row?.usage != null ||
+          row?.activeOperation?.action is AcpQueryUsageActionView) {
+        _initialStarted = true;
         return;
       }
     }
@@ -276,15 +405,61 @@ class AccountCardViewModel extends _$AccountCardViewModel {
             ?.account(_key.id, connectionRevision: revision)
             ?.state;
       }
-      final projection = projectAcpUsage(
-        snapshot: resource.value,
-        stale: stale,
-        accountId: _key.id,
-        connectionRevision: revision,
-        strings: _strings,
-      );
-      if (projection.queried || projection.busy) acpUsage = projection;
+      if (account.capabilities.queryUsage) {
+        final projection = projectAcpUsage(
+          snapshot: resource.value,
+          stale: stale,
+          accountId: _key.id,
+          connectionRevision: revision,
+          strings: _strings,
+        );
+        if (projection.queried || projection.busy) acpUsage = projection;
+      }
     }
+    final acpPhase = switch ((acpConnection, acpAuth)) {
+      (AcpConnectionRetryingState(), _) => AcpPresentationPhase.reconnecting,
+      (AcpConnectionStartingState(), _) => AcpPresentationPhase.checking,
+      (AcpConnectionStoppingState(), _) => AcpPresentationPhase.closing,
+      (AcpConnectionBlockedState(), _) => AcpPresentationPhase.failed,
+      (_, AcpCheckingState()) => AcpPresentationPhase.checking,
+      (_, AcpRequiredState()) => AcpPresentationPhase.needsLogin,
+      (_, AcpAuthenticatingState()) => AcpPresentationPhase.authenticating,
+      (_, AcpVerifyingState()) => AcpPresentationPhase.verifying,
+      (_, AcpVerifiedState()) => AcpPresentationPhase.connected,
+      (_, AcpCancellingState()) => AcpPresentationPhase.cancelling,
+      (_, AcpClosingState()) => AcpPresentationPhase.closing,
+      (_, AcpCancelledState()) => AcpPresentationPhase.idle,
+      (_, AcpFailedState()) => AcpPresentationPhase.failed,
+      _ => AcpPresentationPhase.idle,
+    };
+    final runningVersion = switch (acpAuth) {
+      AcpVerifiedState(:final server) ||
+      AcpRequiredState(:final server) => server?.version,
+      _ => null,
+    };
+    final isManaged = account.acpTemplate != null;
+    final installResource = _acp.install.value;
+    final acpUpgrade = _key.kind == AccountKind.acp
+        ? projectAcpUpgrade(
+            snapshot: installResource.value,
+            installStale: installResource.stale,
+            template: account.acpTemplate,
+            connection: acpConnection,
+            runningVersion: runningVersion,
+            strings: _strings,
+            busyCheck: _checkingUpdate,
+            commandError: _upgradeError,
+          )
+        : null;
+    final displayVersion = acpUpgrade?.installedVersion ?? runningVersion;
+    final sourceLabel = _key.kind == AccountKind.acp
+        ? (isManaged
+              ? '${_strings['acp.managed']} · Antigravity'
+              : _strings['acp.local'])
+        : null;
+    final versionLabel = displayVersion != null && displayVersion.isNotEmpty
+        ? 'v$displayVersion'
+        : null;
     return AccountRowPresentation(
       key: _key,
       name: account.name,
@@ -322,6 +497,11 @@ class AccountCardViewModel extends _$AccountCardViewModel {
                     (_, AcpFailedState()) => 'acp.failed',
                     _ => 'acp',
                   }],
+              phase: acpPhase,
+              isManaged: isManaged,
+              sourceLabel: sourceLabel,
+              versionLabel: versionLabel,
+              upgrade: acpUpgrade,
               usage: acpUsage,
             ),
       operationError:
@@ -341,9 +521,14 @@ class AccountCardViewModel extends _$AccountCardViewModel {
               (_key.kind == AccountKind.acp && revision == null)
           ? const []
           : [
-              if (account.capabilities.queryUsage ||
-                  (_key.kind == AccountKind.acp && revision != null))
+              if ((_key.kind == AccountKind.native &&
+                      account.capabilities.queryUsage) ||
+                  _canQueryAcpUsage(account))
                 AccountRowAction.refresh,
+              if (_key.kind == AccountKind.acp &&
+                  acpUpgrade?.canCheck == true &&
+                  !_checkingUpdate)
+                AccountRowAction.checkUpdate,
               if (account.capabilities.setDefault && !account.isDefault)
                 AccountRowAction.setDefault,
               if (account.capabilities.edit) AccountRowAction.edit,

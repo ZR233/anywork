@@ -77,6 +77,9 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
                     usage_query_revision: account.usage_query_revision,
                     acp_enabled: account.acp_enabled,
                     acp_connection_revision: account.acp_connection_revision,
+                    acp_template: account
+                        .acp_template
+                        .map(crate::api::studio::convert::acp::bridge_acp_provider),
                     capabilities: BridgeAccountCapabilities {
                         set_default: account.capabilities.set_default,
                         edit: account.capabilities.edit,

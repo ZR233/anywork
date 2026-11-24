@@ -1,4 +1,6 @@
 {
+  "composerSpeed": "Speed",
+  "composerSpeedStandard": "Standard",
   "acpConnectionReconnecting": "Reconnecting",
   "studioFailureConversationResyncRequired": "Conversation content needs to be synchronized again. Please retry.",
   "conversationDirectoryUnavailable": "Session information is unavailable. Please retry.",
@@ -707,7 +709,7 @@
   "acpEstimatedOutputSpeed": "Estimated ACP text speed (includes the first-chunk wait)",
   "statusLastConfirmedAgentTokenSpeed": "Last confirmed output speed (includes the first-token wait)",
   "settingsStatisticsTitle": "Statistics",
-  "settingsStatisticsSubtitle": "Recent successful calls grouped by account and configured model, with an in-group effort breakdown.",
+  "settingsStatisticsSubtitle": "Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.",
   "settingsStatisticsSummaryTitle": "Model performance",
   "settingsStatisticsHistoryTitle": "Call history",
   "settingsStatisticsAllModels": "All models",
@@ -846,91 +848,33 @@
   "timelineReasoningFailed": "Thinking failed",
   "timelineReasoningCancelled": "Thinking cancelled",
   "timelineReasoningElapsedUnderSecond": "Thought for less than 1s",
-  "timelineReasoningElapsedSeconds": "Thought for {seconds}s",
-  "@timelineReasoningElapsedSeconds": {
+  "timelineReasoningElapsedDuration": "Thought for {duration}",
+  "@timelineReasoningElapsedDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineReasoningElapsedMinutes": "Thought for {minutes}m",
-  "@timelineReasoningElapsedMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineReasoningElapsedMinutesSeconds": "Thought for {minutes}m {seconds}s",
-  "@timelineReasoningElapsedMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
   "timelineGroupWorkedUnderSecond": "Worked for less than 1s",
-  "timelineGroupWorkedSeconds": "Worked for {seconds}s",
-  "@timelineGroupWorkedSeconds": {
+  "timelineGroupWorkedDuration": "Worked for {duration}",
+  "@timelineGroupWorkedDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupWorkedMinutes": "Worked for {minutes}m",
-  "@timelineGroupWorkedMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupWorkedMinutesSeconds": "Worked for {minutes}m {seconds}s",
-  "@timelineGroupWorkedMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
   "timelineGroupExecutingUnderSecond": "Running for less than 1s",
-  "timelineGroupExecutingSeconds": "Running for {seconds}s",
-  "@timelineGroupExecutingSeconds": {
+  "timelineGroupExecutingDuration": "Running for {duration}",
+  "@timelineGroupExecutingDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupExecutingMinutes": "Running for {minutes}m",
-  "@timelineGroupExecutingMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupExecutingMinutesSeconds": "Running for {minutes}m {seconds}s",
-  "@timelineGroupExecutingMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
   "timelineGroupClosing": "Finishing work",
-  "timelineGroupUnrestored": "Previous work is unfinished and has not resumed",
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -1051,30 +995,11 @@
   "timelineToolStdinRunning": "Writing input",
   "timelineToolStdinFailed": "Input not written",
   "timelineToolElapsedUnderSecond": "Took less than 1s",
-  "timelineToolElapsedSeconds": "Took {seconds}s",
-  "@timelineToolElapsedSeconds": {
+  "timelineToolElapsedDuration": "Took {duration}",
+  "@timelineToolElapsedDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineToolElapsedMinutes": "Took {minutes}m",
-  "@timelineToolElapsedMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineToolElapsedMinutesSeconds": "Took {minutes}m {seconds}s",
-  "@timelineToolElapsedMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
@@ -1830,7 +1755,7 @@
   "settingsModelAutoCompactUsingDefault": "Automatic",
   "settingsModelAutoCompactInputLabel": "Threshold (tokens)",
   "settingsModelAutoCompactInvalid": "Enter a positive integer token count.",
-  "settingsModelAutoCompactHelp": "The effective threshold is capped at 90% of the context window and reserves the maximum output budget.",
+  "settingsModelAutoCompactHelp": "Leave empty to use the model default. Custom thresholds can use up to 90% of the maximum context window.",
   "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so an automatic compaction threshold cannot be calculated.",
   "settingsPriceInput": "Input",
   "settingsPriceOutput": "Output",
@@ -2087,7 +2012,6 @@
   },
   "modelTextInputUnsupported": "Text input unsupported",
   "modelTextOutputUnsupported": "Text output unsupported",
-  "modelContextWindowUnknown": "Context window unknown",
   "modelTextFilterEmpty": "No matching text models. Check model parameters in account settings.",
   "modeEditorTitle": "Work modes",
   "modeEditorNewMode": "New mode",
@@ -2396,7 +2320,12 @@
   "settingsAccountProtocol": "Account protocol",
   "statisticsGroupTotal": "Group total",
   "statisticsAllEfforts": "All effort levels",
-  "statisticsEffortBreakdownTitle": "Effort breakdown",
+  "statisticsEffortBreakdownTitle": "Effort and request tier breakdown",
+  "statisticsRequestedServiceTier": "Request speed tier",
+  "statisticsAllServiceTiers": "All request tiers",
+  "statisticsServiceTierStandard": "Standard",
+  "statisticsServiceTierUnrecorded": "Not recorded",
+  "statisticsServiceTierNotApplicable": "Not applicable",
   "accountProtocolOpenAi": "OpenAI",
   "accountProtocolDeepSeek": "DeepSeek",
   "accountProtocolZhipu": "Zhipu",
@@ -2450,9 +2379,8 @@
   "conversationActivityWaitingTools": "Waiting for tools",
   "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
   "conversationActivityWaitingTimer": "Timer",
-  "settingsModelAutoCompactAdjusted": "The effective limit was adjusted for context capacity and output reserve.",
+  "settingsModelAutoCompactAdjusted": "The effective threshold was adjusted to fit the latest maximum context window.",
   "modelContextParametersInvalid": "Inconsistent context parameters",
-  "modelInputBudgetExhausted": "No input capacity after reserving output",
   "statusCompactNow": "Compact now",
   "statusCompacting": "Compacting…",
   "statusCompactionFailed": "Compaction failed. Try again.",
@@ -3032,7 +2960,7 @@
   "acpEditorStepBasicTitle": "1. Account information",
   "acpEditorStepBasicSubtitle": "Set a display name for this Antigravity account in anywork. No API key is needed.",
   "acpEditorStepPrepareTitle": "2. Prepare official managed server",
-  "acpEditorStepPrepareSubtitle": "anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).",
+  "acpEditorStepPrepareSubtitle": "anywork automatically verifies or downloads the official Google Antigravity server (1.x).",
   "acpEditorStepConnectTitle": "3. Save and sign in with Google",
   "acpEditorStepConnectSubtitle": "Once the server is ready, click Save and connect to open account details and sign in with Google in your browser.",
   "acpInstallIdleHint": "Click Download and prepare below to reuse an existing installation or download from the official source.",
@@ -3064,7 +2992,6 @@
   "interactionDetailsReadFailed": "Failed to read the details resource.",
   "interactionDetailsInvalidFormat": "The interaction details have an invalid format.",
   "timelineGroupUnfinished": "Work unfinished",
-  "timelineGroupWorking": "Working",
   "timelineGroupRecord": "Work record",
   "timelineGroupActiveCount": "{count} running",
   "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}},
@@ -3230,8 +3157,66 @@
   "acpComposerBlockerRunning": "Response in progress",
   "acpContentThoughtLabel": "Thinking",
   "acpProcessGroupSummary": "Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}",
-  "@acpProcessGroupSummary": {"placeholders": {"count": {"type": "int"}, "toolCount": {"type": "int"}}},
-  "acpProcessGroupRunning": "Running",
+  "@acpProcessGroupSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupToolsOnly": "{toolCount, plural, =1{Ran 1 tool} other{Ran {toolCount} tools}}",
+  "@acpProcessGroupToolsOnly": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupThoughtsOnly": "{count, plural, =1{Thought once} other{{count} thoughts}}",
+  "@acpProcessGroupThoughtsOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupActivitiesOnly": "Process · {count, plural, =1{1 activity} other{{count} activities}}",
+  "@acpProcessGroupActivitiesOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningToolsMeta": "{toolCount, plural, =1{1 tool} other{{toolCount} tools}}",
+  "@acpProcessGroupRunningToolsMeta": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningActivitiesMeta": "{count, plural, =1{1 activity} other{{count} activities}}",
+  "@acpProcessGroupRunningActivitiesMeta": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpToolKindRead": "Read",
+  "acpToolKindEdit": "Edit",
+  "acpToolKindDelete": "Delete",
+  "acpToolKindMove": "Move",
+  "acpToolKindSearch": "Search",
+  "acpToolKindExecute": "Execute",
+  "acpToolKindThink": "Think",
+  "acpToolKindFetch": "Fetch",
+  "acpToolKindSwitchMode": "Switch mode",
+  "acpToolKindOther": "Tool",
   "acpContentAudioLabel": "Audio content",
   "acpContentResourceLabel": "Embedded resource",
   "acpContentBinarySummary": "{mimeType} · {byteCount} bytes",
@@ -3635,6 +3620,212 @@
   "timelineToolNameWebSearch": "Web query",
   "timelineToolNameDeepseekWebSearch": "DeepSeek web search",
   "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
+  "liveStatusConnectionDisconnected": "Live updates disconnected",
+  "liveStatusConnectionReconnecting": "Reconnecting live updates",
+  "liveStatusMembersUnavailable": "Member view unavailable",
+  "liveStatusMembersLoading": "Loading sealed members…",
+  "liveStatusRetryAction": "Retry",
+  "liveStatusContentRangeWindow": "Bytes {start}–{end} / {total}",
+  "@liveStatusContentRangeWindow": {
+    "placeholders": {
+      "start": {
+        "type": "int"
+      },
+      "end": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "liveStatusContentFirstSegment": "First chunk",
+  "liveStatusContentNextSegment": "Next chunk",
+  "timelinePatchUnavailableHint": "Patch hunk unavailable: content is incomplete or cannot be parsed",
+  "timelinePatchFileAdd": "Add",
+  "timelinePatchFileUpdate": "Update",
+  "timelinePatchFileDelete": "Delete",
+  "timelineToolCallFallback": "Tool call",
+  "timelineToolArgumentsIncompleteTitle": "Tool arguments incomplete",
+  "timelineToolArgumentsIncompleteDetail": "The argument window did not include the complete body",
+  "timelineToolIdentityMismatchTitle": "Tool identity mismatch",
+  "timelineToolIdentityMismatchDetail": "Declared call identity differs from completion payload",
+  "timelineToolMalformedLabel": "{name} · Malformed content",
+  "@timelineToolMalformedLabel": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolDeferredLabel": "{name} · Body loaded on demand",
+  "@timelineToolDeferredLabel": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolDeferredReason": "Arguments are loaded on demand; full content has not been retrieved yet",
+  "timelineToolParseFailed": "Current tool content cannot be parsed: {reason}",
+  "@timelineToolParseFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextWindowTitle": "Context window",
+  "acpSnapshotLiveBadge": "Live",
+  "acpSnapshotRetainedBadge": "Last snapshot",
+  "acpContextRemainingLabel": "{tokens} remaining",
+  "@acpContextRemainingLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextOverCapacityLabel": "Over capacity by {tokens}",
+  "@acpContextOverCapacityLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextNotReported": "Context usage not reported by agent",
+  "acpContextExactTokens": "{used} / {size} exact tokens",
+  "@acpContextExactTokens": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricSpeedTitle": "Est. output speed",
+  "acpMetricSpeedDetail": "≈ {tokens} tokens · {duration}",
+  "@acpMetricSpeedDetail": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricCostTitle": "Session cost",
+  "acpMetricCostSubtitle": "Reported by agent",
+  "acpMetricTurnsTitle": "Completed turns",
+  "acpMetricTurnsValue": "{count}",
+  "@acpMetricTurnsValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpDetailSessionSection": "Session & configuration",
+  "acpDetailLastStopReason": "Last finish",
+  "acpDetailUpdatedAt": "Updated",
+  "acpDetailCapabilitiesSection": "Capabilities & identity",
+  "acpDetailSessionId": "Remote session",
+  "acpContextDetailSection": "Context breakdown",
+  "acpContextUsedLabel": "Used tokens",
+  "acpContextCapacityLabel": "Window capacity",
+  "acpContextDeltaLabel": "Delta vs previous",
+  "acpThroughputDetailSection": "Latest sample",
+  "acpThroughputFormulaNote": "Estimated at ~1 token per 4 chars, including initial wait",
+  "acpThroughputTokensLabel": "Est. output tokens",
+  "acpThroughputDurationLabel": "Response time",
+  "acpCostDetailSection": "Cost breakdown",
+  "acpCostCurrencyLabel": "Currency",
+  "acpCostRawLabel": "Raw reading",
+  "acpCostScopeLabel": "Source",
+  "acpSessionDetailTitle": "Session info",
+  "accountsCategoryAll": "All",
+  "accountsCategoryAcp": "ACP Agents",
+  "accountsCategoryNative": "API Accounts",
+  "accountsUpgradableCount": "{count} update{count, plural, =1{} other{s}}",
+  "@accountsUpgradableCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpManagedBadge": "Managed",
+  "acpLocalBadge": "Local command",
+  "acpVersionTag": "v{version}",
+  "@acpVersionTag": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeCheck": "Check for updates",
+  "acpUpgradeChecking": "Checking for updates…",
+  "acpUpgradeUpToDate": "Up to date · v{version}",
+  "@acpUpgradeUpToDate": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeAvailableTitle": "Update available",
+  "acpUpgradeAvailableVersions": "v{current} → v{latest}",
+  "@acpUpgradeAvailableVersions": {
+    "placeholders": {
+      "current": {
+        "type": "String"
+      },
+      "latest": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeAction": "Upgrade to v{version}",
+  "@acpUpgradeAction": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeActionGeneric": "Upgrade now",
+  "acpUpgradeUpgrading": "Upgrading to v{version}",
+  "@acpUpgradeUpgrading": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradePendingSwitch": "Installed v{version}; will switch once active sessions end",
+  "@acpUpgradePendingSwitch": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeIncompatibleMajor": "v{version} available (update anywork to support major v2)",
+  "@acpUpgradeIncompatibleMajor": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeCheckFailed": "Update check failed. Try again.",
+  "acpUpgradeRetryCheck": "Retry check",
+  "acpManagedServerTitle": "Managed server & updates",
   "timelineTurnFailed": "Turn failed",
   "timelineTurnCompleted": "Turn completed",
   "timelineTurnBudgetLimited": "Turn reached budget limit",

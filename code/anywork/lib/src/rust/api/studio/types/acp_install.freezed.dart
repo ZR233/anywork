@@ -1296,4 +1296,532 @@ as BridgeAcpInstallFailure,
 
 }
 
+/// @nodoc
+mixin _$BridgeAcpInstallUpdateState {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAcpInstallUpdateStateCopyWith<$Res>  {
+$BridgeAcpInstallUpdateStateCopyWith(BridgeAcpInstallUpdateState _, $Res Function(BridgeAcpInstallUpdateState) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAcpInstallUpdateState].
+extension BridgeAcpInstallUpdateStatePatterns on BridgeAcpInstallUpdateState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpInstallUpdateState_Idle value)?  idle,TResult Function( BridgeAcpInstallUpdateState_Checking value)?  checking,TResult Function( BridgeAcpInstallUpdateState_UpToDate value)?  upToDate,TResult Function( BridgeAcpInstallUpdateState_UpdateAvailable value)?  updateAvailable,TResult Function( BridgeAcpInstallUpdateState_IncompatibleMajor value)?  incompatibleMajor,TResult Function( BridgeAcpInstallUpdateState_Failed value)?  failed,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAcpInstallUpdateState_Idle() when idle != null:
+return idle(_that);case BridgeAcpInstallUpdateState_Checking() when checking != null:
+return checking(_that);case BridgeAcpInstallUpdateState_UpToDate() when upToDate != null:
+return upToDate(_that);case BridgeAcpInstallUpdateState_UpdateAvailable() when updateAvailable != null:
+return updateAvailable(_that);case BridgeAcpInstallUpdateState_IncompatibleMajor() when incompatibleMajor != null:
+return incompatibleMajor(_that);case BridgeAcpInstallUpdateState_Failed() when failed != null:
+return failed(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpInstallUpdateState_Idle value)  idle,required TResult Function( BridgeAcpInstallUpdateState_Checking value)  checking,required TResult Function( BridgeAcpInstallUpdateState_UpToDate value)  upToDate,required TResult Function( BridgeAcpInstallUpdateState_UpdateAvailable value)  updateAvailable,required TResult Function( BridgeAcpInstallUpdateState_IncompatibleMajor value)  incompatibleMajor,required TResult Function( BridgeAcpInstallUpdateState_Failed value)  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpInstallUpdateState_Idle():
+return idle(_that);case BridgeAcpInstallUpdateState_Checking():
+return checking(_that);case BridgeAcpInstallUpdateState_UpToDate():
+return upToDate(_that);case BridgeAcpInstallUpdateState_UpdateAvailable():
+return updateAvailable(_that);case BridgeAcpInstallUpdateState_IncompatibleMajor():
+return incompatibleMajor(_that);case BridgeAcpInstallUpdateState_Failed():
+return failed(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpInstallUpdateState_Idle value)?  idle,TResult? Function( BridgeAcpInstallUpdateState_Checking value)?  checking,TResult? Function( BridgeAcpInstallUpdateState_UpToDate value)?  upToDate,TResult? Function( BridgeAcpInstallUpdateState_UpdateAvailable value)?  updateAvailable,TResult? Function( BridgeAcpInstallUpdateState_IncompatibleMajor value)?  incompatibleMajor,TResult? Function( BridgeAcpInstallUpdateState_Failed value)?  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpInstallUpdateState_Idle() when idle != null:
+return idle(_that);case BridgeAcpInstallUpdateState_Checking() when checking != null:
+return checking(_that);case BridgeAcpInstallUpdateState_UpToDate() when upToDate != null:
+return upToDate(_that);case BridgeAcpInstallUpdateState_UpdateAvailable() when updateAvailable != null:
+return updateAvailable(_that);case BridgeAcpInstallUpdateState_IncompatibleMajor() when incompatibleMajor != null:
+return incompatibleMajor(_that);case BridgeAcpInstallUpdateState_Failed() when failed != null:
+return failed(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  idle,TResult Function()?  checking,TResult Function( PlatformInt64 checkedAt,  String latestVersion)?  upToDate,TResult Function( PlatformInt64 checkedAt,  BridgeAcpInstallRelease latest)?  updateAvailable,TResult Function( PlatformInt64 checkedAt,  String latestVersion)?  incompatibleMajor,TResult Function( PlatformInt64 checkedAt,  BridgeAcpInstallFailure failure)?  failed,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAcpInstallUpdateState_Idle() when idle != null:
+return idle();case BridgeAcpInstallUpdateState_Checking() when checking != null:
+return checking();case BridgeAcpInstallUpdateState_UpToDate() when upToDate != null:
+return upToDate(_that.checkedAt,_that.latestVersion);case BridgeAcpInstallUpdateState_UpdateAvailable() when updateAvailable != null:
+return updateAvailable(_that.checkedAt,_that.latest);case BridgeAcpInstallUpdateState_IncompatibleMajor() when incompatibleMajor != null:
+return incompatibleMajor(_that.checkedAt,_that.latestVersion);case BridgeAcpInstallUpdateState_Failed() when failed != null:
+return failed(_that.checkedAt,_that.failure);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  idle,required TResult Function()  checking,required TResult Function( PlatformInt64 checkedAt,  String latestVersion)  upToDate,required TResult Function( PlatformInt64 checkedAt,  BridgeAcpInstallRelease latest)  updateAvailable,required TResult Function( PlatformInt64 checkedAt,  String latestVersion)  incompatibleMajor,required TResult Function( PlatformInt64 checkedAt,  BridgeAcpInstallFailure failure)  failed,}) {final _that = this;
+switch (_that) {
+case BridgeAcpInstallUpdateState_Idle():
+return idle();case BridgeAcpInstallUpdateState_Checking():
+return checking();case BridgeAcpInstallUpdateState_UpToDate():
+return upToDate(_that.checkedAt,_that.latestVersion);case BridgeAcpInstallUpdateState_UpdateAvailable():
+return updateAvailable(_that.checkedAt,_that.latest);case BridgeAcpInstallUpdateState_IncompatibleMajor():
+return incompatibleMajor(_that.checkedAt,_that.latestVersion);case BridgeAcpInstallUpdateState_Failed():
+return failed(_that.checkedAt,_that.failure);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  idle,TResult? Function()?  checking,TResult? Function( PlatformInt64 checkedAt,  String latestVersion)?  upToDate,TResult? Function( PlatformInt64 checkedAt,  BridgeAcpInstallRelease latest)?  updateAvailable,TResult? Function( PlatformInt64 checkedAt,  String latestVersion)?  incompatibleMajor,TResult? Function( PlatformInt64 checkedAt,  BridgeAcpInstallFailure failure)?  failed,}) {final _that = this;
+switch (_that) {
+case BridgeAcpInstallUpdateState_Idle() when idle != null:
+return idle();case BridgeAcpInstallUpdateState_Checking() when checking != null:
+return checking();case BridgeAcpInstallUpdateState_UpToDate() when upToDate != null:
+return upToDate(_that.checkedAt,_that.latestVersion);case BridgeAcpInstallUpdateState_UpdateAvailable() when updateAvailable != null:
+return updateAvailable(_that.checkedAt,_that.latest);case BridgeAcpInstallUpdateState_IncompatibleMajor() when incompatibleMajor != null:
+return incompatibleMajor(_that.checkedAt,_that.latestVersion);case BridgeAcpInstallUpdateState_Failed() when failed != null:
+return failed(_that.checkedAt,_that.failure);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpInstallUpdateState_Idle extends BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState_Idle(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState_Idle);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState.idle()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpInstallUpdateState_Checking extends BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState_Checking(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState_Checking);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState.checking()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpInstallUpdateState_UpToDate extends BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState_UpToDate({required this.checkedAt, required this.latestVersion}): super._();
+
+
+ final  PlatformInt64 checkedAt;
+ final  String latestVersion;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpInstallUpdateState_UpToDateCopyWith<BridgeAcpInstallUpdateState_UpToDate> get copyWith => _$BridgeAcpInstallUpdateState_UpToDateCopyWithImpl<BridgeAcpInstallUpdateState_UpToDate>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState_UpToDate&&(identical(other.checkedAt, checkedAt) || other.checkedAt == checkedAt)&&(identical(other.latestVersion, latestVersion) || other.latestVersion == latestVersion));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,checkedAt,latestVersion);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState.upToDate(checkedAt: $checkedAt, latestVersion: $latestVersion)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpInstallUpdateState_UpToDateCopyWith<$Res> implements $BridgeAcpInstallUpdateStateCopyWith<$Res> {
+  factory $BridgeAcpInstallUpdateState_UpToDateCopyWith(BridgeAcpInstallUpdateState_UpToDate value, $Res Function(BridgeAcpInstallUpdateState_UpToDate) _then) = _$BridgeAcpInstallUpdateState_UpToDateCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 checkedAt, String latestVersion
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpInstallUpdateState_UpToDateCopyWithImpl<$Res>
+    implements $BridgeAcpInstallUpdateState_UpToDateCopyWith<$Res> {
+  _$BridgeAcpInstallUpdateState_UpToDateCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpInstallUpdateState_UpToDate _self;
+  final $Res Function(BridgeAcpInstallUpdateState_UpToDate) _then;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? checkedAt = null,Object? latestVersion = null,}) {
+  return _then(BridgeAcpInstallUpdateState_UpToDate(
+checkedAt: null == checkedAt ? _self.checkedAt : checkedAt // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,latestVersion: null == latestVersion ? _self.latestVersion : latestVersion // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpInstallUpdateState_UpdateAvailable extends BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState_UpdateAvailable({required this.checkedAt, required this.latest}): super._();
+
+
+ final  PlatformInt64 checkedAt;
+ final  BridgeAcpInstallRelease latest;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpInstallUpdateState_UpdateAvailableCopyWith<BridgeAcpInstallUpdateState_UpdateAvailable> get copyWith => _$BridgeAcpInstallUpdateState_UpdateAvailableCopyWithImpl<BridgeAcpInstallUpdateState_UpdateAvailable>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState_UpdateAvailable&&(identical(other.checkedAt, checkedAt) || other.checkedAt == checkedAt)&&(identical(other.latest, latest) || other.latest == latest));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,checkedAt,latest);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState.updateAvailable(checkedAt: $checkedAt, latest: $latest)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpInstallUpdateState_UpdateAvailableCopyWith<$Res> implements $BridgeAcpInstallUpdateStateCopyWith<$Res> {
+  factory $BridgeAcpInstallUpdateState_UpdateAvailableCopyWith(BridgeAcpInstallUpdateState_UpdateAvailable value, $Res Function(BridgeAcpInstallUpdateState_UpdateAvailable) _then) = _$BridgeAcpInstallUpdateState_UpdateAvailableCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 checkedAt, BridgeAcpInstallRelease latest
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpInstallUpdateState_UpdateAvailableCopyWithImpl<$Res>
+    implements $BridgeAcpInstallUpdateState_UpdateAvailableCopyWith<$Res> {
+  _$BridgeAcpInstallUpdateState_UpdateAvailableCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpInstallUpdateState_UpdateAvailable _self;
+  final $Res Function(BridgeAcpInstallUpdateState_UpdateAvailable) _then;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? checkedAt = null,Object? latest = null,}) {
+  return _then(BridgeAcpInstallUpdateState_UpdateAvailable(
+checkedAt: null == checkedAt ? _self.checkedAt : checkedAt // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,latest: null == latest ? _self.latest : latest // ignore: cast_nullable_to_non_nullable
+as BridgeAcpInstallRelease,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpInstallUpdateState_IncompatibleMajor extends BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState_IncompatibleMajor({required this.checkedAt, required this.latestVersion}): super._();
+
+
+ final  PlatformInt64 checkedAt;
+ final  String latestVersion;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpInstallUpdateState_IncompatibleMajorCopyWith<BridgeAcpInstallUpdateState_IncompatibleMajor> get copyWith => _$BridgeAcpInstallUpdateState_IncompatibleMajorCopyWithImpl<BridgeAcpInstallUpdateState_IncompatibleMajor>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState_IncompatibleMajor&&(identical(other.checkedAt, checkedAt) || other.checkedAt == checkedAt)&&(identical(other.latestVersion, latestVersion) || other.latestVersion == latestVersion));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,checkedAt,latestVersion);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState.incompatibleMajor(checkedAt: $checkedAt, latestVersion: $latestVersion)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpInstallUpdateState_IncompatibleMajorCopyWith<$Res> implements $BridgeAcpInstallUpdateStateCopyWith<$Res> {
+  factory $BridgeAcpInstallUpdateState_IncompatibleMajorCopyWith(BridgeAcpInstallUpdateState_IncompatibleMajor value, $Res Function(BridgeAcpInstallUpdateState_IncompatibleMajor) _then) = _$BridgeAcpInstallUpdateState_IncompatibleMajorCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 checkedAt, String latestVersion
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpInstallUpdateState_IncompatibleMajorCopyWithImpl<$Res>
+    implements $BridgeAcpInstallUpdateState_IncompatibleMajorCopyWith<$Res> {
+  _$BridgeAcpInstallUpdateState_IncompatibleMajorCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpInstallUpdateState_IncompatibleMajor _self;
+  final $Res Function(BridgeAcpInstallUpdateState_IncompatibleMajor) _then;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? checkedAt = null,Object? latestVersion = null,}) {
+  return _then(BridgeAcpInstallUpdateState_IncompatibleMajor(
+checkedAt: null == checkedAt ? _self.checkedAt : checkedAt // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,latestVersion: null == latestVersion ? _self.latestVersion : latestVersion // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpInstallUpdateState_Failed extends BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState_Failed({required this.checkedAt, required this.failure}): super._();
+
+
+ final  PlatformInt64 checkedAt;
+ final  BridgeAcpInstallFailure failure;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpInstallUpdateState_FailedCopyWith<BridgeAcpInstallUpdateState_Failed> get copyWith => _$BridgeAcpInstallUpdateState_FailedCopyWithImpl<BridgeAcpInstallUpdateState_Failed>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpInstallUpdateState_Failed&&(identical(other.checkedAt, checkedAt) || other.checkedAt == checkedAt)&&(identical(other.failure, failure) || other.failure == failure));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,checkedAt,failure);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpInstallUpdateState.failed(checkedAt: $checkedAt, failure: $failure)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpInstallUpdateState_FailedCopyWith<$Res> implements $BridgeAcpInstallUpdateStateCopyWith<$Res> {
+  factory $BridgeAcpInstallUpdateState_FailedCopyWith(BridgeAcpInstallUpdateState_Failed value, $Res Function(BridgeAcpInstallUpdateState_Failed) _then) = _$BridgeAcpInstallUpdateState_FailedCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 checkedAt, BridgeAcpInstallFailure failure
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpInstallUpdateState_FailedCopyWithImpl<$Res>
+    implements $BridgeAcpInstallUpdateState_FailedCopyWith<$Res> {
+  _$BridgeAcpInstallUpdateState_FailedCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpInstallUpdateState_Failed _self;
+  final $Res Function(BridgeAcpInstallUpdateState_Failed) _then;
+
+/// Create a copy of BridgeAcpInstallUpdateState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? checkedAt = null,Object? failure = null,}) {
+  return _then(BridgeAcpInstallUpdateState_Failed(
+checkedAt: null == checkedAt ? _self.checkedAt : checkedAt // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,failure: null == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
+as BridgeAcpInstallFailure,
+  ));
+}
+
+
+}
+
 // dart format on

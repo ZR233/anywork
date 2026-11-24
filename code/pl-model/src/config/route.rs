@@ -163,7 +163,7 @@ impl AgentModelConfig {
         let models = account.effective_catalog(None)?;
         let Some(model) = models
             .iter()
-            .find(|entry| entry.model.model_id == route.model_id)
+            .find(|entry| entry.model.base.slug == route.model_id)
         else {
             if account.discovery_profile()?.is_none() {
                 return Err(PureError::ConfigError(format!(
@@ -194,6 +194,7 @@ impl AgentModelConfig {
         let model = &model.model;
         if let Some(connection_mode) = account.connection_overrides().get(&route.model_id)
             && !model
+                .extra
                 .binding
                 .transport
                 .supported_connection_modes
@@ -208,7 +209,7 @@ impl AgentModelConfig {
         }
         let candidates = model.supported_efforts();
         let valid = match &route.effort {
-            None => candidates.is_empty(),
+            None => true,
             Some(effort) => candidates.iter().any(|c| c == effort.as_str()),
         };
         if !valid {
@@ -225,9 +226,9 @@ impl AgentModelConfig {
             if !observed_candidates
                 && (account.discovery_profile()?.is_none()
                     || account
-                        .editable_models()
+                        .model_overrides()
                         .iter()
-                        .any(|manual| manual.model_id == route.model_id))
+                        .any(|manual| manual.base.slug == route.model_id))
             {
                 return Err(PureError::ConfigError(
                     "model route has invalid effort selection".into(),
@@ -285,7 +286,7 @@ impl AgentModelConfig {
         let models = account.effective_catalog(None)?;
         let model = models
             .iter()
-            .find(|entry| entry.model.model_id == route.model_id)
+            .find(|entry| entry.model.base.slug == route.model_id)
             .cloned()
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
@@ -310,6 +311,7 @@ impl AgentModelConfig {
         let model = model.model;
         if let Some(connection_mode) = account.connection_overrides().get(&route.model_id)
             && !model
+                .extra
                 .binding
                 .transport
                 .supported_connection_modes
@@ -330,12 +332,6 @@ impl AgentModelConfig {
                     route.account_id, route.model_id
                 )));
             }
-            (None, false) => {
-                return Err(PureError::ConfigError(format!(
-                    "role {role} must select an effort for model {}.{}",
-                    route.account_id, route.model_id
-                )));
-            }
             (Some(effort), false)
                 if !candidates
                     .iter()
@@ -350,14 +346,34 @@ impl AgentModelConfig {
             }
             _ => {}
         }
+        let effort = route
+            .effort
+            .clone()
+            .or_else(|| model.default_effort().map(ReasoningEffort::new));
+        let mut endpoint = account.to_endpoint()?;
+        // A compatible endpoint can advertise hosted search for a particular Responses model.
+        // Keep an explicit account policy authoritative, including when it disables search.
+        if matches!(
+            account.capabilities,
+            super::AccountCapabilitySelection::TemplateDefaults
+        ) && model.extra.binding.transport.protocol == crate::protocol::WireApi::Responses
+            && model.extra.capabilities.supports_web_search()
+            && model.observation.as_ref().is_some_and(|o| {
+                o.fields
+                    .contains_key(&crate::model::ModelMetadataField::WebSearch)
+            })
+        {
+            endpoint.service_capabilities.web_search.hosted_responses = true;
+        }
         Ok(ResolvedModelRoute {
             pricing_mode: account.billing_kind()?.into(),
             role,
             account_id: route.account_id.clone(),
-            endpoint: account.to_endpoint()?,
+            endpoint,
             context,
             model,
-            effort: route.effort.clone(),
+            effort,
+            service_tier: None,
         })
     }
 }

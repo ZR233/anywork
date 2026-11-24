@@ -1946,7 +1946,12 @@ impl FixtureServer {
                 post(provider_usage::control).fallback(unexpected_route),
             )
         } else {
-            app
+            // Every compatible account performs background discovery. A valid empty
+            // inventory leaves a test's explicit model and inference script intact.
+            app.route(
+                "/v1/models",
+                get(|| async { Json(serde_json::json!({"data": []})) }).fallback(unexpected_route),
+            )
         };
         let app = if model_catalog_enabled {
             app.route(
@@ -4359,13 +4364,14 @@ async fn files(State(state): State<AppState>, mut multipart: Multipart) -> Respo
             return StatusCode::BAD_REQUEST.into_response();
         }
         let value = if name == "file" {
+            let purpose_precedes_file = fields.contains_key("purpose");
             let filename = field.file_name().unwrap_or_default().to_owned();
             let mime_type = field.content_type().unwrap_or_default().to_owned();
             let Ok(bytes) = field.bytes().await else {
                 record_rejected(&state, "POST".into(), "/v1/files".into(), Value::Null);
                 return StatusCode::BAD_REQUEST.into_response();
             };
-            json!({"filename":filename,"mime_type":mime_type,"sha256":hex::encode(Sha256::digest(&bytes))})
+            json!({"filename":filename,"mime_type":mime_type,"sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":purpose_precedes_file})
         } else {
             let Ok(text) = field.text().await else {
                 record_rejected(&state, "POST".into(), "/v1/files".into(), Value::Null);

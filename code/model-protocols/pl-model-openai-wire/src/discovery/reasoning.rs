@@ -5,7 +5,9 @@ use serde::Deserialize;
 
 use super::DiscoveryPolicy;
 use super::{ModelCatalogQueryError, effort_parameter, nullable};
-use crate::model::{ModelInfo, ModelParameter, ModelParameterDefaultObservation, ParameterWire};
+use crate::model::{
+    ModelDefinition, ModelParameter, ModelParameterDefaultObservation, ParameterWire,
+};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ReasoningDeclaration {
@@ -77,7 +79,7 @@ impl ReasoningDeclaration {
 
     pub fn apply(
         self,
-        model: &mut ModelInfo,
+        model: &mut ModelDefinition,
         dialect: DiscoveryPolicy,
         explicit_reasoning: Option<bool>,
     ) -> Result<(), ModelCatalogQueryError> {
@@ -114,6 +116,7 @@ impl ReasoningDeclaration {
         }
         merge_default(&mut defaults, "effort", self.default)?;
         merge_default(&mut defaults, "effort", self.default_reasoning_level)?;
+        let mut resolved: Vec<_> = model.parameters().collect();
         let previous_default = model
             .effort_parameter()
             .and_then(|parameter| parameter.default.clone());
@@ -129,6 +132,7 @@ impl ReasoningDeclaration {
             };
             if parameters.iter().any(|parameter| {
                 parameter.name != "effort"
+                    || parameter.wire.len() != parameter.candidates.len()
                     || parameter.wire.iter().any(|(candidate, wire)| {
                         !wire.remove.is_empty()
                             || wire.set.len() != 1
@@ -138,11 +142,17 @@ impl ReasoningDeclaration {
             }) {
                 return Err(ModelCatalogQueryError::Protocol);
             }
-            model.parameters = parameters
+            let service_tiers = resolved
+                .iter()
+                .filter(|p| p.name == "service_tier")
+                .cloned()
+                .collect::<Vec<_>>();
+            resolved = parameters
                 .into_iter()
                 .map(|parameter| {
                     merge_default(&mut defaults, &parameter.name, parameter.default)?;
                     Ok(ModelParameter {
+                        candidate_display_names: Default::default(),
                         name: parameter.name,
                         label: parameter.label,
                         candidates: parameter.candidates,
@@ -151,33 +161,34 @@ impl ReasoningDeclaration {
                     })
                 })
                 .collect::<Result<_, ModelCatalogQueryError>>()?;
+            resolved.extend(service_tiers);
         }
         if let Some(values) = levels {
-            model
-                .parameters
-                .retain(|parameter| parameter.name != "effort");
+            resolved.retain(|parameter| parameter.name != "effort");
             if !values.is_empty() {
-                model.parameters.push(effort_parameter(values, dialect));
+                resolved.push(effort_parameter(values, dialect));
             }
         }
         if self.supports_effort == Some(false) || explicit_reasoning == Some(false) {
-            if candidates_declared && !model.supported_efforts().is_empty()
+            if candidates_declared
+                && resolved
+                    .iter()
+                    .any(|p| p.name == "effort" && !p.candidates.is_empty())
                 || defaults.get("effort").is_some_and(Option::is_some)
             {
                 return Err(ModelCatalogQueryError::Protocol);
             }
-            model
-                .parameters
-                .retain(|parameter| parameter.name != "effort");
+            resolved.retain(|parameter| parameter.name != "effort");
         }
         if candidates_declared
             && explicit_reasoning.is_none()
             && self.supports_effort != Some(false)
         {
-            model.capabilities.reasoning = !model.supported_efforts().is_empty();
+            model.extra.capabilities.reasoning = resolved
+                .iter()
+                .any(|p| p.name == "effort" && !p.candidates.is_empty());
         }
-        if let Some(parameter) = model
-            .parameters
+        if let Some(parameter) = resolved
             .iter_mut()
             .find(|parameter| parameter.name == "effort")
         {
@@ -185,10 +196,7 @@ impl ReasoningDeclaration {
                 previous_default.filter(|value| parameter.candidates.contains(value));
         }
         for (name, value) in defaults {
-            let parameter = model
-                .parameters
-                .iter_mut()
-                .find(|parameter| parameter.name == name);
+            let parameter = resolved.iter_mut().find(|parameter| parameter.name == name);
             if candidates_declared
                 && value.as_ref().is_some_and(|value| {
                     parameter
@@ -207,6 +215,7 @@ impl ReasoningDeclaration {
                 .parameter_defaults
                 .insert(name, ModelParameterDefaultObservation { value, order: 0 });
         }
+        model.set_parameters(resolved);
         Ok(())
     }
 }

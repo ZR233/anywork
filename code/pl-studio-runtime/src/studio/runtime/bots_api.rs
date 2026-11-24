@@ -91,7 +91,8 @@ impl StudioRuntime {
         let selector = self.bots.model_selector(&bot).map_err(bot_err)?;
         let (previous, saved) = crate::studio::model_route::route_record(&state, false)?
             .ok_or_else(|| anyhow::anyhow!("bot session has no model route"))?;
-        if saved == selector
+        if saved.model == selector
+            && saved.service_tier.is_none()
             && state
                 .extensions
                 .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
@@ -107,7 +108,7 @@ impl StudioRuntime {
         let mut mutations = vec![pl_core::thread::extensions::ExtensionMutation::Put {
             id: crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
             expected_revision: Some(previous.revision),
-            payload: crate::studio::model_route::encode(&selector)?,
+            payload: crate::studio::model_route::encode(&selector.into())?,
         }];
         if !state
             .extensions

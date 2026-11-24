@@ -166,24 +166,6 @@ StudioDriverFacts queryStudioDriverFacts(
         .lease(presentationThreadId ?? '')
         ?.liveStatus
         ?.primaryActivity,
-    liveActivityTools: switch (timeline
-        .lease(presentationThreadId ?? '')
-        ?.liveStatus
-        ?.activityTools) {
-      final tools? => LiveActivityToolsFacts(
-        ownerId: tools.reference.ownerId,
-        collection: tools.reference.collection,
-        revision: tools.reference.revision,
-        totalCount: tools.totalCount,
-        loadedCount: tools.loadedCount,
-        expanded: tools.expanded,
-        loading: tools.loading,
-        hasPrevious: tools.hasPrevious,
-        hasNext: tools.hasNext,
-        error: tools.error,
-      ),
-      null => null,
-    },
     timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
       for (final state in client.conversations.sessionStates)
@@ -990,6 +972,23 @@ StudioDriverAcpInstallFacts? _acpInstallFacts(AcpService service) {
           reused: entry.state.server?.reused ?? false,
           failureCode: entry.state.failure?.code.name,
           failureRetryable: entry.state.failure?.retryable,
+          installedVersion: entry.installed?.release.version,
+          updatePhase: switch (entry.update) {
+            AcpInstallUpdateIdleState() => 'idle',
+            AcpInstallUpdateCheckingState() => 'checking',
+            AcpInstallUpdateUpToDateState() => 'up_to_date',
+            AcpInstallUpdateAvailableState() => 'update_available',
+            AcpInstallUpdateIncompatibleMajorState() => 'incompatible_major',
+            AcpInstallUpdateFailedState() => 'failed',
+          },
+          updateLatestVersion: switch (entry.update) {
+            AcpInstallUpdateUpToDateState(:final latestVersion) =>
+              latestVersion,
+            AcpInstallUpdateAvailableState(:final latest) => latest.version,
+            AcpInstallUpdateIncompatibleMajorState(:final latestVersion) =>
+              latestVersion,
+            _ => null,
+          },
         ),
     ],
   );

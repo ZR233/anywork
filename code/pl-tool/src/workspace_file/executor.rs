@@ -368,9 +368,14 @@ impl WorkspaceFileBackend for ExecutorWorkspaceFileBackend {
             .path_request(request.path, request.cwd)
             .map_err(file_error)?;
         let mut bytes = Vec::new();
-        self.copy_capture_bounded(path.as_str(), &mut bytes, request.max_bytes as u64)
-            .await
-            .map_err(file_error)?;
+        let copied = match request.max_bytes {
+            Some(limit) => {
+                self.copy_capture_bounded(path.as_str(), &mut bytes, limit as u64)
+                    .await
+            }
+            None => self.copy_file_to(path.as_str(), &mut bytes).await,
+        };
+        copied.map_err(file_error)?;
         Ok(bytes)
     }
     async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {

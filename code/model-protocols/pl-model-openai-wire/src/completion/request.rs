@@ -49,6 +49,7 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u64>,
     pub reasoning: Option<ReasoningConfig>,
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,11 @@ pub struct CompletionRequestBuilder {
 }
 
 impl CompletionRequestBuilder {
+    pub fn service_tier(mut self, service_tier: Option<String>) -> Self {
+        self.request.service_tier = service_tier;
+        self
+    }
+
     pub fn system_prompt(mut self, system_prompt: SystemPrompt) -> Self {
         self.request.system_prompt = Some(system_prompt);
         self
@@ -216,6 +222,7 @@ impl CompletionRequest {
                 temperature: None,
                 max_tokens: None,
                 reasoning: None,
+                service_tier: None,
             },
         }
     }
@@ -232,9 +239,10 @@ impl CompletionRequest {
 
     pub fn validate_against(
         &self,
-        model: &str,
+        base: &crate::model::CodexModel,
         capabilities: &ModelCapabilities,
     ) -> pl_protocol::Result<()> {
+        let model = &base.slug;
         let declared = self
             .attachments
             .iter()
@@ -298,7 +306,7 @@ impl CompletionRequest {
         }
         if has_function_tools
             && self.parallel_tool_calls
-            && !capabilities.supports_parallel_tool_calls()
+            && base.supports_parallel_tool_calls != Some(true)
         {
             return Err(PureError::ConfigError(format!(
                 "model {} does not support parallel tool calls",

@@ -107,7 +107,7 @@ pub(crate) fn resolve_child_selection(
 ) -> crate::Result<pl_model::config::ResolvedModelRoute> {
     let route = config.models.resolve_route(role, selector)?;
     validate_credential(&route)?;
-    if !route.model.capabilities.tools.function_calling {
+    if !route.model.extra.capabilities.tools.function_calling {
         return Err(crate::PureError::ConfigError(
             "child model requires tool calling".into(),
         ));
@@ -296,7 +296,9 @@ mod tests {
                     "Local admission fixture",
                     "http://127.0.0.1:1",
                 ),
-                vec![pl_model::model::ModelInfo::compatible(&selector.model_id)],
+                vec![pl_model::model::ModelDefinition::compatible(
+                    &selector.model_id,
+                )],
             ),
         );
         let route = resolve(&config, &selector)?;

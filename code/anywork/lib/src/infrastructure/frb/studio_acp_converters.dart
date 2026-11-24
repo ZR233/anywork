@@ -551,10 +551,51 @@ AcpInstallStateView _acpInstallStateFromFrb(frb.BridgeAcpInstallState value) =>
         ),
     };
 
+AcpInstallUpdateStateView _acpInstallUpdateStateFromFrb(
+  frb.BridgeAcpInstallUpdateState value,
+) => switch (value) {
+  frb.BridgeAcpInstallUpdateState_Idle() => const AcpInstallUpdateIdleState(),
+  frb.BridgeAcpInstallUpdateState_Checking() =>
+    const AcpInstallUpdateCheckingState(),
+  frb.BridgeAcpInstallUpdateState_UpToDate(
+    :final checkedAt,
+    :final latestVersion,
+  ) =>
+    AcpInstallUpdateUpToDateState(
+      checkedAt: _frbInt(checkedAt),
+      latestVersion: latestVersion,
+    ),
+  frb.BridgeAcpInstallUpdateState_UpdateAvailable(
+    :final checkedAt,
+    :final latest,
+  ) =>
+    AcpInstallUpdateAvailableState(
+      checkedAt: _frbInt(checkedAt),
+      latest: _acpInstallReleaseFromFrb(latest),
+    ),
+  frb.BridgeAcpInstallUpdateState_IncompatibleMajor(
+    :final checkedAt,
+    :final latestVersion,
+  ) =>
+    AcpInstallUpdateIncompatibleMajorState(
+      checkedAt: _frbInt(checkedAt),
+      latestVersion: latestVersion,
+    ),
+  frb.BridgeAcpInstallUpdateState_Failed(:final checkedAt, :final failure) =>
+    AcpInstallUpdateFailedState(
+      checkedAt: _frbInt(checkedAt),
+      failure: _acpInstallFailureFromFrb(failure),
+    ),
+};
+
 AcpInstallEntryView _acpInstallEntryFromFrb(frb.BridgeAcpInstallEntry value) =>
     AcpInstallEntryView(
       provider: _acpProviderFromFrb(value.provider),
       state: _acpInstallStateFromFrb(value.state),
+      installed: value.installed == null
+          ? null
+          : _acpInstalledServerFromFrb(value.installed!),
+      update: _acpInstallUpdateStateFromFrb(value.update),
     );
 
 AcpInstallSnapshotView _acpInstallSnapshotFromFrb(

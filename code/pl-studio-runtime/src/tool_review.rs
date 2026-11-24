@@ -105,9 +105,10 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         account_id: route.account_id.as_str().into(),
         account_display_name: Some(route.endpoint.name.clone()),
         // 冻结的目录配置模型；发送/返回模型只留在 observation 诊断里。
-        model_id: Some(route.model.model_id.clone()),
+        model_id: Some(route.model.base.slug.clone()),
         model_observation,
         effort: route.effort.as_ref().map(|effort| effort.as_str().into()),
+        requested_service_tier: Some("notApplicable".into()),
         context_window: route.context.context_window,
         accounting,
         prompt_generation: None,

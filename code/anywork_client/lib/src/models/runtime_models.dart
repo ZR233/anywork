@@ -535,6 +535,7 @@ class ThreadModelRouteView {
     required this.accountId,
     required this.modelId,
     required this.effort,
+    this.serviceTier,
     required this.revision,
     required this.available,
     this.unavailableReason,
@@ -544,6 +545,7 @@ class ThreadModelRouteView {
   final String accountId;
   final String modelId;
   final String? effort;
+  final String? serviceTier;
   final int revision;
   final bool available;
   final String? unavailableReason;
@@ -556,6 +558,7 @@ class ThreadModelRouteView {
       accountId == other.accountId &&
       modelId == other.modelId &&
       effort == other.effort &&
+      serviceTier == other.serviceTier &&
       revision == other.revision &&
       available == other.available &&
       unavailableReason == other.unavailableReason;
@@ -565,6 +568,7 @@ class ThreadModelRouteView {
     accountId,
     modelId,
     effort,
+    serviceTier,
     revision,
     available,
     unavailableReason,

@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use pl_model_openai_wire::model::{
-    BundledModelDefinition, MediaSendOrder, ModelDefinitionError, ModelInfo,
+    BundledModelDefinition, MediaSendOrder, ModelDefinition, ModelDefinitionError,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
         ToolCapabilities,
@@ -11,6 +11,7 @@ use pl_model_openai_wire::model::{
     info::{MediaWireFormat, ModelRequestProfile, ModelTransportProfile, TruncationMode},
     pricing::{ModelPricing, TokenPriceTier},
 };
+use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 
 const RECOMMENDED_MODEL: &str = "grok-4.7";
 const COMMON_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];
@@ -95,7 +96,7 @@ const MODELS: &[Definition] = &[
 ];
 
 impl Definition {
-    fn instantiate(&self, family: &ModelFamily) -> ModelInfo {
+    fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
         let mut model = family.instantiate(ModelInstanceSpec {
             model_id: self.id,
             display_name: self.name,
@@ -112,10 +113,12 @@ impl Definition {
             },
         });
         if !self.efforts.is_empty() {
-            model.capabilities.reasoning = true;
-            model
-                .parameters
-                .push(effort_parameter("reasoning.effort", self.efforts, None));
+            model.extra.capabilities.reasoning = true;
+            model.set_parameters(vec![effort_parameter(
+                "reasoning.effort",
+                self.efforts,
+                None,
+            )]);
         }
         model
     }
@@ -123,7 +126,6 @@ impl Definition {
 
 fn family() -> ModelFamily {
     ModelFamily {
-        id: "grok-responses",
         capabilities: ModelCapabilities {
             temperature: false,
             input: vec![
@@ -140,20 +142,24 @@ fn family() -> ModelFamily {
             ],
             tools: ToolCapabilities {
                 function_calling: true,
-                parallel_tool_calls: true,
                 ..Default::default()
             },
             ..ModelCapabilities::text_only()
         },
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: Vec::new(),
         transport: ModelTransportProfile::responses_http(),
         request_profile: ModelRequestProfile::responses().with_image_media(
             MediaWireFormat::ResponsesInputImage,
             MediaSendOrder::RemoteUrlFirst,
         ),
-        base_instructions: String::new(),
     }
 }
 

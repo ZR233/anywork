@@ -353,7 +353,7 @@ impl StateStore {
                     crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
                     pl_core::thread::extensions::ExtensionRecord {
                         revision: checkpoint.state.extension_sequence,
-                        payload: crate::studio::model_route::encode(&route)?,
+                        payload: crate::studio::model_route::encode(&route.into())?,
                     },
                 );
             }

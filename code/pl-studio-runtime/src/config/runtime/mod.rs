@@ -1210,13 +1210,14 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
             }
             let model = models
                 .iter()
-                .find(|model| model.model_id == *model_id)
+                .find(|model| model.base.slug == *model_id)
                 .ok_or_else(|| {
                     PureError::ConfigError(
                         "new connection override references unavailable model".into(),
                     )
                 })?;
             if !model
+                .extra
                 .binding
                 .transport
                 .supported_connection_modes

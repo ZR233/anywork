@@ -15,7 +15,10 @@ impl ModelRuntime {
         context: ModelInvocationContext,
         mut current: Option<&mut crate::runtime::current::CurrentProducer>,
     ) -> std::result::Result<CompletionResponse, CompletionFailure> {
-        crate::runtime::context::validate(self.model.binding.transport.protocol, &request.input)?;
+        crate::runtime::context::validate(
+            self.model.extra.binding.transport.protocol,
+            &request.input,
+        )?;
         let admission = async {
             if let Some(cancellation) = &context.cancellation {
                 tokio::select! {
@@ -49,7 +52,7 @@ impl ModelRuntime {
         let retry_jitter_key = original_trace
             .as_ref()
             .map(|trace| trace.inference_id.as_str())
-            .unwrap_or(self.model.model_id.as_str())
+            .unwrap_or(self.model.base.slug.as_str())
             .to_string();
         let mut attempt_number = 0_u32;
         let mut transport_attempts = 0_u64;
@@ -159,7 +162,7 @@ impl ModelRuntime {
                         .saturating_sub(transport_metrics_before.continuation_invalid);
                     response.orchestration.http_fallbacks = http_fallbacks;
                     response.timing = inference_timer.and_then(|timer| timer.finish());
-                    response.accounting = self.model.pricing.account(
+                    response.accounting = self.model.extra.pricing.account(
                         response.accounting.usage,
                         self.pricing_mode,
                         request_started_at,
@@ -171,7 +174,7 @@ impl ModelRuntime {
                     // 失败/取消的尝试不产生任何可确认的速度：在把它交给任何终态发布者或重试
                     // 换代之前，先整组撤销 live 用量与耗时，已收到的内容与回执不受影响。
                     context.close_live_usage();
-                    error.accounting = Box::new(self.model.pricing.account(
+                    error.accounting = Box::new(self.model.extra.pricing.account(
                         error.accounting.usage,
                         self.pricing_mode,
                         request_started_at,

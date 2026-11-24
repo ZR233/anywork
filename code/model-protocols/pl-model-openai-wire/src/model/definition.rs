@@ -1,14 +1,14 @@
 //! Validated built-in model inventories.
 use thiserror::Error;
 
-use super::ModelInfo;
+use super::ModelDefinition;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BundledModelDefinition {
     pub suggested_model: String,
     /// Initial route recommendation, independent of the model's weakest default effort.
     pub suggested_effort: Option<String>,
-    pub models: Vec<ModelInfo>,
+    pub models: Vec<ModelDefinition>,
 }
 
 /// A binary/packaging defect, never a damaged user configuration.
@@ -41,7 +41,7 @@ impl BundledModelDefinition {
     /// # Errors
     /// Returns an error when a declaration or the recommendation is invalid.
     pub fn new(
-        models: Vec<ModelInfo>,
+        models: Vec<ModelDefinition>,
         suggested_model: &str,
         suggested_effort: Option<&str>,
     ) -> Result<Self, ModelDefinitionError> {
@@ -54,7 +54,7 @@ impl BundledModelDefinition {
         let suggested = definition
             .models
             .iter()
-            .find(|m| m.model_id == definition.suggested_model)
+            .find(|m| m.base.slug == definition.suggested_model)
             .ok_or(ModelDefinitionError::Recommendation)?;
         let supported_efforts = suggested.supported_efforts();
         let valid_recommendation = match &definition.suggested_effort {
@@ -68,10 +68,10 @@ impl BundledModelDefinition {
     }
 }
 
-pub fn validate_inventory(models: &[ModelInfo]) -> Result<(), ModelDefinitionError> {
+pub fn validate_inventory(models: &[ModelDefinition]) -> Result<(), ModelDefinitionError> {
     let mut model_ids = std::collections::BTreeSet::new();
     for model in models {
-        if model.model_id.trim().is_empty() || !model_ids.insert(&model.model_id) {
+        if model.base.slug.trim().is_empty() || !model_ids.insert(&model.base.slug) {
             return Err(ModelDefinitionError::Declaration);
         }
         model

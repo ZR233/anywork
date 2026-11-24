@@ -256,8 +256,14 @@ abstract final class TimelinePreviewFixtures {
   static const groupSource = ForegroundTurnChatSource(turnId: 'preview-turn');
   static const groupStartedAt = 1735689600;
   static const commandFinishedAt = 1735689601;
+  static const workSummaryKey = 'part.summaryText.0';
+  static final workSummaryBytes = utf8.encode(
+    '### 核对 **工作组成员** 与 `WorkRange` 的读取边界\n'
+    '确认过长的思考概要在窄窗口中不会挤占命令、修改和其他成员的展示空间。',
+  );
+  static const _workReasoningId = 'preview-reasoning';
   static final completedReasoning = ChatAtom(
-    id: 'preview-reasoning',
+    id: _workReasoningId,
     source: groupSource,
     sourceOrder: 1,
     kind: ChatAtomKind.reasoning,
@@ -271,7 +277,25 @@ abstract final class TimelinePreviewFixtures {
     startedAt: groupStartedAt,
     finishedAt: groupStartedAt,
     contents: const [],
-    payload: _payload('thinking', const {}, bodies: _reasoningBodies),
+    payload: _payload(
+      'thinking',
+      const {},
+      bodies: [
+        {
+          'key': workSummaryKey,
+          'byteLength': workSummaryBytes.length,
+          'reference': {
+            'databaseId': 'preview',
+            'ownerEventId': _workReasoningId,
+            'bodyId': 'work-summary',
+            'bodyKey': workSummaryKey,
+            'byteStart': 0,
+            'byteLength': workSummaryBytes.length,
+          },
+        },
+        _reasoningBodies.last,
+      ],
+    ),
   );
   static final completedCommand = ChatAtom(
     id: 'preview-tool',

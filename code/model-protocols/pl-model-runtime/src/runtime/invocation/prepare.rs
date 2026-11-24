@@ -56,6 +56,11 @@ impl ModelRuntime {
         prompt_cache_key: Option<&str>,
         purpose: &InvocationPurpose,
     ) -> Result<(OpenAiRequestBody, InferenceModelObservation)> {
+        if request.service_tier.is_some() && !matches!(purpose, InvocationPurpose::Completion) {
+            return Err(PureError::ConfigError(
+                "service_tier is only supported for completions".into(),
+            ));
+        }
         let prompt_cache_key = prompt_cache_key.filter(|_| {
             self.endpoint
                 .effective_prompt_cache_policy(&self.model)
@@ -68,9 +73,9 @@ impl ModelRuntime {
             request,
         )?;
         let mut body = crate::runtime::openai::build_request(
-            self.model.binding.transport.protocol,
+            self.model.extra.binding.transport.protocol,
             self.endpoint
-                .instruction_wire_role(self.model.binding.transport.protocol),
+                .instruction_wire_role(self.model.extra.binding.transport.protocol),
             &request,
             &self.model,
             prompt_cache_key,
@@ -91,7 +96,7 @@ impl ModelRuntime {
         Ok((
             body,
             InferenceModelObservation {
-                configured_model: self.model.model_id.clone(),
+                configured_model: self.model.base.slug.clone(),
                 sent_model,
                 reported_model: None,
             },

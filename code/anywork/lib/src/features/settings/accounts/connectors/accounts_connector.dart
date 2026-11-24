@@ -102,6 +102,7 @@ class _AccountsConnectorState extends ConsumerState<AccountsConnector> {
                 ),
             scrollController: _listScroll,
             onSearchChanged: owner.search,
+            onCategoryChanged: owner.selectCategory,
             onAdd: () => const AccountCreateRoute().go(context),
             onRefreshAll: owner.refreshAll,
             onRetry: owner.retryObservation,
@@ -113,6 +114,12 @@ class _AccountsConnectorState extends ConsumerState<AccountsConnector> {
               switch (action) {
                 case AccountRowAction.refresh:
                   unawaited(owner.refresh(key));
+                case AccountRowAction.upgrade:
+                  unawaited(owner.upgrade(key));
+                case AccountRowAction.cancelUpgrade:
+                  unawaited(owner.cancelUpgrade(key));
+                case AccountRowAction.checkUpdate:
+                  unawaited(owner.checkUpdate(key));
                 case AccountRowAction.setDefault:
                   unawaited(owner.setDefault(key));
                 case AccountRowAction.edit:

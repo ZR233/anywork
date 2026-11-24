@@ -1,4 +1,6 @@
 {
+  "composerSpeed": "速度",
+  "composerSpeedStandard": "标准",
   "acpConnectionReconnecting": "重连中",
   "studioFailureConversationResyncRequired": "会话内容需要重新同步，请重试。",
   "conversationDirectoryUnavailable": "无法获取会话信息。请重试。",
@@ -617,7 +619,7 @@
   "acpEstimatedOutputSpeed": "ACP 正文估算速度（含首段等待）",
   "statusLastConfirmedAgentTokenSpeed": "最近已确认输出速度（含首字等待）",
   "settingsStatisticsTitle": "统计",
-  "settingsStatisticsSubtitle": "按账号、配置模型与组内思考强度汇总最近成功调用。",
+  "settingsStatisticsSubtitle": "按账号和配置模型汇总最近成功调用，并按思考强度与请求速度档位细分。",
   "settingsStatisticsSummaryTitle": "模型性能",
   "settingsStatisticsHistoryTitle": "调用历史",
   "settingsStatisticsAllModels": "全部模型",
@@ -714,19 +716,12 @@
   "timelineReasoningFailed": "思考失败",
   "timelineReasoningCancelled": "思考已取消",
   "timelineReasoningElapsedUnderSecond": "思考了不到 1 秒",
-  "timelineReasoningElapsedSeconds": "思考了 {seconds} 秒",
-  "timelineReasoningElapsedMinutes": "思考了 {minutes} 分",
-  "timelineReasoningElapsedMinutesSeconds": "思考了 {minutes} 分 {seconds} 秒",
+  "timelineReasoningElapsedDuration": "思考了 {duration}",
   "timelineGroupWorkedUnderSecond": "工作了不到 1 秒",
-  "timelineGroupWorkedSeconds": "工作了 {seconds} 秒",
-  "timelineGroupWorkedMinutes": "工作了 {minutes} 分",
-  "timelineGroupWorkedMinutesSeconds": "工作了 {minutes} 分 {seconds} 秒",
+  "timelineGroupWorkedDuration": "工作了 {duration}",
   "timelineGroupExecutingUnderSecond": "执行了不到 1 秒",
-  "timelineGroupExecutingSeconds": "执行了 {seconds} 秒",
-  "timelineGroupExecutingMinutes": "执行了 {minutes} 分",
-  "timelineGroupExecutingMinutesSeconds": "执行了 {minutes} 分 {seconds} 秒",
+  "timelineGroupExecutingDuration": "执行了 {duration}",
   "timelineGroupClosing": "正在收束",
-  "timelineGroupUnrestored": "上次执行未收束，尚未恢复",
   "timelineReasoningSummary": "概要",
   "timelineReasoningContent": "完整内容",
   "timelineReasoningBudgetLimited": "已达思考预算",
@@ -776,9 +771,7 @@
   "timelineToolStdinRunning": "正在写入输入",
   "timelineToolStdinFailed": "输入写入失败",
   "timelineToolElapsedUnderSecond": "用时不到 1 秒",
-  "timelineToolElapsedSeconds": "用时 {seconds} 秒",
-  "timelineToolElapsedMinutes": "用时 {minutes} 分",
-  "timelineToolElapsedMinutesSeconds": "用时 {minutes} 分 {seconds} 秒",
+  "timelineToolElapsedDuration": "用时 {duration}",
   "timelineToolSearchSucceeded": "已搜索",
   "timelineToolSearchRunning": "正在搜索",
   "timelineToolSearchFailed": "搜索失败",
@@ -1351,7 +1344,7 @@
   "settingsModelAutoCompactUsingDefault": "自动",
   "settingsModelAutoCompactInputLabel": "阈值（词元）",
   "settingsModelAutoCompactInvalid": "请输入正整数词元数。",
-  "settingsModelAutoCompactHelp": "实际阈值不超过上下文容量的 90%，并预留最大输出预算。",
+  "settingsModelAutoCompactHelp": "留空使用模型默认值。自定义阈值最多为最大上下文的 90%。",
   "settingsModelAutoCompactUnknownCapacity": "上下文容量未知，无法计算自动压缩阈值。",
   "settingsPriceInput": "输入",
   "settingsPriceOutput": "输出",
@@ -1587,7 +1580,6 @@
   },
   "modelTextInputUnsupported": "不支持文本输入",
   "modelTextOutputUnsupported": "不支持文本输出",
-  "modelContextWindowUnknown": "上下文大小未知",
   "modelTextFilterEmpty": "没有符合文本条件的模型，请在账号设置中查看参数",
   "modeEditorTitle": "工作模式",
   "modeEditorNewMode": "新建模式",
@@ -1896,7 +1888,12 @@
   "settingsAccountProtocol": "账号协议",
   "statisticsGroupTotal": "本组汇总",
   "statisticsAllEfforts": "全部强度",
-  "statisticsEffortBreakdownTitle": "组内思考强度",
+  "statisticsEffortBreakdownTitle": "组内思考强度与请求档位",
+  "statisticsRequestedServiceTier": "请求速度档位",
+  "statisticsAllServiceTiers": "全部请求档位",
+  "statisticsServiceTierStandard": "标准",
+  "statisticsServiceTierUnrecorded": "未记录",
+  "statisticsServiceTierNotApplicable": "不适用",
   "accountProtocolOpenAi": "OpenAI",
   "accountProtocolDeepSeek": "DeepSeek",
   "accountProtocolZhipu": "智谱",
@@ -1950,9 +1947,8 @@
   "conversationActivityWaitingTools": "等待工具完成",
   "conversationActivityWaitingMessages": "等待子代理或新消息",
   "conversationActivityWaitingTimer": "计时器",
-  "settingsModelAutoCompactAdjusted": "已根据模型上下文容量与输出预留调整生效阈值。",
+  "settingsModelAutoCompactAdjusted": "已按模型最新的最大上下文调整生效阈值。",
   "modelContextParametersInvalid": "上下文参数不一致",
-  "modelInputBudgetExhausted": "预留输出后没有可用输入容量",
   "statusCompactNow": "立即压缩",
   "statusCompacting": "正在压缩…",
   "statusCompactionFailed": "压缩失败，请重试。",
@@ -2420,7 +2416,7 @@
   "acpEditorStepBasicTitle": "1. 账号信息",
   "acpEditorStepBasicSubtitle": "设置此反重力账号在糊来帮中的显示名称。无需填写 API 密钥。",
   "acpEditorStepPrepareTitle": "2. 准备官方受管服务",
-  "acpEditorStepPrepareSubtitle": "糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（v1.4.5）。",
+  "acpEditorStepPrepareSubtitle": "糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（1.x）。",
   "acpEditorStepConnectTitle": "3. 保存并登录 Google 账号",
   "acpEditorStepConnectSubtitle": "受管服务就绪后点击「保存并连接」，将进入账号详情页并引导在浏览器中完成 Google 登录授权。",
   "acpInstallIdleHint": "点击下方「下载并准备」检测本机已有安装或从官方源下载受管服务。",
@@ -2452,7 +2448,6 @@
   "interactionDetailsReadFailed": "详情资源读取失败",
   "interactionDetailsInvalidFormat": "交互详情格式无效",
   "timelineGroupUnfinished": "工作未完成",
-  "timelineGroupWorking": "工作中",
   "timelineGroupRecord": "工作记录",
   "timelineGroupActiveCount": "{count} 进行中",
   "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}},
@@ -2547,6 +2542,65 @@
       }
     }
   },
+  "acpContextWindowTitle": "上下文窗口",
+  "acpSnapshotLiveBadge": "实时",
+  "acpSnapshotRetainedBadge": "上次快照",
+  "acpContextRemainingLabel": "剩余可用 {tokens}",
+  "@acpContextRemainingLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextOverCapacityLabel": "超出容量 {tokens}",
+  "@acpContextOverCapacityLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextNotReported": "对端暂未报告上下文占用",
+  "acpContextExactTokens": "精确 {used} / {size} 词元",
+  "@acpContextExactTokens": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricSpeedTitle": "正文估算速度",
+  "acpMetricSpeedDetail": "≈ {tokens} 词元 · {duration}",
+  "@acpMetricSpeedDetail": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricCostTitle": "累计费用",
+  "acpMetricCostSubtitle": "对端累计报告",
+  "acpMetricTurnsTitle": "已完成轮次",
+  "acpMetricTurnsValue": "{count} 轮",
+  "@acpMetricTurnsValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpDetailSessionSection": "会话与运行配置",
+  "acpDetailLastStopReason": "上次结束",
+  "acpDetailUpdatedAt": "最近更新",
+  "acpDetailCapabilitiesSection": "协议能力与标识",
+  "acpDetailSessionId": "远端会话",
   "acpPlanTitle": "执行计划",
   "acpPlanProgress": "已完成 {completed} / {total}",
   "@acpPlanProgress": {
@@ -2618,8 +2672,66 @@
   "acpComposerBlockerRunning": "正在生成回复",
   "acpContentThoughtLabel": "思考过程",
   "acpProcessGroupSummary": "过程 · {count} 项活动 · {toolCount} 个工具",
-  "@acpProcessGroupSummary": {"placeholders": {"count": {"type": "int"}, "toolCount": {"type": "int"}}},
-  "acpProcessGroupRunning": "执行中",
+  "@acpProcessGroupSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupToolsOnly": "执行了 {toolCount} 个工具",
+  "@acpProcessGroupToolsOnly": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupThoughtsOnly": "思考了 {count} 段",
+  "@acpProcessGroupThoughtsOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupActivitiesOnly": "过程 · {count} 项活动",
+  "@acpProcessGroupActivitiesOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningToolsMeta": "{toolCount} 个工具",
+  "@acpProcessGroupRunningToolsMeta": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningActivitiesMeta": "{count} 项活动",
+  "@acpProcessGroupRunningActivitiesMeta": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpToolKindRead": "读取",
+  "acpToolKindEdit": "编辑",
+  "acpToolKindDelete": "删除",
+  "acpToolKindMove": "移动",
+  "acpToolKindSearch": "搜索",
+  "acpToolKindExecute": "执行",
+  "acpToolKindThink": "思考",
+  "acpToolKindFetch": "获取",
+  "acpToolKindSwitchMode": "切换模式",
+  "acpToolKindOther": "工具",
   "acpContentAudioLabel": "音频内容",
   "acpContentResourceLabel": "内嵌资源",
   "acpContentBinarySummary": "{mimeType} · {byteCount} 字节",
@@ -3023,6 +3135,60 @@
   "timelineToolNameWebSearch": "网页查询",
   "timelineToolNameDeepseekWebSearch": "DeepSeek 网页搜索",
   "timelineToolNameDeepseekWebFetch": "DeepSeek 网页抓取",
+  "liveStatusConnectionDisconnected": "实时同步已断开",
+  "liveStatusConnectionReconnecting": "正在重连实时同步",
+  "liveStatusMembersUnavailable": "成员读取尚未就绪",
+  "liveStatusMembersLoading": "正在读取封存观察…",
+  "liveStatusRetryAction": "重试",
+  "liveStatusContentRangeWindow": "字节 {start}–{end} / {total}",
+  "liveStatusContentFirstSegment": "第一段",
+  "liveStatusContentNextSegment": "下一段",
+  "timelinePatchUnavailableHint": "补丁片段不可用：内容不完整或无法完整解析",
+  "timelinePatchFileAdd": "新增",
+  "timelinePatchFileUpdate": "更新",
+  "timelinePatchFileDelete": "删除",
+  "timelineToolCallFallback": "工具调用",
+  "timelineToolArgumentsIncompleteTitle": "工具参数不完整",
+  "timelineToolArgumentsIncompleteDetail": "参数窗口未包含完整正文",
+  "timelineToolIdentityMismatchTitle": "工具内容身份不一致",
+  "timelineToolIdentityMismatchDetail": "声明的调用身份与完成载荷不同",
+  "timelineToolMalformedLabel": "{name} · 内容格式错误",
+  "timelineToolDeferredLabel": "{name} · 正文按需读取",
+  "timelineToolDeferredReason": "参数按需读取，尚未取得完整业务内容",
+  "timelineToolParseFailed": "当前工具内容无法解析：{reason}",
+  "acpContextDetailSection": "上下文明细",
+  "acpContextUsedLabel": "已用词元",
+  "acpContextCapacityLabel": "窗口容量",
+  "acpContextDeltaLabel": "较上次变化",
+  "acpThroughputDetailSection": "最近样本",
+  "acpThroughputFormulaNote": "按每 4 个字符约计 1 词元估算，含首段等待耗时",
+  "acpThroughputTokensLabel": "估算输出词元",
+  "acpThroughputDurationLabel": "响应耗时",
+  "acpCostDetailSection": "费用明细",
+  "acpCostCurrencyLabel": "币种",
+  "acpCostRawLabel": "原始读数",
+  "acpCostScopeLabel": "统计口径",
+  "acpSessionDetailTitle": "会话信息",
+  "accountsCategoryAll": "全部",
+  "accountsCategoryAcp": "ACP 智能体",
+  "accountsCategoryNative": "API 账户",
+  "accountsUpgradableCount": "{count} 项可升级",
+  "acpManagedBadge": "官方受管",
+  "acpLocalBadge": "本地服务",
+  "acpVersionTag": "v{version}",
+  "acpUpgradeCheck": "检查更新",
+  "acpUpgradeChecking": "正在检查新版本…",
+  "acpUpgradeUpToDate": "已是最新 · v{version}",
+  "acpUpgradeAvailableTitle": "发现官方新版本",
+  "acpUpgradeAvailableVersions": "v{current} → v{latest}",
+  "acpUpgradeAction": "升级到 v{version}",
+  "acpUpgradeActionGeneric": "立即升级",
+  "acpUpgradeUpgrading": "正在升级到 v{version}",
+  "acpUpgradePendingSwitch": "已安装 v{version}，当前会话结束后自动切换",
+  "acpUpgradeIncompatibleMajor": "官方已发布 v{version}（需更新应用以支持大版本 2）",
+  "acpUpgradeCheckFailed": "版本检查失败，请重试",
+  "acpUpgradeRetryCheck": "重试检查",
+  "acpManagedServerTitle": "受管组件与版本",
   "timelineTurnFailed": "轮次失败",
   "timelineTurnCompleted": "轮次已完成",
   "timelineTurnBudgetLimited": "轮次达到预算上限",

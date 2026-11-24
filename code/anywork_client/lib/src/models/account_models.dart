@@ -8,9 +8,7 @@ enum ModelType { text }
 enum ModelTypeExclusion {
   textInputUnsupported,
   textOutputUnsupported,
-  contextWindowUnknown,
   contextParametersInvalid,
-  inputBudgetExhausted,
 }
 
 class ModelTypeSupportView {
@@ -63,26 +61,20 @@ class ModelPriceTierView {
   final double? cacheWrite;
 }
 
-enum ModelContextUnavailable {
-  windowUnknown,
-  invalidParameters,
-  inputBudgetExhausted,
-}
+enum ModelContextUnavailable { invalidParameters }
 
 enum ModelContextAdjustment { safetyLimit }
 
 /// Immutable backend result; this layer performs no budget or threshold arithmetic.
 class ModelContextView {
   const ModelContextView({
-    this.unavailable = ModelContextUnavailable.windowUnknown,
+    this.unavailable,
     this.contextWindow,
-    this.inputTokenLimit,
     this.autoCompactLimit,
     this.adjustment,
   });
   final ModelContextUnavailable? unavailable;
   final int? contextWindow;
-  final int? inputTokenLimit;
   final int? autoCompactLimit;
   final ModelContextAdjustment? adjustment;
   @override
@@ -90,17 +82,30 @@ class ModelContextView {
       other is ModelContextView &&
       unavailable == other.unavailable &&
       contextWindow == other.contextWindow &&
-      inputTokenLimit == other.inputTokenLimit &&
       autoCompactLimit == other.autoCompactLimit &&
       adjustment == other.adjustment;
   @override
-  int get hashCode => Object.hash(
-    unavailable,
-    contextWindow,
-    inputTokenLimit,
-    autoCompactLimit,
-    adjustment,
-  );
+  int get hashCode =>
+      Object.hash(unavailable, contextWindow, autoCompactLimit, adjustment);
+}
+
+class ModelServiceTierView {
+  const ModelServiceTierView({required this.id, this.displayName});
+
+  final String id;
+  final String? displayName;
+
+  String get label => displayName?.isNotEmpty == true ? displayName! : id;
+}
+
+class ModelServiceTierParameterView {
+  const ModelServiceTierParameterView({
+    this.defaultCandidate,
+    required this.candidates,
+  });
+
+  final String? defaultCandidate;
+  final List<ModelServiceTierView> candidates;
 }
 
 class AccountModelView {
@@ -108,6 +113,7 @@ class AccountModelView {
     required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
+    this.serviceTiers,
     this.enabled = true,
     this.typeSupport = const [],
     this.description = '',
@@ -143,6 +149,7 @@ class AccountModelView {
       supportFor(type)?.exclusions.isEmpty == true;
   final String displayName;
   final List<String> reasoningEfforts;
+  final ModelServiceTierParameterView? serviceTiers;
   final String description;
   final int? contextWindow;
   final int? maxContextWindow;
@@ -171,6 +178,7 @@ class AccountModelView {
     bool? enabled,
     String? displayName,
     List<String>? reasoningEfforts,
+    ModelServiceTierParameterView? serviceTiers,
     List<ModelTypeSupportView>? typeSupport,
     String? description,
     int? contextWindow,
@@ -198,6 +206,7 @@ class AccountModelView {
       enabled: enabled ?? this.enabled,
       displayName: displayName ?? this.displayName,
       reasoningEfforts: reasoningEfforts ?? this.reasoningEfforts,
+      serviceTiers: serviceTiers ?? this.serviceTiers,
       typeSupport: typeSupport ?? this.typeSupport,
       description: description ?? this.description,
       contextWindow: contextWindow ?? this.contextWindow,

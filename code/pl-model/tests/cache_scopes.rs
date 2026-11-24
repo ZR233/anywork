@@ -1,7 +1,7 @@
 use pl_model::{
     completion::{CompletionRequest, CompletionTraceContext, Message, MessageContent, MessageRole},
     config::{AccountId, AgentRoleId, ResolvedModelRoute},
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
     protocol::PromptCacheDialect,
     runtime::{
         ModelInvocationContext, ModelSession, ModelTurnOptions, ModelTurnRequest, PromptCacheScope,
@@ -179,13 +179,14 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             fixture.base_url(),
         );
         endpoint.service_capabilities.prompt_cache.dialect = dialect;
-        let mut info = ModelInfo::compatible(model);
-        info.binding.set_transport(if websocket {
+        let mut info = ModelDefinition::compatible(model);
+        info.extra.binding.set_transport(if websocket {
             ModelTransportProfile::responses_websocket()
         } else {
             ModelTransportProfile::responses_http()
         });
         let route = ResolvedModelRoute {
+            service_tier: None,
             account_id: AccountId::new(account).unwrap(),
             role: AgentRoleId::new("cache-test").unwrap(),
             context: info.resolve_context(None),

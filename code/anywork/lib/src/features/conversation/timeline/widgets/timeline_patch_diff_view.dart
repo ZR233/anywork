@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import '../../../../l10n/studio_l10n.dart';
 import '../state/patch_presentation.dart';
 
 /// apply_patch 参数/窗口正文到修改片段的统一入口。
@@ -27,7 +28,7 @@ class TimelinePatchUnavailableHint extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(
-      '补丁片段不可用：内容不完整或无法完整解析',
+      context.l10n.timelinePatchUnavailableHint,
       style: context.text.bodySmall?.copyWith(
         color: context.colors.onSurfaceVariant,
       ),
@@ -42,11 +43,17 @@ class TimelinePatchDiffView extends StatelessWidget {
   const TimelinePatchDiffView({
     required this.document,
     this.softWrap = false,
+    this.margin = const EdgeInsets.only(top: 8),
+    this.backgroundColor,
+    this.border,
     super.key,
   });
 
   final TimelinePatchDocument document;
   final bool softWrap;
+  final EdgeInsetsGeometry margin;
+  final Color? backgroundColor;
+  final BoxBorder? border;
 
   @override
   Widget build(BuildContext context) {
@@ -105,11 +112,12 @@ class TimelinePatchDiffView extends StatelessWidget {
     }
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(top: 8),
+      margin: margin,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: context.colors.surfaceContainerLow,
+        color: backgroundColor ?? context.colors.surfaceContainerLow,
         borderRadius: const BorderRadius.all(Radius.circular(8)),
+        border: border,
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -146,10 +154,20 @@ class TimelinePatchDiffView extends StatelessWidget {
   }
 
   Widget _fileHeader(BuildContext context, TimelinePatchFile file) {
+    final l10n = context.l10n;
     final (label, color) = switch (file.op) {
-      TimelinePatchFileOp.add => ('新增', _markerColor(context, true)),
-      TimelinePatchFileOp.update => ('更新', context.colors.primary),
-      TimelinePatchFileOp.delete => ('删除', _markerColor(context, false)),
+      TimelinePatchFileOp.add => (
+        l10n.timelinePatchFileAdd,
+        _markerColor(context, true),
+      ),
+      TimelinePatchFileOp.update => (
+        l10n.timelinePatchFileUpdate,
+        context.colors.primary,
+      ),
+      TimelinePatchFileOp.delete => (
+        l10n.timelinePatchFileDelete,
+        _markerColor(context, false),
+      ),
     };
     return Row(
       children: [

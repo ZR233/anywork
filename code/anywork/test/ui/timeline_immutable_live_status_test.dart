@@ -293,6 +293,7 @@ final class _ImmutableLiveTransport extends RecordingDemoTransport {
     String ownerId,
   )?
   workRangeBuilder;
+  Future<void> Function()? beforeWorkRange;
 
   Completer<HistoryCut>? _changeWaiter;
 
@@ -346,6 +347,7 @@ final class _ImmutableLiveTransport extends RecordingDemoTransport {
     };
     reader.onWorkRange = (afterSeq, beforeSeq, cut, cursor, demand) async {
       final activeCut = cut ?? currentCut;
+      await beforeWorkRange?.call();
       return HistoryWorkRangePage(
         cut: activeCut,
         afterSeq: afterSeq,
@@ -682,7 +684,13 @@ void main() {
         'live open Work mounted in LiveStatusBar',
       );
 
-      // Expand open Work inside LiveStatusBar and confirm active tool renders there.
+      // Hold the member read open while checking the live loading presentation.
+      final liveReadStarted = Completer<void>();
+      final liveReadRelease = Completer<void>();
+      transport.beforeWorkRange = () {
+        if (!liveReadStarted.isCompleted) liveReadStarted.complete();
+        return liveReadRelease.future;
+      };
       await tester.tap(
         find.descendant(
           of: find.byType(LiveStatusBar),
@@ -690,6 +698,19 @@ void main() {
         ),
       );
       await tester.pump();
+      await pumpClientFuture(
+        tester,
+        liveReadStarted.future,
+        'live member read',
+      );
+      final liveProgress = find.descendant(
+        of: find.byType(LiveStatusBar),
+        matching: find.byType(LinearProgressIndicator),
+      );
+      final showLiveProgress = liveProgress.evaluate().isNotEmpty;
+      transport.beforeWorkRange = null;
+      liveReadRelease.complete();
+      expect(showLiveProgress, isFalse);
       await pumpClientUntil(
         tester,
         () => find
@@ -828,14 +849,16 @@ void main() {
       );
       await pumpClientUntil(
         tester,
-        () => find
-            .descendant(
-              of: find.byType(LiveStatusBar),
-              matching: find.text(streamBody),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'streaming body in LiveStatusBar',
+        () =>
+            lease.controller.messages.length == 2 &&
+            find
+                .descendant(
+                  of: find.byType(LiveStatusBar),
+                  matching: find.text(streamBody),
+                )
+                .evaluate()
+                .isNotEmpty,
+        'streaming body in LiveStatusBar settles preceding work group',
       );
       expect(
         find.descendant(
@@ -846,17 +869,26 @@ void main() {
       );
       expect(
         find.descendant(
+          of: find.byType(LiveStatusBar),
+          matching: find.byType(CompletionRunView),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
           of: find.byType(TimelineConnector),
           matching: find.text(streamBody),
         ),
         findsNothing,
       );
-      expect(
-        identical(lease.controller.messages.single, input1Message),
-        isTrue,
-      );
+      expect(lease.controller.messages.map((m) => m.id), [
+        'row:input-1',
+        'work:2',
+      ]);
+      expect(identical(lease.controller.messages.first, input1Message), isTrue);
+      final streamingSettledWorkMessage = lease.controller.messages[1];
 
-      // Final divider + idle state settles WorkRange + reply once into Timeline and hides LiveStatusBar.
+      // Final divider + idle state settles reply into Timeline and hides LiveStatusBar.
       final idleWorkspace = chatWorkspace(_threadId).copyWith(revision: 4);
       final idleProjection = CurrentProjection(
         logicalStatus: ThreadStatusView.idle,
@@ -904,11 +936,21 @@ void main() {
       ]);
       expect(identical(lease.controller.messages[0], input1Message), isTrue);
       expect(
+        identical(settledWorkMessage, streamingSettledWorkMessage),
+        isTrue,
+      );
+      expect(
         identical(lease.controller.messages[2], settledReplyMessage),
         isTrue,
       );
 
       // Expand Turn 1's settled WorkRange inside TimelineConnector and verify persistence.
+      final historyReadStarted = Completer<void>();
+      final historyReadRelease = Completer<void>();
+      transport.beforeWorkRange = () {
+        if (!historyReadStarted.isCompleted) historyReadStarted.complete();
+        return historyReadRelease.future;
+      };
       await tester.tap(
         find.descendant(
           of: find.byType(TimelineConnector),
@@ -916,6 +958,19 @@ void main() {
         ),
       );
       await tester.pump();
+      await pumpClientFuture(
+        tester,
+        historyReadStarted.future,
+        'history member read',
+      );
+      final historyProgress = find.descendant(
+        of: find.byType(CompletionRunView),
+        matching: find.byType(LinearProgressIndicator),
+      );
+      final showHistoryProgress = historyProgress.evaluate().isNotEmpty;
+      transport.beforeWorkRange = null;
+      historyReadRelease.complete();
+      expect(showHistoryProgress, isTrue);
       await pumpClientUntil(
         tester,
         () =>

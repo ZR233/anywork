@@ -1877,10 +1877,13 @@ catalog = "deepseek"
         let catalog = original["models"]["accounts"]["deepseek"]["catalog"]
             .as_table_mut()
             .unwrap();
-        let manual = pl_model::model::ModelInfo::compatible("manual-preserved");
+        let manual = pl_model::model::ModelDefinition::compatible("manual-preserved");
         catalog.insert(
             "additional_models".into(),
-            toml::Value::Array(vec![toml::Value::try_from(manual).unwrap()]),
+            toml::Value::Array(vec![
+                toml::Value::try_from(crate::config::document_migration::historical_model(&manual))
+                    .unwrap(),
+            ]),
         );
         catalog.insert(
             "connection_overrides".into(),
@@ -1932,6 +1935,9 @@ catalog = "deepseek"
                     .collect(),
             ),
         );
+        account["catalog"]["additional_models"][0] = toml::from_str(
+            "[base]\nslug = 'manual-preserved'\n[extra.binding.transport]\nprotocol = 'chat_completions'",
+        ).unwrap();
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
         assert!(!persisted.contains("disabled_models"));
         assert_eq!(toml::from_str::<toml::Value>(&persisted).unwrap(), expected);

@@ -74,6 +74,7 @@ class BridgeStatisticsEffortPage {
 
 class BridgeStatisticsEffortSummary {
   final String? effort;
+  final String? requestedServiceTier;
   final BigInt sampleCount;
   final BigInt completionTokens;
   final BigInt totalTtftMillis;
@@ -85,6 +86,7 @@ class BridgeStatisticsEffortSummary {
 
   const BridgeStatisticsEffortSummary({
     this.effort,
+    this.requestedServiceTier,
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
@@ -98,6 +100,7 @@ class BridgeStatisticsEffortSummary {
   @override
   int get hashCode =>
       effort.hashCode ^
+      requestedServiceTier.hashCode ^
       sampleCount.hashCode ^
       completionTokens.hashCode ^
       totalTtftMillis.hashCode ^
@@ -113,6 +116,7 @@ class BridgeStatisticsEffortSummary {
       other is BridgeStatisticsEffortSummary &&
           runtimeType == other.runtimeType &&
           effort == other.effort &&
+          requestedServiceTier == other.requestedServiceTier &&
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
@@ -278,6 +282,7 @@ class BridgeStatisticsSample {
   final String? reportedModel;
   final BridgeStatisticsModelMatchState modelMatchState;
   final String? effort;
+  final String? requestedServiceTier;
   final BigInt? completionTokens;
   final BigInt? ttftMillis;
   final BigInt? decodeMillis;
@@ -300,6 +305,7 @@ class BridgeStatisticsSample {
     this.reportedModel,
     required this.modelMatchState,
     this.effort,
+    this.requestedServiceTier,
     this.completionTokens,
     this.ttftMillis,
     this.decodeMillis,
@@ -324,6 +330,7 @@ class BridgeStatisticsSample {
       reportedModel.hashCode ^
       modelMatchState.hashCode ^
       effort.hashCode ^
+      requestedServiceTier.hashCode ^
       completionTokens.hashCode ^
       ttftMillis.hashCode ^
       decodeMillis.hashCode ^
@@ -350,6 +357,7 @@ class BridgeStatisticsSample {
           reportedModel == other.reportedModel &&
           modelMatchState == other.modelMatchState &&
           effort == other.effort &&
+          requestedServiceTier == other.requestedServiceTier &&
           completionTokens == other.completionTokens &&
           ttftMillis == other.ttftMillis &&
           decodeMillis == other.decodeMillis &&

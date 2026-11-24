@@ -78,7 +78,7 @@ impl view_image::ImageReader for Reader {
 }
 
 struct DisplaySource {
-    reads: Arc<Mutex<Vec<(String, usize)>>>,
+    reads: Arc<Mutex<Vec<String>>>,
 }
 
 impl show_files::FileSource for DisplaySource {
@@ -94,11 +94,6 @@ impl show_files::FileSource for DisplaySource {
         }
         Ok(show_files::FileStat {
             is_file: path != "directory",
-            len: Some(if path == "large" {
-                show_files::MAX_SOURCE_BYTES as u64 + 1
-            } else {
-                3
-            }),
         })
     }
 
@@ -106,8 +101,8 @@ impl show_files::FileSource for DisplaySource {
         Ok((path == "local.txt").then(|| "/verified/local.txt".into()))
     }
 
-    async fn read_bytes(&self, path: &str, max_bytes: usize) -> Result<Arc<[u8]>, Self::Error> {
-        self.reads.lock().unwrap().push((path.into(), max_bytes));
+    async fn read_bytes(&self, path: &str) -> Result<Arc<[u8]>, Self::Error> {
+        self.reads.lock().unwrap().push(path.into());
         Ok(Arc::from(&b"abc"[..]))
     }
 
@@ -195,10 +190,13 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
     assert_eq!(files[3]["origin"], serde_json::json!({"kind":"archive"}));
     assert_eq!(files[3]["resource"], 42);
     assert_eq!(files[3]["filename"], "saved.pdf");
-    for file in &files[4..] {
+    // A source past the former 50 MiB ceiling is read and archived, not refused.
+    assert_eq!(files[4]["status"], "ready");
+    assert_eq!(files[4]["modality"], "file");
+    assert_eq!(files[4]["origin"], serde_json::json!({"kind":"remote"}));
+    for file in &files[5..] {
         assert_eq!(file["status"], "failed");
     }
-    assert!(files[4]["message"].as_str().unwrap().contains("50 MiB"));
     assert!(
         files[5]["message"]
             .as_str()
@@ -219,20 +217,20 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
     );
     assert_eq!(
         reads.lock().unwrap().as_slice(),
-        &[
-            ("/verified/local.txt".into(), show_files::MAX_SOURCE_BYTES),
-            ("remote.txt".into(), show_files::MAX_SOURCE_BYTES),
-            ("corrupt.png".into(), show_files::MAX_SOURCE_BYTES),
-        ]
+        &["/verified/local.txt", "remote.txt", "large", "corrupt.png",]
     );
     {
         let retained = archive.media.lock().unwrap();
-        assert_eq!(retained.len(), 2);
-        for media in retained.iter() {
+        assert_eq!(retained.len(), 3);
+        for media in &retained[..2] {
             assert_eq!(media.bytes.as_ref(), b"abc");
             assert_eq!(media.media_type, "text/plain");
             assert!(media.model_image.is_none());
         }
+        // `large` has no extension, so it is archived as an opaque file.
+        assert_eq!(retained[2].bytes.as_ref(), b"abc");
+        assert_eq!(retained[2].media_type, "application/octet-stream");
+        assert!(retained[2].model_image.is_none());
     }
     // A retention failure remains a per-file failure; no retry or success reference.
     archive.fail.store(true, Ordering::SeqCst);
@@ -246,8 +244,8 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
     assert!(
         matches!(&output.files[0], show_files::FileResult::Failed { message, .. } if message == "archive unavailable")
     );
-    assert_eq!(archive.media.lock().unwrap().len(), 3);
-    assert_eq!(reads.lock().unwrap().len(), 4);
+    assert_eq!(archive.media.lock().unwrap().len(), 4);
+    assert_eq!(reads.lock().unwrap().len(), 5);
     show.close().await.unwrap();
 }
 

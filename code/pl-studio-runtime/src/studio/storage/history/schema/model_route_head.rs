@@ -284,8 +284,9 @@ mod tests {
         let head = checkpoint::read_model_route_head(&db).await?.unwrap();
         assert_eq!(head.revision, 7);
         assert_eq!(head.bot_id.as_deref(), Some("original-bot"));
-        assert_eq!(head.route.account_id.as_str(), "saved-account");
-        assert_eq!(head.route.model_id, "original-model");
+        assert_eq!(head.route.model.account_id.as_str(), "saved-account");
+        assert_eq!(head.route.model.model_id, "original-model");
+        assert_eq!(head.route.service_tier, None);
         assert_eq!(
             db.query_one_raw(statement(
                 "SELECT count(*) AS count FROM pragma_table_info('history_meta')

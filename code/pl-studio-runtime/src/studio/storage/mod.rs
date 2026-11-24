@@ -1069,7 +1069,7 @@ mod mode_migration_tests {
         use pl_model::{
             completion::OpenAiCompactionMode,
             config::{AccountId, ResolvedModelRoute},
-            model::ModelInfo,
+            model::ModelDefinition,
             runtime::ThreadModel,
         };
         use std::sync::Arc;
@@ -1079,8 +1079,8 @@ mod mode_migration_tests {
         let mode = registry
             .mode(&crate::mode::ThreadModeId::simple())
             .context("built-in simple Mode")?;
-        let mut model_info = ModelInfo::compatible("migration-model");
-        model_info.base_instructions = "frozen migration base".into();
+        let mut model_info = ModelDefinition::compatible("migration-model");
+        model_info.base.model_messages.instructions_template = "frozen migration base".into();
         let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
             "migration fixture",
             "http://127.0.0.1:0",
@@ -1093,6 +1093,7 @@ mod mode_migration_tests {
             context: model_info.resolve_context(None),
             model: model_info,
             effort: None,
+            service_tier: None,
         };
         let model = ThreadModel::new(pl_model::runtime::from_route(&route)?, None);
         let snapshot = InstructionSnapshot {
@@ -1354,7 +1355,7 @@ mod mode_migration_tests {
         use crate::{StudioHostKind, StudioRuntimeOptions};
         use pl_model::{
             config::{AccountConfig, AccountId, ModelRouteConfig},
-            model::{ModelInfo, ModelTransportProfile},
+            model::{ModelDefinition, ModelTransportProfile},
             protocol::HistoryInstructionRole,
         };
 
@@ -1369,12 +1370,13 @@ mod mode_migration_tests {
             model_id: "mode-migration-model".into(),
             effort: None,
         };
-        let mut model = ModelInfo::compatible(&route.model_id);
+        let mut model = ModelDefinition::compatible(&route.model_id);
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_http());
-        model.capabilities.instruction_snapshot_overrides = true;
-        model.base_instructions = "frozen mode migration base".into();
+        model.extra.capabilities.instruction_snapshot_overrides = true;
+        model.base.model_messages.instructions_template = "frozen mode migration base".into();
         let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
             "mode migration",
             "http://127.0.0.1:0",
@@ -3134,7 +3136,7 @@ mod mode_migration_tests {
         use crate::{StudioHostKind, StudioRuntimeOptions};
         use pl_model::{
             config::{AccountConfig, AccountId, ModelRouteConfig},
-            model::ModelInfo,
+            model::ModelDefinition,
         };
         use pl_tool::workspace::SessionFiles;
         use sea_orm::{DatabaseBackend, Statement};
@@ -3143,8 +3145,7 @@ mod mode_migration_tests {
         let home = directory.path().join("home");
         let workspace = directory.path().join("workspace");
         tokio::fs::create_dir(&workspace).await?;
-        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
-        endpoint.set_nonblocking(true)?;
+        let endpoint = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
         let account_id = AccountId::new("archive-fixture")?;
         let route = ModelRouteConfig {
             account_id: account_id.clone(),
@@ -3158,9 +3159,9 @@ mod mode_migration_tests {
             AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint(
                     "Archive fixture",
-                    format!("http://{}", endpoint.local_addr()?),
+                    endpoint.base_url(),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -3288,16 +3289,17 @@ mod mode_migration_tests {
                 b"reliable"
             );
         }
-        assert_eq!(
-            endpoint.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
+
         anyhow::Ok(())
     }
     .await;
         let shutdown = runtime.shutdown_runtime().await;
         result?;
         shutdown?;
+        assert!(
+            endpoint.finish().await?.is_empty(),
+            "archiving must not send inference"
+        );
         Ok(())
     }
 
@@ -3345,10 +3347,10 @@ mod mode_migration_tests {
         let route = crate::studio::model_route::saved(&migrated.state)?
             .context("migrated route")?
             .route;
-        assert_eq!(route.account_id.as_str(), "deepseek");
-        assert_eq!(route.model_id, "deepseek-flash");
+        assert_eq!(route.model.account_id.as_str(), "deepseek");
+        assert_eq!(route.model.model_id, "deepseek-flash");
         assert_eq!(
-            route.effort.as_ref().map(|value| value.as_str()),
+            route.model.effort.as_ref().map(|value| value.as_str()),
             Some("high")
         );
         assert_eq!(
@@ -3403,8 +3405,8 @@ mod mode_migration_tests {
         let route = crate::studio::model_route::saved(&current.state.to_paused_snapshot())?
             .context("current route")?
             .route;
-        assert_eq!(route.account_id.as_str(), "deepseek");
-        assert_eq!(route.model_id, "deepseek-flash");
+        assert_eq!(route.model.account_id.as_str(), "deepseek");
+        assert_eq!(route.model.model_id, "deepseek-flash");
         Ok(())
     }
 
@@ -3933,10 +3935,11 @@ mod mode_migration_tests {
                             restore_pre_timeline_history_fixture(&db, 8).await?;
                         } else {
                             if family == "calls" {
-                                // v9 requires its ledger; restore the actual published v8 shape.
+                                // Restore the published v8 shape, before fence retirement and request tiers.
                                 db.execute_unprepared(
-                                    "ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
-                                 UPDATE calls_meta SET schema_version=8 WHERE id=1;",
+                                    "ALTER TABLE performance_samples DROP COLUMN requested_service_tier;
+                                     ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
+                                     UPDATE calls_meta SET schema_version=8 WHERE id=1;",
                                 )
                                 .await?;
                             }

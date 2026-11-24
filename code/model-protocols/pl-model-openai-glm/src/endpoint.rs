@@ -11,9 +11,11 @@ pub fn endpoint(base_url: Option<String>) -> ProtocolEndpoint {
     )
 }
 pub fn coding_plan_endpoint(base_url: Option<String>) -> ProtocolEndpoint {
-    ProtocolEndpoint::new(
+    let mut endpoint = ProtocolEndpoint::new(
         ID,
         "Zhipu Coding Plan",
         base_url.unwrap_or_else(|| CODING_PLAN_BASE_URL.into()),
-    )
+    );
+    endpoint.service_capabilities.web_search.hosted_responses = true;
+    endpoint
 }

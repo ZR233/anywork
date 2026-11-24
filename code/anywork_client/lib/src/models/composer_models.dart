@@ -512,6 +512,7 @@ class StartSessionDraft {
     this.projects = const {},
     this.modelIntents = const {},
     this.effortIntents = const {},
+    this.serviceTierIntents = const {},
     this.preparations = const {},
     this.acpPreparations = const {},
     this.submitting = false,
@@ -521,6 +522,7 @@ class StartSessionDraft {
   final Map<String, StartSessionProjectDraft> projects;
   final Map<String, StartSessionModelIntent> modelIntents;
   final Map<String, String> effortIntents;
+  final Map<String, String> serviceTierIntents;
   final Map<String, NewThreadPreparation> preparations;
   final Map<String, AcpDraftPreparation> acpPreparations;
   final bool submitting;
@@ -544,6 +546,7 @@ class StartSessionDraft {
     Map<String, StartSessionProjectDraft>? projects,
     Map<String, StartSessionModelIntent>? modelIntents,
     Map<String, String>? effortIntents,
+    Map<String, String>? serviceTierIntents,
     Map<String, NewThreadPreparation>? preparations,
     Map<String, AcpDraftPreparation>? acpPreparations,
     bool? submitting,
@@ -553,6 +556,7 @@ class StartSessionDraft {
       projects: projects ?? this.projects,
       modelIntents: modelIntents ?? this.modelIntents,
       effortIntents: effortIntents ?? this.effortIntents,
+      serviceTierIntents: serviceTierIntents ?? this.serviceTierIntents,
       preparations: preparations ?? this.preparations,
       acpPreparations: acpPreparations ?? this.acpPreparations,
       submitting: submitting ?? this.submitting,
@@ -569,6 +573,7 @@ class StartSessionDraft {
           _mapEquals(projects, other.projects) &&
           _mapEquals(modelIntents, other.modelIntents) &&
           _mapEquals(effortIntents, other.effortIntents) &&
+          _mapEquals(serviceTierIntents, other.serviceTierIntents) &&
           _mapEquals(preparations, other.preparations) &&
           _mapEquals(acpPreparations, other.acpPreparations);
 
@@ -579,6 +584,7 @@ class StartSessionDraft {
     _mapHash(projects),
     _mapHash(modelIntents),
     _mapHash(effortIntents),
+    _mapHash(serviceTierIntents),
     _mapHash(preparations),
     _mapHash(acpPreparations),
   );

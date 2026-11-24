@@ -34,3 +34,13 @@ Future<BridgeAcpInstallCommandReply> cancelAcpInstall({
   provider: provider,
   targetOperationId: targetOperationId,
 );
+
+/// 触发一次受管 server 新版本检查（仅支持 `1.x` 范围；同步受理后后台执行并推送到 `acpInstall`）。
+Future<BridgeAcpInstallCommandReply> checkAcpInstallUpdate({
+  required String operationId,
+  required BridgeAcpProvider provider,
+}) =>
+    RustLib.instance.api.crateApiStudioHandlersAcpInstallCheckAcpInstallUpdate(
+      operationId: operationId,
+      provider: provider,
+    );

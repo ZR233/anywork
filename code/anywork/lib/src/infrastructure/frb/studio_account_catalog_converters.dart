@@ -135,6 +135,9 @@ AccountDomainFrame _accountFrameFromFrb(
             acpConnectionRevision: _frbNullableInt(
               account.acpConnectionRevision,
             ),
+            acpTemplate: account.acpTemplate == null
+                ? null
+                : _acpProviderFromFrb(account.acpTemplate!),
             capabilities: AccountCapabilities(
               setDefault: account.capabilities.setDefault,
               edit: account.capabilities.edit,
@@ -472,9 +475,22 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
     if (model.capabilities.instructionSnapshotOverrides) '历史指令更新',
   ];
   final reasoning = model.reasoning;
+  final serviceTiers = model.serviceTiers;
   final pricing = model.pricing;
   return AccountModelView(
     modelId: model.modelId,
+    serviceTiers: serviceTiers == null
+        ? null
+        : ModelServiceTierParameterView(
+            defaultCandidate: serviceTiers.defaultCandidate,
+            candidates: [
+              for (final candidate in serviceTiers.candidates)
+                ModelServiceTierView(
+                  id: candidate.id,
+                  displayName: candidate.displayName,
+                ),
+            ],
+          ),
     enabled: model.enabled,
     typeSupport: [
       for (final support in model.typeSupport)
@@ -491,10 +507,6 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
                   ModelTypeExclusion.textOutputUnsupported,
                 frb.BridgeModelTypeExclusion.contextParametersInvalid =>
                   ModelTypeExclusion.contextParametersInvalid,
-                frb.BridgeModelTypeExclusion.inputBudgetExhausted =>
-                  ModelTypeExclusion.inputBudgetExhausted,
-                frb.BridgeModelTypeExclusion.contextWindowUnknown =>
-                  ModelTypeExclusion.contextWindowUnknown,
               },
           ],
         ),
@@ -506,15 +518,10 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
     context: ModelContextView(
       unavailable: switch (model.context.unavailable) {
         null => null,
-        frb.BridgeModelContextUnavailable.windowUnknown =>
-          ModelContextUnavailable.windowUnknown,
         frb.BridgeModelContextUnavailable.invalidParameters =>
           ModelContextUnavailable.invalidParameters,
-        frb.BridgeModelContextUnavailable.inputBudgetExhausted =>
-          ModelContextUnavailable.inputBudgetExhausted,
       },
       contextWindow: model.context.contextWindow?.toInt(),
-      inputTokenLimit: model.context.inputTokenLimit?.toInt(),
       autoCompactLimit: model.context.autoCompactLimit?.toInt(),
       adjustment: model.context.adjustment == null
           ? null

@@ -149,12 +149,14 @@ where
                 format!("'{}' is not a regular file", request.path),
             ));
         }
-        if stat.len.is_some_and(|len| len > request.max_bytes as u64) {
+        if let Some(max_bytes) = request.max_bytes
+            && stat.len.is_some_and(|len| len > max_bytes as u64)
+        {
             return Err(tool_error(
                 "view_image",
                 format!(
                     "'{}' exceeds the {} byte source limit",
-                    request.path, request.max_bytes
+                    request.path, max_bytes
                 ),
             ));
         }
@@ -171,12 +173,14 @@ where
                     format!("failed to read `{}`: {error}", request.path),
                 )
             })?;
-        if bytes.len() > request.max_bytes {
+        if let Some(max_bytes) = request.max_bytes
+            && bytes.len() > max_bytes
+        {
             return Err(tool_error(
                 "view_image",
                 format!(
                     "'{}' changed while reading and exceeds the {} byte source limit",
-                    request.path, request.max_bytes
+                    request.path, max_bytes
                 ),
             ));
         }

@@ -20,7 +20,28 @@ enum AccountBalanceHealth { unknown, sufficient, insufficient }
 
 enum AccountListPhase { loading, ready, failed }
 
-enum AccountRowAction { refresh, setDefault, edit, delete }
+enum AccountRowAction {
+  refresh,
+  setDefault,
+  edit,
+  delete,
+  upgrade,
+  cancelUpgrade,
+  checkUpdate,
+}
+
+enum AccountListCategory { all, acp, native }
+
+enum AcpUpgradePhase {
+  idle,
+  checking,
+  upToDate,
+  updateAvailable,
+  upgrading,
+  pendingSwitch,
+  incompatibleMajor,
+  failed,
+}
 
 enum AccountModelOrigin { online, bundled, manual }
 
@@ -96,6 +117,8 @@ enum AcpAccountAction {
   prepare,
   cancelPreparation,
   usePrepared,
+  upgrade,
+  checkUpdate,
   check,
   login,
   cancelAuthentication,
@@ -280,6 +303,23 @@ abstract class AccountUsagePresentation with _$AccountUsagePresentation {
 }
 
 @freezed
+abstract class AcpCardUpgradePresentation with _$AcpCardUpgradePresentation {
+  const factory AcpCardUpgradePresentation({
+    @Default(AcpUpgradePhase.idle) AcpUpgradePhase phase,
+    String? installedVersion,
+    String? runningVersion,
+    String? latestVersion,
+    String? stageLabel,
+    double? progress,
+    String? progressLabel,
+    String? error,
+    @Default(false) bool canUpgrade,
+    @Default(false) bool canCancel,
+    @Default(false) bool canCheck,
+  }) = _AcpCardUpgradePresentation;
+}
+
+@freezed
 sealed class AccountRowContent with _$AccountRowContent {
   const factory AccountRowContent.native({
     required AccountBilling billing,
@@ -289,6 +329,11 @@ sealed class AccountRowContent with _$AccountRowContent {
   }) = NativeAccountRowContent;
   const factory AccountRowContent.acp({
     required String status,
+    @Default(AcpPresentationPhase.idle) AcpPresentationPhase phase,
+    @Default(false) bool isManaged,
+    String? sourceLabel,
+    String? versionLabel,
+    AcpCardUpgradePresentation? upgrade,
     AcpUsagePresentation? usage,
   }) = AcpAccountRowContent;
 }
@@ -313,6 +358,11 @@ abstract class AccountsListPresentation with _$AccountsListPresentation {
     @Default(<AccountDisplayKey>[]) List<AccountDisplayKey> members,
     @Default('') String search,
     @Default(false) bool searchHasNoResults,
+    @Default(AccountListCategory.all) AccountListCategory category,
+    @Default(0) int totalCount,
+    @Default(0) int acpCount,
+    @Default(0) int nativeCount,
+    @Default(0) int upgradableCount,
     @Default(false) bool refreshing,
     @Default(true) bool canAdd,
     @Default(false) bool canRefresh,
@@ -511,6 +561,7 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
     required String status,
     String? subtitle,
     @Default(AcpUsagePresentation()) AcpUsagePresentation usage,
+    @Default(false) bool supportsUsage,
     String? message,
     String? error,
     double? progress,
@@ -525,6 +576,7 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
     List<AcpLoginMethodPresentation> loginMethods,
     String? selectedLoginMethod,
     @Default(false) bool canSelectLoginMethod,
+    AcpCardUpgradePresentation? upgrade,
   }) = _AcpAccountPresentation;
 
   /// Shared visual precedence for panel and footer, independent of ACP phase.
@@ -533,6 +585,7 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
       switch (primaryAction) {
         AcpAccountAction.prepare ||
         AcpAccountAction.usePrepared ||
+        AcpAccountAction.upgrade ||
         AcpAccountAction.check ||
         AcpAccountAction.login ||
         AcpAccountAction.retry => true,

@@ -1,19 +1,16 @@
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_models.dart';
+import 'package:anywork/src/features/conversation/timeline/timeline_views.dart';
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
-
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 
 class ModelRequestWaitPreview extends StatelessWidget {
   const ModelRequestWaitPreview({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final projected = LiveStatusProjection.project(
+    final projected = LiveStatusMachine.project(
       threadId: 'preview-thread',
-      observation: LiveStatusInputs(
+      inputs: LiveStatusInputs(
         activeTurnId: 'preview-turn',
         activity: const ThreadActivityView(
           threadId: 'preview-thread',
@@ -28,11 +25,6 @@ class ModelRequestWaitPreview extends StatelessWidget {
         hasContentOwner: true,
       ),
     );
-    final presenting = projected.barState as LiveStatusPresenting;
-    return ConversationActivityBar(
-      children: [
-        ConversationRealtimeNotices(notices: presenting.surface.notices),
-      ],
-    );
+    return LiveStatusSurfaceView(gate: projected.gate);
   }
 }

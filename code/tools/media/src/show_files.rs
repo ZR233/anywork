@@ -4,8 +4,7 @@ use pl_tool_media_support::{CancellationToken, Media, MediaHost, MediaKind};
 use std::{error::Error, fmt, future::Future, marker::PhantomData, sync::Arc};
 
 pub const NAME: &str = "show_files";
-pub const DESCRIPTION: &str = "Display an ordered selection of workspace files or this Thread's archived attachments to the user. Workspace files are archived exactly (maximum 50 MiB each); partial failures are reported in order. This does not read file contents into model context or require image input support. Use view_image to inspect an image yourself. Optional caption is trimmed and limited to 240 characters.";
-pub const MAX_SOURCE_BYTES: usize = 50 * 1024 * 1024;
+pub const DESCRIPTION: &str = "Display an ordered selection of workspace files or this Thread's archived attachments to the user. Workspace files are archived exactly, with no size limit; partial failures are reported in order. This does not read file contents into model context or require image input support. Use view_image to inspect an image yourself. Optional caption is trimmed and limited to 240 characters.";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -65,7 +64,6 @@ pub struct Output<R> {
 
 pub struct FileStat {
     pub is_file: bool,
-    pub len: Option<u64>,
 }
 
 /// A host-frozen, per-call capability. Each operation enforces the same grant.
@@ -80,12 +78,9 @@ pub trait FileSource: Send + Sync + 'static {
         &self,
         path: &str,
     ) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send;
-    /// Rejects over-limit files rather than truncating; paths remain subject to the grant.
-    fn read_bytes(
-        &self,
-        path: &str,
-        max_bytes: usize,
-    ) -> impl Future<Output = Result<Arc<[u8]>, Self::Error>> + Send;
+    /// Reads the whole regular file without a size ceiling or truncation; paths remain subject to the grant.
+    fn read_bytes(&self, path: &str)
+    -> impl Future<Output = Result<Arc<[u8]>, Self::Error>> + Send;
     fn archived_file(
         &self,
         id: &str,
@@ -173,11 +168,6 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> ShowFiles<S, H> {
                 "display source is not a regular file",
             ));
         }
-        if stat.len.is_some_and(|len| len > MAX_SOURCE_BYTES as u64) {
-            return Err(DisplayError::invalid(
-                "display source exceeds the 50 MiB limit",
-            ));
-        }
         let origin = match context
             .source
             .local_file_path(path)
@@ -194,14 +184,9 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> ShowFiles<S, H> {
         };
         let bytes = context
             .source
-            .read_bytes(read_path, MAX_SOURCE_BYTES)
+            .read_bytes(read_path)
             .await
             .map_err(DisplayError::caused)?;
-        if bytes.len() > MAX_SOURCE_BYTES {
-            return Err(DisplayError::invalid(
-                "display source exceeds the 50 MiB limit",
-            ));
-        }
         let name = filename(path);
         let classification_name = name.clone();
         let (bytes, media_type, modality) = tokio::task::spawn_blocking(move || {

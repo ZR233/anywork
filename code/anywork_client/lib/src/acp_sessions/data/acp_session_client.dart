@@ -107,9 +107,12 @@ final class AcpSessionClient {
     }
   }
 
-  Future<void> commitDraft(AcpSessionTargetView target) {
+  Future<void> commitDraft(
+    AcpSessionTargetView target, {
+    required String firstPromptText,
+  }) {
     _requireOpen();
-    return _port.commitDraft(target);
+    return _port.commitDraft(target, firstPromptText: firstPromptText);
   }
 
   Future<AcpRunIdView> prompt(AcpPromptRequestView request) {

@@ -384,16 +384,23 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
     }
     final draft = _CompactDraft(raw, _revision, _owner);
     _compact[id] = draft;
-    final parsed = positiveAccountInteger(raw);
-    if (parsed == null) {
-      draft.error = _strings['positiveInteger'];
-    }
+    draft.error = _compactValueError(id, raw);
     _publish();
+  }
+
+  String? _compactValueError(String id, String raw) {
+    final parsed = positiveAccountInteger(raw);
+    if (parsed == null) return _strings['positiveInteger'];
+    final maximum = _models.state.value.model(_model(id))?.maxContextWindow;
+    if (maximum != null && parsed > maximum * 9 ~/ 10) {
+      return '1–${maximum * 9 ~/ 10}';
+    }
+    return null;
   }
 
   void presetCompact(String id, int percent) {
     if (!const [25, 50, 75, 90].contains(percent)) return;
-    final window = _models.state.value.model(_model(id))?.context.contextWindow;
+    final window = _models.state.value.model(_model(id))?.maxContextWindow;
     if (window == null || window <= 0) return;
     final tokens = window * percent ~/ 100;
     if (tokens > 0) changeCompact(id, '$tokens');
@@ -403,7 +410,7 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
     final draft = _compact[id];
     if (draft == null) return;
     final parsed = positiveAccountInteger(draft.raw);
-    if (!draft.clearing && parsed == null) return;
+    if (!draft.clearing && _compactValueError(id, draft.raw) != null) return;
     await _saveCompact(
       id,
       draft,
@@ -439,7 +446,7 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
       identical(draft.owner, _owner) &&
       !_compactAttempts.containsKey(id) &&
       !_compactUncertain.contains(id) &&
-      (draft.clearing || positiveAccountInteger(draft.raw) != null);
+      (draft.clearing || _compactValueError(id, draft.raw) == null);
 
   /// Freeze every revision before leaving; a new edit can never be discarded by
   /// an older completion. Accepted/unknown operations remain domain-owned.
@@ -746,17 +753,8 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
             ),
         ],
         context: [
-          if (model.context.contextWindow case final window?)
-            AccountDisplayFact(label: _strings['context'], value: '$window'),
           if (model.maxContextWindow case final window?)
             AccountDisplayFact(label: _strings['maxContext'], value: '$window'),
-          if (model.context.inputTokenLimit case final input?)
-            AccountDisplayFact(label: _strings['inputBudget'], value: '$input'),
-          if (model.context.unavailable case final unavailable?)
-            AccountDisplayFact(
-              label: _strings['context'],
-              value: _strings['contextUnavailable.${unavailable.name}'],
-            ),
           if (model.maxOutputTokens case final output?)
             AccountDisplayFact(label: _strings['output'], value: '$output'),
         ],
@@ -818,7 +816,7 @@ class AccountModelsViewModel extends _$AccountModelsViewModel {
                       : null),
         saving: _compactAttempts.containsKey(model.modelId),
         dirty: draft != null,
-        contextWindow: model.context.contextWindow,
+        contextWindow: model.maxContextWindow,
         adjusted: model.context.adjustment != null,
         canSave: draft != null && _canSaveCompact(model.modelId, draft),
         canEdit:

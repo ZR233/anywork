@@ -5,6 +5,37 @@ import 'support/accounts_test_runtime.dart';
 
 void main() {
   test(
+    'pending standard speed does not revive the canonical accelerated tier',
+    () {
+      final display = ModelRouteQueries.threadRoute(
+        canonical: const ThreadModelRouteView(
+          accountId: 'account',
+          modelId: 'observed-model',
+          effort: 'high',
+          serviceTier: 'priority',
+          revision: 1,
+          available: true,
+        ),
+        command: const CommandStatus(
+          key: 'thread-route:thread',
+          phase: CommandPhase.pending,
+          target: CommandTarget(
+            accountId: 'account',
+            modelId: 'observed-model',
+            effort: 'high',
+            serviceTier: null,
+          ),
+        ),
+        accounts: selectionAccounts([_account]),
+      );
+      expect(display!.pending, isTrue);
+      expect(display.available, isTrue);
+      expect(display.serviceTier, isNull);
+      expect(display.effort, 'high');
+    },
+  );
+
+  test(
     'typed model queries preserve full catalogs and configured excluded routes',
     () {
       final eligible = _account.models.single;
@@ -13,7 +44,7 @@ void main() {
         typeSupport: const [
           ModelTypeSupportView(
             modelType: ModelType.text,
-            exclusions: [ModelTypeExclusion.contextWindowUnknown],
+            exclusions: [ModelTypeExclusion.contextParametersInvalid],
           ),
         ],
       );

@@ -167,27 +167,42 @@ class _ListScenario extends StatefulWidget {
 
 class _ListScenarioState extends State<_ListScenario> {
   late String _search = widget.initial.search;
+  late AccountListCategory _category = widget.initial.category;
 
   @override
   void didUpdateWidget(covariant _ListScenario oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.initial != widget.initial) {
       _search = widget.initial.search;
+      _category = widget.initial.category;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final rows = widget.initial.rows
-        .where((row) => row.name.toLowerCase().contains(_search.toLowerCase()))
-        .toList();
+    final rows = widget.initial.rows.where((row) {
+      final matchesCategory = switch (_category) {
+        AccountListCategory.all => true,
+        AccountListCategory.acp => row.key.kind == AccountKind.acp,
+        AccountListCategory.native => row.key.kind == AccountKind.native,
+      };
+      if (!matchesCategory) {
+        return false;
+      }
+      return _search.isEmpty ||
+          row.name.toLowerCase().contains(_search.toLowerCase());
+    }).toList();
     return AccountsListView(
       value: widget.initial.presentation.copyWith(
         search: _search,
+        category: _category,
         members: [for (final row in rows) row.key],
-        searchHasNoResults: _search.isNotEmpty && rows.isEmpty,
+        searchHasNoResults:
+            (_search.isNotEmpty || _category != AccountListCategory.all) &&
+            rows.isEmpty,
       ),
       onSearchChanged: (raw) => setState(() => _search = raw),
+      onCategoryChanged: (category) => setState(() => _category = category),
       onAdd: () => widget.record('add account'),
       onRefreshAll: () => widget.record('refresh all'),
       onOpen: (key) => widget.record('open: ${key.kind.name}/${key.id}'),

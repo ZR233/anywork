@@ -19,10 +19,13 @@ Future<BridgeAcpSessionObservation> openAcpSession({
   request: request,
 );
 
-Future<void> commitAcpDraft({required BridgeAcpSessionTarget target}) => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersAcpBusinessCommitAcpDraft(target: target);
+Future<void> commitAcpDraft({
+  required BridgeAcpSessionTarget target,
+  required String firstPromptText,
+}) => RustLib.instance.api.crateApiStudioHandlersAcpBusinessCommitAcpDraft(
+  target: target,
+  firstPromptText: firstPromptText,
+);
 
 Future<BridgeAcpRunId> promptAcpSession({
   required BridgeAcpPromptRequest request,

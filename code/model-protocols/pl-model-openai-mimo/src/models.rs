@@ -6,11 +6,12 @@ use pl_model_openai_wire::model::capabilities::{
 };
 use pl_model_openai_wire::model::family::{ModelFamily, ModelInstanceSpec};
 use pl_model_openai_wire::model::info::{
-    MaxTokensField, MediaWireFormat, ModelInfo, ModelRequestProfile, ModelTransportProfile,
+    MaxTokensField, MediaWireFormat, ModelDefinition, ModelRequestProfile, ModelTransportProfile,
     TruncationMode,
 };
 use pl_model_openai_wire::model::parameter::ModelParameter;
 use pl_model_openai_wire::model::pricing::{ModelPricing, TokenPriceTier};
+use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 
 const MIMO_DEFAULT_MODEL_MODEL_IDS: &[&str] = &["mimo-v2.5-pro", "mimo-v2.5"];
 
@@ -18,7 +19,7 @@ pub fn mimo_default_model_ids() -> &'static [&'static str] {
     MIMO_DEFAULT_MODEL_MODEL_IDS
 }
 
-pub fn models() -> Vec<ModelInfo> {
+pub fn models() -> Vec<ModelDefinition> {
     let mimo_text = mimo_text_family();
     let mimo_vision = mimo_vision_family();
     vec![
@@ -45,12 +46,11 @@ pub fn models() -> Vec<ModelInfo> {
 }
 
 fn mimo_text_family() -> ModelFamily {
-    mimo_family("mimo-text", mimo_text_capabilities(), Vec::new())
+    mimo_family(mimo_text_capabilities(), Vec::new())
 }
 
 fn mimo_vision_family() -> ModelFamily {
     mimo_family(
-        "mimo-vision",
         mimo_vision_capabilities(),
         pl_model_openai_wire::model::image_media_profiles(
             MediaWireFormat::ChatImageUrl,
@@ -61,15 +61,19 @@ fn mimo_vision_family() -> ModelFamily {
 
 /// MiMo 共享 family 元数据；视觉变体叠加本地图片输入能力。
 fn mimo_family(
-    id: &'static str,
     capabilities: ModelCapabilities,
     media: Vec<pl_model_openai_wire::model::ModelMediaInputProfile>,
 ) -> ModelFamily {
     ModelFamily {
-        id,
         capabilities,
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(false),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: vec![mimo_effort_parameter()],
         transport: ModelTransportProfile::chat_completions_http(),
         request_profile: ModelRequestProfile {
@@ -82,13 +86,13 @@ fn mimo_family(
             media,
             ..ModelRequestProfile::default()
         },
-        base_instructions: String::new(),
     }
 }
 
 /// MiMo thinking 开关；官方 Chat API 只声明 `thinking.type`。
 fn mimo_effort_parameter() -> ModelParameter {
     ModelParameter {
+        candidate_display_names: Default::default(),
         default: None,
         name: "effort".to_string(),
         label: Some("Thinking".to_string()),
@@ -126,7 +130,6 @@ fn mimo_capabilities(input: Vec<ModelInputCapability>) -> ModelCapabilities {
         output: vec![ModelModality::Text],
         tools: ToolCapabilities {
             function_calling: true,
-            parallel_tool_calls: false,
             custom_tools: false,
             freeform_tools: false,
             programmatic_tool_calling: false,

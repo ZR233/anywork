@@ -4,7 +4,7 @@ use crate::completion::{
     CompletionFailure, CompletionRequest, ModelCompactionRequest, ModelCompactionResponse,
 };
 use crate::model::PricingMode;
-use crate::model::{ModelCapabilities, ModelInfo};
+use crate::model::{ModelCapabilities, ModelDefinition};
 use crate::protocol::{FileUploadCapability, ProtocolEndpoint, WireApi};
 use pl_model_openai_wire::files::FileUploadService;
 use pl_protocol::PureError;
@@ -17,11 +17,12 @@ pub struct ModelRuntime {
     pub(super) account_id: String,
     pub(super) endpoint: ProtocolEndpoint,
     pub(super) http_client: reqwest::Client,
-    pub(super) model: ModelInfo,
+    pub(super) model: ModelDefinition,
     pub(super) clock: Arc<dyn super::InferenceClock>,
     pub(super) pricing_mode: PricingMode,
     pub(super) upload: Option<&'static FileUploadService>,
     context: crate::model::ModelContextResolution,
+    pub(super) service_tier: Option<String>,
 }
 
 impl ModelRuntime {
@@ -33,6 +34,7 @@ impl ModelRuntime {
         route: crate::config::ResolvedModelRoute,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
+        pl_model_openai_wire::service_tiers::validate(&route.model, route.service_tier.as_deref())?;
         let runtime = Self::bind(
             route.account_id.as_str(),
             route.endpoint,
@@ -42,6 +44,7 @@ impl ModelRuntime {
         .with_pricing_mode(route.pricing_mode);
         Ok(Self {
             context: route.context,
+            service_tier: route.service_tier,
             ..runtime
         })
     }
@@ -52,7 +55,7 @@ impl ModelRuntime {
     pub fn bind(
         account_id: impl Into<String>,
         endpoint: ProtocolEndpoint,
-        model: ModelInfo,
+        model: ModelDefinition,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
         if match upload {
@@ -83,6 +86,7 @@ impl ModelRuntime {
         context.auto_compact_limit = None;
         Ok(Self {
             context,
+            service_tier: None,
             account_id,
             endpoint,
             http_client,
@@ -93,7 +97,7 @@ impl ModelRuntime {
         })
     }
 
-    pub fn model(&self) -> &ModelInfo {
+    pub fn model(&self) -> &ModelDefinition {
         &self.model
     }
     pub fn endpoint(&self) -> &ProtocolEndpoint {
@@ -104,6 +108,7 @@ impl ModelRuntime {
     }
     pub fn effective_model_capabilities(&self) -> ModelCapabilities {
         self.model
+            .extra
             .capabilities
             .clone()
             .with_native_custom_tools(self.endpoint.uses_native_custom_tools())
@@ -114,19 +119,27 @@ impl ModelRuntime {
         let model_info = &self.model;
         let mut hasher = DefaultHasher::new();
         self.endpoint.connection_fingerprint().hash(&mut hasher);
-        model_info.model_id.hash(&mut hasher);
-        model_info.binding.transport.protocol.hash(&mut hasher);
+        model_info.base.slug.hash(&mut hasher);
         model_info
+            .extra
+            .binding
+            .transport
+            .protocol
+            .hash(&mut hasher);
+        model_info
+            .extra
             .binding
             .transport
             .default_connection_mode
             .hash(&mut hasher);
         model_info
+            .extra
             .binding
             .transport
             .supported_connection_modes
             .hash(&mut hasher);
         let mut headers = model_info
+            .extra
             .binding
             .request
             .headers
@@ -161,7 +174,7 @@ impl ModelRuntime {
     pub fn compaction(&self) -> Option<RemoteCompaction<'_>> {
         let runtime = self;
         (runtime.endpoint().service_capabilities.remote_compaction
-            && runtime.model().binding.transport.protocol == WireApi::Responses)
+            && runtime.model().extra.binding.transport.protocol == WireApi::Responses)
             .then_some(RemoteCompaction { runtime })
     }
 }

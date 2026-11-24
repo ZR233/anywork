@@ -47,6 +47,7 @@ impl Source {
             accepted: Some(AcpSessionFrame::Accepted {
                 target: opened.target,
                 has_observation,
+                info_snapshot: opened.info_snapshot.map(Box::new),
             }),
             events,
             events_ended: false,
@@ -208,6 +209,7 @@ mod real_transport {
             let BridgeAcpSessionFrame::Accepted {
                 target: bridged,
                 has_observation: true,
+                ..
             } = frame(&handle).await?
             else {
                 anyhow::bail!("real FRB acceptance missing");
@@ -388,6 +390,7 @@ mod tests {
                     instance: 41,
                 },
                 has_observation: false,
+                info_snapshot: None,
             }),
             events: Box::pin(stream::empty()),
             events_ended: false,
@@ -397,6 +400,7 @@ mod tests {
         let Some(BridgeAcpSessionFrame::Accepted {
             target,
             has_observation,
+            ..
         }) = observation.next().await.unwrap()
         else {
             panic!("missing acceptance");

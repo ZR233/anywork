@@ -68,32 +68,6 @@ final class TimelineDisplayFacts {
   final List<TimelineItemFacts> items;
 }
 
-final class LiveActivityToolsFacts {
-  const LiveActivityToolsFacts({
-    required this.ownerId,
-    required this.collection,
-    required this.revision,
-    required this.totalCount,
-    required this.loadedCount,
-    required this.expanded,
-    required this.loading,
-    required this.hasPrevious,
-    required this.hasNext,
-    this.error,
-  });
-
-  final String ownerId;
-  final String collection;
-  final int revision;
-  final int totalCount;
-  final int loadedCount;
-  final bool expanded;
-  final bool loading;
-  final bool hasPrevious;
-  final bool hasNext;
-  final Object? error;
-}
-
 final class TimelineChildrenFacts {
   TimelineChildrenFacts({
     required this.parentId,
@@ -295,7 +269,6 @@ final class StudioDriverFacts {
     this.timeline,
     this.timelineScroll,
     this.conversationActivity,
-    this.liveActivityTools,
     Map<String, ThreadWorkspace> workspacesByThread = const {},
     List<SessionDirectoryRow> rootRows = const [],
     this.directoryHasMore = false,
@@ -352,7 +325,6 @@ final class StudioDriverFacts {
   /// （design/26 §26.9）。
   final TimelineScrollDiagnostic? timelineScroll;
   final ConversationActivityView? conversationActivity;
-  final LiveActivityToolsFacts? liveActivityTools;
   final Map<String, ThreadWorkspace> workspacesByThread;
   final List<SessionDirectoryRow> rootRows;
   final bool directoryHasMore;
@@ -444,6 +416,9 @@ final class StudioDriverAcpInstallEntryFacts {
     this.reused = false,
     this.failureCode,
     this.failureRetryable,
+    this.installedVersion,
+    this.updatePhase,
+    this.updateLatestVersion,
   });
 
   final String provider;
@@ -474,6 +449,9 @@ final class StudioDriverAcpInstallEntryFacts {
   final bool reused;
   final String? failureCode;
   final bool? failureRetryable;
+  final String? installedVersion;
+  final String? updatePhase;
+  final String? updateLatestVersion;
 }
 
 final class StudioDriverBotsFacts {
@@ -1151,21 +1129,6 @@ abstract final class StudioDriverState {
                   {'id': detail.id, 'title': detail.title, 'body': detail.body},
               ],
             },
-      'liveActivityTools': switch (facts.liveActivityTools) {
-        final tools? => {
-          'ownerId': tools.ownerId,
-          'collection': tools.collection,
-          'revision': tools.revision,
-          'totalCount': tools.totalCount,
-          'loadedCount': tools.loadedCount,
-          'expanded': tools.expanded,
-          'loading': tools.loading,
-          'hasPrevious': tools.hasPrevious,
-          'hasNext': tools.hasNext,
-          'error': tools.error?.toString(),
-        },
-        null => null,
-      },
       // 保存故障/恢复的 typed 诊断（只读投影，不是第二份业务状态）。
       //
       // 每个已观测到存储事实的 Thread 一条：typed 故障类别、代数与水位、执行阶段、
@@ -1778,6 +1741,9 @@ Map<String, Object?>? _acpInstallFactsJson(StudioDriverAcpInstallFacts? facts) {
                 },
           'program': entry.program,
           'reused': entry.reused,
+          'installedVersion': entry.installedVersion,
+          'updatePhase': entry.updatePhase,
+          'updateLatestVersion': entry.updateLatestVersion,
           'failure': entry.failureCode == null
               ? null
               : {

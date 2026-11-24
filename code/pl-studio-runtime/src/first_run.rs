@@ -11,7 +11,7 @@ use pl_model::config::{
     AccountConfig, AccountModelCatalogConfig, AccountTemplateId, AgentModelConfig,
     builtin_account_catalog,
 };
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 use pl_model::protocol::ProtocolEndpoint;
 
 /// Studio 使用的动态 account template 标识。
@@ -61,7 +61,7 @@ impl AccountTemplateKind {
         self.template()?.account.to_endpoint()
     }
 
-    pub fn default_models(&self) -> Result<Vec<ModelInfo>> {
+    pub fn default_models(&self) -> Result<Vec<ModelDefinition>> {
         self.template()?.account.effective_models(None)
     }
 
@@ -69,7 +69,7 @@ impl AccountTemplateKind {
         Ok(self
             .default_models()?
             .into_iter()
-            .map(|model| model.0.model_id)
+            .map(|model| model.base.slug)
             .collect())
     }
 
@@ -90,17 +90,17 @@ impl AccountTemplateKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FirstRunModelDraft {
-    pub config: ModelInfo,
+    pub config: ModelDefinition,
 }
 
 impl FirstRunModelDraft {
-    pub fn from_model_info(config: ModelInfo) -> Self {
+    pub fn from_model_info(config: ModelDefinition) -> Self {
         Self { config }
     }
 
     pub fn custom(model_id: impl Into<String>) -> Self {
         Self {
-            config: ModelInfo::compatible(&model_id.into()),
+            config: ModelDefinition::compatible(&model_id.into()),
         }
     }
 }
@@ -133,7 +133,7 @@ impl FirstRunAccountDraft {
         })
     }
 
-    pub fn all_models(&self) -> Result<Vec<ModelInfo>> {
+    pub fn all_models(&self) -> Result<Vec<ModelDefinition>> {
         let mut models = self.kind.default_models()?;
         models.extend(self.models.iter().map(|model| model.config.clone()));
         Ok(models)
@@ -164,14 +164,14 @@ impl FirstRunAccountDraft {
                 *additional_models = self
                     .models
                     .iter()
-                    .map(|model| model.config.clone())
+                    .map(|model| model.config.clone().into())
                     .collect();
             }
             AccountModelCatalogConfig::Explicit { models, .. } => {
                 *models = self
                     .models
                     .iter()
-                    .map(|model| model.config.clone())
+                    .map(|model| model.config.clone().into())
                     .collect();
             }
         }
@@ -332,25 +332,29 @@ fn validate_account_key(key: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_models(account_key: &str, default_model: &str, models: &[ModelInfo]) -> Result<()> {
+fn validate_models(
+    account_key: &str,
+    default_model: &str,
+    models: &[ModelDefinition],
+) -> Result<()> {
     let mut model_ids = BTreeSet::new();
     for model in models {
-        if model.model_id.trim().is_empty() {
+        if model.base.slug.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
                 "account {account_key} has a model with empty model_id"
             )));
         }
-        if !model_ids.insert(model.model_id.clone()) {
+        if !model_ids.insert(model.base.slug.clone()) {
             return Err(PureError::ConfigError(format!(
                 "account {account_key} has duplicate model model_id: {}",
-                model.model_id
+                model.base.slug
             )));
         }
     }
 
     let _model = models
         .iter()
-        .find(|model| model.model_id == default_model)
+        .find(|model| model.base.slug == default_model)
         .ok_or_else(|| {
             PureError::ConfigError(format!(
                 "account {account_key} default_model is not in models: {default_model}"
@@ -363,7 +367,7 @@ fn role_effort(account: &AccountConfig, model_id: &str) -> Result<Option<String>
     let models = account.effective_models(None)?;
     let model = models
         .iter()
-        .find(|model| model.model_id == model_id)
+        .find(|model| model.base.slug == model_id)
         .ok_or_else(|| {
             PureError::ConfigError(format!("default model is missing from account: {model_id}"))
         })?;

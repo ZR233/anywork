@@ -13,6 +13,12 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get composerSpeed => 'Speed';
+
+  @override
+  String get composerSpeedStandard => 'Standard';
+
+  @override
   String get acpConnectionReconnecting => 'Reconnecting';
 
   @override
@@ -1715,7 +1721,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsStatisticsSubtitle =>
-      'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.';
+      'Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.';
 
   @override
   String get settingsStatisticsSummaryTitle => 'Model performance';
@@ -2020,62 +2026,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningElapsedUnderSecond => 'Thought for less than 1s';
 
   @override
-  String timelineReasoningElapsedSeconds(int seconds) {
-    return 'Thought for ${seconds}s';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutes(int minutes) {
-    return 'Thought for ${minutes}m';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
-    return 'Thought for ${minutes}m ${seconds}s';
+  String timelineReasoningElapsedDuration(String duration) {
+    return 'Thought for $duration';
   }
 
   @override
   String get timelineGroupWorkedUnderSecond => 'Worked for less than 1s';
 
   @override
-  String timelineGroupWorkedSeconds(int seconds) {
-    return 'Worked for ${seconds}s';
-  }
-
-  @override
-  String timelineGroupWorkedMinutes(int minutes) {
-    return 'Worked for ${minutes}m';
-  }
-
-  @override
-  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
-    return 'Worked for ${minutes}m ${seconds}s';
+  String timelineGroupWorkedDuration(String duration) {
+    return 'Worked for $duration';
   }
 
   @override
   String get timelineGroupExecutingUnderSecond => 'Running for less than 1s';
 
   @override
-  String timelineGroupExecutingSeconds(int seconds) {
-    return 'Running for ${seconds}s';
-  }
-
-  @override
-  String timelineGroupExecutingMinutes(int minutes) {
-    return 'Running for ${minutes}m';
-  }
-
-  @override
-  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
-    return 'Running for ${minutes}m ${seconds}s';
+  String timelineGroupExecutingDuration(String duration) {
+    return 'Running for $duration';
   }
 
   @override
   String get timelineGroupClosing => 'Finishing work';
-
-  @override
-  String get timelineGroupUnrestored =>
-      'Previous work is unfinished and has not resumed';
 
   @override
   String get timelineReasoningSummary => 'Summary';
@@ -2219,18 +2191,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineToolElapsedUnderSecond => 'Took less than 1s';
 
   @override
-  String timelineToolElapsedSeconds(int seconds) {
-    return 'Took ${seconds}s';
-  }
-
-  @override
-  String timelineToolElapsedMinutes(int minutes) {
-    return 'Took ${minutes}m';
-  }
-
-  @override
-  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
-    return 'Took ${minutes}m ${seconds}s';
+  String timelineToolElapsedDuration(String duration) {
+    return 'Took $duration';
   }
 
   @override
@@ -3703,7 +3665,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactHelp =>
-      'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.';
+      'Leave empty to use the model default. Custom thresholds can use up to 90% of the maximum context window.';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity =>
@@ -4276,9 +4238,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modelTextOutputUnsupported => 'Text output unsupported';
-
-  @override
-  String get modelContextWindowUnknown => 'Context window unknown';
 
   @override
   String get modelTextFilterEmpty =>
@@ -4956,7 +4915,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statisticsAllEfforts => 'All effort levels';
 
   @override
-  String get statisticsEffortBreakdownTitle => 'Effort breakdown';
+  String get statisticsEffortBreakdownTitle =>
+      'Effort and request tier breakdown';
+
+  @override
+  String get statisticsRequestedServiceTier => 'Request speed tier';
+
+  @override
+  String get statisticsAllServiceTiers => 'All request tiers';
+
+  @override
+  String get statisticsServiceTierStandard => 'Standard';
+
+  @override
+  String get statisticsServiceTierUnrecorded => 'Not recorded';
+
+  @override
+  String get statisticsServiceTierNotApplicable => 'Not applicable';
 
   @override
   String get accountProtocolOpenAi => 'OpenAI';
@@ -5072,14 +5047,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactAdjusted =>
-      'The effective limit was adjusted for context capacity and output reserve.';
+      'The effective threshold was adjusted to fit the latest maximum context window.';
 
   @override
   String get modelContextParametersInvalid => 'Inconsistent context parameters';
-
-  @override
-  String get modelInputBudgetExhausted =>
-      'No input capacity after reserving output';
 
   @override
   String get statusCompactNow => 'Compact now';
@@ -6269,7 +6240,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpEditorStepPrepareSubtitle =>
-      'anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).';
+      'anywork automatically verifies or downloads the official Google Antigravity server (1.x).';
 
   @override
   String get acpEditorStepConnectTitle => '3. Save and sign in with Google';
@@ -6383,9 +6354,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineGroupUnfinished => 'Work unfinished';
-
-  @override
-  String get timelineGroupWorking => 'Working';
 
   @override
   String get timelineGroupRecord => 'Work record';
@@ -6763,7 +6731,89 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get acpProcessGroupRunning => 'Running';
+  String acpProcessGroupToolsOnly(int toolCount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      toolCount,
+      locale: localeName,
+      other: 'Ran $toolCount tools',
+      one: 'Ran 1 tool',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpProcessGroupThoughtsOnly(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count thoughts',
+      one: 'Thought once',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpProcessGroupActivitiesOnly(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count activities',
+      one: '1 activity',
+    );
+    return 'Process · $_temp0';
+  }
+
+  @override
+  String acpProcessGroupRunningToolsMeta(int toolCount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      toolCount,
+      locale: localeName,
+      other: '$toolCount tools',
+      one: '1 tool',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpProcessGroupRunningActivitiesMeta(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count activities',
+      one: '1 activity',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get acpToolKindRead => 'Read';
+
+  @override
+  String get acpToolKindEdit => 'Edit';
+
+  @override
+  String get acpToolKindDelete => 'Delete';
+
+  @override
+  String get acpToolKindMove => 'Move';
+
+  @override
+  String get acpToolKindSearch => 'Search';
+
+  @override
+  String get acpToolKindExecute => 'Execute';
+
+  @override
+  String get acpToolKindThink => 'Think';
+
+  @override
+  String get acpToolKindFetch => 'Fetch';
+
+  @override
+  String get acpToolKindSwitchMode => 'Switch mode';
+
+  @override
+  String get acpToolKindOther => 'Tool';
 
   @override
   String get acpContentAudioLabel => 'Audio content';
@@ -7672,6 +7722,268 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek web fetch';
+
+  @override
+  String get liveStatusConnectionDisconnected => 'Live updates disconnected';
+
+  @override
+  String get liveStatusConnectionReconnecting => 'Reconnecting live updates';
+
+  @override
+  String get liveStatusMembersUnavailable => 'Member view unavailable';
+
+  @override
+  String get liveStatusMembersLoading => 'Loading sealed members…';
+
+  @override
+  String get liveStatusRetryAction => 'Retry';
+
+  @override
+  String liveStatusContentRangeWindow(int start, int end, int total) {
+    return 'Bytes $start–$end / $total';
+  }
+
+  @override
+  String get liveStatusContentFirstSegment => 'First chunk';
+
+  @override
+  String get liveStatusContentNextSegment => 'Next chunk';
+
+  @override
+  String get timelinePatchUnavailableHint =>
+      'Patch hunk unavailable: content is incomplete or cannot be parsed';
+
+  @override
+  String get timelinePatchFileAdd => 'Add';
+
+  @override
+  String get timelinePatchFileUpdate => 'Update';
+
+  @override
+  String get timelinePatchFileDelete => 'Delete';
+
+  @override
+  String get timelineToolCallFallback => 'Tool call';
+
+  @override
+  String get timelineToolArgumentsIncompleteTitle =>
+      'Tool arguments incomplete';
+
+  @override
+  String get timelineToolArgumentsIncompleteDetail =>
+      'The argument window did not include the complete body';
+
+  @override
+  String get timelineToolIdentityMismatchTitle => 'Tool identity mismatch';
+
+  @override
+  String get timelineToolIdentityMismatchDetail =>
+      'Declared call identity differs from completion payload';
+
+  @override
+  String timelineToolMalformedLabel(String name) {
+    return '$name · Malformed content';
+  }
+
+  @override
+  String timelineToolDeferredLabel(String name) {
+    return '$name · Body loaded on demand';
+  }
+
+  @override
+  String get timelineToolDeferredReason =>
+      'Arguments are loaded on demand; full content has not been retrieved yet';
+
+  @override
+  String timelineToolParseFailed(String reason) {
+    return 'Current tool content cannot be parsed: $reason';
+  }
+
+  @override
+  String get acpContextWindowTitle => 'Context window';
+
+  @override
+  String get acpSnapshotLiveBadge => 'Live';
+
+  @override
+  String get acpSnapshotRetainedBadge => 'Last snapshot';
+
+  @override
+  String acpContextRemainingLabel(String tokens) {
+    return '$tokens remaining';
+  }
+
+  @override
+  String acpContextOverCapacityLabel(String tokens) {
+    return 'Over capacity by $tokens';
+  }
+
+  @override
+  String get acpContextNotReported => 'Context usage not reported by agent';
+
+  @override
+  String acpContextExactTokens(String used, String size) {
+    return '$used / $size exact tokens';
+  }
+
+  @override
+  String get acpMetricSpeedTitle => 'Est. output speed';
+
+  @override
+  String acpMetricSpeedDetail(String tokens, String duration) {
+    return '≈ $tokens tokens · $duration';
+  }
+
+  @override
+  String get acpMetricCostTitle => 'Session cost';
+
+  @override
+  String get acpMetricCostSubtitle => 'Reported by agent';
+
+  @override
+  String get acpMetricTurnsTitle => 'Completed turns';
+
+  @override
+  String acpMetricTurnsValue(int count) {
+    return '$count';
+  }
+
+  @override
+  String get acpDetailSessionSection => 'Session & configuration';
+
+  @override
+  String get acpDetailLastStopReason => 'Last finish';
+
+  @override
+  String get acpDetailUpdatedAt => 'Updated';
+
+  @override
+  String get acpDetailCapabilitiesSection => 'Capabilities & identity';
+
+  @override
+  String get acpDetailSessionId => 'Remote session';
+
+  @override
+  String get acpContextDetailSection => 'Context breakdown';
+
+  @override
+  String get acpContextUsedLabel => 'Used tokens';
+
+  @override
+  String get acpContextCapacityLabel => 'Window capacity';
+
+  @override
+  String get acpContextDeltaLabel => 'Delta vs previous';
+
+  @override
+  String get acpThroughputDetailSection => 'Latest sample';
+
+  @override
+  String get acpThroughputFormulaNote =>
+      'Estimated at ~1 token per 4 chars, including initial wait';
+
+  @override
+  String get acpThroughputTokensLabel => 'Est. output tokens';
+
+  @override
+  String get acpThroughputDurationLabel => 'Response time';
+
+  @override
+  String get acpCostDetailSection => 'Cost breakdown';
+
+  @override
+  String get acpCostCurrencyLabel => 'Currency';
+
+  @override
+  String get acpCostRawLabel => 'Raw reading';
+
+  @override
+  String get acpCostScopeLabel => 'Source';
+
+  @override
+  String get acpSessionDetailTitle => 'Session info';
+
+  @override
+  String get accountsCategoryAll => 'All';
+
+  @override
+  String get accountsCategoryAcp => 'ACP Agents';
+
+  @override
+  String get accountsCategoryNative => 'API Accounts';
+
+  @override
+  String accountsUpgradableCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 's',
+      one: '',
+    );
+    return '$count update$_temp0';
+  }
+
+  @override
+  String get acpManagedBadge => 'Managed';
+
+  @override
+  String get acpLocalBadge => 'Local command';
+
+  @override
+  String acpVersionTag(String version) {
+    return 'v$version';
+  }
+
+  @override
+  String get acpUpgradeCheck => 'Check for updates';
+
+  @override
+  String get acpUpgradeChecking => 'Checking for updates…';
+
+  @override
+  String acpUpgradeUpToDate(String version) {
+    return 'Up to date · v$version';
+  }
+
+  @override
+  String get acpUpgradeAvailableTitle => 'Update available';
+
+  @override
+  String acpUpgradeAvailableVersions(String current, String latest) {
+    return 'v$current → v$latest';
+  }
+
+  @override
+  String acpUpgradeAction(String version) {
+    return 'Upgrade to v$version';
+  }
+
+  @override
+  String get acpUpgradeActionGeneric => 'Upgrade now';
+
+  @override
+  String acpUpgradeUpgrading(String version) {
+    return 'Upgrading to v$version';
+  }
+
+  @override
+  String acpUpgradePendingSwitch(String version) {
+    return 'Installed v$version; will switch once active sessions end';
+  }
+
+  @override
+  String acpUpgradeIncompatibleMajor(String version) {
+    return 'v$version available (update anywork to support major v2)';
+  }
+
+  @override
+  String get acpUpgradeCheckFailed => 'Update check failed. Try again.';
+
+  @override
+  String get acpUpgradeRetryCheck => 'Retry check';
+
+  @override
+  String get acpManagedServerTitle => 'Managed server & updates';
 
   @override
   String get timelineTurnFailed => 'Turn failed';

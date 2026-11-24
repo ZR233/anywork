@@ -1,8 +1,8 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
 import 'package:anywork/src/features/status/context_usage_readout.dart';
-import 'package:anywork/src/features/status/status_detail_panel.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/status_detail_panel.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/gestures.dart';

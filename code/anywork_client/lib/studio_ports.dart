@@ -201,6 +201,7 @@ abstract class StudioTransport
     required ModeModelRouteView route,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
+    String? serviceTier,
     String? workspaceMode,
   });
   Future<RenameThreadCommandReply> renameThread(
@@ -243,6 +244,7 @@ abstract class StudioTransport
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   });
   Future<void> compactThread(String threadId);
 

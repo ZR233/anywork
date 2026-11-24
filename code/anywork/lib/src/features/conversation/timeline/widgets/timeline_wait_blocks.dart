@@ -4,16 +4,18 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../state/tool_presentation.dart';
+import '../tools/items/wait/sleep_tool_item.dart';
+import '../tools/items/wait/wait_tool_item.dart';
+import '../tools/tool_item_view.dart';
 import 'timeline_activity_row.dart';
 
-/// 历史活动组内的等候成员：与其它成员同一轻量活动行，来源/规则/诊断在展开区。
-///
-/// 实时与历史共享活动行和运行指示，实时正文复用 [TimelineWaitDetails]。
+/// Thin compatibility wrapper delegating `ThreadWaitPresentationView` cards to
+/// the unified [TimelineToolItemView] adapter pipeline.
 class TimelineWaitPanel extends StatelessWidget {
   const TimelineWaitPanel({
     required this.presentation,
     required this.identity,
-    this.diagnostics,
     this.initiallyExpanded = false,
     this.onExpansionChanged,
     this.staticObservation = false,
@@ -22,53 +24,37 @@ class TimelineWaitPanel extends StatelessWidget {
 
   final ThreadWaitPresentationView presentation;
   final String identity;
-  final Widget? diagnostics;
   final bool initiallyExpanded;
   final ValueChanged<bool>? onExpansionChanged;
   final bool staticObservation;
 
   @override
   Widget build(BuildContext context) {
-    final title = _waitTitle(context, presentation);
-    final rowLabel = _waitRowLabel(context, presentation);
-    final subtitle = timelineWaitSubtitle(context, presentation);
-    final waiting = presentation.state == ThreadWaitStateView.waiting;
-    return Semantics(
-      container: true,
-      label: subtitle == null ? title : '$title · $subtitle',
-      child: KeyedSubtree(
-        key: StudioDriverKeys.waitingCard(identity),
-        child: TimelineActivityTileTheme(
-          child: Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: TimelineActivityDisclosure(
-              key: ValueKey('wait-expand:$identity'),
-              initiallyExpanded: initiallyExpanded,
-              onExpansionChanged: onExpansionChanged,
-              titleBuilder: (context, expanded) => TimelineActivityRow(
-                icon: _waitStateIcon(presentation.state),
-                iconColor: waiting
-                    ? null
-                    : _waitStateColor(context, presentation.state),
-                label: rowLabel,
-                active: waiting && !staticObservation,
-                indicatorStyle: waiting
-                    ? TimelineActivityIndicatorStyle.rotating
-                    : TimelineActivityIndicatorStyle.restingCat,
-                expanded: expanded,
-                tooltip: subtitle,
-              ),
-              children: [
-                TimelineWaitDetails(
-                  presentation: presentation,
-                  identity: identity,
-                  diagnostics: diagnostics,
-                ),
-              ],
-            ),
-          ),
-        ),
+    final isSleep = presentation.intent is ThreadWaitTimerIntentView;
+    final statusString = switch (presentation.state) {
+      ThreadWaitStateView.waiting => 'waiting',
+      ThreadWaitStateView.failed => 'failed',
+      ThreadWaitStateView.cancelled => 'cancelled',
+      ThreadWaitStateView.interrupted => 'interrupted',
+      _ => 'succeeded',
+    };
+    return TimelineToolItemView(
+      item: TimelineToolPresentation(
+        id: identity,
+        toolCallId: identity,
+        name: isSleep ? 'sleep' : 'wait',
+        presentationContract: isSleep
+            ? SleepToolItem.contractId
+            : WaitToolItem.contractId,
+        statusString: statusString,
+        arguments: '',
+        output: '',
+        frozenObservation: staticObservation,
+        wait: presentation,
       ),
+      initiallyExpanded: initiallyExpanded,
+      staticObservation: staticObservation,
+      onExpansionChanged: onExpansionChanged,
     );
   }
 }
@@ -212,7 +198,7 @@ class _WaitSource {
   final String status;
 }
 
-String _waitTitle(BuildContext context, ThreadWaitPresentationView wait) {
+String waitTitle(BuildContext context, ThreadWaitPresentationView wait) {
   final l10n = context.l10n;
   return switch ((wait.intent, wait.state)) {
     (ThreadWaitTimerIntentView(), ThreadWaitStateView.waiting) =>
@@ -250,9 +236,9 @@ String _waitTitle(BuildContext context, ThreadWaitPresentationView wait) {
 /// 行内等候摘要：事件等待给出数量与最长等待，计时器给出定时时长。
 ///
 /// 来源明细、等待规则与诊断仍在该行展开区；悬浮提示读到完整摘要。
-String _waitRowLabel(BuildContext context, ThreadWaitPresentationView wait) {
+String waitRowLabel(BuildContext context, ThreadWaitPresentationView wait) {
   final l10n = context.l10n;
-  final title = _waitTitle(context, wait);
+  final title = waitTitle(context, wait);
   final parts = switch (wait.intent) {
     ThreadWaitEventsIntentView(:final targets, :final timeoutMs) => [
       title,
@@ -375,7 +361,7 @@ IconData _waitTargetIcon(String? toolName) {
   };
 }
 
-IconData _waitStateIcon(ThreadWaitStateView state) {
+IconData waitStateIcon(ThreadWaitStateView state) {
   return switch (state) {
     ThreadWaitStateView.waiting => Icons.hourglass_empty,
     ThreadWaitStateView.ready ||
@@ -387,7 +373,7 @@ IconData _waitStateIcon(ThreadWaitStateView state) {
   };
 }
 
-Color _waitStateColor(BuildContext context, ThreadWaitStateView state) {
+Color waitStateColor(BuildContext context, ThreadWaitStateView state) {
   return switch (state) {
     ThreadWaitStateView.waiting => context.statusColors.activeIndicator,
     ThreadWaitStateView.ready ||

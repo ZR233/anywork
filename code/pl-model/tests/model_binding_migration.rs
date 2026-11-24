@@ -1,6 +1,6 @@
 //! Producer-owned model binding migration and account identity through public API only.
 use pl_core::context::OpaquePayload;
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 use pl_model::runtime::migration::migrate_payload;
 use pl_model::{
     protocol::WireApi,
@@ -515,7 +515,7 @@ fn runtime_requires_an_explicit_stable_account_id() {
         "Display name is not an identity",
         "http://127.0.0.1:1",
     );
-    let model = ModelInfo::compatible("model");
+    let model = ModelDefinition::compatible("model");
     assert!(pl_model::runtime::new_with_account_id("  ", endpoint.clone(), model.clone()).is_err());
     let runtime = pl_model::runtime::new_with_account_id("account-stable", endpoint, model)
         .expect("explicit account id is valid");
@@ -655,7 +655,7 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
     let runtime = pl_model::runtime::new_with_account_id(
         "deepseek",
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", "http://127.0.0.1:1"),
-        ModelInfo::compatible("deepseek-v4-pro"),
+        ModelDefinition::compatible("deepseek-v4-pro"),
     )
     .unwrap();
     let model = pl_model::runtime::ThreadModel::new(runtime, None);

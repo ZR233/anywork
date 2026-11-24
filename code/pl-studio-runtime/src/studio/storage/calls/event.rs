@@ -145,6 +145,8 @@ pub(super) struct CallLogRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) requested_service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) usage: Option<CallUsageRecord>,
     pub(super) usage_status: Option<pl_core::usage::UsageStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,6 +234,7 @@ impl CallLogRecord {
             sent_model: None,
             reported_model: None,
             effort: None,
+            requested_service_tier: None,
             usage: None,
             usage_status: self.usage_status,
             cost: None,
@@ -293,6 +296,8 @@ struct RawCallLogRecord {
     reported_model: Option<String>,
     #[serde(default)]
     effort: Option<String>,
+    #[serde(default)]
+    requested_service_tier: Option<String>,
     #[serde(default)]
     usage: Option<CallUsageRecord>,
     #[serde(default)]
@@ -357,6 +362,7 @@ impl RawCallLogRecord {
             sent_model: self.sent_model,
             reported_model: self.reported_model,
             effort: self.effort.or(self.reasoning_effort),
+            requested_service_tier: self.requested_service_tier,
             usage: self.usage,
             usage_status: if self.version < 3 {
                 Some(pl_core::usage::UsageStatus::LegacyUnknown)
@@ -416,6 +422,7 @@ pub(super) fn attempt_record(
         sent_model: None,
         reported_model: None,
         effort: None,
+        requested_service_tier: None,
         usage: outcome_usage(&attempt.outcome).map(usage_record_from_model),
         usage_status: outcome_usage(&attempt.outcome)
             .map(|usage| pl_core::usage::analyze_usage(usage).status),
@@ -468,6 +475,7 @@ pub(super) fn billing_record(
         sent_model,
         reported_model,
         effort: billing.effort.clone(),
+        requested_service_tier: billing.requested_service_tier.clone(),
         usage: Some(CallUsageRecord {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,

@@ -54,9 +54,14 @@ pub(crate) fn preparer(
         context_window: route.context.context_window,
         auto_compact_limit: route.context.auto_compact_limit,
         options: policy(mode),
-        base_instructions: route.model.base_instructions.clone(),
+        base_instructions: route
+            .model
+            .base
+            .model_messages
+            .instructions_template
+            .clone(),
         instruction_binding,
-        supports_workflow: route.model.capabilities.supports_function_calling(),
+        supports_workflow: route.model.extra.capabilities.supports_function_calling(),
         models: models.clone(),
         role: route.role.clone(),
     })))
@@ -337,6 +342,7 @@ impl ContextPreparationHook for StudioCompaction {
                     inference_id: id.clone(),
                     binding: result.binding,
                     reasoning_effort,
+                    requested_service_tier: Some("notApplicable".into()),
                     reasoning_effort_source: Some(if handoff.is_some() {
                         CompactionEffortSource::CurrentModelDefault
                     } else {
@@ -434,6 +440,7 @@ impl ContextPreparationHook for StudioCompaction {
                     inference_id: id.clone(),
                     binding: receipt.binding,
                     reasoning_effort: reasoning_effort.clone(),
+                    requested_service_tier: Some("notApplicable".into()),
                     reasoning_effort_source: Some(if handoff.is_some() {
                         CompactionEffortSource::CurrentModelDefault
                     } else {
@@ -493,7 +500,7 @@ impl StudioCompaction {
             let entry = account
                 .effective_catalog(None)?
                 .into_iter()
-                .find(|entry| entry.model.model_id == binding.model_id)
+                .find(|entry| entry.model.base.slug == binding.model_id)
                 .ok_or_else(|| anyhow::anyhow!("compaction source model is unavailable"))?;
             let route = self.models.resolve_route(
                 self.role.clone(),
@@ -1064,6 +1071,10 @@ pub(crate) struct CompactionReceipt {
     pub inference_id: String,
     pub binding: pl_model::runtime::ModelCallBinding,
     pub reasoning_effort: Option<String>,
+    /// Newly recorded compaction requests do not have a selectable tier. Historical
+    /// receipts retain absence so reprojecting them does not change a durable call hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_source: Option<CompactionEffortSource>,
     pub context_window: Option<u64>,
@@ -1181,7 +1192,7 @@ mod tests {
     };
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
-        model::{ModelInfo, ModelTransportProfile},
+        model::{ModelDefinition, ModelTransportProfile},
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     use serde_json::json;
@@ -1243,15 +1254,16 @@ mod tests {
             ),
             ("target", target.base_url(), 500_000, 450_000, "TARGET_BASE"),
         ] {
-            let mut model = ModelInfo::compatible(id);
+            let mut model = ModelDefinition::compatible(id);
             model
+                .extra
                 .binding
                 .set_transport(ModelTransportProfile::responses_http());
-            model.context_window = Some(window);
-            model.max_context_window = Some(window);
-            model.max_output_tokens = Some(1024);
-            model.auto_compact_token_limit = Some(threshold);
-            model.base_instructions = base.into();
+            model.base.context_window = Some(window);
+            model.base.max_context_window = Some(window);
+            model.extra.max_output_tokens = Some(1024);
+            model.base.auto_compact_token_limit = Some(threshold);
+            model.base.model_messages.instructions_template = base.into();
             config.models.accounts.insert(
                 AccountId::new(id)?,
                 AccountConfig::from_explicit_models(

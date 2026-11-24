@@ -179,6 +179,14 @@ String summarizeThoughtBlocks(List<AcpContentBlockPresentation> blocks) {
   return '';
 }
 
+String? _firstNonBlank(String? primary, String? fallback) {
+  final first = primary?.trim();
+  if (first != null && first.isNotEmpty) return first;
+  final second = fallback?.trim();
+  if (second != null && second.isNotEmpty) return second;
+  return null;
+}
+
 /// Only adapts display values. Tool updates are already merged by the Client.
 TimelineToolPresentation mapAcpToolPresentation(
   AcpToolCallId id,
@@ -186,8 +194,10 @@ TimelineToolPresentation mapAcpToolPresentation(
 ) => TimelineToolPresentation(
   id: id.value,
   toolCallId: id.value,
-  name: fields.title ?? fields.name ?? id.value,
-  presentationContract: 'acp.tool',
+  name: _firstNonBlank(fields.title, fields.name) ?? id.value,
+  presentationContract: fields.kind != null
+      ? 'acp.tool.${fields.kind!.name}'
+      : 'acp.tool.other',
   statusString: switch (fields.status) {
     AcpToolCallStatusView.completed => 'succeeded',
     AcpToolCallStatusView.failed => 'failed',
@@ -210,16 +220,29 @@ AcpToolStatusKind mapAcpToolStatus(AcpToolCallStatusView? status) =>
 
 String formatAcpJsonText(AcpJsonValue? value) => switch (value) {
   null => '',
-  AcpJsonNull() => 'null',
-  AcpJsonBool(:final value) => '$value',
-  AcpJsonInteger(:final value) => '$value',
-  AcpJsonDecimal(:final value) => '$value',
-  AcpJsonString(:final value) => jsonEncode(value),
-  AcpJsonArray(:final values) =>
-    '[${values.map(formatAcpJsonText).join(', ')}]',
-  AcpJsonObject(:final values) =>
-    '{${values.entries.map((entry) => '${jsonEncode(entry.key)}: ${formatAcpJsonText(entry.value)}').join(', ')}}',
+  AcpJsonString(:final value) => value,
+  _ => _formatAcpJsonNode(value, indent: 0),
 };
+
+String _formatAcpJsonNode(AcpJsonValue value, {required int indent}) {
+  final pad = '  ' * indent;
+  final nextPad = '  ' * (indent + 1);
+  return switch (value) {
+    AcpJsonNull() => 'null',
+    AcpJsonBool(:final value) => '$value',
+    AcpJsonInteger(:final value) => '$value',
+    AcpJsonDecimal(:final value) => '$value',
+    AcpJsonString(:final value) => jsonEncode(value),
+    AcpJsonArray(:final values) =>
+      values.isEmpty
+          ? '[]'
+          : '[\n${values.map((item) => '$nextPad${_formatAcpJsonNode(item, indent: indent + 1)}').join(',\n')}\n$pad]',
+    AcpJsonObject(:final values) =>
+      values.isEmpty
+          ? '{}'
+          : '{\n${values.entries.map((entry) => '$nextPad${jsonEncode(entry.key)}: ${_formatAcpJsonNode(entry.value, indent: indent + 1)}').join(',\n')}\n$pad}',
+  };
+}
 
 TimelinePatchDocument mapAcpDiffPresentation(AcpToolDiffView diff) =>
     TimelinePatchDocument(
@@ -298,6 +321,7 @@ AcpUpdatePresentation mapAcpUpdatePresentation(
     AcpUpdatePresentation.compaction(
       statusLabel: status.other ?? status.kind.name,
       errorMessage: error is AcpFieldValue<String> ? error.value : null,
+      inProgress: status.kind == AcpCompactionStatusKindView.inProgress,
     ),
   AcpAvailableCommandsUpdateView(:final commands) =>
     superseded || commands.isEmpty
@@ -374,6 +398,7 @@ AcpTimelineItemPresentation? mapAcpTimelineItem({
         tool: mapAcpToolPresentation(toolCallId, fields),
         status: mapAcpToolStatus(fields.status),
         kindLabel: fields.kind?.name,
+        rawName: fields.name,
         locations: locations,
         terminals: terminals,
         diffs: diffs,

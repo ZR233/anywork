@@ -2,9 +2,9 @@ use pl_protocol::Result;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::completion::ReasoningConfig;
+use crate::completion::CompletionRequest;
 use crate::completion::ToolFormat;
-use crate::model::info::ModelInfo;
+use crate::model::info::ModelDefinition;
 
 use super::protocol_error;
 #[derive(Debug, Clone, Serialize)]
@@ -40,11 +40,14 @@ pub(super) fn to_object_map<T: Serialize>(value: &T) -> Result<Map<String, Value
 /// 注入 base body 后应用 parameter wire，完成请求体动态字段组装。
 pub(super) fn finalize_body(
     body: &mut Map<String, Value>,
-    model: &ModelInfo,
-    reasoning: &Option<ReasoningConfig>,
+    model: &ModelDefinition,
+    request: &CompletionRequest,
 ) {
-    merge_base_body(body, &model.binding.request.body);
-    apply_parameters(body, model, reasoning);
+    merge_base_body(body, &model.extra.binding.request.body);
+    apply_parameters(body, model, request);
+    if let Some(tier) = &request.service_tier {
+        body.insert("service_tier".into(), Value::String(tier.clone()));
+    }
 }
 
 /// 深合并 base body 到请求体：对象字段递归合并，其余字段覆盖。
@@ -64,12 +67,13 @@ pub(super) fn merge_base_body(target: &mut Map<String, Value>, source: &Map<Stri
 /// 遍历模型声明的可调参数，对用户选中的值应用 wire 写入请求体。
 fn apply_parameters(
     body: &mut Map<String, Value>,
-    model: &ModelInfo,
-    reasoning: &Option<ReasoningConfig>,
+    model: &ModelDefinition,
+    request: &CompletionRequest,
 ) {
-    for parameter in &model.parameters {
+    for parameter in model.parameters() {
         let selected = if parameter.name == "effort" {
-            reasoning
+            request
+                .reasoning
                 .as_ref()
                 .and_then(|config| config.effort.as_deref())
         } else {

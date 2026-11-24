@@ -13,7 +13,7 @@ import 'timeline_markdown.dart';
 class TimelineReasoningView extends StatelessWidget {
   const TimelineReasoningView({
     this.summary,
-    this.summaryWidget,
+    this.summaryBuilder,
     this.body,
     this.startedAt,
     this.finishedAt,
@@ -26,7 +26,7 @@ class TimelineReasoningView extends StatelessWidget {
   });
 
   final String? summary;
-  final Widget? summaryWidget;
+  final Widget Function(String fallback)? summaryBuilder;
   final Widget? body;
   final int? startedAt;
   final int? finishedAt;
@@ -67,7 +67,7 @@ class TimelineReasoningView extends StatelessWidget {
         active: running,
         label: label,
         labelWidget:
-            summaryWidget ??
+            summaryBuilder?.call(fallback) ??
             (hasSummary ? TimelineReasoningSummary(text: summary!) : null),
         tooltip: diagnostic == null ? label : '$label\n$diagnostic',
         expanded: expanded,
@@ -139,7 +139,9 @@ class TimelineReasoningSummary extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: effectiveStyle,
-        inlineCodeBackgroundColor: inlineCodeBackgroundColor,
+        inlineCodeBackgroundColor:
+            inlineCodeBackgroundColor ??
+            context.colors.surfaceContainerHigh.withValues(alpha: .75),
         onLink: (_) {},
         isSafeLink: (_) => false,
         imageBuilder: (_, url) => Text(

@@ -1126,7 +1126,7 @@ mod storage_fault_tests {
                 let sink = ThreadStorageSink::new(self.0.clone(), protocol)
                     .await
                     .map_err(storage_error)?;
-                let model_info = pl_model::model::ModelInfo::compatible("reactivated-model");
+                let model_info = pl_model::model::ModelDefinition::compatible("reactivated-model");
                 let route = pl_model::config::ResolvedModelRoute {
                     pricing_mode: Default::default(),
                     role: crate::config::root_agent_route_id(),
@@ -1139,6 +1139,7 @@ mod storage_fault_tests {
                     context: model_info.resolve_context(None),
                     model: model_info,
                     effort: None,
+                    service_tier: None,
                 };
                 let model = pl_model::runtime::ThreadModel::new(
                     pl_model::runtime::from_route(&route)?,
@@ -1154,7 +1155,7 @@ mod storage_fault_tests {
                     id: id.clone(),
                     parent_id: None,
                     model: Some(pl_core::thread::RuntimeModel::new(
-                        route.model.model_id.clone(),
+                        route.model.base.slug.clone(),
                         pl_core::model::ModelFactory::new(model),
                         None,
                     )),

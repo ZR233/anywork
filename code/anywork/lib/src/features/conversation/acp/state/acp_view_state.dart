@@ -41,6 +41,20 @@ abstract final class AcpViewKeyValues {
   static (String, String) planCard(String threadId) => ('acp-plan', threadId);
   static (String, String) toolCard(String toolCallId) =>
       ('acp-tool', toolCallId);
+  static (String, String) status(String threadId) => ('acp-status', threadId);
+  static (String, String) statusDetail(String threadId) =>
+      ('acp-status-detail', threadId);
+  static (String, String) contextUsage(String threadId) =>
+      ('acp-context-usage', threadId);
+  static (String, String) contextUsageDetail(String threadId) =>
+      ('acp-context-usage-detail', threadId);
+  static (String, String) throughput(String threadId) =>
+      ('acp-throughput', threadId);
+  static (String, String) throughputDetail(String threadId) =>
+      ('acp-throughput-detail', threadId);
+  static (String, String) cost(String threadId) => ('acp-cost', threadId);
+  static (String, String) costDetail(String threadId) =>
+      ('acp-cost-detail', threadId);
   static (String, String) externalHistoryButton(String threadId) =>
       ('acp-external-history-button', threadId);
   static (String, String) externalHistoryLoad(String sessionId) =>
@@ -187,6 +201,7 @@ sealed class AcpUpdatePresentation with _$AcpUpdatePresentation {
   const factory AcpUpdatePresentation.compaction({
     required String statusLabel,
     String? errorMessage,
+    @Default(false) bool inProgress,
   }) = AcpCompactionUpdatePresentation;
 
   const factory AcpUpdatePresentation.availableCommands({
@@ -227,6 +242,7 @@ sealed class AcpTimelineItemPresentation with _$AcpTimelineItemPresentation {
     required TimelineToolPresentation tool,
     required AcpToolStatusKind status,
     String? kindLabel,
+    String? rawName,
     @Default(<String>[]) List<String> locations,
     @Default(<String>[]) List<String> terminals,
     @Default(<TimelinePatchDocument>[]) List<TimelinePatchDocument> diffs,
@@ -443,7 +459,7 @@ enum AcpStopReasonKind {
   other,
 }
 
-typedef AcpContextUsageViewState = ({BigInt used, BigInt size});
+typedef AcpContextUsageViewState = ({BigInt? used, BigInt? size, bool isLive});
 
 typedef AcpCostViewState = ({double amount, String currency});
 
@@ -455,6 +471,67 @@ abstract class AcpStatusBarViewState with _$AcpStatusBarViewState {
     String? stopReasonRaw,
     AcpHistoryOriginKind? provenance,
   }) = _AcpStatusBarViewState;
+}
+
+@freezed
+abstract class AcpConfigReadoutItem with _$AcpConfigReadoutItem {
+  const factory AcpConfigReadoutItem({
+    required String label,
+    required String value,
+    bool? booleanValue,
+    @Default(false) bool useModeFallbackLabel,
+  }) = _AcpConfigReadoutItem;
+}
+
+@freezed
+abstract class AcpContextDetailViewState with _$AcpContextDetailViewState {
+  const factory AcpContextDetailViewState({
+    BigInt? used,
+    BigInt? size,
+    BigInt? previousUsed,
+    @Default(false) bool isLive,
+    DateTime? updatedAt,
+  }) = _AcpContextDetailViewState;
+}
+
+@freezed
+abstract class AcpThroughputDetailViewState
+    with _$AcpThroughputDetailViewState {
+  const factory AcpThroughputDetailViewState({
+    double? tokensPerSecond,
+    int? estimatedOutputTokens,
+    int? responseMillis,
+    @Default(false) bool isLive,
+    DateTime? updatedAt,
+  }) = _AcpThroughputDetailViewState;
+}
+
+@freezed
+abstract class AcpCostDetailViewState with _$AcpCostDetailViewState {
+  const factory AcpCostDetailViewState({
+    required double amount,
+    required String currency,
+    @Default(false) bool isLive,
+    DateTime? updatedAt,
+  }) = _AcpCostDetailViewState;
+}
+
+@freezed
+abstract class AcpSessionDetailViewState with _$AcpSessionDetailViewState {
+  const factory AcpSessionDetailViewState({
+    required AcpSessionStatusPhase phase,
+    @Default(false) bool isLive,
+    String? serviceName,
+    String? serverName,
+    String? serverVersion,
+    String? remoteSessionId,
+    AcpStopReasonKind? lastStopReason,
+    String? lastStopReasonRaw,
+    int? completedTurns,
+    DateTime? updatedAt,
+    @Default(<AcpConfigReadoutItem>[]) List<AcpConfigReadoutItem> configItems,
+    @Default(<AcpCapabilityKind>[]) List<AcpCapabilityKind> capabilities,
+  }) = _AcpSessionDetailViewState;
 }
 
 enum AcpExternalHistoryAvailability {

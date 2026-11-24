@@ -18,16 +18,14 @@ pub(crate) fn resolve_saved(
     let selector = super::model_route::saved(snapshot)?
         .context("Thread has no frozen model route")?
         .route;
-    let route = config
-        .models
-        .resolve_route(crate::config::root_agent_route_id(), &selector)?;
+    let route = selector.resolve(config)?;
     super::delegation::validate_credential(&route)?;
     Ok(route)
 }
 
 pub(crate) fn validate_media(
     state: &ThreadSnapshot,
-    model: &pl_model::model::ModelInfo,
+    model: &pl_model::model::ModelDefinition,
     additional: &[ContextContent],
 ) -> Result<()> {
     let history = state
@@ -88,15 +86,19 @@ pub(crate) fn configured_model(
     hosted: Vec<pl_model::runtime::HostedTool>,
 ) -> Result<RuntimeModel> {
     // The key has the existing model-binding identity domain. It never enters model context/logs.
-    let key = crate::hash::canonical_json_hash(&serde_json::json!({
-        "account": route.account_id, "endpoint": route.endpoint, "model": route.model.model_id,
+    let mut identity = serde_json::json!({
+        "account": route.account_id, "endpoint": route.endpoint, "model": route.model.base.slug,
         "effort": route.effort, "pricing": route.pricing_mode, "contextPolicy": route.context,
         "modelDefinition": route.model, "compaction": config.runtime.openai_compaction_mode,
         "hosted": hosted.iter().map(|tool| match tool {
             pl_model::runtime::HostedTool::WebSearch(options) => crate::ToolSpec::WebSearch { options: options.clone() },
             pl_model::runtime::HostedTool::ProgrammaticToolCalling => crate::ToolSpec::ProgrammaticToolCalling,
         }).collect::<Vec<_>>(),
-    }));
+    });
+    if let Some(service_tier) = &route.service_tier {
+        identity["serviceTier"] = serde_json::Value::String(service_tier.clone());
+    }
+    let key = crate::hash::canonical_json_hash(&identity);
     let model = ThreadModel::new(
         pl_model::runtime::from_route(route)?,
         route.reasoning_config(),

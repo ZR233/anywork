@@ -134,10 +134,12 @@ class AccountsViewModel extends _$AccountsViewModel {
   late AcpService _acp;
   AccountStrings _strings = const AccountStrings.empty();
   AccountDemand? _summaryDemand;
+  AccountDemand? _installDemand;
   bool _visible = false;
   Map<AccountDisplayKey, _CardObservationLease> _cards = {};
   Object _cardSync = Object();
   String _search = '';
+  AccountListCategory _category = AccountListCategory.all;
   final Map<AccountDisplayKey, String> _errors = {};
   final Set<AccountDisplayKey> _pending = {};
   final Map<AccountDisplayKey, _ListAttempt> _attempts = {};
@@ -164,12 +166,19 @@ class AccountsViewModel extends _$AccountsViewModel {
           _summariesChanged(source);
         }
       }),
+      _acp.install.watch((_) {
+        if (lifetime.mounted && identical(lifetime, ref)) {
+          _publish();
+        }
+      }),
     ];
+    _syncInstallDemand(_accounts.state.value.accounts);
     ref.onDispose(() {
       for (final observation in observations) {
         observation.cancel();
       }
       releaseAccountDemand(_summaryDemand);
+      releaseAccountDemand(_installDemand);
       for (final lease in cards.values.toList()) {
         lease.cancel();
       }
@@ -294,9 +303,30 @@ class AccountsViewModel extends _$AccountsViewModel {
     _publish();
   }
 
+  void selectCategory(AccountListCategory category) {
+    if (_category == category) return;
+    _category = category;
+    _publish();
+  }
+
   Future<void> refresh(AccountDisplayKey key) async {
     if (!_cards.containsKey(key)) return;
     await ref.read(accountCardViewModelProvider(key).notifier).refresh();
+  }
+
+  Future<void> upgrade(AccountDisplayKey key) async {
+    if (!_cards.containsKey(key)) return;
+    await ref.read(accountCardViewModelProvider(key).notifier).upgrade();
+  }
+
+  Future<void> cancelUpgrade(AccountDisplayKey key) async {
+    if (!_cards.containsKey(key)) return;
+    await ref.read(accountCardViewModelProvider(key).notifier).cancelUpgrade();
+  }
+
+  Future<void> checkUpdate(AccountDisplayKey key) async {
+    if (!_cards.containsKey(key)) return;
+    await ref.read(accountCardViewModelProvider(key).notifier).checkUpdate();
   }
 
   Future<void> refreshAll() async {
@@ -305,6 +335,8 @@ class AccountsViewModel extends _$AccountsViewModel {
         if ((account.identity is NativeAccountIdentity &&
                 account.capabilities.queryUsage) ||
             (account.identity is AcpAccountIdentity &&
+                account.acpEnabled == true &&
+                account.capabilities.queryUsage &&
                 account.acpConnectionRevision != null))
           displayIdentity(account.identity),
     ];
@@ -635,13 +667,54 @@ class AccountsViewModel extends _$AccountsViewModel {
         _retireAttempt(attempt);
       }
     }
+    _syncInstallDemand(source.accounts);
     _syncCards();
     _publish();
   }
 
+  void _syncInstallDemand(List<AccountSummary> accounts) {
+    final hasManaged = accounts.any((account) => account.acpTemplate != null);
+    if (hasManaged) {
+      _installDemand ??= _acp.observeInstall();
+    } else if (_installDemand != null) {
+      final demand = _installDemand;
+      _installDemand = null;
+      releaseAccountDemand(demand);
+    }
+  }
+
   AccountsViewState _derive() {
     final source = _accounts.state.value;
+    final acpCount = source.accounts
+        .where((account) => account.identity is AcpAccountIdentity)
+        .length;
+    final nativeCount = source.accounts
+        .where((account) => account.identity is NativeAccountIdentity)
+        .length;
+    final installSnapshot = _acp.install.value.stale
+        ? null
+        : _acp.install.value.value;
+    var upgradableCount = 0;
+    if (installSnapshot != null) {
+      final seenProviders = <AcpProviderView>{};
+      for (final account in source.accounts) {
+        final template = account.acpTemplate;
+        if (template != null &&
+            seenProviders.add(template) &&
+            installSnapshot.updateOf(template)
+                is AcpInstallUpdateAvailableState &&
+            !installSnapshot.stateOf(template).isBusy) {
+          upgradableCount += 1;
+        }
+      }
+    }
     final filtered = source.accounts.where((account) {
+      final matchesCategory = switch (_category) {
+        AccountListCategory.all => true,
+        AccountListCategory.acp => account.identity is AcpAccountIdentity,
+        AccountListCategory.native => account.identity is NativeAccountIdentity,
+      };
+      if (!matchesCategory) return false;
       final query = _search.trim().toLowerCase();
       return query.isEmpty ||
           account.name.toLowerCase().contains(query) ||
@@ -676,7 +749,14 @@ class AccountsViewModel extends _$AccountsViewModel {
                   : AccountListPhase.loading)
             : AccountListPhase.ready,
         search: _search,
-        searchHasNoResults: _search.trim().isNotEmpty && filtered.isEmpty,
+        searchHasNoResults:
+            filtered.isEmpty &&
+            (_search.trim().isNotEmpty || _category != AccountListCategory.all),
+        category: _category,
+        totalCount: source.accounts.length,
+        acpCount: acpCount,
+        nativeCount: nativeCount,
+        upgradableCount: upgradableCount,
         refreshing: source.loading,
         canAdd: source.loaded,
         canRefresh: source.loaded,

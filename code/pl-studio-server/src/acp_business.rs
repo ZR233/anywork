@@ -20,6 +20,44 @@ use frames::OpenFrames;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpDraftCommitRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub thread_id: String,
+    pub instance: u64,
+    pub first_prompt_text: Option<String>,
+}
+
+#[cfg(test)]
+mod draft_commit_tests {
+    use super::AcpDraftCommitRequest;
+
+    #[test]
+    fn draft_commit_accepts_the_original_http_target_and_optional_text() {
+        let target = serde_json::json!({
+            "sessionId": "session",
+            "agentId": "agent",
+            "threadId": "thread",
+            "instance": 7
+        });
+        let original: AcpDraftCommitRequest = serde_json::from_value(target.clone()).unwrap();
+        assert_eq!(original.first_prompt_text, None);
+        let mut with_title = target;
+        with_title["firstPromptText"] = "  First\nrequest  ".into();
+        let current: AcpDraftCommitRequest = serde_json::from_value(with_title).unwrap();
+        assert_eq!(
+            current.first_prompt_text.as_deref(),
+            Some("  First\nrequest  ")
+        );
+        assert_eq!(current.session_id, "session");
+        assert_eq!(current.agent_id, "agent");
+        assert_eq!(current.thread_id, "thread");
+        assert_eq!(current.instance, 7);
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AcpPromptRequest {
     pub target: AcpSessionTarget,
     #[schema(value_type = Vec<serde_json::Value>)]
@@ -93,13 +131,31 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
 }
 
 #[utoipa::path(post, path = "/api/v1/acp/sessions/commit-draft", operation_id = "acpSessions.commitDraft",
-    request_body = AcpSessionTarget,
+    request_body = AcpDraftCommitRequest,
     responses(StudioApiErrors, (status = 200), (status = 502, body = AcpBusinessFailure)))]
 async fn commit_draft(
     State(state): State<AppState>,
-    ApiJson(target): ApiJson<AcpSessionTarget>,
+    ApiJson(request): ApiJson<AcpDraftCommitRequest>,
 ) -> Result<Json<()>, AcpApiError> {
-    state.runtime.commit_acp_draft(target).await?;
+    let AcpDraftCommitRequest {
+        session_id,
+        agent_id,
+        thread_id,
+        instance,
+        first_prompt_text,
+    } = request;
+    state
+        .runtime
+        .commit_acp_draft(
+            AcpSessionTarget {
+                session_id,
+                agent_id,
+                thread_id,
+                instance,
+            },
+            first_prompt_text.as_deref().unwrap_or_default(),
+        )
+        .await?;
     Ok(Json(()))
 }
 
@@ -470,6 +526,7 @@ mod tests {
             last_completed: None,
             observation_gap: None,
             auth_methods: vec![],
+            info_snapshot: None,
         };
         let value = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(value["configOptions"], configs);
@@ -703,6 +760,7 @@ mod tests {
             let Some(AcpSessionFrame::Accepted {
                 target,
                 has_observation,
+                ..
             }) = stream.next().await?
             else {
                 anyhow::bail!("first HTTP frame was not Accepted");
@@ -716,7 +774,7 @@ mod tests {
             let Some(AcpSessionFrame::Event { event }) = stream.next().await? else {
                 anyhow::bail!("missing initialization event");
             };
-            let AcpSessionEvent::Initialized { capabilities } = *event else {
+            let AcpSessionEvent::Initialized { capabilities, .. } = *event else {
                 anyhow::bail!("initialize must precede replay and publication");
             };
             ensure!(capabilities.load_session);

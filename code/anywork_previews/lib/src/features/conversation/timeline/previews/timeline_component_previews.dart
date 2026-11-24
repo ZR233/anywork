@@ -28,7 +28,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_imag
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_outcome_card.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 
 import 'timeline_preview_fixtures.dart';
@@ -357,15 +357,38 @@ class _AtomicGroupPreview extends StatefulWidget {
 
 class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
   late final groups = [
-    for (var index = 0; index < (widget.live ? 1 : 2); index++)
-      TimelinePreviewFixtures.runUnit(
-        TimelinePreviewFixtures.runEntry(
-          'preview-group-$index',
-          index * 4 + 2,
-          count: index == 0 ? 2 : 1,
-        ),
-      ),
+    for (var index = 0; index < (widget.live ? 1 : 2); index++) _work(index),
   ];
+
+  TimelineDisplayUnit _work(int index) {
+    final unit = TimelinePreviewFixtures.runUnit(
+      TimelinePreviewFixtures.runEntry(
+        'preview-group-$index',
+        index * 4 + 2,
+        count: index == 0 ? (widget.live ? 2 : 3) : 1,
+      ),
+    );
+    if (index == 0 && (!widget.live || widget.waitingForBoundary)) {
+      unit.expansion.current = unit;
+      unit.expansion.readHistoryBody = (_, reference, range) async {
+        if (reference.ownerEventId !=
+                TimelinePreviewFixtures.completedReasoning.id ||
+            reference.bodyKey != TimelinePreviewFixtures.workSummaryKey ||
+            range.offset != 0) {
+          throw StateError('Unexpected preview body request');
+        }
+        final summary = TimelinePreviewFixtures.workSummaryBytes;
+        return ContentWindow(
+          offset: 0,
+          bytes: summary,
+          generation: reference.bodyId,
+          availableThrough: summary.length,
+          sealed: true,
+        );
+      };
+    }
+    return unit;
+  }
 
   @override
   void dispose() {
@@ -386,6 +409,12 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
             unit: groups[index],
             childBuilder: (_) => Column(
               children: [
+                if (index == 0)
+                  _chatItem(
+                    ChatItemPresentation.decode(
+                      TimelinePreviewFixtures.completedCommand,
+                    ),
+                  ),
                 if (widget.live && !widget.waitingForBoundary)
                   _activeReasoningWindow()
                 else
@@ -396,12 +425,8 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
                           : TimelinePreviewFixtures.secondCompletedReasoning,
                     ),
                   ),
-                if (index == 0)
-                  _chatItem(
-                    ChatItemPresentation.decode(
-                      TimelinePreviewFixtures.completedCommand,
-                    ),
-                  ),
+                if (!widget.live && index == 0)
+                  _chatItem(TimelinePreviewFixtures.applyPatchTool),
               ],
             ),
           ),
@@ -651,7 +676,7 @@ Widget timelineActivityRowPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 参数与结果', group: 'Timeline · 历史组件', size: Size(760, 400))
 Widget timelineToolDetailsPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item: (TimelinePreviewFixtures.tool.toolCard as DecodedToolCard).value,
     ),
   ),
@@ -669,7 +694,7 @@ Widget timelineToolDetailsPreview() => _timelinePreviewHost(
 )
 Widget timelineApplyPatchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item: (TimelinePreviewFixtures.applyPatchTool.toolCard as DecodedToolCard)
           .value,
       initiallyExpanded: true,
@@ -680,7 +705,7 @@ Widget timelineApplyPatchPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 网页搜索', group: 'Timeline · 历史组件', size: Size(720, 320))
 Widget timelineWebSearchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item:
           (TimelinePreviewFixtures.webSearch.toolCard as DecodedToolCard).value,
     ),

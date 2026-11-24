@@ -294,6 +294,49 @@ pub struct BridgeAcpTextPerformance {
     pub estimated_output_tokens: u64,
     pub response_millis: u64,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpUsageSnapshot {
+    pub used: u64,
+    pub size: u64,
+    pub updated_at: i64,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeAcpCostSnapshot {
+    pub amount: f64,
+    pub currency: String,
+    pub updated_at: i64,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpTextPerformanceSnapshot {
+    pub estimated_output_tokens: u64,
+    pub response_millis: u64,
+    pub updated_at: i64,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpServerInfoSnapshot {
+    pub name: String,
+    pub version: String,
+    pub title: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpConfigItemSnapshot {
+    pub id: String,
+    pub name: String,
+    pub category: Option<String>,
+    pub value_id: String,
+    pub value_label: String,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeAcpSessionInfoSnapshot {
+    pub usage: Option<BridgeAcpUsageSnapshot>,
+    pub cost: Option<BridgeAcpCostSnapshot>,
+    pub text_performance: Option<BridgeAcpTextPerformanceSnapshot>,
+    pub last_stop_reason: Option<String>,
+    pub server_info: Option<BridgeAcpServerInfoSnapshot>,
+    pub active_config: Vec<BridgeAcpConfigItemSnapshot>,
+    pub completed_turns: Option<u64>,
+    pub updated_at: i64,
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeAcpCompletedRun {
     pub run: BridgeAcpRunId,
@@ -319,6 +362,7 @@ pub enum BridgeAcpSessionFrame {
     Accepted {
         target: BridgeAcpSessionTarget,
         has_observation: bool,
+        info_snapshot: Option<Box<BridgeAcpSessionInfoSnapshot>>,
     },
     Settled {
         result: BridgeAcpSettlement,
@@ -344,6 +388,7 @@ pub struct BridgeAcpAgentCapabilities {
 pub enum BridgeAcpSessionEvent {
     Initialized {
         capabilities: BridgeAcpAgentCapabilities,
+        server_info: Option<BridgeAcpServerInfoSnapshot>,
     },
     Update {
         update: BridgeAcpSessionNotification,
@@ -386,6 +431,7 @@ pub struct BridgeAcpBusinessSnapshot {
     pub last_completed: Option<BridgeAcpCompletedRun>,
     pub observation_gap: Option<BridgeAcpObservationGap>,
     pub auth_methods: Vec<BridgeAcpAuthMethod>,
+    pub info_snapshot: Option<BridgeAcpSessionInfoSnapshot>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeAcpBusinessClose {

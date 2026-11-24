@@ -29,14 +29,14 @@ const FORBIDDEN: &[&str] = &[
 ];
 
 pub(super) fn validate_model_overrides(
-    model: &crate::model::ModelInfo,
+    model: &crate::model::ModelDefinition,
     request: &CompletionRequest,
     original: &Map<String, Value>,
 ) -> Result<()> {
     let mut fixed = original.clone();
-    super::body::merge_base_body(&mut fixed, &model.binding.request.body);
+    super::body::merge_base_body(&mut fixed, &model.extra.binding.request.body);
     validate_body(&fixed, original)?;
-    for parameter in &model.parameters {
+    for parameter in model.parameters() {
         if parameter.name != "effort" {
             continue;
         }

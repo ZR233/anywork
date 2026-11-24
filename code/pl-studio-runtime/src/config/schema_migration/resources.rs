@@ -805,7 +805,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV33::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV34::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -1300,7 +1300,7 @@ workspace_mode = "directory"
         let current = fs::read_to_string(store.paths().config_file()).unwrap();
         format!(
             "{}\n[acp.accounts.\"{id}\"]\nname='Saved'\nprovider='antigravity'\n",
-            current.replacen("schema_version = 33", "schema_version = 32", 1)
+            current.replacen("schema_version = 34", "schema_version = 32", 1)
         )
         .into_bytes()
     }
@@ -1556,9 +1556,9 @@ workspace_mode = "directory"
 
         let main: toml::Value =
             toml::from_str(&fs::read_to_string(store.paths().config_file()).unwrap()).unwrap();
-        assert_eq!(main["schema_version"].as_integer(), Some(33));
+        assert_eq!(main["schema_version"].as_integer(), Some(34));
         assert!(main.get("lsp").is_none());
-        assert_eq!(migrated.schema_version, 33);
+        assert_eq!(migrated.schema_version, 34);
         assert!(migrated.validate_declarations().is_ok());
         assert!(!operation_dir(store.paths()).exists());
         let backups: Vec<_> = fs::read_dir(store.paths().config_dir())
@@ -1668,7 +1668,7 @@ workspace_mode = "directory"
             )
             .unwrap()["schema_version"]
                 .as_integer(),
-            Some(33)
+            Some(34)
         );
         assert!(
             operation_dir(store.paths())

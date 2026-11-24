@@ -50,6 +50,7 @@ pub struct BridgeAccountSummary {
     pub acp_enabled: Option<bool>,
     /// ACP authentication-owner identity; not a settings/catalog observation watermark.
     pub acp_connection_revision: Option<u64>,
+    pub acp_template: Option<crate::api::studio::types::BridgeAcpProvider>,
     pub capabilities: BridgeAccountCapabilities,
 }
 

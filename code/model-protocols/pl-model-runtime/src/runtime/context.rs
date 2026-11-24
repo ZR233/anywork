@@ -12,7 +12,7 @@ impl ModelRuntime {
     /// # Errors
     /// Rejects incompatible native material without rewriting or dropping history.
     pub fn validate_context(&self, items: &[ModelContextItem]) -> Result<()> {
-        validate(self.model().binding.transport.protocol, items)
+        validate(self.model().extra.binding.transport.protocol, items)
     }
     /// Projects tools and checks capabilities before the caller admits this frozen request.
     ///
@@ -50,10 +50,11 @@ pub(super) fn validate(protocol: WireApi, items: &[ModelContextItem]) -> Result<
 
 pub(super) fn project_request(
     endpoint: &crate::protocol::ProtocolEndpoint,
-    model: &crate::model::ModelInfo,
+    model: &crate::model::ModelDefinition,
     account_id: &str,
     mut request: crate::completion::CompletionRequest,
 ) -> Result<crate::completion::CompletionRequest> {
+    pl_model_openai_wire::service_tiers::validate(model, request.service_tier.as_deref())?;
     if endpoint.authorization.is_some() {
         super::openai::validate_chatgpt_request(&request)?;
         if !endpoint.service_capabilities.web_search.hosted_responses
@@ -68,9 +69,10 @@ pub(super) fn project_request(
             ));
         }
     }
-    validate(model.binding.transport.protocol, &request.input)?;
-    if model.binding.transport.protocol == WireApi::ChatCompletions
+    validate(model.extra.binding.transport.protocol, &request.input)?;
+    if model.extra.binding.transport.protocol == WireApi::ChatCompletions
         && model
+            .extra
             .capabilities
             .interleaved
             .as_ref()
@@ -106,6 +108,7 @@ pub(super) fn project_request(
         ));
     }
     let capabilities = model
+        .extra
         .capabilities
         .clone()
         .with_native_custom_tools(endpoint.uses_native_custom_tools());
@@ -158,6 +161,6 @@ pub(super) fn project_request(
         }
     }
 
-    request.validate_against(&model.model_id, &capabilities)?;
+    request.validate_against(&model.base, &capabilities)?;
     Ok(request)
 }

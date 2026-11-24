@@ -44,6 +44,7 @@ class _StatisticsConnectorState extends ConsumerState<StatisticsConnector> {
       visible: widget.visible,
       onModelChanged: viewModel.selectModel,
       onEffortChanged: viewModel.selectEffort,
+      onServiceTierChanged: viewModel.selectServiceTier,
       onMismatchesOnlyChanged: viewModel.setMismatchesOnly,
       onRetry: viewModel.retry,
     );

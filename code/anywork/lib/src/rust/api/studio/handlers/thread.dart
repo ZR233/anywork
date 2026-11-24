@@ -90,21 +90,9 @@ Future<BridgeThreadModeCommandReply> setThreadMode({
 
 /// Changes a root Thread's durable model route. The active Turn keeps its admitted binding.
 Future<BridgeThreadModelRouteCommandReply> setThreadModelRoute({
-  required String operationId,
-  required String threadId,
-  required String accountId,
-  required String modelId,
-  String? effort,
-  required BigInt expectedModelRouteRevision,
-  required BigInt expectedSettingsRevision,
+  required BridgeSetThreadModelRouteRequest request,
 }) => RustLib.instance.api.crateApiStudioHandlersThreadSetThreadModelRoute(
-  operationId: operationId,
-  threadId: threadId,
-  accountId: accountId,
-  modelId: modelId,
-  effort: effort,
-  expectedModelRouteRevision: expectedModelRouteRevision,
-  expectedSettingsRevision: expectedSettingsRevision,
+  request: request,
 );
 
 /// Restores an archived session tree with its original identity and history.

@@ -18,6 +18,7 @@ class StatisticsView extends StatefulWidget {
     required this.visible,
     required this.onModelChanged,
     required this.onEffortChanged,
+    this.onServiceTierChanged,
     required this.onMismatchesOnlyChanged,
     required this.onRetry,
     super.key,
@@ -27,6 +28,7 @@ class StatisticsView extends StatefulWidget {
   final bool visible;
   final ValueChanged<String?> onModelChanged;
   final ValueChanged<String?> onEffortChanged;
+  final ValueChanged<String?>? onServiceTierChanged;
   final ValueChanged<bool> onMismatchesOnlyChanged;
   final VoidCallback onRetry;
 
@@ -46,6 +48,8 @@ class _StatisticsViewState extends State<StatisticsView> {
   // Cached widgets forward to the current owner, never to callbacks captured from an old frame.
   void _selectModel(String? value) => widget.onModelChanged(value);
   void _selectEffort(String? value) => widget.onEffortChanged(value);
+  void _selectServiceTier(String? value) =>
+      widget.onServiceTierChanged?.call(value);
   void _selectMismatches(bool value) => widget.onMismatchesOnlyChanged(value);
 
   @override
@@ -57,6 +61,7 @@ class _StatisticsViewState extends State<StatisticsView> {
     final history = state.filteredHistory;
     final filter = state.modelFilter;
     final effortFilter = state.effortFilter;
+    final serviceTierFilter = state.serviceTierFilter;
     final mismatchesOnly = state.mismatchesOnly;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -104,11 +109,17 @@ class _StatisticsViewState extends State<StatisticsView> {
         final emptyLabel =
             history.isNotEmpty ||
                 (filter == null &&
+                    effortFilter == null &&
+                    serviceTierFilter == null &&
                     !mismatchesOnly &&
                     sourceHistory.isEmpty &&
                     hasProjectionIssue)
             ? null
-            : sourceHistory.isEmpty && filter == null && !mismatchesOnly
+            : sourceHistory.isEmpty &&
+                  filter == null &&
+                  effortFilter == null &&
+                  serviceTierFilter == null &&
+                  !mismatchesOnly
             ? context.l10n.settingsStatisticsEmpty
             : mismatchesOnly
             ? context.l10n.settingsStatisticsMismatchEmpty
@@ -121,6 +132,7 @@ class _StatisticsViewState extends State<StatisticsView> {
           history,
           filter,
           effortFilter,
+          serviceTierFilter,
           mismatchesOnly,
           compact,
           emptyLabel,
@@ -136,6 +148,7 @@ class _StatisticsViewState extends State<StatisticsView> {
             compact: compact,
             filter: filter,
             effortFilter: effortFilter,
+            serviceTierFilter: serviceTierFilter,
             mismatchesOnly: mismatchesOnly,
             emptyLabel: emptyLabel,
           );
@@ -170,6 +183,7 @@ class _StatisticsViewState extends State<StatisticsView> {
     required bool compact,
     required String? filter,
     required String? effortFilter,
+    required String? serviceTierFilter,
     required bool mismatchesOnly,
     required String? emptyLabel,
   }) {
@@ -186,6 +200,8 @@ class _StatisticsViewState extends State<StatisticsView> {
               onChanged: _selectModel,
               effortValue: effortFilter,
               onEffortChanged: _selectEffort,
+              serviceTierValue: serviceTierFilter,
+              onServiceTierChanged: _selectServiceTier,
               mismatchesOnly: mismatchesOnly,
               onMismatchesOnlyChanged: _selectMismatches,
             ),

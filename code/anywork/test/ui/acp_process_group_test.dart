@@ -1,11 +1,15 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_timeline_connector.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_timeline_view_model.dart';
 import 'package:anywork/src/features/conversation/timeline/state/patch_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_shell.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_chrome.dart';
 import 'package:anywork_client/acp_sessions.dart';
@@ -26,18 +30,26 @@ Widget _app(Widget child) => MaterialApp(
   home: Scaffold(body: SingleChildScrollView(child: child)),
 );
 
-AcpTimelineToolCallItem _tool({bool patch = false}) => AcpTimelineToolCallItem(
+AcpTimelineToolCallItem _tool({
+  bool patch = false,
+  String? kindLabel,
+  String arguments = '完整参数不可隐藏',
+  String output = '完整输出',
+}) => AcpTimelineToolCallItem(
   id: 'tool',
   toolCallId: 'call',
   status: AcpToolStatusKind.completed,
-  tool: const TimelineToolPresentation(
+  kindLabel: kindLabel,
+  tool: TimelineToolPresentation(
     id: 'tool',
     toolCallId: 'call',
     name: '更新文件',
-    presentationContract: 'acp.tool',
+    presentationContract: kindLabel == null
+        ? 'acp.tool'
+        : 'acp.tool.$kindLabel',
     statusString: 'succeeded',
-    arguments: '完整参数不可隐藏',
-    output: '完整输出',
+    arguments: arguments,
+    output: output,
   ),
   diffs: patch
       ? [
@@ -53,7 +65,7 @@ void main() {
     AcpToolStatusKind.inProgress,
     AcpToolStatusKind.failed,
   ]) {
-    testWidgets('过程组颜色服从应用主题而非外层展开主题：$status', (tester) async {
+    testWidgets('过程组与组内工具颜色服从应用主题而非外层展开主题：$status', (tester) async {
       await tester.pumpWidget(
         ListTileTheme(
           data: const ListTileThemeData(
@@ -72,61 +84,66 @@ void main() {
               collapsedIconColor: Colors.white,
             ),
             child: _app(
-              AcpTimelineProcessGroupView(
-                row: sampleAcpProcessRow(status: status),
+              LiveStatusMotionHost(
+                child: AcpTimelineProcessGroupView(
+                  row: sampleAcpProcessRow(status: status),
+                ),
               ),
             ),
           ),
         ),
       );
-      final colors = pureStudioTheme().colorScheme;
-      void expectAppColors() {
-        final material = find
-            .descendant(
-              of: find.byType(ExpansionTile),
-              matching: find.byWidgetPredicate(
-                (widget) => widget is Material && widget.shape is Border,
-              ),
-            )
-            .first;
-        expect(tester.widget<Material>(material).color, colors.surface);
-        final ink = find
-            .descendant(
-              of: find.byType(ListTile).first,
-              matching: find.byType(Ink),
-            )
-            .first;
-        expect(
-          (tester.widget<Ink>(ink).decoration as ShapeDecoration).color,
-          colors.surface,
-          reason: '最终绘制标题底色的 Ink 不能继承外层 ListTileTheme 黑底',
+      final theme = pureStudioTheme();
+      final colors = theme.colorScheme;
+      final groupShell = find.byType(TimelineWorkGroupShell);
+      expect(groupShell, findsOneWidget);
+
+      void checkHeaderTextColor() {
+        final headerRow = tester.widget<TimelineActivityRow>(
+          find.byType(TimelineActivityRow).first,
         );
-        final title = find.text('过程 · 3 项活动 · 1 个工具');
-        final paragraph = tester.widget<RichText>(
-          find.descendant(of: title, matching: find.byType(RichText)),
+        final headerParagraph = tester.widget<RichText>(
+          find
+              .descendant(
+                of: find.text(headerRow.label),
+                matching: find.byType(RichText),
+              )
+              .first,
         );
+        expect(headerParagraph.text.style?.color, isNot(Colors.white));
+        if (!headerRow.active) {
+          expect(headerParagraph.text.style?.color, colors.onSurfaceVariant);
+        } else {
+          expect(headerParagraph.text.style?.color, colors.onSurface);
+        }
+      }
+
+      checkHeaderTextColor();
+      await tester.tap(find.byType(TimelineActivityRow).first);
+      await tester.pump(const Duration(milliseconds: 300));
+      checkHeaderTextColor();
+
+      final innerTiles = find.descendant(
+        of: find.byType(AcpToolCard),
+        matching: find.byType(ListTile),
+      );
+      expect(innerTiles, findsWidgets);
+      for (final tileElement in tester.elementList(innerTiles)) {
         expect(
-          paragraph.text.style?.color,
-          pureStudioTheme().textTheme.bodySmall!.color,
+          ListTileTheme.of(tileElement).tileColor,
+          theme.listTileTheme.tileColor,
         );
-        final tileContext = tester.element(find.byType(ListTile).first);
+        expect(ListTileTheme.of(tileElement).tileColor, isNot(Colors.black));
+        expect(ListTileTheme.of(tileElement).textColor, isNot(Colors.white));
         expect(
-          ListTileTheme.of(tileContext).textColor,
-          colors.onSurfaceVariant,
-        );
-        expect(
-          ListTileTheme.of(tileContext).iconColor,
-          colors.onSurfaceVariant,
+          ExpansionTileTheme.of(tileElement).backgroundColor,
+          isNot(Colors.black),
         );
       }
 
-      expectAppColors();
-      await tester.tap(find.byType(ListTile).first);
-      await tester.pump(const Duration(milliseconds: 400));
-      expectAppColors();
-      await tester.tap(find.byType(ListTile).first);
-      await tester.pump(const Duration(milliseconds: 400));
-      expectAppColors();
+      await tester.tap(find.byType(TimelineActivityRow).first);
+      await tester.pump(const Duration(milliseconds: 300));
+      checkHeaderTextColor();
     });
   }
 
@@ -175,7 +192,7 @@ void main() {
           hasLength(scenario.members),
           reason: '摘要计数只能包含真实可见成员',
         );
-        expect(find.text('过程 · 2 项活动 · 2 个工具'), findsOneWidget);
+        expect(find.text('执行了 2 个工具'), findsOneWidget);
       }
     });
   }
@@ -190,7 +207,9 @@ void main() {
         harness.scope(const AcpTimelineConnector(threadId: 'thread')),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(ListTile).first);
+      await tester.tap(find.byType(TimelineActivityRow).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('工具 follow'));
       await tester.pumpAndSettle();
       final controller = tester
           .widget<ListView>(find.byType(ListView))
@@ -207,7 +226,10 @@ void main() {
       final oldExtent = controller.position.maxScrollExtent;
       harness.update(
         change == '追加工具'
-            ? _protocolTool('appended', output: _longOutput('追加', 60))
+            ? _protocolTool(
+                'appended',
+                diffText: List.generate(30, (i) => 'line $i').join('\n'),
+              )
             : AcpToolCallChangedView(
                 AcpToolCallUpdateView(
                   toolCallId: const AcpToolCallId('follow'),
@@ -245,7 +267,9 @@ void main() {
       harness.scope(const AcpTimelineConnector(threadId: 'thread')),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(ListTile).first);
+    await tester.tap(find.byType(TimelineActivityRow).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工具 reading'));
     await tester.pumpAndSettle();
     final controller = tester
         .widget<ListView>(find.byType(ListView))
@@ -257,7 +281,10 @@ void main() {
     final oldPixels = controller.position.pixels;
     expect(controller.position.extentAfter, greaterThan(160));
     harness.update(
-      _protocolTool('reading-appended', output: _longOutput('新内容', 80)),
+      _protocolTool(
+        'reading-appended',
+        diffText: List.generate(40, (i) => 'diff line $i').join('\n'),
+      ),
     );
     await tester.pumpAndSettle();
     expect(controller.position.pixels, closeTo(oldPixels, 1));
@@ -267,10 +294,17 @@ void main() {
   for (final patch in [false, true]) {
     testWidgets('展开工具完整展示参数及输出，含补丁=$patch', (tester) async {
       await tester.pumpWidget(
-        _app(AcpToolCard(item: _tool(patch: patch), initiallyExpanded: true)),
+        _app(
+          AcpToolCard(
+            item: _tool(patch: patch, kindLabel: patch ? 'edit' : 'execute'),
+            initiallyExpanded: true,
+          ),
+        ),
       );
+      expect(find.byType(TimelineToolItemView), findsOneWidget);
       expect(find.text('完整参数不可隐藏'), findsOneWidget);
       expect(find.text('完整输出'), findsOneWidget);
+      expect(find.text(patch ? '编辑' : '执行'), findsOneWidget);
       for (final code in tester.widgetList<StudioCodeBlock>(
         find.byType(StudioCodeBlock),
       )) {
@@ -280,40 +314,84 @@ void main() {
     });
   }
 
+  testWidgets('无详情轻量工具不可展开且不显示箭头', (tester) async {
+    await tester.pumpWidget(
+      _app(
+        AcpToolCard(
+          item: _tool(kindLabel: 'think', arguments: '', output: ''),
+        ),
+      ),
+    );
+    final row = tester.widget<TimelineActivityRow>(
+      find.byType(TimelineActivityRow),
+    );
+    expect(row.expandable, isFalse);
+    expect(row.meta, '思考');
+  });
+
   for (final status in [
     AcpToolStatusKind.completed,
     AcpToolStatusKind.failed,
   ]) {
-    testWidgets('过程默认折叠，一次展开全部详情：$status', (tester) async {
+    testWidgets('过程默认折叠，展开后复用共享组件且支持逐项折叠：$status', (tester) async {
       final row = sampleAcpProcessRow(status: status, longContent: true);
-      await tester.pumpWidget(_app(AcpTimelineProcessGroupView(row: row)));
+      await tester.pumpWidget(
+        _app(
+          LiveStatusMotionHost(child: AcpTimelineProcessGroupView(row: row)),
+        ),
+      );
       expect(find.byType(AcpToolCard), findsNothing);
       expect(find.text('过程 · 3 项活动 · 1 个工具'), findsOneWidget);
       expect(find.text('1 个工具失败'), findsNothing);
-      expect(find.byIcon(Icons.account_tree_outlined), findsOneWidget);
+      expect(find.byIcon(Icons.work_outline), findsOneWidget);
       expect(find.byIcon(Icons.error_outline), findsNothing);
-      await tester.tap(find.byType(ListTile).first);
+
+      await tester.tap(find.byType(TimelineActivityRow).first);
       await tester.pumpAndSettle();
+
+      expect(find.byType(TimelineActivityRail), findsWidgets);
+      expect(find.byType(TimelineReasoningView), findsOneWidget);
       expect(find.byType(AcpToolCard), findsOneWidget);
-      expect(find.textContaining('思考正文：'), findsOneWidget);
-      expect(find.textContaining('嵌入文本结束'), findsOneWidget);
+      expect(find.byType(TimelineToolItemView), findsOneWidget);
       expect(find.text('检查记录已保存'), findsOneWidget);
+
+      // 含 Diff 的编辑工具默认展开
       expect(find.byType(TimelinePatchDiffView), findsOneWidget);
+      expect(
+        tester
+            .widget<TimelinePatchDiffView>(find.byType(TimelinePatchDiffView))
+            .softWrap,
+        isTrue,
+      );
       expect(find.text('audio/wav'), findsOneWidget);
       expect(find.text('官方验证参考资料'), findsOneWidget);
-      final members = tester.widgetList<TimelineActivityRow>(
-        find.descendant(
-          of: find.byType(AcpTimelineEntryView),
-          matching: find.byType(TimelineActivityRow),
-        ),
-      );
-      expect(members, isNotEmpty);
-      expect(members.every((row) => !row.isIssue), isTrue);
       expect(
-        members.every((row) => !row.expandable),
-        isTrue,
-        reason: '工具、思考、嵌入文本不应存在二级折叠',
+        find.text(status == AcpToolStatusKind.failed ? '编辑 · 失败' : '编辑'),
+        findsOneWidget,
       );
+
+      // 思考条默认折叠，点击后可在同一过程组内单独展开与收起
+      expect(find.textContaining('思考正文：'), findsNothing);
+      await tester.tap(find.text('核对接口与调用链'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('思考正文：'), findsOneWidget);
+      await tester.tap(find.text('核对接口与调用链'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('思考正文：'), findsNothing);
+
+      // 工具也可单独收起与重新展开
+      await tester.tap(find.text('更新过程展示'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TimelinePatchDiffView), findsNothing);
+      await tester.tap(find.text('更新过程展示'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TimelinePatchDiffView), findsOneWidget);
+
+      final groupRow = tester.widget<TimelineActivityRow>(
+        find.byType(TimelineActivityRow).first,
+      );
+      expect(groupRow.isIssue, isFalse);
+
       expect(
         find.descendant(
           of: find.byType(AcpTimelineProcessGroupView),
@@ -327,7 +405,7 @@ void main() {
           matching: find.byType(Scrollable),
         ),
         findsNothing,
-        reason: '独立过程组也不能引入 SelectableText 的隐式滚动位置',
+        reason: '独立过程组不能引入嵌套 Scrollable 或 SelectableText 的隐式滚动位置',
       );
       for (final code in tester.widgetList<StudioCodeBlock>(
         find.byType(StudioCodeBlock),
@@ -338,7 +416,103 @@ void main() {
     });
   }
 
-  testWidgets('失败工具保持类别图标且保留失败输出', (tester) async {
+  testWidgets('过程组标题覆盖进行中与已完成各类诚实状态且不伪造耗时', (tester) async {
+    // 1. 进行中：execute 工具用进度环、单行呈现工具名与计数，不再出现第二行“执行中”
+    final execRow = AcpTimelineProcessRow(
+      id: 'running-exec',
+      items: const [
+        AcpTimelineToolCallItem(
+          id: 't1',
+          toolCallId: 'c1',
+          status: AcpToolStatusKind.inProgress,
+          kindLabel: 'execute',
+          tool: TimelineToolPresentation(
+            id: 't1',
+            toolCallId: 'c1',
+            name: 'cargo test',
+            presentationContract: 'acp.tool.execute',
+            statusString: 'running',
+            arguments: '',
+            output: '',
+          ),
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _app(
+        LiveStatusMotionHost(child: AcpTimelineProcessGroupView(row: execRow)),
+      ),
+    );
+    expect(find.text('cargo test'), findsOneWidget);
+    expect(find.text('1 个工具'), findsOneWidget);
+    expect(find.text('执行中'), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    // 2. 进行中：非 execute 工具与思考展示单行概要，不显示第二行
+    final thoughtRunning = AcpTimelineProcessRow(
+      id: 'running-thought',
+      items: const [
+        AcpTimelineThoughtItem(
+          id: 'th1',
+          summary: '正在分析依赖树',
+          active: true,
+          blocks: [AcpTextBlockPresentation(text: '正在分析依赖树')],
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _app(
+        LiveStatusMotionHost(
+          child: AcpTimelineProcessGroupView(row: thoughtRunning),
+        ),
+      ),
+    );
+    expect(find.text('正在分析依赖树'), findsOneWidget);
+    expect(find.text('执行中'), findsNothing);
+    final activeRow = tester.widget<TimelineActivityRow>(
+      find.byType(TimelineActivityRow).first,
+    );
+    expect(activeRow.header, isTrue);
+    expect(activeRow.indicatorStyle, TimelineActivityIndicatorStyle.restingCat);
+
+    // 3. 已完成：纯思考、纯工具、纯更新分别展示诚实文案且无秒数
+    final thoughtsDone = AcpTimelineProcessRow(
+      id: 'done-thoughts',
+      items: const [
+        AcpTimelineThoughtItem(
+          id: 'th1',
+          summary: '思考一',
+          blocks: [AcpTextBlockPresentation(text: '思考一')],
+        ),
+        AcpTimelineThoughtItem(
+          id: 'th2',
+          summary: '思考二',
+          blocks: [AcpTextBlockPresentation(text: '思考二')],
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _app(AcpTimelineProcessGroupView(row: thoughtsDone)),
+    );
+    expect(find.text('思考了 2 段'), findsOneWidget);
+    expect(find.byIcon(Icons.psychology_alt_outlined), findsOneWidget);
+
+    final updatesDone = AcpTimelineProcessRow(
+      id: 'done-updates',
+      items: const [
+        AcpTimelineSessionUpdateItem(
+          id: 'u1',
+          update: AcpSessionInfoUpdatePresentation(),
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      _app(AcpTimelineProcessGroupView(row: updatesDone)),
+    );
+    expect(find.text('过程 · 1 项活动'), findsOneWidget);
+  });
+
+  testWidgets('失败工具保持类别图标、显示本地化失败状态且保留失败输出', (tester) async {
     final tool = sampleAcpProcessRow(status: AcpToolStatusKind.failed).items
         .whereType<AcpTimelineToolCallItem>()
         .single
@@ -347,6 +521,7 @@ void main() {
     expect(find.text('验证失败：权限不足，原文件未改动。'), findsNothing);
     expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
     expect(find.byIcon(Icons.error_outline), findsNothing);
+    expect(find.text('编辑 · 失败'), findsOneWidget);
     await tester.tap(find.byType(TimelineActivityRow));
     await tester.pumpAndSettle();
     expect(find.text('验证失败：权限不足，原文件未改动。'), findsOneWidget);
@@ -359,16 +534,20 @@ void main() {
     addTearDown(source.dispose);
     await tester.pumpWidget(
       _app(
-        ValueListenableBuilder<AcpTimelineProcessRow>(
-          valueListenable: source,
-          builder: (context, row, _) =>
-              AcpTimelineProcessGroupView(key: ValueKey(row.id), row: row),
+        LiveStatusMotionHost(
+          child: ValueListenableBuilder<AcpTimelineProcessRow>(
+            valueListenable: source,
+            builder: (context, row, _) =>
+                AcpTimelineProcessGroupView(key: ValueKey(row.id), row: row),
+          ),
         ),
       ),
     );
-    expect(find.text('执行中'), findsOneWidget);
+    expect(find.text('更新过程展示'), findsOneWidget);
+    expect(find.text('1 个工具'), findsOneWidget);
+    expect(find.text('执行中'), findsNothing);
     expect(find.byType(AcpToolCard), findsNothing);
-    await tester.tap(find.byType(ListTile).first);
+    await tester.tap(find.byType(TimelineActivityRow).first);
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(AcpToolCard), findsOneWidget);
     final completed = sampleAcpProcessRow();
@@ -383,7 +562,6 @@ void main() {
       ],
     );
     await tester.pumpAndSettle();
-    expect(find.text('执行中'), findsNothing);
     expect(find.text('过程 · 4 项活动 · 1 个工具'), findsOneWidget);
     expect(find.text('追加通知'), findsOneWidget);
     source.value = sampleAcpProcessRow(id: 'different:process');
@@ -423,7 +601,7 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.byType(ListTile).first);
+    await tester.tap(find.byType(TimelineActivityRow).first);
     await tester.pumpAndSettle();
     expect(find.byType(AcpToolCard), findsOneWidget);
     final controller = tester
@@ -439,7 +617,7 @@ void main() {
     controller.jumpTo(0);
     await tester.pumpAndSettle();
     expect(find.byType(AcpToolCard), findsOneWidget);
-    await tester.tap(find.byType(ListTile).first);
+    await tester.tap(find.byType(TimelineActivityRow).first);
     await tester.pumpAndSettle();
     controller.jumpTo(controller.position.maxScrollExtent);
     await tester.pumpAndSettle();
@@ -484,10 +662,12 @@ void main() {
         .first
         .row
         .id;
-    await tester.tap(find.byType(ListTile).first);
+    await tester.tap(find.byType(TimelineActivityRow).first);
     await tester.pumpAndSettle();
     expect(find.text('完整思考'), findsWidgets);
     expect(find.text('工具 first'), findsOneWidget);
+    await tester.tap(find.text('工具 first'));
+    await tester.pumpAndSettle();
     harness.update(
       AcpToolCallChangedView(
         AcpToolCallUpdateView(
@@ -525,7 +705,7 @@ void main() {
           MediaQuery(
             data: MediaQueryData(
               size: size,
-              textScaler: TextScaler.linear(1.8),
+              textScaler: const TextScaler.linear(1.8),
             ),
             child: sampleAcpConversation(),
           ),
@@ -618,19 +798,39 @@ void main() {
       );
     });
   }
+
+  test('formatAcpJsonText 保留多行字符串原文并缩进 JSON 对象', () {
+    expect(formatAcpJsonText(const AcpJsonString('第一行\n第二行')), '第一行\n第二行');
+    expect(
+      formatAcpJsonText(
+        AcpJsonObject({
+          'path': const AcpJsonString('a.dart'),
+          'line': AcpJsonInteger(BigInt.from(10)),
+        }),
+      ),
+      '{\n  "path": "a.dart",\n  "line": 10\n}',
+    );
+  });
 }
 
-AcpToolCallSessionUpdateView _protocolTool(String id, {String? output}) =>
-    AcpToolCallSessionUpdateView(
-      AcpToolCallView(
-        toolCallId: AcpToolCallId(id),
-        title: '工具 $id',
-        kind: AcpToolKindView.execute,
-        status: AcpToolCallStatusView.completed,
-        rawInput: const AcpJsonString('工具完整参数'),
-        rawOutput: AcpJsonString(output ?? '工具完整输出'),
-      ),
-    );
+AcpToolCallSessionUpdateView _protocolTool(
+  String id, {
+  String? output,
+  String? diffText,
+}) => AcpToolCallSessionUpdateView(
+  AcpToolCallView(
+    toolCallId: AcpToolCallId(id),
+    title: '工具 $id',
+    kind: diffText == null ? AcpToolKindView.execute : AcpToolKindView.edit,
+    status: AcpToolCallStatusView.completed,
+    content: [
+      if (diffText != null)
+        AcpToolDiffView(path: 'lib/$id.dart', newText: diffText),
+    ],
+    rawInput: const AcpJsonString('工具完整参数'),
+    rawOutput: AcpJsonString(output ?? '工具完整输出'),
+  ),
+);
 
 String _longOutput(String prefix, int lines) => List.generate(
   lines,

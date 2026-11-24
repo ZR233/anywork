@@ -15,7 +15,7 @@ impl ModelRuntime {
         session: &ModelSession,
         purpose: &InvocationPurpose,
     ) -> OpenAiTransport {
-        let transport = &self.model.binding.transport;
+        let transport = &self.model.extra.binding.transport;
         let connection_key = self.connection_fingerprint();
         if matches!(purpose, InvocationPurpose::Completion)
             && transport.protocol == WireApi::Responses
@@ -28,6 +28,7 @@ impl ModelRuntime {
     }
     pub(super) fn supports_http_fallback(&self) -> bool {
         self.model
+            .extra
             .binding
             .transport
             .supported_connection_modes
@@ -44,10 +45,10 @@ impl ModelRuntime {
         let api_base = self.resolve_base_url();
         let endpoint = self.endpoint.clone();
         let model_headers = match purpose {
-            InvocationPurpose::Completion => self.model.binding.request.headers.clone(),
+            InvocationPurpose::Completion => self.model.extra.binding.request.headers.clone(),
             InvocationPurpose::RemoteCompaction { headers, .. } => headers.clone(),
         };
-        let wire_api = self.model.binding.transport.protocol;
+        let wire_api = self.model.extra.binding.transport.protocol;
         let connection_key = self.connection_fingerprint();
         let transport = self.active_transport(&session, purpose);
         async move {

@@ -6,6 +6,7 @@ final class StatisticsViewState {
     required this.repository,
     required this.modelFilter,
     required this.effortFilter,
+    this.serviceTierFilter,
     required this.mismatchesOnly,
     required Iterable<StatisticsSample> filteredHistory,
   }) : filteredHistory = StatisticsMaterial.freeze(filteredHistory);
@@ -13,6 +14,7 @@ final class StatisticsViewState {
   final StatisticsRepositoryState repository;
   final String? modelFilter;
   final String? effortFilter;
+  final String? serviceTierFilter;
   final bool mismatchesOnly;
   final List<StatisticsSample> filteredHistory;
 
@@ -26,6 +28,7 @@ final class StatisticsViewState {
           repository == other.repository &&
           modelFilter == other.modelFilter &&
           effortFilter == other.effortFilter &&
+          serviceTierFilter == other.serviceTierFilter &&
           mismatchesOnly == other.mismatchesOnly &&
           _listEquals(filteredHistory, other.filteredHistory);
 
@@ -34,6 +37,7 @@ final class StatisticsViewState {
     repository,
     modelFilter,
     effortFilter,
+    serviceTierFilter,
     mismatchesOnly,
     Object.hashAll(filteredHistory),
   );

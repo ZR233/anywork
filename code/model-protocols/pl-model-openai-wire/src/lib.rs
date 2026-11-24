@@ -8,6 +8,7 @@ pub mod files;
 pub mod model;
 pub mod openai;
 pub mod protocol;
+pub mod service_tiers;
 pub use pl_model_types::authorization;
 pub use pl_model_types::{ModelMemberState, PromptPrefixChangedReason, PureError, Result, headers};
 

@@ -1117,12 +1117,19 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
       projection: projection,
       loadedAtoms: _loadedCurrentAtoms,
     );
+    final streamingText = _read.owner._isTextStreaming(
+      _read.session,
+      projection: projection,
+      loadedAtoms: atoms,
+    );
     final snapshot = _snapshotCurrent(
       revision,
       projection,
       executionActive: executionActive,
     );
-    final settledTail = !executionActive ? _heldTailWork : null;
+    final settledTail = (!executionActive || streamingText)
+        ? _heldTailWork
+        : null;
     if (settledTail != null) _heldTailWork = null;
     final DisplayBlock? settledBlock =
         settledTail != null &&
@@ -1134,7 +1141,7 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
           )
         : null;
     DisplayBlock? updatedLiveWork;
-    if (executionActive && _heldTailWork != null) {
+    if (executionActive && !streamingText && _heldTailWork != null) {
       final tail = _heldTailWork!;
       updatedLiveWork = TimelineHistoryProjection.liveOpenWorkBlock(
         tail.range,
@@ -1374,6 +1381,30 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     return session.state.activeTurn != null || session.state.activity != null;
   }
 
+  bool _isTextStreaming(
+    ConversationSession session, {
+    CurrentProjection? projection,
+    List<CurrentAtom> loadedAtoms = const [],
+  }) {
+    if (projection != null) {
+      if (projection.activeTurn?.phase == CurrentTurnPhase.responding) {
+        return true;
+      }
+      final atoms = projection.atoms.isNotEmpty
+          ? projection.atoms
+          : loadedAtoms;
+      if (atoms.any(
+        (atom) =>
+            atom.lifecycle is ActiveChatAtom &&
+            atom.kind == ChatAtomKind.text &&
+            atom.contents.isNotEmpty,
+      )) {
+        return true;
+      }
+    }
+    return session.state.activity?.kind == ThreadActivityKind.responding;
+  }
+
   ({
     List<DisplayBlock> timelineBlocks,
     ({HistoryWorkRange range, HistoryCut cut})? heldTail,
@@ -1393,11 +1424,17 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       projection: projection,
       loadedAtoms: loadedAtoms,
     );
+    final streamingText = _isTextStreaming(
+      session,
+      projection: projection,
+      loadedAtoms: loadedAtoms,
+    );
     final first = page.items.firstOrNull;
     final heldRange =
         first is WorkRangeTimelineItem &&
             first.range.beforeSeq == null &&
             active &&
+            !streamingText &&
             (first.range.runId == null ||
                 ownerId == null ||
                 first.range.runId == ownerId) &&

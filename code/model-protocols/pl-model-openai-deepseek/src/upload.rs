@@ -14,9 +14,15 @@ pub async fn upload_file(
         )
         .mime_str(&request.input.media_type)
         .map_err(transport::reqwest_error_to_pure)?;
+    // The Files endpoint chooses the PDF parser when it starts reading the file part.
+    let purpose = if request.input.media_type == "application/pdf" {
+        "text_recognition"
+    } else {
+        "user_data"
+    };
     let form = reqwest::multipart::Form::new()
+        .text("purpose", purpose)
         .part("file", part)
-        .text("purpose", "user_data")
         .text("expires_after[anchor]", "created_at")
         .text("expires_after[seconds]", "86400");
     let headers = transport::headers(
@@ -63,6 +69,6 @@ pub async fn upload_file(
 pub static FILE_UPLOAD: pl_model_openai_wire::files::FileUploadService =
     pl_model_openai_wire::files::FileUploadService {
         id: pl_model_openai_wire::protocol::FileUploadCapability::from_static("deep_seek"),
-        cache_revision: "deepseek:user_data:86400",
+        cache_revision: "deepseek:files-v2:86400",
         upload: |request| Box::pin(upload_file(request)),
     };

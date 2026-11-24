@@ -47,12 +47,15 @@ pub struct StudioModelPerformanceSummary {
     pub effort_breakdowns: Vec<StudioModelPerformanceEffortSummary>,
 }
 
-/// An effort breakdown within one account/model aggregate.
+/// A breakdown by effort and frozen request service tier within one account/model aggregate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioModelPerformanceEffortSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// `standard`, `notApplicable`, or `tier:<exact id>`; absent when not recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
     pub sample_count: u64,
     pub completion_tokens: u64,
     pub total_ttft_millis: u64,
@@ -90,6 +93,9 @@ pub struct StudioModelPerformanceSample {
     pub model_match_state: ModelMatchState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Original request grouping key, not the tier reported by the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
     pub completion_tokens: Option<u64>,
     pub ttft_millis: Option<u64>,
     pub decode_millis: Option<u64>,

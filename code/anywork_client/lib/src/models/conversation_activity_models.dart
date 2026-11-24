@@ -161,12 +161,14 @@ class ConversationActivityView {
 
   bool get hasDetails => expandable || details.isNotEmpty;
 
-  /// 当前前台工具执行阶段是否正在运行 `exec` 命令。
+  /// 当前前台工具执行阶段是否正在运行 `exec` 类命令。
   bool get isRunningExecTool =>
       kind == ConversationActivityKind.runningTool &&
       activeTools.any(
         (tool) =>
-            tool.name == 'exec' &&
+            (tool.name == 'exec' ||
+                tool.name == 'exec_command' ||
+                tool.name == 'builtin.exec@2') &&
             tool.state == ThreadActivityToolState.running,
       );
 
@@ -312,6 +314,12 @@ ConversationActivityView? projectConversationActivity({
   // A coarse responding summary belongs to that response, not to the next
   // thinking interval. Keep a separately typed thinking summary unchanged.
   final summary = _singleLine(activity.summary);
+  final wait =
+      activity.tools.latestStarted?.wait ??
+      activity.tools.active
+          .map((tool) => tool.wait)
+          .whereType<ThreadWaitPresentationView>()
+          .firstOrNull;
   return ConversationActivityView(
     identity: activity.identity,
     kind: kind,
@@ -327,6 +335,7 @@ ConversationActivityView? projectConversationActivity({
         activity.deferred.isNotEmpty ||
         businessRefs?.plan?.document != null ||
         businessRefs?.interactions != null,
+    wait: wait,
     deferred: activity.deferred,
   );
 }

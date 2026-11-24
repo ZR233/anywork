@@ -12,6 +12,7 @@ use pl_studio_statistics::{
 fn snapshot() -> StudioModelPerformanceSnapshot {
     let effort = StudioModelPerformanceEffortSummary {
         effort: Some("high".into()),
+        requested_service_tier: Some("tier:priority".into()),
         sample_count: 1,
         completion_tokens: 20,
         total_ttft_millis: 10,
@@ -51,6 +52,7 @@ fn snapshot() -> StudioModelPerformanceSnapshot {
         reported_model: None,
         model_match_state: Default::default(),
         effort: Some("high".into()),
+        requested_service_tier: Some("tier:priority".into()),
         completion_tokens: Some(20),
         ttft_millis: Some(10),
         decode_millis: Some(90),

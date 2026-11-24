@@ -101,6 +101,18 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @composerSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Speed'**
+  String get composerSpeed;
+
+  /// No description provided for @composerSpeedStandard.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard'**
+  String get composerSpeedStandard;
+
   /// No description provided for @acpConnectionReconnecting.
   ///
   /// In en, this message translates to:
@@ -3146,7 +3158,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStatisticsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.'**
+  /// **'Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.'**
   String get settingsStatisticsSubtitle;
 
   /// No description provided for @settingsStatisticsSummaryTitle.
@@ -3683,23 +3695,11 @@ abstract class AppLocalizations {
   /// **'Thought for less than 1s'**
   String get timelineReasoningElapsedUnderSecond;
 
-  /// No description provided for @timelineReasoningElapsedSeconds.
+  /// No description provided for @timelineReasoningElapsedDuration.
   ///
   /// In en, this message translates to:
-  /// **'Thought for {seconds}s'**
-  String timelineReasoningElapsedSeconds(int seconds);
-
-  /// No description provided for @timelineReasoningElapsedMinutes.
-  ///
-  /// In en, this message translates to:
-  /// **'Thought for {minutes}m'**
-  String timelineReasoningElapsedMinutes(int minutes);
-
-  /// No description provided for @timelineReasoningElapsedMinutesSeconds.
-  ///
-  /// In en, this message translates to:
-  /// **'Thought for {minutes}m {seconds}s'**
-  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds);
+  /// **'Thought for {duration}'**
+  String timelineReasoningElapsedDuration(String duration);
 
   /// No description provided for @timelineGroupWorkedUnderSecond.
   ///
@@ -3707,23 +3707,11 @@ abstract class AppLocalizations {
   /// **'Worked for less than 1s'**
   String get timelineGroupWorkedUnderSecond;
 
-  /// No description provided for @timelineGroupWorkedSeconds.
+  /// No description provided for @timelineGroupWorkedDuration.
   ///
   /// In en, this message translates to:
-  /// **'Worked for {seconds}s'**
-  String timelineGroupWorkedSeconds(int seconds);
-
-  /// No description provided for @timelineGroupWorkedMinutes.
-  ///
-  /// In en, this message translates to:
-  /// **'Worked for {minutes}m'**
-  String timelineGroupWorkedMinutes(int minutes);
-
-  /// No description provided for @timelineGroupWorkedMinutesSeconds.
-  ///
-  /// In en, this message translates to:
-  /// **'Worked for {minutes}m {seconds}s'**
-  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds);
+  /// **'Worked for {duration}'**
+  String timelineGroupWorkedDuration(String duration);
 
   /// No description provided for @timelineGroupExecutingUnderSecond.
   ///
@@ -3731,35 +3719,17 @@ abstract class AppLocalizations {
   /// **'Running for less than 1s'**
   String get timelineGroupExecutingUnderSecond;
 
-  /// No description provided for @timelineGroupExecutingSeconds.
+  /// No description provided for @timelineGroupExecutingDuration.
   ///
   /// In en, this message translates to:
-  /// **'Running for {seconds}s'**
-  String timelineGroupExecutingSeconds(int seconds);
-
-  /// No description provided for @timelineGroupExecutingMinutes.
-  ///
-  /// In en, this message translates to:
-  /// **'Running for {minutes}m'**
-  String timelineGroupExecutingMinutes(int minutes);
-
-  /// No description provided for @timelineGroupExecutingMinutesSeconds.
-  ///
-  /// In en, this message translates to:
-  /// **'Running for {minutes}m {seconds}s'**
-  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds);
+  /// **'Running for {duration}'**
+  String timelineGroupExecutingDuration(String duration);
 
   /// No description provided for @timelineGroupClosing.
   ///
   /// In en, this message translates to:
   /// **'Finishing work'**
   String get timelineGroupClosing;
-
-  /// No description provided for @timelineGroupUnrestored.
-  ///
-  /// In en, this message translates to:
-  /// **'Previous work is unfinished and has not resumed'**
-  String get timelineGroupUnrestored;
 
   /// No description provided for @timelineReasoningSummary.
   ///
@@ -3975,23 +3945,11 @@ abstract class AppLocalizations {
   /// **'Took less than 1s'**
   String get timelineToolElapsedUnderSecond;
 
-  /// No description provided for @timelineToolElapsedSeconds.
+  /// No description provided for @timelineToolElapsedDuration.
   ///
   /// In en, this message translates to:
-  /// **'Took {seconds}s'**
-  String timelineToolElapsedSeconds(int seconds);
-
-  /// No description provided for @timelineToolElapsedMinutes.
-  ///
-  /// In en, this message translates to:
-  /// **'Took {minutes}m'**
-  String timelineToolElapsedMinutes(int minutes);
-
-  /// No description provided for @timelineToolElapsedMinutesSeconds.
-  ///
-  /// In en, this message translates to:
-  /// **'Took {minutes}m {seconds}s'**
-  String timelineToolElapsedMinutesSeconds(int minutes, int seconds);
+  /// **'Took {duration}'**
+  String timelineToolElapsedDuration(String duration);
 
   /// No description provided for @timelineToolSearchSucceeded.
   ///
@@ -6648,7 +6606,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactHelp.
   ///
   /// In en, this message translates to:
-  /// **'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.'**
+  /// **'Leave empty to use the model default. Custom thresholds can use up to 90% of the maximum context window.'**
   String get settingsModelAutoCompactHelp;
 
   /// No description provided for @settingsModelAutoCompactUnknownCapacity.
@@ -7670,12 +7628,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Text output unsupported'**
   String get modelTextOutputUnsupported;
-
-  /// No description provided for @modelContextWindowUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Context window unknown'**
-  String get modelContextWindowUnknown;
 
   /// No description provided for @modelTextFilterEmpty.
   ///
@@ -8874,8 +8826,38 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsEffortBreakdownTitle.
   ///
   /// In en, this message translates to:
-  /// **'Effort breakdown'**
+  /// **'Effort and request tier breakdown'**
   String get statisticsEffortBreakdownTitle;
+
+  /// No description provided for @statisticsRequestedServiceTier.
+  ///
+  /// In en, this message translates to:
+  /// **'Request speed tier'**
+  String get statisticsRequestedServiceTier;
+
+  /// No description provided for @statisticsAllServiceTiers.
+  ///
+  /// In en, this message translates to:
+  /// **'All request tiers'**
+  String get statisticsAllServiceTiers;
+
+  /// No description provided for @statisticsServiceTierStandard.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard'**
+  String get statisticsServiceTierStandard;
+
+  /// No description provided for @statisticsServiceTierUnrecorded.
+  ///
+  /// In en, this message translates to:
+  /// **'Not recorded'**
+  String get statisticsServiceTierUnrecorded;
+
+  /// No description provided for @statisticsServiceTierNotApplicable.
+  ///
+  /// In en, this message translates to:
+  /// **'Not applicable'**
+  String get statisticsServiceTierNotApplicable;
 
   /// No description provided for @accountProtocolOpenAi.
   ///
@@ -9072,7 +9054,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactAdjusted.
   ///
   /// In en, this message translates to:
-  /// **'The effective limit was adjusted for context capacity and output reserve.'**
+  /// **'The effective threshold was adjusted to fit the latest maximum context window.'**
   String get settingsModelAutoCompactAdjusted;
 
   /// No description provided for @modelContextParametersInvalid.
@@ -9080,12 +9062,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Inconsistent context parameters'**
   String get modelContextParametersInvalid;
-
-  /// No description provided for @modelInputBudgetExhausted.
-  ///
-  /// In en, this message translates to:
-  /// **'No input capacity after reserving output'**
-  String get modelInputBudgetExhausted;
 
   /// No description provided for @statusCompactNow.
   ///
@@ -11160,7 +11136,7 @@ abstract class AppLocalizations {
   /// No description provided for @acpEditorStepPrepareSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).'**
+  /// **'anywork automatically verifies or downloads the official Google Antigravity server (1.x).'**
   String get acpEditorStepPrepareSubtitle;
 
   /// No description provided for @acpEditorStepConnectTitle.
@@ -11348,12 +11324,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Work unfinished'**
   String get timelineGroupUnfinished;
-
-  /// No description provided for @timelineGroupWorking.
-  ///
-  /// In en, this message translates to:
-  /// **'Working'**
-  String get timelineGroupWorking;
 
   /// No description provided for @timelineGroupRecord.
   ///
@@ -12009,11 +11979,95 @@ abstract class AppLocalizations {
   /// **'Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}'**
   String acpProcessGroupSummary(int count, int toolCount);
 
-  /// No description provided for @acpProcessGroupRunning.
+  /// No description provided for @acpProcessGroupToolsOnly.
   ///
   /// In en, this message translates to:
-  /// **'Running'**
-  String get acpProcessGroupRunning;
+  /// **'{toolCount, plural, =1{Ran 1 tool} other{Ran {toolCount} tools}}'**
+  String acpProcessGroupToolsOnly(int toolCount);
+
+  /// No description provided for @acpProcessGroupThoughtsOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{Thought once} other{{count} thoughts}}'**
+  String acpProcessGroupThoughtsOnly(int count);
+
+  /// No description provided for @acpProcessGroupActivitiesOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Process · {count, plural, =1{1 activity} other{{count} activities}}'**
+  String acpProcessGroupActivitiesOnly(int count);
+
+  /// No description provided for @acpProcessGroupRunningToolsMeta.
+  ///
+  /// In en, this message translates to:
+  /// **'{toolCount, plural, =1{1 tool} other{{toolCount} tools}}'**
+  String acpProcessGroupRunningToolsMeta(int toolCount);
+
+  /// No description provided for @acpProcessGroupRunningActivitiesMeta.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 activity} other{{count} activities}}'**
+  String acpProcessGroupRunningActivitiesMeta(int count);
+
+  /// No description provided for @acpToolKindRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Read'**
+  String get acpToolKindRead;
+
+  /// No description provided for @acpToolKindEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit'**
+  String get acpToolKindEdit;
+
+  /// No description provided for @acpToolKindDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get acpToolKindDelete;
+
+  /// No description provided for @acpToolKindMove.
+  ///
+  /// In en, this message translates to:
+  /// **'Move'**
+  String get acpToolKindMove;
+
+  /// No description provided for @acpToolKindSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search'**
+  String get acpToolKindSearch;
+
+  /// No description provided for @acpToolKindExecute.
+  ///
+  /// In en, this message translates to:
+  /// **'Execute'**
+  String get acpToolKindExecute;
+
+  /// No description provided for @acpToolKindThink.
+  ///
+  /// In en, this message translates to:
+  /// **'Think'**
+  String get acpToolKindThink;
+
+  /// No description provided for @acpToolKindFetch.
+  ///
+  /// In en, this message translates to:
+  /// **'Fetch'**
+  String get acpToolKindFetch;
+
+  /// No description provided for @acpToolKindSwitchMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Switch mode'**
+  String get acpToolKindSwitchMode;
+
+  /// No description provided for @acpToolKindOther.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool'**
+  String get acpToolKindOther;
 
   /// No description provided for @acpContentAudioLabel.
   ///
@@ -13652,6 +13706,438 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'DeepSeek web fetch'**
   String get timelineToolNameDeepseekWebFetch;
+
+  /// No description provided for @liveStatusConnectionDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Live updates disconnected'**
+  String get liveStatusConnectionDisconnected;
+
+  /// No description provided for @liveStatusConnectionReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting live updates'**
+  String get liveStatusConnectionReconnecting;
+
+  /// No description provided for @liveStatusMembersUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Member view unavailable'**
+  String get liveStatusMembersUnavailable;
+
+  /// No description provided for @liveStatusMembersLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading sealed members…'**
+  String get liveStatusMembersLoading;
+
+  /// No description provided for @liveStatusRetryAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get liveStatusRetryAction;
+
+  /// No description provided for @liveStatusContentRangeWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Bytes {start}–{end} / {total}'**
+  String liveStatusContentRangeWindow(int start, int end, int total);
+
+  /// No description provided for @liveStatusContentFirstSegment.
+  ///
+  /// In en, this message translates to:
+  /// **'First chunk'**
+  String get liveStatusContentFirstSegment;
+
+  /// No description provided for @liveStatusContentNextSegment.
+  ///
+  /// In en, this message translates to:
+  /// **'Next chunk'**
+  String get liveStatusContentNextSegment;
+
+  /// No description provided for @timelinePatchUnavailableHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Patch hunk unavailable: content is incomplete or cannot be parsed'**
+  String get timelinePatchUnavailableHint;
+
+  /// No description provided for @timelinePatchFileAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add'**
+  String get timelinePatchFileAdd;
+
+  /// No description provided for @timelinePatchFileUpdate.
+  ///
+  /// In en, this message translates to:
+  /// **'Update'**
+  String get timelinePatchFileUpdate;
+
+  /// No description provided for @timelinePatchFileDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get timelinePatchFileDelete;
+
+  /// No description provided for @timelineToolCallFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool call'**
+  String get timelineToolCallFallback;
+
+  /// No description provided for @timelineToolArgumentsIncompleteTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool arguments incomplete'**
+  String get timelineToolArgumentsIncompleteTitle;
+
+  /// No description provided for @timelineToolArgumentsIncompleteDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'The argument window did not include the complete body'**
+  String get timelineToolArgumentsIncompleteDetail;
+
+  /// No description provided for @timelineToolIdentityMismatchTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool identity mismatch'**
+  String get timelineToolIdentityMismatchTitle;
+
+  /// No description provided for @timelineToolIdentityMismatchDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Declared call identity differs from completion payload'**
+  String get timelineToolIdentityMismatchDetail;
+
+  /// No description provided for @timelineToolMalformedLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} · Malformed content'**
+  String timelineToolMalformedLabel(String name);
+
+  /// No description provided for @timelineToolDeferredLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} · Body loaded on demand'**
+  String timelineToolDeferredLabel(String name);
+
+  /// No description provided for @timelineToolDeferredReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Arguments are loaded on demand; full content has not been retrieved yet'**
+  String get timelineToolDeferredReason;
+
+  /// No description provided for @timelineToolParseFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Current tool content cannot be parsed: {reason}'**
+  String timelineToolParseFailed(String reason);
+
+  /// No description provided for @acpContextWindowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Context window'**
+  String get acpContextWindowTitle;
+
+  /// No description provided for @acpSnapshotLiveBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Live'**
+  String get acpSnapshotLiveBadge;
+
+  /// No description provided for @acpSnapshotRetainedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Last snapshot'**
+  String get acpSnapshotRetainedBadge;
+
+  /// No description provided for @acpContextRemainingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{tokens} remaining'**
+  String acpContextRemainingLabel(String tokens);
+
+  /// No description provided for @acpContextOverCapacityLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Over capacity by {tokens}'**
+  String acpContextOverCapacityLabel(String tokens);
+
+  /// No description provided for @acpContextNotReported.
+  ///
+  /// In en, this message translates to:
+  /// **'Context usage not reported by agent'**
+  String get acpContextNotReported;
+
+  /// No description provided for @acpContextExactTokens.
+  ///
+  /// In en, this message translates to:
+  /// **'{used} / {size} exact tokens'**
+  String acpContextExactTokens(String used, String size);
+
+  /// No description provided for @acpMetricSpeedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Est. output speed'**
+  String get acpMetricSpeedTitle;
+
+  /// No description provided for @acpMetricSpeedDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'≈ {tokens} tokens · {duration}'**
+  String acpMetricSpeedDetail(String tokens, String duration);
+
+  /// No description provided for @acpMetricCostTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Session cost'**
+  String get acpMetricCostTitle;
+
+  /// No description provided for @acpMetricCostSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reported by agent'**
+  String get acpMetricCostSubtitle;
+
+  /// No description provided for @acpMetricTurnsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed turns'**
+  String get acpMetricTurnsTitle;
+
+  /// No description provided for @acpMetricTurnsValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{count}'**
+  String acpMetricTurnsValue(int count);
+
+  /// No description provided for @acpDetailSessionSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Session & configuration'**
+  String get acpDetailSessionSection;
+
+  /// No description provided for @acpDetailLastStopReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Last finish'**
+  String get acpDetailLastStopReason;
+
+  /// No description provided for @acpDetailUpdatedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated'**
+  String get acpDetailUpdatedAt;
+
+  /// No description provided for @acpDetailCapabilitiesSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Capabilities & identity'**
+  String get acpDetailCapabilitiesSection;
+
+  /// No description provided for @acpDetailSessionId.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote session'**
+  String get acpDetailSessionId;
+
+  /// No description provided for @acpContextDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Context breakdown'**
+  String get acpContextDetailSection;
+
+  /// No description provided for @acpContextUsedLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Used tokens'**
+  String get acpContextUsedLabel;
+
+  /// No description provided for @acpContextCapacityLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Window capacity'**
+  String get acpContextCapacityLabel;
+
+  /// No description provided for @acpContextDeltaLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Delta vs previous'**
+  String get acpContextDeltaLabel;
+
+  /// No description provided for @acpThroughputDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Latest sample'**
+  String get acpThroughputDetailSection;
+
+  /// No description provided for @acpThroughputFormulaNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated at ~1 token per 4 chars, including initial wait'**
+  String get acpThroughputFormulaNote;
+
+  /// No description provided for @acpThroughputTokensLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Est. output tokens'**
+  String get acpThroughputTokensLabel;
+
+  /// No description provided for @acpThroughputDurationLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Response time'**
+  String get acpThroughputDurationLabel;
+
+  /// No description provided for @acpCostDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Cost breakdown'**
+  String get acpCostDetailSection;
+
+  /// No description provided for @acpCostCurrencyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Currency'**
+  String get acpCostCurrencyLabel;
+
+  /// No description provided for @acpCostRawLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw reading'**
+  String get acpCostRawLabel;
+
+  /// No description provided for @acpCostScopeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Source'**
+  String get acpCostScopeLabel;
+
+  /// No description provided for @acpSessionDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Session info'**
+  String get acpSessionDetailTitle;
+
+  /// No description provided for @accountsCategoryAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get accountsCategoryAll;
+
+  /// No description provided for @accountsCategoryAcp.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP Agents'**
+  String get accountsCategoryAcp;
+
+  /// No description provided for @accountsCategoryNative.
+  ///
+  /// In en, this message translates to:
+  /// **'API Accounts'**
+  String get accountsCategoryNative;
+
+  /// No description provided for @accountsUpgradableCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} update{count, plural, =1{} other{s}}'**
+  String accountsUpgradableCount(int count);
+
+  /// No description provided for @acpManagedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed'**
+  String get acpManagedBadge;
+
+  /// No description provided for @acpLocalBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Local command'**
+  String get acpLocalBadge;
+
+  /// No description provided for @acpVersionTag.
+  ///
+  /// In en, this message translates to:
+  /// **'v{version}'**
+  String acpVersionTag(String version);
+
+  /// No description provided for @acpUpgradeCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Check for updates'**
+  String get acpUpgradeCheck;
+
+  /// No description provided for @acpUpgradeChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking for updates…'**
+  String get acpUpgradeChecking;
+
+  /// No description provided for @acpUpgradeUpToDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Up to date · v{version}'**
+  String acpUpgradeUpToDate(String version);
+
+  /// No description provided for @acpUpgradeAvailableTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Update available'**
+  String get acpUpgradeAvailableTitle;
+
+  /// No description provided for @acpUpgradeAvailableVersions.
+  ///
+  /// In en, this message translates to:
+  /// **'v{current} → v{latest}'**
+  String acpUpgradeAvailableVersions(String current, String latest);
+
+  /// No description provided for @acpUpgradeAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Upgrade to v{version}'**
+  String acpUpgradeAction(String version);
+
+  /// No description provided for @acpUpgradeActionGeneric.
+  ///
+  /// In en, this message translates to:
+  /// **'Upgrade now'**
+  String get acpUpgradeActionGeneric;
+
+  /// No description provided for @acpUpgradeUpgrading.
+  ///
+  /// In en, this message translates to:
+  /// **'Upgrading to v{version}'**
+  String acpUpgradeUpgrading(String version);
+
+  /// No description provided for @acpUpgradePendingSwitch.
+  ///
+  /// In en, this message translates to:
+  /// **'Installed v{version}; will switch once active sessions end'**
+  String acpUpgradePendingSwitch(String version);
+
+  /// No description provided for @acpUpgradeIncompatibleMajor.
+  ///
+  /// In en, this message translates to:
+  /// **'v{version} available (update anywork to support major v2)'**
+  String acpUpgradeIncompatibleMajor(String version);
+
+  /// No description provided for @acpUpgradeCheckFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Update check failed. Try again.'**
+  String get acpUpgradeCheckFailed;
+
+  /// No description provided for @acpUpgradeRetryCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry check'**
+  String get acpUpgradeRetryCheck;
+
+  /// No description provided for @acpManagedServerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed server & updates'**
+  String get acpManagedServerTitle;
 
   /// No description provided for @timelineTurnFailed.
   ///

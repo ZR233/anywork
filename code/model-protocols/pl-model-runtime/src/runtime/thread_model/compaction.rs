@@ -197,6 +197,8 @@ impl ThreadModel {
         let mut encoded = self.encode_request(&request).await?.completion;
         // Reduction has its own output policy; ordinary request capacity is resolved separately.
         encoded.max_tokens = None;
+        // Native and text compaction do not inherit the ordinary turn's speed selection.
+        encoded.service_tier = None;
         let binding = receipt::ModelCallBinding::capture(&self.runtime, "compaction");
         let session = ModelSession::default();
         let invocation = ModelInvocationContext::new(session.clone())
@@ -289,6 +291,7 @@ impl ThreadModel {
                 compatibility_family: self
                     .runtime
                     .model()
+                    .extra
                     .capabilities
                     .native_context_family
                     .clone(),
@@ -412,6 +415,7 @@ pub(super) fn decode(
         checkpoint.compatibility_family.as_deref(),
         runtime
             .model()
+            .extra
             .capabilities
             .native_context_family
             .as_deref(),

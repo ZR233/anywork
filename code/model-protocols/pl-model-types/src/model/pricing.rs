@@ -13,12 +13,16 @@ pub use pl_core::usage::UsageStatus;
 #[serde(rename_all = "camelCase")]
 pub struct TokenPriceTier {
     pub input_from: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_until: Option<u64>,
     pub output_from: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_until: Option<u64>,
     pub input_per_mtok: f64,
     pub output_per_mtok: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_per_mtok: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_per_mtok: Option<f64>,
 }
 
