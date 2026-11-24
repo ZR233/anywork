@@ -453,6 +453,18 @@ pub(crate) fn effective_system_profile_route(
     ))
 }
 
+pub(crate) fn current_profile_revision(
+    paths: &ConfigPaths,
+    profile_id: &str,
+) -> Result<Option<String>> {
+    validate_user_agent_profile_id(profile_id)?;
+    let path = paths.agents_dir().join(format!("{profile_id}.toml"));
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    Ok(load_user_profile(&path, true)?.map(|profile| profile.definition.revision))
+}
+
 fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<AgentProfile>> {
     let profile_id = path
         .file_stem()

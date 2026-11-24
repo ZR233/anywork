@@ -318,16 +318,14 @@ impl StudioRuntime {
     pub fn save_user_agent_profile(
         &self,
         operation_id: String,
-        expected_settings_revision: u64,
+        expected_revision: Option<&str>,
         profile_id: &str,
         profile: &crate::config::UserAgentProfile,
     ) -> Result<crate::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
-        let (state, changed) = self.config_runtime.save_user_agent_profile(
-            expected_settings_revision,
-            profile_id,
-            profile,
-        )?;
+        let (state, changed) =
+            self.config_runtime
+                .save_user_agent_profile(expected_revision, profile_id, profile)?;
         self.publish_settings_state()?;
         self.settings_command_reply(
             operation_id,
@@ -341,7 +339,6 @@ impl StudioRuntime {
     pub fn set_system_agent_enabled(
         &self,
         operation_id: String,
-        expected_settings_revision: u64,
         profile_id: &str,
         enabled: bool,
     ) -> Result<crate::SettingsCommandReply> {
@@ -353,7 +350,7 @@ impl StudioRuntime {
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(expected_settings_revision, |config| {
+            .update_with_effective(None, |config, _| {
                 let mut config = config.clone();
                 if enabled {
                     changed = config.disabled_system_agents.remove(&profile_id);

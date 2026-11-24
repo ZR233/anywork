@@ -493,7 +493,8 @@ impl ContextPreparationHook for RestrictCorrections {
             request.model.cancellation.cancel();
         }
         ContextPreparation::Prepared {
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: None,
             facts: vec![],

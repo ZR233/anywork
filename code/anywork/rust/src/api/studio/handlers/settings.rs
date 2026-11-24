@@ -40,7 +40,6 @@ pub async fn read_deepseek_web_search_settings()
 /// resolved by the runtime from its canonical desired configuration.
 pub async fn apply_settings_field(
     operation_id: String,
-    expected_settings_revision: u64,
     input: SettingsFieldInput,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
@@ -49,7 +48,6 @@ pub async fn apply_settings_field(
             .studio
             .apply_settings_field(pl_studio_runtime::UpdateSettingsFieldRequest {
                 operation_id,
-                expected_revision: expected_settings_revision,
                 update: input.into(),
             })
             .await?,
@@ -81,7 +79,6 @@ pub async fn remove_account_model(
 /// Changes only the unified enabled field of one exact catalog member.
 pub async fn set_account_model_enabled(
     operation_id: String,
-    expected_settings_revision: u64,
     account_id: String,
     model_id: String,
     enabled: bool,
@@ -90,7 +87,6 @@ pub async fn set_account_model_enabled(
         active_bridge().await?.studio.set_account_model_enabled(
             pl_studio_runtime::SetAccountModelEnabledRequest {
                 operation_id,
-                expected_revision: expected_settings_revision,
                 account_id,
                 model_id,
                 enabled,
@@ -102,7 +98,6 @@ pub async fn set_account_model_enabled(
 /// `None` explicitly clears the override; explicit Unknown is a distinct intent.
 pub async fn set_account_billing_kind(
     operation_id: String,
-    expected_settings_revision: u64,
     account_id: String,
     billing_kind: Option<BridgeBillingKind>,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
@@ -114,7 +109,6 @@ pub async fn set_account_billing_kind(
         active_bridge().await?.studio.set_account_billing_kind(
             pl_studio_runtime::SetAccountBillingKindRequest {
                 operation_id,
-                expected_revision: expected_settings_revision,
                 account_id,
                 billing_kind,
             },
@@ -136,17 +130,12 @@ pub async fn reload_settings_from_disk(
 
 pub async fn save_runtime_permission_mode(
     operation_id: String,
-    expected_settings_revision: u64,
     mode: String,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(
         bridge.studio.save_permission_settings(
-            pl_studio_runtime::UpdatePermissionSettingsRequest {
-                operation_id,
-                expected_revision: expected_settings_revision,
-                mode,
-            },
+            pl_studio_runtime::UpdatePermissionSettingsRequest { operation_id, mode },
         )?,
     ))
 }

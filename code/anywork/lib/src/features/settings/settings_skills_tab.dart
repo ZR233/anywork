@@ -147,13 +147,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
                     key: ValueKey('skill-enabled-${skill.name}'),
                     value: !disabledSkills.contains(skill.name),
                     onChanged: (selected) {
-                      final disabled = {...disabledSkills};
-                      if (selected) {
-                        disabled.remove(skill.name);
-                      } else {
-                        disabled.add(skill.name);
-                      }
-                      unawaited(_saveDisabled(disabled));
+                      unawaited(_saveDisabled(skill.name, !selected));
                     },
                   ),
                   children: [
@@ -272,7 +266,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
     }
   }
 
-  Future<void> _saveDisabled(Set<String> disabled) async {
+  Future<void> _saveDisabled(String name, bool disabled) async {
     try {
       setState(() => _saveError = null);
       final settings = ref.read(settingsSkillsViewProvider).settings;
@@ -280,7 +274,7 @@ class _SkillsTabState extends ConsumerState<SkillsTab> {
       await ref
           .read(anyworkClientProvider)
           .settingsCommands
-          .applySettingsField(SkillsDisabledCommand(disabled.toList()..sort()));
+          .applySettingsField(SkillDisabledCommand(name, disabled));
     } catch (error) {
       if (mounted) {
         setState(() => _saveError = error.toString());

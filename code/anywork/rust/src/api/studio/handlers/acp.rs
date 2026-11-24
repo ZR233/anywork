@@ -28,25 +28,18 @@ pub fn load_acp_account_catalog() -> Result<BridgeAcpAccountCatalog, BridgeError
 /// 保存（新增或更新）一条 ACP 接入。
 pub async fn save_acp_account(
     operation_id: String,
-    expected_settings_revision: u64,
     expected_document_revision: Option<u64>,
     account: BridgeAcpAccountUpdate,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.save_acp_account(
-        update_acp_account_request(
-            operation_id,
-            expected_settings_revision,
-            expected_document_revision,
-            account,
-        ),
+        update_acp_account_request(operation_id, expected_document_revision, account),
     )?))
 }
 
 /// 删除一条 ACP 接入；不注销官方账号、不删除其凭据。
 pub async fn remove_acp_account(
     operation_id: String,
-    expected_settings_revision: u64,
     account_id: String,
     expected_document_revision: u64,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
@@ -54,7 +47,6 @@ pub async fn remove_acp_account(
     Ok(settings_command_reply(bridge.studio.remove_acp_account(
         RemoveAcpAccountRequest {
             operation_id,
-            expected_revision: expected_settings_revision,
             account_id,
             expected_document_revision,
         },

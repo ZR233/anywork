@@ -39,7 +39,7 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 - **版本 `29 → 30`**：允许已验证的 Codex workspace 和套餐元数据；已有 API、SIWC 账号、资源、凭据关联和模型选择保持原样，不自动转换或重新登录。新字段只随用户完成并保存的授权写入。
 - **版本 `30 → 31`**：将旧版 `config.toml` 中的 `[mcp.servers.<id>]` 与 `[mcp.builtin_servers.<id>]` 拆分迁移为 `<StudioHome>/mcp/host/<server-key>.toml` 独立单文件配置（各自携带 `schema_version = 1` 与 `kind = "server" | "builtin"`，`server-key` 为稳定服务 ID 的 SHA-256），同时从 `config.toml` 移除 `[mcp]` 配置段与退役字段 `[runtime].active_mcp_servers`，保持其余账号、凭据关联、路由及技能设置不变。迁移前完整备份原文件，中断后可安全恢复；正常读写仅消费单文件 MCP 目录，不双读 `config.toml` 中的旧 `[mcp]` 段。
 
-所有设置变更命令（Settings command）均须携带 `expectedSettingsRevision`，成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
+设置所有者在写锁内将普通字段和列表单项更新应用到最新配置。整份设置替换或重载校验设置版本，独立文档校验自身版本。提交成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 
 ### 20.1.1 设置变更的资源边界
 
@@ -99,7 +99,7 @@ Antigravity 是普通定义的内置启动模板，其受管安装、固定发�
 
 ### 20.2.1 模型启用、计费类别与分发默认设置
 
-- **模型启用覆盖（`model_enabled_overrides`）**：保存精确 `model_id` 到布尔值的映射，缺省为空；条目为明确开启或关闭，缺项默认启用。线上未列出的内置项仍使用内置声明并保持默认启用；来源变化、成功空名单或重启不清除已保存意图。默认规则由 [06](./06-model.md) 的模型层统一解析，不给用户文件批量补写 `true`，已有显式 `false` 原样保留。模型启用状态切换复用独立类型化变更命令（携带 `operationId`、`expectedSettingsRevision`、`accountId`、`modelId` 与 `enabled`），只更新指定成员的覆盖，提交后同时推进设置水位与目录资格水位。模型配置快照以 `modelEnabledOverrides` 发布期望配置，目录快照发布已解析的 `enabled`；两者不是两份独立启用设置。禁用导致既有路由不可用时仅标记路由 `unavailable`，不自动篡改用户已选路由。
+- **模型启用覆盖（`model_enabled_overrides`）**：保存精确 `model_id` 到布尔值的映射，缺省为空；条目为明确开启或关闭，缺项默认启用。线上未列出的内置项仍使用内置声明并保持默认启用；来源变化、成功空名单或重启不清除已保存意图。默认规则由 [06](./06-model.md) 的模型层统一解析，不给用户文件批量补写 `true`，已有显式 `false` 原样保留。模型启用状态切换复用独立类型化变更命令（携带 `operationId`、`accountId`、`modelId` 与 `enabled`），只更新指定成员的覆盖，提交后同时推进设置水位与目录资格水位。模型配置快照以 `modelEnabledOverrides` 发布期望配置，目录快照发布已解析的 `enabled`；两者不是两份独立启用设置。禁用导致既有路由不可用时仅标记路由 `unavailable`，不自动篡改用户已选路由。
 - **账号计费类别（`billing_kind`）**：可选值为 `metered | subscription | noCharge | unknown`，作为账号计费意图的唯一持久化事实源。省略时按明确模板与权威端点地址自动推导生效类别，无法匹配时为 `unknown`；显式配置值优先且不被端点地址修改静默覆盖，自动推导结果亦不回写为显式配置。权威设置快照同时投影生效值 `billingKind`（用于展示与筛选）与可空覆盖值 `billingKindOverride`（表达用户显式意图）。账号页的「不计费」开关即该类别的布尔投影：开启时写入显式 `noCharge`，关闭时清除覆盖并恢复自动推导。
 - **子智能体分发默认设置（`[delegation]`）**：保存 `mode = profile | automatic`（默认 `profile`）与 `preference = economy | balanced | fast`（默认 `balanced`）。两个字段各自使用独立的类型化设置命令，仅改变未来新建会话的默认值；已建会话在创建准入时冻结解析后的非空枚举，后续不再回读全局默认设置（见 [12](./12-collaboration.md) §12.7）。
 
@@ -342,7 +342,7 @@ Studio home 的 `lsp/host/<server-id>.toml` 是本地默认配置，格式相同
 
 ## 20.14 独立设置变更命令
 
-配置变更按最小业务资源拆分为独立的类型化命令（typed command）：账号实例编辑、默认账号切换、账号删除、单个工作模式路由的模型或推理强度、单个智能体角色的模型或推理强度、系统指令字段、技能字段、单个 MCP 服务、通用设置字段、OpenAI 搜索字段以及 DeepSeek 搜索与抓取两个独立开关。所有命令均携带 `expectedSettingsRevision` 并由同一运行时命令锁执行 CAS 校验；桥接层与本地回环 HTTP 统一通过 `PUT /api/v1/settings/field`（承载 `SettingsFieldUpdate`）与对应资源端点处理，单字段更新请求严禁顺带覆写同页其他未修改字段的旧副本。启动期在线模型目录观察属于独立的命令通道与修订水位（仅推进 `modelCatalogRevision`），不阻塞设置变更命令。
+配置变更按最小业务资源拆分为独立的类型化命令（typed command）：账号实例编辑、默认账号切换、账号删除、单个工作模式路由的模型或推理强度、单个智能体角色的模型或推理强度、系统指令字段、技能字段、单个 MCP 服务、通用设置字段、OpenAI 搜索字段以及 DeepSeek 搜索与抓取两个独立开关。普通字段按提交顺序生效，列表勾选提交目标 ID 和开关值。工作模式、Agent Profile 和 ACP 定义使用打开文档时取得的版本，创建时要求目标缺失；桥接层与本地回环 HTTP 统一通过 `PUT /api/v1/settings/field`（承载 `SettingsFieldUpdate`）与对应资源端点处理，单字段更新请求严禁顺带覆写同页其他未修改字段的旧副本。启动期在线模型目录观察属于独立的命令通道与修订水位（仅推进 `modelCatalogRevision`），不阻塞设置变更命令。
 
 ## 20.15 模型标识迁移与账号隔离目录
 
@@ -352,7 +352,7 @@ Studio home 的 `lsp/host/<server-id>.toml` 是本地默认配置，格式相同
 
 自定义工作模式保存在数据根目录的 `modes/` 子目录下，每个 `<mode-id>.json` 文件保存一份完整的工作模式文档（执行字段与状态图约束见 [11](./11-thread-mode.md)，画布布局元数据独立于执行定义）。系统提供 JSON Schema 与显式校验命令；JSON 格式仅用于配置创作与落盘，运行时与传输层统一使用类型化 DTO。
 
-配置所有者在启动、保存、删除与显式重载时访问该目录，日常查询仅读取已发布的不可变快照。保存与删除采用目录修订号 CAS、同一串行命令通道与原子文件替换，内置工作模式 ID 受写保护。显式重载会先完整读取并校验所有文件，任一文件损坏均保留上一份有效目录而不静默跳过坏文件。自定义工作模式上限为 **128 个**，单个 JSON 文件上限为 **256 KiB**，画布布局最多包含 **32 个节点**（节点坐标必须为有限浮点数且绝对值不超过 `1,000,000`）。启动时若检测到损坏的工作模式文件，将阻止启动并保留原文件，不触发产品数据库自动重置。
+配置所有者在启动、保存、删除与显式重载时访问该目录，日常查询仅读取已发布的不可变快照。创建使用版本 0，保存与删除核对目标文件的内容版本。目录修订号用于目录订阅和整目录重载。保存使用同一串行命令通道与原子文件替换，内置工作模式 ID 受写保护。显式重载会先完整读取并校验所有文件，任一文件损坏均保留上一份有效目录而不静默跳过坏文件。自定义工作模式上限为 **128 个**，单个 JSON 文件上限为 **256 KiB**，画布布局最多包含 **32 个节点**（节点坐标必须为有限浮点数且绝对值不超过 `1,000,000`）。启动时若检测到损坏的工作模式文件，将阻止启动并保留原文件，不触发产品数据库自动重置。
 
 ## 20.17 图像生成配置边界
 

@@ -204,7 +204,6 @@ pub async fn set_thread_model_route(
             pl_studio_runtime::SetThreadModelRouteRequest {
                 operation_id: request.operation_id,
                 expected_model_route_revision: request.expected_model_route_revision,
-                expected_settings_revision: request.expected_settings_revision,
                 account_id: request.account_id,
                 model_id: request.model_id,
                 effort: request.effort,

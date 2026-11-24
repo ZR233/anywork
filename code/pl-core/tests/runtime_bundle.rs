@@ -36,6 +36,7 @@ fn bundle(
         base: thread.runtime_bundle_base(&thread.snapshot()),
         desired: label.into(),
         model: None,
+        require_idle: false,
         model_context_revision: None,
         tools: Some(RuntimeTools {
             registrations,
@@ -177,13 +178,16 @@ async fn requests_see_whole_installed_bundles_and_stale_opening_is_retired() {
         label: "newest",
         ..original.clone()
     };
-    installed(
-        thread
-            .install_runtime_bundle(probe_bundle(&thread, &newest))
-            .await
-            .unwrap(),
-    )
-    .await;
+    let candidate = probe_bundle(&thread, &newest);
+    thread
+        .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+            id: "title.billing".into(),
+            expected_revision: None,
+            payload: OpaquePayload::text("saved"),
+        }])
+        .await
+        .unwrap();
+    installed(thread.install_runtime_bundle(candidate).await.unwrap()).await;
     assert!(matches!(
         &*stale.installed().await.unwrap_err(),
         ThreadError::StaleRuntimeBundle
@@ -459,5 +463,68 @@ async fn revoked_authority_cancels_the_old_task_and_waits_for_its_exit() {
                 .context()
                 .contains(&support::text("original output"))
     }));
+    thread.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn reconfiguration_binds_instructions_to_the_version_assigned_after_concurrent_billing() {
+    use pl_core::{
+        context::ContextRecord,
+        thread::{
+            ContextReplacementReason, ReplaceContext, RuntimeApplication,
+            extensions::{
+                ApplicationUpdate, ExtensionInputs, ExtensionMutation, InstructionRevisionBinding,
+            },
+        },
+    };
+    let thread = ThreadHandle::start_current("mode-change".into(), None).unwrap();
+    let snapshot = thread.snapshot();
+    let mut candidate = bundle(&thread, "tools", Vec::new());
+    candidate.base.extension_inputs =
+        ExtensionInputs::capture(&snapshot.extensions, &["instructions"]);
+    candidate.application = Some(RuntimeApplication {
+        instruction_binding: Some(InstructionRevisionBinding {
+            record_id: "projected".into(),
+            extension_id: "instructions".into(),
+        }),
+        update: ApplicationUpdate {
+            facts: Vec::new(),
+            mutations: vec![ExtensionMutation::Put {
+                id: "instructions".into(),
+                expected_revision: None,
+                payload: OpaquePayload::text("instructions"),
+            }],
+        },
+        context: Some(ReplaceContext {
+            expected_revision: snapshot.context.revision,
+            reason: ContextReplacementReason::Rebuild,
+            records: vec![ContextRecord {
+                id: "projected".into(),
+                turn_id: None,
+                tool_calls: Vec::new(),
+                source: ContextSource::InstructionSnapshot {
+                    revision: 0,
+                    content_hash: pl_core::context::content_hash(b"instructions"),
+                    replaces: None,
+                },
+                content: vec![support::text("instructions")],
+            }],
+        }),
+    });
+    thread
+        .mutate_extensions(vec![ExtensionMutation::Put {
+            id: "billing".into(),
+            expected_revision: None,
+            payload: OpaquePayload::text("saved"),
+        }])
+        .await
+        .unwrap();
+    installed(thread.install_runtime_bundle(candidate).await.unwrap()).await;
+    let state = thread.snapshot();
+    let assigned = state.extensions["instructions"].revision;
+    assert!(assigned > state.extensions["billing"].revision);
+    assert!(
+        matches!(state.context.records[0].source, ContextSource::InstructionSnapshot { revision, .. } if revision == assigned)
+    );
     thread.close().await.unwrap();
 }

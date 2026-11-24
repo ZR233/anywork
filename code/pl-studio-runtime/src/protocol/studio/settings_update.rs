@@ -45,8 +45,9 @@ pub enum SettingsFieldUpdate {
     SkillsExternalDirs {
         value: Vec<String>,
     },
-    SkillsDisabled {
-        value: Vec<String>,
+    SkillDisabled {
+        id: String,
+        value: bool,
     },
     SkillsAutoLearnMinToolCalls {
         value: u32,
@@ -63,11 +64,13 @@ pub enum SettingsFieldUpdate {
     GeneralSidebarWidth {
         value: Option<u16>,
     },
-    GeneralPinnedThreadIds {
-        value: Vec<String>,
+    ThreadPinned {
+        id: String,
+        value: bool,
     },
-    GeneralPinnedProjectIds {
-        value: Vec<String>,
+    ProjectPinned {
+        id: String,
+        value: bool,
     },
     WebSearchMode {
         value: String,
@@ -128,7 +131,6 @@ pub enum SettingsFieldUpdate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateSettingsFieldRequest {
     pub operation_id: String,
-    pub expected_revision: u64,
     pub update: SettingsFieldUpdate,
 }
 
@@ -136,7 +138,6 @@ pub struct UpdateSettingsFieldRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdatePermissionSettingsRequest {
     pub operation_id: String,
-    pub expected_revision: u64,
     pub mode: String,
 }
 
@@ -148,7 +149,6 @@ pub struct UpdatePermissionSettingsRequest {
 pub struct SetThreadModelRouteRequest {
     pub operation_id: String,
     pub expected_model_route_revision: u64,
-    pub expected_settings_revision: u64,
     pub account_id: String,
     pub model_id: String,
     pub effort: Option<String>,

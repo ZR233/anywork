@@ -1456,8 +1456,6 @@ pub enum ThreadError {
     StaleRuntimeBundle,
     #[error("runtime resource installation failed: {0}")]
     RuntimeInstallation(#[source] Arc<ThreadError>),
-    #[error("extension sequence conflict: expected {expected}, actual {actual}")]
-    ExtensionSequenceConflict { expected: u64, actual: u64 },
     #[error("model output does not match the admitted request")]
     InvalidOutput,
     #[error(transparent)]

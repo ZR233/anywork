@@ -28,13 +28,11 @@ Future<BridgeAgentProfilesStateSnapshot> readAgentProfilesState() => RustLib
 /// Enables or disables an immutable built-in Agent Profile.
 Future<BridgeSettingsCommandReply> setSystemAgentEnabled({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   required String profileId,
   required bool enabled,
 }) => RustLib.instance.api
     .crateApiStudioHandlersAgentProfilesSetSystemAgentEnabled(
       operationId: operationId,
-      expectedSettingsRevision: expectedSettingsRevision,
       profileId: profileId,
       enabled: enabled,
     );
@@ -42,7 +40,7 @@ Future<BridgeSettingsCommandReply> setSystemAgentEnabled({
 /// Atomically creates or replaces one user Agent Profile TOML file.
 Future<BridgeSettingsCommandReply> saveUserAgentProfile({
   required String operationId,
-  required BigInt expectedSettingsRevision,
+  String? expectedDocumentRevision,
   required String profileId,
   required bool enabled,
   required String displayName,
@@ -53,7 +51,7 @@ Future<BridgeSettingsCommandReply> saveUserAgentProfile({
 }) => RustLib.instance.api
     .crateApiStudioHandlersAgentProfilesSaveUserAgentProfile(
       operationId: operationId,
-      expectedSettingsRevision: expectedSettingsRevision,
+      expectedDocumentRevision: expectedDocumentRevision,
       profileId: profileId,
       enabled: enabled,
       displayName: displayName,

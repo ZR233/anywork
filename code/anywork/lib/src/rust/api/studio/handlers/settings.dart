@@ -28,11 +28,9 @@ Future<BridgeDeepSeekWebSearchSettingsDto> readDeepseekWebSearchSettings() =>
 /// resolved by the runtime from its canonical desired configuration.
 Future<BridgeSettingsCommandReply> applySettingsField({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   required SettingsFieldInput input,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsApplySettingsField(
   operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
   input: input,
 );
 
@@ -54,13 +52,11 @@ Future<BridgeSettingsCommandReply> removeAccountModel({
 /// Changes only the unified enabled field of one exact catalog member.
 Future<BridgeSettingsCommandReply> setAccountModelEnabled({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   required String accountId,
   required String modelId,
   required bool enabled,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsSetAccountModelEnabled(
   operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
   accountId: accountId,
   modelId: modelId,
   enabled: enabled,
@@ -69,12 +65,10 @@ Future<BridgeSettingsCommandReply> setAccountModelEnabled({
 /// `None` explicitly clears the override; explicit Unknown is a distinct intent.
 Future<BridgeSettingsCommandReply> setAccountBillingKind({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   required String accountId,
   BridgeBillingKind? billingKind,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsSetAccountBillingKind(
   operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
   accountId: accountId,
   billingKind: billingKind,
 );
@@ -87,12 +81,10 @@ Future<BridgeSettingsStateResponse> reloadSettingsFromDisk({
 
 Future<BridgeSettingsCommandReply> saveRuntimePermissionMode({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   required String mode,
 }) => RustLib.instance.api
     .crateApiStudioHandlersSettingsSaveRuntimePermissionMode(
       operationId: operationId,
-      expectedSettingsRevision: expectedSettingsRevision,
       mode: mode,
     );
 

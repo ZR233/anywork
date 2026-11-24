@@ -225,6 +225,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 "expectedRevision": expected,
                 "actualRevision": actual,
             })),
+            ConfigRuntimeError::ProfileConflict(_) => StudioError::new(StudioErrorCode::StaleRevision, error.to_string(), false),
             ConfigRuntimeError::Core(error) => pure_error(error),
             ConfigRuntimeError::BundledAgentCatalog(_) => StudioError::internal(),
             ConfigRuntimeError::ModeDefinitions(error) => StudioError::new(

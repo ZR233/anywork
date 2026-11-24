@@ -122,9 +122,10 @@ class SkillsExternalDirsCommand extends SettingsFieldCommand {
   final List<String> value;
 }
 
-class SkillsDisabledCommand extends SettingsFieldCommand {
-  const SkillsDisabledCommand(this.value);
-  final List<String> value;
+class SkillDisabledCommand extends SettingsFieldCommand {
+  const SkillDisabledCommand(this.id, this.value);
+  final String id;
+  final bool value;
 }
 
 class SkillsAutoLearnMinToolCallsCommand extends SettingsFieldCommand {
@@ -152,14 +153,16 @@ class GeneralSidebarWidthCommand extends SettingsFieldCommand {
   final int? value;
 }
 
-class GeneralPinnedThreadIdsCommand extends SettingsFieldCommand {
-  const GeneralPinnedThreadIdsCommand(this.value);
-  final List<String> value;
+class ThreadPinnedCommand extends SettingsFieldCommand {
+  const ThreadPinnedCommand(this.id, this.value);
+  final String id;
+  final bool value;
 }
 
-class GeneralPinnedProjectIdsCommand extends SettingsFieldCommand {
-  const GeneralPinnedProjectIdsCommand(this.value);
-  final List<String> value;
+class ProjectPinnedCommand extends SettingsFieldCommand {
+  const ProjectPinnedCommand(this.id, this.value);
+  final String id;
+  final bool value;
 }
 
 class WebSearchModeCommand extends SettingsFieldCommand {

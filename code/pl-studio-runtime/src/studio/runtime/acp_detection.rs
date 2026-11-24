@@ -743,7 +743,6 @@ sys.stderr.flush()
         assert_eq!(fixture.calls().len(), 2, "same operation must not restart");
         fixture.runtime.save_acp_account(UpdateAcpAccountRequest {
             operation_id: "save-local-entry".into(),
-            expected_revision: fixture.runtime.config_runtime.read()?.revision,
             expected_document_revision: None,
             account: AcpAccountUpdate {
                 account_id: "local-entry".into(),

@@ -831,7 +831,6 @@ impl Observation<'_> {
                 .http()?
                 .update_settings_field(&UpdateSettingsFieldRequest {
                     operation_id: format!("agent-empty-route-{role}"),
-                    expected_revision: current.config.revision,
                     update: SettingsFieldUpdate::RoleModel {
                         role: role.clone(),
                         account_id: config::CHILD_ACCOUNT.into(),
@@ -865,7 +864,6 @@ impl Observation<'_> {
             .http()?
             .update_settings_field(&UpdateSettingsFieldRequest {
                 operation_id: "agent-base-override".into(),
-                expected_revision: current.config.revision,
                 update: SettingsFieldUpdate::InstructionBaseOverride {
                     value: value.into(),
                 },

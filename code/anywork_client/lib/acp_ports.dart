@@ -11,13 +11,11 @@ abstract interface class AcpPort {
   });
   Future<AcpAccountCatalogView> loadAcpAccountCatalog();
   Future<SettingsCommandReply> saveAcpAccount(
-    int revision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
     required BigInt? expectedDocumentRevision,
   });
   Future<SettingsCommandReply> removeAcpAccount(
-    int revision,
     String accountId, {
     required OperationId operationId,
     required BigInt expectedDocumentRevision,

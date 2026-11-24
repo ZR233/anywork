@@ -81,7 +81,7 @@ impl ConfigRuntime {
                 .ok_or_else(|| thread_mode_not_found(mode_id))?
         };
         Ok(ThreadModeDefinitionSnapshot {
-            revision: snapshot.catalog().revision,
+            revision: document_revision(&document)?,
             document,
             read_only: descriptor.read_only,
         })
@@ -98,7 +98,6 @@ impl ConfigRuntime {
             .map_err(|_| mode_config_error("ConfigRuntime command lock is poisoned"))?;
         self.ensure_mode_command_open()?;
         let current = self.modes.snapshot();
-        ensure_mode_revision(expected_revision, current.catalog().revision)?;
         let mode_id = document.definition.id.clone();
         if current
             .mode(&mode_id)
@@ -135,6 +134,7 @@ impl ConfigRuntime {
         }
         let previous = read_optional(&path)?;
         fs::create_dir_all(self.store.paths().modes_dir())?;
+        check_document_version(&path, previous.as_deref(), expected_revision)?;
         if previous.as_deref() != Some(bytes.as_slice()) {
             pl_tool::workspace::write_file_atomically(&path, &bytes)?;
         }
@@ -143,7 +143,7 @@ impl ConfigRuntime {
                 changed: false,
                 catalog: current.catalog().clone(),
                 definition: Some(ThreadModeDefinitionSnapshot {
-                    revision: current.catalog().revision,
+                    revision: document_revision(&canonical)?,
                     document: canonical,
                     read_only: false,
                 }),
@@ -165,7 +165,7 @@ impl ConfigRuntime {
         Ok(ModeDefinitionCommandOutcome {
             changed: true,
             definition: Some(ThreadModeDefinitionSnapshot {
-                revision: catalog.revision,
+                revision: document_revision(&canonical)?,
                 document: canonical,
                 read_only: false,
             }),
@@ -184,7 +184,6 @@ impl ConfigRuntime {
             .map_err(|_| mode_config_error("ConfigRuntime command lock is poisoned"))?;
         self.ensure_mode_command_open()?;
         let current = self.modes.snapshot();
-        ensure_mode_revision(expected_revision, current.catalog().revision)?;
         let mode = current
             .mode(mode_id)
             .ok_or_else(|| thread_mode_not_found(mode_id))?;
@@ -206,6 +205,7 @@ impl ConfigRuntime {
         }
         let path = mode_path(self.store.paths(), mode_id)?;
         let previous = read_optional(&path)?;
+        check_document_version(&path, previous.as_deref(), expected_revision)?;
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -401,6 +401,31 @@ fn restore_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
         },
     }
     Ok(())
+}
+
+fn document_revision(document: &ThreadModeDocument) -> Result<u64> {
+    // The JSON API also serves JavaScript clients. Keep the opaque version exactly representable.
+    Ok((crate::config::document_revision(
+        document.definition.id.as_str(),
+        &serde_json::to_vec(document)?,
+    ) & ((1_u64 << 53) - 1))
+        .max(1))
+}
+
+fn check_document_version(path: &Path, previous: Option<&[u8]>, expected: u64) -> Result<()> {
+    let actual = match previous {
+        None => 0,
+        Some(bytes) => {
+            let json = std::str::from_utf8(bytes)?;
+            let result = crate::mode::validate_mode_json(json);
+            document_revision(
+                &result
+                    .document
+                    .ok_or_else(|| mode_file_validation_error(path, result.issues))?,
+            )?
+        }
+    };
+    ensure_mode_revision(expected, actual)
 }
 
 fn ensure_mode_revision(expected: u64, actual: u64) -> Result<()> {

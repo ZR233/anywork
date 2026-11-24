@@ -1928,7 +1928,6 @@ mod tests {
     async fn acp_account_http_input_preserves_sources_launch_literals_and_document_cas() {
         let request = extract::<UpdateAcpAccountRequest>(serde_json::json!({
             "operationId": "save-op",
-            "expectedRevision": 6,
             "expectedDocumentRevision": 19,
             "account": {
                 "accountId": "custom-agent",
@@ -1943,7 +1942,6 @@ mod tests {
         .await
         .unwrap_or_else(|_| panic!("valid generic account rejected"));
         assert_eq!(request.operation_id, "save-op");
-        assert_eq!(request.expected_revision, 6);
         assert_eq!(request.expected_document_revision, Some(19));
         assert_eq!(request.account.template, None);
         assert_eq!(request.account.command.as_deref(), Some("/a path/agent"));
@@ -1956,7 +1954,6 @@ mod tests {
 
         let managed = extract::<UpdateAcpAccountRequest>(serde_json::json!({
             "operationId": "create-op",
-            "expectedRevision": 7,
             "expectedDocumentRevision": null,
             "account": {
                 "accountId": "managed",
@@ -1973,7 +1970,6 @@ mod tests {
 
         let remove = extract::<RemoveAcpAccountRequest>(serde_json::json!({
             "operationId": "remove-op",
-            "expectedRevision": 8,
             "accountId": "custom-agent",
             "expectedDocumentRevision": 19
         }))

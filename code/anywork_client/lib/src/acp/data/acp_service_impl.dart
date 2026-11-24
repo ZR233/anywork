@@ -448,8 +448,7 @@ final class AcpServiceImpl implements AcpService {
       targets: {
         'settings': AccountDetailTarget(AcpAccountIdentity(account.accountId)),
       },
-      request: (revision, operation) => port.saveAcpAccount(
-        revision,
+      request: (_, operation) => port.saveAcpAccount(
         frozen,
         operationId: operation,
         expectedDocumentRevision: expectedDocumentRevision,
@@ -468,8 +467,7 @@ final class AcpServiceImpl implements AcpService {
     return mutations.run(
       key: 'account:acp:${identity.accountId}',
       targets: {'settings': AccountDetailTarget(identity)},
-      request: (revision, operation) => port.removeAcpAccount(
-        revision,
+      request: (_, operation) => port.removeAcpAccount(
         identity.accountId,
         operationId: operation,
         expectedDocumentRevision: documentRevision,

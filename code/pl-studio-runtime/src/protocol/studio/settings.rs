@@ -180,7 +180,6 @@ pub struct RemoveAccountModelRequest {
 pub struct SetAccountModelEnabledRequest {
     /// 调用方操作身份；回执原样携带同一个 ID，不能由服务端生成或替换。
     pub operation_id: String,
-    pub expected_revision: u64,
     pub account_id: String,
     pub model_id: String,
     pub enabled: bool,
@@ -257,7 +256,6 @@ impl<'de> Deserialize<'de> for BillingKindIntent {
 pub struct SetAccountBillingKindRequest {
     /// 调用方操作身份；回执原样携带同一个 ID，不能由服务端生成或替换。
     pub operation_id: String,
-    pub expected_revision: u64,
     pub account_id: String,
     /// 字段必须出现：`null` 表示清除覆盖并恢复推导，具体类别表示显式覆盖；缺失字段是
     /// 非法请求。schema 因此把它列为 `required` 并允许 `null` 值。

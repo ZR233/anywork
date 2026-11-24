@@ -1332,9 +1332,6 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       operationId: operationId,
       threadId: threadId,
       expectedModelRouteRevision: route.revision,
-      expectedSettingsRevision:
-          _client.settingsWrites.stamp?.revision ??
-          _client.settings.state.settingsRevision,
       accountId: accountId,
       modelId: modelId,
       effort: effort ?? target.reasoningEfforts.firstOrNull,
