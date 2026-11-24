@@ -5,7 +5,7 @@ use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaMana
 
 pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 27;
 
-pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
+pub(super) async fn admit(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
     if version == 0 {
         ensure!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1")).await?.is_none(), "unversioned nonempty Studio database; existing data preserved");
@@ -57,12 +57,30 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
         !pending.is_empty() || version == STUDIO_DATABASE_SCHEMA_VERSION,
         "Studio format conflicts with completed migrations; existing data preserved"
     );
+    Ok(())
+}
+
+pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
+    admit(db).await?;
     crate::studio::storage::sqlite_util::preflight_sqlite(
         db,
         "Studio database integrity check failed",
     )
-    .await?;
-    Ok(())
+    .await
+}
+
+pub(super) async fn load_legacy_retirements(
+    db: &DatabaseConnection,
+) -> Result<std::collections::BTreeSet<String>> {
+    db.query_all_raw(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "SELECT owner_id FROM studio_objects \
+         WHERE owner_kind='thread' AND object_kind='agentRetirement'",
+    ))
+    .await?
+    .into_iter()
+    .map(|row| row.try_get("", "owner_id").map_err(Into::into))
+    .collect()
 }
 
 pub(super) async fn migrate(db: &DatabaseConnection) -> Result<()> {

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::NewThreadModelRoute;
 use crate::{AcpAgentConfig, AgentBinding, NativeAgentConfig};
@@ -264,7 +265,11 @@ impl ProfileV3 {
     }
 }
 
-fn migrator() -> Result<Migrator> {
+fn migrator() -> Result<&'static Migrator> {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    if let Some(migrator) = MIGRATOR.get() {
+        return Ok(migrator);
+    }
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -277,35 +282,42 @@ fn migrator() -> Result<Migrator> {
                 .into::<ProfileV3>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
-    Ok(migrator)
+    Ok(MIGRATOR.get_or_init(|| migrator))
+}
+
+fn current_version() -> Result<u32> {
+    toml_schema::integer_version(ProfileV3::VERSION)
+        .map_err(|error| toml_schema::chain_error(ENTITY, error))
 }
 
 pub(crate) fn load_profile(path: &Path, content: &str) -> Result<LoadedDocument<ProfileV3>> {
-    let migrator = migrator()?;
-    let mut value = toml_schema::parse(path, content, ENTITY, 3)?;
-    if value.contains_key(VERSION_KEY) {
-        return toml_schema::load::<ProfileV1, ProfileV3>(
-            path,
-            content,
-            &migrator,
-            ENTITY,
-            VERSION_KEY,
-        );
+    let target = current_version()?;
+    let mut value = toml_schema::parse(path, content, ENTITY, target)?;
+    if !value.contains_key(VERSION_KEY) {
+        value.insert(VERSION_KEY.into(), "0.0.0".into());
+        let document = migrator()?.load_flat_from(ENTITY, value).map_err(|error| {
+            toml_schema::migration_error(path, ENTITY, None, target, "import", error)
+        })?;
+        return Ok(LoadedDocument {
+            document,
+            source_version: 0,
+            migrated: true,
+        });
     }
-    value.insert(VERSION_KEY.into(), "0.0.0".into());
-    let document = migrator
-        .load_flat_from(ENTITY, value)
-        .map_err(|error| toml_schema::migration_error(path, ENTITY, None, 3, "import", error))?;
-    Ok(LoadedDocument {
-        document,
-        source_version: 0,
-        migrated: true,
-    })
+    if toml_schema::integer_header(&value, VERSION_KEY) == Some(target) {
+        let document = toml_schema::decode_current_table(path, value, ENTITY, VERSION_KEY)?;
+        return Ok(LoadedDocument {
+            document,
+            source_version: target,
+            migrated: false,
+        });
+    }
+    toml_schema::load_table::<ProfileV1, ProfileV3>(path, value, migrator()?, ENTITY, VERSION_KEY)
 }
 
 pub(in crate::config) fn load_current(path: &Path, content: &str) -> Result<ProfileV3> {
-    toml_schema::load::<ProfileV3, ProfileV3>(path, content, &migrator()?, ENTITY, VERSION_KEY)
-        .map(|loaded| loaded.document)
+    current_version()?;
+    toml_schema::decode_current(path, content, ENTITY, VERSION_KEY)
 }
 
 const fn enabled() -> bool {

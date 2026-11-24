@@ -291,6 +291,8 @@ impl StudioThreadFactory {
             }
             crate::instruction::migrate_saved_representation(&mut state, &saved_identity)
                 .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
+            crate::plan_tool::migrate_saved_plan(&mut state)
+                .map_err(|error| resource_error("migrate saved plan", error))?;
             debug_assert!(
                 state.extensions.contains_key("studio.mode"),
                 "saved Mode migration preserved its identity"

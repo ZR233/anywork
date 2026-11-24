@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 pub const PLAN_EXTENSION: &str = "studio.plan";
 const FORMAT: &str = "pl.studio.plan";
+const PLAN_PAYLOAD_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 enum PlanPayloadError {
@@ -43,25 +44,72 @@ pub fn encode_plan_state(state: &AgentSessionPlanState) -> Result<OpaquePayload,
     crate::plan_tool::state::validate_session_state_size(state).map_err(ToolError::new)?;
     OpaquePayload::new(
         FORMAT,
-        1,
+        PLAN_PAYLOAD_VERSION,
         serde_json::to_string(state).map_err(ToolError::new)?,
     )
     .map_err(ToolError::new)
 }
 
-/// Decodes either the current `pl-tool-plan` envelope or pre-unification v1 `studio.plan` JSON.
+/// Decodes the current `pl.studio.plan` payload.
+///
+/// Version 1, including the pre-unification shape, is accepted only by [`migrate_plan_payload`].
 ///
 /// # Errors
-/// Rejects unknown payload formats, corrupt plan state, and excessive content.
+/// Rejects unknown payload formats, obsolete versions, corrupt plan state, and excessive content.
 pub fn decode_plan_state(payload: &OpaquePayload) -> Result<AgentSessionPlanState, ToolError> {
-    if payload.format() != FORMAT || payload.version() != 1 {
+    if payload.format() != FORMAT || payload.version() != PLAN_PAYLOAD_VERSION {
         return Err(ToolError::new(PlanPayloadError::Unsupported {
             format: payload.format().into(),
             version: payload.version(),
         }));
     }
-    let state: AgentSessionPlanState = if let Ok(value) =
-        serde_json::from_str::<serde_json::Value>(payload.content())
+    let state = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    crate::plan_tool::state::validate_session_state_size(&state).map_err(ToolError::new)?;
+    Ok(state)
+}
+
+/// Upgrades a saved version-1 plan payload at the recovery migration boundary.
+///
+/// Current payloads are returned unchanged. A version-1 payload is re-encoded as version 2;
+/// the pre-unification shape is converted only here.
+///
+/// # Errors
+/// Rejects an unsupported plan version or a payload that cannot be converted.
+pub fn migrate_plan_payload(payload: &OpaquePayload) -> anyhow::Result<Option<OpaquePayload>> {
+    if payload.format() != FORMAT {
+        return Ok(None);
+    }
+    if payload.version() == PLAN_PAYLOAD_VERSION {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        payload.version() == 1,
+        "unsupported plan payload {} version {}",
+        payload.format(),
+        payload.version()
+    );
+    let state = decode_saved_v1(payload).map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(Some(
+        encode_plan_state(&state).map_err(|error| anyhow::anyhow!("{error}"))?,
+    ))
+}
+
+/// Rewrites a saved `studio.plan` extension in place. Missing plans are left absent.
+///
+/// # Errors
+/// Rejects an unsupported plan version or a payload that cannot be converted.
+pub fn migrate_saved_plan(state: &mut pl_core::thread::ThreadSnapshot) -> anyhow::Result<()> {
+    let Some(record) = state.extensions.get_mut(PLAN_EXTENSION) else {
+        return Ok(());
+    };
+    if let Some(current) = migrate_plan_payload(&record.payload)? {
+        record.payload = current;
+    }
+    Ok(())
+}
+
+fn decode_saved_v1(payload: &OpaquePayload) -> Result<AgentSessionPlanState, ToolError> {
+    let state = if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload.content())
         && value.get("plan").is_none()
         && (value.get("state").is_some()
             || value.get("revision").is_some()
@@ -463,5 +511,41 @@ mod argument_tests {
             );
         }
         tool.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use pl_core::context::OpaquePayload;
+
+    #[test]
+    fn version_one_legacy_shape_migrates_once_and_hot_decode_rejects_it() {
+        let saved = OpaquePayload::new(
+            FORMAT,
+            1,
+            r#"{"revision":4,"state":"approved","document":{"version":2,"markdown":"keep","contentHash":"abc"},"updatedAt":9}"#,
+        )
+        .unwrap();
+        assert!(decode_plan_state(&saved).is_err());
+        let current = migrate_plan_payload(&saved).unwrap().unwrap();
+        assert_eq!(current.version(), PLAN_PAYLOAD_VERSION);
+        let state = decode_plan_state(&current).unwrap();
+        assert_eq!(state.plan.revision, 4);
+        assert_eq!(state.plan.state, PlanState::Approved);
+        assert_eq!(state.plan.updated_at_ms, 9_000);
+        let document = state.plan.document.unwrap();
+        assert_eq!(document.revision, 2);
+        assert_eq!(document.content, "keep");
+        assert_eq!(document.hash, "abc");
+        assert!(migrate_plan_payload(&current).unwrap().is_none());
+    }
+
+    #[test]
+    fn version_one_current_shape_is_rewrapped_without_changing_fields() {
+        let state = AgentSessionPlanState::with_document(PlanState::Drafting, 3, "body", 1_000);
+        let saved = OpaquePayload::new(FORMAT, 1, serde_json::to_string(&state).unwrap()).unwrap();
+        let current = migrate_plan_payload(&saved).unwrap().unwrap();
+        assert_eq!(decode_plan_state(&current).unwrap(), state);
     }
 }

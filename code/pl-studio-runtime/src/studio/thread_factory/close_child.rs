@@ -20,11 +20,7 @@ impl StudioThreadFactory {
     ) -> Result<AgentCloseRecord> {
         self.validate_child_close_association(thread).await?;
         ensure!(
-            !self
-                .services
-                .store
-                .has_legacy_retirement(&thread.id)
-                .await?,
+            !self.services.store.has_legacy_retirement(&thread.id),
             "old unpublished retirement facts require explicit recovery; original data preserved"
         );
         if let Some(mut record) = self.services.store.agent_close(&thread.id).await? {

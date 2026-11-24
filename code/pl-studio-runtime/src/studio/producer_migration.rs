@@ -52,6 +52,9 @@ pub(crate) fn replace_payload(saved: &mut RawObject, payload: &OpaquePayload) ->
 }
 
 pub(crate) fn normalize(payload: &OpaquePayload) -> Result<Option<OpaquePayload>> {
+    if payload.format() == "pl.studio.plan" {
+        return crate::plan_tool::migrate_plan_payload(payload);
+    }
     let (content, current) = match payload.format() {
         "pl.studio.auxiliary-billing" => (
             migrate_auxiliary(payload.version(), payload.content())?,

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -65,6 +66,7 @@ impl StudioStore {
             attachment_lock: Default::default(),
             history_admission: Default::default(),
             paths,
+            legacy_retirements: Default::default(),
             _memory_home: Some(std::sync::Arc::new(home)),
         };
         Ok(store)
@@ -106,9 +108,6 @@ impl StudioStore {
         };
         if installation == InstallationState::Existing {
             for (path, name) in [
-                (paths.catalog_file(), "catalog.toml"),
-                (paths.settings_file(), "settings.toml"),
-                (paths.workspaces_file(), "workspaces.toml"),
                 (paths.database(), "studio.sqlite"),
                 (paths.calls_database(), "calls/calls.sqlite"),
             ] {
@@ -135,15 +134,19 @@ impl StudioStore {
         .await?;
         let initialization = async {
             migrate(&db).await?;
-            validate_database(&db).await
+            validate_database(&db).await?;
+            super::schema::load_legacy_retirements(&db).await
         }
         .await;
-        if let Err(error) = initialization {
-            return Err(match db.close().await {
-                Ok(()) => error.context("Studio database initialization failed"),
-                Err(cleanup) => crate::studio::startup::cleanup_error(cleanup).context(error),
-            });
-        }
+        let legacy_retirements = match initialization {
+            Ok(ids) => std::sync::Arc::new(ids),
+            Err(error) => {
+                return Err(match db.close().await {
+                    Ok(()) => error.context("Studio database initialization failed"),
+                    Err(cleanup) => crate::studio::startup::cleanup_error(cleanup).context(error),
+                });
+            }
+        };
         // Canonical TOML is the only fact source for directory and settings reads. A missing or
         // corrupt document on an installation that already owns state fails startup instead of
         // being replaced by an empty default; no retired SQLite table is read here.
@@ -181,6 +184,7 @@ impl StudioStore {
             attachment_lock: Default::default(),
             history_admission: Default::default(),
             paths,
+            legacy_retirements,
             _memory_home: None,
         };
         Ok(store)
@@ -438,7 +442,7 @@ async fn connect_read_only_database(path: &Path) -> Result<DatabaseConnection> {
 async fn inspect_database(path: &Path) -> Result<()> {
     let database = connect_read_only_database(path).await?;
     let version = async {
-        super::schema::preflight(&database).await?;
+        super::schema::admit(&database).await?;
         database_schema_version(&database).await
     }
     .await;
@@ -485,23 +489,6 @@ async fn validate_database_version(db: &DatabaseConnection, expected_version: i6
         .into());
     }
 
-    let rows = db
-        .query_all_raw(Statement::from_string(
-            DatabaseBackend::Sqlite,
-            "PRAGMA quick_check".to_string(),
-        ))
-        .await?;
-    let results = rows
-        .into_iter()
-        .map(|row| row.try_get::<String>("", "quick_check"))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    if results.as_slice() != ["ok"] {
-        return Err(StudioDatabaseError::CorruptDatabase {
-            reason: results.join("; "),
-        }
-        .into());
-    }
-
     let actual = schema_fingerprint(db).await?;
     let expected = expected_schema_fingerprint().await?;
     if actual != expected {
@@ -525,11 +512,16 @@ async fn database_schema_version(db: &impl sea_orm::ConnectionTrait) -> Result<i
 }
 
 async fn expected_schema_fingerprint() -> Result<String> {
+    static FINGERPRINT: OnceLock<String> = OnceLock::new();
+    if let Some(fingerprint) = FINGERPRINT.get() {
+        return Ok(fingerprint.clone());
+    }
     let database = connect_memory().await?;
     migrate(&database).await?;
     let fingerprint = schema_fingerprint(&database).await;
     database.close().await?;
-    fingerprint
+    let fingerprint = fingerprint?;
+    Ok(FINGERPRINT.get_or_init(|| fingerprint).clone())
 }
 
 async fn schema_fingerprint(db: &DatabaseConnection) -> Result<String> {

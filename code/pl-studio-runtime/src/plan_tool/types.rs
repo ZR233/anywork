@@ -174,7 +174,7 @@ impl From<&PlanSnapshot> for AgentSessionPlanRuntimeSnapshot {
     }
 }
 
-/// Legacy pre-unification persisted `studio.plan` JSON shape supported on read paths.
+/// Pre-unification `studio.plan` JSON. Decoded only while migrating a version-1 payload.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LegacyAgentSessionPlanState {

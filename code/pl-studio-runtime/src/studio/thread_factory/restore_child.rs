@@ -114,6 +114,8 @@ impl StudioThreadFactory {
         let mut migrated = current.state.to_paused_snapshot();
         crate::instruction::migrate_saved_representation(&mut migrated, &saved_identity)
             .map_err(|error| resource_error("migrate saved child instructions", error))?;
+        crate::plan_tool::migrate_saved_plan(&mut migrated)
+            .map_err(|error| resource_error("migrate saved child plan", error))?;
         current.state.extensions = migrated.extensions;
         current.state.extension_sequence = migrated.extension_sequence;
         let restored = current.state.to_paused_snapshot();
