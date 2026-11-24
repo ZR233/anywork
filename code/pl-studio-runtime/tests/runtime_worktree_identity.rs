@@ -478,12 +478,13 @@ async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Re
             );
             let expected = lease_fact(&env.home, &id, legacy).await?;
 
-            // The cold parent uses its actual send_message tool. No child subscription or
-            // Runtime ensure_thread_owner call can mask a missing factory confirmation.
-            let replacement = pl_provider_fixture::FixtureServer::start(vec![
+            // Keep the provider identity stable across the cold restart. The next
+            // reply needs the actual child ID to exercise factory confirmation
+            // through the parent's send_message tool.
+            env.root_provider.extend_script(vec![
                 prompt_step(
                     "cold-resume-parent",
-                    0,
+                    2,
                     support::tool_reply(
                         "send_message",
                         "cold-send",
@@ -494,28 +495,15 @@ async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Re
                     Protocol::ResponsesHttp,
                     "cold-send",
                     "sequence",
-                    1,
+                    3,
                     held_reply(&parent_resumed, "cold-parent-resumed"),
                 ),
-            ])
-            .await?;
-            let old = std::mem::replace(&mut env.root_provider, replacement);
-            old.finish().await?;
-            let config_store = pl_studio_runtime::config::ConfigStore::new(
-                pl_studio_runtime::config::ConfigPaths::from_config_dir(&env.home),
-            );
-            let mut config = config_store.load()?;
-            config
-                .models
-                .accounts
-                .get_mut(&pl_model::config::AccountId::new("root-fixture")?)
-                .context("root fixture account")?
-                .base_url = env.root_provider.base_url();
-            config_store.save(&config)?;
+            ]);
             env.restart().await?;
             recovery_ready(&env.runtime).await?;
             ensure!(
-                env.root_provider.recorded().is_empty() && env.child_provider.recorded().len() == 1,
+                env.root_provider.live_status().total == 2
+                    && env.child_provider.live_status().total == 1,
                 "restart or Recovery Retry resumed model execution"
             );
             ensure!(
@@ -565,8 +553,12 @@ async fn parent_send_confirms_cold_clean_dirty_and_legacy_child_bindings() -> Re
                     },
                 )
                 .await?;
-            reached(&child_resumed).await?;
-            reached(&parent_resumed).await?;
+            reached(&child_resumed)
+                .await
+                .context("child did not resume after the parent's send_message")?;
+            reached(&parent_resumed)
+                .await
+                .context("parent did not receive the send_message result")?;
             let send = support::receipt(&env.root_provider, "cold-send")?;
             ensure!(send["target"] == id && send["sequence"].as_u64().is_some());
             let confirmed = lease_fact(&env.home, &id, false).await?;
