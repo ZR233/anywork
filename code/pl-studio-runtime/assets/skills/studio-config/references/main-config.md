@@ -160,7 +160,14 @@ selections or explicit compaction overrides.
 
 The built-in Google Gemini templates use native Gemini REST (`protocol = "gemini"`,
 wire API `gemini_generate_content`, credential header `x-goog-api-key`) and recommend
-`gemini-3.7-flash` (`medium` effort, 1M context, image/PDF/text inline input):
+`gemini-4-hydrogen` (`high` effort, 1M unified context, `512,000` default automatic compaction
+threshold, image/PDF/text inline input).
+The bundled catalog includes the Gemini 4 series: `gemini-4-hydrogen` and `gemini-4-neon`
+(default `high`; support `low`, `medium`, `high`, `xhigh`), plus `gemini-4-argon` and
+`gemini-4-carbon` (default `medium`; support `low`, `medium`, `high`). All four models default
+to a `512,000`-token automatic compaction threshold (overridable per account/model up to 90% of
+the 1M context window, i.e. `943,718`). None of the Gemini 4 models support `minimal`, and
+official Google endpoints use implicit prefix caching:
 
 - `vertex-ai`: Google Cloud Vertex AI Gemini (`base_url = "https://aiplatform.googleapis.com/v1/publishers/google"`,
   `bearer_token_env = "GCP_API_KEY"`, catalog `"vertex-ai"`). Vertex AI API Keys do not
@@ -246,7 +253,7 @@ Enablement cannot create an unknown model or bypass capability/credential
 validation. Model IDs and metadata are account-local.
 
 `[models.accounts.<id>.catalog.auto_compact_overrides]` maps model IDs to positive
-integer thresholds up to 90% of the known maximum context (inclusive, rounded down). Removing the key restores the current automatic value. The automatic default takes 90% of the provider’s `context_window` (or `max_context_window` if absent) and caps it at the provider’s explicit `auto_compact_token_limit` when supplied. Unknown context and prices can be omitted.
+integer thresholds up to 90% of the known maximum context (inclusive, rounded down). Removing the key restores the current automatic value across all protocols (Gemini, OpenAI, and compatible endpoints). For bundled models and members matching an account’s bundled catalog ID, the automatic default takes 90% of the provider’s `context_window` (or `max_context_window` if absent) and caps it at `auto_compact_token_limit` when supplied. For online models without a bundled counterpart and unbundled manual models, an omitted `auto_compact_token_limit` defaults to `min(256000, floor(window * 90%))` when context is declared (or stays disabled if 90% floors to `0`) and `256000` when context is unknown, without writing the fallback into `config.toml`; an explicit `auto_compact_token_limit` is still honored (capped at 90% when context is known). Unknown context and prices can be omitted.
 
 ## Credentials
 

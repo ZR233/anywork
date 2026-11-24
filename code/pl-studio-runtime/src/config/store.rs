@@ -1669,8 +1669,8 @@ catalog = "vertex-ai"
 
 [mode_model_routes."mode.auto"]
 account_id = "vertex"
-model_id = "gemini-3.7-flash"
-effort = "medium"
+model_id = "gemini-4-hydrogen"
+effort = "high"
 "#;
         let cli = ConfigStore::for_cli(directory.path());
         fs::write(cli.paths.config_file(), toml).unwrap();

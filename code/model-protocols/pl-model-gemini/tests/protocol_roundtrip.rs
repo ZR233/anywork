@@ -16,7 +16,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
     let model = bundled
         .models
         .iter()
-        .find(|m| m.base.slug == "gemini-3.7-flash")
+        .find(|m| m.base.slug == "gemini-4-hydrogen")
         .unwrap()
         .clone();
     let ep = endpoint::vertex_endpoint(None);
@@ -35,7 +35,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
             output_schema: None,
         }])
         .reasoning(Some(ReasoningConfig {
-            effort: Some("high".into()),
+            effort: Some("xhigh".into()),
             summary: None,
         }))
         .build();
@@ -118,7 +118,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
-        model: "gemini-3.7-flash".into(),
+        model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
     };
@@ -169,12 +169,12 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
 
     assert_eq!(
         prepared.path_and_query,
-        "/models/gemini-3.7-flash:streamGenerateContent?alt=sse"
+        "/models/gemini-4-hydrogen:streamGenerateContent?alt=sse"
     );
     assert!(prepared.body.get("model").is_none());
     assert_eq!(
         prepared.body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
-        "high"
+        "xhigh"
     );
     assert_eq!(
         prepared.body["generationConfig"]["thinkingConfig"]["includeThoughts"],
@@ -211,7 +211,7 @@ fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
     let mut collector = ReplayCollector::default();
 
     let frames = [
-        r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Let me think.","thought":true}]}}],"usageMetadata":{"trafficType":"ON_DEMAND"},"modelVersion":"gemini-3-flash-preview","responseId":"resp-1"}"#,
+        r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Let me think.","thought":true}]}}],"usageMetadata":{"trafficType":"ON_DEMAND"},"modelVersion":"gemini-4-hydrogen","responseId":"resp-1"}"#,
         r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello!"}]}}]}"#,
         r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"","thoughtSignature":"SIG_TAIL"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"totalTokenCount":22}}"#,
     ];
@@ -267,7 +267,7 @@ fn rejects_cross_owner_thought_signature_replay_and_invalid_model_path() {
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
-        model: "gemini-3.7-flash".into(),
+        model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
     };
@@ -304,7 +304,7 @@ fn tool_media_after_function_response_uses_separate_user_turn() {
     let model = bundled
         .models
         .iter()
-        .find(|m| m.base.slug == "gemini-3.7-flash")
+        .find(|m| m.base.slug == "gemini-4-hydrogen")
         .unwrap()
         .clone();
     let ep = endpoint::vertex_endpoint(None);
@@ -342,7 +342,7 @@ fn tool_media_after_function_response_uses_separate_user_turn() {
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
-        model: "gemini-3.7-flash".into(),
+        model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
     };

@@ -82,7 +82,7 @@ abstract final class AccountTemplatePreviewFixtures {
       'xai' => 'grok-4.7',
       'zhipu' || 'zhipu-coding-plan' => 'glm-5.3',
       'mimo-api' || 'mimo-token-plan' => 'mimo-v2.5-pro',
-      'vertex-ai' || 'gemini' => 'gemini-3.7-flash',
+      'vertex-ai' || 'gemini' => 'gemini-4-hydrogen',
       _ => 'my-custom-model',
     };
     return AccountModelPresentation(
@@ -105,28 +105,31 @@ abstract final class AccountTemplatePreviewFixtures {
     if (id == 'vertex-ai' || id == 'gemini') {
       return [
         AccountModelPresentation(
-          key: AccountModelKey(account: key(id), modelId: 'gemini-3.7-flash'),
-          name: 'Gemini 3.7 Flash',
+          key: AccountModelKey(account: key(id), modelId: 'gemini-4-hydrogen'),
+          name: 'Gemini 4 Hydrogen',
           origin: AccountModelOrigin.bundled,
-          summary:
-              'Fast multimodal Gemini reasoning model for coding and tool use.',
+          summary: 'Fast, cost-efficient Gemini 4 multimodal reasoning model for everyday coding and agentic workflows.',
           canToggle: true,
         ),
         AccountModelPresentation(
-          key: AccountModelKey(
-            account: key(id),
-            modelId: 'gemini-3.1-pro-preview',
-          ),
-          name: 'Gemini 3.1 Pro Preview',
+          key: AccountModelKey(account: key(id), modelId: 'gemini-4-neon'),
+          name: 'Gemini 4 Neon',
           origin: AccountModelOrigin.bundled,
-          summary: 'High-capability Gemini 3.1 Pro multimodal reasoning model.',
+          summary: 'Frontier-level Gemini 4 model balancing deep reasoning with fast end-to-end completion.',
           canToggle: true,
         ),
         AccountModelPresentation(
-          key: AccountModelKey(account: key(id), modelId: 'gemini-2.5-flash'),
-          name: 'Gemini 2.5 Flash',
+          key: AccountModelKey(account: key(id), modelId: 'gemini-4-argon'),
+          name: 'Gemini 4 Argon',
           origin: AccountModelOrigin.bundled,
-          summary: 'Balanced Gemini 2.5 Flash model with thinking budget.',
+          summary: 'Efficient Gemini 4 frontier reasoning model with faster responses and lower token spend per turn than Carbon.',
+          canToggle: true,
+        ),
+        AccountModelPresentation(
+          key: AccountModelKey(account: key(id), modelId: 'gemini-4-carbon'),
+          name: 'Gemini 4 Carbon',
+          origin: AccountModelOrigin.bundled,
+          summary: 'Strongest Gemini 4 reasoning model for complex engineering, science, and security.',
           canToggle: true,
         ),
       ];
@@ -266,10 +269,8 @@ abstract final class AccountTemplatePreviewFixtures {
     manualModels: const [
       ManualAccountModelPresentation(
         editorKey: 'synthetic-gemini-manual',
-        id: AccountTextPresentation(raw: 'gemini-3-flash-preview'),
-        name: AccountTextPresentation(
-          raw: 'Gemini 3 Flash Preview (us-central1)',
-        ),
+        id: AccountTextPresentation(raw: 'gemini-4-neon'),
+        name: AccountTextPresentation(raw: 'Gemini 4 Neon (us-central1)'),
         contextWindow: AccountTextPresentation(raw: '1048576'),
         maxOutputTokens: AccountTextPresentation(raw: '65536'),
         wireApi: AccountWireApi.geminiGenerateContent,

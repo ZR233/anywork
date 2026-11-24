@@ -26,6 +26,7 @@ pub fn bundled_selection_guides() -> &'static [BundledSelectionGuide] {
 const VERIFIED_AT: i64 = 1_792_627_200;
 const TERRA_VERIFIED_AT: i64 = 1_793_059_200;
 const GPT62_VERIFIED_AT: i64 = 1_794_960_000;
+const GEMINI4_VERIFIED_AT: i64 = 1_795_478_400; // 2026-11-24 UTC
 
 const OPENAI_MODELS_DOC: &str = "https://developers.openai.com/api/docs/models";
 
@@ -433,69 +434,134 @@ static BUNDLED_SELECTION_GUIDES: &[BundledSelectionGuide] = &[
     },
     BundledSelectionGuide {
         catalogs: &["gemini", "vertex-ai"],
-        model_id: "gemini-3.7-flash",
+        model_id: "gemini-4-hydrogen",
         guide: ModelSelectionGuide {
-            summary: "Google Gemini 3.7 Flash 多模态推理模型，兼顾低延迟、工具调用与 1M 上下文，适合日常编码与多模态工作。",
+            summary: "Google Gemini 4 日常主力多模态推理模型，兼顾低延迟、高性价比与 1M 统一上下文，适合日常编码、多步工具调用与并行子任务。",
             task_suitability: &[
                 AgentTaskCategory::Coding,
                 AgentTaskCategory::Tooling,
                 AgentTaskCategory::Multimodal,
-                AgentTaskCategory::Reasoning,
-            ],
-            limitations: &[
-                "通过 Vertex AI API Key 访问时按区域模型可用性提供服务",
-                "支持思考档位 low/medium/high，但不保证兼容 OpenAI 生态独有的 hosted tool 语义",
-            ],
-            sources: &[ModelSelectionSource {
-                kind: ModelSelectionSourceKind::Official,
-                url: "https://ai.google.dev/gemini-api/docs/models",
-                verified_at: VERIFIED_AT,
-                measurement: None,
-            }],
-        },
-    },
-    BundledSelectionGuide {
-        catalogs: &["gemini", "vertex-ai"],
-        model_id: "gemini-3-flash-preview",
-        guide: ModelSelectionGuide {
-            summary: "Google Gemini 3 Flash Preview 快速多模态推理模型，提供 1M 上下文与思考控制。",
-            task_suitability: &[
+                AgentTaskCategory::LongContext,
                 AgentTaskCategory::General,
-                AgentTaskCategory::Tooling,
-                AgentTaskCategory::Multimodal,
             ],
             limitations: &[
-                "预览型号的配额、区域可用性与行为可能随 Google 更新变化",
-                "定价未内置在静态目录中，未知价格字段保持为空",
+                "支持思考档位 low/medium/high/xhigh（默认 high），不支持 minimal；xhigh 会显著增加耗时与思考词元消耗",
+                "仅支持隐式上下文缓存（4,096 tokens 起生效），不支持显式缓存管理，亦不包含 OpenAI hosted tool 语义",
+                "通过 Vertex AI 访问时按区域模型可用性提供服务，非 Global 区域端点另行计价",
             ],
-            sources: &[ModelSelectionSource {
-                kind: ModelSelectionSourceKind::Official,
-                url: "https://ai.google.dev/gemini-api/docs/models",
-                verified_at: VERIFIED_AT,
-                measurement: None,
-            }],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/pricing",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+            ],
         },
     },
     BundledSelectionGuide {
         catalogs: &["gemini", "vertex-ai"],
-        model_id: "gemini-3.1-pro-preview",
+        model_id: "gemini-4-neon",
         guide: ModelSelectionGuide {
-            summary: "Google Gemini 3.1 Pro Preview 高能力多模态推理模型，适合复杂编码与深度分析，单价高于 Flash 系列。",
+            summary: "Google Gemini 4 中高阶前沿多模态模型，在复杂软件工程、知识工作与科学分析上提供接近旗舰的深度推理与更快的端到端完成速度。",
+            task_suitability: &[
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Reasoning,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::Multimodal,
+                AgentTaskCategory::LongContext,
+            ],
+            limitations: &[
+                "仅提供付费层（无 Free Tier），单价为 Hydrogen 的两倍，常规轻任务优先考虑 gemini-4-hydrogen",
+                "支持思考档位 low/medium/high/xhigh（默认 high），不支持 minimal；仅支持隐式上下文缓存",
+                "通过 Vertex AI 访问时按区域可用性提供服务，非 Global 区域端点另行计价",
+            ],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/models/gemini-4-neon",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/pricing",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+            ],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["gemini", "vertex-ai"],
+        model_id: "gemini-4-argon",
+        guide: ModelSelectionGuide {
+            summary: "Google Gemini 4 高效前沿推理模型，面向复杂编码、Agent 编排与数理科学任务，相对 Carbon 响应更快且单轮思考词元开销更低。",
             task_suitability: &[
                 AgentTaskCategory::Reasoning,
                 AgentTaskCategory::Coding,
+                AgentTaskCategory::Tooling,
                 AgentTaskCategory::Multimodal,
+                AgentTaskCategory::LongContext,
             ],
             limitations: &[
-                "单价与延迟高于 Flash 系列，简单任务更适合选择 gemini-3.7-flash",
-                "超过 200k 输入上下文触发高阶计费分档",
+                "仅提供付费层（无 Free Tier）；目录内置为 2026-12-01 起的正式标准价，2026-11-30 前存在官方半价促销",
+                "支持思考档位 low/medium/high（默认 medium），不支持 minimal 或 xhigh；仅支持隐式上下文缓存",
+                "最高难度的深度验证与长程排查可升级评估 gemini-4-carbon",
             ],
-            sources: &[ModelSelectionSource {
-                kind: ModelSelectionSourceKind::Official,
-                url: "https://ai.google.dev/gemini-api/docs/models",
-                verified_at: VERIFIED_AT,
-                measurement: None,
-            }],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/pricing",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+            ],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["gemini", "vertex-ai"],
+        model_id: "gemini-4-carbon",
+        guide: ModelSelectionGuide {
+            summary: "Google Gemini 4 最强深度推理旗舰模型，适合复杂架构设计、长程自主编码、密集多模态核验、科研推理与安全审计。",
+            task_suitability: &[
+                AgentTaskCategory::Reasoning,
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::Multimodal,
+                AgentTaskCategory::LongContext,
+            ],
+            limitations: &[
+                "仅提供付费层（无 Free Tier），单轮思考词元消耗与首字延迟最高；目录内置为 2026-12-01 起的正式标准价（2026-11-30 前有半价促销）",
+                "支持思考档位 low/medium/high（默认 medium），不支持 minimal 或 xhigh；仅支持隐式上下文缓存",
+                "日常迭代与交互式任务优先考虑 gemini-4-hydrogen 或 gemini-4-neon",
+            ],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/models/gemini-4-carbon",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://ai.google.dev/gemini-api/docs/pricing",
+                    verified_at: GEMINI4_VERIFIED_AT,
+                    measurement: None,
+                },
+            ],
         },
     },
 ];

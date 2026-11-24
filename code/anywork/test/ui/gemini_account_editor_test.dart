@@ -217,8 +217,8 @@ void main() {
             manualModels: const [
               ManualAccountModelPresentation(
                 editorKey: 'row-1',
-                id: AccountTextPresentation(raw: 'gemini-3-flash-preview'),
-                name: AccountTextPresentation(raw: 'Gemini 3 Flash Preview'),
+                id: AccountTextPresentation(raw: 'gemini-4-neon'),
+                name: AccountTextPresentation(raw: 'Gemini 4 Neon'),
                 contextWindow: AccountTextPresentation(raw: '1048576'),
                 maxOutputTokens: AccountTextPresentation(raw: '65536'),
                 wireApi: AccountWireApi.geminiGenerateContent,
@@ -251,7 +251,7 @@ void main() {
     const strings = AccountStrings({'required': 'Required'});
     const geminiDraft = ManualModelDraft(
       editorKey: 'g1',
-      id: 'gemini-3.7-flash',
+      id: 'gemini-4-hydrogen',
       wireApi: AccountWireApi.geminiGenerateContent,
     );
     final geminiPresentation = geminiDraft.presentation(

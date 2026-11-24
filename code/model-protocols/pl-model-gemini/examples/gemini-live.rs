@@ -23,7 +23,7 @@ struct Args {
     flavor: TargetFlavor,
     #[arg(long)]
     base_url: Option<String>,
-    #[arg(long, default_value = "gemini-3.7-flash")]
+    #[arg(long, default_value = pl_model_gemini::models::RECOMMENDED_MODEL)]
     model: String,
     #[arg(long)]
     effort: Option<String>,
@@ -123,6 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("reasoning_len: {}", reasoning.len());
             }
             println!("usage: {}", serde_json::to_string(&resp.accounting.usage)?);
+            println!(
+                "pricing: {}",
+                serde_json::to_string(&resp.accounting.pricing)?
+            );
         }
         Command::ToolRoundtrip => {
             let tools = vec![ToolSpec::Function {
@@ -158,6 +162,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build();
             let resp1 = runtime.complete(req1.clone(), context()).await?;
             println!("turn1 tool_calls={}", resp1.tool_calls.len());
+            println!(
+                "turn1 usage: {}",
+                serde_json::to_string(&resp1.accounting.usage)?
+            );
+            println!(
+                "turn1 pricing: {}",
+                serde_json::to_string(&resp1.accounting.pricing)?
+            );
             assert!(
                 !resp1.tool_calls.is_empty(),
                 "expected at least one tool call"
@@ -198,6 +210,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "turn2 usage: {}",
                 serde_json::to_string(&resp2.accounting.usage)?
+            );
+            println!(
+                "turn2 pricing: {}",
+                serde_json::to_string(&resp2.accounting.pricing)?
             );
         }
         Command::Multimodal => {
@@ -258,6 +274,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "multimodal usage: {}",
                 serde_json::to_string(&resp.accounting.usage)?
+            );
+            println!(
+                "multimodal pricing: {}",
+                serde_json::to_string(&resp.accounting.pricing)?
             );
         }
     }

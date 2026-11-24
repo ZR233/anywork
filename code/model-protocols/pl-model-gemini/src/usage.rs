@@ -42,11 +42,21 @@ impl GeminiUsageMetadata {
                     .saturating_add(thoughts.unwrap_or(0)),
             ),
         };
+        // Gemini REST uses Proto3 JSON serialization, which omits `cachedContentTokenCount` when 0
+        // (e.g., short prompts below the 4,096-token implicit cache threshold or cache misses).
+        // Normalize omitted cache counts to `Some(0)` whenever prompt token counts are reported so
+        // tiered/discounted cache pricing can price cache-miss calls instead of reporting
+        // `UnpricedReason::MissingCacheUsage`.
+        let cache_read_tokens = if self.prompt_token_count.is_some() {
+            self.cached_content_token_count.or(Some(0))
+        } else {
+            self.cached_content_token_count
+        };
         Some(UsageReport {
             input_tokens: self.prompt_token_count,
             output_tokens,
             total_tokens: self.total_token_count,
-            cache_read_tokens: self.cached_content_token_count,
+            cache_read_tokens,
             cache_write_tokens: None,
             reasoning_tokens: self.thoughts_token_count,
         })
@@ -56,6 +66,7 @@ impl GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pl_model_types::model::{PricingMode, PricingOutcome};
 
     #[test]
     fn empty_metadata_with_only_traffic_type_yields_none() {
@@ -82,5 +93,89 @@ mod tests {
         assert_eq!(report.reasoning_tokens, Some(30));
         assert_eq!(report.cache_read_tokens, Some(50));
         assert_eq!(report.total_tokens, Some(190));
+    }
+
+    #[test]
+    fn omitted_cached_content_token_count_normalizes_to_zero_when_prompt_tokens_present() {
+        let meta: GeminiUsageMetadata = serde_json::from_str(
+            r#"{
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 40,
+                "thoughtsTokenCount": 30,
+                "totalTokenCount": 190
+            }"#,
+        )
+        .unwrap();
+        let report = meta.to_usage_report().unwrap();
+        assert_eq!(report.cache_read_tokens, Some(0));
+    }
+
+    #[test]
+    fn pricing_estimates_both_cache_miss_and_cache_hit_for_gemini_4_hydrogen() {
+        let bundled = crate::bundled_definition().unwrap();
+        let hydrogen = bundled
+            .models
+            .iter()
+            .find(|m| m.base.slug == "gemini-4-hydrogen")
+            .unwrap();
+
+        let miss: GeminiUsageMetadata = serde_json::from_str(
+            r#"{
+                "promptTokenCount": 1000,
+                "candidatesTokenCount": 200,
+                "thoughtsTokenCount": 300,
+                "totalTokenCount": 1500
+            }"#,
+        )
+        .unwrap();
+        let miss_accounting = hydrogen.extra.pricing.account(
+            miss.to_usage_report().unwrap(),
+            PricingMode::Catalog,
+            0,
+        );
+        let PricingOutcome::Estimated {
+            cost,
+            cache_savings,
+        } = miss_accounting.pricing
+        else {
+            panic!(
+                "expected estimated cost on cache miss, got {:?}",
+                miss_accounting.pricing
+            );
+        };
+        assert_eq!(cost.currency, "USD");
+        // (1000 * 1.50 + 500 * 7.50) / 1_000_000 = 0.00525
+        assert!((cost.amount - 0.00525).abs() < 1e-12);
+        assert_eq!(cache_savings.unwrap().amount, 0.0);
+
+        let hit: GeminiUsageMetadata = serde_json::from_str(
+            r#"{
+                "promptTokenCount": 10000,
+                "cachedContentTokenCount": 6000,
+                "candidatesTokenCount": 100,
+                "thoughtsTokenCount": 100,
+                "totalTokenCount": 10200
+            }"#,
+        )
+        .unwrap();
+        let hit_accounting =
+            hydrogen
+                .extra
+                .pricing
+                .account(hit.to_usage_report().unwrap(), PricingMode::Catalog, 0);
+        let PricingOutcome::Estimated {
+            cost,
+            cache_savings,
+        } = hit_accounting.pricing
+        else {
+            panic!(
+                "expected estimated cost on cache hit, got {:?}",
+                hit_accounting.pricing
+            );
+        };
+        // (4000 * 1.50 + 6000 * 0.075 + 200 * 7.50) / 1_000_000 = 0.00795
+        assert!((cost.amount - 0.00795).abs() < 1e-12);
+        // 6000 * (1.50 - 0.075) / 1_000_000 = 0.00855
+        assert!((cache_savings.unwrap().amount - 0.00855).abs() < 1e-12);
     }
 }

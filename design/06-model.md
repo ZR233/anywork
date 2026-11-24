@@ -241,7 +241,9 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 设置和调用使用同一份解析结果，数值单位均为 token。
 
 - 最大上下文取 `max_context_window`，缺失时取 `context_window`。两者都缺失时保留未知，允许发起文本调用。
-- 默认压缩遵循 Codex 的 `ModelInfo::auto_compact_token_limit()`。优先用 `context_window`，缺失时用 `max_context_window`，乘以 9 再除以 10 向下取整。在线字段 `auto_compact_token_limit` 和计算结果都存在时取较小值，只存在一个时取该值。
+- 默认自动压缩阈值全协议（Gemini、OpenAI 及兼容协议等）共享同一解析实现，均以 `context_window`（缺失时取 `max_context_window`）乘以 9 再除以 10 向下取整作为 90% 安全上限：
+  - **内置模型及命中内置 ID 的目录成员**（含在 `Bundled` 目录中用 `additional_models` 仅做同 ID 微调的成员）：当存在显式 `auto_compact_token_limit`（如内置 Gemini 4 的 `512,000` 或在线字段）且同时已知上下文窗口时取显式值与 90% 上限的较小值；未声明显式值时取 90% 上限；两者皆缺失时不启用自动压缩。
+  - **在线发现但无内置对应的模型，以及非内置手动配置模型**：未显式声明 `auto_compact_token_limit` 时，采用 `256,000`（`DEFAULT_FALLBACK_AUTO_COMPACT_LIMIT`）作为默认回退阈值——若已声明上下文窗口，则取 `min(256,000, floor(window × 9 / 10))`（若 90% 向下取整为 `0` 则保持不启用）；若上下文窗口未知，则直接取 `256,000` 并保持 `context_window` 未知，且不将该回退值回写进用户配置文件。若显式声明了 `auto_compact_token_limit`，则遵循显式值（已知上下文时仍受 90% 安全上限约束）。
 - 用户可按账号和模型保存正整数阈值，最大为最大上下文的 90%（含边界，向下取整）。新阈值超限会提示修改。目录之后降容会约束生效阈值，保留用户原设置。删除覆盖即恢复当时的目录默认。最大输出只描述一次生成的输出限制。
 - **请求期冻结**：每次模型调用在请求准备阶段将已解析的 `context_window`、`max_context_window` 与 `auto_compact_limit` 一并冻结到请求及结果回执中，历史记录解码时若缺失这些可选字段则保持为未知，绝不读取当前目录或当前配置回填历史。
 - **远程压缩能力**：完成请求输入支持携带含 `encryptedContent` 的专用压缩条目（`Compaction`），该条目可映射为 Responses 原生输入，而在 Chat Completions 协议下会被明确拒绝。端点是否支持远程压缩须显式声明，执行时复用共享执行器并固定走 HTTP 通道。

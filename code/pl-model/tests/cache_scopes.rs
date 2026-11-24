@@ -189,7 +189,10 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             service_tier: None,
             account_id: AccountId::new(account).unwrap(),
             role: AgentRoleId::new("cache-test").unwrap(),
-            context: info.resolve_context(None),
+            context: info.resolve_context(
+                None,
+                pl_model::model::AutoCompactDefaultPolicy::UnbundledOrManual,
+            ),
             model: info,
             endpoint,
             pricing_mode: pl_model::model::PricingMode::NoCharge,

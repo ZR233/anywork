@@ -49,6 +49,21 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 
 pub use pl_model_types::model::{TruncationMode, TruncationPolicy};
 
+/// 在线发现但无内置对应、或手动配置的模型，在未显式声明 `auto_compact_token_limit`
+/// 时采用的默认自动压缩阈值（256K token）。若上下文已声明，则与上下文 90% 取较小值。
+pub const DEFAULT_FALLBACK_AUTO_COMPACT_LIMIT: u64 = 256_000;
+
+/// 未显式声明 `auto_compact_token_limit` 时的默认自动压缩策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoCompactDefaultPolicy {
+    /// 绑定内置定义的模型（含命中内置 ID 的在线观测）：仅按上下文 90% 推导，上下文未知时保持未启用。
+    #[default]
+    Bundled,
+    /// 无内置对应的在线模型及手动配置模型：未显式声明 `auto_compact_token_limit` 时，
+    /// 使用 [`DEFAULT_FALLBACK_AUTO_COMPACT_LIMIT`]（256,000）与上下文 90% 的较小值；上下文未知时取 256,000。
+    UnbundledOrManual,
+}
+
 /// Adapter binding kept separate from provider-neutral model metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -480,7 +495,9 @@ impl ModelDefinition {
                 model: self.base.slug.clone(),
             });
         }
-        if self.resolve_context(None).unavailable
+        if self
+            .resolve_context(None, AutoCompactDefaultPolicy::Bundled)
+            .unavailable
             == Some(crate::model::ModelContextUnavailable::InvalidParameters)
             || self
                 .extra
@@ -557,6 +574,7 @@ impl ModelDefinition {
     pub fn resolve_context(
         &self,
         override_limit: Option<u64>,
+        default_policy: AutoCompactDefaultPolicy,
     ) -> crate::model::ModelContextResolution {
         use crate::model::{
             ModelContextAdjustment, ModelContextResolution, ModelContextUnavailable,
@@ -576,8 +594,15 @@ impl ModelDefinition {
                 .zip(self.base.max_context_window)
                 .is_some_and(|(current, maximum)| current > maximum);
         let capacity = self.base.max_context_window.or(window);
+        let fallback_limit = match default_policy {
+            AutoCompactDefaultPolicy::Bundled => None,
+            AutoCompactDefaultPolicy::UnbundledOrManual => {
+                Some(DEFAULT_FALLBACK_AUTO_COMPACT_LIMIT)
+            }
+        };
         let default_ceiling = window.map(ninety_percent);
-        let default_limit = match (self.base.auto_compact_token_limit, default_ceiling) {
+        let configured_default = self.base.auto_compact_token_limit.or(fallback_limit);
+        let default_limit = match (configured_default, default_ceiling) {
             (Some(limit), Some(ceiling)) => Some(limit.min(ceiling)),
             (limit, ceiling) => limit.or(ceiling),
         };

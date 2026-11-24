@@ -1136,7 +1136,8 @@ mod storage_fault_tests {
                         "storage fixture",
                         "http://127.0.0.1:0",
                     ),
-                    context: model_info.resolve_context(None),
+                    context: model_info
+                        .resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled),
                     model: model_info,
                     effort: None,
                     service_tier: None,
