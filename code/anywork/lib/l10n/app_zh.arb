@@ -3296,5 +3296,37 @@
   "timelineOutcomeStatusDenied": "已拒绝",
   "timelineOutcomeStatusCancelled": "已取消",
   "timelineOutcomeStatusCompleted": "已完成",
-  "timelineOutcomeStatusSucceeded": "已成功"
+  "timelineOutcomeStatusSucceeded": "已成功",
+  "timelineDiffStatLabel": "新增 {additions} 行，删除 {deletions} 行",
+  "@timelineDiffStatLabel": {
+    "placeholders": {
+      "additions": {
+        "type": "int"
+      },
+      "deletions": {
+        "type": "int"
+      }
+    }
+  },
+  "timelinePatchCopyPath": "复制路径",
+  "acpCopyMessage": "复制消息",
+  "acpJumpToPendingPermission": "跳到最新 · 等待权限确认",
+  "acpJumpToRunning": "跳到最新 · 运行中",
+  "acpJumpToNewOutput": "跳到最新 · 有新输出",
+  "acpPlanCompletedHeadline": "执行计划已完成",
+  "acpSlashMenuLabel": "斜杠命令",
+  "acpSlashMenuNoMatches": "无匹配命令",
+  "acpHistorySearchHint": "搜索标题、路径或会话 ID",
+  "acpHistorySearchCount": "{matched} / {total}",
+  "@acpHistorySearchCount": {
+    "placeholders": {
+      "matched": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySearchEmpty": "没有匹配的外部会话"
 }

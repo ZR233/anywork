@@ -7702,4 +7702,44 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineOutcomeStatusSucceeded => '已成功';
+
+  @override
+  String timelineDiffStatLabel(int additions, int deletions) {
+    return '新增 $additions 行，删除 $deletions 行';
+  }
+
+  @override
+  String get timelinePatchCopyPath => '复制路径';
+
+  @override
+  String get acpCopyMessage => '复制消息';
+
+  @override
+  String get acpJumpToPendingPermission => '跳到最新 · 等待权限确认';
+
+  @override
+  String get acpJumpToRunning => '跳到最新 · 运行中';
+
+  @override
+  String get acpJumpToNewOutput => '跳到最新 · 有新输出';
+
+  @override
+  String get acpPlanCompletedHeadline => '执行计划已完成';
+
+  @override
+  String get acpSlashMenuLabel => '斜杠命令';
+
+  @override
+  String get acpSlashMenuNoMatches => '无匹配命令';
+
+  @override
+  String get acpHistorySearchHint => '搜索标题、路径或会话 ID';
+
+  @override
+  String acpHistorySearchCount(int matched, int total) {
+    return '$matched / $total';
+  }
+
+  @override
+  String get acpHistorySearchEmpty => '没有匹配的外部会话';
 }

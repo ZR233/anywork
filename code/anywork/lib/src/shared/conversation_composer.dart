@@ -56,6 +56,7 @@ class ConversationComposer extends StatelessWidget {
     this.onAddUrl,
     this.onDropFiles,
     this.onPaste,
+    this.onKeyEvent,
     super.key,
   });
 
@@ -93,6 +94,7 @@ class ConversationComposer extends StatelessWidget {
     bool Function() isCurrent,
   )?
   onPaste;
+  final KeyEventResult Function(FocusNode node, KeyEvent event)? onKeyEvent;
 
   @override
   Widget build(BuildContext context) =>
@@ -118,24 +120,41 @@ class _ConversationComposerState extends State<_ConversationComposerScope> {
       selection: TextSelection.collapsed(offset: _composer.text.length),
     ),
   );
+  late final FocusNode _focusNode = FocusNode(
+    onKeyEvent: _handleEditorKeyEvent,
+  );
   var _dragging = false;
+
+  KeyEventResult _handleEditorKeyEvent(FocusNode node, KeyEvent event) {
+    final handler = _composer.onKeyEvent;
+    if (handler == null || _controller.value.composing.isValid) {
+      return KeyEventResult.ignored;
+    }
+    return handler(node, event);
+  }
 
   @override
   void didUpdateWidget(covariant _ConversationComposerScope oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (_composer.text == _controller.text) return;
+    final previousLength = _controller.text.length;
     final selection = _controller.selection;
+    final wasAtEnd =
+        selection.isCollapsed && selection.baseOffset == previousLength;
+    final nextSelection = wasAtEnd
+        ? TextSelection.collapsed(offset: _composer.text.length)
+        : selection.isValid
+        ? selection.copyWith(
+            baseOffset: selection.baseOffset.clamp(0, _composer.text.length),
+            extentOffset: selection.extentOffset.clamp(
+              0,
+              _composer.text.length,
+            ),
+          )
+        : TextSelection.collapsed(offset: _composer.text.length);
     _controller.value = TextEditingValue(
       text: _composer.text,
-      selection: selection.isValid
-          ? selection.copyWith(
-              baseOffset: selection.baseOffset.clamp(0, _composer.text.length),
-              extentOffset: selection.extentOffset.clamp(
-                0,
-                _composer.text.length,
-              ),
-            )
-          : TextSelection.collapsed(offset: _composer.text.length),
+      selection: nextSelection,
     );
   }
 
@@ -146,6 +165,7 @@ class _ConversationComposerState extends State<_ConversationComposerScope> {
     // cannot resume against this draft, even when it does not check mounted.
     _controller.value = const TextEditingValue();
     _controller.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -215,6 +235,7 @@ class _ConversationComposerState extends State<_ConversationComposerScope> {
       child: TextField(
         key: _composer.inputKey,
         controller: _controller,
+        focusNode: _focusNode,
         autofocus: _composer.autofocus,
         enabled: _composer.enabled,
         minLines: _composer.compact ? 2 : 3,

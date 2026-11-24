@@ -6,9 +6,9 @@ import '../../../../shared/studio_chrome.dart';
 import '../state/acp_view_state.dart';
 
 /// Pure modal dialog presenting external ACP peer sessions with explicit
-/// "Load history" and "Resume" actions, cursor pagination, and `unknown`
-/// open-outcome protection.
-class AcpExternalHistoryDialog extends StatelessWidget {
+/// "Load history" and "Resume" actions, cursor pagination, instant search
+/// filtering, and `unknown` open-outcome protection.
+class AcpExternalHistoryDialog extends StatefulWidget {
   const AcpExternalHistoryDialog({
     super.key,
     required this.state,
@@ -25,6 +25,37 @@ class AcpExternalHistoryDialog extends StatelessWidget {
   final ValueChanged<String> onLoadSession;
   final ValueChanged<String> onResumeSession;
   final VoidCallback onClose;
+
+  @override
+  State<AcpExternalHistoryDialog> createState() =>
+      _AcpExternalHistoryDialogState();
+}
+
+class _AcpExternalHistoryDialogState extends State<AcpExternalHistoryDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  AcpExternalHistoryDialogState get state => widget.state;
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<AcpExternalSessionRowPresentation> _filterSessions(
+    List<AcpExternalSessionRowPresentation> sessions,
+  ) {
+    final trimmed = _query.trim().toLowerCase();
+    if (trimmed.isEmpty) return sessions;
+    return [
+      for (final session in sessions)
+        if ((session.title ?? '').toLowerCase().contains(trimmed) ||
+            session.cwd.toLowerCase().contains(trimmed) ||
+            session.sessionId.toLowerCase().contains(trimmed))
+          session,
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +108,7 @@ class AcpExternalHistoryDialog extends StatelessWidget {
                   const SizedBox(width: 8),
                   IconButton(
                     tooltip: l10n.acpHistoryRefresh,
-                    onPressed: canRefresh ? onRefresh : null,
+                    onPressed: canRefresh ? widget.onRefresh : null,
                     icon: const Icon(Icons.refresh_rounded, size: 19),
                   ),
                 ],
@@ -93,7 +124,7 @@ class AcpExternalHistoryDialog extends StatelessWidget {
                 children: [
                   if (state.nextCursor != null)
                     OutlinedButton.icon(
-                      onPressed: canRefresh ? onLoadMore : null,
+                      onPressed: canRefresh ? widget.onLoadMore : null,
                       icon: state.loadingMore
                           ? const SizedBox.square(
                               dimension: 14,
@@ -104,7 +135,7 @@ class AcpExternalHistoryDialog extends StatelessWidget {
                     ),
                   const Spacer(),
                   TextButton(
-                    onPressed: onClose,
+                    onPressed: widget.onClose,
                     child: Text(l10n.acpHistoryClose),
                   ),
                 ],
@@ -140,6 +171,9 @@ class AcpExternalHistoryDialog extends StatelessWidget {
       );
     }
 
+    final filtered = _filterSessions(state.sessions);
+    final hasQuery = _query.trim().isNotEmpty;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -153,6 +187,53 @@ class AcpExternalHistoryDialog extends StatelessWidget {
             title: l10n.acpHistoryListFailed,
             message: err,
             tone: StudioNoticeTone.danger,
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (state.sessions.isNotEmpty) ...[
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('acp-history-search'),
+                  controller: _searchController,
+                  onChanged: (value) => setState(() => _query = value),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                    hintText: l10n.acpHistorySearchHint,
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _query = '');
+                            },
+                            icon: const Icon(Icons.close_rounded, size: 16),
+                          ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(StudioRadii.sm),
+                    ),
+                  ),
+                ),
+              ),
+              if (hasQuery) ...[
+                const SizedBox(width: 10),
+                Text(
+                  l10n.acpHistorySearchCount(
+                    filtered.length,
+                    state.sessions.length,
+                  ),
+                  style: context.text.labelSmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: 10),
         ],
@@ -186,19 +267,27 @@ class AcpExternalHistoryDialog extends StatelessWidget {
                     message: l10n.acpHistorySubtitle,
                   ),
                 )
+              : filtered.isEmpty && hasQuery
+              ? Center(
+                  child: StudioEmptyState(
+                    icon: Icons.search_off_rounded,
+                    title: l10n.acpHistorySearchEmpty,
+                    message: l10n.acpHistorySearchHint,
+                  ),
+                )
               : ListView.separated(
-                  itemCount: state.sessions.length,
+                  itemCount: filtered.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 10),
                   itemBuilder: (context, index) => _ExternalSessionCard(
-                    row: state.sessions[index],
+                    row: filtered[index],
                     canLoad: state.canLoad,
                     canResume: state.canResume,
                     locked:
                         state.loading || state.loadingMore || state.anyOpening,
                     onLoad: () =>
-                        onLoadSession(state.sessions[index].sessionId),
+                        widget.onLoadSession(filtered[index].sessionId),
                     onResume: () =>
-                        onResumeSession(state.sessions[index].sessionId),
+                        widget.onResumeSession(filtered[index].sessionId),
                   ),
                 ),
         ),

@@ -7,6 +7,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../state/acp_view_state.dart';
+import 'acp_content_view_model.dart';
 import 'acp_session_view_model.dart';
 
 part 'acp_composer_view_model.g.dart';
@@ -146,6 +147,9 @@ class AcpComposerViewModel extends _$AcpComposerViewModel {
           !session.observationEnded,
       canAttach: canAttach && !draft.isSubmissionPending,
       submitting: draft.isSubmissionPending,
+      availableCommands: extractLatestAcpAvailableCommands(
+        state?.content ?? const [],
+      ),
       blocker: blocker,
       draftError: draft.error,
     );
