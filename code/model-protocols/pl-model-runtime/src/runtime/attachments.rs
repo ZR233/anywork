@@ -24,7 +24,7 @@ pub(super) enum UploadState {
 }
 
 pub(super) struct AttachmentBackend<'a> {
-    pub upload: Option<&'static pl_model_openai_wire::files::FileUploadService>,
+    pub upload: Option<&'static pl_model_wire::files::FileUploadService>,
     pub endpoint: &'a ProtocolEndpoint,
     pub model: &'a ModelDefinition,
     pub client: &'a reqwest::Client,
@@ -259,7 +259,7 @@ impl AttachmentBackend<'_> {
             }
             cache.insert(key.clone(), UploadState::Pending);
         }
-        let uploaded = (service.upload)(pl_model_openai_wire::files::FileUploadRequest {
+        let uploaded = (service.upload)(pl_model_wire::files::FileUploadRequest {
             client: self.client,
             endpoint: self.endpoint,
             model_headers: &self.model.extra.binding.request.headers,

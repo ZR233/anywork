@@ -186,6 +186,7 @@ fn custom_model_settings(model: &ModelDefinition) -> StudioCustomModelSettings {
         wire_api: match model.extra.binding.transport.protocol {
             WireApi::Responses => "responses",
             WireApi::ChatCompletions => "chat_completions",
+            WireApi::GeminiGenerateContent => "gemini_generate_content",
         }
         .to_string(),
         supported_connection_modes: model

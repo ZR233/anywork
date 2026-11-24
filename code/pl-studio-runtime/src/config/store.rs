@@ -871,6 +871,7 @@ mod tests {
                     "zhipu" => "zhipu",
                     "mi_mo" => "miMo",
                     "xai" => "xai",
+                    "gemini" => "gemini",
                     _ => "openAiCompatible",
                 };
                 account.insert("adapter".into(), toml::Value::String(adapter.into()));
@@ -1657,5 +1658,50 @@ mod tests {
             migrated_backups(path).is_empty(),
             "backup is written only after validation succeeds"
         );
+    }
+
+    #[test]
+    fn cli_loader_accepts_gemini_protocol_account_in_current_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let toml = r#"schema_version = 34
+
+[models.accounts.vertex]
+template = "vertex-ai"
+protocol = "gemini"
+name = "Vertex AI Gemini"
+authentication = "apiKey"
+base_url = "https://aiplatform.googleapis.com/v1/publishers/google"
+bearer_token_env = "GCP_API_KEY"
+
+[models.accounts.vertex.capabilities]
+source = "template_defaults"
+
+[models.accounts.vertex.catalog]
+source = "bundled"
+catalog = "vertex-ai"
+
+[mode_model_routes."mode.simple"]
+account_id = "vertex"
+model_id = "gemini-3.7-flash"
+effort = "medium"
+
+[mode_model_routes."mode.task"]
+account_id = "vertex"
+model_id = "gemini-3.7-flash"
+effort = "medium"
+"#;
+        let cli = ConfigStore::for_cli(directory.path());
+        fs::write(cli.paths.config_file(), toml).unwrap();
+        let loaded = cli
+            .load_for_startup()
+            .expect("schema 34 gemini config loads");
+        assert_eq!(
+            loaded.models.accounts[&AccountId::new("vertex").unwrap()]
+                .protocol
+                .as_str(),
+            "gemini"
+        );
+        let serialized = serialize_persisted_config(&loaded).expect("gemini config serializes");
+        assert!(serialized.contains("protocol = \"gemini\""));
     }
 }

@@ -13,6 +13,7 @@ export 'widgets/account_models_view.dart';
 export 'widgets/account_details_header.dart';
 export 'widgets/account_identity.dart';
 export 'widgets/account_editor_fields.dart';
+export 'widgets/account_gemini_connection.dart';
 export 'widgets/account_list_item.dart';
 export 'widgets/account_template_selector.dart';
 export 'widgets/account_usage_metrics.dart';

@@ -1,4 +1,4 @@
-use pl_model_openai_wire::model::{
+use pl_model_wire::model::{
     AgentTaskCategory, BundledSelectionGuide, ModelSelectionGuide, ModelSelectionMeasurement,
     ModelSelectionSource, ModelSelectionSourceKind,
 };
@@ -429,6 +429,73 @@ static BUNDLED_SELECTION_GUIDES: &[BundledSelectionGuide] = &[
                     }),
                 },
             ],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["gemini", "vertex-ai"],
+        model_id: "gemini-3.7-flash",
+        guide: ModelSelectionGuide {
+            summary: "Google Gemini 3.7 Flash 多模态推理模型，兼顾低延迟、工具调用与 1M 上下文，适合日常编码与多模态工作。",
+            task_suitability: &[
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::Multimodal,
+                AgentTaskCategory::Reasoning,
+            ],
+            limitations: &[
+                "通过 Vertex AI API Key 访问时按区域模型可用性提供服务",
+                "支持思考档位 low/medium/high，但不保证兼容 OpenAI 生态独有的 hosted tool 语义",
+            ],
+            sources: &[ModelSelectionSource {
+                kind: ModelSelectionSourceKind::Official,
+                url: "https://ai.google.dev/gemini-api/docs/models",
+                verified_at: VERIFIED_AT,
+                measurement: None,
+            }],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["gemini", "vertex-ai"],
+        model_id: "gemini-3-flash-preview",
+        guide: ModelSelectionGuide {
+            summary: "Google Gemini 3 Flash Preview 快速多模态推理模型，提供 1M 上下文与思考控制。",
+            task_suitability: &[
+                AgentTaskCategory::General,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::Multimodal,
+            ],
+            limitations: &[
+                "预览型号的配额、区域可用性与行为可能随 Google 更新变化",
+                "定价未内置在静态目录中，未知价格字段保持为空",
+            ],
+            sources: &[ModelSelectionSource {
+                kind: ModelSelectionSourceKind::Official,
+                url: "https://ai.google.dev/gemini-api/docs/models",
+                verified_at: VERIFIED_AT,
+                measurement: None,
+            }],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["gemini", "vertex-ai"],
+        model_id: "gemini-3.1-pro-preview",
+        guide: ModelSelectionGuide {
+            summary: "Google Gemini 3.1 Pro Preview 高能力多模态推理模型，适合复杂编码与深度分析，单价高于 Flash 系列。",
+            task_suitability: &[
+                AgentTaskCategory::Reasoning,
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Multimodal,
+            ],
+            limitations: &[
+                "单价与延迟高于 Flash 系列，简单任务更适合选择 gemini-3.7-flash",
+                "超过 200k 输入上下文触发高阶计费分档",
+            ],
+            sources: &[ModelSelectionSource {
+                kind: ModelSelectionSourceKind::Official,
+                url: "https://ai.google.dev/gemini-api/docs/models",
+                verified_at: VERIFIED_AT,
+                measurement: None,
+            }],
         },
     },
 ];

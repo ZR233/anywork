@@ -1,6 +1,8 @@
-use pl_model_openai_wire::{
-    adapter::Adapter, discovery::DiscoveryPolicy, model::ModelModality,
-    protocol::InstructionWireRole,
+use pl_model_wire::{
+    adapter::Adapter,
+    discovery::DiscoveryPolicy,
+    model::ModelModality,
+    protocol::{ApiKeyHeaderScheme, InstructionWireRole},
 };
 
 pub const CATALOG: DiscoveryPolicy = DiscoveryPolicy {
@@ -11,22 +13,30 @@ pub const CATALOG: DiscoveryPolicy = DiscoveryPolicy {
 
 pub static ADAPTER: Adapter = Adapter {
     id: crate::endpoint::ID,
+    codec: &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+    api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
     responses_instruction_role: InstructionWireRole::Developer,
     discovery: CATALOG,
+    discovery_query_params: &[],
+    discovery_page_token_param: None,
     file_upload: None,
     prepare_request: None,
     hosted_search_label: None,
     on_base_url_override: None,
-    parse_catalog: pl_model_openai_wire::generic_catalog::openai_records,
+    parse_catalog_page: pl_model_wire::generic_catalog::openai_page,
 };
 
 pub static COMPATIBLE_ADAPTER: Adapter = Adapter {
     id: crate::endpoint::COMPATIBLE_ID,
+    codec: &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+    api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
     responses_instruction_role: InstructionWireRole::Developer,
     discovery: DiscoveryPolicy::COMPATIBLE,
+    discovery_query_params: &[],
+    discovery_page_token_param: None,
     file_upload: None,
     prepare_request: None,
     hosted_search_label: None,
     on_base_url_override: None,
-    parse_catalog: pl_model_openai_wire::generic_catalog::records,
+    parse_catalog_page: pl_model_wire::generic_catalog::page,
 };

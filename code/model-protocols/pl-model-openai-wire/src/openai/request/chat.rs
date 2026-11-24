@@ -9,11 +9,11 @@ use crate::model::info::{MaxTokensField, MediaWireFormat, ModelDefinition};
 use crate::protocol::InstructionWireRole;
 
 use super::body::ToolFormatBody;
-use super::content::{
-    MediaRepresentationPlan, media_url, message_content_text, tool_media_content,
-};
 use super::protocol_error;
-use super::tool_history::{record_arguments_text, record_custom_input};
+use pl_model_wire::completion::request_support::{
+    MediaRepresentationPlan, media_url, message_content_text, record_arguments_text,
+    record_custom_input, tool_media_content,
+};
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct ChatRequestBody {
     model: String,
@@ -404,9 +404,12 @@ fn chat_content_for_user(
                     MediaWireFormat::ChatFileUrl => ChatContentPart::FileUrl {
                         file_url: ChatMediaUrl { url },
                     },
-                    MediaWireFormat::ResponsesInputImage | MediaWireFormat::ResponsesInputFile => {
+                    MediaWireFormat::ResponsesInputImage
+                    | MediaWireFormat::ResponsesInputFile
+                    | MediaWireFormat::GeminiInlineImage
+                    | MediaWireFormat::GeminiInlineFile => {
                         return Err(protocol_error(
-                            "Responses media wire cannot be serialized by Chat Completions",
+                            "non-Chat media wire format cannot be serialized by Chat Completions",
                         ));
                     }
                 });

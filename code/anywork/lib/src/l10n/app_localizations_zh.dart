@@ -3794,6 +3794,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modelProtocolChatCompletions => 'Chat Completions（对话补全）';
 
   @override
+  String get modelProtocolGeminiGenerateContent =>
+      'Gemini API（generateContent）';
+
+  @override
   String get modelConnectionWebSocket => 'WS（WebSocket 长连接）';
 
   @override
@@ -3805,6 +3809,10 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsProtocolResponsesHttp => 'Responses（响应式接口，HTTP）';
+
+  @override
+  String get settingsProtocolGeminiGenerateContentHttp =>
+      'Gemini API（generateContent，HTTP）';
 
   @override
   String settingsAgentRouteUnavailable(String route) {
@@ -4731,6 +4739,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolGemini => 'Google Gemini';
 
   @override
   String get accountProtocolCustom => '自定义（OpenAI 兼容）';
@@ -7719,6 +7730,57 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineOutcomeStatusSucceeded => '已成功';
+
+  @override
+  String get accountsGeminiModeAiStudio => 'AI Studio';
+
+  @override
+  String get accountsGeminiModeVertexAi => 'Vertex AI';
+
+  @override
+  String get accountsGeminiModeCustom => '自定义端点';
+
+  @override
+  String get accountsGeminiHintAiStudio =>
+      '使用 Google AI Studio 的 Gemini API 密钥（x-goog-api-key），支持在线获取模型列表。';
+
+  @override
+  String get accountsGeminiHintVertexAi =>
+      '使用 Vertex AI API 密钥（x-goog-api-key）访问 Gemini 模型，推荐使用 global 端点。';
+
+  @override
+  String get accountsGeminiHintCustom =>
+      '使用自定义 Gemini API（generateContent）端点，通过 x-goog-api-key 鉴权。';
+
+  @override
+  String get accountsGeminiBadgeHeader => 'x-goog-api-key';
+
+  @override
+  String get accountsGeminiBadgeMultimodal => '多模态';
+
+  @override
+  String get accountsGeminiBadgeDiscovery => '在线目录';
+
+  @override
+  String get accountsGeminiBadgeBundledCatalog => '内置目录';
+
+  @override
+  String get accountsGeminiBadgeImplicitCache => '隐式缓存';
+
+  @override
+  String get accountsGeminiEndpointPresetsLabel => '端点';
+
+  @override
+  String get accountsGeminiPresetGlobal => 'global（推荐）';
+
+  @override
+  String get accountsGeminiPresetAiStudioOfficial => 'Gemini API (v1beta)';
+
+  @override
+  String get accountsGeminiCredentialLabelVertex => 'Vertex AI API 密钥';
+
+  @override
+  String get accountsGeminiCredentialLabelAiStudio => 'Gemini API 密钥';
 
   @override
   String timelineDiffStatLabel(int additions, int deletions) {

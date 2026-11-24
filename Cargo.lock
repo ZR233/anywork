@@ -4046,6 +4046,7 @@ dependencies = [
  "pl-agent-tool",
  "pl-core",
  "pl-model-auth",
+ "pl-model-gemini",
  "pl-model-openai",
  "pl-model-openai-deepseek",
  "pl-model-openai-glm",
@@ -4053,6 +4054,7 @@ dependencies = [
  "pl-model-openai-wire",
  "pl-model-openai-xai",
  "pl-model-runtime",
+ "pl-model-wire",
  "pl-protocol",
  "pl-provider-fixture",
  "pretty_assertions",
@@ -4094,6 +4096,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-model-gemini"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "pl-model-runtime",
+ "pl-model-types",
+ "pl-model-wire",
+ "pl-protocol",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "pl-model-openai"
 version = "0.1.0"
 dependencies = [
@@ -4104,6 +4122,7 @@ dependencies = [
  "pl-model-auth",
  "pl-model-openai-wire",
  "pl-model-runtime",
+ "pl-model-wire",
  "pl-protocol",
  "pl-tool-search",
  "pretty_assertions",
@@ -4125,6 +4144,7 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
+ "pl-model-wire",
  "pl-protocol",
  "reqwest",
  "serde",
@@ -4141,6 +4161,7 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
+ "pl-model-wire",
  "serde_json",
  "tokio",
 ]
@@ -4152,6 +4173,7 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
+ "pl-model-wire",
  "tokio",
 ]
 
@@ -4159,23 +4181,14 @@ dependencies = [
 name = "pl-model-openai-wire"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.1",
- "futures",
- "hyper",
- "pl-agent-tool",
- "pl-core",
  "pl-model-types",
+ "pl-model-wire",
  "pl-protocol",
  "pretty_assertions",
- "reqwest",
- "schemars 1.2.3",
  "serde",
  "serde_json",
- "sse-stream 0.3.0",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
- "utoipa",
 ]
 
 [[package]]
@@ -4185,6 +4198,7 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
+ "pl-model-wire",
  "serde",
  "serde_json",
  "tokio",
@@ -4204,6 +4218,7 @@ dependencies = [
  "pl-model-auth",
  "pl-model-openai",
  "pl-model-openai-wire",
+ "pl-model-wire",
  "pl-protocol",
  "pl-provider-fixture",
  "pretty_assertions",
@@ -4230,6 +4245,29 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "utoipa",
+]
+
+[[package]]
+name = "pl-model-wire"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "futures",
+ "hyper",
+ "pl-agent-tool",
+ "pl-core",
+ "pl-model-types",
+ "pl-protocol",
+ "pretty_assertions",
+ "reqwest",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sse-stream 0.3.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
  "utoipa",
 ]
 

@@ -2,7 +2,7 @@
 use pl_model_openai::images::{
     ImageGenerationBackground, ImageGenerationRequest, ImagesClient, ImagesError,
 };
-use pl_model_openai_wire::protocol::ProtocolEndpoint;
+use pl_model_wire::protocol::ProtocolEndpoint;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use std::time::Duration;

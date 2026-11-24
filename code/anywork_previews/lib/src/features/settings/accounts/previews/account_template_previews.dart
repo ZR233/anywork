@@ -363,7 +363,65 @@ Widget accountTemplateAntigravityEditorPreview() => accountAcpEditorPreviewHost(
 );
 
 @Preview(
-  name: 'Templates / all 8 Native + Antigravity / list',
+  name: 'Template / vertex-ai / Create Editor',
+  group: 'Accounts · Templates',
+  size: Size(920, 1080),
+)
+Widget accountTemplateVertexAiCreateEditorPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.createEditor('vertex-ai'),
+    );
+
+@Preview(
+  name: 'Template / vertex-ai / Edit Editor',
+  group: 'Accounts · Templates',
+  size: Size(920, 1120),
+)
+Widget accountTemplateVertexAiEditEditorPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.geminiEditEditor(),
+    );
+
+@Preview(
+  name: 'Template / vertex-ai / Create Narrow',
+  group: 'Accounts · Templates',
+  size: Size(420, 1000),
+)
+Widget accountTemplateVertexAiCreateNarrowPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.createEditor('vertex-ai'),
+      textScale: 1.2,
+    );
+
+@Preview(
+  name: 'Template / vertex-ai / Details',
+  group: 'Accounts · Templates',
+  size: Size(1180, 1080),
+)
+Widget accountTemplateVertexAiDetailsPreview() => accountDetailsPreviewHost(
+  AccountTemplatePreviewFixtures.details('vertex-ai'),
+);
+
+@Preview(
+  name: 'Template / gemini / Create Editor',
+  group: 'Accounts · Templates',
+  size: Size(920, 1080),
+)
+Widget accountTemplateGeminiCreateEditorPreview() =>
+    accountNativeEditorPreviewHost(
+      AccountTemplatePreviewFixtures.createEditor('gemini'),
+    );
+
+@Preview(
+  name: 'Template / gemini / Details',
+  group: 'Accounts · Templates',
+  size: Size(1180, 1080),
+)
+Widget accountTemplateGeminiDetailsPreview() =>
+    accountDetailsPreviewHost(AccountTemplatePreviewFixtures.details('gemini'));
+
+@Preview(
+  name: 'Templates / all Native + Antigravity / list',
   group: 'Accounts · Templates',
   size: Size(1240, 1400),
 )

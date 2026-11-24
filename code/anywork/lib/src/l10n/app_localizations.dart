@@ -7167,6 +7167,12 @@ abstract class AppLocalizations {
   /// **'Chat Completions'**
   String get modelProtocolChatCompletions;
 
+  /// No description provided for @modelProtocolGeminiGenerateContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Gemini API (generateContent)'**
+  String get modelProtocolGeminiGenerateContent;
+
   /// No description provided for @modelConnectionWebSocket.
   ///
   /// In en, this message translates to:
@@ -7190,6 +7196,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Responses (HTTP)'**
   String get settingsProtocolResponsesHttp;
+
+  /// No description provided for @settingsProtocolGeminiGenerateContentHttp.
+  ///
+  /// In en, this message translates to:
+  /// **'Gemini API (generateContent, HTTP)'**
+  String get settingsProtocolGeminiGenerateContentHttp;
 
   /// No description provided for @settingsAgentRouteUnavailable.
   ///
@@ -8954,6 +8966,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'xAI'**
   String get accountProtocolXai;
+
+  /// No description provided for @accountProtocolGemini.
+  ///
+  /// In en, this message translates to:
+  /// **'Google Gemini'**
+  String get accountProtocolGemini;
 
   /// No description provided for @accountProtocolCustom.
   ///
@@ -14510,6 +14528,102 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Succeeded'**
   String get timelineOutcomeStatusSucceeded;
+
+  /// No description provided for @accountsGeminiModeAiStudio.
+  ///
+  /// In en, this message translates to:
+  /// **'AI Studio'**
+  String get accountsGeminiModeAiStudio;
+
+  /// No description provided for @accountsGeminiModeVertexAi.
+  ///
+  /// In en, this message translates to:
+  /// **'Vertex AI'**
+  String get accountsGeminiModeVertexAi;
+
+  /// No description provided for @accountsGeminiModeCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom endpoint'**
+  String get accountsGeminiModeCustom;
+
+  /// No description provided for @accountsGeminiHintAiStudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Access the Gemini API with a Google AI Studio API key (x-goog-api-key), including online model listing.'**
+  String get accountsGeminiHintAiStudio;
+
+  /// No description provided for @accountsGeminiHintVertexAi.
+  ///
+  /// In en, this message translates to:
+  /// **'Access Gemini models with a Vertex AI API key (x-goog-api-key). The global endpoint is recommended.'**
+  String get accountsGeminiHintVertexAi;
+
+  /// No description provided for @accountsGeminiHintCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect to a custom Gemini API (generateContent) endpoint using x-goog-api-key authentication.'**
+  String get accountsGeminiHintCustom;
+
+  /// No description provided for @accountsGeminiBadgeHeader.
+  ///
+  /// In en, this message translates to:
+  /// **'x-goog-api-key'**
+  String get accountsGeminiBadgeHeader;
+
+  /// No description provided for @accountsGeminiBadgeMultimodal.
+  ///
+  /// In en, this message translates to:
+  /// **'Multimodal'**
+  String get accountsGeminiBadgeMultimodal;
+
+  /// No description provided for @accountsGeminiBadgeDiscovery.
+  ///
+  /// In en, this message translates to:
+  /// **'Online catalog'**
+  String get accountsGeminiBadgeDiscovery;
+
+  /// No description provided for @accountsGeminiBadgeBundledCatalog.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in catalog'**
+  String get accountsGeminiBadgeBundledCatalog;
+
+  /// No description provided for @accountsGeminiBadgeImplicitCache.
+  ///
+  /// In en, this message translates to:
+  /// **'Implicit caching'**
+  String get accountsGeminiBadgeImplicitCache;
+
+  /// No description provided for @accountsGeminiEndpointPresetsLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Endpoints'**
+  String get accountsGeminiEndpointPresetsLabel;
+
+  /// No description provided for @accountsGeminiPresetGlobal.
+  ///
+  /// In en, this message translates to:
+  /// **'global (Recommended)'**
+  String get accountsGeminiPresetGlobal;
+
+  /// No description provided for @accountsGeminiPresetAiStudioOfficial.
+  ///
+  /// In en, this message translates to:
+  /// **'Gemini API (v1beta)'**
+  String get accountsGeminiPresetAiStudioOfficial;
+
+  /// No description provided for @accountsGeminiCredentialLabelVertex.
+  ///
+  /// In en, this message translates to:
+  /// **'Vertex AI API key'**
+  String get accountsGeminiCredentialLabelVertex;
+
+  /// No description provided for @accountsGeminiCredentialLabelAiStudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Gemini API key'**
+  String get accountsGeminiCredentialLabelAiStudio;
 
   /// No description provided for @timelineDiffStatLabel.
   ///

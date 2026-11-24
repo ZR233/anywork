@@ -10,12 +10,10 @@ use crate::model::info::MediaWireFormat;
 use crate::protocol::InstructionWireRole;
 
 use super::body::ToolFormatBody;
-use super::content::{
-    MediaRepresentationPlan, media_file_id, media_url, message_content_text, tool_media_content,
-};
 use super::protocol_error;
-use super::tool_history::{
-    record_arguments_text, record_custom_input, tool_callers_by_result_position,
+use pl_model_wire::completion::request_support::{
+    MediaRepresentationPlan, media_file_id, media_url, message_content_text, record_arguments_text,
+    record_custom_input, tool_callers_by_result_position, tool_media_content,
 };
 // Provider envelope only: the canonical context remains the producer's original string.
 fn json_object_result_output(output: String) -> String {

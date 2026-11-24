@@ -59,7 +59,7 @@ final class AccountEditorViewModelProvider
 }
 
 String _$accountEditorViewModelHash() =>
-    r'bc4e778fa61708f22891458ad4e8dc83d3a53d13';
+    r'eac63c0057757da564bb7a1b8538ddda5e5b67a2';
 
 /// One form owns raw input, baseline, dirty and revision. No Widget controller
 /// or canonical mirror is used to decide whether a save completed this draft.

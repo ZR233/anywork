@@ -85,9 +85,9 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 ### 协议栈分工与执行器单点所有权
 
-- `pl-model` 通过静态 `ProtocolRegistry` 按开放的 `ProtocolId` 装配协议。账户保存稳定 ID，配置装配拒绝未注册的协议，历史回执独立读取原始 ID。端点能力控制文件、图像、托管工具和缓存。OpenAI 官方和通用自定义端点由同一 crate 提供独立装配，分别声明默认能力。
-- `pl-model-types` 只定义通用消息、元数据、流事件和身份。Chat Completions、Responses、其模型绑定及原生回放归 `pl-model-openai-wire`。Responses 原生上下文在内存中携带带格式与版本的 `OpaquePayload`，按现有 Responses 形状读写历史。派生协议各自定义目录解释、请求配置、指令角色和服务。HTTP/SSE 与 WebSocket 使用同一份 Responses 事件契约。
-- `pl-model-runtime` 持有冻结模型绑定和 HTTP 客户端。普通完成与原生压缩共用执行器、取消、恢复、续接和计量，文件上传由装配层注入对应实现。流累积器拥有规范事件；Core 的实时 progress、可靠成员交付和 Current 捕获消费同一次执行的观察结果。
+- `pl-model` 通过静态 `ProtocolRegistry` 按开放的 `ProtocolId` 装配协议。账户保存稳定 ID，配置装配拒绝未注册的协议，历史回执独立读取原始 ID。端点能力控制文件、图像、托管工具、凭据请求头（`ApiKeyHeaderScheme`：`Authorization: Bearer` 或 Google API 的 `x-goog-api-key`）和缓存。OpenAI 官方和通用自定义端点由同一 crate 提供独立装配，分别声明默认能力。
+- `pl-model-types` 只定义通用消息、元数据、流事件、身份与认证请求头方案。协议无关的模型绑定、通用媒体表示规划、HTTP/SSE 传输及统一抽象 `WireCodec`/`WireStreamDecoder` 归 `pl-model-wire`；OpenAI Chat Completions、Responses 编解码归 `pl-model-openai-wire`；原生 Gemini REST（`generateContent` / `streamGenerateContent`）编解码与目录独立归属 `pl-model-gemini`，不依赖 OpenAI wire crate。Responses 原生上下文在内存中携带带格式与版本的 `OpaquePayload`，按现有 Responses 形状读写历史；Gemini 原生回放保留候选内容部分（含空文本附带的不透明 `thoughtSignature` 与 `functionCall.id`）。HTTP/SSE 与 WebSocket 使用同一份 Responses 事件契约。
+- `pl-model-runtime` 持有冻结模型绑定、选定的 `WireCodec` 与 HTTP 客户端，不直接依赖具体厂商协议 crate。普通完成与原生压缩共用执行器、取消、恢复、续接和计量，文件上传由装配层注入对应实现。流累积器拥有规范事件；Core 的实时 progress、可靠成员交付和 Current 捕获消费同一次执行的观察结果。
 - SSE 增量扫描新到达的字节，兼容 LF、CRLF、CR 和跨网络分块的 UTF-8。取消或提前结束时，请求与未完成缓冲区随读取器释放。
 - `pl-model-auth` 持有 OAuth/OIDC、身份和刷新状态，运行时通过已绑定的凭据接口按请求获取令牌。OpenAI 协议持有 Codex 请求格式和订阅用量查询。API Key 协议示例可以独立运行。使用命令见 [协议示例](../code/model-protocols/README.md)。
 
@@ -125,20 +125,22 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 - **智谱（Zhipu）与智谱 Coding Plan**：共用智谱协议适配器。普通智谱模板指向通用 Chat Completions 端点及通用目录；Coding Plan 模板默认指向官方 Responses 协议端点（`https://open.bigmodel.cn/api/v1`）并绑定独立的智谱 Responses 目录（含 `GLM-5.3` 与 `GLM-5.3-Flash`）。
 - **MiMo**：MiMo API 与 Token Plan 为两个独立账号模板，共享同一份 MiMo 模型目录。
 - **xAI**：默认指向 `https://api.x.ai/v1` 并绑定独立的 xAI Responses 目录；官方规范端点声明支持 Responses `prompt_cache_key`（用户覆盖自定义 `base_url` 后自动关闭该继承能力），不声明托管搜索、文件上传、远程压缩或 WebSocket。
+- **Google Gemini / Vertex AI（`protocol = "gemini"`，`gemini_generate_content`）**：共用独立 `pl-model-gemini` 协议栈，默认凭据请求头使用 `x-goog-api-key`；支持图像（JPEG/PNG/WEBP/GIF）与文件（PDF/纯文本）内联多模态输入（`inlineData` Base64）及原生思考权重映射与 `thoughtSignature` 完整回放。`vertex-ai` 模板默认指向 `https://aiplatform.googleapis.com/v1/publishers/google`（环境变量 `GCP_API_KEY`），因 Vertex AI `ListPublisherModels` API 不支持 API Key，故关闭自动在线 `/models` 发现并直接使用内置目录；`gemini` 模板指向 `https://generativelanguage.googleapis.com/v1beta`（环境变量 `GEMINI_API_KEY`），支持通过 `/models?pageSize=1000` 与 `pageToken` 有界分页发现并按 `supportedGenerationMethods` 中的 `generateContent` 过滤。
 
 ## 6.5 协议与传输层（Transport）
 
 ### 协议维度与连接模式覆盖
 
-`pl-model` 内部支持 Responses API 与 Chat Completions API 两种线协议，核心层仅消费统一绑定后的运行时、规范完成请求/响应及厂商无关的模型事件。厂商适配器、线协议与物理连接模式是三个正交维度：Responses 支持 WebSocket 或 HTTP（SSE），Chat Completions 仅支持 HTTP；线协议由模型绑定声明，厂商适配器由账号选择，因此同一账号下的不同模型可各自使用不同的线协议而不改变账号身份。
+`pl-model` 内部支持 Responses API、Chat Completions API 与原生 Gemini GenerateContent API 三类线协议，核心层仅消费统一绑定后的运行时、规范完成请求/响应及厂商无关的模型事件。厂商适配器、线协议与物理连接模式是三个正交维度：Responses 支持 WebSocket 或 HTTP（SSE），Chat Completions 与 Gemini GenerateContent 仅支持 HTTP（SSE）；线协议由模型绑定声明，厂商适配器由账号选择，因此同一账号下的不同模型可各自使用不同的线协议而不改变账号身份。
 
-每个模型声明必填的传输档案（`transport profile`），包含协议类型（`protocol`）、支持的连接模式集合（`supported_connection_modes`）与默认连接模式（`default_connection_mode`）。账号模型目录支持按 `model_id` 保存连接模式覆盖项（`connection_overrides`）。配置保存阶段严格拦截非法组合（如 `Chat + WebSocket`、支持列表为空、默认模式不在支持列表中、或覆盖项指向未知/不支持的连接模式），校验失败返回携带 `model_id` 与涉事模态/协议上下文的类型化错误。若在线目录更新导致用户原先保存的合法选择变为不可用，系统保留该用户配置并报告外部绑定不可用，不将其判为用户数据损坏，也不静默篡改用户选择。
+每个模型声明必填的传输档案（`transport profile`），包含协议类型（`protocol`）、支持的连接模式集合（`supported_connection_modes`）与默认连接模式（`default_connection_mode`）。账号模型目录支持按 `model_id` 保存连接模式覆盖项（`connection_overrides`）。配置保存阶段严格拦截非法组合（如 `Chat + WebSocket`、`GeminiGenerateContent + WebSocket`、支持列表为空、默认模式不在支持列表中、或覆盖项指向未知/不支持的连接模式），校验失败返回携带 `model_id` 与涉事模态/协议上下文的类型化错误。若在线目录更新导致用户原先保存的合法选择变为不可用，系统保留该用户配置并报告外部绑定不可用，不将其判为用户数据损坏，也不静默篡改用户选择。
 
 各厂商默认连接绑定如下：
 - **OpenAI**：使用 Responses 协议，同时支持 WebSocket 与 HTTP 且默认采用 WebSocket；当切换为 HTTP 时仍调用 `/responses` 端点消费 SSE，绝不隐式降级为 Chat Completions。
 - **GPT-6.1 Terra**：作为 OpenAI 目录的独立型号沿用上述 Responses 绑定，工具调用不走 Chat Completions；支持文本、图片及已声明的 PDF/文本文件输入，输出为文本。其 `effort` 候选为 `none`、`low`、`medium`、`high`、`xhigh`、`max`，独立默认值为 `medium`，不因 `none` 排在首位而改变默认推理强度。模型未预设自动压缩阈值，按 §6.7 的 Codex 公式推导，不继承其他型号的预设；新增目录成员不改变推荐型号或已有路由。能力与参数依据 [Terra 模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-terra)及 [GPT-6 指南](https://developers.openai.com/api/docs/guides/latest-model)，价格及核验时间由内置目录维护。
 - **DeepSeek / xAI / 智谱 Coding Plan**：使用 `Responses + HTTP`。
 - **智谱通用目录 / MiMo**：使用 `Chat Completions + HTTP`。
+- **Google Gemini / Vertex AI**：使用 `GeminiGenerateContent + HTTP`（调用 `/models/{model}:streamGenerateContent?alt=sse`）。
 
 ### 连接生命周期与超时边界
 

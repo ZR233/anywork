@@ -52,14 +52,14 @@ async fn loopback_response(
 async fn model_sse(
     events: Vec<serde_json::Value>,
 ) -> std::result::Result<
-    pl_model_openai_wire::completion::CompletionResponse,
-    pl_model_openai_wire::completion::CompletionFailure,
+    pl_model_wire::completion::CompletionResponse,
+    pl_model_wire::completion::CompletionFailure,
 > {
-    use pl_model_openai_wire::{
+    use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime};
+    use pl_model_wire::{
         completion::{CompletionRequest, Message, MessageContent, MessageRole},
         model::{ModelDefinition, ModelTransportProfile},
     };
-    use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime};
     let body = events
         .into_iter()
         .map(|event| format!("data: {event}\n\n"))
@@ -74,7 +74,14 @@ async fn model_sse(
         .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::bind("terminal-fixture", endpoint, model, None).unwrap();
+    let runtime = ModelRuntime::bind(
+        "terminal-fixture",
+        endpoint,
+        model,
+        &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+        None,
+    )
+    .unwrap();
     let request = CompletionRequest::builder()
         .messages(vec![Message {
             role: MessageRole::User,
@@ -180,8 +187,7 @@ async fn siwc_model_sse_preserves_normal_output_and_opaque_reasoning() {
     .await
     .unwrap();
     assert_eq!(response.content.as_deref(), Some(text.as_str()));
-    let Some(pl_model_openai_wire::completion::AssistantReplay::Responses { output }) =
-        response.replay
+    let Some(pl_model_wire::completion::AssistantReplay::Responses { output }) = response.replay
     else {
         panic!("expected native replay material");
     };

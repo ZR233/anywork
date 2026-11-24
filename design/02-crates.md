@@ -13,9 +13,9 @@ pl-studio-server / pl-studio-cli → pl-studio-update
 pl-studio-cli → pl-tool
 pl-studio-update → pl-remote-helper
 pl-model / pl-tool / pl-studio-statistics → pl-protocol
-pl-model → pl-model-runtime / pl-model-types / 厂商协议 crate / pl-model-auth
-pl-model-runtime → pl-core / pl-model-types / pl-model-openai-wire
-厂商协议 crate → pl-model-types / pl-model-openai-wire
+pl-model → pl-model-runtime / pl-model-types / pl-model-wire / 厂商协议 crate / pl-model-auth
+pl-model-runtime → pl-core / pl-model-types / pl-model-wire / pl-model-openai-wire
+厂商协议 crate → pl-model-types / pl-model-wire（OpenAI 系另依赖 pl-model-openai-wire；pl-model-gemini 独立不依赖 pl-model-openai-wire）
 厂商协议 example → pl-model-runtime (dev-dependency)
 pl-studio-runtime → pl-model-auth
 pl-tool → pl-core / pl-model
@@ -34,7 +34,7 @@ pl-trace → pl-core
 - `pl-tool` 是 Anywork 工具宿主适配及运行基础设施，不是独立工具的依赖入口。它将冻结的调用事实和受限能力传给工具，并将领域结果适配为内核输出；配置、凭据解析、工作区选择、持久化及产品事件仍归 Studio。共享支持只承载实际复用的文件、进程、媒体或服务能力，不建立通用产品上下文、第二套状态、注册表或调度器。
 - `pl-core` 不依赖 `pl-protocol`、`pl-model`、`pl-tool`、`pl-trace`、`pl-output` 或 Studio 层组件（含测试依赖）。新增概念须先甄别是否属于通用的会话线程编排；账号、工具和产品专属概念分别归入对应适配层，不得通过 `pl-core` 门面镜像导出。
 - 工作区完整成员清单以根目录 `Cargo.toml` 为准；Flutter 应用目录本身不是 Cargo 工作区成员，其 Rust 桥接库 `pl-studio-bridge` 单独纳入工作区。
-- 厂商目录解析和独立服务客户端归属对应协议 crate。共享目录传输、Chat Completions 和 Responses 编解码归属 `pl-model-openai-wire`；`pl-model` 负责账号路由和选择厂商实现。协议客户端测试覆盖公开 HTTP 边界，`pl-tool` 负责参数校验、结果编排和媒体文件归档。
+- 厂商目录解析和独立服务客户端归属对应协议 crate。协议无关的模型绑定契约、HTTP/SSE 传输与 `WireCodec`/`WireStreamDecoder` 抽象归属 `pl-model-wire`；Chat Completions 与 Responses 编解码归属 `pl-model-openai-wire`；原生 Gemini REST（`generateContent` / `streamGenerateContent`）独立归属 `pl-model-gemini` 且不依赖 `pl-model-openai-wire`；`pl-model` 负责账号路由和选择厂商实现，`pl-model-runtime` 仅通过 `WireCodec` trait 驱动 HTTP/SSE 协议族（并保留 Responses WebSocket 专用通道），不依赖具体厂商协议 crate。协议客户端测试覆盖公开 HTTP 边界，`pl-tool` 负责参数校验、结果编排和媒体文件归档。
 - 原生账号的 OAuth/OIDC、身份校验和刷新会话归属 `pl-model-auth`。OpenAI 协议通过 `pl-protocol::credential` 的凭据接口读取当前令牌，Codex 配额查询由 `pl-model-openai` 执行。Studio 装配受保护存储并持有登录操作、编辑意图绑定、配置提交及关闭责任。认证不会引入第二个模型执行器，公共状态由 `pl-studio-runtime` 向 HTTP、FRB 和 Client 发布，具体认证契约见 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证)。
 - ACP 是外部智能体接入协议，不属于原生模型的 HTTP 协议族。`pl-acp` 消费宿主提供的受监督字节流，负责 ACP 握手协商、认证及业务会话的类型化请求与有序更新；它不依赖 Studio、`pl-model` 或 `pl-tool`，不读取产品配置与凭据，也不直接创建操作系统进程。Studio 层负责装配进程监督器，管理接入配置、固定 1.4.5 版本的官方服务端准备、启动资格与认证流程；固定厂商版本策略不下沉到通用 `pl-acp` 协议库，协议库仅校验宿主显式传入的期望服务端版本，并在版本不匹配时拦截后续认证与会话请求（详见 [28](./28-acp.md)）。`pl-studio-runtime` 可精确依赖同次锁定的官方 `agent-client-protocol-schema` 纯数据类型，承载 ACP 内容块、会话更新、权限及配置载荷；协议 DTO 不耦合 ACP 连接实现。HTTP 使用该官方序列化形状，FRB 与 Client 在各自边界做薄类型转换，不用 JSON 字符串或另写协议解析器替代类型契约。
 
@@ -51,8 +51,10 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-model` | 账号配置、有效模型目录、正式路由与协议装配 |
 | `pl-model-types` | 通用消息、流事件、模型元数据和开放协议标识 |
 | `pl-model-runtime` | Core 会话适配、请求执行、连接和续接、重试、取消、附件缓存与计量 |
-| `pl-model-openai-wire` | Chat Completions 与 Responses 的模型绑定、共享编解码和 HTTP 工具 |
-| `code/model-protocols/` 中的厂商 crate | 目录解释、内置模型声明与服务实现，派生协议组合共享 wire |
+| `pl-model-wire` | 协议无关模型绑定、HTTP/SSE 传输与 `WireCodec`/`WireStreamDecoder` 抽象契约 |
+| `pl-model-openai-wire` | OpenAI Chat Completions 与 Responses 线协议编解码与共享请求构建 |
+| `pl-model-gemini` | 原生 Gemini REST（`streamGenerateContent`、Vertex AI API Key 与 Gemini API）独立编解码与模型目录 |
+| `code/model-protocols/` 中的其他厂商 crate | 目录解释、内置模型声明与服务实现，OpenAI 系派生协议组合 `pl-model-openai-wire` |
 | `pl-model-auth` | 模型账号认证协议、身份值对象与凭据刷新会话；存储由宿主注入，不拥有产品登录操作、配置提交或模型执行 |
 | `pl-acp` | 外部智能体的 ACP 协商、认证与业务会话协议，类型化请求、有序更新及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |

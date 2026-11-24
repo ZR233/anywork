@@ -82,6 +82,7 @@ abstract final class AccountTemplatePreviewFixtures {
       'xai' => 'grok-4.7',
       'zhipu' || 'zhipu-coding-plan' => 'glm-5.3',
       'mimo-api' || 'mimo-token-plan' => 'mimo-v2.5-pro',
+      'vertex-ai' || 'gemini' => 'gemini-3.7-flash',
       _ => 'my-custom-model',
     };
     return AccountModelPresentation(
@@ -97,6 +98,40 @@ abstract final class AccountTemplatePreviewFixtures {
       // another template's declarations. Rich synthetic readouts have their
       // own component/state previews in accounts_previews.dart.
     );
+  }
+
+  static List<AccountModelPresentation> declaredModels(String id) {
+    if (id == 'openai-compatible') return const [];
+    if (id == 'vertex-ai' || id == 'gemini') {
+      return [
+        AccountModelPresentation(
+          key: AccountModelKey(account: key(id), modelId: 'gemini-3.7-flash'),
+          name: 'Gemini 3.7 Flash',
+          origin: AccountModelOrigin.bundled,
+          summary:
+              'Fast multimodal Gemini reasoning model for coding and tool use.',
+          canToggle: true,
+        ),
+        AccountModelPresentation(
+          key: AccountModelKey(
+            account: key(id),
+            modelId: 'gemini-3.1-pro-preview',
+          ),
+          name: 'Gemini 3.1 Pro Preview',
+          origin: AccountModelOrigin.bundled,
+          summary: 'High-capability Gemini 3.1 Pro multimodal reasoning model.',
+          canToggle: true,
+        ),
+        AccountModelPresentation(
+          key: AccountModelKey(account: key(id), modelId: 'gemini-2.5-flash'),
+          name: 'Gemini 2.5 Flash',
+          origin: AccountModelOrigin.bundled,
+          summary: 'Balanced Gemini 2.5 Flash model with thinking budget.',
+          canToggle: true,
+        ),
+      ];
+    }
+    return [model(id)];
   }
 
   static AccountRowPresentation row(String id, {String? displayEndpoint}) {
@@ -185,11 +220,70 @@ abstract final class AccountTemplatePreviewFixtures {
         canSave: true,
         canAddModel: true,
         billing: billingControl(id),
-        declaredModels: id == 'openai-compatible' ? [] : [model(id)],
+        declaredModels: declaredModels(id),
         manualModels: id == 'openai-compatible'
             ? AccountPreviewFixtures.editor.manualModels
             : [],
       );
+
+  static String? credentialHelper(String id) => switch (id) {
+    'vertex-ai' || 'gemini' => null,
+    _ => template(id).description,
+  };
+
+  static NativeAccountEditorPresentation createEditor(String id) {
+    final isGemini = id == 'vertex-ai' || id == 'gemini';
+    return NativeAccountEditorPresentation(
+      editorId: 'create-$id',
+      templateKey: template(id).key,
+      templates: AccountPreviewFixtures.nativeTemplates,
+      name: AccountTextPresentation(
+        raw: template(id).name,
+        helper: isGemini ? null : template(id).description,
+      ),
+      endpoint: AccountTextPresentation(raw: endpoint(id)),
+      credential: AccountTextPresentation(helper: credentialHelper(id)),
+      canChangeTemplate: true,
+      showSetDefaultOnCreate: true,
+      hasStoredCredential: false,
+      credentialRequired: id != 'openai-compatible',
+      isOpenAiTemplate: id == 'openai',
+      protocolLabel: protocol(id),
+      canSave: true,
+      canAddModel: true,
+      billing: billingControl(id),
+      declaredModels: declaredModels(id),
+      manualModels: const [],
+    );
+  }
+
+  static NativeAccountEditorPresentation
+  geminiEditEditor() => editor('vertex-ai').copyWith(
+    dirty: true,
+    endpoint: const AccountTextPresentation(
+      raw: 'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
+    ),
+    manualModels: const [
+      ManualAccountModelPresentation(
+        editorKey: 'synthetic-gemini-manual',
+        id: AccountTextPresentation(raw: 'gemini-3-flash-preview'),
+        name: AccountTextPresentation(
+          raw: 'Gemini 3 Flash Preview (us-central1)',
+        ),
+        contextWindow: AccountTextPresentation(raw: '1048576'),
+        maxOutputTokens: AccountTextPresentation(raw: '65536'),
+        wireApi: AccountWireApi.geminiGenerateContent,
+        allowedWireApis: [AccountWireApi.geminiGenerateContent],
+        connection: AccountConnection.http,
+        allowedConnections: [
+          AccountConnection.automatic,
+          AccountConnection.http,
+        ],
+        canRemove: true,
+        canEditId: true,
+      ),
+    ],
+  );
 
   static final editorWithUsageUnknownTemplate =
       _createEditorWithUsageUnknownTemplate();

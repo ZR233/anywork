@@ -1,17 +1,18 @@
 //! Provider 原始 SSE 流到 canonical 事件流的解码链。
 //!
-//! `OpenAiStreamDecoder` 先把 wire 事件归一为 `ModelStreamEvent`，
-//! `VisibleOutputDecoder` 再按模型的可见输出协议（原生 phases 或标签文本）
+//! `WireStreamDecoder`（或 WebSocket 上的 `OpenAiStreamDecoder`）先把 wire 事件归一为
+//! `ModelStreamEvent`，`VisibleOutputDecoder` 再按模型的可见输出协议（原生 phases 或标签文本）
 //! 适配为最终对外的事件。
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use std::collections::VecDeque;
 
+use pl_model_wire::transport::RawSseFrame;
+use pl_model_wire::wire_codec::{VisibleOutputProtocol, WireStreamDecoder};
 use pl_protocol::Result;
 
 use crate::protocol::WireApi;
-use crate::runtime::openai::VisibleOutputProtocol;
 use crate::runtime::openai::sse;
 
 use crate::stream::event::ModelStreamEvent;
@@ -19,6 +20,91 @@ use crate::stream::tagged_output::{TaggedOutputDiagnostics, TaggedVisibleOutputA
 
 pub(crate) type CompletionEventStream = BoxStream<'static, Result<ModelStreamEvent>>;
 pub(crate) type OpenAiRawEventStream = BoxStream<'static, Result<sse::SseStreamEvent>>;
+
+pub(crate) fn decode_wire_stream(
+    decoder: Box<dyn WireStreamDecoder>,
+    stream: BoxStream<'static, Result<RawSseFrame>>,
+    visible_output_protocol: VisibleOutputProtocol,
+    close_on_terminal: bool,
+    trace: Option<crate::completion::CompletionTraceContext>,
+) -> CompletionEventStream {
+    let state = WireStreamDecodeState {
+        stream: Some(stream),
+        trace,
+        decoder,
+        visible_output: VisibleOutputDecoder::new(visible_output_protocol),
+        close_on_terminal,
+        pending: VecDeque::new(),
+        stream_finished: false,
+    };
+
+    futures::stream::unfold(state, |mut state| async move {
+        loop {
+            if let Some(event) = state.pending.pop_front() {
+                return Some((Ok(event), state));
+            }
+
+            if state.stream_finished {
+                return None;
+            }
+            let frame = match state.stream.as_mut() {
+                Some(stream) => match stream.next().await {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(error)) => return Some((Err(error), state)),
+                    None => {
+                        state.stream = None;
+                        state.stream_finished = true;
+                        for event in state.decoder.finish() {
+                            state.pending.extend(state.visible_output.decode(event));
+                        }
+                        state.visible_output.record_diagnostics();
+                        continue;
+                    }
+                },
+                None => {
+                    state.stream_finished = true;
+                    continue;
+                }
+            };
+
+            let redact = |text: &str| frame.diagnostics.redact_text(text);
+            let decoded =
+                match state
+                    .decoder
+                    .decode_frame(&frame.data, frame.request_id.as_deref(), &redact)
+                {
+                    Ok(decoded) => decoded,
+                    Err(mut error) => {
+                        frame.diagnostics.redact_error(&mut error);
+                        return Some((Err(error), state));
+                    }
+                };
+            if let Some(usage) = decoded.usage_capture.as_ref()
+                && let Err(error) = crate::runtime::wire_capture::capture_usage_observation(
+                    usage,
+                    state.trace.as_ref(),
+                )
+                .await
+            {
+                return Some((Err(error), state));
+            }
+            for stream_event in decoded.events {
+                state
+                    .pending
+                    .extend(state.visible_output.decode(stream_event));
+            }
+            if state.close_on_terminal && decoded.reached_terminal {
+                state.stream = None;
+                state.stream_finished = true;
+                for event in state.decoder.finish() {
+                    state.pending.extend(state.visible_output.decode(event));
+                }
+                state.visible_output.record_diagnostics();
+            }
+        }
+    })
+    .boxed()
+}
 
 pub(crate) fn decode_raw_event_stream(
     api: WireApi,
@@ -70,6 +156,16 @@ pub(crate) fn decode_raw_event_stream(
         }
     })
     .boxed()
+}
+
+struct WireStreamDecodeState {
+    stream: Option<BoxStream<'static, Result<RawSseFrame>>>,
+    trace: Option<crate::completion::CompletionTraceContext>,
+    decoder: Box<dyn WireStreamDecoder>,
+    visible_output: VisibleOutputDecoder,
+    close_on_terminal: bool,
+    pending: VecDeque<ModelStreamEvent>,
+    stream_finished: bool,
 }
 
 struct ProviderStreamDecodeState {

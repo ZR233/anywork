@@ -84,6 +84,9 @@ impl StudioRuntime {
                                         pl_model::protocol::WireApi::ChatCompletions => {
                                             "chat_completions"
                                         }
+                                        pl_model::protocol::WireApi::GeminiGenerateContent => {
+                                            "gemini_generate_content"
+                                        }
                                     }
                                     .to_owned(),
                                     context_window: model.base.max_context_window,

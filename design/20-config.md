@@ -197,7 +197,7 @@ Runtime 发布的目录修订同时覆盖完整的能力补齐后快照与 `pl-m
 
 账号声明的保存资格与模型的路由可用性分开校验。Native 账号允许在尚未配置任何模型时保存，空 `Explicit` 目录本身不构成声明错误；保存、启动及重载保留这个空目录，不补造模型、在线发现能力或默认路由。名称、端点、协议、模板、凭据和覆盖仍遵循既有校验，已有路由与模型引用的完整性约束不因允许空目录而放宽。没有可用模型的账号不能设为默认，也不能解析为可执行路由；创建后设默认仍是创建确认后的独立操作，失败保留已创建身份，用户补齐模型后仅重试剩余意图。
 
-路由解析根据当前路由选中的模型绑定与连接覆盖（`connection_overrides`）确定传输协议（`Responses` 或 `Chat`）与连接方式（`HTTP` 或 `WS`），再结合账号的厂商协议适配、端点地址、凭据与服务能力组装为运行时路由；合法传输组合矩阵为 `Responses + WS/HTTP` 与 `Chat + HTTP`。
+路由解析根据当前路由选中的模型绑定与连接覆盖（`connection_overrides`）确定传输协议（`Responses`、`ChatCompletions` 或 `GeminiGenerateContent`）与连接方式（`HTTP` 或 `WS`），再结合账号的厂商协议适配、端点地址、凭据头方案（`AuthorizationBearer` 或 Google `XGoogApiKey`）、凭据与服务能力组装为运行时路由；合法传输组合矩阵为 `Responses + WS/HTTP`、`ChatCompletions + HTTP` 与 `GeminiGenerateContent + HTTP`。内置 `vertex-ai`（环境变量 `GCP_API_KEY`，关闭在线 `/models` 发现）与 `gemini`（环境变量 `GEMINI_API_KEY`，支持 `/models` 分页发现）两个模板共用 `protocol = "gemini"`。
 
 账号端点服务能力与单模型能力严格区分：账号服务能力表征服务端点是否支持 Responses 托管工具（hosted tools）、托管或独立联网搜索（携带 `OpenAIResponses` 或 `DeepSeekResponses` 方言）以及图像生成（携带 `Images` 方言与生图模型前缀）；模型能力则表征当前模型自身是否支持原生搜索、函数调用或多模态输入。官方 OpenAI 端点默认开启 Responses 托管工具，若用户覆盖为自定义 `base_url` 则默认关闭；xAI 权威端点默认继承 `prompt_cache_key` 缓存方言，若覆盖为非权威 `base_url` 则由 `TemplateDefaults` 自动撤销该缓存方言。自定义 Responses 服务确认支持缓存键后，可通过现有 `capabilities.source = "explicit"` 与 `capabilities.prompt_cache.dialect = "open_ai_prompt_cache_key"` 声明；这不启用其他未声明的服务能力。每个智能体的缓存归属由运行时按 Thread 生成，用户配置、模型固定 body 和参数映射不提供原始键覆盖入口。
 
@@ -284,7 +284,7 @@ MCP 期望配置采用按环境作用域隔离的**单服务单文件 TOML** 模
 
 设置页基于账号配置领域提供的静态权威账号模板目录构造独立编辑草稿；模板不写入通用 `SettingsStore`，共享选模消费模型领域的只读目录，不借用账号编辑整卡（分域边界见 [25.14](./25-frontend-state.md#2514-账号分域与可预览呈现)）。设置项写入磁盘前必须在前端与 Studio 服务端双重完成完整校验，校验失败时仅在界面展示错误而不落盘：
 - 账号键名（account key）非空且唯一；模板引用必须存在；自定义账号必须显式指定传输协议（`protocol`）。
-- 传输模式组合必须合法：`Responses + WebSocket/HTTP` 与 `ChatCompletions + HTTP` 合法，`ChatCompletions + WebSocket` 在发起任何网络请求前直接拒绝。
+- 传输模式组合必须合法：`Responses + WebSocket/HTTP`、`ChatCompletions + HTTP` 与 `GeminiGenerateContent + HTTP` 合法，`ChatCompletions + WebSocket` 与 `GeminiGenerateContent + WebSocket` 在发起任何网络请求前直接拒绝。
 - 除允许免鉴权的本地服务外，API 密钥不得为空。
 - 没有被路由引用的 Native 账号可保存空模型目录；空目录不提供可选模型，设默认或执行路由仍须解析到真实可用的模型。允许空目录不豁免其他声明、覆盖或引用校验。
 - 每个角色路由引用的模型必须存在于对应账号的有效模型集合中，同一账号下的 `model_id` 不得重复；角色引用的默认模型若用于生成角色推理强度，必须声明 `effort` 参数且包含至少一个候选值。
