@@ -64,6 +64,8 @@ fn builtin_catalog_includes_and_validates_vertex_ai_and_gemini() {
         assert_eq!(ids, expected_ids);
         for m in models {
             assert_eq!(m.transport.protocol, "gemini_generate_content");
+            assert_eq!(m.context.context_window, Some(1_048_576));
+            assert_eq!(m.context.auto_compact_limit, Some(512_000));
             let pricing = m
                 .pricing
                 .as_ref()
@@ -190,6 +192,11 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
             .capabilities
             .supports_input_modality(pl_model::model::ModelModality::File)
     );
+    assert_eq!(hydrogen.base.auto_compact_token_limit, Some(512_000));
+    assert_eq!(
+        hydrogen.resolve_context(None).auto_compact_limit,
+        Some(512_000)
+    );
 
     let carbon = models
         .iter()
@@ -198,6 +205,11 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
     assert_eq!(
         carbon.extra.capabilities.output,
         vec![pl_model::model::ModelModality::Text]
+    );
+    assert_eq!(carbon.base.auto_compact_token_limit, Some(512_000));
+    assert_eq!(
+        carbon.resolve_context(None).auto_compact_limit,
+        Some(512_000)
     );
 
     let embedding = models

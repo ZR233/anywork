@@ -24,6 +24,10 @@ const PRICING_SOURCE: &str = "https://ai.google.dev/gemini-api/docs/pricing";
 const VERIFIED_AT: i64 = 1_795_478_400; // 2026-11-24 UTC
 const UNIFIED_CONTEXT_WINDOW: u64 = 1_048_576;
 const STREAMING_MAX_OUTPUT: u64 = 65_536;
+// Matches Google Antigravity's 512K automatic compaction ceiling for Gemini 4 models,
+// leaving headroom within the unified 1M input/thinking/output context pool while still
+// allowing per-account overrides up to 90% (943,718 tokens).
+const DEFAULT_AUTO_COMPACT_TOKEN_LIMIT: u64 = 512_000;
 
 struct Definition {
     id: &'static str,
@@ -31,6 +35,7 @@ struct Definition {
     description: &'static str,
     context: u64,
     max_output: u64,
+    auto_compact_token_limit: u64,
     thinking_levels: &'static [&'static str],
     default_thinking_level: &'static str,
     pricing: TokenPriceTier,
@@ -46,6 +51,7 @@ const MODELS: &[Definition] = &[
         description: "Fast, cost-efficient Gemini 4 multimodal reasoning model for everyday coding and agentic workflows.",
         context: UNIFIED_CONTEXT_WINDOW,
         max_output: STREAMING_MAX_OUTPUT,
+        auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
         thinking_levels: LEVEL_EXTENDED,
         default_thinking_level: "high",
         pricing: TokenPriceTier::flat(1.50, 7.50, Some(0.075), None),
@@ -56,6 +62,7 @@ const MODELS: &[Definition] = &[
         description: "Frontier-level Gemini 4 model balancing deep reasoning with fast end-to-end completion for complex coding and knowledge work.",
         context: UNIFIED_CONTEXT_WINDOW,
         max_output: STREAMING_MAX_OUTPUT,
+        auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
         thinking_levels: LEVEL_EXTENDED,
         default_thinking_level: "high",
         pricing: TokenPriceTier::flat(3.00, 15.00, Some(0.15), None),
@@ -67,6 +74,7 @@ const MODELS: &[Definition] = &[
         context: UNIFIED_CONTEXT_WINDOW,
         // Streaming single-hop default limit is 65,536 (live /models metadata reports 32,768 for non-streaming hops).
         max_output: STREAMING_MAX_OUTPUT,
+        auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
         thinking_levels: LEVEL_STANDARD,
         default_thinking_level: "medium",
         // Standard Paid Tier rate effective 2026-12-01 (introductory promo $2.00/$10.00/$0.10 runs through 2026-11-30).
@@ -79,6 +87,7 @@ const MODELS: &[Definition] = &[
         context: UNIFIED_CONTEXT_WINDOW,
         // Streaming single-hop default limit is 65,536 (live /models metadata reports 32,768 for non-streaming hops).
         max_output: STREAMING_MAX_OUTPUT,
+        auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
         thinking_levels: LEVEL_STANDARD,
         default_thinking_level: "medium",
         // Standard Paid Tier rate effective 2026-12-01 (introductory promo $2.00/$10.00/$0.10 runs through 2026-11-30).
@@ -103,6 +112,7 @@ impl Definition {
             max_output_tokens: Some(self.max_output),
             pricing,
         });
+        model.base.auto_compact_token_limit = Some(self.auto_compact_token_limit);
         model.set_parameters(vec![thinking_effort_parameter(
             self.thinking_levels,
             self.default_thinking_level,
@@ -291,6 +301,19 @@ mod tests {
             assert_eq!(model.base.context_window, Some(UNIFIED_CONTEXT_WINDOW));
             assert_eq!(model.base.max_context_window, Some(UNIFIED_CONTEXT_WINDOW));
             assert_eq!(model.extra.max_output_tokens, Some(STREAMING_MAX_OUTPUT));
+            assert_eq!(
+                model.base.auto_compact_token_limit,
+                Some(DEFAULT_AUTO_COMPACT_TOKEN_LIMIT)
+            );
+            assert_eq!(
+                model.resolve_context(None).auto_compact_limit,
+                Some(DEFAULT_AUTO_COMPACT_TOKEN_LIMIT)
+            );
+            assert_eq!(model.max_auto_compact_override(), Some(943_718));
+            assert_eq!(
+                model.resolve_context(Some(700_000)).auto_compact_limit,
+                Some(700_000)
+            );
 
             let effort_param = model.effort_parameter().expect("effort parameter");
             assert_eq!(effort_param.default.as_deref(), Some(default_effort));
