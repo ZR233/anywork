@@ -4,48 +4,10 @@
 
 mod current;
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::ThreadCheckpoint;
-
-/// 显式的 `state.prev.toml` 回退诊断。
-///
-/// checkpoint 层只知道自己读到了哪一份文件，所以恢复事实在一个进程级登记表里累积：持久化观测
-/// 把它作为该 Thread 的可查询恢复诊断发布，同一 Thread 的下一次成功保存会清除它。
-static CHECKPOINT_RECOVERY: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-
-fn checkpoint_recovery() -> &'static Mutex<BTreeMap<String, String>> {
-    CHECKPOINT_RECOVERY.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-/// 登记一次显式回退；诊断内容说明主文件为何不可用。
-pub(crate) fn record_checkpoint_recovery(thread_id: &str, diagnostic: String) {
-    checkpoint_recovery()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(thread_id.to_owned(), diagnostic);
-}
-
-/// 同一 Thread 成功保存 checkpoint 后清除回退诊断。
-pub(crate) fn clear_checkpoint_recovery(thread_id: &str) {
-    checkpoint_recovery()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(thread_id);
-}
-
-/// 当前所有未清除的回退诊断快照。
-pub(crate) fn checkpoint_recovery_snapshot() -> BTreeMap<String, String> {
-    checkpoint_recovery()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
 
 /// Frozen continuation provenance decoded only during schema-24 import.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -120,6 +82,7 @@ pub(crate) struct StateStore {
     thread_id: String,
     legacy_calls: Option<super::calls::CallsStore>,
     current: Option<current::CurrentRegistration>,
+    coordinator: Option<super::coordinator::ThreadPersistenceCoordinator>,
 }
 
 impl StateStore {
@@ -129,11 +92,21 @@ impl StateStore {
             thread_id: thread_id.to_owned(),
             legacy_calls: None,
             current: None,
+            coordinator: None,
         }
     }
 
     pub(crate) fn with_legacy_calls(mut self, calls: super::calls::CallsStore) -> Self {
         self.legacy_calls = Some(calls);
+        self
+    }
+
+    /// Binds checkpoint fallback diagnostics to the coordinator that observes this Thread.
+    pub(crate) fn with_persistence(
+        mut self,
+        coordinator: super::coordinator::ThreadPersistenceCoordinator,
+    ) -> Self {
+        self.coordinator = Some(coordinator);
         self
     }
 
@@ -291,10 +264,12 @@ impl StateStore {
                     || "state.toml was missing".to_owned(),
                     std::string::ToString::to_string,
                 );
-                record_checkpoint_recovery(
-                    &self.thread_id,
-                    format!("recovered the Thread checkpoint from state.prev.toml ({primary})"),
-                );
+                if let Some(coordinator) = &self.coordinator {
+                    coordinator.record_checkpoint_recovery(
+                        &self.thread_id,
+                        format!("recovered the Thread checkpoint from state.prev.toml ({primary})"),
+                    );
+                }
                 tracing::warn!(
                     thread_id = %self.thread_id,
                     recovered_from = %path.display(),

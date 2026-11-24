@@ -195,7 +195,8 @@ impl StudioStore {
                 .to_path_buf(),
             thread_id,
         )
-        .with_legacy_calls(self.calls.clone()))
+        .with_legacy_calls(self.calls.clone())
+        .with_persistence(self.thread_persistence.clone()))
     }
 
     pub(crate) fn calls(&self) -> &CallsStore {
