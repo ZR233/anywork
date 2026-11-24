@@ -2,6 +2,7 @@ import 'package:anywork/src/features/conversation/composer/state/start_backend_v
 import 'package:anywork/src/features/conversation/composer/views/composer_route_selectors.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
+import 'package:anywork/src/shared/account_brand.dart';
 import 'package:anywork/src/shared/composer_configuration_bar.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/model_directory.dart';
@@ -15,6 +16,7 @@ final _accounts = [
   ModelSelectionAccount(
     id: 'account',
     name: '测试账号',
+    brandKey: 'openai',
     billingKind: null,
     models: const [
       AccountModelView(
@@ -27,6 +29,12 @@ final _accounts = [
         modelId: 'two',
         displayName: '模型二',
         reasoningEfforts: ['low', 'high'],
+        inputCapabilities: [
+          ModelInputCapabilityView(
+            modality: ModelModalityView.image,
+            sources: [ModelInputSourceView.local],
+          ),
+        ],
         typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
       ),
     ],
@@ -121,6 +129,15 @@ void main() {
           }
           expect(find.text('主智能体模型 · 模型一'), findsOneWidget);
         }
+        if (key == StudioDriverKeys.model) {
+          expect(
+            find.descendant(
+              of: find.byKey(key),
+              matching: find.byType(AccountBrandMark),
+            ),
+            findsNothing,
+          );
+        }
         await tester.tap(find.byKey(key));
         await tester.pump(const Duration(milliseconds: 300));
       }
@@ -132,6 +149,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(selections.last, ThreadModeId.fromId('mode.custom'));
       await open(StudioDriverKeys.model);
+      expect(
+        find.byKey(StudioDriverKeys.modelCapabilityTags('account', 'two')),
+        findsOneWidget,
+      );
       await tester.tap(
         find.byKey(StudioDriverKeys.modelOption('account', 'two')),
       );
@@ -193,6 +214,10 @@ void main() {
     expect(find.byType(SubmenuButton), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.model));
     await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.byKey(StudioDriverKeys.modelCapabilityTags('account', 'two')),
+      findsOneWidget,
+    );
     expect(
       tester
           .widget<MenuItemButton>(
