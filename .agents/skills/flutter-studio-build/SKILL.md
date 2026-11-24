@@ -140,10 +140,12 @@ Flutter 原始 release 输出位于：
 `cargo xtask build-gui` 完成后再把可发布文件收集到 `dist/anywork-release/`。Windows/macOS PR 编译使用这一默认 Release/AOT 路线并保留 bundle 与工程工具检查点，不发布；Rust 测试与依赖 VM service 的 GUI 测试继续使用开发配置。讨论故障时明确区分
 Flutter 原始输出与 xtask 最终收集目录。
 
-Windows 稳定发布将编译与打包分开：先运行 `cargo xtask build-gui`，再以
-`release-gui stage --version <x.y.z> --bundle <路径>` 消费显式提供的预构建 bundle。
-`stage` 不启动 Flutter/Rust 编译；运行 bundle 与小型发布工具分别归档，下游对各自有效载荷
-核对一次生产者摘要，并核对工具编译工作区与源码/版本身份，禁止缺失时回退重新编译。
+稳定发布及 RC 使用独立 runner 并行执行 `cargo xtask build-gui --without-anywk` 和
+`cargo xtask build-anywk --output <目录>`。GUI runner 编译 bridge 并将其装入 Flutter App，分别归档
+应用与发布工具。打包 runner 核对构件 ID、生产者摘要及工具编译工作区，直接用已核验的发布工具执行
+`assemble-gui --bundle <应用目录> --anywk <CLI 目录> --source-sha <提交>`，再调用
+`release-gui stage --version <x.y.z> --bundle <应用目录>`。Linux 的 CLI 编译和装配使用同一个已核验的
+构建镜像。打包只消费预构建输入，缺失或身份校验失败会终止。普通本地 `cargo xtask build-gui` 直接生成完整应用。
 不收集独立符号包，不为重复身份创建自述清单；`finalize` 已执行完整自检，同一作业不重复
 核验未改变的资产，跨作业和正式发布前的安全校验仍保留。构件过期或完整重跑不属于断点续跑保证；
 后置失败优先仅重跑失败/指定作业。阶段、权限与安全验证边界见
@@ -167,7 +169,7 @@ musl 目标，可复用现有 Zig/cargo-zigbuild 或 `PURE_REMOTE_HELPER_PREBUIL
 `run-gui --release` 直接启动包内 `Contents/MacOS/anywork`。本地与 CI 使用 ad-hoc 签名，
 不启用 App Sandbox，不包含 Developer ID、公证或应用内更新。稳定版与 RC 共享 `macos-15`
 Apple Silicon 构建、预构建打包作业；`release-gui stage` 通过 Apple `ditto` 生成完整 `.app` ZIP
-及 SHA-256，`verify` 解包核对版本、arm64 架构、资源和完整签名。编译检查点以 tar 保留
+及 SHA-256。装入已签名的 `anywk` 后重新签署外层 `.app`，打包核验完整签名；`verify` 再解包核对版本、arm64 架构、资源和签名。编译检查点以 tar 保留
 framework 符号链接与执行权限，跨作业仍按构件 ID、生产者摘要与工具工作区验证，不回退编译。
 关闭窗口与 `Cmd+Q` 复用标准退出协调器和共享原生期限。原生测试与人工验收使用 `process-wrap` 进程组回收；
 macOS 没有 Linux subreaper，主动脱离进程组的子进程不在该机制覆盖内，不能外推 Linux 回收结论。

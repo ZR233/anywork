@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real archive round trips and fail-closed PR artifact handoff boundaries."""
+"""Real archive round trips and fail-closed CI artifact handoff boundaries."""
 
 from __future__ import annotations
 
@@ -32,6 +32,72 @@ HELPER_FILES = {
         "pl-remote-helper.sha256",
     )
 }
+
+
+class StudioAnywkHandoffTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(
+            prefix="studio-anywk-handoff-", dir=os.environ.get("PR_HANDOFF_TEST_SCRATCH")
+        )
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        self.producer = root / "producer"
+        self.consumer = root / "consumer"
+        self.consumer.mkdir()
+        self.runner_temp = root / "runner temp"
+        self.runner_temp.mkdir()
+        self.output = self.runner_temp / "github-output"
+        self.archive = self.runner_temp / "studio-anywk" / "anywk.tar"
+        self.archive.parent.mkdir()
+        self.directory = Path("target/studio-anywk")
+        files = self.producer / self.directory
+        files.mkdir(parents=True)
+        (files / "anywk").write_bytes(b"\0release cli")
+        (files / "anywk").chmod(0o751)
+        (files / "build-info.json").write_bytes(b'{"version":"1.2.3"}\n')
+
+    def run_handoff(self, action, workspace, **env):
+        script = Path(__file__).with_name("studio-anywk-handoff.sh").resolve()
+        return subprocess.run(
+            ["bash", str(script), action], cwd=workspace, capture_output=True, text=True,
+            env={**os.environ, "RUNNER_OS": "Linux", "RUNNER_TEMP": str(self.runner_temp),
+                 "GITHUB_OUTPUT": str(self.output), **env},
+        )
+
+    def checkpoint(self):
+        result = self.run_handoff("checkpoint", self.producer)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.runner_temp / "anywk.tar").rename(self.archive)
+        digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        self.assertEqual(self.output.read_text(), f"archiveSha256={digest}\n")
+        return digest
+
+    def restore(self, digest):
+        return self.run_handoff("restore", self.consumer, ANYWK_ARCHIVE_SHA256=digest)
+
+    def test_archive_round_trip_preserves_files_and_executable_mode(self):
+        result = self.restore(self.checkpoint())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        restored = self.consumer / self.directory
+        self.assertEqual({path.name for path in restored.iterdir()}, {"anywk", "build-info.json"})
+        for path in restored.iterdir():
+            self.assertEqual(path.read_bytes(), (self.producer / self.directory / path.name).read_bytes())
+        self.assertTrue(os.access(restored / "anywk", os.X_OK))
+
+    def test_wrong_digest_and_extra_members_fail_before_extraction(self):
+        digest = self.checkpoint()
+        with tarfile.open(self.archive, "a") as tar:
+            tar.addfile(tarfile.TarInfo("extra"))
+        updated_digest = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        for expected, message in (
+            (digest, "SHA-256 mismatch"),
+            (updated_digest, "Unexpected members"),
+        ):
+            with self.subTest(message=message):
+                result = self.restore(expected)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse((self.consumer / self.directory).exists())
 
 
 class HandoffTest(unittest.TestCase):

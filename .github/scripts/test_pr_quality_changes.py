@@ -70,6 +70,10 @@ class PlanFromPathsTest(unittest.TestCase):
             ".release-please-manifest.json",
             "release-please-config.json",
             ".github/workflows/studio-release.yml",
+            ".github/workflows/studio-anywk-build.yml",
+            ".github/workflows/macos-release-package.yml",
+            ".github/actions/restore-studio-anywk/action.yml",
+            ".github/scripts/studio-anywk-handoff.sh",
             ".github/scripts/studio-release-assets.ps1",
         ):
             with self.subTest(path=path):

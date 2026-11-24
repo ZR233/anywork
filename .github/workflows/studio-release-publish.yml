@@ -242,6 +242,18 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  windows-anywk:
+    name: Compile standalone Windows x64 CLI
+    needs: resolve
+    if: needs.resolve.outputs.draft == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/studio-anywk-build.yml
+    with:
+      sourceSha: ${{ needs.resolve.outputs.sha }}
+      platform: windows-x64
+      artifactPrefix: studio-${{ needs.resolve.outputs.releaseId }}
+
   compile:
     name: Compile Windows x64 checkpoint
     needs:
@@ -304,7 +316,7 @@ jobs:
         uses: ./.github/actions/setup-studio-rust
 
       - name: Build GUI bundle and release tool
-        run: cargo xtask build-gui
+        run: cargo xtask build-gui --without-anywk
 
       - name: Archive runtime bundle and identify release tool
         id: checkpoint
@@ -335,7 +347,7 @@ jobs:
 
   package:
     name: Package and sign Windows x64
-    needs: [resolve, compile]
+    needs: [resolve, compile, windows-anywk]
     if: needs.resolve.outputs.draft == 'true'
     runs-on: windows-latest
     permissions:
@@ -345,6 +357,7 @@ jobs:
       archiveSha256: ${{ steps.identity.outputs.archiveSha256 }}
     env:
       RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
       BUNDLE_ARTIFACT_ID: ${{ needs.compile.outputs.bundleArtifactId }}
       BUNDLE_SHA256: ${{ needs.compile.outputs.bundleSha256 }}
       TOOL_ARTIFACT_ID: ${{ needs.compile.outputs.toolArtifactId }}
@@ -393,6 +406,18 @@ jobs:
         run: |
           . .github/scripts/studio-compile-handoff.ps1
           Restore-StudioReleaseTool
+
+      - name: Restore verified anywk checkpoint
+        uses: ./.github/actions/restore-studio-anywk
+        with:
+          artifact-id: ${{ needs.windows-anywk.outputs.artifactId }}
+          archive-sha256: ${{ needs.windows-anywk.outputs.archiveSha256 }}
+
+      - name: Assemble GUI from verified prebuilt inputs
+        shell: pwsh
+        run: |
+          & $env:STUDIO_RELEASE_TOOL assemble-gui --bundle $env:STUDIO_RELEASE_BUNDLE --anywk target/studio-anywk --source-sha $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw "GUI assembly exited with $LASTEXITCODE" }
 
       - name: Install pinned release packaging tools
         shell: pwsh
@@ -527,6 +552,20 @@ jobs:
         with:
           subject-path: dist/studio-release/${{ needs.resolve.outputs.version }}/anywork-${{ needs.resolve.outputs.version }}-windows-x86_64-setup.exe
 
+  linux-anywk:
+    name: Compile standalone Linux amd64 CLI
+    needs: [resolve, linux-environment]
+    if: needs.resolve.outputs.draft == 'true' && needs.resolve.outputs.linux == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/studio-anywk-build.yml
+    with:
+      sourceSha: ${{ needs.resolve.outputs.sha }}
+      platform: linux-amd64
+      artifactPrefix: studio-${{ needs.resolve.outputs.releaseId }}
+      linuxImageRef: ${{ needs.linux-environment.outputs.imageRef }}
+      linuxEnvironmentKey: ${{ needs.linux-environment.outputs.key }}
+
   linux-compile:
     name: Compile Linux amd64 checkpoint
     needs: [resolve, helper, linux-environment]
@@ -596,7 +635,7 @@ jobs:
             . -> target/xtask
 
       - name: Build GUI with same-run prebuilt helpers
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo xtask build-gui
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo xtask build-gui --without-anywk
       - name: Identify full bundle and prebuilt tool immediately
         id: checkpoint
         run: bash .github/scripts/studio-linux-handoff.sh checkpoint
@@ -621,7 +660,7 @@ jobs:
 
   linux-package:
     name: Package verified Linux prebuilt inputs
-    needs: [resolve, linux-compile, linux-environment]
+    needs: [resolve, linux-compile, linux-anywk, linux-environment]
     if: needs.resolve.outputs.draft == 'true' && needs.resolve.outputs.linux == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -631,6 +670,7 @@ jobs:
       archiveSha256: ${{ steps.identity.outputs.archiveSha256 }}
     env:
       RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
       BUNDLE_ARTIFACT_ID: ${{ needs.linux-compile.outputs.bundleArtifactId }}
       BUNDLE_SHA256: ${{ needs.linux-compile.outputs.bundleSha256 }}
       TOOL_ARTIFACT_ID: ${{ needs.linux-compile.outputs.toolArtifactId }}
@@ -656,12 +696,23 @@ jobs:
       - name: Verify SHA-256 and exact compiled workspace identity
         run: bash .github/scripts/studio-linux-handoff.sh restore-inputs
 
+      - name: Restore verified anywk checkpoint inside the checkout mount
+        uses: ./.github/actions/restore-studio-anywk
+        with:
+          artifact-id: ${{ needs.linux-anywk.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-anywk.outputs.archiveSha256 }}
+
       - name: Pull and verify published environment
         env:
           LINUX_IMAGE_REF: ${{ needs.linux-environment.outputs.imageRef }}
         run: bash .github/scripts/linux-build-handoff.sh
 
       # Direct prebuilt tool execution: no cargo/Flutter/helper compilation here.
+      - name: Assemble GUI in the verified image
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
+            "$STUDIO_LINUX_TOOL" assemble-gui --bundle "$STUDIO_LINUX_BUNDLE" \
+            --anywk target/studio-anywk --source-sha "$SOURCE_SHA"
       - name: Stage Debian package from verified bundle
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
@@ -711,8 +762,20 @@ jobs:
         with:
           subject-path: dist/studio-release/${{ needs.resolve.outputs.version }}/anywork-${{ needs.resolve.outputs.version }}-linux-x86_64.deb
 
-  macos-build:
-    name: Build and package macOS arm64
+  macos-anywk:
+    name: Compile standalone macOS arm64 CLI
+    needs: resolve
+    if: needs.resolve.outputs.draft == 'true' && needs.resolve.outputs.macos == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/studio-anywk-build.yml
+    with:
+      sourceSha: ${{ needs.resolve.outputs.sha }}
+      platform: macos-arm64
+      artifactPrefix: studio-${{ needs.resolve.outputs.releaseId }}
+
+  macos-compile:
+    name: Compile macOS arm64 GUI checkpoint
     needs: [resolve, helper]
     if: needs.resolve.outputs.draft == 'true' && needs.resolve.outputs.macos == 'true'
     permissions:
@@ -722,6 +785,25 @@ jobs:
       sourceSha: ${{ needs.resolve.outputs.sha }}
       helperX64Id: ${{ needs.helper.outputs.x64ArtifactId }}
       helperArm64Id: ${{ needs.helper.outputs.arm64ArtifactId }}
+      artifactPrefix: studio-${{ needs.resolve.outputs.releaseId }}
+
+  macos-build:
+    name: Package verified macOS arm64 prebuilt inputs
+    needs: [resolve, macos-compile, macos-anywk]
+    if: needs.resolve.outputs.draft == 'true' && needs.resolve.outputs.macos == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/macos-release-package.yml
+    with:
+      sourceSha: ${{ needs.resolve.outputs.sha }}
+      version: ${{ needs.resolve.outputs.version }}
+      bundleArtifactId: ${{ needs.macos-compile.outputs.bundleArtifactId }}
+      bundleSha256: ${{ needs.macos-compile.outputs.bundleSha256 }}
+      toolArtifactId: ${{ needs.macos-compile.outputs.toolArtifactId }}
+      toolSha256: ${{ needs.macos-compile.outputs.toolSha256 }}
+      toolWorkspace: ${{ needs.macos-compile.outputs.toolWorkspace }}
+      anywkArtifactId: ${{ needs.macos-anywk.outputs.artifactId }}
+      anywkArchiveSha256: ${{ needs.macos-anywk.outputs.archiveSha256 }}
       artifactPrefix: studio-${{ needs.resolve.outputs.releaseId }}
       verifyPackage: false
 
