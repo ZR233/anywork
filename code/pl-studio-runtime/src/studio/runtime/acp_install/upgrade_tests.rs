@@ -265,21 +265,23 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
         other => panic!("expected release, got {other:?}"),
     }
 
-    // Below minimum 1.4.5 -> SourceRejected
-    let too_old = registry_json(
-        "1.4.4",
-        target,
-        official_url,
-        "agy_acp_server.par",
-        &["--uid="],
-        &sha,
-    );
-    assert_eq!(
-        source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &too_old)
-            .unwrap_err()
-            .code,
-        AcpInstallFailureCode::SourceRejected
-    );
+    // Below minimum 1.5.2 -> SourceRejected
+    for unsupported in ["1.4.5", "1.5.1"] {
+        let too_old = registry_json(
+            unsupported,
+            target,
+            official_url,
+            "agy_acp_server.par",
+            &["--uid="],
+            &sha,
+        );
+        assert_eq!(
+            source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &too_old)
+                .unwrap_err()
+                .code,
+            AcpInstallFailureCode::SourceRejected
+        );
+    }
 
     // Major 2.0.0 -> IncompatibleMajor
     let major_two = registry_json(
@@ -375,26 +377,26 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
 }
 
 #[tokio::test]
-async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
+async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
     let target = source::current_target().expect("supported test target");
     let (cmd, args) = target_command_and_args(target);
-    let (zip_145, sha_145) = build_stored_zip(&[(cmd, b"#!/bin/sh\necho 1.4.5\n", 0o100755)]);
     let (zip_152, sha_152) = build_stored_zip(&[(cmd, b"#!/bin/sh\necho 1.5.2\n", 0o100755)]);
+    let (zip_153, sha_153) = build_stored_zip(&[(cmd, b"#!/bin/sh\necho 1.5.3\n", 0o100755)]);
 
     let state = MockServerState::default();
     {
         let mut archives = state.archives.lock().unwrap();
-        archives.insert("agy-1.4.5.zip".into(), zip_145);
         archives.insert("agy-1.5.2.zip".into(), zip_152);
+        archives.insert("agy-1.5.3.zip".into(), zip_153);
     }
     let (registry_url, archive_base_url, server_handle) = start_mock_server(state.clone()).await?;
     *state.registry_body.lock().unwrap() = registry_json(
-        "1.4.5",
+        "1.5.2",
         target,
-        &format!("{archive_base_url}agy-1.4.5.zip"),
+        &format!("{archive_base_url}agy-1.5.2.zip"),
         cmd,
         &args,
-        &sha_145,
+        &sha_152,
     );
 
     let (_home, runtime) = test_runtime().await?;
@@ -405,15 +407,15 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
             archive_base_url: archive_base_url.clone(),
         });
 
-    // Step 1: initial install 1.4.5
+    // Step 1: initial install 1.5.2
     runtime.start_acp_install(StartAcpInstallRequest {
-        operation_id: "install-145".into(),
+        operation_id: "install-152".into(),
         provider: AcpProvider::Antigravity,
     })?;
     let after_install = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             &snapshot.state_of(AcpProvider::Antigravity),
-            AcpInstallState::Ready { server, .. } if server.release.version == "1.4.5"
+            AcpInstallState::Ready { server, .. } if server.release.version == "1.5.2"
         )
     })
     .await?;
@@ -421,30 +423,30 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
         after_install
             .installed_of(AcpProvider::Antigravity)
             .map(|server| server.release.version.as_str()),
-        Some("1.4.5")
+        Some("1.5.2")
     );
     assert!(matches!(
         after_install.update_of(AcpProvider::Antigravity),
-        AcpInstallUpdateState::UpToDate { latest_version, .. } if latest_version == "1.4.5"
+        AcpInstallUpdateState::UpToDate { latest_version, .. } if latest_version == "1.5.2"
     ));
 
-    // Step 2: upstream publishes 1.5.2; check_acp_install_update discovers it
+    // Step 2: upstream publishes 1.5.3; check_acp_install_update discovers it
     *state.registry_body.lock().unwrap() = registry_json(
-        "1.5.2",
+        "1.5.3",
         target,
-        &format!("{archive_base_url}agy-1.5.2.zip"),
+        &format!("{archive_base_url}agy-1.5.3.zip"),
         cmd,
         &args,
-        &sha_152,
+        &sha_153,
     );
     runtime.check_acp_install_update(CheckAcpInstallUpdateRequest {
-        operation_id: "check-152".into(),
+        operation_id: "check-153".into(),
         provider: AcpProvider::Antigravity,
     })?;
     let after_check = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.update_of(AcpProvider::Antigravity),
-            AcpInstallUpdateState::UpdateAvailable { latest, .. } if latest.version == "1.5.2"
+            AcpInstallUpdateState::UpdateAvailable { latest, .. } if latest.version == "1.5.3"
         )
     })
     .await?;
@@ -452,21 +454,21 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
         after_check
             .installed_of(AcpProvider::Antigravity)
             .map(|server| server.release.version.as_str()),
-        Some("1.4.5")
+        Some("1.5.2")
     );
 
-    // Step 3: one-click upgrade installs 1.5.2 & updates installed/update facts
+    // Step 3: one-click upgrade installs 1.5.3 & updates installed/update facts
     runtime.start_acp_install(StartAcpInstallRequest {
-        operation_id: "upgrade-152".into(),
+        operation_id: "upgrade-153".into(),
         provider: AcpProvider::Antigravity,
     })?;
     let after_upgrade = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.state_of(AcpProvider::Antigravity),
-            AcpInstallState::Ready { server, .. } if server.release.version == "1.5.2"
+            AcpInstallState::Ready { server, .. } if server.release.version == "1.5.3"
         ) && matches!(
             snapshot.update_of(AcpProvider::Antigravity),
-            AcpInstallUpdateState::UpToDate { latest_version, .. } if latest_version == "1.5.2"
+            AcpInstallUpdateState::UpToDate { latest_version, .. } if latest_version == "1.5.3"
         )
     })
     .await?;
@@ -474,17 +476,17 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
         after_upgrade
             .installed_of(AcpProvider::Antigravity)
             .map(|server| server.release.version.as_str()),
-        Some("1.5.2")
+        Some("1.5.3")
     );
 
-    // Step 4: background check seeing 2.0.0 surfaces IncompatibleMajor without changing installed 1.5.2
+    // Step 4: background check seeing 2.0.0 surfaces IncompatibleMajor without changing installed 1.5.3
     *state.registry_body.lock().unwrap() = registry_json(
         "2.0.0",
         target,
-        &format!("{archive_base_url}agy-1.5.2.zip"),
+        &format!("{archive_base_url}agy-1.5.3.zip"),
         cmd,
         &args,
-        &sha_152,
+        &sha_153,
     );
     runtime.acp_install.start_background_check(true);
     let after_major = wait_install_snapshot(&runtime, |snapshot| {
@@ -498,7 +500,7 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
         after_major
             .installed_of(AcpProvider::Antigravity)
             .map(|server| server.release.version.as_str()),
-        Some("1.5.2")
+        Some("1.5.3")
     );
 
     runtime.shutdown_runtime().await?;
@@ -511,9 +513,9 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
 async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_latest() -> Result<()> {
     let (_home, runtime) = test_runtime().await?;
     let retired =
-        seed_synthetic_install_version(&runtime.store, "1.4.1", b"#!/bin/sh\necho 1.4.1\n");
-    seed_synthetic_install_version(&runtime.store, "1.4.5", b"#!/bin/sh\necho 1.4.5\n");
+        seed_synthetic_install_version(&runtime.store, "1.4.5", b"#!/bin/sh\necho 1.4.5\n");
     seed_synthetic_install_version(&runtime.store, "1.5.2", b"#!/bin/sh\necho 1.5.2\n");
+    seed_synthetic_install_version(&runtime.store, "1.5.3", b"#!/bin/sh\necho 1.5.3\n");
 
     let cancel = CancellationToken::new();
     let verified = prepare::verified_install(
@@ -523,10 +525,10 @@ async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_late
     )
     .await
     .expect("selects highest installed 1.x version");
-    assert_eq!(verified.release.version, "1.5.2");
+    assert_eq!(verified.release.version, "1.5.3");
     assert!(retired.is_file(), "retired installation stays on disk");
 
-    // Corrupt highest version: must fail closed rather than silently falling back to 1.4.5
+    // Corrupt highest version: must fail closed rather than silently falling back to 1.5.2
     std::fs::write(&verified.program, b"#!/bin/sh\necho x.y.z\n")?;
     let error = prepare::verified_install(
         &runtime.store,
@@ -545,8 +547,8 @@ async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_late
 #[tokio::test]
 async fn offline_scan_distinguishes_unsupported_versions_from_invalid_receipts() -> Result<()> {
     let (_home, runtime) = test_runtime().await?;
-    let retired = seed_synthetic_install_version(&runtime.store, "1.4.1", b"retired");
-    for version in ["0.9.0", "1.6.0-beta.1", "1.6.0+build.1", "2.0.0"] {
+    let retired = seed_synthetic_install_version(&runtime.store, "1.4.5", b"retired");
+    for version in ["0.9.0", "1.5.1", "1.6.0-beta.1", "1.6.0+build.1", "2.0.0"] {
         seed_synthetic_install_version(&runtime.store, version, b"unsupported");
     }
     let cancel = CancellationToken::new();

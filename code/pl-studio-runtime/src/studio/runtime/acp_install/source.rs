@@ -1,9 +1,9 @@
 //! 受管发行来源解析、大版本 1 兼容性校验与官方注册表客户端。
 //!
-//! 受管 Antigravity 支持大版本 `1` 范围内的兼容发行（`>= 1.4.5, < 2.0.0`）：
+//! 受管 Antigravity 支持大版本 `1` 范围内的兼容发行（`>= 1.5.2, < 2.0.0`）：
 //! - 在线更新与发现严格固定从官方 ACP 注册表（`cdn.agentclientprotocol.com`）读取，且分发包必须位于
 //!   官方 Google HTTPS 目录（`https://dl.google.com/agy-extensions/releases/`）；
-//! - 保留官方 `1.4.5` 四平台发行清单作为内置兼容基线，保证仅查看/离线复用已装版本时无需硬编码第二套来源；
+//! - 保留官方 `1.5.2` 六平台发行清单作为内置兼容基线，保证仅查看/离线复用已装版本时无需硬编码第二套来源；
 //! - 严禁从环境变量、用户输入或任意第三方域名覆盖官方来源（仅单元测试可在 `#[cfg(test)]` 注入本机回环服务）。
 
 use std::collections::BTreeMap;
@@ -22,7 +22,7 @@ use crate::{
 use super::mapping::failure;
 
 /// 受管 Antigravity 支持的最低兼容版本。
-pub(in crate::studio::runtime) const MINIMUM_SUPPORTED_VERSION: &str = "1.4.5";
+pub(in crate::studio::runtime) const MINIMUM_SUPPORTED_VERSION: &str = "1.5.2";
 /// 受管 Antigravity 允许的语义化主版本号。
 pub(in crate::studio::runtime) const SUPPORTED_MAJOR_VERSION: u64 = 1;
 /// 模板目录展示的支持范围标识。
@@ -146,35 +146,48 @@ struct FixedTarget {
     args: &'static [&'static str],
 }
 
-/// 内置 `1.4.5` 基线清单（来自 ACP registry revision `02b460362cfedf4d43b03df7aad6d79a353fe064`）。
-/// macOS（`darwin-*`）自 `1.5.x` 起由官方注册表正式发布。
+/// 内置 `1.5.2` 基线清单（来自 ACP registry revision `e29b5bf3bfd8756db5d901690b43dc31e926ccd5`）。
 const BUNDLED_TARGETS: &[FixedTarget] = &[
     FixedTarget {
         target: "linux-x86_64",
-        sha256: "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
-        archive_path: "linux/agy-acp-server-1.4.5-linux-x86_64.zip",
+        sha256: "99dd8612450805011619d7b8447ce374c289e00549d8557f36790e1dd6256852",
+        archive_path: "linux/agy-acp-server-1.5.2-linux-x86_64.zip",
         command: "agy_acp_server.par",
         args: &["--uid="],
     },
     FixedTarget {
         target: "linux-aarch64",
-        sha256: "7d64246633ae094f67e3bbcd2d679e89048f91346d5339313336e7483f40f056",
-        archive_path: "linux/agy-acp-server-1.4.5-linux-arm64.zip",
+        sha256: "e729e05ef54ef0763e48900032466b47fa7c9939cde257f93ba49410ab577acb",
+        archive_path: "linux/agy-acp-server-1.5.2-linux-arm64.zip",
         command: "agy_acp_server.par",
         args: &["--uid="],
     },
     FixedTarget {
         target: "windows-x86_64",
-        sha256: "d24f4c73c9f96d4f44384e281c855a56c72d8eaa9c5b0fad7ccb1635c6b63f50",
-        archive_path: "windows/agy-acp-server-1.4.5-windows-x86_64.zip",
+        sha256: "5cbadd4f4df698572473d8890fc26ec2dc1724501f06e3a963941daec2bd21d6",
+        archive_path: "windows/agy-acp-server-1.5.2-windows-x86_64.zip",
         command: "agy_acp_server.exe",
         args: &[],
     },
     FixedTarget {
         target: "windows-aarch64",
-        sha256: "ab0a9aac8349e08ef289be6d16da8f89e3abe60eba5158032ef78c4a1220261c",
-        archive_path: "windows/agy-acp-server-1.4.5-windows-arm64.zip",
+        sha256: "8a4b2ea8df2ffefae33309348752e9119d21a6d36090c0eb48631c2e8f5781ab",
+        archive_path: "windows/agy-acp-server-1.5.2-windows-arm64.zip",
         command: "agy_acp_server.exe",
+        args: &[],
+    },
+    FixedTarget {
+        target: "darwin-x86_64",
+        sha256: "92addb5580577b5356d35484d72d1a113d9c5312ad766bcb304983aa8e3fbb06",
+        archive_path: "macos/agy-acp-server-1.5.2-darwin-x86_64.zip",
+        command: "agy_acp_server.par",
+        args: &[],
+    },
+    FixedTarget {
+        target: "darwin-aarch64",
+        sha256: "123a16d5c40a8ac99e20f01a62b68dd860fd96b1c528dfb8eaa37ca8733d4845",
+        archive_path: "macos/agy-acp-server-1.5.2-darwin-arm64.zip",
+        command: "agy_acp_server.par",
         args: &[],
     },
 ];
@@ -229,7 +242,7 @@ pub(crate) fn availability() -> AcpInstallAvailability {
     }
 }
 
-/// 严格校验语义化版本号并按大版本 1 兼容性归类（`>= 1.4.5, < 2.0.0`）。
+/// 严格校验语义化版本号并按大版本 1 兼容性归类（`>= 1.5.2, < 2.0.0`）。
 pub(super) fn classify_version(raw: &str) -> VersionClassification {
     let Ok(version) = semver::Version::parse(raw) else {
         return VersionClassification::Malformed;
@@ -353,7 +366,7 @@ fn bundled_targets(provider: AcpProvider) -> &'static [FixedTarget] {
     }
 }
 
-/// 解析内置 `1.4.5` 基线清单（仅本地、不联网）；用于测试夹具或远端不可用/超前大版本时的受支持基线兜底。
+/// 解析内置 `1.5.2` 基线清单（仅本地、不联网）；用于测试夹具或远端不可用/超前大版本时的受支持基线兜底。
 pub(super) fn resolve_bundled(provider: AcpProvider) -> Result<ResolvedRelease, AcpInstallFailure> {
     let stage = AcpInstallStage::Resolve;
     let Some(target) = current_target() else {

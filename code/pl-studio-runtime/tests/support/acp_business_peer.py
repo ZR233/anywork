@@ -55,7 +55,7 @@ for line in sys.stdin:
         if mode == 'session-titles':
             capabilities['sessionCapabilities']['list'] = {}
         version_path=root / 'server-version'
-        server_version=version_path.read_text().strip() if version_path.exists() else '1.4.5'
+        server_version=version_path.read_text().strip() if version_path.exists() else '1.5.2'
         result={'protocolVersion':1, 'agentCapabilities':capabilities,
                 'agentInfo':{'name':'synthetic-peer','version':server_version},
                 'authMethods':[{'id':'login','name':'Sign in','description':'Use the official server login'}]}
@@ -149,6 +149,8 @@ for line in sys.stdin:
             permission_id = 'permission-' + str(rid)
             permission_prompts[permission_id] = (sid, rid)
             request = json.loads((root / 'permission-request.json').read_text())
+            for pre in request.pop('preUpdates', []):
+                emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':sid,'update':pre}})
             emit({'jsonrpc':'2.0','id':permission_id,'method':'session/request_permission',
                   'params':{'sessionId':sid, **request}})
             continue

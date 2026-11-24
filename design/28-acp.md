@@ -34,7 +34,7 @@ Studio 装配完成及有效配置提交后，为每个已启用的 ACP 账户�
 
 认证状态构成独立的版本域，包含十种状态：`未检查`、`检查中`、`需要登录`、`登录中`、`验证中`、`收束中`、`认证通过`、`取消中`、`已取消`与`失败`。运行中阶段携带操作身份（`operationId`），`需要登录`阶段也持有原 `operationId`、活跃连接与服务端实际声明的认证方法列表，`失败`阶段保留发生阶段、类型化错误原因与可恢复操作指引。`认证通过`状态记录服务端身份与检查时间戳，仅代表该次探测时刻的观察结论，不代表永久在线；进程重启后需重新检查，不能由历史成功记录或 `authMethods` 非空直接推断当前凭据有效。
 
-协议层允许服务端身份字段可选，通用 command 不要求品牌、agentInfo 或固定版本；所有连接都核验实际协商协议版本。Antigravity 模板强制要求实际服务端版本处于 SemVer 大版本 `1` 兼容范围内（`>= 1.4.5, < 2.0.0`）且与本次校验选中的已安装版本一致，缺失或不符明确失败，不用本地账号名称或常量修补。认证方法名称、ID、类型来自 initialize；只广告和执行宿主已实现的 agent 流程，terminal/未知未实现方法不误传给 authenticate，也不映射为其他方式。
+协议层允许服务端身份字段可选，通用 command 不要求品牌、agentInfo 或固定版本；所有连接都核验实际协商协议版本。Antigravity 模板强制要求实际服务端版本处于 SemVer 大版本 `1` 兼容范围内（`>= 1.5.2, < 2.0.0`）且与本次校验选中的已安装版本一致，缺失或不符明确失败，不用本地账号名称或常量修补。认证方法名称、ID、类型来自 initialize；只广告和执行宿主已实现的 agent 流程，terminal/未知未实现方法不误传给 authenticate，也不映射为其他方式。
 
 配置保存／删除与连接认证解耦：保存配置成功后立即返回权威设置快照，后续连接失败不推翻已保存事实。连接检查、发起登录、额度刷新与取消操作均通过类型化命令准入；只读快照查询和主题订阅本身不会触发外部进程启动。账号列表仅对 `enabled == true` 且策略声明支持额度查询的 ACP 账号在当前连接修订尚无 `usage` 观察缓存时发起一次首次额度刷新，后续重进列表直接复用内存观察；不支持额度的通用 command 与已禁用账号不发额度请求，具体生命周期见 [28.9](#289-账户额度查询)。命令调用快速返回已受理的操作身份，由认证所有者在后台推进并通过独立的 `acpAuth` 主题发布状态，避免阻塞 FRB 或 HTTP 请求等待人工完成登录。
 
@@ -50,7 +50,7 @@ Studio 装配完成及有效配置提交后，为每个已启用的 ACP 账户�
 
 协议客户端仅协商已实现的 ACP v1 能力。首次准备验证模板安装、启动进程并执行一次 `initialize`，按模板要求核对实际版本处于 SemVer `1.x` 范围且与当次已校验安装版本一致；后续操作复用该初始化结果和连接。检查在账户专属空目录创建独立 `session/new`（空 `mcpServers`）；成功只证明此刻认证可用，`AuthRequired` 表示需要用户继续登录，其他错误保留分类。协议无通用 `get_auth_state`，不能用 `authMethods`、子进程存活或浏览器关闭判定认证成功。
 
-宿主传入可选的期望版本门槛与范围策略：Antigravity 模板传入当前已验证已装版本作为期望精确版本（并由安装校验约束其处于 SemVer `>= 1.4.5, < 2.0.0`），普通 command 为 `None`。协议客户端在收到 `initialize` 响应后、任何认证或会话请求前核对该门槛，模板要求的实际版本缺失或不相等时返回强类型 `server-version-mismatch`；不裁剪空白、不用显示名称替代、不在通用库硬编码厂商常量。同连接代次复用核验结果，不为每次检查重新 initialize；普通 command 不要求服务端提供身份，但仍校验 ACP v1。
+宿主传入可选的期望版本门槛与范围策略：Antigravity 模板传入当前已验证已装版本作为期望精确版本（并由安装校验约束其处于 SemVer `>= 1.5.2, < 2.0.0`），普通 command 为 `None`。协议客户端在收到 `initialize` 响应后、任何认证或会话请求前核对该门槛，模板要求的实际版本缺失或不相等时返回强类型 `server-version-mismatch`；不裁剪空白、不用显示名称替代、不在通用库硬编码厂商常量。同连接代次复用核验结果，不为每次检查重新 initialize；普通 command 不要求服务端提供身份，但仍校验 ACP v1。
 
 `AuthRequired` 是当前登录流程的可继续阶段，携带原始 `operationId`、服务端身份与实际认证方法；所有者保留同一 SDK 连接、通信流和官方进程。继续登录是单独的类型化命令，绑定账户、连接修订、目标操作身份和方法 ID，不能重新启动另一个认证进程。仅对当前连接实际声明的 `agent` 方法调用 `authenticate`，等待协议返回成功后再调用 `session/new` 完成复核；若仍要求认证则回到同一流程的需要登录阶段。浏览器窗口关闭或用户自述授权完成不能替代该响应和复核。
 
@@ -70,18 +70,18 @@ Studio 装配完成及有效配置提交后，为每个已启用的 ACP 账户�
 
 ## 28.5 官方服务器来源与受管准备
 
-受管服务器准备与同大版本升级属于 Studio 产品层能力，独立于 ACP 协议客户端与原生模型适配器。产品仅允许受管 Antigravity Server 在 SemVer 大版本 `1` 范围内（`>= 1.4.5, < 2.0.0`）准备与升级，不开放通用扩展市场、任意第三方下载地址、`2.0+` 跨大版本自动升级或自定义 Shell 安装脚本。目标包按运行 Studio 后端的受支持操作系统（Windows / Linux / macOS）与处理器架构（`x86_64` / `aarch64`）匹配，不以远程客户端的显示平台决定下载目标。模板目录对外声明 `supportedVersion = "1.x"`；读取模板、设置、安装状态或订阅主题本身不隐式下载安装包或发起登录。
+受管服务器准备与同大版本升级属于 Studio 产品层能力，独立于 ACP 协议客户端与原生模型适配器。产品仅允许受管 Antigravity Server 在 SemVer 大版本 `1` 范围内（`>= 1.5.2, < 2.0.0`）准备与升级，不开放通用扩展市场、任意第三方下载地址、`2.0+` 跨大版本自动升级或自定义 Shell 安装脚本。目标包按运行 Studio 后端的受支持操作系统（Windows / Linux / macOS）与处理器架构（`x86_64` / `aarch64`）匹配，不以远程客户端的显示平台决定下载目标。模板目录对外声明 `supportedVersion = "1.x"`；读取模板、设置、安装状态或订阅主题本身不隐式下载安装包或发起登录。
 
-在线版本发现与升级严格解析官方 ACP Registry 地址 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`（匹配 agent ID `antigravity-acp`），同时保留基于快照 `02b460362cfedf4d43b03df7aad6d79a353fe064` 生成的内置 `1.4.5` 四平台基线清单用于离线初始安装与无网兜底（macOS 目标 `darwin-x86_64` / `darwin-aarch64` 仅通过在线官方注册表发行）。所有目标归档 URL 必须位于官方 Google HTTPS 基址 `https://dl.google.com/agy-extensions/releases/` 之下，可选 SHA-256 校验和必须为 64 位小写十六进制；包内入口仅允许白名单内的 `agy_acp_server.par`（Linux/macOS）或 `agy_acp_server.exe`（Windows），启动参数严格限定字符集与数量上限（Linux 固定基线为 `["--uid="]`，macOS/Windows 为 `[]`）。官方注册表若返回 `>= 2.0.0` 发行，则版本检查明确归类为 `IncompatibleMajor`（不自动下载或升级），低于 `1.4.5` 或非稳定版本则拒绝：
+在线版本发现与升级严格解析官方 ACP Registry 地址 `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`（匹配 agent ID `antigravity-acp`），同时保留基于快照 `e29b5bf3bfd8756db5d901690b43dc31e926ccd5` 生成的内置 `1.5.2` 六平台基线清单用于离线初始安装与无网兜底。所有目标归档 URL 必须位于官方 Google HTTPS 基址 `https://dl.google.com/agy-extensions/releases/` 之下，可选 SHA-256 校验和必须为 64 位小写十六进制；包内入口仅允许白名单内的 `agy_acp_server.par`（Linux/macOS）或 `agy_acp_server.exe`（Windows），启动参数严格限定字符集与数量上限（Linux 固定基线为 `["--uid="]`，macOS/Windows 为 `[]`）。官方注册表若返回 `>= 2.0.0` 发行，则版本检查明确归类为 `IncompatibleMajor`（不自动下载或升级），低于 `1.5.2` 或非稳定版本则拒绝：
 
-| 宿主目标（Target） | 内置 `1.4.5` 基线归档（相对基址） | 包内允许入口 | 典型启动参数（`argv`） |
+| 宿主目标（Target） | 内置 `1.5.2` 基线归档（相对基址） | 包内允许入口 | 典型启动参数（`argv`） |
 | --- | --- | --- | --- |
-| `linux-x86_64` | `linux/agy-acp-server-1.4.5-linux-x86_64.zip` | `agy_acp_server.par` | `["--uid="]` |
-| `linux-aarch64` | `linux/agy-acp-server-1.4.5-linux-arm64.zip` | `agy_acp_server.par` | `["--uid="]` |
-| `windows-x86_64` | `windows/agy-acp-server-1.4.5-windows-x86_64.zip` | `agy_acp_server.exe` | `[]` |
-| `windows-aarch64` | `windows/agy-acp-server-1.4.5-windows-arm64.zip` | `agy_acp_server.exe` | `[]` |
-| `darwin-x86_64` | 仅在线 `1.5.x+` 官方注册表提供 | `agy_acp_server.par` | `[]` |
-| `darwin-aarch64` | 仅在线 `1.5.x+` 官方注册表提供 | `agy_acp_server.par` | `[]` |
+| `linux-x86_64` | `linux/agy-acp-server-1.5.2-linux-x86_64.zip` | `agy_acp_server.par` | `["--uid="]` |
+| `linux-aarch64` | `linux/agy-acp-server-1.5.2-linux-arm64.zip` | `agy_acp_server.par` | `["--uid="]` |
+| `windows-x86_64` | `windows/agy-acp-server-1.5.2-windows-x86_64.zip` | `agy_acp_server.exe` | `[]` |
+| `windows-aarch64` | `windows/agy-acp-server-1.5.2-windows-arm64.zip` | `agy_acp_server.exe` | `[]` |
+| `darwin-x86_64` | `macos/agy-acp-server-1.5.2-darwin-x86_64.zip` | `agy_acp_server.par` | `[]` |
+| `darwin-aarch64` | `macos/agy-acp-server-1.5.2-darwin-arm64.zip` | `agy_acp_server.par` | `[]` |
 
 运行时初始化与账户连接准备共用本地已发布目录的离线只读扫描。扫描校验目录、回执身份与发行来源，跳过版本号有效但不在支持范围内的安装，并完整校验最高受支持版本的所有成员。连接准备找不到受支持的候选时提示准备组件，遇到目录、回执或所选安装异常时报告相应错误。
 
@@ -131,7 +131,7 @@ ACP 账号使用同一编辑草稿选择本机 agy、自定义命令或受管安
 
 安装就绪与编辑器认领不构成账号保存确认。Client 的保存并连接编排（`saveAndConnect`）须将本次保存的操作身份及结算事实完整交回：明确拒绝、结果未知和同步失败与已确认保存分别表达，保存未确认时不发连接检查、不允许界面重新发送同一冻结意图。由于配置提交后运行期会自动为已启用账户启动后台连接检查，`saveAndConnect` 在保存确认后对已禁用账号、或当前同连接修订已 `Verified`／已在执行 `Check` 的账号直接复用后台检查而不再重复发 `check`；若仍发出的 `check` 收到 `Busy` 且 `acpAuthBusy` 切面证明同一连接修订已有 `Check` 在途，则合并为已受理检查而不报失败。已确认保存后其他检查失败仅作为部分成功反馈，不抹除账号身份；检查受理本身也不代表已连接或已认证。类型化结果、观察屏障及退出收束遵循 [25.3](./25-frontend-state.md#253-版本域与资源戳stamps)，不将安装、配置和认证合并成事务或以通用异常推断配置未写入。
 
-历史配置模式 `24 → 25` 曾保留旧 `accountId`、`provider` 与名称，并剥离旧版 `program` / `args` 的执行语义；这些旧字段只在对应迁移解码边界读取。当前主配置 `32 → 33` 再将旧内嵌账号迁为同 ID 的用户级受管模板定义，保留原件、备份、安装资产、凭据及 Profile 引用，不恢复旧字段双读或在迁移时下载。当前普通 command 的独立 args 是新定义的合法字段，不与历史字段混同。仅受管模板要求匹配的 `1.x` 安装（`>= 1.4.5, < 2.0.0`），缺失时保账号并提示准备，已有已校验版本时离线择优最高版本复用并在大版本 `1` 内支持显式检查与升级；名称修改不触发下载、认证或连接代次变化。联合迁移及冲突恢复遵循 [20](./20-config.md)，自动静默升级、跨大版本（`2.0+`）升级、卸载和历史版本清理仍不在当前范围内。
+历史配置模式 `24 → 25` 曾保留旧 `accountId`、`provider` 与名称，并剥离旧版 `program` / `args` 的执行语义；这些旧字段只在对应迁移解码边界读取。当前主配置 `32 → 33` 再将旧内嵌账号迁为同 ID 的用户级受管模板定义，保留原件、备份、安装资产、凭据及 Profile 引用，不恢复旧字段双读或在迁移时下载。当前普通 command 的独立 args 是新定义的合法字段，不与历史字段混同。仅受管模板要求匹配的 `1.x` 安装（`>= 1.5.2, < 2.0.0`），缺失时保账号并提示准备，已有已校验版本时离线择优最高版本复用并在大版本 `1` 内支持显式检查与升级；名称修改不触发下载、认证或连接代次变化。联合迁移及冲突恢复遵循 [20](./20-config.md)，自动静默升级、跨大版本（`2.0+`）升级、卸载和历史版本清理仍不在当前范围内。
 
 ### 继续登录接口
 
@@ -171,7 +171,7 @@ HTTP、FRB 与 SDK 传递同一类型化观察，Flutter 只做本地化和格�
 
 真实供应商验收通过显式启用的 `acp_real_login` 原生集成场景执行，设置进程环境 `ANYWORK_ACP_ACCEPTANCE=login` 和独立 `ANYWORK_HOME` 后运行 `cargo xtask test-project --suite desktop --case acp_real_login`；`ANYWORK_ACP_EVIDENCE` 可指定真实组件渲染截图目录。显式准备固定发行、保存/检查账户、用户完成官方浏览器授权、等待原流程自动验证，随后显式查询额度。已有凭据使检查直接通过时，须由用户通过官方入口退出，或为验收进程使用独立用户配置目录；不得删除或改写原有凭据，也不把复用登录状态计为首次浏览器授权。重复运行可复用已保存的验收账户和受管安装。结束后以同一产品及用户配置目录、`ANYWORK_ACP_ACCEPTANCE=restart` 再次运行，验证重启后重新检查及额度读取。人工授权不设测试时限，Google 账号选择、验证码、同意和官方退出由用户完成，工具不操作其凭据。截图导出只遮蔽包含 Windows 用户名的本机安装路径，保留实际认证、版本和额度结果。
 
-通过判据同时要求：真实 `session/new` 成功、服务端实际报告处于受支持的 `1.x` 范围（`>= 1.4.5, < 2.0.0`）且与当次受管版本一致、GUI canonical `verified`，以及关闭结果 `completed` / `clean` / `drained`、官方原生测试 runner 成功退出、所属进程全部回收。单独握手、模拟对端和仅启动进程不构成真实通过。报告注明实际平台、代理条件、未覆盖平台和证据位置。
+通过判据同时要求：真实 `session/new` 成功、服务端实际报告处于受支持的 `1.x` 范围（`>= 1.5.2, < 2.0.0`）且与当次受管版本一致、GUI canonical `verified`，以及关闭结果 `completed` / `clean` / `drained`、官方原生测试 runner 成功退出、所属进程全部回收。单独握手、模拟对端和仅启动进程不构成真实通过。报告注明实际平台、代理条件、未覆盖平台和证据位置。
 
 ## 28.11 ACP 业务会话与原生内容通路
 
@@ -223,7 +223,7 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 普通 submit 消费正式 `ContentBlock`，按对端 prompt 能力校验，最多一个活动 prompt，busy 明确拒绝。独立业务驱动同时推进更新、有限命令、控制请求完成和 EOF；配置/权限 RPC 的等待不持有整个会话锁，权限只保留 SDK responder、合法选项及当前请求资格，回答后释放，cancel/close 按协议回答 Cancelled。待决权限独立受最多 64 项、保留数据合计 8 MiB 的资源上限约束，消费观察事件不会释放仍待回答的权限额度；回答后归还额度，超限请求立即回答 Cancelled。权限事件无法交付或观察已失效时，取消失去有效观察通路的待决权限，后续请求不再积存；活动 prompt 与其他控制仍按实际协议结果继续。
 
-原会话先核对活动轮次及观察资格，再按 [28.12](#2812-host-mcp-与宿主指令) 筛选可即时答复的权限请求。命中时直接向 ACP 对端答复其提供的唯一 `allow_once` 选项，避免产生待确认事件或占用待决权限额度。其余请求继续使用原待确认与取消路径，普通工具更新保持原样交付。
+原会话先核对活动轮次及观察资格，再按同轮次 `toolCallId` 增量更新缓存的受限 `name`（受条数与总字节上限约束，并在终态或轮次结束清理）连同当前权限请求的可选 `_meta` 构成结构化工具身份（按类型排除 `title` 与 `raw_input`），交由 [28.12](#2812-host-mcp-与宿主指令) 筛选可即时答复的权限请求。命中时直接向 ACP 对端答复其提供的唯一 `allow_once` 选项，避免产生待确认事件或占用待决权限额度。其余请求继续使用原待确认与取消路径，普通工具更新保持原样交付。
 
 中断发送前在原 owner 核对已观察的 runtime/运行资格，取消通知只有 session ID 也不能迟到命中新 prompt。后续 send 的替换输入由原受管操作持有：cancel 当前运行、消费合法尾部并真实收束后再提交，已有替换在途返回 Busy，不建立可靠输入队列。只有真实 PromptResponse 或错误才结束运行，输出文本或 idle 不构成成功，不自动重发。
 
@@ -261,7 +261,7 @@ initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rm
 
 领域端口只交付工具目录和执行调用。目录项与可调用绑定由同一装配结果产生，`HostInvocation` 携带该实例目录中的工具身份和参数，`HostResult` 携带结构化结果及业务错误标记；不维护另一份九项操作枚举或名称白名单。目录直接投影原作者声明，不回解 `ToolDefinition`，不复制 schema；Grammar/Text 输入只在 MCP 边界以明确的字符串字段承载原文。MCP 握手、request ID、通知和结果封装由官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
 
-Host MCP 注入成功时，Studio 以同一份实例目录提供 ACP 权限过滤。它匹配对端报告的程序化工具名、宿主配置的 `anywork` MCP 命名空间和目录中的完整工具身份。裸工具名、显示标题、未知命名形式及目录外工具继续走待确认流程。自动答复只处理 ACP 对端的一次许可。实际 MCP 请求仍由实例凭据、原会话绑定和业务权限校验。
+Host MCP 注入成功时，Studio 以同一份实例目录提供 ACP 权限过滤。它仅检验对端提供的结构化工具身份：包括按常见 MCP 命名空间分隔符（`__`、`_`、`:`、`/`、`.`、`-`）解析 `mcp<sep>anywork<sep><tool>` 或 `anywork<sep><tool>` 中的程序化 `name`，以及结构化 `_meta.mcp`（要求 `server == "anywork"`、目录内精确 `tool`，且若存在 `is_mcp_tool_call` 则必须为 `true`）。当 `name` 与 `_meta.mcp` 同时存在时两者必须指向同一目录工具；显式非宿主 `name`、非法或冲突的 `_meta`、显示标题（`title`）、裸工具名、未知命名形式及目录外工具继续走待确认流程。自动答复只处理 ACP 对端的一次许可。实际 MCP 请求仍由实例凭据、原会话绑定和业务权限校验。
 
 技能管理的多分支JSON参数使用共享的JSON值投影，以 `input` 承载，例如 `{"input":{"action":"delete","name":"example"}}`；不再拥有专用包装类型或解包闭包。投影将原完整作者schema作为独立资源嵌入，保留分支与引用关系；边界严格解开一层后调用原作者，不压平分支、不增加显示元字段、不忽略未知参数，也不改变Native工具输入。该适配避免对端给工具根对象追加显示字段时与内部分支的严格字段校验冲突。
 

@@ -5,6 +5,7 @@
 //! 协议结果；丢弃调用 future 不取消已经受理的命令，丢弃 driver 更不表示进程已回收。
 //! [`Session::close`] 只确认开始关闭；完整关闭事实从 driver join 的 [`Exit`] 读取。
 
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -33,6 +34,8 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 const SUMMARY_LIMIT: usize = 16 * 1024;
 const PERMISSIONS: usize = 64;
 const PERMISSION_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TRACKED_TOOL_NAMES: usize = 256;
+const MAX_TRACKED_TOOL_NAME_BYTES: usize = 64 * 1024;
 
 /// 明确的会话打开意图；能力不足不降级。
 #[derive(Debug, Clone)]
@@ -49,9 +52,19 @@ type OpenSetupFuture =
 /// The callback owns its future; it must not require the protocol receive lock.
 pub type PrepareOpen = Arc<dyn Fn(AgentCapabilities) -> OpenSetupFuture + Send + Sync>;
 
-/// Matches a programmatic tool name against the host's session-scoped policy.
+/// Structural tool call identity passed to [`AllowOnceForTool`].
+/// Excludes human-readable `title`, `raw_input`, and `options` by type.
+#[derive(Debug, Clone, Copy)]
+pub struct PermissionToolCall<'a> {
+    /// Programmatic tool name resolved from this permission request or earlier updates for the same `toolCallId`.
+    pub name: Option<&'a str>,
+    /// Optional structured protocol metadata attached to the permission request's tool call.
+    pub meta: Option<&'a Meta>,
+}
+
+/// Matches a tool call's structural identity against the host's session-scoped policy.
 /// Runs under the session lock, so it must be fast and must not reenter the session.
-pub type AllowOnceForTool = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+pub type AllowOnceForTool = Arc<dyn Fn(PermissionToolCall<'_>) -> bool + Send + Sync>;
 
 /// Values prepared by the host for this connection; bearer headers must never be logged.
 #[derive(Default)]
@@ -459,6 +472,9 @@ struct Active {
     text_characters: Option<u64>,
     model: Option<String>,
     effort: Option<String>,
+    tool_names: HashMap<ToolCallId, String>,
+    tool_name_order: VecDeque<ToolCallId>,
+    tool_name_bytes: usize,
 }
 
 impl Active {
@@ -469,6 +485,59 @@ impl Active {
             characters,
             response_millis,
         })
+    }
+
+    fn track_tool_call(
+        &mut self,
+        tool_call_id: &ToolCallId,
+        status: Option<ToolCallStatus>,
+        name: Option<&str>,
+    ) {
+        if matches!(
+            status,
+            Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+        ) {
+            self.remove_tool_name(tool_call_id);
+        } else if let Some(name) = name {
+            self.record_tool_name(tool_call_id.clone(), name.to_owned());
+        }
+    }
+
+    fn remove_tool_name(&mut self, tool_call_id: &ToolCallId) {
+        if let Some(previous) = self.tool_names.remove(tool_call_id) {
+            self.tool_name_bytes = self
+                .tool_name_bytes
+                .saturating_sub(tool_call_id.0.len().saturating_add(previous.len()));
+            self.tool_name_order
+                .retain(|existing| existing != tool_call_id);
+        }
+    }
+
+    fn record_tool_name(&mut self, tool_call_id: ToolCallId, name: String) {
+        self.remove_tool_name(&tool_call_id);
+        let entry_bytes = tool_call_id.0.len().saturating_add(name.len());
+        if entry_bytes > MAX_TRACKED_TOOL_NAME_BYTES {
+            return;
+        }
+        while self.tool_names.len() >= MAX_TRACKED_TOOL_NAMES
+            || self.tool_name_bytes.saturating_add(entry_bytes) > MAX_TRACKED_TOOL_NAME_BYTES
+        {
+            let Some(oldest) = self.tool_name_order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.tool_names.remove(&oldest) {
+                self.tool_name_bytes = self
+                    .tool_name_bytes
+                    .saturating_sub(oldest.0.len().saturating_add(removed.len()));
+            }
+        }
+        self.tool_name_bytes += entry_bytes;
+        self.tool_name_order.push_back(tool_call_id.clone());
+        self.tool_names.insert(tool_call_id, name);
+    }
+
+    fn tool_name(&self, tool_call_id: &ToolCallId) -> Option<&str> {
+        self.tool_names.get(tool_call_id).map(String::as_str)
     }
 }
 
@@ -687,9 +756,24 @@ impl State {
                     run.truncated |= end != text.text.len();
                 }
             }
-            SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_) => {
+            SessionUpdate::ToolCall(call) => {
                 if let Some(run) = &mut self.active {
                     run.text_characters = None;
+                    run.track_tool_call(
+                        &call.tool_call_id,
+                        Some(call.status),
+                        call.name.as_deref(),
+                    );
+                }
+            }
+            SessionUpdate::ToolCallUpdate(update) => {
+                if let Some(run) = &mut self.active {
+                    run.text_characters = None;
+                    run.track_tool_call(
+                        &update.tool_call_id,
+                        update.fields.status,
+                        update.fields.name.as_deref(),
+                    );
                 }
             }
             _ => {}
@@ -779,7 +863,15 @@ impl State {
         request: &RequestPermissionRequest,
     ) -> Option<PermissionOptionId> {
         let matches_tool = self.allow_once_for_tool.as_ref()?;
-        if !matches_tool(request.tool_call.fields.name.as_deref()?) {
+        let name = request.tool_call.fields.name.as_deref().or_else(|| {
+            self.active
+                .as_ref()
+                .and_then(|run| run.tool_name(&request.tool_call.tool_call_id))
+        });
+        if !matches_tool(PermissionToolCall {
+            name,
+            meta: request.tool_call.meta.as_ref(),
+        }) {
             return None;
         }
         let mut allow_once = request
@@ -824,6 +916,13 @@ impl State {
             self.reply_permission(responder, RequestPermissionOutcome::Cancelled);
             return;
         };
+        if let Some(run) = &mut self.active {
+            run.track_tool_call(
+                &request.tool_call.tool_call_id,
+                request.tool_call.fields.status,
+                request.tool_call.fields.name.as_deref(),
+            );
+        }
         if let Some(option) = self.automatic_permission_option(&request) {
             self.reply_permission(
                 responder,
@@ -1381,6 +1480,9 @@ fn start_prompt(
         text_characters: Some(0),
         model: selected(SessionConfigOptionCategory::Model),
         effort: selected(SessionConfigOptionCategory::ThoughtLevel),
+        tool_names: HashMap::new(),
+        tool_name_order: VecDeque::new(),
+        tool_name_bytes: 0,
     });
     let state = state.clone();
     let result = connection
@@ -1832,6 +1934,7 @@ mod tests {
         },
         Permission,
         PermissionOptions(Vec<PermissionOption>),
+        PermissionToolCall(Box<ToolCallUpdate>, Vec<PermissionOption>),
         ReleaseLoad,
         FailLoad(RpcError),
         Eof,
@@ -2004,6 +2107,9 @@ mod tests {
                                 Some(PeerCommand::PermissionOptions(options)) => {
                                     send_permission(&connection, peer_state.clone(), peer_changed.clone(), options)?;
                                 }
+                                Some(PeerCommand::PermissionToolCall(tool_call, options)) => {
+                                    send_permission_tool_call(&connection, peer_state.clone(), peer_changed.clone(), *tool_call, options)?;
+                                }
                                 Some(PeerCommand::ReleaseLoad) => {
                                     let (responder, response) = peer_lock(&peer_state).held_load.take().unwrap();
                                     responder.respond(response)?;
@@ -2117,11 +2223,25 @@ mod tests {
         changed: Arc<Notify>,
         options: Vec<PermissionOption>,
     ) -> Result<(), RpcError> {
+        send_permission_tool_call(
+            connection,
+            state,
+            changed,
+            ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new()),
+            options,
+        )
+    }
+
+    fn send_permission_tool_call(
+        connection: &ConnectionTo<Client>,
+        state: PeerShared,
+        changed: Arc<Notify>,
+        tool_call: ToolCallUpdate,
+        options: Vec<PermissionOption>,
+    ) -> Result<(), RpcError> {
         connection
             .prepare_request(RequestPermissionRequest::new(
-                "business",
-                ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new()),
-                options,
+                "business", tool_call, options,
             ))
             .on_receiving_result(async move |result| {
                 peer_lock(&state).permission_results.push(result?.outcome);
@@ -4378,5 +4498,367 @@ mod tests {
         assert!(snap2.updated_at.is_some());
 
         harness.finish().await;
+    }
+
+    fn permission_filter_scenario(filter: AllowOnceForTool) -> Scenario {
+        Scenario {
+            prepare: Some(Arc::new(move |_| {
+                let filter = filter.clone();
+                Box::pin(async move {
+                    Ok(OpenSetup {
+                        allow_once_for_tool: Some(filter),
+                        ..OpenSetup::default()
+                    })
+                })
+            })),
+            ..Scenario::default()
+        }
+    }
+
+    fn permission_tool_call(tool_call: ToolCallUpdate) -> PeerCommand {
+        PeerCommand::PermissionToolCall(
+            Box::new(tool_call),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        )
+    }
+
+    #[tokio::test]
+    async fn automatic_permission_resolves_delta_tool_name_and_respects_overrides() {
+        let mut harness = Harness::new(
+            Open::New,
+            permission_filter_scenario(Arc::new(|tool_call| {
+                tool_call.name == Some("mcp_anywork_exec")
+            })),
+        );
+        harness.ready().await;
+
+        harness.session.submit(input("run tools")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 1).await;
+
+        // ToolCall carries programmatic name; subsequent RequestPermissionRequest omits name.
+        harness
+            .updates(vec![update(
+                "business",
+                SessionUpdate::ToolCall(
+                    ToolCall::new("tc-delta", "Run exec").name("mcp_anywork_exec"),
+                ),
+            )])
+            .await;
+        assert!(matches!(harness.event().await, Event::Update(..)));
+
+        harness
+            .control
+            .send(permission_tool_call(ToolCallUpdate::new(
+                "tc-delta",
+                ToolCallUpdateFields::new(),
+            )))
+            .await
+            .unwrap();
+        harness
+            .wait(|state| state.permission_results.len() == 1)
+            .await;
+        assert!(matches!(
+            &peer_lock(&harness.state).permission_results[0],
+            RequestPermissionOutcome::Selected(selected) if selected.option_id.0.as_ref() == "allow"
+        ));
+
+        // ToolCallUpdate overrides cached name to a disallowed tool; next omission must prompt.
+        harness
+            .updates(vec![update(
+                "business",
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tc-delta",
+                    ToolCallUpdateFields::new().name("bash"),
+                )),
+            )])
+            .await;
+        assert!(matches!(harness.event().await, Event::Update(..)));
+
+        harness
+            .control
+            .send(permission_tool_call(ToolCallUpdate::new(
+                "tc-delta",
+                ToolCallUpdateFields::new(),
+            )))
+            .await
+            .unwrap();
+        let permission = match harness.event().await {
+            Event::Permission { id, request } => {
+                assert_eq!(request.tool_call.tool_call_id.0.as_ref(), "tc-delta");
+                id
+            }
+            event => panic!("expected Event::Permission, got {event:?}"),
+        };
+        harness
+            .session
+            .answer_permission(permission, None)
+            .await
+            .unwrap();
+        harness
+            .wait(|state| state.permission_results.len() == 2)
+            .await;
+        assert!(matches!(
+            peer_lock(&harness.state).permission_results[1],
+            RequestPermissionOutcome::Cancelled
+        ));
+
+        // Explicit disallowed name on RequestPermissionRequest overrides cached allowed name.
+        harness
+            .updates(vec![update(
+                "business",
+                SessionUpdate::ToolCall(
+                    ToolCall::new("tc-override", "Run exec").name("mcp_anywork_exec"),
+                ),
+            )])
+            .await;
+        assert!(matches!(harness.event().await, Event::Update(..)));
+
+        harness
+            .control
+            .send(permission_tool_call(ToolCallUpdate::new(
+                "tc-override",
+                ToolCallUpdateFields::new().name("bash"),
+            )))
+            .await
+            .unwrap();
+        let permission = match harness.event().await {
+            Event::Permission { id, request } => {
+                assert_eq!(request.tool_call.tool_call_id.0.as_ref(), "tc-override");
+                id
+            }
+            event => panic!("expected Event::Permission, got {event:?}"),
+        };
+        harness
+            .session
+            .answer_permission(permission, Some("allow".into()))
+            .await
+            .unwrap();
+        harness
+            .wait(|state| state.permission_results.len() == 3)
+            .await;
+        assert!(matches!(
+            &peer_lock(&harness.state).permission_results[2],
+            RequestPermissionOutcome::Selected(selected) if selected.option_id.0.as_ref() == "allow"
+        ));
+
+        harness.complete(StopReason::EndTurn).await;
+        assert!(matches!(harness.event().await, Event::Completed(_)));
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn automatic_permission_clears_tool_name_on_terminal_status_and_run_boundary() {
+        let mut harness = Harness::new(
+            Open::New,
+            permission_filter_scenario(Arc::new(|tool_call| {
+                tool_call.name == Some("mcp_anywork_exec")
+            })),
+        );
+        harness.ready().await;
+
+        harness.session.submit(input("run 1")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 1).await;
+
+        // Terminal Completed status evicts cached tool name for the same toolCallId.
+        harness
+            .updates(vec![
+                update(
+                    "business",
+                    SessionUpdate::ToolCall(
+                        ToolCall::new("tc-done", "Done").name("mcp_anywork_exec"),
+                    ),
+                ),
+                update(
+                    "business",
+                    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                        "tc-done",
+                        ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                    )),
+                ),
+                update(
+                    "business",
+                    SessionUpdate::ToolCall(
+                        ToolCall::new("tc-cross", "Cross").name("mcp_anywork_exec"),
+                    ),
+                ),
+            ])
+            .await;
+        for _ in 0..3 {
+            assert!(matches!(harness.event().await, Event::Update(..)));
+        }
+
+        harness
+            .control
+            .send(permission_tool_call(ToolCallUpdate::new(
+                "tc-done",
+                ToolCallUpdateFields::new(),
+            )))
+            .await
+            .unwrap();
+        let permission = match harness.event().await {
+            Event::Permission { id, request } => {
+                assert_eq!(request.tool_call.tool_call_id.0.as_ref(), "tc-done");
+                id
+            }
+            event => panic!("expected Event::Permission for evicted tc-done, got {event:?}"),
+        };
+        harness
+            .session
+            .answer_permission(permission, None)
+            .await
+            .unwrap();
+        harness
+            .wait(|state| state.permission_results.len() == 1)
+            .await;
+
+        harness.complete(StopReason::EndTurn).await;
+        assert!(matches!(harness.event().await, Event::Completed(_)));
+
+        // Run 2 must not reuse tc-cross recorded in Run 1.
+        harness.session.submit(input("run 2")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 2).await;
+
+        harness
+            .control
+            .send(permission_tool_call(ToolCallUpdate::new(
+                "tc-cross",
+                ToolCallUpdateFields::new(),
+            )))
+            .await
+            .unwrap();
+        let permission = match harness.event().await {
+            Event::Permission { id, request } => {
+                assert_eq!(request.tool_call.tool_call_id.0.as_ref(), "tc-cross");
+                id
+            }
+            event => panic!("expected Event::Permission across run boundary, got {event:?}"),
+        };
+        harness
+            .session
+            .answer_permission(permission, None)
+            .await
+            .unwrap();
+        harness
+            .wait(|state| state.permission_results.len() == 2)
+            .await;
+        assert!(matches!(
+            peer_lock(&harness.state).permission_results[1],
+            RequestPermissionOutcome::Cancelled
+        ));
+
+        harness.complete(StopReason::EndTurn).await;
+        assert!(matches!(harness.event().await, Event::Completed(_)));
+        harness.finish().await;
+    }
+
+    #[tokio::test]
+    async fn automatic_permission_passes_tool_call_meta_when_name_is_omitted() {
+        let mut harness = Harness::new(
+            Open::New,
+            permission_filter_scenario(Arc::new(|tool_call| {
+                if tool_call.name.is_some() {
+                    return false;
+                }
+                let Some(meta) = tool_call.meta else {
+                    return false;
+                };
+                meta.get("is_mcp_tool_call").and_then(|v| v.as_bool()) == Some(true)
+                    && meta
+                        .get("mcp")
+                        .and_then(|v| v.as_object())
+                        .is_some_and(|mcp| {
+                            mcp.get("server").and_then(|v| v.as_str()) == Some("anywork")
+                                && mcp.get("tool").and_then(|v| v.as_str())
+                                    == Some("anywork_exec_command")
+                        })
+            })),
+        );
+        harness.ready().await;
+
+        harness.session.submit(input("meta call")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 1).await;
+
+        let mut mcp = Meta::new();
+        mcp.insert("server".into(), "anywork".into());
+        mcp.insert("tool".into(), "anywork_exec_command".into());
+        let mut meta = Meta::new();
+        meta.insert("mcp".into(), mcp.into());
+        meta.insert("is_mcp_tool_call".into(), true.into());
+
+        harness
+            .control
+            .send(permission_tool_call(
+                ToolCallUpdate::new("tc-meta", ToolCallUpdateFields::new()).meta(meta),
+            ))
+            .await
+            .unwrap();
+        harness
+            .wait(|state| state.permission_results.len() == 1)
+            .await;
+        assert!(matches!(
+            &peer_lock(&harness.state).permission_results[0],
+            RequestPermissionOutcome::Selected(selected) if selected.option_id.0.as_ref() == "allow"
+        ));
+
+        harness.complete(StopReason::EndTurn).await;
+        assert!(matches!(harness.event().await, Event::Completed(_)));
+        harness.finish().await;
+    }
+
+    #[test]
+    fn active_tool_name_cache_bounds_entries_and_bytes() {
+        let mut active = Active {
+            id: RunId {
+                instance: 1,
+                sequence: 1,
+            },
+            summary: String::new(),
+            truncated: false,
+            cancelling: false,
+            started: tokio::time::Instant::now(),
+            text_characters: None,
+            model: None,
+            effort: None,
+            tool_names: HashMap::new(),
+            tool_name_order: VecDeque::new(),
+            tool_name_bytes: 0,
+        };
+
+        // Count limit evicts oldest entry.
+        for i in 0..=MAX_TRACKED_TOOL_NAMES {
+            let id = ToolCallId::new(format!("tc-{i}"));
+            active.track_tool_call(&id, None, Some("mcp_anywork_stat"));
+        }
+        assert_eq!(active.tool_names.len(), MAX_TRACKED_TOOL_NAMES);
+        assert_eq!(active.tool_name_order.len(), MAX_TRACKED_TOOL_NAMES);
+        assert_eq!(active.tool_name(&ToolCallId::new("tc-0")), None);
+        assert_eq!(
+            active.tool_name(&ToolCallId::new(format!("tc-{MAX_TRACKED_TOOL_NAMES}"))),
+            Some("mcp_anywork_stat")
+        );
+
+        // Oversized update on an existing id must drop stale prior name instead of keeping it.
+        let replaced_id = ToolCallId::new(format!("tc-{MAX_TRACKED_TOOL_NAMES}"));
+        let oversized = "x".repeat(MAX_TRACKED_TOOL_NAME_BYTES);
+        active.track_tool_call(&replaced_id, None, Some(&oversized));
+        assert_eq!(active.tool_name(&replaced_id), None);
+
+        // Byte limit keeps total tracked bytes <= MAX_TRACKED_TOOL_NAME_BYTES.
+        let chunk = "n".repeat(20 * 1024);
+        for i in 0..5 {
+            let id = ToolCallId::new(format!("big-{i}"));
+            active.track_tool_call(&id, None, Some(&chunk));
+            assert!(active.tool_name_bytes <= MAX_TRACKED_TOOL_NAME_BYTES);
+            assert_eq!(active.tool_names.len(), active.tool_name_order.len());
+        }
+        assert_eq!(active.tool_name(&ToolCallId::new("big-0")), None);
+        assert_eq!(
+            active.tool_name(&ToolCallId::new("big-4")),
+            Some(chunk.as_str())
+        );
     }
 }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use axum::{Router, body::Body, middleware::Next, response::Response};
 use http::{Request, StatusCode, header::AUTHORIZATION};
-use pl_acp::session::{AllowOnceForTool, PrepareOpen, schema};
+use pl_acp::session::{AllowOnceForTool, PermissionToolCall, PrepareOpen, schema};
 use pl_agent_tool::ToolDefinition;
 use pl_studio_mcp::{
     HostCatalog, HostError, HostInvocation, HostMcpService, HostResult, HostTool, HostTools,
@@ -31,6 +31,7 @@ use crate::{
 };
 
 const SERVER_NAME: &str = "anywork";
+const MCP_NAME_SEPARATORS: [&str; 6] = ["__", "_", ":", "/", ".", "-"];
 
 /// All references held by the protocol callback are weak with respect to its owner.
 pub(crate) async fn prepare_open(
@@ -213,6 +214,85 @@ async fn workspace_instructions(
         ));
     }
     Ok(text)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaMcpMatch<'a> {
+    Absent,
+    Matched(&'a str),
+    Rejected,
+}
+
+fn strip_mcp_separator(input: &str) -> Option<&str> {
+    MCP_NAME_SEPARATORS
+        .iter()
+        .find_map(|separator| input.strip_prefix(separator))
+}
+
+fn host_mcp_tool_from_name<'a>(
+    name: &'a str,
+    tools: &BTreeMap<String, HostBinding>,
+) -> Option<&'a str> {
+    if let Some(after_mcp) = name
+        .strip_prefix("mcp")
+        .and_then(strip_mcp_separator)
+        .and_then(|rest| rest.strip_prefix(SERVER_NAME))
+        .and_then(strip_mcp_separator)
+        && tools.contains_key(after_mcp)
+    {
+        return Some(after_mcp);
+    }
+    name.strip_prefix(SERVER_NAME)
+        .and_then(strip_mcp_separator)
+        .filter(|tool| tools.contains_key(*tool))
+}
+
+fn inspect_host_mcp_meta<'a>(
+    meta: &'a schema::Meta,
+    tools: &BTreeMap<String, HostBinding>,
+) -> MetaMcpMatch<'a> {
+    if let Some(flag) = meta.get("is_mcp_tool_call")
+        && flag.as_bool() != Some(true)
+    {
+        return MetaMcpMatch::Rejected;
+    }
+    let Some(mcp) = meta.get("mcp") else {
+        return MetaMcpMatch::Absent;
+    };
+    let Some(mcp) = mcp.as_object() else {
+        return MetaMcpMatch::Rejected;
+    };
+    let Some(server) = mcp.get("server").and_then(Value::as_str) else {
+        return MetaMcpMatch::Rejected;
+    };
+    if server != SERVER_NAME {
+        return MetaMcpMatch::Rejected;
+    }
+    let Some(tool) = mcp.get("tool").and_then(Value::as_str) else {
+        return MetaMcpMatch::Rejected;
+    };
+    if tools.contains_key(tool) {
+        MetaMcpMatch::Matched(tool)
+    } else {
+        MetaMcpMatch::Rejected
+    }
+}
+
+fn matches_host_mcp_tool_call(
+    tool_call: PermissionToolCall<'_>,
+    tools: &BTreeMap<String, HostBinding>,
+) -> bool {
+    let name_tool = tool_call
+        .name
+        .map(|name| host_mcp_tool_from_name(name, tools));
+    let meta_match = tool_call.meta.map_or(MetaMcpMatch::Absent, |meta| {
+        inspect_host_mcp_meta(meta, tools)
+    });
+    match (name_tool, meta_match) {
+        (Some(None), _) | (_, MetaMcpMatch::Rejected) | (None, MetaMcpMatch::Absent) => false,
+        (Some(Some(name_tool)), MetaMcpMatch::Matched(meta_tool)) => name_tool == meta_tool,
+        (Some(Some(_)), MetaMcpMatch::Absent) | (None, MetaMcpMatch::Matched(_)) => true,
+    }
 }
 
 /// Held directly by AcpResources. Debug deliberately omits its bearer and URL.
@@ -407,20 +487,11 @@ impl HostMcp {
     pub(super) fn permission_filter(&self) -> AllowOnceForTool {
         let tools = Arc::downgrade(&self.tools);
         let closed = self.domain_closed.clone();
-        let prefixes = [
-            format!("mcp_{SERVER_NAME}_"),
-            format!("mcp__{SERVER_NAME}__"),
-        ];
-        Arc::new(move |name| {
+        Arc::new(move |tool_call| {
             !closed.is_cancelled()
-                && prefixes
-                    .iter()
-                    .find_map(|prefix| name.strip_prefix(prefix.as_str()))
-                    .is_some_and(|tool| {
-                        tools
-                            .upgrade()
-                            .is_some_and(|tools| tools.contains_key(tool))
-                    })
+                && tools
+                    .upgrade()
+                    .is_some_and(|tools| matches_host_mcp_tool_call(tool_call, &tools))
         })
     }
 
@@ -2285,6 +2356,32 @@ mod tests {
         use pl_acp::session::schema::{ContentBlock, StopReason, TextContent};
         use std::time::Duration;
 
+        struct PermissionCase {
+            name: &'static str,
+            pre_updates: Vec<Value>,
+            tool_call: Value,
+            options: Vec<Value>,
+            auto_allowed: bool,
+        }
+
+        fn build_tool_call(
+            id: &str,
+            title: &str,
+            tool_name: Option<&str>,
+            meta: Option<Value>,
+        ) -> Value {
+            let mut map = serde_json::Map::new();
+            map.insert("toolCallId".into(), json!(id));
+            map.insert("title".into(), json!(title));
+            if let Some(tool_name) = tool_name {
+                map.insert("name".into(), json!(tool_name));
+            }
+            if let Some(meta) = meta {
+                map.insert("_meta".into(), meta);
+            }
+            Value::Object(map)
+        }
+
         let fixture = Fixture::new("mcp-permission").await?;
         let result = async {
             let mut open = fixture.open().await?;
@@ -2295,53 +2392,335 @@ mod tests {
             let reject = json!({"optionId":"deny", "kind":"reject_once", "name":"Deny"});
             let standard = || vec![always.clone(), reject.clone(), once.clone()];
             let agy_name = "mcp_anywork_anywork_list_agents";
-            let cases = [
-                ("Antigravity tool", Some(agy_name), standard(), true),
+            let valid_meta = || {
+                json!({
+                    "mcp": {"server": "anywork", "tool": "anywork_list_agents"},
+                    "is_mcp_tool_call": true,
+                })
+            };
+            let mut cases = Vec::new();
+            let mut add = |name: &'static str,
+                           pre_updates: Vec<Value>,
+                           tool_call: Value,
+                           options: Vec<Value>,
+                           auto_allowed: bool| {
+                cases.push(PermissionCase {
+                    name,
+                    pre_updates,
+                    tool_call,
+                    options,
+                    auto_allowed,
+                });
+            };
+
+            add(
+                "1.5.2 omitted name with _meta.mcp",
+                Vec::new(),
+                build_tool_call(
+                    "1.5.2 omitted name with _meta.mcp",
+                    "anywork_anywork_exec_command",
+                    None,
+                    Some(valid_meta()),
+                ),
+                standard(),
+                true,
+            );
+            add(
+                "1.5.2 explicit null name with _meta.mcp",
+                Vec::new(),
+                json!({
+                    "toolCallId": "1.5.2 explicit null name with _meta.mcp",
+                    "title": "anywork_anywork_exec_command",
+                    "name": Value::Null,
+                    "_meta": {"mcp": {"server": "anywork", "tool": "anywork_list_agents"}},
+                }),
+                standard(),
+                true,
+            );
+            for (label, tool_name) in [
+                ("Antigravity tool mcp_anywork_", agy_name),
                 (
-                    "Claude tool",
-                    Some("mcp__anywork__anywork_list_agents"),
+                    "Claude tool mcp__anywork__",
+                    "mcp__anywork__anywork_list_agents",
+                ),
+                (
+                    "colon separator mcp:anywork:",
+                    "mcp:anywork:anywork_list_agents",
+                ),
+                (
+                    "slash separator mcp/anywork/",
+                    "mcp/anywork/anywork_list_agents",
+                ),
+                (
+                    "dot separator mcp.anywork.",
+                    "mcp.anywork.anywork_list_agents",
+                ),
+                (
+                    "hyphen separator mcp-anywork-",
+                    "mcp-anywork-anywork_list_agents",
+                ),
+                ("server prefix anywork_", "anywork_anywork_list_agents"),
+            ] {
+                add(
+                    label,
+                    Vec::new(),
+                    build_tool_call(label, agy_name, Some(tool_name), None),
                     standard(),
                     true,
+                );
+            }
+            add(
+                "ACP delta preUpdates tool_call name then omitted name",
+                vec![json!({
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "ACP delta preUpdates tool_call name then omitted name",
+                    "title": "List",
+                    "name": agy_name,
+                })],
+                build_tool_call(
+                    "ACP delta preUpdates tool_call name then omitted name",
+                    "List",
+                    None,
+                    None,
                 ),
-                ("title only", None, standard(), false),
-                ("bare name", Some("anywork_list_agents"), standard(), false),
-                (
-                    "other server",
+                standard(),
+                true,
+            );
+            add(
+                "consistent name and _meta.mcp",
+                Vec::new(),
+                build_tool_call(
+                    "consistent name and _meta.mcp",
+                    agy_name,
+                    Some(agy_name),
+                    Some(valid_meta()),
+                ),
+                standard(),
+                true,
+            );
+            add(
+                "is_mcp_tool_call true without mcp object and valid name",
+                Vec::new(),
+                build_tool_call(
+                    "is_mcp_tool_call true without mcp object and valid name",
+                    agy_name,
+                    Some(agy_name),
+                    Some(json!({"is_mcp_tool_call": true})),
+                ),
+                standard(),
+                true,
+            );
+            add(
+                "title only mcp_anywork",
+                Vec::new(),
+                build_tool_call("title only mcp_anywork", agy_name, None, None),
+                standard(),
+                false,
+            );
+            add(
+                "title only spoofed 1.5.2 title",
+                Vec::new(),
+                build_tool_call(
+                    "title only spoofed 1.5.2 title",
+                    "anywork_anywork_exec_command",
+                    None,
+                    None,
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "title shell substring attack",
+                Vec::new(),
+                build_tool_call(
+                    "title shell substring attack",
+                    "rm -rf code/anywork_client",
+                    None,
+                    None,
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "bare name",
+                Vec::new(),
+                build_tool_call("bare name", agy_name, Some("anywork_list_agents"), None),
+                standard(),
+                false,
+            );
+            add(
+                "trailing suffix",
+                Vec::new(),
+                build_tool_call(
+                    "trailing suffix",
+                    agy_name,
+                    Some("mcp_anywork_anywork_list_agents_extra"),
+                    None,
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "other server in name",
+                Vec::new(),
+                build_tool_call(
+                    "other server in name",
+                    agy_name,
                     Some("mcp_other_anywork_list_agents"),
-                    standard(),
-                    false,
+                    None,
                 ),
-                (
-                    "unknown tool",
+                standard(),
+                false,
+            );
+            add(
+                "other server in _meta",
+                Vec::new(),
+                build_tool_call(
+                    "other server in _meta",
+                    agy_name,
+                    None,
+                    Some(json!({
+                        "mcp": {"server": "other", "tool": "anywork_list_agents"},
+                        "is_mcp_tool_call": true,
+                    })),
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "unknown tool in name",
+                Vec::new(),
+                build_tool_call(
+                    "unknown tool in name",
+                    agy_name,
                     Some("mcp_anywork_anywork_unknown"),
-                    standard(),
-                    false,
+                    None,
                 ),
-                ("only durable allow", Some(agy_name), vec![always], false),
-                (
-                    "duplicate option id",
+                standard(),
+                false,
+            );
+            add(
+                "unknown tool in _meta",
+                Vec::new(),
+                build_tool_call(
+                    "unknown tool in _meta",
+                    agy_name,
+                    None,
+                    Some(json!({
+                        "mcp": {"server": "anywork", "tool": "anywork_unknown"},
+                        "is_mcp_tool_call": true,
+                    })),
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "is_mcp_tool_call false with valid name",
+                Vec::new(),
+                build_tool_call(
+                    "is_mcp_tool_call false with valid name",
+                    agy_name,
                     Some(agy_name),
-                    vec![
-                        once.clone(),
-                        json!({"optionId":"this-call", "kind":"reject_once", "name":"Deny"}),
-                    ],
-                    false,
+                    Some(json!({
+                        "mcp": {"server": "anywork", "tool": "anywork_list_agents"},
+                        "is_mcp_tool_call": false,
+                    })),
                 ),
-                (
-                    "multiple one-time options",
+                standard(),
+                false,
+            );
+            add(
+                "name and _meta.mcp tool mismatch",
+                Vec::new(),
+                build_tool_call(
+                    "name and _meta.mcp tool mismatch",
+                    agy_name,
                     Some(agy_name),
-                    vec![
-                        once,
-                        json!({"optionId":"other", "kind":"allow_once", "name":"Other"}),
-                    ],
-                    false,
+                    Some(json!({
+                        "mcp": {"server": "anywork", "tool": "anywork_wait_agent"},
+                        "is_mcp_tool_call": true,
+                    })),
                 ),
-            ];
-            for (case, name, options, auto_allowed) in cases {
+                standard(),
+                false,
+            );
+            add(
+                "disallowed name with valid _meta",
+                Vec::new(),
+                build_tool_call(
+                    "disallowed name with valid _meta",
+                    agy_name,
+                    Some("bash"),
+                    Some(valid_meta()),
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "preUpdates overridden to disallowed tool",
+                vec![
+                    json!({
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "preUpdates overridden to disallowed tool",
+                        "title": "List",
+                        "name": agy_name,
+                    }),
+                    json!({
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "preUpdates overridden to disallowed tool",
+                        "name": "bash",
+                    }),
+                ],
+                build_tool_call(
+                    "preUpdates overridden to disallowed tool",
+                    "List",
+                    None,
+                    None,
+                ),
+                standard(),
+                false,
+            );
+            add(
+                "only durable allow",
+                Vec::new(),
+                build_tool_call("only durable allow", agy_name, Some(agy_name), None),
+                vec![always],
+                false,
+            );
+            add(
+                "duplicate option id",
+                Vec::new(),
+                build_tool_call("duplicate option id", agy_name, Some(agy_name), None),
+                vec![
+                    once.clone(),
+                    json!({"optionId":"this-call", "kind":"reject_once", "name":"Deny"}),
+                ],
+                false,
+            );
+            add(
+                "multiple one-time options",
+                Vec::new(),
+                build_tool_call("multiple one-time options", agy_name, Some(agy_name), None),
+                vec![
+                    once,
+                    json!({"optionId":"other", "kind":"allow_once", "name":"Other"}),
+                ],
+                false,
+            );
+
+            for PermissionCase {
+                name: case,
+                pre_updates,
+                tool_call,
+                options,
+                auto_allowed,
+            } in cases
+            {
                 std::fs::write(
                     fixture.home.path().join("permission-request.json"),
                     serde_json::to_vec(&json!({
-                        "toolCall": {"toolCallId": case, "title": agy_name, "name": name},
+                        "preUpdates": pre_updates,
+                        "toolCall": tool_call,
                         "options": options,
                     }))?,
                 )?;
