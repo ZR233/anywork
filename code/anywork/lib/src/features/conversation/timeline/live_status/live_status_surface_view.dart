@@ -60,6 +60,16 @@ class LiveStatusSurfaceView extends StatelessWidget {
     final barChildren = <Widget>[];
 
     switch (presenting.primary) {
+      case LiveReconnectingPhase(:final detail):
+        barChildren.add(
+          Flexible(
+            key: const ValueKey('live-primary-reconnecting'),
+            fit: FlexFit.loose,
+            child: _StatusHeaderRow(
+              spec: LiveStatusHeaderSpec.forReconnecting(context, detail),
+            ),
+          ),
+        );
       case LiveResponsePhase(:final activity) && final response:
         if (activity != null) {
           barChildren.add(
@@ -182,10 +192,10 @@ class LiveStatusSurfaceView extends StatelessWidget {
         ) => ConversationActivityStatus(view: activity),
         LiveStorageAttention(:final activity, :final severity) =>
           ConversationActivityStatus(view: activity, storageSeverity: severity),
-        LiveConnectionAttention() => _AttentionHeaderRow(
+        LiveDisconnectedAttention() => _StatusHeaderRow(
           spec: LiveStatusHeaderSpec.forAttention(context, attention),
         ),
-        LiveErrorAttention(:final retryable) => _AttentionHeaderRow(
+        LiveErrorAttention(:final retryable) => _StatusHeaderRow(
           spec: LiveStatusHeaderSpec.forAttention(context, attention),
           trailingAction: retryable && onRetryError != null
               ? TextButton(
@@ -200,8 +210,8 @@ class LiveStatusSurfaceView extends StatelessWidget {
       };
 }
 
-class _AttentionHeaderRow extends StatelessWidget {
-  const _AttentionHeaderRow({required this.spec, this.trailingAction});
+class _StatusHeaderRow extends StatelessWidget {
+  const _StatusHeaderRow({required this.spec, this.trailingAction});
 
   final LiveStatusHeaderSpec spec;
   final Widget? trailingAction;

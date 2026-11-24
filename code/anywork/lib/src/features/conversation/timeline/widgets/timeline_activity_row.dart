@@ -373,16 +373,15 @@ class _LiveStatusMotionScope extends InheritedWidget {
       !identical(controller, oldWidget.controller);
 }
 
-/// `exec` 命令运行期专用定宽槽位圆形进度指示器（复用官方 Material 3 `CircularProgressIndicator`）。
+/// 定宽圆形进度指示器，动画重绘限制在图标槽内。
 ///
 /// 禁用动画或离开 Ticker 树时固定渲染 ¾ 圆弧（`value: 0.72`），保证无障碍减少动态效果且不挂起测试帧。
-class TimelineExecProgressIndicator extends StatelessWidget {
-  const TimelineExecProgressIndicator({
+class _TimelineCircularProgressIndicator extends StatelessWidget {
+  const _TimelineCircularProgressIndicator({
     required this.color,
     required this.size,
     this.strokeWidth = 2.0,
     this.animate = true,
-    super.key,
   });
 
   final Color color;
@@ -558,7 +557,7 @@ class _TimelineActivityIndicatorState extends State<TimelineActivityIndicator>
           color: widget.color,
         ),
         TimelineActivityIndicatorStyle.circularProgress =>
-          TimelineExecProgressIndicator(
+          _TimelineCircularProgressIndicator(
             color: widget.color,
             size: widget.spinnerSize,
             strokeWidth: widget.spinnerStrokeWidth,

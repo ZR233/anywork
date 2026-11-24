@@ -36,6 +36,80 @@ Widget _host(
 );
 
 void main() {
+  testWidgets(
+    'reconnecting replaces active work until synchronization resumes',
+    (tester) async {
+      LiveStatusGateState project({String? detail, bool blocking = false}) =>
+          LiveStatusMachine.project(
+            threadId: 'thread-1',
+            inputs: LiveStatusInputs(
+              connectionStatus: detail == null
+                  ? LiveConnectionStatus.connected
+                  : LiveConnectionStatus.reconnecting,
+              connectionDetail: detail,
+              liveOpenWork: const DisplayBlock(
+                id: 'work-1',
+                blockOrder: 1,
+                body: WorkDisplayBlock(
+                  timing: WorkTiming(startedAtMillis: 100000),
+                  members: DisplayBlockRef(
+                    blockId: 'work-1',
+                    cut: HistoryCut('cut'),
+                    anchorSeq: 1,
+                    headSeq: 1,
+                  ),
+                  executionPresent: true,
+                  memberCount: 1,
+                  unfinishedCount: 1,
+                  groupClosed: false,
+                ),
+              ),
+              storage: blocking
+                  ? const ThreadStorageStateView(
+                      execution: ThreadStorageExecution.paused,
+                    )
+                  : null,
+            ),
+          ).gate;
+      Future<void> show(LiveStatusGateState gate) => tester.pumpWidget(
+        _host(
+          LiveStatusSurfaceView(
+            gate: gate,
+            liveWorkInitiallyExpanded: true,
+            liveWorkChildBuilder: (_) => const Text('Open tool member'),
+          ),
+        ),
+      );
+
+      await show(project());
+      final work = find.byType(CompletionRunView);
+      expect(work, findsOneWidget);
+      expect(find.text('Open tool member'), findsOneWidget);
+
+      await show(project(detail: 'first failure'));
+      expect(work, findsNothing);
+      expect(find.text('Open tool member'), findsNothing);
+      final label = find.text('正在重连实时同步');
+      final row = find.ancestor(
+        of: label,
+        matching: find.byType(TimelineActivityRow),
+      );
+      final element = tester.element(row);
+      expect(tester.widget<TimelineActivityRow>(row).tooltip, 'first failure');
+
+      await show(project(detail: 'second failure', blocking: true));
+      expect(label, findsOneWidget);
+      expect(work, findsNothing);
+      expect(tester.element(row), same(element));
+      expect(tester.widget<TimelineActivityRow>(row).tooltip, 'second failure');
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      await show(project());
+      expect(label, findsNothing);
+      expect(work, findsOneWidget);
+    },
+  );
+
   group('LiveStatusSurfaceView', () {
     testWidgets(
       'stopping renders neutral spinner and static icon under reduced motion',

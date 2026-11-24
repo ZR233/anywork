@@ -423,16 +423,16 @@ Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
         active: const [
           ThreadActivityToolEntry(
             callId: 'preview-command',
-            name: 'exec',
-            summary: 'cargo flutter analyze',
-            arguments: ThreadActivityArgumentsKind.commandLine,
+            name: 'read_file',
+            summary: '读取 design/26-timeline-content.md',
+            arguments: ThreadActivityArgumentsKind.opaque,
             state: ThreadActivityToolState.running,
             startedAt: 100,
           ),
         ],
       ),
     ),
-    liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 2),
+    liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 3),
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
     liveWorkChildBuilder: (_) => const Column(
@@ -458,8 +458,32 @@ Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
             output: '',
           ),
         ),
+        TimelineToolItemView(
+          workGroupMember: true,
+          item: TimelineToolPresentation(
+            id: 'preview-read',
+            toolCallId: 'preview-read',
+            name: 'read_file',
+            presentationContract: 'builtin.read_file@1',
+            statusString: 'running',
+            arguments: '{"path":"design/26-timeline-content.md"}',
+            output: '',
+          ),
+        ),
       ],
     ),
+  ),
+);
+
+@Preview(name: '重连中 · 独立状态', group: '实时状态栏', size: Size(760, 140))
+Widget conversationLiveStatusReconnectingPreview() => liveStatusPreviewHost(
+  _liveMachineSurface(
+    activity: _threadActivity(
+      ThreadActivityKind.runningTool,
+      summary: '读取 design/26-timeline-content.md',
+    ),
+    liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 3),
+    connectionStatus: LiveConnectionStatus.reconnecting,
   ),
 );
 

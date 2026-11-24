@@ -95,6 +95,7 @@ class TimelineToolItemView extends StatefulWidget {
     this.registry,
     this.initiallyExpanded = false,
     this.staticObservation,
+    this.workGroupMember = false,
     this.onExpansionChanged,
     this.markdownBuilder,
     this.additionalContentBuilder,
@@ -109,6 +110,7 @@ class TimelineToolItemView extends StatefulWidget {
   final TimelineToolItemRegistry? registry;
   final bool initiallyExpanded;
   final bool? staticObservation;
+  final bool workGroupMember;
   final ValueChanged<bool>? onExpansionChanged;
   final TimelineToolMarkdownBuilder? markdownBuilder;
   final WidgetBuilder? additionalContentBuilder;
@@ -379,12 +381,20 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
             ? Icons.stop_circle_outlined
             : icon;
         final rowIsIssue = summary.isIssue && !preserveWhenIssue;
+        final inWorkGroup =
+            widget.workGroupMember || _group?.current?.body is WorkDisplayBlock;
+        final runningStyle =
+            inWorkGroup &&
+                activeIndicatorStyle ==
+                    TimelineActivityIndicatorStyle.restingCat
+            ? TimelineActivityIndicatorStyle.circularProgress
+            : activeIndicatorStyle;
         return TimelineActivityRow(
           icon: resolvedIcon,
           iconColor: color,
           label: summary.label,
           active: active,
-          indicatorStyle: active ? activeIndicatorStyle : idleIndicatorStyle,
+          indicatorStyle: active ? runningStyle : idleIndicatorStyle,
           isIssue: rowIsIssue,
           expanded: expanded,
           expandable: expandable,

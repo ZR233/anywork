@@ -119,6 +119,9 @@ void main() {
 
     await fixture.transport.currentOpened(1);
     current = fixture.currentReader();
+    expect(session.state.sync.phase, DomainSyncPhase.reconnecting);
+    expect(session.state.sync.errorMessage, contains('current broke'));
+    expect(session.state.revision, 4);
     await current.deliver(
       ResetCurrentFrame(currentViewForWorkspace(_workspace(revision: 2))),
     );
