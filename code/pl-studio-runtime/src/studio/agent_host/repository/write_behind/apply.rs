@@ -3,7 +3,7 @@
 //! 模型调用事实属于独立的 `calls.sqlite`，由 `storage::calls::CallsStore` 的唯一逻辑 writer
 //! 落库，本模块不再承载模型性能或计费的第二份事实。
 use super::super::store_error;
-use super::queue::{PendingBatch, StudioDirectoryMutation, StudioMutation};
+use super::queue::{PendingBatch, StudioMutation};
 use super::worker::{BatchError, PersistenceDisposition};
 use crate::PureError;
 use crate::studio::StudioStore;
@@ -17,14 +17,13 @@ pub(super) async fn apply_batch(
 ) -> Result<(), BatchError> {
     let tx = store.database().begin().await.map_err(classify_db_error)?;
     for entry in &batch.entries {
-        let StudioMutation::Directory(directory) = &entry.mutation;
-        match directory.as_ref() {
-            StudioDirectoryMutation::Delta(delta) => {
+        match entry.mutation.as_ref() {
+            StudioMutation::Delta(delta) => {
                 apply_directory_delta(store, &tx, delta)
                     .await
                     .map_err(|error| classify_store_error(store_error(error)))?;
             }
-            StudioDirectoryMutation::WorktreeLease(lease) => {
+            StudioMutation::WorktreeLease(lease) => {
                 put_object(
                     &tx,
                     &lease.owner_thread_id,

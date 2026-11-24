@@ -95,8 +95,6 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
                 _ = shared.work_notify.notified() => continue,
                 _ = tokio::time::sleep_until(deadline) => {}
             }
-        } else if flush_waiting && idle_batch {
-            // 等待方在屏障上：跳过空闲去抖，立即取批落库。
         }
         let batch = drain_batch(&shared);
         if batch.entries.is_empty() {
@@ -111,8 +109,7 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
                     let gate = {
                         let mut gate = shared.lease_ack_gate.lock().unwrap();
                         if gate.as_ref().is_some_and(|gate| batch.entries.iter().any(|entry| {
-                            let super::queue::StudioMutation::Directory(mutation) = &entry.mutation;
-                            matches!(mutation.as_ref(), super::queue::StudioDirectoryMutation::WorktreeLease(lease)
+                            matches!(entry.mutation.as_ref(), super::queue::StudioMutation::WorktreeLease(lease)
                                 if lease.state == gate.state)
                         })) {
                             gate.take()

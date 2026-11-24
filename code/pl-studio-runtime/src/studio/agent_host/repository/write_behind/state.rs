@@ -24,7 +24,8 @@ pub(super) fn update_healthy_state(shared: &WriterShared, pending: usize) {
     } else {
         PersistenceState::Flushing(FlushingPersistence {
             pending_commits: pending as u64,
-            oldest_pending_revision: oldest_pending_revision(shared),
+            // 目录事实与 lease 没有单条 revision 概念；该位恒为空以维持状态快照契约。
+            oldest_pending_revision: None,
         })
     };
     publish_state(shared, state);
@@ -37,13 +38,13 @@ pub(super) fn update_after_success(shared: &WriterShared, pending: usize, was_un
         let first_failed_at = first_failed_at(shared).unwrap_or_else(unix_seconds);
         PersistenceState::Recovering(RecoveringPersistence {
             pending_commits: pending as u64,
-            oldest_pending_revision: oldest_pending_revision(shared),
+            oldest_pending_revision: None,
             first_failed_at,
         })
     } else {
         PersistenceState::Flushing(FlushingPersistence {
             pending_commits: pending as u64,
-            oldest_pending_revision: oldest_pending_revision(shared),
+            oldest_pending_revision: None,
         })
     };
     publish_state(shared, state);
@@ -56,7 +57,7 @@ pub(super) fn publish_degraded(shared: &WriterShared, error: &PureError) {
         shared,
         PersistenceState::Degraded(DegradedPersistence {
             pending_commits: pending as u64,
-            oldest_pending_revision: oldest_pending_revision(shared),
+            oldest_pending_revision: None,
             first_failed_at,
             error: persistence_error("persistenceUnavailable", error.to_string(), true),
         }),
@@ -71,7 +72,7 @@ pub(super) fn publish_blocked(shared: &WriterShared, reason: &str) {
         shared,
         PersistenceState::Blocked(BlockedPersistence {
             pending_commits: pending as u64,
-            oldest_pending_revision: oldest_pending_revision(shared),
+            oldest_pending_revision: None,
             first_failed_at,
             error: persistence_error("persistenceBlocked", reason.to_string(), false),
         }),
@@ -87,8 +88,6 @@ fn publish_state(shared: &WriterShared, state: PersistenceState) {
         revision: current.revision.saturating_add(1),
         state,
     });
-    let next = shared.durable_progress.borrow().wrapping_add(1);
-    shared.durable_progress.send_replace(next);
 }
 
 fn persistence_error(code: &str, message: String, retryable: bool) -> StateError {
@@ -106,11 +105,6 @@ fn first_failed_at(shared: &WriterShared) -> Option<i64> {
         PersistenceState::Blocked(state) => Some(state.first_failed_at),
         PersistenceState::Ready(_) | PersistenceState::Flushing(_) => None,
     }
-}
-
-/// 目录事实与 lease 没有单条 revision 概念；保留该位以维持状态快照契约。
-fn oldest_pending_revision(_shared: &WriterShared) -> Option<u64> {
-    None
 }
 
 fn pending_from_queue(shared: &WriterShared) -> usize {
