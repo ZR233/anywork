@@ -757,20 +757,6 @@ pub fn canonical_document_ref(scope: &McpScope, id: &str) -> Result<McpDocumentR
     })
 }
 
-pub fn scope_dir(paths: &ConfigPaths, scope: &McpScope) -> Result<PathBuf> {
-    match scope {
-        McpScope::Host => Ok(paths.mcp_host_dir()),
-        McpScope::Ssh { ssh_alias } => {
-            if ssh_alias.trim().is_empty() {
-                return Err(PureError::ConfigError(
-                    "SSH alias must not be empty".to_owned(),
-                ));
-            }
-            paths.mcp_ssh_dir(ssh_alias)
-        }
-    }
-}
-
 pub fn resolve_document_path(
     paths: &ConfigPaths,
     document: &McpDocumentRef,

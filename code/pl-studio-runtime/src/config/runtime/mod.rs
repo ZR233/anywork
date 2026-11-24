@@ -11,7 +11,7 @@ use crate::{PureError, Result};
 use super::model_catalog::{self, Observation};
 use super::{
     AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, McpCatalogResource,
-    McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig,
+    McpDocumentError, StudioConfig,
 };
 use crate::mode::ThreadModeDocument;
 use crate::mode::ThreadModeId;
@@ -434,7 +434,8 @@ impl ConfigRuntime {
     }
 
     /// 从已发布缓存取得启用 Profile 的执行视图；不扫描文件。
-    pub fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
+    #[cfg(test)]
+    pub(crate) fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
         Ok(self
             .profiles
             .read()
@@ -468,7 +469,8 @@ impl ConfigRuntime {
     }
 
     /// 订阅指定环境作用域的 MCP 配置目录变更唤醒。
-    pub fn subscribe_mcp_catalog(
+    #[cfg(test)]
+    fn subscribe_mcp_catalog(
         &self,
         scope: &McpScope,
     ) -> ConfigRuntimeResult<(McpCatalogSnapshot, tokio::sync::watch::Receiver<u64>)> {
@@ -483,10 +485,11 @@ impl ConfigRuntime {
     }
 
     /// 解析指定环境作用域内所有有效 MCP 条目（含启用、禁用、缺前置条件）。
-    pub fn effective_mcp_servers_for_scope(
+    #[cfg(test)]
+    fn effective_mcp_servers_for_scope(
         &self,
         scope: &McpScope,
-    ) -> ConfigRuntimeResult<BTreeMap<String, ScopedEffectiveMcpServer>> {
+    ) -> ConfigRuntimeResult<BTreeMap<String, super::ScopedEffectiveMcpServer>> {
         let _command = self
             .command_lock
             .lock()
@@ -500,13 +503,14 @@ impl ConfigRuntime {
     }
 
     /// 解析单个 Thread 在指定环境作用域下需要连接的 MCP servers。
-    pub fn resolve_thread_mcp_configs(
+    #[cfg(test)]
+    fn resolve_thread_mcp_configs(
         &self,
         scope: &McpScope,
         workspace_root: &std::path::Path,
         host_base_cwd: &std::path::Path,
         remote_commands: Option<Arc<pl_tool::command::ExecutorCommandBackend>>,
-    ) -> ConfigRuntimeResult<BTreeMap<String, ResolvedThreadMcpServer>> {
+    ) -> ConfigRuntimeResult<BTreeMap<String, super::ResolvedThreadMcpServer>> {
         let _command = self
             .command_lock
             .lock()
@@ -713,10 +717,8 @@ impl ConfigRuntime {
     ///
     /// # Errors
     /// Returns unknown/disabled Profile, configuration or account route errors.
-    pub fn resolve_agent_profile(
-        &self,
-        profile_id: &str,
-    ) -> ConfigRuntimeResult<ResolvedAgentProfile> {
+    #[cfg(test)]
+    fn resolve_agent_profile(&self, profile_id: &str) -> ConfigRuntimeResult<ResolvedAgentProfile> {
         self.resolve_delegated_profile(profile_id, crate::DelegationMode::Profile, None)
     }
 

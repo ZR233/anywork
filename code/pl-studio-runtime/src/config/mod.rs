@@ -46,14 +46,13 @@ pub(crate) use agent_profile::{
 };
 pub use mcp::{build_builtin_effective_config, builtin_mcp_server_ids, is_builtin_mcp_server_id};
 pub use mcp_document::{
-    ALL_BUILTIN_IDS, MCP_DOCUMENT_SCHEMA_VERSION, McpFileSpecV1, McpFileV1,
-    validate_server_config_strict,
+    MCP_DOCUMENT_SCHEMA_VERSION, McpFileSpecV1, McpFileV1, validate_server_config_strict,
 };
 pub use mcp_resource::{
     McpCatalogResource, McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer,
     ScopedMcpScan, canonical_document_ref, canonical_mcp_filename,
     ensure_default_host_builtins_if_fresh, resolve_document_path,
-    resolve_scoped_servers_for_thread, resolve_stdio_cwd, scan_scope_catalog, scope_dir,
+    resolve_scoped_servers_for_thread, resolve_stdio_cwd, scan_scope_catalog,
 };
 pub use pl_tool::mcp::config::EffectiveMcpServerConfig;
 pub use pl_tool::mcp::config::McpServerConfig as StudioMcpServerEntry;

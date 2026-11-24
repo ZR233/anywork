@@ -227,13 +227,11 @@ impl SystemCredentialStore {
     fn load_account(&self, scope: &str, id: &str, account: &str) -> Result<Option<String>> {
         match protected_get(&entry_for_account(scope, id, account)?, account) {
             Ok(secret) => Ok(Some(secret)),
-            Err(KeyringError::NoEntry) => Ok(self
-                .fallback_lease
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(account)
-                .cloned()),
-            Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => Ok(self
+            Err(
+                KeyringError::NoEntry
+                | KeyringError::PlatformFailure(_)
+                | KeyringError::NoStorageAccess(_),
+            ) => Ok(self
                 .fallback_lease
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -244,31 +242,10 @@ impl SystemCredentialStore {
     }
 
     fn save_account(&self, scope: &str, id: &str, account: &str, secret: &str) -> Result<()> {
-        self.save_account_with_status(scope, id, account, secret)
-            .map(|_| ())
-    }
-
-    fn save_account_with_status(
-        &self,
-        scope: &str,
-        id: &str,
-        account: &str,
-        secret: &str,
-    ) -> Result<bool> {
         match protected_set(&entry_for_account(scope, id, account)?, account, secret) {
-            Ok(()) => {
-                self.fallback_lease
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(account.to_string(), secret.to_string());
-                Ok(true)
-            }
-            Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => {
-                self.fallback_lease
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(account.to_string(), secret.to_string());
-                Ok(false)
+            Ok(()) | Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => {
+                self.lease_account(account, secret);
+                Ok(())
             }
             Err(error) => Err(credential_error("write", scope, id, error)),
         }
