@@ -19,8 +19,7 @@ use super::{AccountConfig, AccountTemplateId, ModelCatalogId, ModelDescriptor};
 use super::{AccountModelEntry, AccountModelOrigin};
 use crate::model::{ModelDefinition, ModelModality};
 use crate::protocol::{
-    ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities, WireApi,
-    wire_transport_profile_revision,
+    ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities, wire_transport_profile_revision,
 };
 
 const MIMO_API_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
@@ -515,18 +514,11 @@ pub fn account_service_capabilities_descriptor(
 
 fn connection_mode_descriptor(mode: ConnectionMode) -> ConnectionModeDescriptor {
     ConnectionModeDescriptor {
-        id: connection_mode_label(mode).to_string(),
+        id: mode.label().to_owned(),
         display_name: match mode {
             ConnectionMode::WebSocket => "WebSocket".to_string(),
             ConnectionMode::Http => "HTTP".to_string(),
         },
-    }
-}
-
-fn connection_mode_label(mode: ConnectionMode) -> &'static str {
-    match mode {
-        ConnectionMode::WebSocket => "web_socket",
-        ConnectionMode::Http => "http",
     }
 }
 
@@ -569,7 +561,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
         context: entry.context.clone(),
         max_output_tokens: model.extra.max_output_tokens,
         transport: ModelTransportDescriptor {
-            protocol: protocol_label(model.extra.binding.transport.protocol).to_string(),
+            protocol: model.extra.binding.transport.protocol.label().to_owned(),
             connection_modes: model
                 .extra
                 .binding
@@ -579,10 +571,13 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
                 .copied()
                 .map(connection_mode_descriptor)
                 .collect(),
-            default_connection_mode: connection_mode_label(
-                model.extra.binding.transport.default_connection_mode,
-            )
-            .to_string(),
+            default_connection_mode: model
+                .extra
+                .binding
+                .transport
+                .default_connection_mode
+                .label()
+                .to_owned(),
         },
         capabilities: ModelCapabilitiesDto {
             input: capabilities.input.iter().map(Into::into).collect(),
@@ -628,14 +623,6 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
                     .collect(),
             }),
         pricing,
-    }
-}
-
-fn protocol_label(protocol: WireApi) -> &'static str {
-    match protocol {
-        WireApi::Responses => "responses",
-        WireApi::ChatCompletions => "chat_completions",
-        WireApi::GeminiGenerateContent => "gemini_generate_content",
     }
 }
 

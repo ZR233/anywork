@@ -24,7 +24,8 @@ mod view;
 
 use account_edit::invalid_settings_argument;
 pub(crate) use view::{
-    account_settings, model_catalog_snapshot, settings_config_snapshot, settings_state_response,
+    account_model_catalog, account_settings, model_catalog_snapshot, model_catalog_state,
+    settings_config_snapshot, settings_state_response,
 };
 use view::{normalized_optional, normalized_string_list};
 
@@ -39,6 +40,30 @@ fn set_list_membership(list: &mut Vec<String>, id: String, present: bool) {
 }
 
 impl StudioRuntime {
+    fn run_settings_command(
+        &self,
+        operation_id: String,
+        state: &crate::ConfigRuntimeSnapshot,
+        changed: bool,
+        effect: CommandEffectPoint,
+    ) -> Result<SettingsCommandReply> {
+        self.publish_settings_state()?;
+        self.settings_command_reply(operation_id, state, changed, effect)
+    }
+
+    async fn with_chatgpt_account_claim<T>(
+        &self,
+        intent: &crate::AccountAuthenticationIntent,
+        account_id: &str,
+        save: impl FnOnce(Option<super::chatgpt_auth::LoginClaim>) -> Result<T>,
+    ) -> Result<T> {
+        let state = self.chatgpt_auth.with_claim(intent, account_id, save)?;
+        if matches!(intent, crate::AccountAuthenticationIntent::ApiKey) {
+            self.chatgpt_auth.discard_account(account_id).await?;
+        }
+        Ok(state)
+    }
+
     pub(super) fn read_settings_response(&self) -> Result<SettingsStateResponse> {
         // 同一 Settings command 边界内取得配置与 ACP 投影：不会看到"提交已生效但身份未对齐"的中间态。
         // 外层是命令边界错误，内层是投影错误；两层都保留为命令错误，不丢弃任何一层。
@@ -388,8 +413,7 @@ impl StudioRuntime {
                 config.runtime.permission_mode = mode;
                 Ok(config)
             })?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -412,8 +436,7 @@ impl StudioRuntime {
         let authentication = request.account.authentication.clone();
         let account_id = request.account.account_id.clone();
         let state = self
-            .chatgpt_auth
-            .with_claim(&authentication, &account_id, |credential| {
+            .with_chatgpt_account_claim(&authentication, &account_id, |credential| {
                 Ok(self.config_runtime.update_with_credential_intents(
                     request.expected_revision,
                     crate::config::credential_commit::CredentialIntents::for_account(
@@ -436,12 +459,9 @@ impl StudioRuntime {
                         .map_err(|error| crate::PureError::ConfigError(error.to_string()))
                     },
                 )?)
-            })?;
-        if matches!(authentication, crate::AccountAuthenticationIntent::ApiKey) {
-            self.chatgpt_auth.discard_account(&account_id).await?;
-        }
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+            })
+            .await?;
+        self.run_settings_command(
             request.operation_id,
             &state,
             true,
@@ -478,8 +498,7 @@ impl StudioRuntime {
                 next.models.accounts.insert(account_id.clone(), account);
                 Ok(next)
             })?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -507,8 +526,7 @@ impl StudioRuntime {
                 account.billing_kind = value;
                 Ok(next)
             })?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -577,8 +595,7 @@ impl StudioRuntime {
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             current.canonical_config() != state.canonical_config(),
@@ -612,8 +629,7 @@ impl StudioRuntime {
                 Ok(next)
             },
         )?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -638,8 +654,7 @@ impl StudioRuntime {
         self.chatgpt_auth
             .discard_account(&request.account_id)
             .await?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             current.canonical_config() != state.canonical_config(),

@@ -66,13 +66,7 @@ impl StudioRuntime {
                     settings_config,
                 ),
             },
-            model_catalog: crate::StudioModelCatalogStateSnapshot {
-                state: crate::ObservedResource::ready(
-                    model_catalog.revision,
-                    model_catalog.updated_at,
-                    model_catalog,
-                ),
-            },
+            model_catalog: super::settings_api::model_catalog_state(model_catalog),
             recovery,
             host_mcp_catalog,
             lsp,

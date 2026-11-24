@@ -120,13 +120,7 @@ impl StudioRuntime {
                 let catalog =
                     super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
                 StudioProductBaselineState::ModelCatalog(Box::new(
-                    crate::StudioModelCatalogStateSnapshot {
-                        state: crate::ObservedResource::ready(
-                            catalog.revision,
-                            catalog.updated_at,
-                            catalog,
-                        ),
-                    },
+                    super::settings_api::model_catalog_state(catalog),
                 ))
             }
             StudioProductTopic::Recovery => {

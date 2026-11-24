@@ -23,6 +23,18 @@ pub(crate) async fn preflight_sqlite(
     Ok(())
 }
 
+/// 只有数据库忙/锁/IO 类错误允许自动重试；结构或约束错误必须显式回给调用方。
+pub(crate) fn is_retryable_write(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("database is locked")
+        || message.contains("database table is locked")
+        || message.contains("database is busy")
+        || message.contains("disk i/o error")
+        || message.contains("sqlite_busy")
+        || message.contains("sqlite_locked")
+        || message.contains("sqlite_ioerr")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

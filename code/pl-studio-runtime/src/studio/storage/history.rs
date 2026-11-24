@@ -1,6 +1,7 @@
 //! Frozen schema-24 storage for one-shot v2 TOML import and schema 24→25 migration.
 
 #[cfg(test)]
+use super::sqlite_util::is_retryable_write;
 use crate::{ExecutionItem, ExecutionKind, ExecutionShape, LegacyTurn};
 use std::{
     path::{Path, PathBuf},
@@ -1829,21 +1830,6 @@ async fn begin_write(db: &DatabaseConnection) -> Result<sea_orm::DatabaseTransac
             Err(error) => return Err(error.into()),
         }
     }
-}
-
-/// 只有忙/锁/IO 类错误允许在写者内部有界重试；结构与约束错误必须立刻失败闭锁。
-///
-/// 与全局 call writer 的判定保持同一集合：一次瞬时 `SQLITE_BUSY`/`SQLITE_LOCKED`/`SQLITE_IOERR`
-/// 既不丢事实也不得升级成终态持久化失败，而约束/损坏类错误必须原样上报。
-pub(crate) fn is_retryable_write(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("database is locked")
-        || message.contains("database table is locked")
-        || message.contains("database is busy")
-        || message.contains("disk i/o error")
-        || message.contains("sqlite_busy")
-        || message.contains("sqlite_locked")
-        || message.contains("sqlite_ioerr")
 }
 
 /// Opens an *existing* history database read-only, without creating or upgrading anything.

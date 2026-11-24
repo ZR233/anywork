@@ -19,6 +19,7 @@
 //! 旧日志回填。未来版本显式失败并保留原字节，不触碰用户 home 下的旧数据根。
 //! schema 9 将全 effect 水位保全为仅供显式旧 checkpoint 迁移使用的 fence，生产写入只处理实际记录。
 
+use super::sqlite_util::is_retryable_write;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1859,18 +1860,6 @@ fn integer(value: u64) -> Result<i64> {
     value
         .try_into()
         .map_err(|_| anyhow::anyhow!("call write sequence exceeds SQLite range"))
-}
-
-/// 只有数据库忙/锁/IO 类错误允许自动重试；结构或约束错误必须显式回给调用方。
-pub(crate) fn is_retryable_write(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("database is locked")
-        || message.contains("database table is locked")
-        || message.contains("database is busy")
-        || message.contains("disk i/o error")
-        || message.contains("sqlite_busy")
-        || message.contains("sqlite_locked")
-        || message.contains("sqlite_ioerr")
 }
 
 #[cfg(test)]

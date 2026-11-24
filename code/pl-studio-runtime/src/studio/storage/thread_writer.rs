@@ -24,10 +24,10 @@ use tokio::time::Instant;
 
 use crate::history::HistoryStore;
 use crate::studio::StudioStore;
-use crate::studio::storage::calls::is_retryable_write;
 use crate::studio::storage::coordinator::{
     PendingSequenceRange, ThreadPersistenceMetrics, ThreadPersistenceReport,
 };
+use crate::studio::storage::sqlite_util::is_retryable_write;
 use crate::studio::thread_projection::PreparedEffect;
 
 mod batch;

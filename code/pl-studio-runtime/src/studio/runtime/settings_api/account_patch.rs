@@ -24,8 +24,7 @@ impl StudioRuntime {
         let authentication = request.authentication.clone();
         let account_id = request.account_id.clone();
         let state = self
-            .chatgpt_auth
-            .with_claim(&authentication, &account_id, |credential| {
+            .with_chatgpt_account_claim(&authentication, &account_id, |credential| {
                 Ok(self.config_runtime.update_with_credential_intents(
                     request.expected_revision,
                     crate::config::credential_commit::CredentialIntents::for_account(
@@ -122,11 +121,7 @@ impl StudioRuntime {
                                 .filter(|(model_id, _)| !removed_manual.contains(*model_id))
                                 .map(|(id, mode)| crate::AccountModelConnectionUpdate {
                                     model_id: id.clone(),
-                                    connection_mode: match mode {
-                                        ConnectionMode::Http => "http",
-                                        ConnectionMode::WebSocket => "web_socket",
-                                    }
-                                    .to_owned(),
+                                    connection_mode: mode.label().into(),
                                 })
                                 .collect(),
                             model_auto_compact_limits: account
@@ -160,12 +155,9 @@ impl StudioRuntime {
                         Ok(next)
                     },
                 )?)
-            })?;
-        if matches!(authentication, crate::AccountAuthenticationIntent::ApiKey) {
-            self.chatgpt_auth.discard_account(&account_id).await?;
-        }
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+            })
+            .await?;
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -201,8 +193,7 @@ impl StudioRuntime {
                     Ok(next)
                 },
             )?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -266,8 +257,7 @@ impl StudioRuntime {
                     Ok(next)
                 },
             )?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
