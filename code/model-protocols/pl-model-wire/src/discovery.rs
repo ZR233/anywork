@@ -389,6 +389,8 @@ fn normalize(
     if clear_temperature {
         model.extra.default_temperature = None;
     }
+    // Priority belongs to this response's inventory, so discard any inherited value.
+    model.base.fields.remove("priority");
     if let Some(codex) = record.codex {
         if let Some(levels) = codex.supported_reasoning_levels {
             if levels.is_empty() {

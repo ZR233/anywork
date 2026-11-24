@@ -157,7 +157,7 @@ fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision
 }
 
 #[tokio::test]
-async fn overlay_keeps_models_enabled_by_default_and_keeps_exact_price_join() {
+async fn overlay_enables_online_and_manual_members_and_keeps_exact_price_join() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
     let withdrawn = definition
@@ -190,8 +190,12 @@ async fn overlay_keeps_models_enabled_by_default_and_keeps_exact_price_join() {
         .find(|entry| entry.model.base.slug == withdrawn.base.slug)
         .unwrap();
     assert_eq!(missing.origin, AccountModelOrigin::Bundled);
-    assert!(missing.enabled);
-    assert!(catalog.iter().all(|entry| entry.enabled));
+    assert!(!missing.enabled);
+    assert!(
+        catalog
+            .iter()
+            .all(|entry| entry.enabled == (entry.origin != AccountModelOrigin::Bundled))
+    );
     let known_entry = catalog
         .iter()
         .find(|entry| entry.model.base.slug == known.base.slug)

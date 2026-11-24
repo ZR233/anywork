@@ -42,7 +42,7 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
         .into_iter()
         .map(|entry| (entry.model.base.slug.clone(), entry.model))
         .collect::<BTreeMap<_, _>>();
-    let entries = account.effective_catalog(None)?;
+    let entries = account.catalog_with_defaults(crate::protocol::builtin_protocols())?;
 
     // Observations carry their own acquisition order; ordering is meaningful only inside this
     // account's query identity.

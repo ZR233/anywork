@@ -69,7 +69,7 @@ pub struct AccountModelEntry {
     pub model: ModelDefinition,
     pub origin: AccountModelOrigin,
     pub context: crate::model::ModelContextResolution,
-    /// 用户启用意图的投影；禁用成员仍留在目录里，只是不能被选为执行模型。
+    /// 目录默认值与用户覆盖解析后的启用状态；禁用成员仍留在管理目录中。
     ///
     /// 它不改写 [`Self::type_support`]：类型资格与启用意图是两个独立事实。
     pub enabled: bool,
@@ -188,7 +188,7 @@ pub struct AccountConfig {
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
     model_catalog_overlay: Option<Vec<ModelDefinition>>,
-    /// 精确 model_id 的显式启用覆盖；缺项默认启用，撤下成员仍保留意图。
+    /// 精确 model_id 的显式启用覆盖；缺项使用目录默认值，撤下成员仍保留意图。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_enabled_overrides: BTreeMap<String, bool>,
     #[serde(skip)]
@@ -389,6 +389,7 @@ impl AccountConfig {
 
     /// 管理目录查询；保留全部绑定内置定义，合并当前在线与手工成员。
     ///
+    /// 当前在线目录的整数优先级按升序排列，同级和未标记成员沿用模型 ID 顺序。
     /// 类型筛选消费已合并的定义，不用于发现阶段或改变供应商成员。启用意图在每次读取时
     /// 从 desired 配置投影，因此已解析目录缓存不会把禁用成员漏成可用。
     pub fn effective_catalog(
@@ -404,26 +405,15 @@ impl AccountConfig {
         model_type: Option<crate::model::ModelType>,
         registry: crate::protocol::ProtocolRegistry<'_>,
     ) -> Result<Vec<AccountModelEntry>> {
-        let catalog = if let Some(catalog) = &self.resolved_catalog {
-            catalog.clone()
-        } else {
-            let mut entries = apply_connection_overrides(
-                self.catalog_membership(registry)?,
-                self.connection_overrides(),
-                self.discovery_profile()?.is_some(),
-                self.model_overrides(),
-            )?;
-            self.resolve_entries_context(&mut entries)?;
-            entries
-        };
-        Ok(catalog
+        Ok(self
+            .catalog_with_defaults(registry)?
             .into_iter()
             .map(|mut entry| {
                 entry.enabled = self
                     .model_enabled_overrides
                     .get(&entry.model.base.slug)
                     .copied()
-                    .unwrap_or(true);
+                    .unwrap_or(entry.enabled);
                 entry
             })
             .filter(|entry| {
@@ -432,9 +422,26 @@ impl AccountConfig {
             .collect())
     }
 
+    pub(super) fn catalog_with_defaults(
+        &self,
+        registry: crate::protocol::ProtocolRegistry<'_>,
+    ) -> Result<Vec<AccountModelEntry>> {
+        if let Some(catalog) = &self.resolved_catalog {
+            return Ok(catalog.clone());
+        }
+        let mut entries = apply_connection_overrides(
+            self.catalog_membership(registry)?,
+            self.connection_overrides(),
+            self.discovery_profile()?.is_some(),
+            self.model_overrides(),
+        )?;
+        self.resolve_entries_context(&mut entries)?;
+        Ok(entries)
+    }
+
     /// 会话、固定 Profile 与自动子代理共用的选择资格入口。
     ///
-    /// 先应用模型自身的类型资格（文本输入输出、上下文与预算），再排除用户禁用的成员；
+    /// 先应用模型自身的类型资格（文本输入输出、上下文与预算），再排除未启用的成员；
     /// 启用、价格或评价不能绕过类型资格。管理页仍用 [`Self::effective_catalog`] 读取完整
     /// 目录，自动分发的凭据、连接与任务能力追加过滤由调用方完成。
     pub fn selectable_catalog(
@@ -469,7 +476,7 @@ impl AccountConfig {
         Ok(())
     }
 
-    /// 返回当前保存的显式启用覆盖；缺项表示默认启用。
+    /// 返回当前保存的显式启用覆盖；缺项使用目录默认值。
     ///
     /// 调用方据此投影管理页开关与配置保存，不需要第二份自动分发白名单。
     pub fn model_enabled_overrides(&self) -> &BTreeMap<String, bool> {
@@ -569,32 +576,29 @@ impl AccountConfig {
             .iter()
             .cloned()
             .map(|model| {
-                (
-                    model.base.slug.clone(),
-                    AccountModelEntry::new(model, AccountModelOrigin::Bundled),
-                )
+                let id = model.base.slug.clone();
+                let mut entry = AccountModelEntry::new(model, AccountModelOrigin::Bundled);
+                // Once an online inventory exists, only a matching observation
+                // replaces this disabled default. A local edit preserves it.
+                entry.enabled = self.model_catalog_overlay.is_none();
+                (id, entry)
             })
             .collect::<BTreeMap<_, _>>();
         let discovery = self.discovery_profile()?;
         for model in additional {
-            let mut effective = local
-                .remove(&model.base.slug)
-                .map(|entry| entry.model)
-                .unwrap_or_else(|| {
-                    let mut member = ModelDefinition::compatible(&model.base.slug);
-                    if let Some(discovery) = &discovery {
-                        member
-                            .extra
-                            .binding
-                            .set_transport(discovery.transport.clone());
-                    }
+            let mut entry = local.remove(&model.base.slug).unwrap_or_else(|| {
+                let mut member = ModelDefinition::compatible(&model.base.slug);
+                if let Some(discovery) = &discovery {
                     member
-                });
-            model.apply(&mut effective)?;
-            local.insert(
-                model.base.slug.clone(),
-                AccountModelEntry::new(effective, AccountModelOrigin::Manual),
-            );
+                        .extra
+                        .binding
+                        .set_transport(discovery.transport.clone());
+                }
+                AccountModelEntry::new(member, AccountModelOrigin::Manual)
+            });
+            model.apply(&mut entry.model)?;
+            entry.origin = AccountModelOrigin::Manual;
+            local.insert(model.base.slug.clone(), entry);
         }
         // Speed candidates come from this account's online catalog.
         for entry in local.values_mut() {
@@ -607,6 +611,13 @@ impl AccountConfig {
         let Some(overlay) = &self.model_catalog_overlay else {
             return Ok(self.restrict_authentication_transport(local.into_values().collect()));
         };
+        let online_priorities: HashMap<_, _> = overlay
+            .iter()
+            .filter_map(|model| {
+                let priority = model.base.fields.get("priority")?.as_i64()?;
+                Some((model.base.slug.as_str(), priority))
+            })
+            .collect();
         let mut entries = local.clone();
         let policy = registry.resolve(&self.protocol)?.discovery;
         for observed in overlay {
@@ -654,7 +665,15 @@ impl AccountConfig {
                 AccountModelEntry::new(model, origin),
             );
         }
-        Ok(self.restrict_authentication_transport(entries.into_values().collect()))
+        let mut entries = self.restrict_authentication_transport(entries.into_values().collect());
+        if !online_priorities.is_empty() {
+            // Stable sorting preserves the existing model ID order within ties and unranked rows.
+            entries.sort_by_key(|entry| {
+                let priority = online_priorities.get(entry.model.base.slug.as_str());
+                (priority.is_none(), priority)
+            });
+        }
+        Ok(entries)
     }
 
     fn restrict_authentication_transport(
