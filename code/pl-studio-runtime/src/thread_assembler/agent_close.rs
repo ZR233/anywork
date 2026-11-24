@@ -325,9 +325,7 @@ impl AgentServices {
                 && owner.observed_thread(&record.id).is_none()
             {
                 self.factory.project_child_close(record, &state).await?;
-                owner
-                    .acknowledge_parent_reports(&self.store, record)
-                    .await?;
+                owner.acknowledge_parent_reports(record).await?;
                 return self.factory.finish_child_execution(record).await;
             }
             self.install_storage_owner(owner, record, current, EntryPurpose::CloseStorage)?;
@@ -343,9 +341,7 @@ impl AgentServices {
             .project_child_close(record, &thread.snapshot())
             .await;
         owner.close_with_permit(&record.id, operation).await?;
-        owner
-            .acknowledge_parent_reports(&self.store, record)
-            .await?;
+        owner.acknowledge_parent_reports(record).await?;
         projection?;
         self.factory.finish_child_execution(record).await
     }

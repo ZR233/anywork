@@ -410,7 +410,6 @@ impl StudioThreadFactory {
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
-                    assignment: binding.assignment.as_ref(),
                     workspace_usage: binding
                         .workspace_usage
                         .upgrade()
@@ -423,7 +422,6 @@ impl StudioThreadFactory {
                     root_thread_id: &thread.root_thread_id,
                     workspace: binding.workspace.clone(),
                     store: resources,
-                    helper_source: self.services.helper_source.clone(),
                 },
                 &binding.lifetime,
                 CatalogPreparation::Refresh {

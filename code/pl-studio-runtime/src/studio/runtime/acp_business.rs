@@ -881,7 +881,7 @@ mod mixed_tests {
         let protocol = fixture.runtime.agent_facility.product_events
             .thread_snapshot(identity.thread_id.as_str())?.context("Native child projection")?;
         assert_eq!(
-            owner.acknowledge_parent_reports(&fixture.runtime.store, &protocol).await?,
+            owner.acknowledge_parent_reports(&protocol).await?,
             crate::thread_assembler::observation::ParentReportAcknowledgement::Absent,
         );
         assert!(owner.observed_thread(caller.thread_id.as_str()).is_none());

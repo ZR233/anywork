@@ -3688,7 +3688,6 @@ pub(crate) mod storage_fault_tests {
             ),
             thread_modes: config.thread_mode_manager(),
             ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
-            helper_source: source,
             bots,
             run_export: None,
         });

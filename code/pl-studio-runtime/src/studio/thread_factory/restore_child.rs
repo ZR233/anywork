@@ -247,20 +247,21 @@ impl StudioThreadFactory {
                 })?,
         );
         let mut prepared = self
-            .prepare_thread_tools(ThreadToolAssembly {
-                assignment: Some(&assignment),
-                workspace_usage: workspace_usage.clone(),
-                thread_id: id,
-                cancellation: &request.cancellation,
-                config: &config,
-                route: &route,
-                project: &project,
-                root_thread_id: &thread.root_thread_id,
-                workspace: ToolWorkspace::new(workspace)
-                    .with_lsp_runtime(Some(self.services.lsp_runtime.clone())),
-                store: resources.clone(),
-                helper_source: self.services.helper_source.clone(),
-            })
+            .prepare_thread_tools(
+                ThreadToolAssembly {
+                    workspace_usage: workspace_usage.clone(),
+                    thread_id: id,
+                    cancellation: &request.cancellation,
+                    config: &config,
+                    route: &route,
+                    project: &project,
+                    root_thread_id: &thread.root_thread_id,
+                    workspace: ToolWorkspace::new(workspace)
+                        .with_lsp_runtime(Some(self.services.lsp_runtime.clone())),
+                    store: resources.clone(),
+                },
+                Some(&assignment),
+            )
             .await?;
 
         let review_check = if assignment.mode == crate::AgentWorkspaceMode::Review {

@@ -285,19 +285,20 @@ impl StudioChildResources for StudioThreadFactory {
                 .map_err(|error| resource_error("resolve child session resources", error))?,
         );
         let mut prepared_tools = self
-            .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
-                assignment: Some(&assignment),
-                workspace_usage: workspace_usage.clone(),
-                thread_id: &request.id,
-                cancellation: &request.cancellation,
-                config: &profile.config,
-                route: &profile.route,
-                project: &project,
-                root_thread_id: &parent.root_thread_id,
-                workspace,
-                store: store.clone(),
-                helper_source: self.services.helper_source.clone(),
-            })
+            .prepare_thread_tools(
+                super::thread_tools::ThreadToolAssembly {
+                    workspace_usage: workspace_usage.clone(),
+                    thread_id: &request.id,
+                    cancellation: &request.cancellation,
+                    config: &profile.config,
+                    route: &profile.route,
+                    project: &project,
+                    root_thread_id: &parent.root_thread_id,
+                    workspace,
+                    store: store.clone(),
+                },
+                Some(&assignment),
+            )
             .await?;
         check_cancelled(request)?;
         let workspace_payload = crate::studio::workspace_receipt::to_payload(&assignment)

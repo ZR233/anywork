@@ -98,7 +98,6 @@ impl StudioRuntime {
                 skills: skills.clone(),
                 thread_modes: thread_modes.clone(),
                 ssh_manager: ssh_manager.clone(),
-                helper_source: helper_source.clone(),
                 bots: bots.clone(),
                 run_export: run_export.clone(),
             },

@@ -52,7 +52,6 @@ pub(in crate::studio) struct StudioThreadServices {
     pub skills: crate::studio::runtime::SkillCatalogRuntime,
     pub thread_modes: crate::mode::ThreadModeManager,
     pub ssh_manager: Arc<pl_tool::remote::SshManager>,
-    pub helper_source: crate::worker_assets::RemoteHelperSource,
     pub bots: crate::bots::BotRuntime,
     pub run_export: Option<Arc<crate::studio::runtime::run_export::RunExportCoordinator>>,
 }
