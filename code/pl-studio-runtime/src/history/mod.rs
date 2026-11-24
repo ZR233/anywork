@@ -18,6 +18,9 @@ mod types;
 pub mod upgrade;
 mod validate;
 
+#[cfg(test)]
+mod scale;
+
 pub use accounting::HistoryUsageFact;
 pub(crate) use accounting::PreparedHistoryUsage;
 pub use body::{
