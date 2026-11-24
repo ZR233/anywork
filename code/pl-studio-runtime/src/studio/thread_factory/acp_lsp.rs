@@ -2,7 +2,6 @@
 use super::StudioThreadFactory;
 use anyhow::Result;
 use pl_tool::{command::WorkspaceExecutionBinding, lsp::LspPathBinding, workspace::ToolWorkspace};
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub(in crate::studio) struct PreparedAcpLsp {
@@ -19,13 +18,8 @@ impl StudioThreadFactory {
         remote: bool,
     ) -> Result<PreparedAcpLsp> {
         let registry = self.services.lsp_runtime.clone();
-        let host =
-            pl_lsp::host::ExecutorLspHost::new(execution.executor().clone(), execution.root())?;
-        let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = Some(Arc::new(host));
-        let defaults = (!remote).then(|| self.services.store.paths().home().join("lsp/host"));
-        let lease = registry
-            .acquire_workspace(workspace.root(), host, defaults)
-            .await?;
+        let host = self.lsp_host_binding(execution, remote)?;
+        let lease = host.acquire(&registry, workspace).await?;
         Ok(PreparedAcpLsp {
             registry,
             paths: LspPathBinding::new(workspace.clone(), execution.files()),
