@@ -7,7 +7,8 @@ use pl_model::model::ModelTransportProfile;
 use pl_provider_fixture::ReplyStage;
 use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest,
-    ThreadWorkspaceMode, TurnCancellationCause, TurnState,
+    ThreadActivityToolState, ThreadWaitState, ThreadWorkspaceMode, TurnCancellationCause,
+    TurnState,
 };
 use serde_json::json;
 use support::{Environment, current_demand, prompt_step, reached, text_reply, tool_reply};
@@ -65,12 +66,16 @@ async fn active_root_route_save_then_submit_summarizes_source_after_tool_cancell
             let held = async {
                 loop {
                     let view = reader.snapshot(current_demand()).await?;
+                    // Current exposes attempt-scoped Core call IDs, whereas WAIT_CALL is
+                    // the provider's wire ID. Bind this barrier to the original input and
+                    // its unique foreground wait instead of comparing the two ID domains.
                     if view.state.activity.as_ref().is_some_and(|activity| {
-                        activity
-                            .tools
-                            .active
-                            .iter()
-                            .any(|tool| tool.call_id == WAIT_CALL)
+                        activity.input_id.as_deref() == Some(format!("input-{OLD_INPUT}").as_str())
+                            && matches!(activity.tools.active.as_slice(), [tool]
+                                if tool.name == "wait"
+                                    && tool.state == ThreadActivityToolState::Running
+                                    && tool.wait.as_ref().is_some_and(|wait|
+                                        wait.state() == ThreadWaitState::Waiting))
                     }) {
                         return Ok::<_, anyhow::Error>(view);
                     }
