@@ -55,12 +55,13 @@ pub(in crate::studio) use user_input::{
     attach as attach_tool_user_input, project_user_input as project_tool_user_input,
 };
 
-/// The canonical terminal Turn already prepared for the reliable history transaction.
+/// The canonical terminal Turn transitioned by this reliable effect.
 pub(in crate::studio) fn prepared_terminal_turn(prepared: &PreparedEffect) -> Option<crate::Turn> {
+    let turn_id = prepared.terminal_turn_id.as_deref()?;
     prepared
         .history_turn_details
-        .values()
-        .find(|turn| turn.state.is_terminal())
+        .get(turn_id)
+        .filter(|turn| turn.state.is_terminal())
         .cloned()
 }
 

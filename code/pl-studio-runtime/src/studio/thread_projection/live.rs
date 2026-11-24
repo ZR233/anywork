@@ -308,6 +308,8 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
     /// Input admissions and transitions frozen from this effect's original observation cut.
     pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
+    /// Turn ID transitioned to a terminal state by this exact effect (`effect.turn`), if any.
+    pub(in crate::studio) terminal_turn_id: Option<String>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
     pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
     pub(in crate::studio) parent_finish: Option<Arc<pl_tool::finish_turn::SavedFinishTurn>>,
@@ -321,6 +323,7 @@ pub(in crate::studio) struct PreparedEffect {
 fn prepared_turns(
     items: &[ExecutionItem],
     run: RuntimeEpoch,
+    effect_sequence: u64,
 ) -> Result<(Vec<HistoryTurnHead>, BTreeMap<String, crate::Turn>), ProjectionError> {
     fn millis(at: i64) -> Result<i64, ProjectionError> {
         crate::history::milliseconds_from_seconds(at)
@@ -365,7 +368,11 @@ fn prepared_turns(
                 input_id: turn.input_id().map(str::to_owned),
                 id: item.turn_id.clone(),
                 thread_id: item.thread_id.clone(),
-                revision: item.revision,
+                // `Turn.revision` belongs to the Thread-wide monotonic `effect.sequence` domain
+                // (matching `prepare_turn_frames`, `project_active_turn`, `publish_last_turn`,
+                // `ConversationStateFeed::reflect_terminal`, and `agent_review::baseline`),
+                // unlike per-item `ExecutionItem.revision`.
+                revision: effect_sequence,
                 state: turn.state().clone(),
                 updated_at: item.updated_at,
             },
@@ -552,6 +559,11 @@ impl PreparedEffect {
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(self.accounting.retained_bytes())
+            .saturating_add(
+                self.terminal_turn_id
+                    .as_ref()
+                    .map_or(0, |id| id.len() as u64),
+            )
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
     }
@@ -1523,7 +1535,12 @@ impl LiveProjection {
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
-        let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
+        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
+        let terminal_turn_id = effect
+            .turn
+            .as_ref()
+            .filter(|record| record.state != pl_core::thread::TurnState::Running)
+            .map(|record| record.turn_id.clone());
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
@@ -1534,6 +1551,7 @@ impl LiveProjection {
             history_turn_details: Arc::new(history_turn_details),
             history_sources: history_sources(&history_sources_raw).into(),
             retained_resources: retained_resources(effect)?.into(),
+            terminal_turn_id,
             parent_report: None,
             parent_finish: None,
             terminal_retention: None,
@@ -1586,7 +1604,12 @@ impl LiveProjection {
             .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
             .await?;
         self.retire_effect_source(effect)?;
-        let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
+        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
+        let terminal_turn_id = effect
+            .turn
+            .as_ref()
+            .filter(|record| record.state != pl_core::thread::TurnState::Running)
+            .map(|record| record.turn_id.clone());
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
@@ -1597,6 +1620,7 @@ impl LiveProjection {
             history_turn_details: Arc::new(history_turn_details),
             history_sources: history_sources(&history_sources_raw).into(),
             retained_resources: retained_resources(effect)?.into(),
+            terminal_turn_id,
             parent_report: None,
             parent_finish: None,
             terminal_retention: None,
@@ -4325,6 +4349,244 @@ mod append_only_history_tests {
             }));
             channel.stop_and_join().await?;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_turn_revision_tracks_effect_sequence_across_short_followups() -> Result<()> {
+        use pl_core::thread::{TurnOutcome, TurnRecord, TurnState};
+
+        let directory = tempfile::tempdir()?;
+        let thread = crate::Thread::placeholder("terminal-revision-order");
+        let history = HistoryStore::open(
+            directory.path().join("history.sqlite"),
+            &thread.id,
+            HistoryLimits {
+                pending_events: 64,
+                pending_bytes: 1024 * 1024,
+            },
+        )
+        .await?;
+        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        let mut projection = LiveProjection::new();
+        projection.bind_execution(
+            channel.order_index(),
+            RuntimeEpoch::new(),
+            history.database_id().to_owned(),
+        )?;
+
+        let turn1_id = "turn-long-1".to_owned();
+        let mut state = ThreadSnapshot {
+            commit_sequence: 1,
+            turns: Arc::from([TurnRecord {
+                turn_id: turn1_id.clone(),
+                input_id: None,
+                state: TurnState::Running,
+                elapsed_ms: None,
+                model_steps: 0,
+            }]),
+            ..Default::default()
+        };
+        let (_, _) = projection
+            .prepare(
+                &thread,
+                &ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: 1,
+                    committed_at: 100,
+                    turn: Some(state.turns[0].clone()),
+                    ..Default::default()
+                },
+                &state,
+                true,
+            )
+            .await?;
+
+        // Drive Turn 1 through several phase transitions to inflate its item content revision.
+        let phase_invocation = pl_core::model::ModelToolCall {
+            call_id: "phase".into(),
+            tool_id: "exec".into(),
+            arguments: pl_core::context::OpaquePayload::text("{}"),
+            presentation_contract: None,
+            rejection: None,
+        };
+        for seq in 2_u64..=5 {
+            state.commit_sequence = seq;
+            let task = pl_core::thread::task::TaskRecord {
+                id: "task:phase".into(),
+                parent_call_id: None,
+                invocation: Some(phase_invocation.clone()),
+                call_id: "phase".into(),
+                tool_id: "exec".into(),
+                turn_id: turn1_id.clone(),
+                revision: seq,
+                status: if seq % 2 == 0 {
+                    pl_core::thread::task::TaskStatus::Running
+                } else {
+                    pl_core::thread::task::TaskStatus::Succeeded
+                },
+                cancel_requested: false,
+                acknowledgement: None,
+                started_sequence: Some(2),
+            };
+            if seq % 2 == 0 {
+                state.tasks.insert(task.id.clone(), task.clone());
+            } else {
+                state.tasks.clear();
+            }
+            let _ = projection
+                .prepare(
+                    &thread,
+                    &ThreadEffectBatch {
+                        thread_id: thread.id.clone(),
+                        sequence: seq,
+                        committed_at: 100 + seq as i64,
+                        tasks: Arc::from([task]),
+                        ..Default::default()
+                    },
+                    &state,
+                    true,
+                )
+                .await?;
+        }
+
+        let turn1_done = TurnRecord {
+            turn_id: turn1_id.clone(),
+            input_id: None,
+            state: TurnState::Finished(TurnOutcome::Completed),
+            elapsed_ms: Some(25),
+            model_steps: 2,
+        };
+        state.commit_sequence = 6;
+        state.turns = Arc::from([turn1_done.clone()]);
+        let (_, p_turn1) = projection
+            .prepare(
+                &thread,
+                &ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: 6,
+                    committed_at: 106,
+                    turn: Some(turn1_done.clone()),
+                    ..Default::default()
+                },
+                &state,
+                true,
+            )
+            .await?;
+        let terminal1 =
+            super::super::prepared_terminal_turn(&p_turn1).context("turn 1 terminal projection")?;
+        assert_eq!(terminal1.id, turn1_id);
+        assert_eq!(terminal1.revision, 6);
+
+        // Turn 2 is much shorter (fewer transitions than Turn 1), yet commits at higher sequence 8.
+        let turn2_id = "turn-short-2".to_owned();
+        let turn2_running = TurnRecord {
+            turn_id: turn2_id.clone(),
+            input_id: None,
+            state: TurnState::Running,
+            elapsed_ms: None,
+            model_steps: 0,
+        };
+        state.commit_sequence = 7;
+        state.turns = Arc::from([turn1_done.clone(), turn2_running.clone()]);
+        let _ = projection
+            .prepare(
+                &thread,
+                &ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: 7,
+                    committed_at: 107,
+                    turn: Some(turn2_running),
+                    ..Default::default()
+                },
+                &state,
+                true,
+            )
+            .await?;
+
+        let turn2_done = TurnRecord {
+            turn_id: turn2_id.clone(),
+            input_id: None,
+            state: TurnState::Finished(TurnOutcome::Completed),
+            elapsed_ms: Some(5),
+            model_steps: 1,
+        };
+        state.commit_sequence = 8;
+        state.turns = Arc::from([turn1_done.clone(), turn2_done.clone()]);
+        let (events2, p_turn2) = projection
+            .prepare(
+                &thread,
+                &ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: 8,
+                    committed_at: 108,
+                    turn: Some(turn2_done),
+                    ..Default::default()
+                },
+                &state,
+                true,
+            )
+            .await?;
+        let terminal2 =
+            super::super::prepared_terminal_turn(&p_turn2).context("turn 2 terminal projection")?;
+        assert_eq!(terminal2.id, turn2_id);
+        assert_eq!(terminal2.revision, 8);
+        assert!(terminal2.revision > terminal1.revision);
+        let frame2 = events2
+            .as_ref()
+            .and_then(|list| {
+                list.iter().find_map(|ev| match ev {
+                    LiveEvent::Turn { turn, .. } if turn.id == turn2_id => Some(turn),
+                    _ => None,
+                })
+            })
+            .context("live frame for turn 2")?;
+        assert_eq!(frame2.revision, 8);
+
+        // A later effect referencing an already-retired Turn (effect.turn == None) must NOT emit a
+        // synthetic prepared_terminal_turn for the old Turn.
+        let late_invocation = pl_core::model::ModelToolCall {
+            call_id: "late-turn1".into(),
+            tool_id: "exec".into(),
+            arguments: pl_core::context::OpaquePayload::text("{}"),
+            presentation_contract: None,
+            rejection: None,
+        };
+        let task_on_turn1 = pl_core::thread::task::TaskRecord {
+            id: "task:late-turn1".into(),
+            parent_call_id: None,
+            invocation: Some(late_invocation),
+            call_id: "late-turn1".into(),
+            tool_id: "exec".into(),
+            turn_id: turn1_id,
+            revision: 1,
+            status: pl_core::thread::task::TaskStatus::Cancelled,
+            cancel_requested: true,
+            acknowledgement: None,
+            started_sequence: Some(2),
+        };
+        state.commit_sequence = 9;
+        let (_, p_late) = projection
+            .prepare(
+                &thread,
+                &ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: 9,
+                    committed_at: 109,
+                    tasks: Arc::from([task_on_turn1]),
+                    ..Default::default()
+                },
+                &state,
+                true,
+            )
+            .await?;
+        assert!(
+            super::super::prepared_terminal_turn(&p_late).is_none(),
+            "effect without a terminal transition in effect.turn must not re-publish an old Turn"
+        );
+
+        channel.stop_and_join().await?;
+        history.close().await?;
         Ok(())
     }
 }

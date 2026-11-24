@@ -2780,4 +2780,68 @@ mod live_feed_tests {
             Err(broadcast::error::TryRecvError::Closed)
         ));
     }
+
+    #[test]
+    fn publish_last_turn_advances_for_shorter_followup_and_ignores_stale_revisions() {
+        use crate::{CompletedTurnState, Turn, TurnCompletion, TurnState};
+        use tokio_util::sync::CancellationToken;
+
+        let (_, progress) = watch::channel(Progress::default());
+        let feed = ThreadLiveFeed::new(None, progress, CancellationToken::new());
+        let turn1 = Arc::new(Turn {
+            input_id: None,
+            id: "turn-long-1".into(),
+            thread_id: "child".into(),
+            revision: 10,
+            state: TurnState::Completed(CompletedTurnState::new(
+                Some(100),
+                110,
+                TurnCompletion::Normal,
+            )),
+            updated_at: 110,
+        });
+        let turn2 = Arc::new(Turn {
+            input_id: None,
+            id: "turn-short-2".into(),
+            thread_id: "child".into(),
+            revision: 12,
+            state: TurnState::Completed(CompletedTurnState::new(
+                Some(111),
+                112,
+                TurnCompletion::Normal,
+            )),
+            updated_at: 112,
+        });
+        let stale = Arc::new(Turn {
+            input_id: None,
+            id: "turn-stale".into(),
+            thread_id: "child".into(),
+            revision: 9,
+            state: TurnState::Completed(CompletedTurnState::new(
+                Some(90),
+                95,
+                TurnCompletion::Normal,
+            )),
+            updated_at: 95,
+        });
+
+        feed.publish_last_turn(turn1);
+        feed.publish_last_turn(stale);
+        assert_eq!(
+            feed.last_turn
+                .borrow()
+                .as_ref()
+                .map(|t| (t.id.as_str(), t.revision)),
+            Some(("turn-long-1", 10))
+        );
+
+        feed.publish_last_turn(turn2);
+        assert_eq!(
+            feed.last_turn
+                .borrow()
+                .as_ref()
+                .map(|t| (t.id.as_str(), t.revision)),
+            Some(("turn-short-2", 12))
+        );
+    }
 }
