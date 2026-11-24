@@ -114,9 +114,8 @@ if args == ["pub", "deps", "--json"]:
         )
         boundary_calls = [args for _, args, _ in calls
                           if args[0].startswith("--packages=")]
-        self.assertEqual(len(boundary_calls), 2)
-        self.assertNotIn("--ui-closure", boundary_calls[0])
-        self.assertIn("--ui-closure", boundary_calls[1])
+        self.assertEqual(len(boundary_calls), 1)
+        self.assertIn("--all", boundary_calls[0])
 
     def test_selection_runs_only_requested_package_and_ignores_other_suites(self):
         for option, package, other in [

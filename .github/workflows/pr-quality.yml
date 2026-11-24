@@ -304,6 +304,8 @@ jobs:
       - name: Build the current-source remote helper
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
       - name: Run workspace behavior and documentation tests
+        env:
+          ANYWORK_CONTAINER_TMPFS: '1'
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
             export PATH="$PWD/target/debug:$PATH"

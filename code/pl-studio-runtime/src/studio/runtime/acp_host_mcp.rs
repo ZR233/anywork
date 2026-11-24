@@ -1479,7 +1479,7 @@ mod tests {
             pl_tool::workspace::prepare_session_files(&execution.files(), &files).await?;
             let mut config = fixture.runtime.config_runtime.read()?.config;
             config.runtime.tool_capabilities.git = true;
-            let tools = WorkspaceTools::new(open.target.thread_id.clone(), PreparedAcpWorkspace {
+            let tools = WorkspaceTools::new_with_handoff_timeout(open.target.thread_id.clone(), PreparedAcpWorkspace {
                 workspace: ToolWorkspace::new(AgentWorkspace::local(&root).with_session_files(files)),
                 execution: execution.clone(),
                 environment: ExecutionEnvironment::for_ssh(ExecutionOs::Linux, ShellDialect::Bash, "/bin/bash"),
@@ -1492,7 +1492,7 @@ mod tests {
                 }),
                 store: crate::resource_store::FileResourceStore::new(fixture.runtime.store.session_resources_dir_for(&fixture.workspace.id, &open.target.thread_id)?),
                 host_scratch: fixture.runtime.store.session_scratch_dir_for(&fixture.workspace.id, &open.target.thread_id)?,
-            }, &config);
+            }, &config, Duration::from_millis(250));
             workspace_tools = Some(tools.clone());
             let mut remote_project = fixture.workspace.clone();
             remote_project.ssh_alias = Some("in-process-helper".into());

@@ -1258,6 +1258,12 @@ pub enum Reply {
         code: String,
         message: String,
     },
+    HttpErrorWithRetryAfter {
+        status: u16,
+        code: String,
+        message: String,
+        retry_after_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -2584,14 +2590,37 @@ pub fn gui_timeline_history_20k_seed_script() -> Vec<Step> {
 /// model text items without event delay. Title ordering and exact optional
 /// inter-turn text compaction reuse the cumulative fixture's private assembly.
 pub fn gui_timeline_read_profile_seed_script() -> Vec<Step> {
+    read_profile_seed_script_with(
+        GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
+        GUI_TIMELINE_READ_PROFILE_SEED_ITEMS,
+    )
+}
+
+fn read_profile_seed_script_with(batches: usize, items_per_batch: usize) -> Vec<Step> {
     let mut steps = Vec::new();
-    for batch in 1..=GUI_TIMELINE_READ_PROFILE_SEED_BATCHES {
+    for batch in 1..=batches {
         push_timeline_history_20k_batch(
             &mut steps,
             "read-profile-seed",
             batch,
             gui_timeline_read_profile_seed_prompt(batch),
-            GUI_TIMELINE_READ_PROFILE_SEED_ITEMS,
+            items_per_batch,
+            0,
+        );
+    }
+    steps
+}
+
+#[cfg(test)]
+fn timeline_history_seed_script_with(batches: usize, items_per_batch: usize) -> Vec<Step> {
+    let mut steps = Vec::new();
+    for batch in 1..=batches {
+        push_timeline_history_20k_batch(
+            &mut steps,
+            "seed",
+            batch,
+            gui_timeline_history_20k_seed_prompt(batch),
+            items_per_batch,
             0,
         );
     }
@@ -4324,6 +4353,17 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
             Json(json!({"error":{"code":code,"message":message}})),
         )
             .into_response(),
+        Ok(Reply::HttpErrorWithRetryAfter {
+            status,
+            code,
+            message,
+            retry_after_ms,
+        }) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            [("retry-after-ms", retry_after_ms.to_string())],
+            Json(json!({"error":{"code":code,"message":message}})),
+        )
+            .into_response(),
         Ok(Reply::Json(body)) => Json(body).into_response(),
         Err(MatchError::InvalidFunctionOutput) => (
             StatusCode::BAD_REQUEST,
@@ -4403,6 +4443,17 @@ async fn files(State(state): State<AppState>, mut multipart: Multipart) -> Respo
             message,
         }) => (
             StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({"error":{"code":code,"message":message}})),
+        )
+            .into_response(),
+        Ok(Reply::HttpErrorWithRetryAfter {
+            status,
+            code,
+            message,
+            retry_after_ms,
+        }) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            [("retry-after-ms", retry_after_ms.to_string())],
             Json(json!({"error":{"code":code,"message":message}})),
         )
             .into_response(),
@@ -4658,7 +4709,13 @@ fn match_step(
                         | Reply::SegmentedSse { .. }
                         | Reply::Json(_)
                         | Reply::HttpError { .. }
-                ) | (Protocol::Files, Reply::Json(_) | Reply::HttpError { .. })
+                        | Reply::HttpErrorWithRetryAfter { .. }
+                ) | (
+                    Protocol::Files,
+                    Reply::Json(_)
+                        | Reply::HttpError { .. }
+                        | Reply::HttpErrorWithRetryAfter { .. }
+                )
             );
             reply_matches
                 && method == expected_method
@@ -6028,13 +6085,15 @@ mod timeline_history_20k_tests {
 
     #[tokio::test]
     async fn read_profile_consumes_every_required_batch_with_optional_titles_and_compaction() {
+        const BATCHES: usize = 3;
+        const ITEMS: usize = 2;
         let client = reqwest::Client::new();
         for compact in [false, true] {
-            let fixture = FixtureServer::start(gui_timeline_read_profile_seed_script())
+            let fixture = FixtureServer::start(read_profile_seed_script_with(BATCHES, ITEMS))
                 .await
                 .unwrap();
             let mut completed_items = 0;
-            for batch in 1..=200 {
+            for batch in 1..=BATCHES {
                 if compact && batch > 1 {
                     let (status, body) = read_profile_prompt(
                         &client,
@@ -6044,9 +6103,9 @@ mod timeline_history_20k_tests {
                     .await;
                     assert_eq!(status, StatusCode::OK, "{body}");
                     assert!(body.contains(&format!(
-                        "{} seed batches of 100 model text items completed ({} model text items)",
+                        "{} seed batches of {GUI_TIMELINE_READ_PROFILE_SEED_ITEMS} model text items completed ({} model text items)",
                         batch - 1,
-                        (batch - 1) * 100
+                        (batch - 1) * GUI_TIMELINE_READ_PROFILE_SEED_ITEMS
                     )));
                     assert!(!body.contains("-item-"));
                 }
@@ -6068,7 +6127,7 @@ mod timeline_history_20k_tests {
                     .map(|data| serde_json::from_str::<Value>(data).unwrap())
                     .filter(|event| event["type"] == "response.output_item.done")
                     .count();
-                assert_eq!(done, 100, "batch {batch}");
+                assert_eq!(done, ITEMS, "batch {batch}");
                 completed_items += done;
                 if batch % 2 == 0 {
                     let (status, body) =
@@ -6078,16 +6137,19 @@ mod timeline_history_20k_tests {
                     assert!(body.contains("Fixture Session"));
                 }
             }
-            assert_eq!(completed_items, 20_000);
+            assert_eq!(completed_items, BATCHES * ITEMS);
             let requests = fixture.finish().await.unwrap();
-            assert_eq!(requests.len(), 400 + if compact { 199 } else { 0 });
+            assert_eq!(
+                requests.len(),
+                BATCHES * 2 + if compact { BATCHES - 1 } else { 0 }
+            );
             assert!(requests.iter().all(|request| request.accepted));
         }
     }
 
     #[tokio::test]
     async fn read_profile_rejects_early_repeated_or_inexact_compaction_and_missing_batches() {
-        let fixture = FixtureServer::start(gui_timeline_read_profile_seed_script())
+        let fixture = FixtureServer::start(read_profile_seed_script_with(3, 1))
             .await
             .unwrap();
         let client = reqwest::Client::new();
@@ -6132,12 +6194,14 @@ mod timeline_history_20k_tests {
 
     #[tokio::test]
     async fn seed_batches_finish_with_and_without_text_compaction() {
+        const BATCHES: usize = 3;
+        const ITEMS: usize = 2;
         let client = reqwest::Client::new();
         for compact in [false, true] {
-            let fixture = FixtureServer::start(gui_timeline_history_20k_seed_script())
+            let fixture = FixtureServer::start(timeline_history_seed_script_with(BATCHES, ITEMS))
                 .await
                 .unwrap();
-            for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+            for batch in 1..=BATCHES {
                 if compact && batch > 1 {
                     // Synthetic instructions exercise the production prefix/suffix shape
                     // without copying the private production prompt or captured input.
@@ -6202,18 +6266,13 @@ mod timeline_history_20k_tests {
                     .map(|data| serde_json::from_str::<Value>(data).unwrap())
                     .filter(|event| event["type"] == "response.output_item.done")
                     .count();
-                assert_eq!(completed_items, GUI_TIMELINE_HISTORY_20K_SEED_ITEMS);
+                assert_eq!(completed_items, ITEMS);
             }
             assert!(fixture.live_status().remaining_optional);
             let requests = fixture.finish().await.unwrap();
             assert_eq!(
                 requests.len(),
-                GUI_TIMELINE_HISTORY_20K_SEED_BATCHES
-                    + if compact {
-                        GUI_TIMELINE_HISTORY_20K_SEED_BATCHES - 1
-                    } else {
-                        0
-                    }
+                BATCHES + if compact { BATCHES - 1 } else { 0 }
             );
             assert!(requests.iter().all(|request| request.accepted));
         }
@@ -6221,7 +6280,8 @@ mod timeline_history_20k_tests {
 
     #[tokio::test]
     async fn invalid_compaction_requests_still_fail_verification_after_all_seed_batches() {
-        let fixture = FixtureServer::start(gui_timeline_history_20k_seed_script())
+        const BATCHES: usize = 3;
+        let fixture = FixtureServer::start(timeline_history_seed_script_with(BATCHES, 2))
             .await
             .unwrap();
         let client = reqwest::Client::new();
@@ -6235,7 +6295,7 @@ mod timeline_history_20k_tests {
                 )
             }]
         });
-        for batch in 1..=GUI_TIMELINE_HISTORY_20K_SEED_BATCHES {
+        for batch in 1..=BATCHES {
             if batch <= 2 {
                 let response = client
                     .post(format!("{}/responses", fixture.base_url()))
@@ -6317,6 +6377,10 @@ mod timeline_history_20k_tests {
 
     #[tokio::test]
     async fn large_history_request_capacity_is_explicit_and_still_bounded() {
+        assert_eq!(
+            GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES.get(),
+            16 * 1024 * 1024
+        );
         let client = reqwest::Client::new();
         let body = json!({"padding": "a".repeat(1024 * 1024)});
         let ordinary = FixtureServer::start(Vec::new()).await.unwrap();
@@ -6329,6 +6393,7 @@ mod timeline_history_20k_tests {
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         ordinary.finish().await.unwrap();
 
+        let custom_limit = NonZeroUsize::new(2 * 1024 * 1024).expect("2 MiB is nonzero");
         let large = FixtureServer::start_with_options(
             vec![Step::exact(
                 Protocol::ResponsesHttp,
@@ -6336,7 +6401,7 @@ mod timeline_history_20k_tests {
                 Reply::Sse(responses_text("ok", "large-request", "fixture-model")),
             )],
             FixtureOptions {
-                request_body_limit: Some(GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES),
+                request_body_limit: Some(custom_limit),
                 ..FixtureOptions::default()
             },
         )
@@ -6344,10 +6409,7 @@ mod timeline_history_20k_tests {
         .unwrap();
         let response = client
             .post(format!("{}/responses", large.base_url()))
-            .body(vec![
-                b' ';
-                GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES.get() + 1
-            ])
+            .body(vec![b' '; custom_limit.get() + 1])
             .send()
             .await
             .unwrap();

@@ -32,8 +32,3 @@ tempfile = { workspace = true }
 # tests use to prove the coalescing deadline is fixed deterministically instead of with real sleeps.
 # Production dependencies keep tokio's workspace feature set unchanged.
 tokio = { workspace = true, features = ["test-util"] }
-
-[[test]]
-name = "sqlite_persistence"
-path = "tests/sqlite_persistence.rs"
-required-features = ["sqlite"]
