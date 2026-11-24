@@ -283,7 +283,7 @@ impl<T> ObservedResource<T> {
     }
 }
 
-fn cached_observation<T: Clone>(state: &ObservedResource<T>) -> Option<(i64, T)> {
+fn cached_observation<T: Clone>(state: &ObservedResource<T>) -> Option<(Option<i64>, T)> {
     match state {
         ObservedResource::Ready(current) => {
             Some((current.last_checked_at(), current.value().clone()))
