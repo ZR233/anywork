@@ -12,9 +12,8 @@ use crate::protocol::InstructionWireRole;
 use super::body::ToolFormatBody;
 use super::protocol_error;
 use pl_model_wire::completion::request_support::{
-    MediaRepresentationPlan, media_file_id, media_url, message_content_text,
-    record_arguments_text, record_custom_input, tool_callers_by_result_position,
-    tool_media_content,
+    MediaRepresentationPlan, media_file_id, media_url, message_content_text, record_arguments_text,
+    record_custom_input, tool_callers_by_result_position, tool_media_content,
 };
 // Provider envelope only: the canonical context remains the producer's original string.
 fn json_object_result_output(output: String) -> String {
@@ -80,7 +79,7 @@ pub(super) struct ResponsesRequestBody {
 impl ResponsesRequestBody {
     pub(super) fn from_request(
         request: &CompletionRequest,
-        model: &crate::model::ModelInfo,
+        model: &crate::model::ModelDefinition,
         prompt_cache_key: Option<&str>,
         instruction_role: InstructionWireRole,
         chatgpt: bool,
@@ -259,11 +258,12 @@ impl ResponsesRequestBody {
 
         Ok(Self {
             model: model
+                .extra
                 .binding
                 .request
                 .api_model
                 .clone()
-                .unwrap_or_else(|| model.model_id.clone()),
+                .unwrap_or_else(|| model.base.slug.clone()),
             input,
             stream: true,
             tool_choice: request.tool_choice.clone(),

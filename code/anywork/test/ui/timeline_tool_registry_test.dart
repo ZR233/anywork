@@ -4,16 +4,20 @@ import 'dart:convert';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_owned_body_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/tool_display.dart';
-import 'package:anywork/src/features/conversation/timeline/state/tool_display_registry.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/items/acp/acp_tool_details_scope.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_adapter.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_registry.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_detail_panel.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
 import 'package:anywork/src/l10n/app_localizations_zh.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -38,10 +42,11 @@ TimelineToolPresentation _tool(
   String arguments,
   String output, {
   String status = 'succeeded',
+  String name = 'exec',
 }) => TimelineToolPresentation(
   id: 'semantic-tool',
   toolCallId: 'call',
-  name: 'exec',
+  name: name,
   presentationContract: contract,
   statusString: status,
   arguments: arguments,
@@ -103,6 +108,135 @@ final class _FixtureCurrentBodyWatch implements CurrentBodyWatch {
   }();
 }
 
+final class _StatefulSlotIcon extends StatefulWidget {
+  const _StatefulSlotIcon();
+
+  @override
+  State<_StatefulSlotIcon> createState() => _StatefulSlotIconState();
+}
+
+class _StatefulSlotIconState extends State<_StatefulSlotIcon> {
+  bool _toggled = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      key: const ValueKey('toggle-stateful-icon'),
+      onTap: () => setState(() => _toggled = !_toggled),
+      child: Icon(_toggled ? Icons.bolt : Icons.hourglass_bottom, size: 15),
+    );
+  }
+}
+
+class _StatefulWidgetIconAdapter extends TimelineToolItemAdapter {
+  const _StatefulWidgetIconAdapter();
+
+  @override
+  String get id => 'custom.stateful_icon@1';
+
+  @override
+  TimelineToolMatcher get matcher =>
+      const TimelineToolMatcher.contract('custom.stateful_icon@1');
+
+  @override
+  String displayName(AppLocalizations l10n, TimelineToolPresentation item) =>
+      'Stateful Icon Tool';
+
+  @override
+  TimelineToolRowSummary buildRowSummary(TimelineToolItemContext context) {
+    return TimelineToolRowSummary(
+      icon: TimelineToolIcon.widget(
+        (_, _) => const _StatefulSlotIcon(),
+        fallbackIcon: Icons.extension_outlined,
+      ),
+      label: displayName(context.l10n, context.item),
+    );
+  }
+
+  @override
+  List<Widget> buildExpandedChildren(
+    TimelineToolItemContext context,
+    TimelineToolExpandedSlots slots,
+  ) => slots.standardPanel == null ? const [] : [slots.standardPanel!];
+
+  @override
+  Widget? buildInlineBody(
+    TimelineToolItemContext context, {
+    ToolAcceptanceProjection? acceptance,
+  }) => const Text('Stateful icon body');
+
+  @override
+  Widget buildWindowBody(
+    TimelineToolItemContext context,
+    String windowText, {
+    required bool isInput,
+    ToolAcceptanceProjection? acceptance,
+  }) => Text(windowText);
+}
+
+class _ScopeIconAdapter extends TimelineToolItemAdapter {
+  const _ScopeIconAdapter();
+
+  @override
+  String get id => 'custom.scope_icon@1';
+
+  @override
+  TimelineToolMatcher get matcher =>
+      const TimelineToolMatcher.contract('custom.scope_icon@1');
+
+  @override
+  String displayName(AppLocalizations l10n, TimelineToolPresentation item) =>
+      'Scope Icon Tool';
+
+  @override
+  TimelineToolRowSummary buildRowSummary(TimelineToolItemContext context) {
+    return TimelineToolRowSummary(
+      icon: const TimelineToolIcon.data(Icons.extension_outlined),
+      label: displayName(context.l10n, context.item),
+    );
+  }
+
+  @override
+  List<Widget> buildExpandedChildren(
+    TimelineToolItemContext context,
+    TimelineToolExpandedSlots slots,
+  ) => [
+    Builder(
+      builder: (innerContext) => Row(
+        children: [
+          TextButton(
+            key: const ValueKey('set-scope-icon'),
+            onPressed: () =>
+                TimelineToolItemScope.of(innerContext)
+                    .setIcon(const TimelineToolIcon.data(Icons.auto_awesome)),
+            child: const Text('Override icon'),
+          ),
+          TextButton(
+            key: const ValueKey('clear-scope-icon'),
+            onPressed: () =>
+                TimelineToolItemScope.of(innerContext).clearIconOverride(),
+            child: const Text('Reset icon'),
+          ),
+        ],
+      ),
+    ),
+  ];
+
+  @override
+  Widget? buildInlineBody(
+    TimelineToolItemContext context, {
+    ToolAcceptanceProjection? acceptance,
+  }) => null;
+
+  @override
+  Widget buildWindowBody(
+    TimelineToolItemContext context,
+    String windowText, {
+    required bool isInput,
+    ToolAcceptanceProjection? acceptance,
+  }) => Text(windowText);
+}
+
 void main() {
   testWidgets(
     'acceptance owner ignores partial, unsealed and retired callbacks across local identity generations',
@@ -117,7 +251,7 @@ void main() {
       Widget owner(String reference, String contract, String id) => _host(
         TimelineGroupBodyIntent(
           intent: group,
-          child: TimelineToolDetails(
+          child: TimelineToolItemView(
             item: TimelineToolPresentation(
               id: id,
               toolCallId: 'call',
@@ -317,28 +451,27 @@ void main() {
         'private-run',
       ),
     ]) {
-      final spec = toolDisplayRegistry[contract]!;
-      expect(spec.outputFormat, ToolOutputFormat.structured);
+      final adapter = timelineToolItemRegistry.lookupExact(contract)!;
+      expect(adapter.bodyPolicy.readsStructuredOutput, isTrue);
       final cuts = [
         complete.indexOf(secret) + secret.length,
         complete.length - 1,
       ];
       for (final cut in cuts) {
         final partial = complete.substring(0, cut);
-        final values = spec.decodeOutput(_zh, partial);
+        final values = adapter.decodeOutput(_zh, partial);
         expect(
           values.whereType<ToolDetailText>(),
           isEmpty,
           reason: '$contract at $cut',
         );
         expect(values.single, isA<ToolDetailUnavailable>());
-        expect(spec.decodeAcceptance(partial).state, ToolAcceptance.pending);
+        expect(adapter.decodeAcceptance(partial).state, ToolAcceptance.pending);
       }
     }
-    final text = toolDisplayRegistry['generic@1']!.decodeOutput(
-      _zh,
-      '{"text":"intentionally plain',
-    );
+    final text = timelineToolItemRegistry
+        .lookupExact('generic@1')!
+        .decodeOutput(_zh, '{"text":"intentionally plain');
     expect(
       text.single,
       isA<ToolDetailText>().having(
@@ -348,7 +481,8 @@ void main() {
       ),
     );
     expect(
-      toolDisplayRegistry['builtin.sleep@1']!
+      timelineToolItemRegistry
+          .lookupExact('builtin.sleep@1')!
           .decodeOutput(_zh, 'Timer elapsed.')
           .single,
       isA<ToolDetailText>(),
@@ -360,24 +494,26 @@ void main() {
     (tester) async {
       const rejected =
           '{"accepted":false,"code":"staleRevision","snapshot":{"runId":"private-run"},"recoveryAction":"Inspect canonical state and retry"}';
-      final spec = toolDisplayRegistry['builtin.workflow_transition@1']!;
-      expect(spec.readsOutput('succeeded', output: rejected), isTrue);
+      final adapter = timelineToolItemRegistry.lookupExact(
+        'builtin.workflow_transition@1',
+      )!;
+      expect(adapter.readsOutput('succeeded', output: rejected), isTrue);
       expect(
-        spec.readsOutput(
+        adapter.readsOutput(
           'succeeded',
           output: '{"accepted":true,"snapshot":{"runId":"private-run"}}',
         ),
         isFalse,
       );
       expect(
-        spec.readsOutput('succeeded'),
+        adapter.readsOutput('succeeded'),
         isTrue,
         reason:
             'Deferred results must be read before their acceptance is known',
       );
       await tester.pumpWidget(
         _host(
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: _tool(
               'builtin.workflow_transition@1',
               '{"completion":{"reason":"ready","summary":"finished","evidence":[]}}',
@@ -401,7 +537,9 @@ void main() {
   );
 
   test('canonical collaboration, workflow and plan inputs use their real schema fields', () {
-    final spawn = toolDisplayRegistry['builtin.spawn_agent@1']!;
+    final spawn = timelineToolItemRegistry.lookupExact(
+      'builtin.spawn_agent@1',
+    )!;
     final values = spawn.decodeInput(
       _zh,
       '{"profileId":"directory-executor","taskSummary":"Fix tool details","message":"Inspect the current schema and preserve failures"}',
@@ -420,7 +558,8 @@ void main() {
           .single,
       isA<ToolDetailUnavailable>(),
     );
-    final transition = toolDisplayRegistry['builtin.workflow_transition@1']!
+    final transition = timelineToolItemRegistry
+        .lookupExact('builtin.workflow_transition@1')!
         .decodeInput(
           _zh,
           '{"expectedRunId":"private","expectedRevision":1,"expectedStateId":"implement","targetStateId":"verify","completion":{"reason":"Implementation complete","summary":"One registry now owns matching","evidence":["Focused tests pass"]}}',
@@ -433,10 +572,12 @@ void main() {
         'Focused tests pass',
       ]),
     );
-    final submit = toolDisplayRegistry['builtin.plan_submit@1']!.decodeInput(
-      _zh,
-      '{"expectedRevision":1,"plan":"# Actual plan\\nInspect and implement"}',
-    );
+    final submit = timelineToolItemRegistry
+        .lookupExact('builtin.plan_submit@1')!
+        .decodeInput(
+          _zh,
+          '{"expectedRevision":1,"plan":"# Actual plan\\nInspect and implement"}',
+        );
     expect(
       submit.single,
       isA<ToolDetailText>().having(
@@ -467,7 +608,10 @@ void main() {
       ),
     ]) {
       expect(
-        toolDisplayRegistry[contract]!.decodeOutput(_zh, output).single,
+        timelineToolItemRegistry
+            .lookupExact(contract)!
+            .decodeOutput(_zh, output)
+            .single,
         isA<ToolDetailText>().having(
           (value) => value.text,
           'delivered text',
@@ -479,10 +623,12 @@ void main() {
   });
 
   test('canonical media and wait receipts retain structured results and partial failures', () {
-    final media = toolDisplayRegistry['builtin.show_files@1']!.decodeOutput(
-      _zh,
-      '{"caption":"Read this","files":[{"status":"ready","filename":"visible.pdf","resource":{"id":"private"}},{"status":"failed","filename":"missing.pdf","message":"Original missing file error"}]}',
-    );
+    final media = timelineToolItemRegistry
+        .lookupExact('builtin.show_files@1')!
+        .decodeOutput(
+          _zh,
+          '{"caption":"Read this","files":[{"status":"ready","filename":"visible.pdf","resource":{"id":"private"}},{"status":"failed","filename":"missing.pdf","message":"Original missing file error"}]}',
+        );
     expect(
       media.whereType<ToolDetailText>().map((value) => value.text),
       containsAll([
@@ -492,37 +638,45 @@ void main() {
         '已失败',
       ]),
     );
-    final wait = toolDisplayRegistry['builtin.wait@1']!.decodeOutput(
-      _zh,
-      '{"tasks":[{"taskId":"private","status":"failed"}],"messagesReady":true,"timedOut":false}',
-    );
+    final wait = timelineToolItemRegistry
+        .lookupExact('builtin.wait@1')!
+        .decodeOutput(
+          _zh,
+          '{"tasks":[{"taskId":"private","status":"failed"}],"messagesReady":true,"timedOut":false}',
+        );
     expect(
       wait.whereType<ToolDetailText>().map((value) => value.text),
       contains('已失败'),
     );
-    final emptySearch = toolDisplayRegistry['builtin.search_session_note@1']!
+    final emptySearch = timelineToolItemRegistry
+        .lookupExact('builtin.search_session_note@1')!
         .decodeOutput(_zh, '{"matches":[],"count":0,"nextCursor":null}');
     expect(emptySearch.whereType<ToolDetailUnavailable>(), isEmpty);
   });
 
   test('canonical filesystem and plan results preserve semantic fields instead of internal revisions', () {
-    final stat = toolDisplayRegistry['builtin.stat_path@1']!.decodeOutput(
-      _zh,
-      '{"path":"a.txt","exists":true,"type":"file","len":23,"readonly":true}',
-    );
+    final stat = timelineToolItemRegistry
+        .lookupExact('builtin.stat_path@1')!
+        .decodeOutput(
+          _zh,
+          '{"path":"a.txt","exists":true,"type":"file","len":23,"readonly":true}',
+        );
     expect(
       stat.whereType<ToolDetailText>().map((value) => value.text),
       containsAll(['文件', '23', '是']),
     );
-    final plan = toolDisplayRegistry['builtin.plan_current@1']!.decodeOutput(
-      _zh,
-      '{"revision":32,"state":"approved","document":{"version":4,"markdown":"approved implementation","contentHash":"private-hash"},"allowedTransitions":[]}',
-    );
+    final plan = timelineToolItemRegistry
+        .lookupExact('builtin.plan_current@1')!
+        .decodeOutput(
+          _zh,
+          '{"revision":32,"state":"approved","document":{"version":4,"markdown":"approved implementation","contentHash":"private-hash"},"allowedTransitions":[]}',
+        );
     expect(
       plan.whereType<ToolDetailText>().map((value) => value.text),
       containsAll(['已批准', 'approved implementation']),
     );
-    final workflow = toolDisplayRegistry['builtin.workflow_current@1']!
+    final workflow = timelineToolItemRegistry
+        .lookupExact('builtin.workflow_current@1')!
         .decodeOutput(
           _zh,
           '{"runId":"private","currentState":{"id":"state-id","title":"Implementation","instructions":"Change one owner","completionCriteria":["Tests pass"],"kind":"atomic"},"lifecycle":"active"}',
@@ -553,7 +707,7 @@ void main() {
         );
         await tester.pumpWidget(
           _host(
-            TimelineToolDetails(
+            TimelineToolItemView(
               key: ValueKey(status),
               item: item,
               initiallyExpanded: true,
@@ -566,7 +720,7 @@ void main() {
         expect(text, contains('original diagnostic'), reason: status);
         expect(text, contains('original stderr'), reason: status);
         final l10n = AppLocalizations.of(
-          tester.element(find.byType(TimelineToolDetails)),
+          tester.element(find.byType(TimelineToolItemView)),
         );
         expect(text, contains(l10n.timelineToolExitCode(7)), reason: status);
         if (status == 'failed') {
@@ -619,33 +773,46 @@ void main() {
       'builtin.deepseek_web_search@1',
       'builtin.deepseek_web_fetch@1',
     };
-    expect(toolDisplayRegistry.keys.toSet(), expectedContracts);
-    final rebuilt = buildToolDisplayRegistry(toolDisplayRegistry.values);
-    expect(rebuilt.keys.toSet(), expectedContracts);
+    expect(timelineToolItemRegistry.exactContracts, expectedContracts);
+    expect(timelineToolItemRegistry.adapters, hasLength(38));
+
+    final nonFallbackAdapters = timelineToolItemRegistry.adapters
+        .where((adapter) => adapter.id != 'generic@1')
+        .toList();
+    final rebuilt = TimelineToolItemRegistry(adapters: nonFallbackAdapters);
+    expect(rebuilt.exactContracts, expectedContracts);
+
     for (final contract in expectedContracts) {
-      final spec = rebuilt[contract]!;
-      expect(spec.contract, contract);
+      final adapter = rebuilt.lookupExact(contract)!;
+      expect(adapter.id, contract);
       expect(
-        () => spec.decodeInput(_zh, '{}'),
+        () => adapter.decodeInput(_zh, '{}'),
         returnsNormally,
         reason: contract,
       );
       expect(
-        () => spec.decodeOutput(_en, '{}'),
+        () => adapter.decodeOutput(_en, '{}'),
         returnsNormally,
         reason: contract,
       );
-      expect(() => spec.artifacts(_zh, ''), returnsNormally, reason: contract);
+      expect(
+        () => adapter.decodeArtifacts(_zh, ''),
+        returnsNormally,
+        reason: contract,
+      );
     }
     expect(
-      () => buildToolDisplayRegistry([
-        toolDisplayRegistry['builtin.exec@2']!,
-        toolDisplayRegistry['builtin.exec@2']!,
-      ]),
+      () => TimelineToolItemRegistry(
+        adapters: [
+          timelineToolItemRegistry.lookupExact('builtin.exec@2')!,
+          timelineToolItemRegistry.lookupExact('builtin.exec@2')!,
+        ],
+      ),
       throwsArgumentError,
     );
     expect(
-      () => rebuilt['extra@1'] = toolDisplayRegistry['generic@1']!,
+      () => rebuilt.exactContractIndex['extra@1'] =
+          timelineToolItemRegistry.fallback,
       throwsUnsupportedError,
     );
   });
@@ -695,18 +862,22 @@ void main() {
         ('builtin.lsp_capabilities@1', 'LSP 能力', 'LSP capabilities'),
         ('builtin.lsp_status@1', 'LSP 状态', 'LSP status'),
       ]) {
-        final spec = toolDisplayRegistry[contract]!;
+        final adapter = timelineToolItemRegistry.lookupExact(contract)!;
         final item = _tool(contract, '{}', '{}');
-        expect(spec.displayName(_zh, item), chinese, reason: contract);
-        expect(spec.displayName(_en, item), english, reason: contract);
+        expect(adapter.displayName(_zh, item), chinese, reason: contract);
+        expect(adapter.displayName(_en, item), english, reason: contract);
       }
       final generic = _tool('generic@1', '{}', '{}');
       expect(
-        toolDisplayRegistry['generic@1']!.displayName(_zh, generic),
+        timelineToolItemRegistry
+            .lookupExact('generic@1')!
+            .displayName(_zh, generic),
         'exec',
       );
       expect(
-        toolDisplayRegistry['generic@1']!.displayName(_en, generic),
+        timelineToolItemRegistry
+            .lookupExact('generic@1')!
+            .displayName(_en, generic),
         'exec',
       );
     },
@@ -803,7 +974,7 @@ void main() {
   );
 
   test('write mode fields and workflow acceptance details localize labels but preserve source text', () {
-    final write = toolDisplayRegistry['builtin.write_file@1']!;
+    final write = timelineToolItemRegistry.lookupExact('builtin.write_file@1')!;
     final writeValues = write
         .decodeInput(
           _zh,
@@ -835,7 +1006,9 @@ void main() {
       _en.timelineToolContentMalformed(_en.timelineToolInvalidWriteMode),
     );
 
-    final workflow = toolDisplayRegistry['builtin.workflow_transition@1']!;
+    final workflow = timelineToolItemRegistry.lookupExact(
+      'builtin.workflow_transition@1',
+    )!;
     final pending =
         workflow
                 .acceptanceDetails(
@@ -881,10 +1054,21 @@ void main() {
   });
 
   test('exact registry matching and immutable semantic values do not infer capabilities from names', () {
-    expect(toolDisplayRegistry['builtin.exec@99'], isNull);
-    expect(toolDisplayRegistry['exec'], isNull);
-    final spec = toolDisplayRegistry['builtin.exec@2']!;
-    final values = spec.decodeInput(
+    expect(timelineToolItemRegistry.lookupExact('builtin.exec@99'), isNull);
+    expect(timelineToolItemRegistry.lookupExact('exec'), isNull);
+    expect(
+      timelineToolItemRegistry
+          .resolve(
+            const TimelineToolMatchContext(
+              toolName: 'exec',
+              presentationContract: 'builtin.exec@99',
+            ),
+          )
+          .id,
+      'generic@1',
+    );
+    final adapter = timelineToolItemRegistry.lookupExact('builtin.exec@2')!;
+    final values = adapter.decodeInput(
       _zh,
       '{"command":"printf proof","cwd":"private"}',
     );
@@ -901,34 +1085,35 @@ void main() {
       throwsUnsupportedError,
     );
     expect(
-      spec.decodeInput(_zh, '{"command":3}').single,
+      adapter.decodeInput(_zh, '{"command":3}').single,
       isA<ToolDetailUnavailable>(),
     );
     expect(
-      spec.decodeOutput(_zh, '{"taskId":"private","stdout":').single,
+      adapter.decodeOutput(_zh, '{"taskId":"private","stdout":').single,
       isA<ToolDetailUnavailable>(),
     );
     expect(
-      toolDisplayRegistry['generic@1']!.decodeInput(
-        _zh,
-        '{"command":"must not parse"}',
-      ),
+      timelineToolItemRegistry
+          .lookupExact('generic@1')!
+          .decodeInput(_zh, '{"command":"must not parse"}'),
       isEmpty,
     );
   });
 
   test('execution result preserves streams, numeric signal and structured denial instead of its transport envelope', () {
-    final values = toolDisplayRegistry['builtin.exec@2']!.decodeOutput(
-      _zh,
-      jsonEncode({
-        'stdout': {'content': 'out'},
-        'stderr': {'content': 'err'},
-        'exitCode': 7,
-        'signal': 9,
-        'taskId': 'private',
-        'diagnostic': {'code': 'exec.permission_denied', 'detail': '真实拒绝'},
-      }),
-    );
+    final values = timelineToolItemRegistry
+        .lookupExact('builtin.exec@2')!
+        .decodeOutput(
+          _zh,
+          jsonEncode({
+            'stdout': {'content': 'out'},
+            'stderr': {'content': 'err'},
+            'exitCode': 7,
+            'signal': 9,
+            'taskId': 'private',
+            'diagnostic': {'code': 'exec.permission_denied', 'detail': '真实拒绝'},
+          }),
+        );
     final texts = values
         .whereType<ToolDetailText>()
         .map((value) => value.text)
@@ -942,17 +1127,19 @@ void main() {
   });
 
   test('writing empty user content remains valid and mutation success does not repeat receipts', () {
-    final spec = toolDisplayRegistry['builtin.write_file@1']!;
+    final adapter = timelineToolItemRegistry.lookupExact(
+      'builtin.write_file@1',
+    )!;
     expect(
-      spec
+      adapter
           .decodeInput(_zh, '{"path":"empty.txt","content":"","mode":"create"}')
           .whereType<ToolDetailUnavailable>(),
       isEmpty,
     );
-    expect(spec.readsOutput('succeeded'), isFalse);
-    expect(spec.readsOutput('denied'), isTrue);
+    expect(adapter.readsOutput('succeeded'), isFalse);
+    expect(adapter.readsOutput('denied'), isTrue);
     expect(
-      spec.decodeOutput(_zh, '{"error":"denied","taskId":"private"}').single,
+      adapter.decodeOutput(_zh, '{"error":"denied","taskId":"private"}').single,
       isA<ToolDetailText>().having((value) => value.text, 'error', 'denied'),
     );
   });
@@ -962,7 +1149,7 @@ void main() {
     (tester) async {
       await tester.pumpWidget(
         _host(
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: _tool(
               'builtin.exec@2',
               '{"command":"printf proof\\nprintf second","cwd":"hidden"}',
@@ -991,7 +1178,7 @@ void main() {
     (tester) async {
       await tester.pumpWidget(
         _host(
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: _tool(
               'generic@1',
               '{"command":"private program"}',
@@ -1028,7 +1215,7 @@ void main() {
         ],
       );
       await tester.pumpWidget(
-        _host(TimelineToolDetails(item: tool, initiallyExpanded: true)),
+        _host(TimelineToolItemView(item: tool, initiallyExpanded: true)),
       );
       await tester.pumpAndSettle();
       final text = _visible(tester);
@@ -1039,4 +1226,454 @@ void main() {
       expect(find.byType(TimelineToolDetailPanel), findsOneWidget);
     },
   );
+
+  test('TimelineToolMatcher supports all declarative match modes safely', () {
+    const exact = TimelineToolMatcher.contract('custom.alpha@1');
+    const multi = TimelineToolMatcher.contracts({
+      'custom.beta@1',
+      'custom.beta@2',
+    });
+    const prefix = TimelineToolMatcher.contractPrefix('mcp.github.');
+    const waitName = TimelineToolMatcher.toolName(
+      'wait',
+      requireEmptyContract: true,
+      requireWaitPayload: true,
+    );
+    const combined = TimelineToolMatcher.anyOf([exact, prefix]);
+    final custom = TimelineToolMatcher.custom(
+      (ctx) => ctx.toolName.startsWith('dyn_') && !ctx.hasWaitPayload,
+    );
+
+    expect(
+      exact.matches(
+        const TimelineToolMatchContext(
+          toolName: 'alpha',
+          presentationContract: 'custom.alpha@1',
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      multi.matches(
+        const TimelineToolMatchContext(
+          toolName: 'beta',
+          presentationContract: 'custom.beta@2',
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      prefix.matches(
+        const TimelineToolMatchContext(
+          toolName: 'issue',
+          presentationContract: 'mcp.github.get_issue@1',
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      combined.matches(
+        const TimelineToolMatchContext(
+          toolName: 'x',
+          presentationContract: 'mcp.github.list@1',
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      custom.matches(const TimelineToolMatchContext(toolName: 'dyn_probe')),
+      isTrue,
+    );
+
+    // Live uncontracted wait matches WaitToolItem; version-mismatched builtin.wait@99 falls back.
+    expect(
+      waitName.matches(
+        const TimelineToolMatchContext(
+          toolName: 'wait',
+          presentationContract: '',
+          hasWaitPayload: true,
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      waitName.matches(
+        const TimelineToolMatchContext(
+          toolName: 'wait',
+          presentationContract: 'builtin.wait@99',
+          hasWaitPayload: true,
+        ),
+      ),
+      isFalse,
+    );
+    expect(
+      timelineToolItemRegistry
+          .resolve(
+            const TimelineToolMatchContext(
+              toolName: 'wait',
+              presentationContract: 'builtin.wait@99',
+              hasWaitPayload: true,
+            ),
+          )
+          .id,
+      'generic@1',
+    );
+    expect(
+      timelineToolItemRegistry
+          .resolve(
+            const TimelineToolMatchContext(
+              toolName: 'wait',
+              presentationContract: '',
+              hasWaitPayload: true,
+            ),
+          )
+          .id,
+      'builtin.wait@1',
+    );
+  });
+
+  testWidgets(
+    'Channel A: TimelineToolIcon.widget lets a StatefulWidget dynamically mutate its icon inside the 20px slot',
+    (tester) async {
+      final registry = TimelineToolItemRegistry(
+        adapters: const [_StatefulWidgetIconAdapter()],
+      );
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            registry: registry,
+            item: _tool('custom.stateful_icon@1', '{}', '{}'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.hourglass_bottom), findsOneWidget);
+      expect(find.byIcon(Icons.bolt), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('toggle-stateful-icon')));
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.bolt), findsOneWidget);
+      expect(find.byIcon(Icons.hourglass_bottom), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'Channel B: TimelineToolItemController setIcon/clearIconOverride via TimelineToolItemScope updates icon and resets on generation or identity change',
+    (tester) async {
+      final registry = TimelineToolItemRegistry(
+        adapters: const [_ScopeIconAdapter()],
+      );
+      final group = TimelineExpansionIntent();
+      addTearDown(() {
+        group.dispose();
+        group.retirement.dispose();
+      });
+
+      Widget hostWithItem(String id) => _host(
+        TimelineGroupBodyIntent(
+          intent: group,
+          child: TimelineToolItemView(
+            registry: registry,
+            initiallyExpanded: true,
+            item: TimelineToolPresentation(
+              id: id,
+              toolCallId: 'call-$id',
+              name: 'scope_icon',
+              presentationContract: 'custom.scope_icon@1',
+              statusString: 'succeeded',
+              arguments: '{}',
+              output: '{}',
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(hostWithItem('item-1'));
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.extension_outlined);
+
+      await tester.tap(find.byKey(const ValueKey('set-scope-icon')));
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.auto_awesome);
+
+      await tester.tap(find.byKey(const ValueKey('clear-scope-icon')));
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.extension_outlined);
+
+      await tester.tap(find.byKey(const ValueKey('set-scope-icon')));
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.auto_awesome);
+
+      // Replacing group body retires transient state and clears icon override.
+      group.replaceBody();
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.extension_outlined);
+
+      await tester.tap(find.byKey(const ValueKey('set-scope-icon')));
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.auto_awesome);
+
+      // Switching item identity resets transient icon override as well.
+      await tester.pumpWidget(hostWithItem('item-2'));
+      await tester.pumpAndSettle();
+      expect(_row(tester).icon, Icons.extension_outlined);
+    },
+  );
+
+  testWidgets(
+    'exec uses circularProgress and shows elapsed meta while write_stdin omits elapsed meta',
+    (tester) async {
+      final created = DateTime(2026, 1, 1, 10, 0, 0);
+      final completed = created.add(const Duration(seconds: 7));
+
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: TimelineToolPresentation(
+              id: 'exec-running',
+              toolCallId: 'c1',
+              name: 'exec',
+              presentationContract: 'builtin.exec@2',
+              statusString: 'running',
+              executionPresent: true,
+              arguments: '{"command":"cargo test"}',
+              output: '',
+              createdAt: created,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(_row(tester).icon, Icons.terminal);
+      expect(
+        _row(tester).indicatorStyle,
+        TimelineActivityIndicatorStyle.circularProgress,
+      );
+      expect(_row(tester).active, isTrue);
+
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: TimelineToolPresentation(
+              id: 'exec-done',
+              toolCallId: 'c2',
+              name: 'exec',
+              presentationContract: 'builtin.exec@2',
+              statusString: 'succeeded',
+              arguments: '{"command":"cargo test"}',
+              output: '{"stdout":{"content":"ok"},"exitCode":0}',
+              createdAt: created,
+              completedAt: completed,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(_row(tester).meta, isNotNull);
+
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: TimelineToolPresentation(
+              id: 'stdin-done',
+              toolCallId: 'c3',
+              name: 'write_stdin',
+              presentationContract: 'builtin.write_stdin@1',
+              statusString: 'succeeded',
+              arguments: '{"chars":"continue"}',
+              output: '{"stdout":{"content":"resumed"}}',
+              createdAt: created,
+              completedAt: completed,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(_row(tester).meta, isNull);
+    },
+  );
+
+  testWidgets(
+    'wait and sleep route through unified TimelineToolItemView for live waits and structured fallbacks',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            item: TimelineToolPresentation(
+              id: 'live-wait',
+              toolCallId: 'wait-call',
+              name: 'wait',
+              presentationContract: '',
+              statusString: 'running',
+              arguments: '{}',
+              output: '',
+              wait: ThreadWaitPresentationView(
+                state: ThreadWaitStateView.waiting,
+                intent: ThreadWaitEventsIntentView(
+                  targets: const [
+                    ThreadWaitTargetView(
+                      taskId: 't1',
+                      toolName: 'exec',
+                      summary: 'Build crate',
+                    ),
+                  ],
+                  timeoutMs: 30000,
+                ),
+                messagesReady: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(StudioDriverKeys.waitingCard('live-wait')), findsOne);
+      expect(_row(tester).icon, Icons.hourglass_empty);
+      expect(
+        _row(tester).indicatorStyle,
+        TimelineActivityIndicatorStyle.rotating,
+      );
+      expect(_row(tester).active, isTrue);
+
+      await tester.tap(find.byKey(StudioDriverKeys.waitingCard('live-wait')));
+      await tester.pump();
+      expect(
+        find.byKey(StudioDriverKeys.waitingDetails('live-wait')),
+        findsOneWidget,
+      );
+
+      // Sleep without ThreadWaitPresentationView falls back cleanly to standard panel.
+      await tester.pumpWidget(
+        _host(
+          TimelineToolItemView(
+            initiallyExpanded: true,
+            item: TimelineToolPresentation(
+              id: 'sleep-fallback',
+              toolCallId: 'sleep-call',
+              name: 'sleep',
+              presentationContract: 'builtin.sleep@1',
+              statusString: 'succeeded',
+              arguments: '{"durationMs":1200}',
+              output: '',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('1.2 秒'), findsOneWidget);
+    },
+  );
+
+  testWidgets('AcpToolItem resolves all 10 ToolKinds and peer payloads', (
+    tester,
+  ) async {
+    expect(
+      timelineToolItemRegistry
+          .resolveForPresentation(
+            _tool(
+              'acp.tool.edit',
+              'raw text arg',
+              'raw text out',
+              name: '编辑样本',
+            ),
+          )
+          .id,
+      'acp.tool',
+    );
+    expect(
+      timelineToolItemRegistry
+          .resolveForPresentation(
+            _tool('acp.tool', 'raw text arg', 'raw text out', name: '旧契约样本'),
+          )
+          .id,
+      'acp.tool',
+    );
+
+    const kinds = [
+      (kind: 'read', zh: '读取', en: 'Read', icon: Icons.article_outlined),
+      (kind: 'edit', zh: '编辑', en: 'Edit', icon: Icons.edit_note_rounded),
+      (
+        kind: 'delete',
+        zh: '删除',
+        en: 'Delete',
+        icon: Icons.delete_outline_rounded,
+      ),
+      (kind: 'move', zh: '移动', en: 'Move', icon: Icons.drive_file_move_outline),
+      (
+        kind: 'search',
+        zh: '搜索',
+        en: 'Search',
+        icon: Icons.travel_explore_rounded,
+      ),
+      (kind: 'execute', zh: '执行', en: 'Execute', icon: Icons.terminal_rounded),
+      (kind: 'think', zh: '思考', en: 'Think', icon: Icons.psychology_outlined),
+      (kind: 'fetch', zh: '获取', en: 'Fetch', icon: Icons.public_rounded),
+      (
+        kind: 'switchMode',
+        zh: '切换模式',
+        en: 'Switch mode',
+        icon: Icons.swap_horiz_rounded,
+      ),
+      (kind: 'other', zh: '工具', en: 'Tool', icon: Icons.handyman_outlined),
+    ];
+
+    for (final spec in kinds) {
+      await tester.pumpWidget(
+        _host(
+          AcpToolDetailsScope(
+            kind: spec.kind,
+            locations: const ['lib/main.dart:10'],
+            child: TimelineToolItemView(
+              item: _tool(
+                'acp.tool.${spec.kind}',
+                'plain peer input',
+                '',
+                status: spec.kind == 'edit' ? 'failed' : 'succeeded',
+                name: 'Peer ${spec.kind}',
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.byIcon(spec.icon), findsOneWidget, reason: spec.kind);
+      expect(find.byIcon(Icons.error_outline), findsNothing);
+      final row = _row(tester);
+      if (spec.kind == 'edit') {
+        expect(row.meta, '${spec.zh} · 失败');
+        expect(row.isIssue, isFalse);
+      } else {
+        expect(row.meta, spec.zh);
+      }
+
+      await tester.pumpWidget(
+        _host(
+          locale: const Locale('en'),
+          AcpToolDetailsScope(
+            kind: spec.kind,
+            child: TimelineToolItemView(
+              item: _tool(
+                'acp.tool.${spec.kind}',
+                'plain peer input',
+                'plain peer output',
+                status: 'succeeded',
+                name: 'Peer ${spec.kind}',
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(_row(tester).meta, spec.en);
+    }
+
+    expect(
+      () => timelineToolItemRegistry
+          .resolveForPresentation(
+            _tool('acp.tool.execute', 'plain string args', ''),
+          )
+          .decodeInput(_zh, 'plain string args'),
+      returnsNormally,
+    );
+  });
 }

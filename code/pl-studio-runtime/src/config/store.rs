@@ -525,7 +525,7 @@ fn config_backup_path(config_path: &Path, kind: &str, stamp: u128, collision: u3
 pub(super) fn serialize_persisted_config(config: &StudioConfig) -> Result<String> {
     let mut persisted = config.clone();
     clear_inline_credentials(&mut persisted);
-    super::document_migration::MainV33::from_config(&persisted)
+    super::document_migration::MainV34::from_config(&persisted)
         .and_then(|document| document.encode())
         .map_err(|error| {
             PureError::ConfigError(format!("failed to serialize Studio config: {error}"))
@@ -624,7 +624,8 @@ mod tests {
         let id = id.to_string();
         let model_id = account.effective_catalog(None).unwrap()[0]
             .model
-            .model_id
+            .base
+            .slug
             .clone();
         account.set_model_enabled(&model_id, false).unwrap();
         account
@@ -891,6 +892,12 @@ mod tests {
                 for key in ["models", "additional_models"] {
                     if let Some(models) = catalog.get_mut(key).and_then(toml::Value::as_array_mut) {
                         for model in models {
+                            let current: pl_model::model::ModelDefinition =
+                                model.clone().try_into().unwrap();
+                            *model = toml::Value::try_from(
+                                crate::config::document_migration::historical_model(&current),
+                            )
+                            .unwrap();
                             if let Some(model) = model.as_table_mut()
                                 && let Some(identifier) = model.remove("model_id")
                             {
@@ -911,7 +918,7 @@ mod tests {
     #[test]
     fn schema_21_model_ids_migrate_without_losing_routes_overrides_or_credentials() {
         use pl_model::{
-            config::AccountModelCatalogConfig, model::ModelInfo, protocol::ConnectionMode,
+            config::AccountModelCatalogConfig, model::ModelDefinition, protocol::ConnectionMode,
         };
         let (_directory, store) = isolated_store();
         let mut config = StudioConfig::default_config().unwrap();
@@ -925,7 +932,7 @@ mod tests {
             ..
         } = &mut account.catalog
         {
-            additional_models.push(ModelInfo::compatible("exact-Unchanged-ID"));
+            additional_models.push(ModelDefinition::compatible("exact-Unchanged-ID").into());
             connection_overrides.insert("exact-Unchanged-ID".into(), ConnectionMode::Http);
             auto_compact_overrides.insert("exact-Unchanged-ID".into(), 1234);
         }
@@ -955,11 +962,25 @@ mod tests {
             .unwrap()[0]
             .as_table_mut()
             .unwrap();
+        let current: ModelDefinition = toml::Value::Table(model.clone()).try_into().unwrap();
+        *model = toml::Table::try_from(crate::config::document_migration::historical_model(
+            &current,
+        ))
+        .unwrap();
         let identifier = model.remove("model_id").unwrap();
         model.insert("slug".into(), identifier);
         write_table(path, &table);
         let original = fs::read(path).unwrap();
         let loaded = store.load_for_startup().unwrap();
+        if let AccountModelCatalogConfig::Bundled {
+            additional_models, ..
+        } = &mut config.models.accounts.get_mut(&id).unwrap().catalog
+        {
+            additional_models[0].extra.insert(
+                "binding".into(),
+                serde_json::json!({"transport":{"protocol":"chat_completions"}}),
+            );
+        }
         assert_eq!(loaded, config);
         assert_eq!(
             fs::read(migrated_backups(path).pop().unwrap()).unwrap(),
@@ -1148,7 +1169,8 @@ mod tests {
             .unwrap()
             .catalog
         {
-            additional_models.push(pl_model::model::ModelInfo::compatible("legacy-slug"));
+            additional_models
+                .push(pl_model::model::ModelDefinition::compatible("legacy-slug").into());
         }
         let store = store_with_credentials(&directory, credentials);
         store.save(&config).unwrap();
@@ -1168,6 +1190,20 @@ mod tests {
             .get_mut(&AccountId::new("deepseek").unwrap())
             .unwrap()
             .bearer_token = Some("legacy-secret".into());
+        if let pl_model::config::AccountModelCatalogConfig::Bundled {
+            additional_models, ..
+        } = &mut expected
+            .models
+            .accounts
+            .get_mut(&AccountId::new("deepseek").unwrap())
+            .unwrap()
+            .catalog
+        {
+            additional_models[0].extra.insert(
+                "binding".into(),
+                serde_json::json!({"transport":{"protocol":"chat_completions"}}),
+            );
+        }
         assert_eq!(loaded, expected);
         assert_eq!(
             store.credentials.load("deepseek").unwrap().as_deref(),
@@ -1220,7 +1256,8 @@ mod tests {
             .unwrap()
             .catalog
         {
-            additional_models.push(pl_model::model::ModelInfo::compatible("current-id"));
+            additional_models
+                .push(pl_model::model::ModelDefinition::compatible("current-id").into());
         }
         store.save(&config).unwrap();
         let path = store.paths.config_file();

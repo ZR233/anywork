@@ -1,5 +1,7 @@
 use pl_model_wire::{
-    adapter::Adapter, discovery::DiscoveryPolicy, model::ModelModality,
+    adapter::Adapter,
+    discovery::DiscoveryPolicy,
+    model::ModelModality,
     protocol::{ApiKeyHeaderScheme, InstructionWireRole},
 };
 
@@ -21,7 +23,7 @@ pub static ADAPTER: Adapter = Adapter {
     prepare_request: None,
     hosted_search_label: None,
     on_base_url_override: None,
-    parse_catalog_page: crate::openai_catalog::page,
+    parse_catalog_page: pl_model_wire::generic_catalog::openai_page,
 };
 
 pub static COMPATIBLE_ADAPTER: Adapter = Adapter {

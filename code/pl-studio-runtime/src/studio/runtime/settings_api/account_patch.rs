@@ -74,12 +74,12 @@ impl StudioRuntime {
                         )?;
                         let custom_models = match request.custom_models {
                             AccountModelsPatch::Keep => account
-                                .editable_models()
+                                .editable_models()?
                                 .iter()
                                 .map(|model| crate::AccountModelUpdate {
-                                    model_id: model.model_id.clone(),
-                                    display_name: model.display_name.clone(),
-                                    wire_api: match model.binding.transport.protocol {
+                                    model_id: model.base.slug.clone(),
+                                    display_name: model.base.display_name.clone(),
+                                    wire_api: match model.extra.binding.transport.protocol {
                                         pl_model::protocol::WireApi::Responses => "responses",
                                         pl_model::protocol::WireApi::ChatCompletions => {
                                             "chat_completions"
@@ -89,22 +89,22 @@ impl StudioRuntime {
                                         }
                                     }
                                     .to_owned(),
-                                    context_window: model.context_window,
-                                    max_output_tokens: model.max_output_tokens,
+                                    context_window: model.base.max_context_window,
+                                    max_output_tokens: model.extra.max_output_tokens,
                                 })
                                 .collect(),
                             AccountModelsPatch::Set { models } => models,
                             AccountModelsPatch::Restore => Vec::new(),
                         };
                         let removed_manual = account
-                            .editable_models()
+                            .editable_models()?
                             .iter()
                             .filter(|model| {
                                 !custom_models
                                     .iter()
-                                    .any(|candidate| candidate.model_id.trim() == model.model_id)
+                                    .any(|candidate| candidate.model_id.trim() == model.base.slug)
                             })
-                            .map(|model| model.model_id.clone())
+                            .map(|model| model.base.slug.clone())
                             .collect::<std::collections::BTreeSet<_>>();
                         let input = crate::AccountSettingsUpdate {
                             authentication: request.authentication,
@@ -241,7 +241,7 @@ impl StudioRuntime {
                             if !account
                                 .effective_catalog(None)?
                                 .iter()
-                                .any(|entry| entry.model.model_id == request.model_id)
+                                .any(|entry| entry.model.base.slug == request.model_id)
                             {
                                 return Err(PureError::ConfigError("model does not exist".into()));
                             }

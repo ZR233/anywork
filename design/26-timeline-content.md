@@ -58,7 +58,7 @@ Current 由原 State assembler 生成，`CurrentReader` 是 snapshot/watch、col
 
 state 元数据、usage、live usage、耗时和 controls 不等正文或 collection。Current 正文观察只随该 owner/generation 增长或替换；token 变化可以只发 body 更新，不推动历史事件或全 State 重建。当前正文终态也不必然已有 canonical 历史。
 
-Flutter 不自造持久化历史分组。主时间线严格保持不可变，只展示历史 `divider` 与已封口/已结算 `WorkRange`，从不接收 `CurrentAtom` 叠加或原地行替换。所有实时/可变执行 UI——包括未封口 `WorkRange`（可按需在实时栏内局部展开查看进行中工具与思考）、正在流式输出的 `CurrentAtom`（由 `ConversationResponseView` 渲染）以及活动/审批/保存阻塞提示——统一由底部 `LiveStatusBar` 承载；只有对应 Current 正文在 `LiveStatusBar` 中已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠、遮蔽或卸载时撤销该资格。一旦后续 `divider` 写入封口或执行结束，该尾部 `WorkRange` 与终态事件再作为不可变块一次性追加进主时间线，并退出 `LiveStatusBar`。即使主时间线处于历史浏览模式（固定原 `cut`），`LiveStatusBar` 仍持续独立更新当前执行的开放工作区、流式正文与活动状态，提示存在新输出而不改写旧历史窗口。Current Atoms 保留一个有界集合页，只报告已加载数；活动工具在用户展开后读取单页，完整 `count` 与该页条目数分别表示，opaque 游标导航最多保留 16 个返回位置。
+Flutter 不自造持久化历史分组。主时间线严格保持不可变，只展示历史 `divider` 与已封口/已结算 `WorkRange`，从不接收 `CurrentAtom` 叠加或原地行替换。所有实时/可变执行 UI——包括未封口 `WorkRange`（可按需在实时栏内局部展开查看进行中工具与思考）、正在流式输出的 `CurrentAtom`（由 `ConversationResponseView` 渲染）以及活动/审批/保存阻塞提示——统一由底部 `LiveStatusBar` 承载；只有对应 Current 正文在 `LiveStatusBar` 中已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠、遮蔽或卸载时撤销该资格。一旦后续 `divider` 写入封口或执行结束，该尾部 `WorkRange` 与终态事件再作为不可变块一次性追加进主时间线，并退出 `LiveStatusBar`。即使主时间线处于历史浏览模式（固定原 `cut`），`LiveStatusBar` 仍持续独立更新当前执行的开放工作区、流式正文与活动状态，提示存在新输出而不改写旧历史窗口。Current Atoms 保留一个有界集合页，只报告已加载数；进行中工具明细统一在实时状态栏内可展开的开放工作组中查看，不在实时状态栏外单设平行的活动工具分页列表。
 
 Current watch 发生 lag、resync 或 owner 更换时返回小型 Reset，并重新捕获完整小 State；不 replay 历史。collection cursor 固定 owner 和 revision，版本变化返回 stale；body reference 固定 owner 与 generation，replace 后旧引用失效。旧 owner 的迟到 body、collection 和 watch 结果不能写入新 owner。
 
@@ -96,7 +96,7 @@ Flutter 的现有 timeline controller 是应用内唯一已加载**不可变历�
 
 画面键使用稳定 `event_id`（`divider`）与 `work:<first_seq>`（`WorkRange`）；工作组内部行使用稳定 `call:<call_id>` / `entity:<entity_id>` / `event:<event_id>`。older query 是纯页查询，只能通过明确 apply 入口一次 Prepend，不能隐藏 apply、推进 Current owner 或复写其他 scopes。
 
-实时模式只接纳最新一页的不可变历史项及其 cut：若最新页首项为执行仍在进行的开放 `WorkRange`，将其分流给 `LiveStatusBar.liveOpenWork` 持有而不入列主时间线；仅将已固定的历史项按稳定键只增不改（并在超出窗口上限时从头部裁剪）同步至该有界页面，且在组件成功后提交该页的 older 游标。当执行结束或后续 `divider` 写入封口时，原开放 `WorkRange` 结算为不可变历史块一次性追加至主时间线并退出 `LiveStatusBar`。进入历史浏览后，整个已加载历史窗口固定原 cut；后台变化只提示存在新输出，older 仍使用该 cut 的 opaque 游标，不裁掉正在浏览的行。历史浏览模式只读 History，同时 `LiveStatusBar` 仍继续更新当前执行的实时工作区与流式正文。回到实时位置通过原 reader 读取新的最新页并建立新的展示资格；保留同键的展开意图，旧正文与查询资格退休。提交消息不等待这次查询或绘制。
+实时模式只接纳最新一页的不可变历史项及其 cut：若最新页首项为执行仍在进行的开放 `WorkRange` 且当前尚未进入流式正文回复，将其分流给 `LiveStatusBar.liveOpenWork` 持有而不入列主时间线；仅将已固定的历史项按稳定键只增不改（并在超出窗口上限时从头部裁剪）同步至该有界页面，且在组件成功后提交该页的 older 游标。一旦流式正文开始、执行结束或后续 `divider` 写入封口，原开放 `WorkRange` 立即结算为历史块追加至主时间线并退出 `LiveStatusBar`。进入历史浏览后，整个已加载历史窗口固定原 cut；后台变化只提示存在新输出，older 仍使用该 cut 的 opaque 游标，不裁掉正在浏览的行。历史浏览模式只读 History，同时 `LiveStatusBar` 仍继续更新当前执行的实时工作区与流式正文。回到实时位置通过原 reader 读取新的最新页并建立新的展示资格；保留同键的展开意图，旧正文与查询资格退休。提交消息不等待这次查询或绘制。
 
 `WorkRange` 的边界 `(after_seq, before_seq)` 必须来自该行接纳的同一 `cut`；展开工作组时，原 History owner 按 `seq ASC` 连续拉取该固定 `cut` 下的全部 `work_range_page` 批次，传输预算限制单批，不限制组内总事件数。工作组 ViewModel 增量折叠并发布每个稳定行的最新态，换 `cut` 或失败保留原静态展示并撤销旧读取资格。
 
@@ -110,13 +110,19 @@ Current 正文的打开失败或读取过期通过正文流交付，不作为原
 
 ## 26.9 实时状态与展示组件
 
-状态栏（`LiveStatusBar`）从唯一 Current State 和 `liveOpenWork` 派生，承载全部实时工作区、进行中工具/思考过程、流式助手正文（`ConversationResponseView`）与活动/审批/保存阻塞提示。`execution_present` 不等于正在执行，完整运行资格仍来自真实 sources、atoms、activity 和原 owner 状态（以 `executionActive` 统一界定）。无 active turn 的有效后台活动仍可显示。
+状态栏（`LiveStatusBar`）通过 `LiveStatusMachine` 从唯一 Current State、`liveOpenWork`、`DomainSyncStatus` 与持久化状态派生四选一主阶段（`LiveResponsePhase` / `LiveWorkPhase` / `LiveCompactingPhase` / `LiveActivityPhase`）和去重并发关注条（`LiveStatusAttention`），统一交由纯视图 `LiveStatusSurfaceView` 与共用 `WorkGroupMemberList` / `LiveStatusHeaderSpec` 呈现当前未封口实时工作区（直接吸纳正在运行、等待审批与停止中顶行状态）、流式助手正文（`ConversationResponseView`，开始即收束前序工作组）、实时压缩与正交关注提示；`projectConversationActivity` 同步透传 `wait` 呈现事实，计时超过 60 分钟自动按小时、超过 24 小时按天进位格式化。`execution_present` 不等于正在执行，完整运行资格仍来自真实 sources、atoms、activity 和原 owner 状态（以 `executionActive` 统一界定）。无 active turn 的有效后台活动仍可显示。
+
+实时正文的同一个读取窗口每次更新只解码一次，正文就绪判断与渲染共用该文本。已经可见的窗口在追加文本或更新回调时保留首次可见布局证据。更换正文窗口或卸载时撤销原证据，新窗口在正文实际可见后重新报告。
 
 主时间线中已封口的 `WorkRange` 与实时栏中的未封口工作区均支持默认一行展示真实图标、单行摘要与经过时间；展开后才由工作组 ViewModel 拉取并折叠区间事件。隐藏或折叠撤销该视图自己的正文/媒体读取，不停止业务执行。工作组沿用 `WorkRange` 的 Unix 毫秒起止时间，实时栏开放工作区以当前 Unix 毫秒为上界，主时间线已封口历史工作组取区间末事件时间。先取毫秒差，再按整秒展示；时间缺失或倒序时显示“工作记录”。实时计时只是 UI 派生值，不写 Current 或 History。
 
+实时工作组展开后，标题固定在有界成员区上方，普通执行时沿用当前组的思考摘要。成员区读取期间继续显示可用成员，省略横向加载指示。历史工作组展开后随主时间线连续布局和滚动，并提供加载反馈。具体呈现见 [桌面界面规范](./19-studio-ui.md)。
+
+组内成员折叠或不可展开时只显示一行活动入口：语义图标、主文案和可用的展开标记同行对齐。思考以单行行内 Markdown 显示概要，超长省略，读取状态与错误不增加第二行；无概要时使用真实状态或已知耗时。只有存在正文时才可展开思考。思考概要和正文均无独立复制按钮；展开后的正文仍可选择文字，长正文保留范围导航。工具及正式消息的复制行为不变。
+
 保存失败、停止、审批、存储错误和冷恢复限制必须保持可见，不能被普通活动摘要合并隐藏。发送回显由原 Composer 持有；Current 中同一 `input_id` 的规范输入被时间线消费者应用后，临时回显结算为正式呈现，不产生历史事件或按正文去重。
 
-每个内置工具由一个独立 Dart 展示策略文件持有精确契约、本地化名称、条目动词与目标、参数／结果／附件的语义转换及正文与接纳策略。集中注册处只引入策略并建立契约索引，不重复声明工具身份或分派具体工具行为；未知工具契约统一回退内置 `generic@1` 通用策略，展示工具名、状态、参数与输出而不报错。
+每个内置工具由 `timeline/tools/items/<domain>/` 下的独立 Dart 文件实现 `TimelineToolItemAdapter`（通用兜底 `generic@1` 同样独立实现），完整声明 `TimelineToolMatcher` 匹配规则、`TimelineToolIcon` 静态/动态图标策略（支持组件与 `TimelineToolItemController` 通过 `TimelineToolItemScope` 动态更新图标）、单行折叠摘要与展开视图。集中注册入口 `timeline/tools/tool_item_registry.dart` 建立唯一索引并校验精确契约不重复；`wait` 与 `sleep` 统一纳入同一 `TimelineToolItemView` 与适配器管线，不再单独分叉；未知工具契约回退内置 `generic@1`，展示工具名、状态、参数与输出而不报错。
 
 ## 26.10 当前快照格式与旧数据边界
 

@@ -41,6 +41,7 @@ abstract interface class StartSessionDraftOwner {
   );
   void setModelIntent(ThreadModeId mode, String accountId, String modelId);
   void setEffortIntent(ThreadModeId mode, String effort);
+  void setServiceTierIntent(ThreadModeId mode, String? serviceTier);
   Future<bool> submit(String workspaceId);
   Future<bool> retrySubmission(String workspaceId, String inputId);
   Future<void> removeSubmission(String workspaceId, String inputId);

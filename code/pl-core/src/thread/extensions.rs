@@ -10,6 +10,106 @@ pub struct ExtensionRecord {
     pub payload: OpaquePayload,
 }
 
+/// Frozen inputs to a host projection. Missing keys and membership of enumerated
+/// formats are significant. Unrelated writes cannot invalidate the projection.
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionInputs {
+    revisions: BTreeMap<String, Option<u64>>,
+    formats: Vec<String>,
+}
+
+impl ExtensionInputs {
+    pub fn capture(snapshot: &BTreeMap<String, ExtensionRecord>, keys: &[&str]) -> Self {
+        let mut inputs = Self::default();
+        inputs.include_keys(snapshot, keys);
+        inputs
+    }
+
+    pub fn include_keys(&mut self, snapshot: &BTreeMap<String, ExtensionRecord>, keys: &[&str]) {
+        self.revisions.extend(keys.iter().map(|&key| {
+            (
+                key.to_owned(),
+                snapshot.get(key).map(|entry| entry.revision),
+            )
+        }));
+    }
+
+    pub fn include_format(&mut self, snapshot: &BTreeMap<String, ExtensionRecord>, format: &str) {
+        self.formats.push(format.to_owned());
+        self.revisions.extend(
+            snapshot
+                .iter()
+                .filter(|(_, record)| record.payload.format() == format)
+                .map(|(id, record)| (id.clone(), Some(record.revision))),
+        );
+    }
+
+    pub(super) fn validate(
+        &self,
+        current: &BTreeMap<String, ExtensionRecord>,
+    ) -> Result<(), ThreadError> {
+        for (id, &expected) in &self.revisions {
+            let actual = current.get(id).map(|record| record.revision);
+            if actual != expected {
+                return Err(ThreadError::ExtensionConflict {
+                    id: id.clone(),
+                    expected,
+                    actual,
+                });
+            }
+        }
+        if !self.formats.is_empty() {
+            for (id, record) in current {
+                if !self.revisions.contains_key(id)
+                    && self
+                        .formats
+                        .iter()
+                        .any(|format| format == record.payload.format())
+                {
+                    return Err(ThreadError::ExtensionConflict {
+                        id: id.clone(),
+                        expected: None,
+                        actual: Some(record.revision),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Connects a newly projected instruction record to the extension version actually
+/// assigned by the owner. Compaction may discard the record before installation.
+#[derive(Debug, Clone)]
+pub struct InstructionRevisionBinding {
+    pub record_id: String,
+    pub extension_id: String,
+}
+
+impl InstructionRevisionBinding {
+    pub(super) fn resolve(
+        &self,
+        replacement: &mut ReplaceContext,
+        state: &ThreadSnapshot,
+    ) -> Result<(), ThreadError> {
+        if let Some(record) = replacement
+            .records
+            .iter_mut()
+            .find(|record| record.id == self.record_id)
+        {
+            let ContextSource::InstructionSnapshot { revision, .. } = &mut record.source else {
+                return Err(ThreadError::InvalidContext);
+            };
+            *revision = state
+                .extensions
+                .get(&self.extension_id)
+                .ok_or(ThreadError::InvalidContext)?
+                .revision;
+        }
+        Ok(())
+    }
+}
+
 /// Explicit extension mutations cannot grant framework authority.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]

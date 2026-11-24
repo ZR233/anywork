@@ -256,8 +256,14 @@ abstract final class TimelinePreviewFixtures {
   static const groupSource = ForegroundTurnChatSource(turnId: 'preview-turn');
   static const groupStartedAt = 1735689600;
   static const commandFinishedAt = 1735689601;
+  static const workSummaryKey = 'part.summaryText.0';
+  static final workSummaryBytes = utf8.encode(
+    '### 核对 **工作组成员** 与 `WorkRange` 的读取边界\n'
+    '确认过长的思考概要在窄窗口中不会挤占命令、修改和其他成员的展示空间。',
+  );
+  static const _workReasoningId = 'preview-reasoning';
   static final completedReasoning = ChatAtom(
-    id: 'preview-reasoning',
+    id: _workReasoningId,
     source: groupSource,
     sourceOrder: 1,
     kind: ChatAtomKind.reasoning,
@@ -271,7 +277,25 @@ abstract final class TimelinePreviewFixtures {
     startedAt: groupStartedAt,
     finishedAt: groupStartedAt,
     contents: const [],
-    payload: _payload('thinking', const {}, bodies: _reasoningBodies),
+    payload: _payload(
+      'thinking',
+      const {},
+      bodies: [
+        {
+          'key': workSummaryKey,
+          'byteLength': workSummaryBytes.length,
+          'reference': {
+            'databaseId': 'preview',
+            'ownerEventId': _workReasoningId,
+            'bodyId': 'work-summary',
+            'bodyKey': workSummaryKey,
+            'byteStart': 0,
+            'byteLength': workSummaryBytes.length,
+          },
+        },
+        _reasoningBodies.last,
+      ],
+    ),
   );
   static final completedCommand = ChatAtom(
     id: 'preview-tool',
@@ -718,6 +742,85 @@ abstract final class TimelinePreviewFixtures {
     },
     bodies: [body('tool.arguments', '{"future":true}')],
   );
+
+  static final failedTurnOverloaded = item(
+    'preview-turn-failed-overloaded',
+    'turn',
+    const {
+      'outcome': {
+        'kind': 'failed',
+        'data': {
+          'startedAt': 1795483393,
+          'completedAt': 1795483527,
+          'failure': {
+            'category': 'provider',
+            'providerKind': 'unknown',
+            'code': 'overloaded',
+            'message': '该模型当前访问量过大，请您稍后再试[2026112409252610a0f9ae03204283]',
+            'retry': {'kind': 'permanent'},
+          },
+        },
+      },
+    },
+  );
+
+  static final failedTurnRetryable503 = item(
+    'preview-turn-failed-503',
+    'turn',
+    const {
+      'outcome': {
+        'kind': 'failed',
+        'data': {
+          'startedAt': 1795484000,
+          'completedAt': 1795484008,
+          'failure': {
+            'category': 'providerCapacity',
+            'providerKind': 'transport',
+            'code': 'service_unavailable',
+            'httpStatus': 503,
+            'message': 'Upstream model gateway returned 503 Service Unavailable while streaming response.',
+            'retry': {'kind': 'retryable', 'retryAfterMs': 5000},
+          },
+        },
+      },
+    },
+  );
+
+  static final budgetLimitedTurn = item(
+    'preview-turn-budget-limited',
+    'turn',
+    const {
+      'outcome': {
+        'kind': 'budgetLimited',
+        'data': {
+          'startedAt': 1795485000,
+          'completedAt': 1795485145,
+          'limit': {
+            'kind': 'modelStep',
+            'usage': {
+              'modelSteps': 24,
+              'toolCalls': 41,
+              'waitCalls': 2,
+              'elapsedMs': 145000,
+            },
+          },
+          'rollover': {'kind': 'succeeded'},
+        },
+      },
+    },
+  );
+
+  static final cancelledTurn = item('preview-turn-cancelled', 'turn', const {
+    'outcome': {
+      'kind': 'cancelled',
+      'data': {
+        'startedAt': 1795486000,
+        'requestedAt': 1795486012,
+        'completedAt': 1795486013,
+        'cause': {'kind': 'userRequested'},
+      },
+    },
+  });
 
   static const contentReference = ContentRef(
     databaseId: 'preview-database',

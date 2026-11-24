@@ -43,6 +43,8 @@ pub(crate) struct AccountConnection {
     pub(super) supervisor_finished: AtomicBool,
     pub(super) failure: Mutex<Option<AcpFailure>>,
     pub(super) initialized_at: Mutex<Option<tokio::time::Instant>>,
+    pub(super) installed_version: Mutex<Option<String>>,
+    pub(super) pending_upgrade_version: Mutex<Option<String>>,
     pub(super) launch_now: tokio::sync::Notify,
     retirement_wake: Arc<tokio::sync::Notify>,
     issue: Mutex<Option<String>>,
@@ -95,6 +97,39 @@ impl AccountConnection {
         members.retain(|member| member.has_obligations());
         members.push(member.clone());
         Ok(())
+    }
+
+    /// 在持 `members` 锁期间检查活跃成员并在非空时原子写入待升级目标版本，避免与成员关闭发生竞态。
+    pub(super) fn mark_pending_upgrade_if_active(&self, version: &str) -> bool {
+        let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+        members.retain(|member| member.has_obligations());
+        if members.is_empty() {
+            return false;
+        }
+        *self
+            .pending_upgrade_version
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(version.to_owned());
+        true
+    }
+
+    pub(crate) fn notify_member_closed(&self) {
+        let should_cancel = {
+            let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+            members.retain(|member| member.has_obligations());
+            if !members.is_empty() {
+                false
+            } else {
+                self.pending_upgrade_version
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some()
+            }
+        };
+        if should_cancel {
+            self.signal_cancel();
+            self.retirement_wake.notify_one();
+        }
     }
 
     pub(crate) async fn frontend(&self) -> Result<crate::host_mcp_assets::HostMcpAsset> {
@@ -232,107 +267,160 @@ impl AcpAccountRuntime {
         &self,
         definition: &AcpServiceDefinition,
     ) -> Result<Arc<AccountConnection>> {
+        self.connection_with_mode(definition, false)
+    }
+
+    pub(crate) fn acquire_for_business(
+        &self,
+        definition: &AcpServiceDefinition,
+    ) -> Result<Arc<AccountConnection>> {
+        self.connection_with_mode(definition, true)
+    }
+
+    fn connection_with_mode(
+        &self,
+        definition: &AcpServiceDefinition,
+        wake_backoff: bool,
+    ) -> Result<Arc<AccountConnection>> {
         let inner = self.inner.clone();
-        self.inner.config.with_acp_snapshot(|_, snapshot| {
-            let entry = snapshot
-                .definitions
-                .get(&definition.id)
-                .ok_or_else(|| anyhow::anyhow!("ACP account was removed"))?;
-            ensure!(
-                entry.definition.enabled
-                    && entry.definition.launch == definition.launch
-                    && entry.definition.env == definition.env,
-                "ACP account definition changed"
-            );
-            let mut registry = inner.lock();
-            ensure!(!registry.closed, "ACP runtime is closing");
-            let slot = registry
-                .slots
-                .get(&definition.id)
-                .ok_or_else(|| anyhow::anyhow!("ACP account is unavailable"))?;
-            ensure!(
-                !slot.retired && slot.revision == entry.connection_revision,
-                "ACP account is stale"
-            );
-            let start_at = slot.lifecycle.retry_at;
-            if let Some(connection) = slot.connection.as_ref() {
-                if !connection.is_closing() && connection.revision == entry.connection_revision {
-                    return Ok(connection.clone());
+        let (connection, emit_snapshot) =
+            self.inner.config.with_acp_snapshot(|_, snapshot| {
+                let entry = snapshot
+                    .definitions
+                    .get(&definition.id)
+                    .ok_or_else(|| anyhow::anyhow!("ACP account was removed"))?;
+                ensure!(
+                    entry.definition.enabled
+                        && entry.definition.launch == definition.launch
+                        && entry.definition.env == definition.env,
+                    "ACP account definition changed"
+                );
+                let mut registry = inner.lock();
+                ensure!(!registry.closed, "ACP runtime is closing");
+                let slot = registry
+                    .slots
+                    .get_mut(&definition.id)
+                    .ok_or_else(|| anyhow::anyhow!("ACP account is unavailable"))?;
+                ensure!(
+                    !slot.retired && slot.revision == entry.connection_revision,
+                    "ACP account is stale"
+                );
+                let mut emit_snapshot = None;
+                if wake_backoff {
+                    slot.lifecycle.retry_at = None;
                 }
-                connection.retry.notify_one();
-                if !connection.settled.load(Ordering::Acquire) {
-                    // Keep the explicit retry on the original closing owner, rather than
-                    // releasing its auth slot or overlapping a second process.
-                    return Ok(connection.clone());
+                let start_at = if wake_backoff {
+                    None
+                } else {
+                    slot.lifecycle.retry_at
+                };
+                if let Some(connection) = slot.connection.as_ref().cloned() {
+                    if !connection.is_closing() && connection.revision == entry.connection_revision
+                    {
+                        if wake_backoff {
+                            connection.launch_now.notify_one();
+                            if matches!(
+                                slot.lifecycle.state,
+                                AcpConnectionState::Retrying { .. } | AcpConnectionState::Stopped
+                            ) {
+                                slot.lifecycle.state = AcpConnectionState::Starting;
+                                registry.bump();
+                                emit_snapshot = Some(registry.snapshot());
+                            }
+                        }
+                        return Ok((connection, emit_snapshot));
+                    }
+                    connection.retry.notify_one();
+                    if !connection.settled.load(Ordering::Acquire) {
+                        // Keep the explicit retry on the original closing owner, rather than
+                        // releasing its auth slot or overlapping a second process.
+                        return Ok((connection, None));
+                    }
                 }
-            }
-            let mut previous: Vec<_> = registry
-                .retiring
-                .iter()
-                .filter(|connection| connection.account_id == definition.id)
-                .cloned()
-                .collect();
-            if let Some(connection) = registry
-                .slots
-                .get_mut(&definition.id)
-                .and_then(|slot| slot.connection.take())
-            {
-                previous.push(connection.clone());
-                registry.retiring.push(connection);
-            }
-            let (publish, ready) = watch::channel(None);
-            let connection = Arc::new(AccountConnection {
-                account_id: definition.id.clone(),
-                revision: entry.connection_revision,
-                cancel: CancellationToken::new(),
-                cleanup: pl_acp::auth::CleanupBudget::new(PROCESS_CLEANUP_LIMIT),
-                ready,
-                protocol: Mutex::new(None),
-                members: Mutex::new(Vec::new()),
-                mcp_source: inner.mcp_source.clone(),
-                frontend: tokio::sync::Mutex::new(Frontend::default()),
-                join: tokio::sync::Mutex::new(None),
-                settled: AtomicBool::new(false),
-                supervisor_finished: AtomicBool::new(false),
-                failure: Mutex::new(None),
-                initialized_at: Mutex::new(None),
-                launch_now: tokio::sync::Notify::new(),
-                retirement_wake: inner.retirement_wake.clone(),
-                issue: Mutex::new(None),
-                retry: tokio::sync::Notify::new(),
-            });
-            registry
-                .slots
-                .get_mut(&definition.id)
-                .expect("validated slot")
-                .connection = Some(connection.clone());
-            // Registry and join owner are installed before the supervisor can acquire launch resources.
-            let run_inner = inner.clone();
-            let run_account = connection.clone();
-            let run_definition = definition.clone();
-            let task = tokio::spawn(async move {
-                let result = std::panic::AssertUnwindSafe(supervise(
-                    run_inner,
-                    run_account.clone(),
-                    run_definition,
-                    previous,
-                    start_at,
-                    publish,
-                ))
-                .catch_unwind()
-                .await;
-                run_account
-                    .supervisor_finished
-                    .store(true, Ordering::Release);
-                run_account.retirement_wake.notify_one();
-                if let Err(panic) = result {
-                    std::panic::resume_unwind(panic);
+                let mut previous: Vec<_> = registry
+                    .retiring
+                    .iter()
+                    .filter(|connection| connection.account_id == definition.id)
+                    .cloned()
+                    .collect();
+                if let Some(connection) = registry
+                    .slots
+                    .get_mut(&definition.id)
+                    .and_then(|slot| slot.connection.take())
+                {
+                    previous.push(connection.clone());
+                    registry.retiring.push(connection);
                 }
-            });
-            *connection.join.try_lock().expect("private join") = Some(task);
-            inner.retirement_wake.notify_one();
-            Ok(connection)
-        })?
+                if wake_backoff
+                    && let Some(slot) = registry.slots.get_mut(&definition.id)
+                    && matches!(
+                        slot.lifecycle.state,
+                        AcpConnectionState::Retrying { .. } | AcpConnectionState::Stopped
+                    )
+                {
+                    slot.lifecycle.state = AcpConnectionState::Starting;
+                    registry.bump();
+                    emit_snapshot = Some(registry.snapshot());
+                }
+                let (publish, ready) = watch::channel(None);
+                let connection = Arc::new(AccountConnection {
+                    account_id: definition.id.clone(),
+                    revision: entry.connection_revision,
+                    cancel: CancellationToken::new(),
+                    cleanup: pl_acp::auth::CleanupBudget::new(PROCESS_CLEANUP_LIMIT),
+                    ready,
+                    protocol: Mutex::new(None),
+                    members: Mutex::new(Vec::new()),
+                    mcp_source: inner.mcp_source.clone(),
+                    frontend: tokio::sync::Mutex::new(Frontend::default()),
+                    join: tokio::sync::Mutex::new(None),
+                    settled: AtomicBool::new(false),
+                    supervisor_finished: AtomicBool::new(false),
+                    failure: Mutex::new(None),
+                    initialized_at: Mutex::new(None),
+                    installed_version: Mutex::new(None),
+                    pending_upgrade_version: Mutex::new(None),
+                    launch_now: tokio::sync::Notify::new(),
+                    retirement_wake: inner.retirement_wake.clone(),
+                    issue: Mutex::new(None),
+                    retry: tokio::sync::Notify::new(),
+                });
+                registry
+                    .slots
+                    .get_mut(&definition.id)
+                    .expect("validated slot")
+                    .connection = Some(connection.clone());
+                // Registry and join owner are installed before the supervisor can acquire launch resources.
+                let run_inner = inner.clone();
+                let run_account = connection.clone();
+                let run_definition = definition.clone();
+                let task = tokio::spawn(async move {
+                    let result = std::panic::AssertUnwindSafe(supervise(
+                        run_inner,
+                        run_account.clone(),
+                        run_definition,
+                        previous,
+                        start_at,
+                        publish,
+                    ))
+                    .catch_unwind()
+                    .await;
+                    run_account
+                        .supervisor_finished
+                        .store(true, Ordering::Release);
+                    run_account.retirement_wake.notify_one();
+                    if let Err(panic) = result {
+                        std::panic::resume_unwind(panic);
+                    }
+                });
+                *connection.join.try_lock().expect("private join") = Some(task);
+                inner.retirement_wake.notify_one();
+                Ok((connection, emit_snapshot))
+            })??;
+        if let Some(snapshot) = emit_snapshot {
+            self.inner.emit(snapshot);
+        }
+        Ok(connection)
     }
 
     pub(super) fn connections(&self) -> Vec<Arc<AccountConnection>> {
@@ -384,7 +472,13 @@ async fn supervise(
     inner.connection_state(&account, AcpConnectionState::Starting);
     let launched = spawn_process(&inner, &account.account_id, &definition, &account.cancel).await;
     let (mut worker, probe_dir, expected_version) = match launched {
-        Ok(value) => value,
+        Ok((worker, probe_dir, expected_version)) => {
+            *account
+                .installed_version
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = expected_version.clone();
+            (worker, probe_dir, expected_version)
+        }
         Err(error) => {
             *account
                 .failure
@@ -477,12 +571,11 @@ async fn supervise(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        for member in members {
-            let result = member.close().await;
-            if !result.local_complete {
-                *account.issue.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Some("ACP session cleanup remains pending".into());
-            }
+        let close_results =
+            futures::future::join_all(members.iter().map(|member| member.close())).await;
+        if close_results.iter().any(|result| !result.local_complete) {
+            *account.issue.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some("ACP session cleanup remains pending".into());
         }
     } else {
         publish.send_replace(Some(Err(closed_failure())));
@@ -518,14 +611,20 @@ async fn supervise(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let results = futures::future::join_all(members.iter().map(|member| async {
+            let association_error = member.settle_association(&inner.events).await.err();
+            let closed = member.close().await;
+            (association_error, closed.local_complete)
+        }))
+        .await;
         let mut pending = false;
-        for member in members {
-            if let Err(error) = member.settle_association(&inner.events).await {
+        for (association_error, local_complete) in results {
+            if let Some(error) = association_error {
                 *account.issue.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(error.to_string());
                 pending = true;
             }
-            pending |= !member.close().await.local_complete;
+            pending |= !local_complete;
         }
         if !pending {
             break;
@@ -952,11 +1051,10 @@ mod tests {
                 let weak = Arc::downgrade(&account);
                 drop(account);
                 if generation == 4 {
-                    fixture.runtime.config_runtime.delete_acp_definition(
-                        fixture.runtime.config_runtime.read()?.revision,
-                        "business-peer",
-                        entry.document_revision,
-                    )?;
+                    fixture
+                        .runtime
+                        .config_runtime
+                        .delete_acp_definition("business-peer", entry.document_revision)?;
                     // No later open, prepare or close call is allowed to do this cleanup for us.
                     retired(&fixture.runtime, &weak).await;
                     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -965,11 +1063,10 @@ mod tests {
                     changed
                         .env
                         .insert("SYNTHETIC_GENERATION".into(), generation.to_string());
-                    fixture.runtime.config_runtime.save_acp_definition(
-                        fixture.runtime.config_runtime.read()?.revision,
-                        &changed,
-                        Some(entry.document_revision),
-                    )?;
+                    fixture
+                        .runtime
+                        .config_runtime
+                        .save_acp_definition(&changed, Some(entry.document_revision))?;
                     revision = fixture
                         .runtime
                         .config_runtime
@@ -1022,6 +1119,8 @@ mod tests {
             retirement_wake: runtime.acp_accounts.inner.retirement_wake.clone(),
             issue: Mutex::new(None),
             retry: tokio::sync::Notify::new(),
+            installed_version: Mutex::new(None),
+            pending_upgrade_version: Mutex::new(None),
         });
         (account, release)
     }
@@ -1186,11 +1285,10 @@ mod tests {
                 .clone();
             let mut renamed = definition.definition.clone();
             renamed.display_name = "Only the name changed".into();
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &renamed,
-                Some(definition.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&renamed, Some(definition.document_revision))?;
             assert_eq!(
                 fixture
                     .runtime
@@ -1279,11 +1377,10 @@ mod tests {
             changed
                 .env
                 .insert("SYNTHETIC_GENERATION".into(), "two".into());
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &changed,
-                Some(definition.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&changed, Some(definition.document_revision))?;
             assert!(
                 fixture
                     .runtime
@@ -1362,11 +1459,10 @@ mod tests {
             definition.launch =
                 crate::config::AcpLaunch::Template(crate::config::AcpProvider::Antigravity);
             // Config returns while initialize is still deliberately held by the peer.
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &definition,
-                Some(entry.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&definition, Some(entry.document_revision))?;
             marker(&fixture.home.path().join("initializing")).await;
             let one = fixture.runtime.acp_accounts.connection(&definition)?;
             let two = fixture.runtime.acp_accounts.connection(&definition)?;
@@ -1516,11 +1612,10 @@ mod tests {
                 "ACP_FIXTURE_ROOT".into(),
                 other_root.to_string_lossy().into_owned(),
             );
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &definition,
-                None,
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&definition, None)?;
             let revision = fixture
                 .runtime
                 .config_runtime
@@ -1557,11 +1652,10 @@ mod tests {
             assert_ne!(first_pid, second_pid);
             let mut disabled = entry.definition;
             disabled.enabled = false;
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &disabled,
-                Some(entry.document_revision),
-            )?;
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&disabled, Some(entry.document_revision))?;
             first_owner.close().await?;
             assert!(!std::path::Path::new(&format!("/proc/{first_pid}")).exists());
             assert!(std::path::Path::new(&format!("/proc/{second_pid}")).exists());
@@ -1768,11 +1862,10 @@ mod tests {
             let mut disabled = entry.definition;
             disabled.enabled = false;
             tokio::time::pause();
-            let saved = fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision,
-                &disabled,
-                Some(entry.document_revision),
-            );
+            let saved = fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&disabled, Some(entry.document_revision));
             tokio::time::advance(Duration::from_secs(120)).await;
             tokio::time::resume();
             saved?;
@@ -1804,8 +1897,7 @@ mod tests {
             invalid.launch = crate::config::AcpLaunch::Command {
                 command: fixture.home.path().join("missing-executable").to_string_lossy().into_owned(), args: vec![],
             };
-            fixture.runtime.config_runtime.save_acp_definition(
-                fixture.runtime.config_runtime.read()?.revision, &invalid, Some(entry.document_revision),
+            fixture.runtime.config_runtime.save_acp_definition(&invalid, Some(entry.document_revision),
             )?;
             auth_state(&fixture.runtime, "business-peer", |account| {
                 matches!(&account.connection, AcpConnectionState::Blocked { failure } if failure.code == AcpAuthFailureCode::MissingExecutable)
@@ -1840,6 +1932,196 @@ mod tests {
                     .count(),
                 1
             );
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn query_usage_on_ready_verified_connection_keeps_verified_and_single_process()
+    -> Result<()> {
+        let fixture = Fixture::disabled("replay").await?;
+        with_cleanup(&fixture.runtime, async {
+            let script = format!("#!/usr/bin/python3\n{}", crate::acp_transport_fixture::PEER);
+            crate::studio::runtime::acp_install::seed_synthetic_install(
+                &fixture.runtime.store,
+                script.as_bytes(),
+            );
+            let entry = fixture
+                .runtime
+                .config_runtime
+                .read_acp_definitions()
+                .definitions["business-peer"]
+                .clone();
+            let mut template = entry.definition;
+            template.enabled = true;
+            template.launch =
+                crate::config::AcpLaunch::Template(crate::config::AcpProvider::Antigravity);
+            fixture
+                .runtime
+                .config_runtime
+                .save_acp_definition(&template, Some(entry.document_revision))?;
+            let ready = auth_state(&fixture.runtime, "business-peer", |account| {
+                account.active_operation.is_none()
+                    && matches!(account.connection, AcpConnectionState::Ready)
+                    && matches!(account.state, AcpAuthState::Verified { .. })
+            })
+            .await;
+            let pid = fixture.pid("pid")?;
+
+            let mut updates = fixture
+                .runtime
+                .subscribe_product_topic(crate::StudioProductTopic::AcpAuth)
+                .await?;
+            fixture.runtime.start_acp_auth(StartAcpAuthRequest {
+                operation_id: "usage-1".into(),
+                account_id: "business-peer".into(),
+                expected_connection_revision: ready.connection_revision,
+                action: AcpAuthAction::QueryUsage,
+            })?;
+            let finished = tokio::time::timeout(Duration::from_secs(15), async {
+                let mut saw_active = false;
+                loop {
+                    let frame = updates
+                        .recv()
+                        .await
+                        .expect("auth stream ok")
+                        .expect("auth stream open");
+                    let snapshot = match frame {
+                        crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                            crate::StudioProductBaselineState::AcpAuth(snapshot) => *snapshot,
+                            other => panic!("unexpected baseline: {other:?}"),
+                        },
+                        crate::StudioProductFrame::Event(event) => match event.kind {
+                            crate::StudioProductEventKind::AcpAuthStateChanged(snapshot) => {
+                                *snapshot
+                            }
+                            other => panic!("unexpected event: {other:?}"),
+                        },
+                        crate::StudioProductFrame::Lagged { dropped, .. } => {
+                            panic!("lagged {dropped} auth frames")
+                        }
+                    };
+                    let account = snapshot
+                        .accounts
+                        .into_iter()
+                        .find(|account| account.account_id == "business-peer")
+                        .expect("account present");
+                    assert!(
+                        matches!(account.state, AcpAuthState::Verified { .. }),
+                        "QueryUsage must not clobber Verified auth state: {:?}",
+                        account.state
+                    );
+                    if let Some(op) = account.active_operation.as_ref() {
+                        assert_eq!(op.action, AcpAuthAction::QueryUsage);
+                        saw_active = true;
+                    } else if saw_active && account.usage.is_some() {
+                        return account;
+                    }
+                }
+            })
+            .await?;
+            assert!(matches!(
+                finished.usage,
+                Some(crate::AcpUsageObservation {
+                    state: crate::AcpUsageState::Ready { .. },
+                    ..
+                })
+            ));
+
+            // Cancelling a held QueryUsage on Ready + Verified also preserves Verified & usage.
+            std::fs::write(fixture.home.path().join("mode"), "prompt-hold")?;
+            fixture.runtime.start_acp_auth(StartAcpAuthRequest {
+                operation_id: "usage-cancel".into(),
+                account_id: "business-peer".into(),
+                expected_connection_revision: ready.connection_revision,
+                action: AcpAuthAction::QueryUsage,
+            })?;
+            marker(&fixture.home.path().join("prompting")).await;
+            fixture.runtime.cancel_acp_auth(CancelAcpAuthRequest {
+                operation_id: "cancel-usage-op".into(),
+                account_id: "business-peer".into(),
+                target_operation_id: "usage-cancel".into(),
+            })?;
+            std::fs::write(fixture.home.path().join("release"), "continue")?;
+            let after_cancel = auth_state(&fixture.runtime, "business-peer", |account| {
+                account.active_operation.is_none()
+            })
+            .await;
+            assert!(matches!(after_cancel.state, AcpAuthState::Verified { .. }));
+            assert_eq!(after_cancel.usage, finished.usage);
+            assert_eq!(fixture.pid("pid")?, pid);
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("spawns"))?
+                    .lines()
+                    .count(),
+                1
+            );
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn business_open_wakes_retrying_backoff_immediately() -> Result<()> {
+        let fixture = Fixture::new("replay").await?;
+        with_cleanup(&fixture.runtime, async {
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.connection, AcpConnectionState::Ready)
+                    && matches!(account.state, AcpAuthState::Verified { .. })
+                    && account.active_operation.is_none()
+            })
+            .await;
+            let first_pid = fixture.pid("pid")?;
+            // Force a long retry backoff after the process dies by seeding prior attempts.
+            fixture
+                .runtime
+                .acp_accounts
+                .inner
+                .lock()
+                .slots
+                .get_mut("business-peer")
+                .expect("slot exists")
+                .lifecycle
+                .seed_attempts_for_test(5);
+            assert!(
+                std::process::Command::new("/bin/kill")
+                    .args(["-KILL", &first_pid.to_string()])
+                    .status()?
+                    .success()
+            );
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.connection, AcpConnectionState::Retrying { .. })
+            })
+            .await;
+            assert!(
+                fixture.runtime.acp_accounts.inner.lock().slots["business-peer"]
+                    .lifecycle
+                    .retry_at
+                    .is_some_and(
+                        |deadline| deadline > tokio::time::Instant::now() + Duration::from_secs(10)
+                    )
+            );
+            let mut open = tokio::time::timeout(
+                Duration::from_secs(5),
+                fixture.open_intent(AcpOpenIntent::Draft {
+                    workspace_mode: crate::ThreadWorkspaceMode::Local,
+                    delegation_mode: None,
+                    delegation_preference: None,
+                }),
+            )
+            .await??;
+            Fixture::ready(&mut open).await?;
+            open.completion.wait().await?;
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("spawns"))?
+                    .lines()
+                    .count(),
+                2
+            );
+            let second_pid = fixture.pid("pid")?;
+            assert_ne!(second_pid, first_pid);
+            assert!(std::path::Path::new(&format!("/proc/{second_pid}")).exists());
             Ok(())
         })
         .await

@@ -1,16 +1,12 @@
-use pl_model_wire::protocol::*;
 use pl_model_wire::ApiKeyHeaderScheme;
+use pl_model_wire::protocol::*;
 
 pub const ID: ProtocolId = ProtocolId::from_static("gemini");
 
 pub const VERTEX_BASE_URL: &str = "https://aiplatform.googleapis.com/v1/publishers/google";
 pub const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
-fn build_endpoint(
-    name: &str,
-    default_url: &str,
-    base_url: Option<String>,
-) -> ProtocolEndpoint {
+fn build_endpoint(name: &str, default_url: &str, base_url: Option<String>) -> ProtocolEndpoint {
     let resolved_url = base_url.unwrap_or_else(|| default_url.to_owned());
     let canonical = resolved_url.trim_end_matches('/') == default_url;
     ProtocolEndpoint {

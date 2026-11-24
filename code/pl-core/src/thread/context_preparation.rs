@@ -97,7 +97,8 @@ impl PreviousContextUsage {
 pub enum ContextPreparation {
     Unchanged,
     Prepared {
-        expected_extension_sequence: u64,
+        inputs: extensions::ExtensionInputs,
+        instruction_binding: Option<extensions::InstructionRevisionBinding>,
         /// Producer accounting only; committed if the candidate is cancelled or rejected.
         rejected_mutations: Vec<ExtensionMutation>,
         replacement: Option<ReplaceContext>,
@@ -149,7 +150,6 @@ impl ContextPreparer {
 pub(super) type PreparationWork = futures::future::BoxFuture<'static, PreparationCompletion>;
 pub(super) struct PreparationCompletion {
     expected_context_revision: u64,
-    expected_extension_sequence: u64,
     previous_phase: Option<ModelExecutionPhase>,
     result: Result<ContextPreparation, ThreadError>,
 }
@@ -284,7 +284,6 @@ impl Owner {
             .and_then(|result| result);
             PreparationCompletion {
                 expected_context_revision,
-                expected_extension_sequence,
                 previous_phase,
                 result,
             }
@@ -299,7 +298,6 @@ impl Owner {
     ) -> Result<bool, ThreadError> {
         let PreparationCompletion {
             expected_context_revision,
-            expected_extension_sequence,
             previous_phase,
             result,
         } = completion;
@@ -341,7 +339,8 @@ impl Owner {
                     Err(ThreadError::Model(Arc::new(error)))
                 }
                 ContextPreparation::Prepared {
-                    expected_extension_sequence: producer_sequence,
+                    inputs,
+                    instruction_binding,
                     rejected_mutations,
                     replacement,
                     facts,
@@ -358,26 +357,17 @@ impl Owner {
                             actual: self.state.context.revision,
                         });
                     }
-                    if producer_sequence != expected_extension_sequence
-                        || self.state.extension_sequence != expected_extension_sequence
-                    {
-                        self.commit_preparation_accounting(
-                            rejected_mutations,
-                            &mut preparation_storage_error,
-                        )?;
-                        return Err(ThreadError::ExtensionConflict {
-                            id: "context preparation".into(),
-                            expected: Some(expected_extension_sequence),
-                            actual: Some(self.state.extension_sequence),
-                        });
-                    }
                     let compacted = replacement.as_ref().is_some_and(|replacement| {
                         replacement.reason == ContextReplacementReason::Compaction
                     });
                     let replaces_context = replacement.is_some();
                     let mut candidate = self.state.clone();
                     let staged = (|| {
-                        if let Some(replacement) = replacement {
+                        extensions::stage_extensions(&mut candidate, mutations)?;
+                        if let Some(mut replacement) = replacement {
+                            if let Some(binding) = instruction_binding {
+                                binding.resolve(&mut replacement, &candidate)?;
+                            }
                             // Validate/normalize current facts before restoring the new window, while
                             // retaining the actually committed history as the replacement's predecessor.
                             let committed = candidate.context.clone();
@@ -387,20 +377,25 @@ impl Owner {
                         } else {
                             super::facts::stage_facts(&mut candidate, facts)?;
                         }
-                        extensions::stage_extensions(&mut candidate, mutations)?;
-                        Ok::<_, ThreadError>(())
+                        let changed = candidate.runtime_facts != self.state.runtime_facts
+                            || candidate.context != self.state.context
+                            || candidate.extensions != self.state.extensions;
+                        if replaces_context || changed {
+                            inputs.validate(&self.state.extensions)?;
+                        }
+                        Ok::<_, ThreadError>(changed)
                     })();
-                    if let Err(error) = staged {
-                        self.commit_preparation_accounting(
-                            rejected_mutations,
-                            &mut preparation_storage_error,
-                        )?;
-                        return Err(error);
-                    }
-                    if candidate.context != self.state.context
-                        || candidate.runtime_facts != self.state.runtime_facts
-                        || candidate.extensions != self.state.extensions
-                    {
+                    let changed = match staged {
+                        Ok(changed) => changed,
+                        Err(error) => {
+                            self.commit_preparation_accounting(
+                                rejected_mutations,
+                                &mut preparation_storage_error,
+                            )?;
+                            return Err(error);
+                        }
+                    };
+                    if changed {
                         self.state = candidate;
                         self.publish()?;
                         self.retain_preparation_storage_error(&mut preparation_storage_error);

@@ -51,6 +51,7 @@ final class _DraftTransport extends AccountsTestTransport
     ({
       StudioPromptInput input,
       ModeModelRouteView route,
+      String? serviceTier,
       ThreadModeId mode,
       DelegationMode delegationMode,
       DelegationPreference delegationPreference,
@@ -266,6 +267,7 @@ final class _DraftTransport extends AccountsTestTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -274,6 +276,7 @@ final class _DraftTransport extends AccountsTestTransport
     startEntered.complete((
       input: input,
       route: route,
+      serviceTier: serviceTier,
       mode: mode,
       delegationMode: delegationMode,
       delegationPreference: delegationPreference,
@@ -330,7 +333,6 @@ final class _DraftTransport extends AccountsTestTransport
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int expectedSettingsRevision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) async {
@@ -1810,6 +1812,9 @@ void main() {
     }
 
     owner.updateDraft(_project.id, 'first request');
+    owner.setServiceTierIntent(ThreadModeId.simple, 'priority');
+    owner.setEffortIntent(ThreadModeId.simple, 'medium');
+    expect(owner.state.serviceTierIntents[ThreadModeId.simple.id], 'priority');
     owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree);
     owner.setDelegationPreferenceOverride(
       _project.id,
@@ -1824,8 +1829,15 @@ void main() {
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
     );
     final submission = owner.submit(_project.id);
+    owner.setServiceTierIntent(ThreadModeId.simple, null);
     defaults(3, DelegationMode.profile, DelegationPreference.balanced);
     final request = await transport.startEntered.future;
+    expect(
+      request.serviceTier,
+      'priority',
+      reason: 'Speed is frozen before queued transport dispatch',
+    );
+    expect(owner.state.serviceTierIntents[ThreadModeId.simple.id], isNull);
     final revision = owner.state.revision;
     final progressObserved = owner.source.waitFor(
       (value) =>
@@ -1854,7 +1866,13 @@ void main() {
       '/isolated/worktree',
     );
     owner.updateDraft(_project.id, 'second request');
+    owner.setServiceTierIntent(ThreadModeId.simple, 'priority');
     owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
+    expect(
+      owner.state.serviceTierIntents[ThreadModeId.simple.id],
+      isNull,
+      reason: 'Changing models never carries the old speed intent',
+    );
     owner.setEffortIntent(ThreadModeId.simple, 'high');
     owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.local);
     owner.setDelegationModeOverride(_project.id, DelegationMode.profile);

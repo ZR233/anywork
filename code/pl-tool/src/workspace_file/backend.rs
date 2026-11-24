@@ -33,6 +33,20 @@ pub trait WorkspaceFileBackend: fmt::Debug + Send + Sync {
 
     fn default_cwd(&self) -> impl Future<Output = Result<String>> + Send;
 
+    /// Freeze a metadata-only download target. Backends without a verifiable execution
+    /// binding must reject deferral rather than eagerly reading the file.
+    fn defer_file(
+        &self,
+        _path: &str,
+    ) -> impl Future<Output = Result<crate::file_display::DeferredWorkspaceFile>> + Send {
+        async {
+            Err(crate::tool_error(
+                "file",
+                "backend cannot freeze a deferred file binding",
+            ))
+        }
+    }
+
     /// A validated absolute host locator, only for a backend whose files are local.
     /// Remote backends must retain the default `None`, regardless of their path syntax.
     fn local_file_path(
@@ -114,7 +128,8 @@ pub struct WorkspaceFileReadRequest {
 pub struct WorkspaceFileReadBytesRequest {
     pub path: String,
     pub cwd: Option<String>,
-    pub max_bytes: usize,
+    /// Ceiling for a bounded caller; `None` reads the entire regular file.
+    pub max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

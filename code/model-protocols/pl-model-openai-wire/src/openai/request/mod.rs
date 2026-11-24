@@ -1,22 +1,22 @@
-use crate::completion::CompletionRequest;
-use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
-use crate::protocol::{InstructionWireRole, WireApi};
+use pl_model_wire::completion::CompletionRequest;
 use pl_model_wire::completion::request_support::{
-    finalize_body, merge_base_body, messages_after_last_compaction, to_object_map,
-    validate_tool_history,
+    merge_base_body, messages_after_last_compaction, to_object_map, validate_tool_history,
 };
+use pl_model_wire::model::info::{ModelDefinition, ResponsesMaxTokensField};
+use pl_model_wire::protocol::{InstructionWireRole, WireApi};
 use pl_protocol::{PureError, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use body::finalize_body;
 mod body;
 mod chat;
 pub mod chatgpt;
 mod responses;
 
 use chat::ChatRequestBody;
-use responses::ResponsesRequestBody;
 pub use pl_model_wire::completion::request_support::sent_model_from_wire_body;
+use responses::ResponsesRequestBody;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -85,17 +85,18 @@ pub fn build_openai_request_body(
     endpoint: WireApi,
     instruction_role: InstructionWireRole,
     request: &CompletionRequest,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     prompt_cache_key: Option<&str>,
     chatgpt: bool,
 ) -> Result<OpenAiRequestBody> {
+    pl_model_wire::service_tiers::validate(model, request.service_tier.as_deref())?;
     request.validate_replay_spans()?;
     let messages = messages_after_last_compaction(&request.input);
     validate_tool_history(&messages)?;
     match endpoint {
         WireApi::Responses => {
             let crate::model::ModelProtocolOptions::Responses(options) =
-                &model.binding.request.protocol
+                &model.extra.binding.request.protocol
             else {
                 return Err(protocol_error(
                     "Responses request requires Responses options",
@@ -117,7 +118,7 @@ pub fn build_openai_request_body(
                 request.max_tokens,
                 options.max_tokens_field,
             );
-            finalize_body(&mut body, model, &request.reasoning);
+            finalize_body(&mut body, model, request);
             if chatgpt {
                 chatgpt::validate_body(&body, &original)?;
             }
@@ -129,7 +130,7 @@ pub fn build_openai_request_body(
                 model,
                 instruction_role,
             )?)?;
-            finalize_body(&mut body, model, &request.reasoning);
+            finalize_body(&mut body, model, request);
             Ok(OpenAiRequestBody::Chat(body))
         }
         WireApi::GeminiGenerateContent => Err(protocol_error(

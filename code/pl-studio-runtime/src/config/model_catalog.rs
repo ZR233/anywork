@@ -12,7 +12,7 @@ use crate::{
 };
 use pl_model::{
     config::{AccountConfig, AccountId},
-    model::ModelInfo,
+    model::ModelDefinition,
     protocol::discovery::{ModelCatalogQuery, ModelCatalogQueryCache, ModelCatalogQueryError},
 };
 use serde::{Deserialize, Serialize};
@@ -23,10 +23,10 @@ use super::{ConfigPaths, StudioConfig};
 use crate::Result;
 
 const CACHE_BYTES_LIMIT: usize = 8 * 1024 * 1024;
-const NORMALIZATION_REVISION: u32 = 3;
+const NORMALIZATION_REVISION: u32 = 6;
 /// On-disk schema of `model.json`. Schema 3 also records whether the snapshot was verified by a
 /// complete response of the recorded query identity or adopted from the retired query identity.
-const CACHE_SCHEMA: u32 = 3;
+const CACHE_SCHEMA: u32 = 4;
 /// A legacy import claim is a few hundred bytes; bound the read like every other cache document.
 const CLAIM_BYTES_LIMIT: usize = 4096;
 const CLAIM_FILE: &str = "legacy-import-claim.json";
@@ -73,7 +73,7 @@ pub(super) struct SuccessCache {
     pub success_at: i64,
     pub checked_at: i64,
     pub etag: Option<String>,
-    pub models: Vec<ModelInfo>,
+    pub models: Vec<ModelDefinition>,
 }
 
 /// 成功快照的来源。旧查询身份（v1）的 `model.json` 从未记录厂商协议，因此这类快照只能作为
@@ -100,7 +100,7 @@ impl SuccessCache {
         account: &AccountId,
         identity: &str,
         etag: Option<String>,
-        models: Vec<ModelInfo>,
+        models: Vec<ModelDefinition>,
         success_at: i64,
     ) -> Self {
         Self {
@@ -355,7 +355,13 @@ fn read_cache_file(
     if schema > u64::from(CACHE_SCHEMA) {
         return Err(CacheWarning::Schema);
     }
-    if schema < u64::from(CACHE_SCHEMA) {
+    if schema < 4 {
+        for model in value["models"].as_array_mut().ok_or(CacheWarning::Schema)? {
+            *model = super::document_migration::migrate_cached_model(model.take())
+                .map_err(|_| CacheWarning::Declaration)?;
+        }
+    }
+    if schema < 3 {
         value["verification"] =
             serde_json::to_value(CacheVerification::Verified).map_err(|_| CacheWarning::Schema)?;
     }
@@ -398,8 +404,15 @@ fn import_legacy_cache(
     query: &ModelCatalogQuery,
     account: &AccountConfig,
 ) -> std::result::Result<Option<SuccessCache>, CacheWarning> {
-    let legacy_path = cache_path(paths, account_id, query.legacy_v1_identity_for_migration());
-    let source_identity = full_identity(account_id, query.legacy_v1_identity_for_migration());
+    let previous = query.previous_identity_for_migration();
+    let previous_path = cache_path(paths, account_id, previous);
+    let legacy = if previous_path.try_exists().map_err(|_| CacheWarning::Read)? {
+        previous
+    } else {
+        query.legacy_v1_identity_for_migration()
+    };
+    let legacy_path = cache_path(paths, account_id, legacy);
+    let source_identity = full_identity(account_id, legacy);
     let Some(source) = read_cache_file(&legacy_path, &source_identity, account)? else {
         return Ok(None);
     };
@@ -556,16 +569,16 @@ mod migration_tests {
         ] {
             let query = ModelCatalogQuery::for_account(account).unwrap();
             let mut shared = observed_model();
-            shared.model_id = "gpt-6-luna".into();
-            shared.display_name = title.into();
-            shared.context_window = Some(context);
+            shared.base.slug = "gpt-6-luna".into();
+            shared.base.display_name = title.into();
+            shared.base.context_window = Some(context);
             shared
                 .observation
                 .as_mut()
                 .unwrap()
                 .declare(ModelMetadataField::DisplayName);
             let mut own = observed_model();
-            own.model_id = exclusive.into();
+            own.base.slug = exclusive.into();
             SuccessCache::new(id, query.identity(), None, vec![shared, own], 123)
                 .persist(&paths, id, query.identity())
                 .unwrap();
@@ -599,13 +612,13 @@ mod migration_tests {
                 .unwrap();
             let shared = catalog
                 .iter()
-                .find(|entry| entry.model.model_id == "gpt-6-luna")
+                .find(|entry| entry.model.base.slug == "gpt-6-luna")
                 .unwrap();
-            assert_eq!(shared.model.display_name, title);
-            assert_eq!(shared.model.context_window, Some(context));
+            assert_eq!(shared.model.base.display_name, title);
+            assert_eq!(shared.model.base.context_window, Some(context));
             assert_eq!(shared.enabled, enabled);
-            assert!(catalog.iter().any(|entry| entry.model.model_id == own));
-            assert!(!catalog.iter().any(|entry| entry.model.model_id == foreign));
+            assert!(catalog.iter().any(|entry| entry.model.base.slug == own));
+            assert!(!catalog.iter().any(|entry| entry.model.base.slug == foreign));
         }
         config
             .models
@@ -619,18 +632,21 @@ mod migration_tests {
             "credential changes must retire that account's old observation"
         );
         assert_eq!(
-            changed[&second_id].cache.as_ref().unwrap().models[0].display_name,
+            changed[&second_id].cache.as_ref().unwrap().models[0]
+                .base
+                .display_name,
             "Second account"
         );
     }
 
-    fn observed_model() -> ModelInfo {
-        let mut model = ModelInfo::compatible("exact-observed-id");
-        model.display_name = "Observed display name".into();
-        model.description = Some("catalog description".into());
-        model.context_window = Some(200_000);
-        model.max_context_window = Some(200_000);
+    fn observed_model() -> ModelDefinition {
+        let mut model = ModelDefinition::compatible("exact-observed-id");
+        model.base.display_name = "Observed display name".into();
+        model.base.description = Some("catalog description".into());
+        model.base.context_window = Some(200_000);
+        model.base.max_context_window = Some(200_000);
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_websocket());
         let mut observation = ModelObservation::default();
@@ -656,7 +672,11 @@ mod migration_tests {
             vec![observed_model()],
             123,
         );
-        let mut value = serde_json::to_value(cache).unwrap();
+        let mut value = serde_json::to_value(&cache).unwrap();
+        value["models"][0] = serde_json::to_value(
+            crate::config::document_migration::historical_model(&cache.models[0]),
+        )
+        .unwrap();
         value.as_object_mut().unwrap().remove("verification");
         value["checkedAt"] = checked_at.into();
         value["schema"] = schema.into();
@@ -707,15 +727,22 @@ mod migration_tests {
             .unwrap()
             .identity()
             .to_owned();
-        let mut model = ModelInfo::compatible("exact-Unchanged-ID");
+        let mut model = ModelDefinition::compatible("exact-Unchanged-ID");
+        model.base.display_name = model.base.slug.clone();
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_websocket());
         let cache = SuccessCache::new(&id, &identity, Some("\"legacy\"".into()), vec![model], 123);
-        let mut value = serde_json::to_value(cache).unwrap();
+        let mut value = serde_json::to_value(&cache).unwrap();
+        value["models"][0] = serde_json::to_value(
+            crate::config::document_migration::historical_model(&cache.models[0]),
+        )
+        .unwrap();
         value["schema"] = 1.into();
         value["normalizationRevision"] = 1.into();
         let object = value["models"][0].as_object_mut().unwrap();
+        object.get_mut("capabilities").unwrap()["tools"]["parallel_tool_calls"] = true.into();
         let model_id = object.remove("model_id").unwrap();
         object.insert("slug".into(), model_id);
         if conflict {
@@ -736,7 +763,16 @@ mod migration_tests {
         let cache = read_cache(&paths, &id, &identity, &account)
             .unwrap()
             .unwrap();
-        assert_eq!(cache.models[0].model_id, "exact-Unchanged-ID");
+        assert_eq!(cache.models[0].base.slug, "exact-Unchanged-ID");
+        assert_eq!(
+            cache.models[0].base.supports_parallel_tool_calls,
+            Some(true)
+        );
+        assert!(
+            serde_json::json!(cache.models[0])
+                .pointer("/extra/capabilities/tools/parallel_tool_calls")
+                .is_none()
+        );
         assert!(cache.models[0].observation.is_none());
         assert_eq!(cache.query_etag(), None);
         assert_eq!(cache.success_at, 123);
@@ -748,7 +784,7 @@ mod migration_tests {
                 .effective_models(None)
                 .unwrap()
                 .into_iter()
-                .find(|model| model.model_id == "exact-Unchanged-ID")
+                .find(|model| model.base.slug == "exact-Unchanged-ID")
                 .unwrap(),
             cache.models[0]
         );
@@ -838,7 +874,7 @@ mod migration_tests {
         let target_path = cache_path(&paths, &id, query.identity());
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&target_path).unwrap()).unwrap();
-        assert_eq!(persisted["schema"], 3);
+        assert_eq!(persisted["schema"], CACHE_SCHEMA);
         assert_eq!(persisted["verification"], "legacyMigrated");
         assert_eq!(persisted["successAt"], 123);
         assert_eq!(persisted["checkedAt"], 456);
@@ -1028,7 +1064,7 @@ mod migration_tests {
         let cache = import_legacy_cache(&paths, &id, &query, &account)
             .unwrap()
             .unwrap();
-        assert_eq!(cache.models[0].model_id, "exact-observed-id");
+        assert_eq!(cache.models[0].base.slug, "exact-observed-id");
         assert!(
             cache.models[0].observation.is_none(),
             "旧规范化值不能声称字段存在"
@@ -1054,6 +1090,10 @@ mod migration_tests {
             123,
         );
         let mut value = serde_json::to_value(&cache).unwrap();
+        value["models"][0] = serde_json::to_value(
+            crate::config::document_migration::historical_model(&cache.models[0]),
+        )
+        .unwrap();
         value.as_object_mut().unwrap().remove("verification");
         value["schema"] = 2.into();
         let path = cache_path(&paths, &id, query.identity());
@@ -1067,7 +1107,7 @@ mod migration_tests {
         assert_eq!(read.query_etag(), Some("\"current-etag\""));
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(persisted["schema"], 3);
+        assert_eq!(persisted["schema"], CACHE_SCHEMA);
         assert_eq!(persisted["verification"], "verified");
     }
 

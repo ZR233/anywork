@@ -13,7 +13,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
 
 class AccountInput {
   final String accountId;
@@ -872,14 +872,12 @@ enum BridgeModelContextAdjustment { safetyLimit }
 class BridgeModelContextResolution {
   final BridgeModelContextUnavailable? unavailable;
   final BigInt? contextWindow;
-  final BigInt? inputTokenLimit;
   final BigInt? autoCompactLimit;
   final BridgeModelContextAdjustment? adjustment;
 
   const BridgeModelContextResolution({
     this.unavailable,
     this.contextWindow,
-    this.inputTokenLimit,
     this.autoCompactLimit,
     this.adjustment,
   });
@@ -888,7 +886,6 @@ class BridgeModelContextResolution {
   int get hashCode =>
       unavailable.hashCode ^
       contextWindow.hashCode ^
-      inputTokenLimit.hashCode ^
       autoCompactLimit.hashCode ^
       adjustment.hashCode;
 
@@ -899,16 +896,11 @@ class BridgeModelContextResolution {
           runtimeType == other.runtimeType &&
           unavailable == other.unavailable &&
           contextWindow == other.contextWindow &&
-          inputTokenLimit == other.inputTokenLimit &&
           autoCompactLimit == other.autoCompactLimit &&
           adjustment == other.adjustment;
 }
 
-enum BridgeModelContextUnavailable {
-  windowUnknown,
-  invalidParameters,
-  inputBudgetExhausted,
-}
+enum BridgeModelContextUnavailable { invalidParameters }
 
 class BridgeModelDescriptor {
   final String modelId;
@@ -924,6 +916,7 @@ class BridgeModelDescriptor {
   final BridgeModelTransportDescriptor transport;
   final BridgeModelCapabilities capabilities;
   final BridgeModelReasoningDescriptor? reasoning;
+  final BridgeModelServiceTierParameterDescriptor? serviceTiers;
   final BridgeModelPricing? pricing;
 
   const BridgeModelDescriptor({
@@ -940,6 +933,7 @@ class BridgeModelDescriptor {
     required this.transport,
     required this.capabilities,
     this.reasoning,
+    this.serviceTiers,
     this.pricing,
   });
 
@@ -958,6 +952,7 @@ class BridgeModelDescriptor {
       transport.hashCode ^
       capabilities.hashCode ^
       reasoning.hashCode ^
+      serviceTiers.hashCode ^
       pricing.hashCode;
 
   @override
@@ -978,6 +973,7 @@ class BridgeModelDescriptor {
           transport == other.transport &&
           capabilities == other.capabilities &&
           reasoning == other.reasoning &&
+          serviceTiers == other.serviceTiers &&
           pricing == other.pricing;
 }
 
@@ -1132,6 +1128,45 @@ class BridgeModelReasoningDescriptor {
           candidates == other.candidates;
 }
 
+class BridgeModelServiceTierDescriptor {
+  final String id;
+  final String? displayName;
+
+  const BridgeModelServiceTierDescriptor({required this.id, this.displayName});
+
+  @override
+  int get hashCode => id.hashCode ^ displayName.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelServiceTierDescriptor &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          displayName == other.displayName;
+}
+
+class BridgeModelServiceTierParameterDescriptor {
+  final String? defaultCandidate;
+  final List<BridgeModelServiceTierDescriptor> candidates;
+
+  const BridgeModelServiceTierParameterDescriptor({
+    this.defaultCandidate,
+    required this.candidates,
+  });
+
+  @override
+  int get hashCode => defaultCandidate.hashCode ^ candidates.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelServiceTierParameterDescriptor &&
+          runtimeType == other.runtimeType &&
+          defaultCandidate == other.defaultCandidate &&
+          candidates == other.candidates;
+}
+
 class BridgeModelTransportDescriptor {
   final String protocol;
   final List<BridgeConnectionModeDescriptor> connectionModes;
@@ -1164,9 +1199,7 @@ enum BridgeModelType { text }
 enum BridgeModelTypeExclusion {
   textInputUnsupported,
   textOutputUnsupported,
-  contextWindowUnknown,
   contextParametersInvalid,
-  inputBudgetExhausted,
 }
 
 class BridgeModelTypeSupport {
@@ -1508,9 +1541,10 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   const factory SettingsFieldInput.skillsExternalDirs({
     required List<String> value,
   }) = SettingsFieldInput_SkillsExternalDirs;
-  const factory SettingsFieldInput.skillsDisabled({
-    required List<String> value,
-  }) = SettingsFieldInput_SkillsDisabled;
+  const factory SettingsFieldInput.skillDisabled({
+    required String id,
+    required bool value,
+  }) = SettingsFieldInput_SkillDisabled;
   const factory SettingsFieldInput.skillsAutoLearnMinToolCalls({
     required int value,
   }) = SettingsFieldInput_SkillsAutoLearnMinToolCalls;
@@ -1525,12 +1559,14 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   }) = SettingsFieldInput_GeneralLanguage;
   const factory SettingsFieldInput.generalSidebarWidth({int? value}) =
       SettingsFieldInput_GeneralSidebarWidth;
-  const factory SettingsFieldInput.generalPinnedThreadIds({
-    required List<String> value,
-  }) = SettingsFieldInput_GeneralPinnedThreadIds;
-  const factory SettingsFieldInput.generalPinnedProjectIds({
-    required List<String> value,
-  }) = SettingsFieldInput_GeneralPinnedProjectIds;
+  const factory SettingsFieldInput.threadPinned({
+    required String id,
+    required bool value,
+  }) = SettingsFieldInput_ThreadPinned;
+  const factory SettingsFieldInput.projectPinned({
+    required String id,
+    required bool value,
+  }) = SettingsFieldInput_ProjectPinned;
   const factory SettingsFieldInput.webSearchMode({required String value}) =
       SettingsFieldInput_WebSearchMode;
   const factory SettingsFieldInput.webSearchContextSize({String? value}) =

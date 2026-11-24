@@ -11,7 +11,7 @@ import 'package:anywork/src/features/conversation/timeline/views/timeline_view.d
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -157,7 +157,7 @@ class ExpandedWorkTimelineFixtureState
         children: [
           Text(title, key: ValueKey('expanded-marker-$number')),
           if (tool)
-            TimelineToolDetails(
+            TimelineToolItemView(
               key: ValueKey('expanded-tool-$number'),
               initiallyExpanded: i == 1 || i == middle || i == count,
               item: TimelineToolPresentation(

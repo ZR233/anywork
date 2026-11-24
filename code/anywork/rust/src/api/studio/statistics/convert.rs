@@ -104,6 +104,7 @@ fn bridge_sample(
             }
         },
         effort: value.effort,
+        requested_service_tier: value.requested_service_tier,
         completion_tokens: value.completion_tokens,
         ttft_millis: value.ttft_millis,
         decode_millis: value.decode_millis,
@@ -129,6 +130,7 @@ pub(super) fn bridge_effort_page(value: StatisticsEffortPage) -> BridgeStatistic
             .into_iter()
             .map(|value| BridgeStatisticsEffortSummary {
                 effort: value.effort,
+                requested_service_tier: value.requested_service_tier,
                 sample_count: value.sample_count,
                 completion_tokens: value.completion_tokens,
                 total_ttft_millis: value.total_ttft_millis,

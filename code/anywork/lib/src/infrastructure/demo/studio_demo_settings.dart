@@ -9,8 +9,8 @@ const demoAcpAccountCatalogFixture = AcpAccountCatalogView(
       displayName: 'Antigravity',
       description: '通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。',
       iconKey: 'antigravity',
-      // 产品固定的受管版本由后端模板给出；demo 只镜像这一权威值。
-      supportedVersion: '1.4.5',
+      // 产品支持的受管大版本范围由后端模板给出；demo 只镜像这一权威值。
+      supportedVersion: '1.x',
       installUrl: 'https://antigravity.google/docs/ide/extensions',
       termsUrl: 'https://antigravity.google/terms',
       // demo 预览固定声明一个可用目标；真实目标只由后端按宿主平台给出。
@@ -167,7 +167,9 @@ class DemoAcpAuth {
     }
     final current = _accounts[account.accountId]!;
     _accounts[account.accountId] = AcpAuthAccountView(
-      connection: const AcpConnectionStoppedState(),
+      connection: account.enabled && current.state is AcpVerifiedState
+          ? const AcpConnectionReadyState()
+          : const AcpConnectionStoppedState(),
       accountId: current.accountId,
       connectionRevision: current.connectionRevision,
       state: current.state,
@@ -231,7 +233,11 @@ class DemoAcpAuth {
     AcpAuthActiveOperationView? activeOperation,
   }) {
     _accounts[account.accountId] = AcpAuthAccountView(
-      connection: const AcpConnectionStoppedState(),
+      connection: account.enabled && state is AcpVerifiedState
+          ? const AcpConnectionReadyState()
+          : (account.enabled && (activeOperation != null || state.isBusy)
+                ? const AcpConnectionStartingState()
+                : const AcpConnectionStoppedState()),
       accountId: account.accountId,
       connectionRevision: account.connectionRevision,
       // demo 不合成真实阶段：检查/登录直接收敛到需要登录或认证通过，

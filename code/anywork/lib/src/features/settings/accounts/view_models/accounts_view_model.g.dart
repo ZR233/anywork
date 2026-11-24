@@ -39,7 +39,7 @@ final class AccountsViewModelProvider
   AccountsViewModel create() => AccountsViewModel();
 }
 
-String _$accountsViewModelHash() => r'78c2ccd99edfa5da7cc7b2eafc754ff9d59db156';
+String _$accountsViewModelHash() => r'6d39057286b5517f3b046ca9cd330a8f9147a26c';
 
 /// Summary-only list and actions. Page location and finite editor resources
 /// belong to the Router and editor session, never this owner.

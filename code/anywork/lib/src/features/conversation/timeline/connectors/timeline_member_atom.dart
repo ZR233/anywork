@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart'
+    show ConversationActivityKind, ConversationActivityView;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
+import '../live_status/live_status_header_spec.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';
@@ -19,12 +22,12 @@ import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/content_layout_witness.dart';
+import '../tools/tool_item_registry.dart';
+import '../tools/tool_item_view.dart';
 import '../widgets/timeline_activity_clock.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_reasoning_view.dart';
-import '../widgets/timeline_tool_blocks.dart';
-import '../widgets/timeline_wait_blocks.dart';
 import 'timeline_media_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
 
@@ -257,48 +260,61 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
   );
 
-  Widget _windows({ChatContentRole? role}) => _owner == null
-      ? const SizedBox.shrink()
-      : ListenableBuilder(
-          listenable: _owner!,
-          builder: (_, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (_owner!.cleanupError != null)
-                Text(_owner!.cleanupError.toString()),
-              for (final observation in _owner!.windows)
-                if (role == null || _hasRole(observation, role))
-                  _witness(
-                    observation,
-                    ConversationCurrentWindowView(
-                      id: observation.id,
-                      bodyBuilder:
-                          (widget.atom.kind == ChatAtomKind.text ||
-                                  widget.atom.kind == ChatAtomKind.input) &&
-                              _hasRole(observation, ChatContentRole.body)
-                          ? (text) => _body(observation.id, text)
-                          : null,
-                      text: observation.window == null
-                          ? observation.source.text
-                          : utf8.decode(
-                              observation.window!.bytes,
-                              allowMalformed: true,
-                            ),
-                      error: observation.error,
-                      offset: observation.window?.offset,
-                      end: observation.window == null
-                          ? null
-                          : observation.window!.offset +
-                                observation.window!.bytes.length,
-                      availableThrough: observation.window?.availableThrough,
-                      onFirst: () => _owner!.firstWindow(observation),
-                      onNext: () => _owner!.nextWindow(observation),
-                    ),
-                  ),
-            ],
-          ),
+  Widget _windows({ChatContentRole? role, bool liveResponse = false}) {
+    final owner = _owner;
+    if (owner == null) return const SizedBox.shrink();
+    return ListenableBuilder(
+      listenable: owner,
+      builder: (_, _) {
+        final cleanupError = owner.cleanupError;
+        var ready = cleanupError != null;
+        final children = <Widget>[
+          if (cleanupError != null) Text(cleanupError.toString()),
+        ];
+        for (final observation in owner.windows) {
+          if (role != null && !_hasRole(observation, role)) continue;
+          final window = observation.window;
+          final text = window == null
+              ? observation.source.text
+              : utf8.decode(window.bytes, allowMalformed: true);
+          final error = observation.error;
+          if (liveResponse && !ready) {
+            ready = error != null || (window != null && text.trim().isNotEmpty);
+          }
+          children.add(
+            _witness(
+              observation,
+              ConversationCurrentWindowView(
+                id: observation.id,
+                bodyBuilder:
+                    (widget.atom.kind == ChatAtomKind.text ||
+                            widget.atom.kind == ChatAtomKind.input) &&
+                        _hasRole(observation, ChatContentRole.body)
+                    ? (text) => _body(observation.id, text)
+                    : null,
+                text: text,
+                error: error,
+                offset: window?.offset,
+                end: window == null
+                    ? null
+                    : window.offset + window.bytes.length,
+                availableThrough: window?.availableThrough,
+                onFirst: () => owner.firstWindow(observation),
+                onNext: () => owner.nextWindow(observation),
+              ),
+            ),
+          );
+        }
+        if (liveResponse && !ready) return const SizedBox.shrink();
+        final body = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
         );
+        return liveResponse ? _response(body) : body;
+      },
+    );
+  }
 
   Widget _reasoning() {
     Widget view() {
@@ -393,17 +409,27 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       return TimelineActivityClock.fromUnixSeconds(
         startedAt: widget.executionPresent ? atom.startedAt : null,
         running: widget.executionPresent && atom.startedAt != null,
-        builder: (context, seconds) => TimelineActivityRow(
-          icon: Icons.compress_outlined,
-          indicatorStyle: TimelineActivityIndicatorStyle.compactingZip,
-          label: context.l10n.conversationActivityCompacting,
-          active: widget.executionPresent,
-          header: true,
-          expandable: false,
-          meta: seconds == null
-              ? null
-              : activityDurationLabel(context, seconds),
-        ),
+        builder: (context, seconds) {
+          final spec = LiveStatusHeaderSpec.forActivity(
+            context,
+            ConversationActivityView(
+              identity: 'compaction:${atom.id}',
+              kind: ConversationActivityKind.compacting,
+            ),
+            seconds: seconds,
+          );
+          return TimelineActivityRow(
+            icon: spec.icon,
+            iconColor: spec.iconColor,
+            labelColor: spec.labelColor,
+            indicatorStyle: spec.indicatorStyle,
+            label: spec.label,
+            active: widget.executionPresent && spec.active,
+            header: true,
+            expandable: false,
+            meta: spec.meta,
+          );
+        },
       );
     }
     if (atom.payload != null || widget.record.historyEventId != null) {
@@ -417,7 +443,9 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           : ChatItemPresentation.forRecord(widget.record, id: widget.displayId);
       Widget render(ChatItemPresentation item) {
         bool qualified() =>
-            (item.presentationContract == 'builtin.show_files@1'
+            (timelineToolItemRegistry
+                    .resolveForChatItem(item)
+                    .usesFileArtifactsMedia
                 ? _active
                 : _readActive('attachments')) &&
             identical(qualification, _rangeQualification);
@@ -452,9 +480,9 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     }
     if (atom.kind == ChatAtomKind.reasoning) return _reasoning();
     if (atom.tool case final tool?) {
-      final details = TimelineToolDetails(
-        inline: atom.wait != null,
+      return TimelineToolItemView(
         initiallyExpanded: _expanded,
+        staticObservation: widget.record.contentSource is FrozenObservation,
         item: TimelineToolPresentation(
           id: widget.displayId,
           toolCallId: tool.callId,
@@ -475,36 +503,26 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           frozenObservation: widget.record.contentSource is FrozenObservation,
           arguments: '',
           output: '',
+          wait: atom.wait,
         ),
         onExpansionChanged: _expand,
         declaredContentIdentity: _rangeQualification,
         declaredContentBuilder: (_, _) => [_windows()],
       );
-      return atom.wait == null
-          ? details
-          : TimelineWaitPanel(
-              identity: widget.displayId,
-              staticObservation:
-                  widget.record.contentSource is FrozenObservation,
-              presentation: atom.wait!,
-              initiallyExpanded: _expanded,
-              diagnostics: details,
-              onExpansionChanged: _expand,
-            );
     }
     if (atom.kind == ChatAtomKind.toolCall) {
       return TimelineActivityDisclosure(
         initiallyExpanded: _expanded,
         onExpansionChanged: _expand,
         titleBuilder: (_, expanded) => TimelineActivityRow(
-          label: '工具调用',
+          label: context.l10n.timelineToolCallFallback,
           icon: Icons.build_outlined,
           expanded: expanded,
         ),
         children: [_windows()],
       );
     }
-    if (_isLiveStreamingText) return _liveStreamingText();
+    if (_isLiveStreamingText) return _windows(liveResponse: true);
     return _response(_windows());
   }
 
@@ -514,44 +532,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       widget.atom.kind == ChatAtomKind.text &&
       widget.atom.lifecycle is ActiveChatAtom;
 
-  Widget _liveStreamingText() {
-    final owner = _owner;
-    if (owner == null) return const SizedBox.shrink();
-    return ListenableBuilder(
-      listenable: owner,
-      builder: (_, _) {
-        final ready =
-            owner.cleanupError != null ||
-            owner.windows.any(
-              (observation) =>
-                  observation.error != null ||
-                  (observation.window != null &&
-                      utf8
-                          .decode(
-                            observation.window!.bytes,
-                            allowMalformed: true,
-                          )
-                          .trim()
-                          .isNotEmpty),
-            );
-        if (!ready) return const SizedBox.shrink();
-        return ConversationResponseView(
-          startedAt: widget.atom.startedAt,
-          child: _windows(),
-        );
-      },
-    );
-  }
-
   Widget _response(Widget body) {
-    final atom = widget.atom;
-    if (widget.record.contentSource is CurrentAtomSource &&
-        widget.executionPresent &&
-        atom.kind == ChatAtomKind.text &&
-        atom.lifecycle is ActiveChatAtom) {
-      return ConversationResponseView(startedAt: atom.startedAt, child: body);
+    if (_isLiveStreamingText) {
+      return ConversationResponseView(
+        startedAt: widget.atom.startedAt,
+        child: body,
+      );
     }
-    if ((atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input) &&
+    if ((widget.atom.kind == ChatAtomKind.text ||
+            widget.atom.kind == ChatAtomKind.input) &&
         SelectionContainer.maybeOf(context) == null) {
       body = SelectionArea(child: body);
     }
@@ -562,22 +551,24 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
     final onCurrentLayout = widget.onCurrentContentLayout;
+    final onCurrentUnmounted = widget.onCurrentContentUnmounted;
     if (clock == null ||
         (onLayout == null && onCurrentLayout == null) ||
         observation.window?.bytes.isEmpty != false) {
       return child;
     }
+    final isCurrent = widget.record.contentSource is CurrentAtomSource;
+    final atomId = widget.atom.id;
     return ContentLayoutWitness(
+      key: ObjectKey(observation),
       itemId: widget.displayId,
       monotonicMicros: clock,
       onContentLayout: (itemId, micros) {
         onLayout?.call(itemId, micros);
-        if (widget.record.contentSource is CurrentAtomSource) {
-          onCurrentLayout?.call(widget.record.atom.id, micros);
-        }
+        if (isCurrent) onCurrentLayout?.call(atomId, micros);
       },
-      onContentUnmounted: widget.record.contentSource is CurrentAtomSource
-          ? (_) => widget.onCurrentContentUnmounted?.call(widget.record.atom.id)
+      onContentUnmounted: isCurrent
+          ? (_) => onCurrentUnmounted?.call(atomId)
           : null,
       isDisplayActive: () => _active,
       child: child,

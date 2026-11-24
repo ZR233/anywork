@@ -24,7 +24,7 @@ use pl_core::thread::{
     context_preparation::{
         ContextPreparation, ContextPreparationHook, ContextPreparationRequest, ContextPreparer,
     },
-    extensions::{ExtensionMutation, ExtensionRecord},
+    extensions::{ExtensionInputs, ExtensionMutation, ExtensionRecord, InstructionRevisionBinding},
 };
 use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
 use std::collections::BTreeMap;
@@ -54,9 +54,14 @@ pub(crate) fn preparer(
         context_window: route.context.context_window,
         auto_compact_limit: route.context.auto_compact_limit,
         options: policy(mode),
-        base_instructions: route.model.base_instructions.clone(),
+        base_instructions: route
+            .model
+            .base
+            .model_messages
+            .instructions_template
+            .clone(),
         instruction_binding,
-        supports_workflow: route.model.capabilities.supports_function_calling(),
+        supports_workflow: route.model.extra.capabilities.supports_function_calling(),
         models: models.clone(),
         role: route.role.clone(),
     })))
@@ -78,6 +83,19 @@ struct StudioCompaction {
 }
 impl ContextPreparationHook for StudioCompaction {
     async fn before_step(&self, mut request: ContextPreparationRequest) -> ContextPreparation {
+        let frozen = request.extensions.clone();
+        let mut inputs = ExtensionInputs::capture(
+            &frozen,
+            &[
+                crate::studio::model_route::AGENT_PROFILE_EXTENSION,
+                "studio.mode",
+                "studio.instructions",
+                "studio.instructions.binding",
+                crate::workflow_tool::WORKFLOW_EXTENSION,
+                crate::plan_tool::PLAN_EXTENSION,
+                "studio.workspace",
+            ],
+        );
         let ModePreparation {
             mode,
             mutations: mode_mutations,
@@ -201,9 +219,10 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         };
-        let unchanged = || ContextPreparation::Prepared {
+        let unchanged = |inputs| ContextPreparation::Prepared {
             excluded_tool_ids: excluded_tool_ids.clone(),
-            expected_extension_sequence: request.extension_sequence,
+            inputs,
+            instruction_binding: instruction_repair.binding.clone(),
             rejected_mutations: Vec::new(),
             replacement: instruction_repair.replacement.as_ref().map(|repair| {
                 pl_core::thread::ReplaceContext {
@@ -245,8 +264,9 @@ impl ContextPreparationHook for StudioCompaction {
             || (estimate == pl_model::runtime::ThreadCompactionDecision::Keep
                 && source_usage_route.is_none())
         {
-            return unchanged();
+            return unchanged(inputs);
         }
+        inputs.include_keys(&frozen, &[LATEST_RECEIPT]);
         let previous_summary = active_text_summary(&source_context.records, &request.extensions);
         let handoff = match if same_route_continuation {
             Ok(None)
@@ -270,7 +290,7 @@ impl ContextPreparationHook for StudioCompaction {
             }
         };
         if estimate == pl_model::runtime::ThreadCompactionDecision::Keep && handoff.is_none() {
-            return unchanged();
+            return unchanged(inputs);
         }
         let (compactor, reasoning_effort, context_window) = match &handoff {
             Some((model, route)) => (
@@ -300,6 +320,7 @@ impl ContextPreparationHook for StudioCompaction {
         // activation extensions it consumed are cleared in the same candidate batch. The deletes
         // ride only on the successful replacement: an unreached, failed, cancelled or rejected
         // preparation keeps its activation set, and historical Skill Items stay durable.
+        inputs.include_format(&frozen, SKILL_VIEW_FORMAT);
         let skill_clears = skill_activation_clears(&request.extensions);
         if let Err(source) = request.enter_compacting().await {
             // No provider work is allowed before reliable start admission. Keep the original
@@ -337,6 +358,7 @@ impl ContextPreparationHook for StudioCompaction {
                     inference_id: id.clone(),
                     binding: result.binding,
                     reasoning_effort,
+                    requested_service_tier: Some("notApplicable".into()),
                     reasoning_effort_source: Some(if handoff.is_some() {
                         CompactionEffortSource::CurrentModelDefault
                     } else {
@@ -365,15 +387,22 @@ impl ContextPreparationHook for StudioCompaction {
                 if handoff.is_some() {
                     request.committed_context.records = result.replacement.records.clone().into();
                     request.model.context.records = result.replacement.records.clone().into();
-                    if let Err(error) = restore_current_instructions(
+                    match restore_current_instructions(
                         &mut request,
                         &self.base_instructions,
                         &self.instruction_binding,
                         mode.as_deref(),
                         Vec::new(),
                     ) {
-                        receipt.error = Some(error.to_string());
-                        return failure_with_receipt(error, previous, receipt);
+                        Ok(repair) => {
+                            if repair.binding.is_some() {
+                                instruction_repair.binding = repair.binding;
+                            }
+                        }
+                        Err(error) => {
+                            receipt.error = Some(error.to_string());
+                            return failure_with_receipt(error, previous, receipt);
+                        }
                     }
                     result.replacement.records = request.committed_context.records.to_vec();
                 }
@@ -402,7 +431,8 @@ impl ContextPreparationHook for StudioCompaction {
                 match receipt_mutation(previous, receipt) {
                     Ok(mutation) => ContextPreparation::Prepared {
                         excluded_tool_ids: excluded_tool_ids.clone(),
-                        expected_extension_sequence: request.extension_sequence,
+                        inputs,
+                        instruction_binding: instruction_repair.binding,
                         rejected_mutations,
                         replacement: Some(result.replacement),
                         facts,
@@ -434,6 +464,7 @@ impl ContextPreparationHook for StudioCompaction {
                     inference_id: id.clone(),
                     binding: receipt.binding,
                     reasoning_effort: reasoning_effort.clone(),
+                    requested_service_tier: Some("notApplicable".into()),
                     reasoning_effort_source: Some(if handoff.is_some() {
                         CompactionEffortSource::CurrentModelDefault
                     } else {
@@ -493,7 +524,7 @@ impl StudioCompaction {
             let entry = account
                 .effective_catalog(None)?
                 .into_iter()
-                .find(|entry| entry.model.model_id == binding.model_id)
+                .find(|entry| entry.model.base.slug == binding.model_id)
                 .ok_or_else(|| anyhow::anyhow!("compaction source model is unavailable"))?;
             let route = self.models.resolve_route(
                 self.role.clone(),
@@ -611,6 +642,7 @@ fn skill_activation_clears(
 /// host authority; normalize obsolete text or route bindings without rescanning files.
 #[derive(Default)]
 struct InstructionRepair {
+    binding: Option<InstructionRevisionBinding>,
     replacement: Option<pl_core::thread::ReplaceContext>,
     mutations: Vec<ExtensionMutation>,
 }
@@ -657,7 +689,10 @@ fn restore_current_instructions(
 ) -> Result<InstructionRepair, pl_core::model::ModelError> {
     use pl_core::context::{ContextContent, ContextRecord, ContextSource};
     let Some(mut record) = request.extensions.get("studio.instructions").cloned() else {
-        return Ok(InstructionRepair::default());
+        return Ok(InstructionRepair {
+            mutations,
+            ..Default::default()
+        });
     };
     if record.revision == 0 {
         return Err(receipt_error(std::io::Error::other(
@@ -692,15 +727,9 @@ fn restore_current_instructions(
             .map_err(receipt_error)?,
         });
     }
-    if snapshot.rebind_model_base(base_instructions) | profile_changed {
+    let changed_instruction = snapshot.rebind_model_base(base_instructions) | profile_changed;
+    if changed_instruction {
         let expected_revision = record.revision;
-        record.revision = request
-            .extension_sequence
-            .checked_add(u64::try_from(mutations.len()).map_err(receipt_error)?)
-            .and_then(|sequence| sequence.checked_add(1))
-            .ok_or_else(|| {
-                receipt_error(std::io::Error::other("instruction revision exhausted"))
-            })?;
         record.payload = crate::instruction::encode_snapshot(&snapshot).map_err(receipt_error)?;
         mutations.push(ExtensionMutation::Put {
             id: "studio.instructions".into(),
@@ -717,6 +746,7 @@ fn restore_current_instructions(
     let latest = current.latest_snapshot();
     if current.is_canonical_for(&complete) && (!binding_changed || latest.is_none()) {
         return Ok(InstructionRepair {
+            binding: None,
             replacement: None,
             mutations,
         });
@@ -735,11 +765,17 @@ fn restore_current_instructions(
         }
         _ => None,
     });
+    let record_id = format!(
+        "instruction:{}:{}",
+        request.model.thread_id,
+        uuid::Uuid::new_v4()
+    );
+    let instruction_binding = Some(InstructionRevisionBinding {
+        record_id: record_id.clone(),
+        extension_id: "studio.instructions".into(),
+    });
     let canonical = ContextRecord {
-        id: format!(
-            "instruction:{}:restore:{}",
-            request.model.thread_id, record.revision
-        ),
+        id: record_id,
         turn_id: None,
         source: ContextSource::InstructionSnapshot {
             revision: record.revision,
@@ -778,6 +814,7 @@ fn restore_current_instructions(
     let records = normalize(&request.committed_context.records);
     request.committed_context.records = records.clone().into();
     Ok(InstructionRepair {
+        binding: instruction_binding,
         replacement: Some(pl_core::thread::ReplaceContext {
             expected_revision: request.committed_context.revision,
             reason: pl_core::thread::ContextReplacementReason::Rebuild,
@@ -850,7 +887,7 @@ fn freeze_mode_for_turn(
     std::sync::Arc::make_mut(&mut request.extensions).insert(
         "studio.mode".into(),
         pl_core::thread::extensions::ExtensionRecord {
-            revision: request.extension_sequence.saturating_add(1),
+            revision: expected_revision,
             payload: payload.clone(),
         },
     );
@@ -1064,6 +1101,10 @@ pub(crate) struct CompactionReceipt {
     pub inference_id: String,
     pub binding: pl_model::runtime::ModelCallBinding,
     pub reasoning_effort: Option<String>,
+    /// Newly recorded compaction requests do not have a selectable tier. Historical
+    /// receipts retain absence so reprojecting them does not change a durable call hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_source: Option<CompactionEffortSource>,
     pub context_window: Option<u64>,
@@ -1181,7 +1222,7 @@ mod tests {
     };
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
-        model::{ModelInfo, ModelTransportProfile},
+        model::{ModelDefinition, ModelTransportProfile},
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     use serde_json::json;
@@ -1243,15 +1284,16 @@ mod tests {
             ),
             ("target", target.base_url(), 500_000, 450_000, "TARGET_BASE"),
         ] {
-            let mut model = ModelInfo::compatible(id);
+            let mut model = ModelDefinition::compatible(id);
             model
+                .extra
                 .binding
                 .set_transport(ModelTransportProfile::responses_http());
-            model.context_window = Some(window);
-            model.max_context_window = Some(window);
-            model.max_output_tokens = Some(1024);
-            model.auto_compact_token_limit = Some(threshold);
-            model.base_instructions = base.into();
+            model.base.context_window = Some(window);
+            model.base.max_context_window = Some(window);
+            model.extra.max_output_tokens = Some(1024);
+            model.base.auto_compact_token_limit = Some(threshold);
+            model.base.model_messages.instructions_template = base.into();
             config.models.accounts.insert(
                 AccountId::new(id)?,
                 AccountConfig::from_explicit_models(

@@ -112,7 +112,9 @@ fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, Pro
                     filename: Some(filename),
                     modality,
                 }),
-                pl_tool::file_display::FileDisplayResult::Failed { .. } => None,
+                pl_tool::file_display::FileDisplayResult::Deferred { .. }
+                | pl_tool::file_display::FileDisplayResult::NetworkImage { .. }
+                | pl_tool::file_display::FileDisplayResult::Failed { .. } => None,
             })
             .collect());
     }

@@ -805,7 +805,7 @@ pub(super) fn prepare(
         let (config, source, migrated) = main_document(paths.config_file(), original)?;
         if migrated {
             let candidate =
-                crate::config::document_migration::MainV33::from_config(&config)?.encode()?;
+                crate::config::document_migration::MainV34::from_config(&config)?.encode()?;
             let plan = ResourcePlan {
                 relative_path: STUDIO_CONFIG_FILE_NAME.into(),
                 original: original.to_vec(),
@@ -1300,7 +1300,7 @@ workspace_mode = "directory"
         let current = fs::read_to_string(store.paths().config_file()).unwrap();
         format!(
             "{}\n[acp.accounts.\"{id}\"]\nname='Saved'\nprovider='antigravity'\n",
-            current.replacen("schema_version = 33", "schema_version = 32", 1)
+            current.replacen("schema_version = 34", "schema_version = 32", 1)
         )
         .into_bytes()
     }
@@ -1556,9 +1556,9 @@ workspace_mode = "directory"
 
         let main: toml::Value =
             toml::from_str(&fs::read_to_string(store.paths().config_file()).unwrap()).unwrap();
-        assert_eq!(main["schema_version"].as_integer(), Some(33));
+        assert_eq!(main["schema_version"].as_integer(), Some(34));
         assert!(main.get("lsp").is_none());
-        assert_eq!(migrated.schema_version, 33);
+        assert_eq!(migrated.schema_version, 34);
         assert!(migrated.validate_declarations().is_ok());
         assert!(!operation_dir(store.paths()).exists());
         let backups: Vec<_> = fs::read_dir(store.paths().config_dir())
@@ -1668,7 +1668,7 @@ workspace_mode = "directory"
             )
             .unwrap()["schema_version"]
                 .as_integer(),
-            Some(33)
+            Some(34)
         );
         assert!(
             operation_dir(store.paths())
@@ -2237,7 +2237,7 @@ workspace_mode = "directory"
             profile.enabled = enabled;
             route.effort = Some("high".into());
             let (saved, _) = runtime
-                .save_user_agent_profile(runtime.read().unwrap().revision, "saved", &profile)
+                .save_user_agent_profile(None, "saved", &profile)
                 .unwrap();
             let profile_path = paths.agents_dir().join("saved.toml");
             let profile_bytes = fs::read(&profile_path).unwrap();
@@ -2323,8 +2323,15 @@ workspace_mode = "directory"
                 .expect("saved Native route")
                 .account_id = "deepseek".into();
             profile.description = "Repaired after account deletion".into();
+            let profiles = restarted.agent_profiles_snapshot().unwrap();
+            let opened = profiles
+                .catalog
+                .profiles
+                .iter()
+                .find(|profile| profile.definition.definition_id == "saved")
+                .unwrap();
             let (_, changed) = restarted
-                .save_user_agent_profile(restarted.read().unwrap().revision, "saved", &profile)
+                .save_user_agent_profile(Some(&opened.definition.revision), "saved", &profile)
                 .expect("the retained Profile can be repaired through the normal editor");
             assert!(changed);
             let repaired = restarted.agent_profiles_snapshot().unwrap();

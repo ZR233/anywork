@@ -16,7 +16,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
     let model = bundled
         .models
         .iter()
-        .find(|m| m.model_id == "gemini-3.7-flash")
+        .find(|m| m.base.slug == "gemini-3.7-flash")
         .unwrap()
         .clone();
     let ep = endpoint::vertex_endpoint(None);
@@ -122,7 +122,8 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
         model_observation: None,
         observation: Default::default(),
     };
-    req.append_response_from(&resp, Some("acct:gemini:1")).unwrap();
+    req.append_response_from(&resp, Some("acct:gemini:1"))
+        .unwrap();
 
     for (id, text) in [("call_1", "content A"), ("gemini_noid:2", "content B")] {
         req.input.push(ModelContextItem::ToolResult {
@@ -205,9 +206,8 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
 
 #[test]
 fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
-    let mut decoder = GEMINI_WIRE_CODEC.new_stream_decoder(
-        pl_model_wire::protocol::WireApi::GeminiGenerateContent,
-    );
+    let mut decoder = GEMINI_WIRE_CODEC
+        .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
     let mut collector = ReplayCollector::default();
 
     let frames = [
@@ -230,9 +230,10 @@ fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
         }
     }
     let tail = decoder.finish();
-    assert!(tail
-        .iter()
-        .any(|e| matches!(e, ModelStreamEvent::Completed { .. })));
+    assert!(
+        tail.iter()
+            .any(|e| matches!(e, ModelStreamEvent::Completed { .. }))
+    );
 
     let replay = collector.finish().unwrap().unwrap();
     assert!(replay.has_opaque_provider_state());
@@ -272,23 +273,27 @@ fn rejects_cross_owner_thought_signature_replay_and_invalid_model_path() {
     };
     req.append_response_from(&resp, Some("other-account:gemini:99"))
         .unwrap();
-    assert!(GEMINI_WIRE_CODEC
-        .validate_context(&ep, &model, "current-account", &req)
-        .is_err());
+    assert!(
+        GEMINI_WIRE_CODEC
+            .validate_context(&ep, &model, "current-account", &req)
+            .is_err()
+    );
 
-    model.binding.request.api_model = Some("../evil/path".into());
-    assert!(GEMINI_WIRE_CODEC
-        .encode_http_request(EncodeHttpRequestInput {
-            endpoint: &ep,
-            model: &model,
-            request: &CompletionRequest::builder().build(),
-            prompt_cache_key: None,
-            compaction_body: None,
-            is_compaction: false,
-        })
-        .is_err());
+    model.extra.binding.request.api_model = Some("../evil/path".into());
+    assert!(
+        GEMINI_WIRE_CODEC
+            .encode_http_request(EncodeHttpRequestInput {
+                endpoint: &ep,
+                model: &model,
+                request: &CompletionRequest::builder().build(),
+                prompt_cache_key: None,
+                compaction_body: None,
+                is_compaction: false,
+            })
+            .is_err()
+    );
     assert!(matches!(
-        model.binding.request.protocol,
+        model.extra.binding.request.protocol,
         ModelProtocolOptions::GeminiGenerateContent(_)
     ));
 }

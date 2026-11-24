@@ -36,6 +36,11 @@ impl ConnectionLifecycle {
     pub(super) fn reset(&mut self) {
         *self = Self::default();
     }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn seed_attempts_for_test(&mut self, attempts: u32) {
+        self.attempts = attempts;
+    }
 }
 
 fn retry_delay(attempt: u32) -> Duration {
@@ -83,6 +88,12 @@ impl AcpAccountInner {
             }
             if matches!(state, AcpConnectionState::Starting) {
                 slot.lifecycle.retry_at = None;
+            }
+            if matches!(state, AcpConnectionState::Ready)
+                && slot.operation.is_none()
+                && matches!(slot.state, AcpAuthState::Failed { .. })
+            {
+                slot.state = AcpAuthState::Unchecked;
             }
             if matches!(state, AcpConnectionState::Stopping) {
                 // Measure healthy uptime when the connection stops. Physical cleanup can
@@ -140,6 +151,12 @@ impl AcpAccountInner {
                         retryable: true,
                     })
             };
+            let intentional_upgrade = !cleanup
+                && account
+                    .pending_upgrade_version
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some();
             // A cleanup owner with outstanding physical obligations stays registered.
             if account.settled.load(Ordering::Acquire) {
                 slot.connection.take();
@@ -151,6 +168,9 @@ impl AcpAccountInner {
             slot.background_scheduled = false;
             slot.lifecycle.retry_at = None;
             slot.lifecycle.state = if closed || slot.retired || !slot.identity.enabled {
+                AcpConnectionState::Stopped
+            } else if intentional_upgrade {
+                slot.lifecycle.attempts = 0;
                 AcpConnectionState::Stopped
             } else if !cleanup && reconnects(&failure) {
                 slot.lifecycle.attempts = slot.lifecycle.attempts.saturating_add(1);
@@ -182,27 +202,113 @@ impl AcpAccountInner {
 }
 
 impl AcpAccountRuntime {
-    pub(crate) fn installation_ready(&self, provider: crate::AcpProvider) {
+    pub(crate) fn installation_ready(&self, provider: crate::AcpProvider, installed_version: &str) {
+        let mut emitted = None;
         let _ = self.inner.config.with_acp_snapshot(|revision, snapshot| {
-            {
+            let mut operations_to_cancel = Vec::new();
+            let mut connections_to_cancel = Vec::new();
+            let changed_snapshot = {
                 let mut registry = self.inner.lock();
-                if registry.closed { return; }
+                if registry.closed {
+                    return;
+                }
+                let mut changed = false;
+                let mut retiring = Vec::new();
                 for (id, entry) in &snapshot.definitions {
                     let matches = match provider {
-                        crate::AcpProvider::Antigravity => entry.definition.template_kind() == Some(crate::config::AcpProvider::Antigravity),
+                        crate::AcpProvider::Antigravity => {
+                            entry.definition.template_kind()
+                                == Some(crate::config::AcpProvider::Antigravity)
+                        }
                     };
-                    if !entry.definition.enabled || !matches { continue; }
-                    if let Some(slot) = registry.slots.get_mut(id)
-                        && matches!(&slot.lifecycle.state, AcpConnectionState::Blocked { failure }
-                            if matches!(failure.code, AcpAuthFailureCode::PreparationRequired | AcpAuthFailureCode::InstallationInvalid))
+                    if !entry.definition.enabled || !matches {
+                        continue;
+                    }
+                    let Some(slot) = registry.slots.get_mut(id) else {
+                        continue;
+                    };
+                    if slot.retired {
+                        continue;
+                    }
+                    if matches!(
+                        &slot.lifecycle.state,
+                        AcpConnectionState::Blocked { failure }
+                            if matches!(
+                                failure.code,
+                                AcpAuthFailureCode::PreparationRequired
+                                    | AcpAuthFailureCode::InstallationInvalid
+                                    | AcpAuthFailureCode::ServerVersionMismatch
+                            )
+                    ) {
+                        slot.lifecycle.reset();
+                        slot.background_scheduled = false;
+                        if slot.operation.is_none() {
+                            slot.state = AcpAuthState::Unchecked;
+                        }
+                        changed = true;
+                        continue;
+                    }
+                    if matches!(
+                        slot.lifecycle.state,
+                        AcpConnectionState::Retrying { .. } | AcpConnectionState::Stopped
+                    ) && slot.connection.is_none()
                     {
                         slot.lifecycle.reset();
                         slot.background_scheduled = false;
+                        changed = true;
+                        continue;
+                    }
+                    let running_version = slot.connection.as_ref().and_then(|connection| {
+                        connection
+                            .installed_version
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clone()
+                    });
+                    if running_version
+                        .as_deref()
+                        .is_some_and(|v| v != installed_version)
+                        && let Some(connection) = slot.connection.as_ref().cloned()
+                        && !connection.mark_pending_upgrade_if_active(installed_version)
+                    {
+                        slot.connection.take();
+                        retiring.push(connection.clone());
+                        connections_to_cancel.push(connection);
+                        if let Some(operation) = slot.operation.as_ref() {
+                            operations_to_cancel.push(Arc::clone(operation));
+                        }
+                        slot.lifecycle.reset();
+                        slot.lifecycle.state = AcpConnectionState::Stopping;
+                        slot.background_scheduled = false;
+                        slot.usage = None;
+                        slot.state = match slot.operation.as_ref() {
+                            Some(operation) => AcpAuthState::Closing {
+                                operation_id: operation.operation_id.clone(),
+                                failure: None,
+                            },
+                            None => AcpAuthState::Unchecked,
+                        };
+                        changed = true;
                     }
                 }
+                registry.retiring.extend(retiring);
+                changed.then(|| {
+                    registry.bump();
+                    registry.snapshot()
+                })
+            };
+            for operation in operations_to_cancel {
+                operation.cancel.cancel();
             }
+            for connection in connections_to_cancel {
+                connection.signal_cancel();
+            }
+            emitted = changed_snapshot;
             self.background_prepare(revision, snapshot);
         });
+        if let Some(snapshot) = emitted {
+            self.inner.emit(snapshot);
+        }
         self.inner.retirement_wake.notify_one();
     }
 

@@ -47,20 +47,19 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
   }
 
   Future<void> _editProfile([AgentProfileView? profile]) async {
-    final draft = await showDialog<AgentProfileDraft>(
+    await showDialog<void>(
       context: context,
       builder: (context) => Consumer(
         builder: (context, ref, child) => AgentProfileDialog(
           profile: profile,
+          onSave: ref
+              .read(anyworkClientProvider)
+              .settingsCommands
+              .saveUserAgentProfile,
           accounts: ref.watch(modelSelectionAccountsProvider),
         ),
       ),
     );
-    if (draft == null || !mounted) return;
-    await ref
-        .read(anyworkClientProvider)
-        .settingsCommands
-        .saveUserAgentProfile(draft);
   }
 
   @override

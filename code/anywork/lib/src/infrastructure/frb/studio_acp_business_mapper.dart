@@ -484,24 +484,67 @@ AcpCompletedRunView _completed(b.BridgeAcpCompletedRun v) =>
       truncated: v.truncated,
       textPerformance: _textPerformance(v.textPerformance),
     );
-AcpBusinessSnapshotView acpSnapshotFromFrb(b.BridgeAcpBusinessSnapshot v) =>
-    AcpBusinessSnapshotView(
-      target: acpTargetFromFrb(v.target),
-      acpSessionId: v.acpSessionId == null
+AcpServerInfoView _serverInfo(b.BridgeAcpServerInfoSnapshot v) =>
+    AcpServerInfoView(name: v.name, version: v.version, title: v.title);
+
+AcpSessionInfoSnapshotView _infoSnapshot(b.BridgeAcpSessionInfoSnapshot v) =>
+    AcpSessionInfoSnapshotView(
+      usage: v.usage == null
           ? null
-          : AcpRemoteSessionId(v.acpSessionId!.value),
-      ready: v.ready,
-      closing: v.closing,
-      configPending: v.configPending,
-      configOptions: v.configOptions?.map(acpConfigFromFrb),
-      modes: v.modes == null ? null : _modes(v.modes!),
-      activeRun: v.activeRun == null ? null : acpRunFromFrb(v.activeRun!),
-      lastCompleted: v.lastCompleted == null
+          : AcpUsageSnapshotView(
+              used: v.usage!.used,
+              size: v.usage!.size,
+              updatedAt: v.usage!.updatedAt.toInt(),
+            ),
+      cost: v.cost == null
           ? null
-          : _completed(v.lastCompleted!),
-      observationGap: v.observationGap == null ? null : _gap(v.observationGap!),
-      authMethods: v.authMethods.map(_authMethod),
+          : AcpCostSnapshotView(
+              amount: v.cost!.amount,
+              currency: v.cost!.currency,
+              updatedAt: v.cost!.updatedAt.toInt(),
+            ),
+      textPerformance: v.textPerformance == null
+          ? null
+          : AcpTextPerformanceSnapshotView(
+              estimatedOutputTokens: v.textPerformance!.estimatedOutputTokens
+                  .toInt(),
+              responseMillis: v.textPerformance!.responseMillis.toInt(),
+              updatedAt: v.textPerformance!.updatedAt.toInt(),
+            ),
+      lastStopReason: v.lastStopReason,
+      serverInfo: v.serverInfo == null ? null : _serverInfo(v.serverInfo!),
+      activeConfig: [
+        for (final item in v.activeConfig)
+          AcpConfigItemSnapshotView(
+            id: item.id,
+            name: item.name,
+            category: item.category,
+            valueId: item.valueId,
+            valueLabel: item.valueLabel,
+          ),
+      ],
+      completedTurns: v.completedTurns?.toInt(),
+      updatedAt: v.updatedAt.toInt(),
     );
+
+AcpBusinessSnapshotView acpSnapshotFromFrb(
+  b.BridgeAcpBusinessSnapshot v,
+) => AcpBusinessSnapshotView(
+  target: acpTargetFromFrb(v.target),
+  acpSessionId: v.acpSessionId == null
+      ? null
+      : AcpRemoteSessionId(v.acpSessionId!.value),
+  ready: v.ready,
+  closing: v.closing,
+  configPending: v.configPending,
+  configOptions: v.configOptions?.map(acpConfigFromFrb),
+  modes: v.modes == null ? null : _modes(v.modes!),
+  activeRun: v.activeRun == null ? null : acpRunFromFrb(v.activeRun!),
+  lastCompleted: v.lastCompleted == null ? null : _completed(v.lastCompleted!),
+  observationGap: v.observationGap == null ? null : _gap(v.observationGap!),
+  infoSnapshot: v.infoSnapshot == null ? null : _infoSnapshot(v.infoSnapshot!),
+  authMethods: v.authMethods.map(_authMethod),
+);
 AcpBusinessCloseView acpCloseFromFrb(b.BridgeAcpBusinessClose v) =>
     AcpBusinessCloseView(
       localComplete: v.localComplete,
@@ -527,10 +570,15 @@ AcpBusinessCloseView acpCloseFromFrb(b.BridgeAcpBusinessClose v) =>
     );
 
 AcpSessionFrameView acpFrameFromFrb(b.BridgeAcpSessionFrame v) => switch (v) {
-  b.BridgeAcpSessionFrame_Accepted(:final target, :final hasObservation) =>
+  b.BridgeAcpSessionFrame_Accepted(
+    :final target,
+    :final hasObservation,
+    :final infoSnapshot,
+  ) =>
     AcpAcceptedFrameView(
       target: acpTargetFromFrb(target),
       hasObservation: hasObservation,
+      infoSnapshot: infoSnapshot == null ? null : _infoSnapshot(infoSnapshot),
     ),
   b.BridgeAcpSessionFrame_Settled(:final result) => AcpSettledFrameView(
     switch (result) {
@@ -542,7 +590,10 @@ AcpSessionFrameView acpFrameFromFrb(b.BridgeAcpSessionFrame v) => switch (v) {
   ),
   b.BridgeAcpSessionFrame_Event(:final event) => AcpEventFrameView(
     switch (event) {
-      b.BridgeAcpSessionEvent_Initialized(:final capabilities) =>
+      b.BridgeAcpSessionEvent_Initialized(
+        :final capabilities,
+        :final serverInfo,
+      ) =>
         AcpInitializedEventView(
           AcpAgentCapabilitiesView(
             image: capabilities.image,
@@ -552,6 +603,7 @@ AcpSessionFrameView acpFrameFromFrb(b.BridgeAcpSessionFrame v) => switch (v) {
             listSessions: capabilities.listSessions,
             resumeSession: capabilities.resumeSession,
           ),
+          serverInfo: serverInfo == null ? null : _serverInfo(serverInfo),
         ),
       b.BridgeAcpSessionEvent_Update(:final update, :final textPerformance) =>
         AcpUpdateEventView(

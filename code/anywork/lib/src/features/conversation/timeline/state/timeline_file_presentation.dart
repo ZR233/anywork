@@ -16,6 +16,8 @@ final class TimelineFileEntry {
     this.origin = TimelineFileOrigin.archive,
     this.localPath,
     this.error,
+    this.deferredSize,
+    this.networkImageUrl,
   });
 
   factory TimelineFileEntry.archived(ThreadAttachmentView attachment) =>
@@ -29,6 +31,8 @@ final class TimelineFileEntry {
   final TimelineFileOrigin origin;
   final String? localPath;
   final String? error;
+  final int? deferredSize;
+  final String? networkImageUrl;
 
   bool get isMarkdown =>
       const {'.md', '.markdown'}.contains(p.extension(filename).toLowerCase());
@@ -53,19 +57,21 @@ final class TimelineFilesPresentation {
       final payload = chatObject(artifact['payload'], 'opaque.payload');
       if (payload['format'] == 'pl.tool.files') receipts.add(payload);
     }
-    if (receipts.length != 1 || receipts.single['version'] != 1) {
-      throw const FormatException('缺少或不支持 pl.tool.files@1 回执');
+    if (receipts.length != 1) {
+      throw const FormatException('缺少唯一的 pl.tool.files 回执');
+    }
+    final version = receipts.single['version'];
+    if (version is! int || (version != 1 && version != 2)) {
+      throw const FormatException('不支持的 pl.tool.files 回执版本');
     }
     final content = chatString(
       receipts.single['content'],
       'opaque.payload.content',
     );
-    return decode(jsonDecode(content));
+    return _decode(jsonDecode(content), version);
   }
 
-  /// Decodes only the producer's `pl.tool.files@1` payload, after the existing
-  /// completion adapter has selected the explicit opaque format/version.
-  static TimelineFilesPresentation decode(Object? value) {
+  static TimelineFilesPresentation _decode(Object? value, int version) {
     final payload = chatObject(value, 'pl.tool.files');
     final entries = payload['files'];
     if (entries is! List) {
@@ -73,17 +79,29 @@ final class TimelineFilesPresentation {
     }
     return TimelineFilesPresentation(
       caption: chatOptionalString(payload['caption'], 'caption'),
-      files: List.unmodifiable(entries.map(_entry)),
+      files: List.unmodifiable(entries.map((entry) => _entry(entry, version))),
     );
   }
 
-  static TimelineFileEntry _entry(Object? value) {
+  static TimelineFileEntry _entry(Object? value, int version) {
     final item = chatObject(value, 'file');
     final filename = chatString(item['filename'], 'file.filename');
     if (item['status'] == 'failed') {
       return TimelineFileEntry(
         filename: filename,
         error: chatString(item['message'], 'file.message'),
+      );
+    }
+    if (version == 2 && item['status'] == 'deferred') {
+      final target = chatObject(item['target'], 'file.target');
+      final size = chatInteger(target['size'], 'file.target.size');
+      if (size < 0) throw const FormatException('file.target.size 不能为负数');
+      return TimelineFileEntry(filename: filename, deferredSize: size);
+    }
+    if (version == 2 && item['status'] == 'networkImage') {
+      return TimelineFileEntry(
+        filename: filename,
+        networkImageUrl: chatString(item['url'], 'file.url'),
       );
     }
     if (item['status'] != 'ready') {

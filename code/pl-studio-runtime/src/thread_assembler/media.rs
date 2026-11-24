@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(display.caption.as_deref(), Some("delivered"));
         assert!(matches!(shown.delivered_context.as_slice(), [
                 ContextContent::Text { text }, ContextContent::Resource { reference }
-            ] if text.as_ref() == "File display archived: 1 ready, 0 failed."
+            ] if text.as_ref() == "File display: 1 archived, 0 network previews, 0 deferred, 0 failed."
                 && reference == &attachment.reference));
         history.shutdown().await.unwrap();
         Ok(())

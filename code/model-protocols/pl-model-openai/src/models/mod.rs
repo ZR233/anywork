@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use pl_model_wire::model::{
-    BundledModelDefinition, ModelDefinitionError, ModelInfo,
+    BundledModelDefinition, CodexModel, ModelDefinition, ModelDefinitionError, TruncationPolicy,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
         ToolCapabilities,
@@ -66,7 +66,7 @@ struct Definition {
 }
 
 impl Definition {
-    fn instantiate(&self, family: &ModelFamily) -> ModelInfo {
+    fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
         let mut model = family.instantiate(ModelInstanceSpec {
             model_id: self.id,
             display_name: self.name,
@@ -82,13 +82,13 @@ impl Definition {
                 verified_at: self.verified_at,
             },
         });
-        model.auto_compact_token_limit = self.auto_compact_token_limit;
-        model.capabilities.prompt_cache.cache_write_tokens = self.cache_write_tokens;
-        model.parameters.push(effort_parameter(
+        model.base.auto_compact_token_limit = self.auto_compact_token_limit;
+        model.extra.capabilities.prompt_cache.cache_write_tokens = self.cache_write_tokens;
+        model.set_parameters(vec![effort_parameter(
             "reasoning.effort",
             self.efforts,
             self.default_effort,
-        ));
+        )]);
         model
     }
 }
@@ -102,7 +102,6 @@ fn family() -> ModelFamily {
         replay: vec![MediaRepresentation::DataUrl],
     };
     ModelFamily {
-        id: "openai-responses",
         capabilities: ModelCapabilities {
             temperature: false,
             reasoning: true,
@@ -123,15 +122,20 @@ fn family() -> ModelFamily {
             ],
             tools: ToolCapabilities {
                 function_calling: true,
-                parallel_tool_calls: true,
                 custom_tools: true,
                 freeform_tools: true,
                 programmatic_tool_calling: true,
             },
             ..ModelCapabilities::text_only()
         },
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: Vec::new(),
         transport: ModelTransportProfile::responses_websocket(),
         request_profile: ModelRequestProfile {
@@ -145,7 +149,6 @@ fn family() -> ModelFamily {
             ],
             ..Default::default()
         },
-        base_instructions: String::new(),
     }
 }
 

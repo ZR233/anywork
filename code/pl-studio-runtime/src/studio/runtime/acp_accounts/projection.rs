@@ -28,7 +28,7 @@ pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
             display_name: "Antigravity".to_string(),
             description: "通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。".to_string(),
             icon_key: "antigravity".to_string(),
-            supported_version: super::super::acp_install::SERVER_VERSION.to_string(),
+            supported_version: super::super::acp_install::SUPPORTED_VERSION_RANGE.to_string(),
             install_url: "https://antigravity.google/docs/ide/extensions".to_string(),
             terms_url: "https://antigravity.google/terms".to_string(),
             automatic_install: super::super::acp_install::automatic_install_availability(),
@@ -37,6 +37,13 @@ pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
 }
 
 impl AcpAccountRuntime {
+    /// 单一策略事实源：当前 ACP 定义是否支持账户级额度查询。
+    pub(crate) fn definition_supports_usage(
+        definition: &crate::config::AcpServiceDefinition,
+    ) -> bool {
+        super::strategy::AcpAgentStrategy::for_definition(definition).supports_usage()
+    }
+
     /// canonical Settings 中的 ACP 接入投影。
     ///
     /// 只能在 [`crate::config::ConfigRuntime`] 的 Settings command 边界内调用：`settings_revision`

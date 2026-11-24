@@ -67,6 +67,196 @@ fn args(value: serde_json::Value) -> ShowFilesInput {
 }
 
 #[tokio::test]
+async fn deferred_stream_reopens_saved_fact_and_rejects_changed_or_replaced_bindings() {
+    use tokio::io::AsyncReadExt;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("opaque.bin");
+    let bytes = [0, 255, 17, 0, 222, 173];
+    std::fs::write(&path, bytes).unwrap();
+    let backend = ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
+        .await
+        .unwrap();
+    let target = backend.defer_file("opaque.bin").await.unwrap();
+    let saved = serde_json::to_string(&target).unwrap();
+    let target = serde_json::from_str(&saved).unwrap();
+    let mut reader = backend.open_deferred_file(&target).await.unwrap();
+    let mut actual = Vec::new();
+    reader.read_to_end(&mut actual).await.unwrap();
+    assert_eq!(actual, bytes);
+    backend.validate_deferred_file(&target).await.unwrap();
+
+    // Reconstructing the view of the same executor remains usable after cold decoding.
+    let same =
+        ExecutorWorkspaceFileBackend::new(backend.executor().clone(), backend.canonical_path())
+            .unwrap();
+    same.validate_deferred_file(&target).await.unwrap();
+    let replaced = ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
+        .await
+        .unwrap();
+    assert!(replaced.open_deferred_file(&target).await.is_err());
+    let mut old_process = serde_json::to_value(&target).unwrap();
+    old_process["executorInstance"] = serde_json::json!("old-startup:1");
+    assert!(
+        backend
+            .validate_deferred_file(&serde_json::from_value(old_process).unwrap())
+            .await
+            .is_err()
+    );
+
+    // Detect a same-length edit through the existing target metadata, without sleeps.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    assert!(backend.validate_deferred_file(&target).await.is_err());
+    let target = backend.defer_file("opaque.bin").await.unwrap();
+
+    std::fs::write(&path, b"changed length").unwrap();
+    assert!(
+        backend.validate_deferred_file(&target).await.is_err(),
+        "EOF validation must detect edits"
+    );
+    assert!(backend.open_deferred_file(&target).await.is_err());
+    std::fs::remove_file(&path).unwrap();
+    assert!(backend.open_deferred_file(&target).await.is_err());
+    #[cfg(unix)]
+    {
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), &path).unwrap();
+        assert!(backend.open_deferred_file(&target).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn deferred_host_grant_is_scoped_to_original_workspace_and_path() {
+    use pl_core::tool::execution_policy::ExecutionGrant;
+    use pl_tool::workspace::{AgentWorkspace, ToolWorkspace, WorkspaceMutability};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("workspace");
+    std::fs::create_dir(&root).unwrap();
+    let outside = temp.path().join("outside.bin");
+    std::fs::write(&outside, b"outside").unwrap();
+    let assigned =
+        ToolWorkspace::new(AgentWorkspace::local(&root).with_session_id("original-thread"));
+    let backend = ExecutorWorkspaceFileBackend::local(root.clone(), false)
+        .await
+        .unwrap()
+        .with_workspace(assigned);
+    let grant = ExecutionGrant::default().with_capability(pl_tool::approval::HOST_WORKSPACE_ACCESS);
+    let granted = backend.for_grant(&grant).unwrap();
+    let target = granted.defer_file(outside.to_str().unwrap()).await.unwrap();
+    backend.validate_deferred_file(&target).await.unwrap();
+    assert!(
+        backend
+            .stat(WorkspaceFileStatRequest {
+                path: outside.to_str().unwrap().into(),
+                cwd: None
+            })
+            .await
+            .is_err(),
+        "download must not grant the backend general host access"
+    );
+    let changed_thread = backend.clone().with_workspace(ToolWorkspace::new(
+        AgentWorkspace::local(&root).with_session_id("different-thread"),
+    ));
+    assert!(changed_thread.open_deferred_file(&target).await.is_err());
+    let confined = backend
+        .clone()
+        .with_workspace(ToolWorkspace::new(AgentWorkspace::confined(
+            &root,
+            WorkspaceMutability::ReadOnly,
+        )));
+    assert!(confined.open_deferred_file(&target).await.is_err());
+}
+
+#[tokio::test]
+async fn receipt_versions_and_network_items_preserve_wire_and_model_boundary() {
+    let temp = tempfile::tempdir().unwrap();
+    let media = Arc::new(Media::default());
+    let backend = Arc::new(
+        ExecutorWorkspaceFileBackend::local(temp.path().into(), false)
+            .await
+            .unwrap(),
+    );
+    let output = ThreadShowFilesTool::new(backend.clone(), media.clone())
+        .execute(
+            args(serde_json::json!({"files":[
+                {"kind":"networkImage","url":"https://example.org/photo.png"},
+                {"kind":"networkImage","url":"https://user@example.org/photo.png"}
+            ]})),
+            context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(output.payload().version(), 2);
+    let receipt = saved_file_display_receipt(output.payload())
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&receipt.files[0], FileDisplayResult::NetworkImage { filename, url }
+        if filename == "photo.png" && url == "https://example.org/photo.png")
+    );
+    assert!(matches!(
+        &receipt.files[1],
+        FileDisplayResult::Failed { .. }
+    ));
+    assert!(media.0.lock().unwrap().is_empty());
+    assert_eq!(output.context().len(), 1);
+    assert!(matches!(&output.context()[0], ContextContent::Text { text }
+        if text.contains("0 archived") && text.contains("1 network previews") && text.contains("1 failed")));
+    assert!(
+        !pl_tool::approval::assess(
+            "show_files",
+            &serde_json::json!({"files":[
+                {"kind":"networkImage","url":"https://example.org/photo.png"}
+            ]})
+            .to_string(),
+            temp.path()
+        )
+        .requested_access
+        .allows_external()
+    );
+    let network = serde_json::json!({"status":"networkImage","filename":"photo.png","url":"https://example.org/photo.png"});
+    std::fs::write(temp.path().join("file.bin"), b"original").unwrap();
+    let deferred = serde_json::json!({"status":"deferred","filename":"file.bin","target":backend.defer_file("file.bin").await.unwrap()});
+    let ready = serde_json::json!({"status":"ready","filename":"archive.bin","modality":"file","origin":{"kind":"archive"},
+        "resource":ResourceReference::new("archive".into(), format!("sha256:{}", "a".repeat(64)), 3, "application/octet-stream".into()).unwrap()});
+    for (version, file, valid) in [
+        (1, ready.clone(), true),
+        (
+            1,
+            serde_json::json!({"status":"failed","filename":"missing","message":"missing"}),
+            true,
+        ),
+        (1, network.clone(), false),
+        (1, deferred.clone(), false),
+        (2, ready, true),
+        (2, network, true),
+        (2, deferred, true),
+        (
+            3,
+            serde_json::json!({"status":"failed","filename":"missing","message":"missing"}),
+            false,
+        ),
+    ] {
+        let payload = OpaquePayload::new(
+            "pl.tool.files",
+            version,
+            serde_json::json!({"caption":null,"files":[file]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved_file_display_receipt(&payload).is_ok(),
+            valid,
+            "version {version}: {}",
+            payload.content()
+        );
+    }
+}
+
+#[tokio::test]
 async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("a.txt"), "exact original\n").unwrap();
@@ -139,23 +329,35 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
     assert!(
         matches!(&receipt.files[2], FileDisplayResult::Ready { resource: other, .. } if other == resource)
     );
-    for index in [1, 3, 4] {
+    for index in [1, 3] {
         assert!(matches!(
             &receipt.files[index],
             FileDisplayResult::Failed { .. }
         ));
     }
-    assert_eq!(
-        *media.0.lock().unwrap(),
-        vec![b"exact original\n".to_vec(); 2]
-    );
+    // A file past the former 50 MiB ceiling is archived exactly instead of refused.
+    assert!(matches!(
+        &receipt.files[4],
+        FileDisplayResult::Ready { resource, filename, .. }
+            if filename == "large.bin" && resource.byte_len() == 50 * 1024 * 1024 + 1
+    ));
+    {
+        let retained = media.0.lock().unwrap();
+        assert!(
+            retained[..2]
+                .iter()
+                .all(|bytes| bytes == b"exact original\n")
+        );
+        assert_eq!(retained[2].len(), 50 * 1024 * 1024 + 1);
+        assert!(retained[2].iter().all(|&byte| byte == 0));
+    }
     assert!(
         output
             .context()
             .iter()
             .all(|content| !matches!(content, ContextContent::Opaque { .. }))
     );
-    assert_eq!(output.context().len(), 3);
+    assert_eq!(output.context().len(), 4);
     for input in [
         serde_json::json!({"files":[]}),
         serde_json::json!({"files":[{"kind":"workspace","path":"a.txt"}],"caption":"x".repeat(241)}),
@@ -165,7 +367,7 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
     }
     assert_eq!(
         media.0.lock().unwrap().len(),
-        2,
+        3,
         "invalid batch must not read/retain"
     );
 }
@@ -256,7 +458,18 @@ impl WorkspaceFileBackend for Remote {
         }))
     }
     async fn read_bytes(&self, _: WorkspaceFileReadBytesRequest) -> pl_protocol::Result<Vec<u8>> {
-        Ok(b"%PDF-".to_vec())
+        panic!("remote non-preview must never read body")
+    }
+    async fn defer_file(
+        &self,
+        _: &str,
+    ) -> pl_protocol::Result<pl_tool::file_display::DeferredWorkspaceFile> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "canonicalPath":"/remote/report.pdf", "size":5, "modifiedAt":1,
+            "executorInstance":"fixture", "workspaceRoot":"/remote", "workspaceBinding":null,
+            "hostWorkspaceAccess":false
+        }))
+        .unwrap())
     }
     async fn read_text(&self, _: WorkspaceFileReadRequest) -> pl_protocol::Result<String> {
         unreachable!()
@@ -286,7 +499,14 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
         .unwrap()
         .unwrap();
     assert!(
-        matches!(&receipt.files[0], FileDisplayResult::Ready { origin:FileDisplayOrigin::Remote, filename, .. } if filename == "report.pdf")
+        matches!(&receipt.files[0], FileDisplayResult::Deferred { filename, target } if filename == "report.pdf" && target.size == 5)
+    );
+    assert!(media.0.lock().unwrap().is_empty());
+    assert!(
+        output
+            .context()
+            .iter()
+            .all(|part| matches!(part, ContextContent::Text { .. }))
     );
     let temp = tempfile::tempdir().unwrap();
     let mut encoded = std::io::Cursor::new(Vec::new());
@@ -320,7 +540,7 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
     assert!(
         matches!(&receipt.files[0], FileDisplayResult::Ready { modality:pl_model::completion::AttachmentModality::Image, resource, .. } if resource.media_type() == "image/png")
     );
-    assert_eq!(media.0.lock().unwrap()[1], *encoded.get_ref());
+    assert_eq!(media.0.lock().unwrap()[0], *encoded.get_ref());
     assert!(
         matches!(
             &receipt.files[1],

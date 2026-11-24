@@ -346,7 +346,12 @@ void main() {
         expect(state, isA<AcpVerifiedState>());
       }
       final verified = stateOf(id, revision) as AcpVerifiedState;
-      expect(verified.server?.version, '1.4.5');
+      final serverVersion = verified.server?.version ?? '';
+      expect(
+        _isSupportedAntigravityV1(serverVersion),
+        isTrue,
+        reason: 'Expected SemVer 1.x (>= 1.4.5, < 2.0.0), got $serverVersion',
+      );
       await tester.pumpAndSettle();
       final details = tester.widget<AccountDetailsView>(
         find.byType(AccountDetailsView),
@@ -354,7 +359,9 @@ void main() {
       final panel = (details.value.content as AcpAccountDetailsContent).value;
       expect(panel.phase, AcpPresentationPhase.connected);
       await screenshot('verified-$phase');
-      debugPrint('ACP_SESSION_NEW_VERIFIED version=1.4.5 phase=$phase');
+      debugPrint(
+        'ACP_SESSION_NEW_VERIFIED version=$serverVersion phase=$phase',
+      );
 
       await tapKey(AccountViewKeyValues.acpAction('queryUsage'));
       await untilObserved(graph.acp.auth, (resource) {
@@ -376,4 +383,17 @@ void main() {
     skip: phase != 'login' && phase != 'restart',
     timeout: Timeout.none,
   );
+}
+
+bool _isSupportedAntigravityV1(String version) {
+  final core = version.split(RegExp(r'[-+]')).first.split('.');
+  if (core.length != 3) return false;
+  final major = int.tryParse(core[0]);
+  final minor = int.tryParse(core[1]);
+  final patch = int.tryParse(core[2]);
+  if (major == null || minor == null || patch == null) return false;
+  if (major != 1) return false;
+  if (minor > 4) return true;
+  if (minor == 4) return patch >= 5;
+  return false;
 }

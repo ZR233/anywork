@@ -25,7 +25,6 @@ class _LanguageTransport extends RecordingDemoTransport {
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int revision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) async {
@@ -42,11 +41,7 @@ class _LanguageTransport extends RecordingDemoTransport {
         );
       }
     }
-    return super.applySettingsField(
-      revision,
-      command,
-      operationId: operationId,
-    );
+    return super.applySettingsField(command, operationId: operationId);
   }
 }
 

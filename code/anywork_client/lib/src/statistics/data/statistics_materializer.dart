@@ -111,6 +111,7 @@ final class StatisticsMaterializer {
         page.items.map(
           (item) => StatisticsEffortSummary(
             effort: item.effort,
+            requestedServiceTier: item.requestedServiceTier,
             sampleCount: item.sampleCount,
             completionTokens: item.completionTokens,
             totalTtftMillis: item.totalTtftMillis,

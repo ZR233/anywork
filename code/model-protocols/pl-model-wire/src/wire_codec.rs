@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::completion::CompletionRequest;
 use crate::completion::stream::event::ModelStreamEvent;
-use crate::model::ModelInfo;
+use crate::model::ModelDefinition;
 use crate::protocol::{ProtocolEndpoint, WireApi};
 use crate::transport::SseContentTypePolicy;
 use pl_protocol::{ProviderFailureKind, Result, RetryDisposition};
@@ -27,7 +27,7 @@ impl VisibleOutputProtocol {
 
 pub struct EncodeHttpRequestInput<'a> {
     pub endpoint: &'a ProtocolEndpoint,
-    pub model: &'a ModelInfo,
+    pub model: &'a ModelDefinition,
     pub request: &'a CompletionRequest,
     pub prompt_cache_key: Option<&'a str>,
     pub compaction_body: Option<&'a Map<String, Value>>,
@@ -85,12 +85,13 @@ pub trait WireCodec: Send + Sync + std::fmt::Debug {
     fn validate_context(
         &self,
         endpoint: &ProtocolEndpoint,
-        model: &ModelInfo,
+        model: &ModelDefinition,
         isolation: &str,
         request: &CompletionRequest,
     ) -> Result<()>;
 
-    fn encode_http_request(&self, input: EncodeHttpRequestInput<'_>) -> Result<PreparedHttpRequest>;
+    fn encode_http_request(&self, input: EncodeHttpRequestInput<'_>)
+    -> Result<PreparedHttpRequest>;
 
     fn new_stream_decoder(&self, api: WireApi) -> Box<dyn WireStreamDecoder>;
 

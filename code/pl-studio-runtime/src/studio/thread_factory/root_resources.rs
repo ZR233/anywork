@@ -339,7 +339,7 @@ impl StudioThreadFactory {
         let has_saved_route = saved_route.is_some();
         let default_route = match self.initial_route(id).filter(|_| is_new) {
             Some(frozen) => frozen,
-            None => config.mode_model_route(&selected_mode)?.clone(),
+            None => config.mode_model_route(&selected_mode)?.clone().into(),
         };
         // Restore with the saved route. Bot settings are reconciled at the next input
         // admission, so reopening a Thread cannot change an already frozen request.
@@ -349,16 +349,14 @@ impl StudioThreadFactory {
                 .services
                 .bots
                 .model_selector(bot)
-                .map_err(|error| resource_error("resolve bot model", error))?,
+                .map_err(|error| resource_error("resolve bot model", error))?
+                .into(),
             (None, None) => default_route.clone(),
         };
-        let resolved_route = config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &route_selector)
-            .and_then(|route| {
-                crate::studio::delegation::validate_credential(&route)?;
-                Ok(route)
-            });
+        let resolved_route = route_selector.resolve(&config).and_then(|route| {
+            crate::studio::delegation::validate_credential(&route)?;
+            Ok(route)
+        });
         let (route, model_available) = match resolved_route {
             Ok(route) => (route, true),
             Err(error) if has_saved_route => {
@@ -366,7 +364,7 @@ impl StudioThreadFactory {
                 let fallback = crate::studio::model_route::unavailable_placeholder(
                     &config,
                     crate::config::root_agent_route_id(),
-                    &route_selector,
+                    &route_selector.model,
                 )
                 .map_err(|error| resource_error("restore unavailable root placeholder", error))?;
 

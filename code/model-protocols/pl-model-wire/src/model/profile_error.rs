@@ -1,7 +1,7 @@
 //! 模型 transport 与媒体契约的校验错误。
 //!
 //! [`ModelTransportProfile::validate`](super::ModelTransportProfile::validate) 与
-//! [`ModelInfo::validate_media_contract`](super::ModelInfo::validate_media_contract)
+//! [`ModelDefinition::validate_media_contract`](super::ModelDefinition::validate_media_contract)
 //! 在配置加载、保存与 runtime 构造时拒绝非法组合；变体携带 model_id 与涉事模态等
 //! 结构化上下文，消费方并入 `PureError::ConfigError`。
 

@@ -26,6 +26,9 @@ pub(crate) struct FeishuFileAdapter {
     pub token: String,
 }
 
+const IMAGE_UPLOAD_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const FILE_UPLOAD_MAX_BYTES: u64 = 30 * 1024 * 1024;
+
 pub(super) fn channel_error(error: super::error::FeishuError) -> ChannelError {
     if error.acceptance_unknown() {
         ChannelError::Unknown(error.to_string())
@@ -37,8 +40,8 @@ pub(super) fn channel_error(error: super::error::FeishuError) -> ChannelError {
 impl ChannelAdapter for FeishuFileAdapter {
     fn capabilities(&self) -> FileCapabilities {
         FileCapabilities {
-            image_max_bytes: Some(10 * 1024 * 1024),
-            file_max_bytes: Some(30 * 1024 * 1024),
+            image_max_bytes: Some(IMAGE_UPLOAD_MAX_BYTES),
+            file_max_bytes: Some(FILE_UPLOAD_MAX_BYTES),
         }
     }
 
@@ -51,11 +54,11 @@ impl ChannelAdapter for FeishuFileAdapter {
     ) -> Result<UploadHandle, ChannelError> {
         let image = file.modality == AttachmentModality::Image;
         let limit = if image {
-            10 * 1024 * 1024
+            IMAGE_UPLOAD_MAX_BYTES
         } else {
-            30 * 1024 * 1024
+            FILE_UPLOAD_MAX_BYTES
         };
-        if bytes.is_empty() || bytes.len() > limit {
+        if bytes.is_empty() || bytes.len() as u64 > limit {
             return Err(ChannelError::Rejected(
                 "file exceeds Feishu upload size limit or is empty".into(),
             ));

@@ -1,5 +1,5 @@
 use crate::completion::CompletionRequest;
-use crate::model::info::ModelInfo;
+use crate::model::info::ModelDefinition;
 use crate::protocol::{InstructionWireRole, WireApi};
 use pl_protocol::Result;
 
@@ -8,8 +8,8 @@ mod request;
 pub mod sse;
 pub mod usage;
 
-use request::build_openai_request_body;
 pub use pl_model_wire::wire_codec::VisibleOutputProtocol;
+use request::build_openai_request_body;
 pub use request::chatgpt::validate_request as validate_chatgpt_request;
 pub use request::{OpenAiRequestBody, sent_model_from_wire_body};
 
@@ -17,7 +17,7 @@ pub fn build_request(
     api: WireApi,
     instruction_role: InstructionWireRole,
     request: &CompletionRequest,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     prompt_cache_key: Option<&str>,
     chatgpt: bool,
 ) -> Result<OpenAiRequestBody> {

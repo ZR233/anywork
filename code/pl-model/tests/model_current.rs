@@ -6,7 +6,9 @@ use pl_core::{
 };
 use pl_model::{
     completion::{ModelStreamCurrent, ModelStreamCurrentState, ReasoningConfig},
-    model::{ModelInfo, ModelProtocolOptions, ModelTransportProfile, ResponsesMaxTokensField},
+    model::{
+        ModelDefinition, ModelProtocolOptions, ModelTransportProfile, ResponsesMaxTokensField,
+    },
     protocol::ProtocolEndpoint,
     runtime::{CancellationToken, HostedTool, ThreadModel},
 };
@@ -48,8 +50,9 @@ fn factory(fixture: &FixtureServer) -> ModelFactory {
 }
 
 fn endpoint_factory(base_url: impl Into<String>) -> ModelFactory {
-    let mut model = ModelInfo::compatible("current-model");
+    let mut model = ModelDefinition::compatible("current-model");
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     ModelFactory::new(ThreadModel::new(
@@ -63,10 +66,10 @@ fn endpoint_factory(base_url: impl Into<String>) -> ModelFactory {
     ))
 }
 
-fn recovery_info(transport: ModelTransportProfile) -> ModelInfo {
-    let mut info = ModelInfo::compatible("current-model");
-    info.binding.set_transport(transport);
-    let effort_path = match &mut info.binding.request.protocol {
+fn recovery_info(transport: ModelTransportProfile) -> ModelDefinition {
+    let mut info = ModelDefinition::compatible("current-model");
+    info.extra.binding.set_transport(transport);
+    let effort_path = match &mut info.extra.binding.request.protocol {
         ModelProtocolOptions::Responses(options) => {
             options.max_tokens_field = ResponsesMaxTokensField::MaxOutputTokens;
             "reasoning.effort"
@@ -80,15 +83,16 @@ fn recovery_info(transport: ModelTransportProfile) -> ModelInfo {
         }
     };
     if matches!(
-        info.binding.request.protocol,
+        info.extra.binding.request.protocol,
         ModelProtocolOptions::ChatCompletions(_)
     ) {
-        info.binding
+        info.extra
+            .binding
             .request
             .body
             .insert("store".into(), json!(false));
     }
-    info.parameters = vec![
+    info.extra.parameters = vec![
         serde_json::from_value(json!({
             "name":"effort", "candidates":["low","high"],
             "wire":{
@@ -98,16 +102,16 @@ fn recovery_info(transport: ModelTransportProfile) -> ModelInfo {
         }))
         .unwrap(),
     ];
-    info.capabilities.reasoning = true;
-    info.capabilities.web_search = true;
-    info.capabilities.tools.parallel_tool_calls = true;
-    info.max_output_tokens = Some(700);
+    info.extra.capabilities.reasoning = true;
+    info.extra.capabilities.web_search = true;
+    info.base.supports_parallel_tool_calls = Some(true);
+    info.extra.max_output_tokens = Some(700);
     info
 }
 
 fn recovery_factory(
     fixture: &FixtureServer,
-    info: ModelInfo,
+    info: ModelDefinition,
     reasoning: Option<ReasoningConfig>,
     hosted: Vec<HostedTool>,
 ) -> ModelFactory {
@@ -121,7 +125,7 @@ fn recovery_factory(
 
 fn recovery_factory_with_endpoint(
     mut endpoint: ProtocolEndpoint,
-    info: ModelInfo,
+    info: ModelDefinition,
     reasoning: Option<ReasoningConfig>,
     hosted: Vec<HostedTool>,
 ) -> ModelFactory {
@@ -129,7 +133,11 @@ fn recovery_factory_with_endpoint(
     endpoint
         .service_capabilities
         .responses_tools
-        .programmatic_tool_calling = info.binding.request.supports_programmatic_tool_calling();
+        .programmatic_tool_calling = info
+        .extra
+        .binding
+        .request
+        .supports_programmatic_tool_calling();
     ModelFactory::new(
         ThreadModel::new(
             pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),

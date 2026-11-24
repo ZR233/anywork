@@ -210,29 +210,6 @@ class ThreadThroughputReadout extends ConsumerWidget {
   }
 }
 
-class TokenThroughputReadout extends StatelessWidget {
-  const TokenThroughputReadout({
-    required this.tokensPerSecond,
-    this.estimated = false,
-    super.key,
-  });
-
-  final double? tokensPerSecond;
-  final bool estimated;
-
-  @override
-  Widget build(BuildContext context) {
-    final value = context.tokenThroughputLabel(tokensPerSecond);
-    final text = estimated && tokensPerSecond != null ? '≈ $value' : value;
-    return StatusBarItem(
-      icon: Icons.speed_outlined,
-      text: text,
-      label:
-          '${estimated ? context.l10n.acpEstimatedOutputSpeed : context.l10n.statusLastConfirmedAgentTokenSpeed}: $text',
-    );
-  }
-}
-
 class _DeferredWorkflowReadout extends ConsumerStatefulWidget {
   const _DeferredWorkflowReadout({
     required this.threadId,

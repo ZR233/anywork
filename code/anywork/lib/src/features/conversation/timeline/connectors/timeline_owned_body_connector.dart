@@ -8,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/content_reference_identity.dart';
 import '../widgets/timeline_content_range_view.dart';
+import '../widgets/timeline_reasoning_view.dart';
 
 /// Reads a body through the Current or History owner of the enclosing renderer.
 /// The disclosure generation revokes every request and watch at the same owner.
@@ -307,6 +308,19 @@ class _TimelineOwnedBodyConnectorState
           onRead(window);
         }
       });
+    }
+    if (TimelineBodyReadIntent.summaryOf(context)) {
+      // A summary is part of the member header, not a document window.
+      // Keep the existing read and layout witness, but no range or actions.
+      final text = window == null
+          ? ''
+          : utf8.decode(window.bytes, allowMalformed: true);
+      final label = text.trim().isEmpty ? widget.label : text;
+      final summary = Tooltip(
+        message: _error == null ? label : '$label\n$_error',
+        child: TimelineReasoningSummary(text: label),
+      );
+      return window == null ? summary : widget.witness(text, summary);
     }
     final end = _window == null ? 0 : _window!.offset + _window!.bytes.length;
     final canNext =

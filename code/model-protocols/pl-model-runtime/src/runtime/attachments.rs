@@ -14,7 +14,7 @@ use crate::completion::{
     AttachmentInput, AttachmentRepresentation, AttachmentSource, CompletionRequest,
     ResolvedAttachment,
 };
-use crate::model::{ModelInfo, ModelModality};
+use crate::model::{ModelDefinition, ModelModality};
 use crate::protocol::ProtocolEndpoint;
 
 pub(super) enum UploadState {
@@ -26,7 +26,7 @@ pub(super) enum UploadState {
 pub(super) struct AttachmentBackend<'a> {
     pub upload: Option<&'static pl_model_wire::files::FileUploadService>,
     pub endpoint: &'a ProtocolEndpoint,
-    pub model: &'a ModelInfo,
+    pub model: &'a ModelDefinition,
     pub client: &'a reqwest::Client,
     pub session: &'a ModelSession,
     pub fingerprint: u64,
@@ -66,6 +66,7 @@ impl AttachmentBackend<'_> {
             };
             let capability = self
                 .model
+                .extra
                 .capabilities
                 .input_capability(modality)
                 .ok_or_else(|| PureError::ConfigError("unsupported attachment modality".into()))?;
@@ -157,7 +158,8 @@ impl AttachmentBackend<'_> {
             if let Some(url) = remote_url {
                 sources.push(AttachmentRepresentation::RemoteUrl { url });
             } else if self.upload.is_some()
-                && self.model.binding.transport.protocol == crate::protocol::WireApi::Responses
+                && self.model.extra.binding.transport.protocol
+                    == crate::protocol::WireApi::Responses
                 && let Some(id) = self.upload(attachment, &bytes).await?
             {
                 sources.push(AttachmentRepresentation::ProviderFile { file_id: id });
@@ -260,7 +262,7 @@ impl AttachmentBackend<'_> {
         let uploaded = (service.upload)(pl_model_wire::files::FileUploadRequest {
             client: self.client,
             endpoint: self.endpoint,
-            model_headers: &self.model.binding.request.headers,
+            model_headers: &self.model.extra.binding.request.headers,
             input,
             bytes,
             now: self.now,

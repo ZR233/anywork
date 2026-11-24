@@ -8,6 +8,7 @@ pub mod attachment;
 pub mod bots;
 pub mod delegation;
 pub mod external_state;
+pub mod file_download;
 pub mod lifecycle;
 pub mod mode_editor;
 pub mod persistence;

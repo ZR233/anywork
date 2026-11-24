@@ -13,6 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_file_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_outcome_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
@@ -25,8 +26,9 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cont
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_outcome_card.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 
 import 'timeline_preview_fixtures.dart';
@@ -355,15 +357,38 @@ class _AtomicGroupPreview extends StatefulWidget {
 
 class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
   late final groups = [
-    for (var index = 0; index < (widget.live ? 1 : 2); index++)
-      TimelinePreviewFixtures.runUnit(
-        TimelinePreviewFixtures.runEntry(
-          'preview-group-$index',
-          index * 4 + 2,
-          count: index == 0 ? 2 : 1,
-        ),
-      ),
+    for (var index = 0; index < (widget.live ? 1 : 2); index++) _work(index),
   ];
+
+  TimelineDisplayUnit _work(int index) {
+    final unit = TimelinePreviewFixtures.runUnit(
+      TimelinePreviewFixtures.runEntry(
+        'preview-group-$index',
+        index * 4 + 2,
+        count: index == 0 ? (widget.live ? 2 : 3) : 1,
+      ),
+    );
+    if (index == 0 && (!widget.live || widget.waitingForBoundary)) {
+      unit.expansion.current = unit;
+      unit.expansion.readHistoryBody = (_, reference, range) async {
+        if (reference.ownerEventId !=
+                TimelinePreviewFixtures.completedReasoning.id ||
+            reference.bodyKey != TimelinePreviewFixtures.workSummaryKey ||
+            range.offset != 0) {
+          throw StateError('Unexpected preview body request');
+        }
+        final summary = TimelinePreviewFixtures.workSummaryBytes;
+        return ContentWindow(
+          offset: 0,
+          bytes: summary,
+          generation: reference.bodyId,
+          availableThrough: summary.length,
+          sealed: true,
+        );
+      };
+    }
+    return unit;
+  }
 
   @override
   void dispose() {
@@ -384,6 +409,12 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
             unit: groups[index],
             childBuilder: (_) => Column(
               children: [
+                if (index == 0)
+                  _chatItem(
+                    ChatItemPresentation.decode(
+                      TimelinePreviewFixtures.completedCommand,
+                    ),
+                  ),
                 if (widget.live && !widget.waitingForBoundary)
                   _activeReasoningWindow()
                 else
@@ -394,12 +425,8 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
                           : TimelinePreviewFixtures.secondCompletedReasoning,
                     ),
                   ),
-                if (index == 0)
-                  _chatItem(
-                    ChatItemPresentation.decode(
-                      TimelinePreviewFixtures.completedCommand,
-                    ),
-                  ),
+                if (!widget.live && index == 0)
+                  _chatItem(TimelinePreviewFixtures.applyPatchTool),
               ],
             ),
           ),
@@ -649,7 +676,7 @@ Widget timelineActivityRowPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 参数与结果', group: 'Timeline · 历史组件', size: Size(760, 400))
 Widget timelineToolDetailsPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item: (TimelinePreviewFixtures.tool.toolCard as DecodedToolCard).value,
     ),
   ),
@@ -667,7 +694,7 @@ Widget timelineToolDetailsPreview() => _timelinePreviewHost(
 )
 Widget timelineApplyPatchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item: (TimelinePreviewFixtures.applyPatchTool.toolCard as DecodedToolCard)
           .value,
       initiallyExpanded: true,
@@ -678,7 +705,7 @@ Widget timelineApplyPatchPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 网页搜索', group: 'Timeline · 历史组件', size: Size(720, 320))
 Widget timelineWebSearchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item:
           (TimelinePreviewFixtures.webSearch.toolCard as DecodedToolCard).value,
     ),
@@ -749,6 +776,76 @@ class _TimelineChildrenPreviewState extends State<_TimelineChildrenPreview> {
 @Preview(name: '降级 / 未知展示契约', group: 'Timeline · 历史组件', size: Size(720, 220))
 Widget timelineFallbackPreview() =>
     _timelinePreviewHost(_chatItem(TimelinePreviewFixtures.fallback));
+
+@Preview(
+  name: '错误与结果 / 直接展示错误信息',
+  group: 'Timeline · 历史组件',
+  size: Size(860, 860),
+)
+Widget timelineErrorShowcasePreview() => _timelinePreviewHost(
+  SelectionArea(
+    child: SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Align(
+            alignment: AlignmentDirectional.centerEnd,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxWidth: StudioLayout.conversationPromptWidth,
+              ),
+              child: ChatItemView(
+                item: TimelinePreviewFixtures.user,
+                promptBubble: true,
+                bodyBuilder: _previewMarkdown,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _chatItem(TimelinePreviewFixtures.failedTurnOverloaded),
+          const SizedBox(height: 16),
+          TimelineErrorCard.failure(
+            itemId: 'preview-turn-failed-503-expanded',
+            summary: parseTimelineOutcome(
+              TimelinePreviewFixtures.failedTurnRetryable503.data['outcome'],
+            ),
+            initiallyDetailsExpanded: true,
+          ),
+          const SizedBox(height: 16),
+          _chatItem(TimelinePreviewFixtures.budgetLimitedTurn),
+          const SizedBox(height: 12),
+          _chatItem(TimelinePreviewFixtures.cancelledTurn),
+        ],
+      ),
+    ),
+  ),
+);
+
+@Preview(name: '错误与结果 / 窄窗 150%', group: 'Timeline · 响应式', size: Size(390, 780))
+Widget timelineErrorNarrowPreview() => _timelinePreviewHost(
+  SelectionArea(
+    child: SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _chatItem(TimelinePreviewFixtures.failedTurnOverloaded),
+          const SizedBox(height: 12),
+          TimelineErrorCard.failure(
+            itemId: 'preview-turn-failed-503-narrow',
+            summary: parseTimelineOutcome(
+              TimelinePreviewFixtures.failedTurnRetryable503.data['outcome'],
+            ),
+            initiallyDetailsExpanded: true,
+          ),
+          const SizedBox(height: 12),
+          _chatItem(TimelinePreviewFixtures.budgetLimitedTurn),
+        ],
+      ),
+    ),
+  ),
+  maxWidth: 360,
+  textScale: 1.5,
+);
 
 @Preview(name: '窄窗 / 150% 字体缩放', group: 'Timeline · 响应式', size: Size(340, 720))
 Widget timelineNarrowScaledPreview() => _timelinePreviewHost(

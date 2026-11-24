@@ -43,9 +43,14 @@ class StatisticsSummarySection extends StatelessWidget {
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: DataTable(
+              horizontalMargin: 16,
+              columnSpacing: 24,
               columns: [
                 DataColumn(label: Text(context.l10n.statisticsModel)),
                 DataColumn(label: Text(context.l10n.statisticsReasoningEffort)),
+                DataColumn(
+                  label: Text(context.l10n.statisticsRequestedServiceTier),
+                ),
                 DataColumn(label: Text(context.l10n.statisticsSpeed)),
                 DataColumn(label: Text(context.l10n.statisticsSamples)),
                 DataColumn(label: Text(context.l10n.statisticsOutputTokens)),
@@ -66,6 +71,7 @@ class StatisticsSummarySection extends StatelessWidget {
                         ),
                       ),
                       DataCell(Text(context.l10n.statisticsGroupTotal)),
+                      const DataCell(Text('—')),
                       DataCell(
                         Text(
                           context.tokenThroughputLabel(summary.tokensPerSecond),
@@ -102,6 +108,7 @@ class StatisticsSummarySection extends StatelessWidget {
                               summary.accountId,
                               summary.modelId,
                               effort.effort,
+                              requestedServiceTier: effort.requestedServiceTier,
                             ),
                             child: const SizedBox.shrink(),
                           ),
@@ -111,6 +118,14 @@ class StatisticsSummarySection extends StatelessWidget {
                             formatStatisticsReasoningEffort(
                               context,
                               effort.effort,
+                            ),
+                          ),
+                        ),
+                        DataCell(
+                          Text(
+                            formatStatisticsRequestedServiceTier(
+                              context,
+                              effort.requestedServiceTier,
                             ),
                           ),
                         ),
@@ -215,14 +230,14 @@ class _CompactSummaryCard extends StatelessWidget {
               summary.accountId,
               summary.modelId,
               effort.effort,
+              requestedServiceTier: effort.requestedServiceTier,
             ),
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               '${formatStatisticsReasoningEffort(context, effort.effort)} · '
+              '${formatStatisticsRequestedServiceTier(context, effort.requestedServiceTier)} · '
               '${context.tokenThroughputLabel(effort.tokensPerSecond)} · '
               '${context.l10n.statisticsSamples} ${effort.sampleCount}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
               style: context.text.bodySmall,
             ),
           ),

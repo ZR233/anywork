@@ -82,12 +82,18 @@ impl ThreadModel {
         self.validate_context_origin(&request.context)?;
         let mut encoded = codec::request(request, &self.runtime)?;
         encoded.reasoning = self.reasoning.clone();
+        encoded.service_tier = self.runtime.service_tier.clone();
         if self.runtime.endpoint().authorization.is_none() {
-            encoded.max_tokens = self.runtime.model().max_output_tokens;
+            encoded.max_tokens = self.runtime.model().extra.max_output_tokens;
         }
         encoded.parallel_tool_calls = request.tool_call_mode
             == pl_core::model::ToolCallMode::Parallel
-            && self.runtime.model().capabilities.tools.parallel_tool_calls;
+            && self
+                .runtime
+                .model()
+                .base
+                .supports_parallel_tool_calls
+                .unwrap_or_default();
         self.runtime
             .validate_context(&encoded.input)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
@@ -204,7 +210,7 @@ impl CoreModelSession for ThreadModelSession {
         }
         let estimate = crate::completion::estimate_text_input_tokens(&encoded);
         if estimate
-            .zip(self.runtime.context().input_token_limit)
+            .zip(self.runtime.context().context_window)
             .is_some_and(|(tokens, window)| tokens >= window)
         {
             return Err(failure(
@@ -246,7 +252,7 @@ impl CoreModelSession for ThreadModelSession {
                 scope: &self.purpose,
                 account_id: runtime.account_id(),
                 account: runtime.endpoint(),
-                model: &runtime.model().model_id,
+                model: &runtime.model().base.slug,
                 instructions: instruction_text,
                 prelude_messages: &[],
                 context_hash: &context_hash,
@@ -256,7 +262,7 @@ impl CoreModelSession for ThreadModelSession {
                 parallel_tool_calls: encoded.parallel_tool_calls,
                 reasoning: encoded.reasoning.as_ref(),
                 output_schema: None,
-                service_tier: None,
+                service_tier: encoded.service_tier.as_deref(),
                 compacted: compaction_id.is_some() && self.last_compaction_id != compaction_id,
                 prompt_cache_policy: runtime
                     .endpoint()
@@ -270,7 +276,8 @@ impl CoreModelSession for ThreadModelSession {
         )
         .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?
         .or_else(|| self.prompt.slots.get(&self.purpose).cloned());
-        let request_metadata = receipt::request_metadata(&binding, &encoded, prompt.as_ref())?;
+        let request_metadata =
+            receipt::request_metadata(&runtime, &binding, &encoded, prompt.as_ref())?;
         if let Some(prompt) = &prompt {
             self.prompt.active_scope = self.purpose.clone();
             self.prompt
@@ -324,6 +331,7 @@ impl CoreModelSession for ThreadModelSession {
                     binding,
                     compatibility_family: runtime
                         .model()
+                        .extra
                         .capabilities
                         .native_context_family
                         .clone(),
@@ -400,13 +408,124 @@ mod contract_tests {
     use super::*;
 
     #[tokio::test]
+    async fn service_tiers_route_selection_is_frozen_for_each_thread_scope() {
+        use crate::config::{AccountId, AgentRoleId, ResolvedModelRoute};
+        use crate::runtime::invocation::chatgpt_tests::{catalog, fixture_for};
+        let (_temp, mut runtime) = fixture_for(true);
+        runtime.model = catalog(
+            serde_json::json!({
+                "slug":"fixture-model", "service_tiers":[{"id":"priority"},{"id":"ultrafast"}],
+                "default_service_tier":"ultrafast"
+            }),
+            None,
+        )
+        .remove(0);
+        let mut route = ResolvedModelRoute {
+            pricing_mode: runtime.pricing_mode,
+            account_id: AccountId::new("wire").unwrap(),
+            role: AgentRoleId::new("main").unwrap(),
+            endpoint: runtime.endpoint.clone(),
+            model: runtime.model.clone(),
+            context: runtime.context().clone(),
+            effort: None,
+            service_tier: None,
+        };
+        assert!(matches!(
+            route.clone().with_service_tier(Some("invalid")),
+            Err(pl_protocol::PureError::ConfigError(_))
+        ));
+        let selected = route.clone().with_service_tier(Some("priority")).unwrap();
+        let frozen = ThreadModel::new(
+            ModelRuntime::bind_route(selected, &pl_model_openai_wire::OPENAI_WIRE_CODEC, None)
+                .unwrap(),
+            None,
+        );
+        // A later UI/catalog selection changes another binding, not the already-bound Thread.
+        route = route.with_service_tier(Some("ultrafast")).unwrap();
+        let newer = ThreadModel::new(
+            ModelRuntime::bind_route(
+                route.clone(),
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                None,
+            )
+            .unwrap(),
+            None,
+        );
+        let standard = ThreadModel::new(
+            ModelRuntime::bind_route(
+                route.with_service_tier(None).unwrap(),
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                None,
+            )
+            .unwrap(),
+            None,
+        );
+        let request = || ModelRequest {
+            thread_id: "tier-thread".into(),
+            turn_id: "tier-turn".into(),
+            attempt_id: "tier-attempt".into(),
+            context: pl_core::context::ContextSnapshot {
+                revision: 0,
+                records: Arc::from([]),
+            },
+            tools: Arc::from([]),
+            tool_call_mode: pl_core::model::ToolCallMode::Parallel,
+            solo_tool_ids: Arc::from([]),
+            committed_private_context: None,
+            resources: None,
+            cancellation: pl_core::model::CancellationToken::new(),
+            progress: None,
+            members: None,
+        };
+        let (_temp, legacy) = fixture_for(false);
+        let unsupported = ResolvedModelRoute {
+            pricing_mode: legacy.pricing_mode,
+            account_id: AccountId::new("wire").unwrap(),
+            role: AgentRoleId::new("main").unwrap(),
+            endpoint: legacy.endpoint.clone(),
+            model: legacy.model.clone(),
+            context: legacy.context().clone(),
+            effort: None,
+            service_tier: None,
+        };
+        assert!(unsupported.clone().with_service_tier(None).is_ok());
+        assert!(matches!(
+            unsupported.clone().with_service_tier(Some("priority")),
+            Err(pl_protocol::PureError::ConfigError(_))
+        ));
+        let unsupported = ThreadModel::new(
+            ModelRuntime::bind_route(unsupported, &pl_model_openai_wire::OPENAI_WIRE_CODEC, None)
+                .unwrap(),
+            None,
+        );
+        for (model, sent, recorded) in [
+            (&frozen, Some("priority"), "tier:priority"),
+            (&newer, Some("ultrafast"), "tier:ultrafast"),
+            (&standard, None, "standard"),
+            (&unsupported, None, "notApplicable"),
+        ] {
+            let encoded = model.encode_request(&request()).await.unwrap();
+            assert_eq!(encoded.completion.service_tier.as_deref(), sent);
+            let call = model
+                .open_session()
+                .await
+                .unwrap()
+                .prepare(request())
+                .await
+                .unwrap();
+            let receipt = receipt::model_request_receipt(call.request_metadata().unwrap()).unwrap();
+            assert_eq!(receipt.requested_service_tier.as_deref(), Some(recorded));
+        }
+    }
+
+    #[tokio::test]
     async fn ordinary_thread_model_exposes_the_current_producer_endpoint() {
         use pl_core::context::{ContextContent, ContextRecord, ContextSnapshot};
 
         let runtime = ModelRuntime::bind(
             "fixture",
             pl_model_openai::endpoint::compatible_endpoint("fixture", "http://127.0.0.1:1/v1"),
-            crate::model::ModelInfo::compatible("contract-model"),
+            crate::model::ModelDefinition::compatible("contract-model"),
             &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )

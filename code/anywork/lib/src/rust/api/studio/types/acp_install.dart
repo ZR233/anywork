@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp_install.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 @freezed
 sealed class BridgeAcpInstallAvailability with _$BridgeAcpInstallAvailability {
@@ -50,11 +50,19 @@ class BridgeAcpInstallCommandReply {
 class BridgeAcpInstallEntry {
   final BridgeAcpProvider provider;
   final BridgeAcpInstallState state;
+  final BridgeAcpInstalledServer? installed;
+  final BridgeAcpInstallUpdateState update;
 
-  const BridgeAcpInstallEntry({required this.provider, required this.state});
+  const BridgeAcpInstallEntry({
+    required this.provider,
+    required this.state,
+    this.installed,
+    required this.update,
+  });
 
   @override
-  int get hashCode => provider.hashCode ^ state.hashCode;
+  int get hashCode =>
+      provider.hashCode ^ state.hashCode ^ installed.hashCode ^ update.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -62,7 +70,9 @@ class BridgeAcpInstallEntry {
       other is BridgeAcpInstallEntry &&
           runtimeType == other.runtimeType &&
           provider == other.provider &&
-          state == other.state;
+          state == other.state &&
+          installed == other.installed &&
+          update == other.update;
 }
 
 /// 一次安装失败的安全摘要；不含原始 URL、代理凭据或本地文件路径。
@@ -255,6 +265,32 @@ sealed class BridgeAcpInstallState with _$BridgeAcpInstallState {
     required String operationId,
     required BridgeAcpInstallFailure failure,
   }) = BridgeAcpInstallState_Failed;
+}
+
+@freezed
+sealed class BridgeAcpInstallUpdateState with _$BridgeAcpInstallUpdateState {
+  const BridgeAcpInstallUpdateState._();
+
+  const factory BridgeAcpInstallUpdateState.idle() =
+      BridgeAcpInstallUpdateState_Idle;
+  const factory BridgeAcpInstallUpdateState.checking() =
+      BridgeAcpInstallUpdateState_Checking;
+  const factory BridgeAcpInstallUpdateState.upToDate({
+    required PlatformInt64 checkedAt,
+    required String latestVersion,
+  }) = BridgeAcpInstallUpdateState_UpToDate;
+  const factory BridgeAcpInstallUpdateState.updateAvailable({
+    required PlatformInt64 checkedAt,
+    required BridgeAcpInstallRelease latest,
+  }) = BridgeAcpInstallUpdateState_UpdateAvailable;
+  const factory BridgeAcpInstallUpdateState.incompatibleMajor({
+    required PlatformInt64 checkedAt,
+    required String latestVersion,
+  }) = BridgeAcpInstallUpdateState_IncompatibleMajor;
+  const factory BridgeAcpInstallUpdateState.failed({
+    required PlatformInt64 checkedAt,
+    required BridgeAcpInstallFailure failure,
+  }) = BridgeAcpInstallUpdateState_Failed;
 }
 
 /// 已就绪的官方 server；`reused` 表示复用既有完整安装。

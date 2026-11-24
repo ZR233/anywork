@@ -27,12 +27,12 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     }
     let disabled = model("delegation-disabled");
     let mut no_text = model("delegation-no-text");
-    no_text.capabilities.output = vec![ModelModality::Image];
+    no_text.extra.capabilities.output = vec![ModelModality::Image];
     let mut unknown = model("delegation-unknown-context");
-    unknown.context_window = None;
-    unknown.max_context_window = None;
+    unknown.base.context_window = None;
+    unknown.base.max_context_window = None;
     let mut no_tools = model("delegation-no-tools");
-    no_tools.capabilities.tools.function_calling = false;
+    no_tools.extra.capabilities.tools.function_calling = false;
     a_models.extend([disabled, no_text, unknown, no_tools]);
     let mut a = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::compatible_endpoint(
@@ -129,20 +129,20 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     persist_config(home, &config)
 }
 
-fn model(id: &str) -> ModelInfo {
-    let mut model = ModelInfo::compatible(id);
-    model.display_name = if id == SHARED_MODEL {
+fn model(id: &str) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(id);
+    model.base.display_name = if id == SHARED_MODEL {
         "Delegation same-name model · 长名称用于窄窗口身份核对".into()
     } else {
         id.into()
     };
-    model.description = Some("DELEGATION_INVENTORY_ONLY: custom synthetic model; price, suitability and external benchmarks are unverified.".into());
-    model.context_window = Some(1_000_000);
-    model.max_context_window = Some(1_000_000);
-    model.pricing = ModelPricing::Unknown;
+    model.base.description = Some("DELEGATION_INVENTORY_ONLY: custom synthetic model; price, suitability and external benchmarks are unverified.".into());
+    model.base.context_window = Some(1_000_000);
+    model.base.max_context_window = Some(1_000_000);
+    model.extra.pricing = ModelPricing::Unknown;
     if matches!(id, SHARED_MODEL | OTHER_MODEL) {
         // Synthetic reference prices, never an inferred quota or real supplier tariff.
-        model.pricing = ModelPricing::published_at(
+        model.extra.pricing = ModelPricing::published_at(
             "USD",
             vec![TokenPriceTier::flat(2.0, 8.0, Some(0.5), Some(3.0))],
             "https://example.invalid/synthetic-reference-prices",
@@ -150,17 +150,19 @@ fn model(id: &str) -> ModelInfo {
         );
     }
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     if id == OTHER_MODEL {
-        model.context_window = None;
-        model.auto_compact_token_limit = Some(700_000);
-        model.capabilities.reasoning = true;
-        model.parameters.push(ModelParameter {
+        model.base.context_window = None;
+        model.base.auto_compact_token_limit = Some(700_000);
+        model.extra.capabilities.reasoning = true;
+        model.extra.parameters.push(ModelParameter {
             name: "effort".into(),
             label: None,
             default: Some("low".into()),
             candidates: vec!["low".into(), "high".into()],
+            candidate_display_names: Default::default(),
             wire: ["low", "high"]
                 .into_iter()
                 .map(|effort| {

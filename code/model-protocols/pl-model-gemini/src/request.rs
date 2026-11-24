@@ -2,14 +2,15 @@ use std::collections::BTreeMap;
 
 use pl_model_wire::completion::request_support::{
     MediaRepresentationPlan, finalize_body, media_inline_data, message_content_text,
-    messages_after_last_compaction, record_arguments_text, tool_media_content, validate_tool_history,
+    messages_after_last_compaction, record_arguments_text, tool_media_content,
+    validate_tool_history,
 };
 use pl_model_wire::completion::{
     CompletionRequest, ContentPart, MessageRole, ModelContextItem, ToolSpec,
 };
-use pl_model_wire::model::{MediaWireFormat, ModelInfo, ModelProtocolOptions};
-use pl_model_wire::wire_codec::{PreparedHttpRequest, VisibleOutputProtocol};
+use pl_model_wire::model::{MediaWireFormat, ModelDefinition, ModelProtocolOptions};
 use pl_model_wire::transport::SseContentTypePolicy;
+use pl_model_wire::wire_codec::{PreparedHttpRequest, VisibleOutputProtocol};
 use pl_protocol::{PureError, Result};
 use serde_json::{Map, Value, json};
 
@@ -23,7 +24,9 @@ pub fn validate_model_path_segment(model: &str) -> Result<String> {
         || trimmed != model
         || trimmed.contains("..")
         || trimmed.bytes().any(|b| {
-            b.is_ascii_control() || b.is_ascii_whitespace() || matches!(b, b'/' | b'\\' | b'?' | b'#')
+            b.is_ascii_control()
+                || b.is_ascii_whitespace()
+                || matches!(b, b'/' | b'\\' | b'?' | b'#')
         })
     {
         return Err(protocol_error(format!(
@@ -35,24 +38,27 @@ pub fn validate_model_path_segment(model: &str) -> Result<String> {
 
 pub fn build_http_request(
     request: &CompletionRequest,
-    model: &ModelInfo,
+    model: &ModelDefinition,
 ) -> Result<PreparedHttpRequest> {
     request.validate_replay_spans()?;
     let messages = messages_after_last_compaction(&request.input);
     validate_tool_history(&messages)?;
 
-    let ModelProtocolOptions::GeminiGenerateContent(options) = &model.binding.request.protocol else {
+    let ModelProtocolOptions::GeminiGenerateContent(options) =
+        &model.extra.binding.request.protocol
+    else {
         return Err(protocol_error(
             "Gemini request requires gemini_generate_content protocol options",
         ));
     };
 
     let raw_model = model
+        .extra
         .binding
         .request
         .api_model
         .as_deref()
-        .unwrap_or(&model.model_id);
+        .unwrap_or(&model.base.slug);
     let sent_model = validate_model_path_segment(raw_model)?;
     let path_and_query = format!("/models/{sent_model}:streamGenerateContent?alt=sse");
 
@@ -137,7 +143,11 @@ pub fn build_http_request(
                     if !record.item_id.starts_with("gemini_noid:") {
                         fr.insert("id".into(), Value::String(record.item_id.clone()));
                     }
-                    push_content(&mut contents, "user", vec![json!({ "functionResponse": fr })]);
+                    push_content(
+                        &mut contents,
+                        "user",
+                        vec![json!({ "functionResponse": fr })],
+                    );
                 }
             },
             ModelContextItem::Compaction { .. } | ModelContextItem::Native { .. } => {
@@ -215,17 +225,19 @@ pub fn build_http_request(
     if let Some(max_tokens) = request.max_tokens {
         generation_config.insert("maxOutputTokens".into(), json!(max_tokens));
     }
-    if options.include_thoughts && model.capabilities.reasoning {
-        generation_config.insert(
-            "thinkingConfig".into(),
-            json!({ "includeThoughts": true }),
-        );
+    if options.include_thoughts && model.extra.capabilities.reasoning {
+        generation_config.insert("thinkingConfig".into(), json!({ "includeThoughts": true }));
     }
     if !generation_config.is_empty() {
         body.insert("generationConfig".into(), Value::Object(generation_config));
     }
 
-    if model.binding.request.body.contains_key("systemInstruction")
+    if model
+        .extra
+        .binding
+        .request
+        .body
+        .contains_key("systemInstruction")
         || parameter_writes_path(model, request, "systemInstruction")
     {
         return Err(protocol_error(
@@ -253,21 +265,23 @@ pub fn build_http_request(
 }
 
 fn parameter_writes_path(
-    model: &ModelInfo,
+    model: &ModelDefinition,
     request: &CompletionRequest,
     reserved_root: &str,
 ) -> bool {
     let Some(effort) = request.reasoning.as_ref().and_then(|r| r.effort.as_deref()) else {
         return false;
     };
-    model.parameters.iter().any(|parameter| {
+    model.parameters().any(|parameter| {
         parameter.name == "effort"
             && parameter.wire_for(effort).is_some_and(|wire| {
                 wire.set
                     .iter()
                     .map(|a| a.path.as_str())
                     .chain(wire.remove.iter().map(String::as_str))
-                    .any(|path| path == reserved_root || path.starts_with(&format!("{reserved_root}.")))
+                    .any(|path| {
+                        path == reserved_root || path.starts_with(&format!("{reserved_root}."))
+                    })
             })
     })
 }

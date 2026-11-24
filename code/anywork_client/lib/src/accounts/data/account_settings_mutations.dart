@@ -9,6 +9,11 @@ import '../../studio/commands/command_lane.dart';
 import '../domain/accounts_repository.dart';
 import 'account_observations.dart';
 
+/// Loads the current settings version and dispatches in the same owner generation.
+typedef RevisionedAccountWrite = Future<SettingsCommandReply> Function(
+  Future<SettingsCommandReply> Function(int revision) send,
+);
+
 /// Settings operations keep target-specific proof until receipt observation.
 /// The coordinator carries only order and settings CAS, never these snapshots.
 final class AccountSettingsMutations {
@@ -28,7 +33,11 @@ final class AccountSettingsMutations {
     required String key,
     DraftStamp? draft,
     required Map<String, AccountObservationTarget> targets,
-    required Future<SettingsCommandReply> Function(int, OperationId) request,
+    required Future<SettingsCommandReply> Function(
+      RevisionedAccountWrite,
+      OperationId,
+    )
+    request,
     void Function(OperationHandle operation)? onAdmitted,
   }) {
     if (coordinator.isClosed)
@@ -75,9 +84,12 @@ final class AccountSettingsMutations {
             }
           }
 
-          final reply = await retryRevisionConflict(() async {
-            if (generation != observations.generation)
-              throw const _AccountOwnerChanged();
+          var usedSettingsRevision = false;
+          Future<SettingsCommandReply> withRevision(
+            Future<SettingsCommandReply> Function(int) send,
+          ) async {
+            usedSettingsRevision = true;
+            issued = false;
             final revision = await coordinator.expectedRevision(() async {
               if (!await refresh())
                 throw StateError('Account settings are unavailable');
@@ -85,8 +97,17 @@ final class AccountSettingsMutations {
             if (generation != observations.generation)
               throw const _AccountOwnerChanged();
             issued = true;
-            return request(revision, operation.id);
-          }, refresh: refresh);
+            coordinator.requireOwner(owner);
+            return send(revision);
+          }
+
+          final reply = await retryRevisionConflict(() {
+            coordinator.requireOwner(owner);
+            if (generation != observations.generation)
+              throw const _AccountOwnerChanged();
+            issued = true;
+            return request(withRevision, operation.id);
+          }, refresh: () async => usedSettingsRevision && await refresh());
           if (reply.receipt.operationId != operation.id)
             throw const StudioFailure(
               code: StudioFailureCode.protocol,

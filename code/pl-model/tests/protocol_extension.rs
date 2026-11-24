@@ -1,7 +1,7 @@
 use pl_model::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole, SystemPrompt},
     config::{AccountConfig, ModelCatalogId},
-    model::{ModelInfo, ModelRequestProfile},
+    model::{ModelDefinition, ModelRequestProfile},
     protocol::{
         ApiKeyHeaderScheme, InstructionWireRole, ProtocolEndpoint, ProtocolId, ProtocolRegistry,
         discovery::{ModelCatalogQuery, ModelCatalogQueryResult},
@@ -62,7 +62,7 @@ async fn a_registered_derivative_owns_its_catalog_and_request_policy() {
             request.push(socket.read_u8().await.unwrap());
             assert!(request.len() < 4096);
         }
-        assert!(request.starts_with(b"GET /v1/models HTTP/1.1\r\n"));
+        assert!(request.starts_with(b"GET /v1/models?client_version=0.170.0 HTTP/1.1\r\n"));
         let body = r#"{"fixtureSlug":"fixture-model"}"#;
         socket.write_all(format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
@@ -95,7 +95,7 @@ async fn a_registered_derivative_owns_its_catalog_and_request_policy() {
         .effective_catalog_with_registry(None, registry)
         .unwrap()
         .into_iter()
-        .find(|entry| entry.model.model_id == "fixture-model")
+        .find(|entry| entry.model.base.slug == "fixture-model")
         .expect("discovered model must be usable")
         .model;
     let mut endpoint = account.to_endpoint_with_registry(registry).unwrap();
@@ -131,7 +131,7 @@ fn protocol_config_preserves_unknown_ids_until_assembly() {
         "https://fixture.invalid",
     );
     let original =
-        AccountConfig::from_explicit_models(endpoint, vec![ModelInfo::compatible("fixture")]);
+        AccountConfig::from_explicit_models(endpoint, vec![ModelDefinition::compatible("fixture")]);
     let account: AccountConfig =
         serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
     assert_eq!(account.protocol.as_str(), "fixture_openai_derivative");

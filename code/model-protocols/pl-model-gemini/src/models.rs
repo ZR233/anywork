@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use pl_model_wire::model::{
-    BundledModelDefinition, ModelDefinitionError, ModelInfo,
+    BundledModelDefinition, CodexModel, ModelDefinition, ModelDefinitionError, TruncationPolicy,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
         ToolCapabilities,
@@ -134,7 +134,7 @@ const MODELS: &[Definition] = &[
 ];
 
 impl Definition {
-    fn instantiate(&self, family: &ModelFamily) -> ModelInfo {
+    fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
         let pricing = match self.pricing {
             Some(tiers) => {
                 ModelPricing::published_at("USD", tiers.to_vec(), PRICING_SOURCE, VERIFIED_AT)
@@ -150,7 +150,7 @@ impl Definition {
             max_output_tokens: Some(self.max_output),
             pricing,
         });
-        model.parameters.push(thinking_effort_parameter(self.thinking));
+        model.set_parameters(vec![thinking_effort_parameter(self.thinking)]);
         model
     }
 }
@@ -162,6 +162,7 @@ fn thinking_effort_parameter(control: ThinkingControl) -> ModelParameter {
             label: None,
             default: Some(default.to_owned()),
             candidates: candidates.iter().map(|&c| c.to_owned()).collect(),
+            candidate_display_names: Default::default(),
             wire: candidates
                 .iter()
                 .map(|&c| {
@@ -199,6 +200,7 @@ fn thinking_effort_parameter(control: ThinkingControl) -> ModelParameter {
                 label: None,
                 default: Some(default.to_owned()),
                 candidates,
+                candidate_display_names: Default::default(),
                 wire,
             }
         }
@@ -214,7 +216,6 @@ fn family() -> ModelFamily {
         replay: vec![MediaRepresentation::DataUrl],
     };
     ModelFamily {
-        id: "gemini-generate-content",
         capabilities: ModelCapabilities {
             streaming: true,
             temperature: true,
@@ -251,7 +252,6 @@ fn family() -> ModelFamily {
             output: vec![ModelModality::Text],
             tools: ToolCapabilities {
                 function_calling: true,
-                parallel_tool_calls: true,
                 ..Default::default()
             },
             interleaved: None,
@@ -259,8 +259,14 @@ fn family() -> ModelFamily {
             instruction_snapshot_overrides: false,
             native_context_family: Some(NATIVE_CONTEXT_FAMILY.to_owned()),
         },
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: Vec::new(),
         transport: ModelTransportProfile::gemini_http(),
         request_profile: ModelRequestProfile {
@@ -271,7 +277,6 @@ fn family() -> ModelFamily {
             ],
             ..Default::default()
         },
-        base_instructions: String::new(),
     }
 }
 

@@ -18,7 +18,7 @@ use pl_model_wire::{
     },
     config::ModelCatalogDiscovery,
     discovery::{self, ModelCatalogQueryError},
-    model::{ModelInfo, ModelProtocolOptions},
+    model::{ModelDefinition, ModelProtocolOptions},
     protocol::{ConnectionMode, ProtocolEndpoint, WireApi},
 };
 
@@ -149,7 +149,7 @@ pub enum CommonCommand {
 pub struct Profile {
     pub default_wire: Wire,
     pub supported: &'static [WireApi],
-    pub defaults: Vec<ModelInfo>,
+    pub defaults: Vec<ModelDefinition>,
     pub adapter: &'static Adapter,
     pub allow_tool_stream: bool,
 }
@@ -184,18 +184,20 @@ impl CommonCommand {
                 let mut model = defaults
                     .into_iter()
                     .find(|entry| {
-                        entry.model_id == model && entry.binding.transport.protocol == api
+                        entry.base.slug == model && entry.extra.binding.transport.protocol == api
                     })
-                    .unwrap_or_else(|| ModelInfo::compatible(&model));
-                model.binding.transport.protocol = api;
-                model.binding.transport.default_connection_mode = wire.connection();
+                    .unwrap_or_else(|| ModelDefinition::compatible(&model));
+                model.extra.binding.transport.protocol = api;
+                model.extra.binding.transport.default_connection_mode = wire.connection();
                 if !model
+                    .extra
                     .binding
                     .transport
                     .supported_connection_modes
                     .contains(&wire.connection())
                 {
                     model
+                        .extra
                         .binding
                         .transport
                         .supported_connection_modes
@@ -203,19 +205,19 @@ impl CommonCommand {
                 }
                 if api == WireApi::Responses
                     && !matches!(
-                        model.binding.request.protocol,
+                        model.extra.binding.request.protocol,
                         ModelProtocolOptions::Responses(_)
                     )
                 {
-                    model.binding.request.protocol =
+                    model.extra.binding.request.protocol =
                         ModelProtocolOptions::Responses(Default::default());
                 } else if api == WireApi::GeminiGenerateContent
                     && !matches!(
-                        model.binding.request.protocol,
+                        model.extra.binding.request.protocol,
                         ModelProtocolOptions::GeminiGenerateContent(_)
                     )
                 {
-                    model.binding.request.protocol =
+                    model.extra.binding.request.protocol =
                         ModelProtocolOptions::GeminiGenerateContent(Default::default());
                 }
                 let tools: Vec<ToolSpec> = tools
@@ -229,10 +231,10 @@ impl CommonCommand {
                     return Err("--tool-stream requires a non-empty --tools file".into());
                 }
                 if !tools.is_empty() {
-                    model.capabilities.tools.function_calling = true;
+                    model.extra.capabilities.tools.function_calling = true;
                 }
                 if tool_stream {
-                    match &mut model.binding.request.protocol {
+                    match &mut model.extra.binding.request.protocol {
                         ModelProtocolOptions::ChatCompletions(options) if allow_tool_stream => {
                             options.tool_stream = true
                         }
@@ -373,7 +375,7 @@ impl CommonCommand {
                     &defaults,
                 )?;
                 for entry in entries {
-                    print(&endpoint, &entry.model_id);
+                    print(&endpoint, &entry.base.slug);
                 }
             }
         }

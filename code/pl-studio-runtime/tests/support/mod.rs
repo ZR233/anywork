@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use pl_model::{
     config::{AccountConfig, AccountId, ModelRouteConfig},
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
 use pl_studio_runtime::{
@@ -230,10 +230,10 @@ impl Environment {
             ("root-fixture", &root_provider),
             ("child-fixture", &child_provider),
         ] {
-            let mut model = ModelInfo::compatible(MODEL);
-            model.binding.set_transport(transport.clone());
-            model.capabilities.instruction_snapshot_overrides = true;
-            model.base_instructions = "Lifecycle fixture model base".into();
+            let mut model = ModelDefinition::compatible(MODEL);
+            model.extra.binding.set_transport(transport.clone());
+            model.extra.capabilities.instruction_snapshot_overrides = true;
+            model.base.model_messages.instructions_template = "Lifecycle fixture model base".into();
             config.models.accounts.insert(
                 AccountId::new(account)?,
                 AccountConfig::from_explicit_models(
@@ -328,6 +328,7 @@ impl Environment {
                     model_id: MODEL.into(),
                     effort: None,
                 },
+                service_tier: None,
                 delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                 delegation_preference: None,
                 workspace_mode: mode,

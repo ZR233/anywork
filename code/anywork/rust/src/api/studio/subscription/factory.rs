@@ -56,7 +56,7 @@ pub(crate) mod tests {
         async fn with_followup(reply: Option<pl_provider_fixture::Reply>) -> Result<Self> {
             use pl_model::{
                 config::{AccountConfig, AccountId, ModelRouteConfig},
-                model::{ModelInfo, ModelTransportProfile},
+                model::{ModelDefinition, ModelTransportProfile},
             };
             use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
             use pl_studio_runtime::{
@@ -92,12 +92,14 @@ pub(crate) mod tests {
             let provider = FixtureServer::start(script).await?;
 
             let initialized: Result<pl_studio_runtime::StudioRuntime> = async {
-                let mut model = ModelInfo::compatible(MODEL);
+                let mut model = ModelDefinition::compatible(MODEL);
                 model
+                    .extra
                     .binding
                     .set_transport(ModelTransportProfile::responses_http());
-                model.capabilities.instruction_snapshot_overrides = true;
-                model.base_instructions = "Follow the finite conversation fixture.".into();
+                model.extra.capabilities.instruction_snapshot_overrides = true;
+                model.base.model_messages.instructions_template =
+                    "Follow the finite conversation fixture.".into();
                 let account_id = AccountId::new(ACCOUNT)?;
                 let mut config = StudioConfig::default_config()?;
                 config.models.accounts.clear();
@@ -158,6 +160,7 @@ pub(crate) mod tests {
                             model_id: MODEL.into(),
                             effort: None,
                         },
+                        service_tier: None,
                         delegation_mode: Some(DelegationMode::Profile),
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,

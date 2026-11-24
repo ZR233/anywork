@@ -453,10 +453,10 @@ impl ProtocolEndpoint {
 
     pub fn effective_prompt_cache_policy(
         &self,
-        model: &crate::model::ModelInfo,
+        model: &crate::model::ModelDefinition,
     ) -> EffectivePromptCachePolicy {
         match (
-            model.binding.transport.protocol,
+            model.extra.binding.transport.protocol,
             self.service_capabilities.prompt_cache.dialect,
         ) {
             (_, PromptCacheDialect::ImplicitPrefix) => EffectivePromptCachePolicy::ImplicitPrefix,
@@ -469,14 +469,14 @@ impl ProtocolEndpoint {
 
     pub fn instruction_update_strategy(
         &self,
-        model: &crate::model::ModelInfo,
+        model: &crate::model::ModelDefinition,
     ) -> InstructionUpdateStrategy {
-        let role = self.instruction_wire_role(model.binding.transport.protocol);
+        let role = self.instruction_wire_role(model.extra.binding.transport.protocol);
         let accepts = self
             .service_capabilities
             .history_instruction_role
             .accepts(role);
-        if accepts && model.capabilities.instruction_snapshot_overrides {
+        if accepts && model.extra.capabilities.instruction_snapshot_overrides {
             InstructionUpdateStrategy::AppendFullSnapshot
         } else {
             InstructionUpdateStrategy::ReplacePrefix

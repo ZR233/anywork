@@ -511,6 +511,7 @@ fn billing(index: usize, old: bool, padding: usize) -> InferenceBillingRecord {
             reported_model: Some("bench-wire-model".into()),
         }),
         effort: Some("medium".into()),
+        requested_service_tier: Some("standard".into()),
         context_window: Some(32_768),
         accounting: InferenceAccounting {
             usage: UsageReport {

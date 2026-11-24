@@ -9,6 +9,7 @@ final class ModelRouteDisplay {
     required this.accountId,
     required this.modelId,
     required this.effort,
+    this.serviceTier,
     required this.pending,
     required this.available,
     this.unavailableReason,
@@ -17,6 +18,7 @@ final class ModelRouteDisplay {
   final String accountId;
   final String modelId;
   final String? effort;
+  final String? serviceTier;
   final bool pending;
   final bool available;
   final String? unavailableReason;
@@ -27,6 +29,7 @@ final class ModelRouteDisplay {
       accountId == other.accountId &&
       modelId == other.modelId &&
       effort == other.effort &&
+      serviceTier == other.serviceTier &&
       pending == other.pending &&
       available == other.available &&
       unavailableReason == other.unavailableReason;
@@ -36,6 +39,7 @@ final class ModelRouteDisplay {
     accountId,
     modelId,
     effort,
+    serviceTier,
     pending,
     available,
     unavailableReason,
@@ -197,6 +201,7 @@ abstract final class ModelRouteQueries {
       accountId: accountId,
       modelId: modelId,
       effort: pending ? target!.effort ?? canonical?.effort : canonical?.effort,
+      serviceTier: pending ? target!.serviceTier : canonical?.serviceTier,
       pending: pending,
       available: pending
           ? model(accounts, accountId, modelId)?.enabled == true &&

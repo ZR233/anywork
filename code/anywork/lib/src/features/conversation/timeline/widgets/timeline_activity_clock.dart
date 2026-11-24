@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:duration/duration.dart';
+import 'package:duration/locale.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
@@ -7,39 +9,48 @@ import '../../../../l10n/studio_l10n.dart';
 enum ActivityDurationKind { elapsed, worked, reasoning, executing }
 
 /// 只格式化已有时间事实；未知或倒序时间不构造耗时。
+/// 使用 `package:duration` 完成按日/时/分/秒的分段进位与本地化单位拼接。
 String activityDurationLabel(
   BuildContext context,
   int seconds, {
   ActivityDurationKind kind = ActivityDurationKind.elapsed,
 }) {
   final l10n = context.l10n;
-  final minutes = seconds ~/ 60;
-  final remainder = seconds % 60;
+  if (seconds <= 0) {
+    return switch (kind) {
+      ActivityDurationKind.executing => l10n.timelineGroupExecutingUnderSecond,
+      ActivityDurationKind.worked => l10n.timelineGroupWorkedUnderSecond,
+      ActivityDurationKind.reasoning =>
+        l10n.timelineReasoningElapsedUnderSecond,
+      ActivityDurationKind.elapsed => l10n.timelineToolElapsedUnderSecond,
+    };
+  }
+  final locale = Localizations.maybeLocaleOf(context);
+  final durationLocale = switch (locale?.languageCode) {
+    'zh' when locale?.scriptCode == 'Hant' => chineseTraditionalLocale,
+    'zh' => chineseSimplifiedDurationLocale,
+    final code? => DurationLocale.fromLanguageCode(code) ?? englishLocale,
+    null => englishLocale,
+  };
+  final isChinese = locale?.languageCode == 'zh';
+  final formatted = prettyDuration(
+    Duration(seconds: seconds),
+    tersity: DurationTersity.second,
+    upperTersity: DurationTersity.day,
+    locale: durationLocale,
+    abbreviated: !isChinese,
+    spacer: isChinese ? ' ' : '',
+    delimiter: ' ',
+  );
   return switch (kind) {
-    ActivityDurationKind.executing => switch (seconds) {
-      <= 0 => l10n.timelineGroupExecutingUnderSecond,
-      < 60 => l10n.timelineGroupExecutingSeconds(seconds),
-      _ when remainder == 0 => l10n.timelineGroupExecutingMinutes(minutes),
-      _ => l10n.timelineGroupExecutingMinutesSeconds(minutes, remainder),
-    },
-    ActivityDurationKind.worked => switch (seconds) {
-      <= 0 => l10n.timelineGroupWorkedUnderSecond,
-      < 60 => l10n.timelineGroupWorkedSeconds(seconds),
-      _ when remainder == 0 => l10n.timelineGroupWorkedMinutes(minutes),
-      _ => l10n.timelineGroupWorkedMinutesSeconds(minutes, remainder),
-    },
-    ActivityDurationKind.reasoning => switch (seconds) {
-      <= 0 => l10n.timelineReasoningElapsedUnderSecond,
-      < 60 => l10n.timelineReasoningElapsedSeconds(seconds),
-      _ when remainder == 0 => l10n.timelineReasoningElapsedMinutes(minutes),
-      _ => l10n.timelineReasoningElapsedMinutesSeconds(minutes, remainder),
-    },
-    ActivityDurationKind.elapsed => switch (seconds) {
-      <= 0 => l10n.timelineToolElapsedUnderSecond,
-      < 60 => l10n.timelineToolElapsedSeconds(seconds),
-      _ when remainder == 0 => l10n.timelineToolElapsedMinutes(minutes),
-      _ => l10n.timelineToolElapsedMinutesSeconds(minutes, remainder),
-    },
+    ActivityDurationKind.executing => l10n.timelineGroupExecutingDuration(
+      formatted,
+    ),
+    ActivityDurationKind.worked => l10n.timelineGroupWorkedDuration(formatted),
+    ActivityDurationKind.reasoning => l10n.timelineReasoningElapsedDuration(
+      formatted,
+    ),
+    ActivityDurationKind.elapsed => l10n.timelineToolElapsedDuration(formatted),
   };
 }
 
@@ -60,14 +71,14 @@ class TimelineActivityClock extends StatefulWidget {
     int? startedAt,
     int? finishedAt,
     this.running = false,
+    this.now,
     super.key,
   }) : startedAtMillis = startedAt == null
            ? null
            : startedAt * Duration.millisecondsPerSecond,
        finishedAtMillis = finishedAt == null
            ? null
-           : finishedAt * Duration.millisecondsPerSecond,
-       now = null;
+           : finishedAt * Duration.millisecondsPerSecond;
 
   final int? startedAtMillis;
   final int? finishedAtMillis;

@@ -5,6 +5,7 @@
 //! [`AcpAccountInner::observe_committed`]**；其它路径（读取、投影、命令准入）都只消费这些事实。
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
@@ -58,7 +59,8 @@ impl Slot {
         if operation.generation != generation {
             return None;
         }
-        let cancelling = operation.cancel.is_cancelled()
+        let cancelling = operation.cancel_requested.load(Ordering::Acquire)
+            || operation.cancel.is_cancelled()
             || matches!(
                 &self.state,
                 AcpAuthState::Cancelling { operation_id }
@@ -72,40 +74,101 @@ impl Slot {
             terminal
         };
         let same_connection = self.revision == connection_revision;
+        let preserve_verified = same_connection
+            && matches!(operation.action, crate::AcpAuthAction::QueryUsage)
+            && matches!(self.state, AcpAuthState::Verified { .. })
+            && matches!(self.lifecycle.state, crate::AcpConnectionState::Ready);
         self.operation = None;
         if !self.retired {
-            self.state = if same_connection {
-                decided
+            if !same_connection {
+                self.state = AcpAuthState::Unchecked;
+            } else if preserve_verified {
+                if cancelling && !cleanup_failed {
+                    // Preserve existing Verified auth and prior usage on cancelled QueryUsage.
+                } else {
+                    match &decided {
+                        AcpAuthState::Verified { .. } => {
+                            self.state = decided;
+                            if let Some(usage) = usage_update {
+                                self.usage = Some(usage);
+                            }
+                        }
+                        AcpAuthState::Failed { failure } => {
+                            let invalidates_auth = matches!(
+                                failure.stage,
+                                crate::AcpAuthStage::Close
+                                    | crate::AcpAuthStage::Cleanup
+                                    | crate::AcpAuthStage::Prepare
+                                    | crate::AcpAuthStage::Process
+                                    | crate::AcpAuthStage::Initialize
+                                    | crate::AcpAuthStage::Authenticate
+                            ) || matches!(
+                                failure.code,
+                                crate::AcpAuthFailureCode::Transport
+                                    | crate::AcpAuthFailureCode::Authentication
+                                    | crate::AcpAuthFailureCode::UnsupportedVersion
+                                    | crate::AcpAuthFailureCode::ServerVersionMismatch
+                                    | crate::AcpAuthFailureCode::PreparationRequired
+                                    | crate::AcpAuthFailureCode::InstallationInvalid
+                                    | crate::AcpAuthFailureCode::MissingExecutable
+                                    | crate::AcpAuthFailureCode::UnsupportedPlatform
+                                    | crate::AcpAuthFailureCode::ConfigChanged
+                                    | crate::AcpAuthFailureCode::Cleanup
+                            );
+                            if invalidates_auth {
+                                self.state = decided;
+                            } else {
+                                self.usage =
+                                    Some(usage_update.unwrap_or_else(|| AcpUsageObservation {
+                                        checked_at: unix_seconds(),
+                                        state: crate::AcpUsageState::Failed {
+                                            code: map_usage_failure_code(failure.code),
+                                        },
+                                    }));
+                            }
+                        }
+                        AcpAuthState::Cancelled => {
+                            // Keep Verified on Ready connection.
+                        }
+                        _ => {
+                            self.state = decided;
+                        }
+                    }
+                }
             } else {
-                AcpAuthState::Unchecked
-            };
-            if same_connection
-                && !cancelling
-                && let Some(usage) = usage_update
-            {
-                self.usage = Some(usage);
+                self.state = decided;
+                if !cancelling && let Some(usage) = usage_update {
+                    self.usage = Some(usage);
+                }
             }
         }
         Some(self.retired)
     }
 }
 
-/// ConfigRuntime owns connection revisions; auth only tracks its admitted identity and enabled state.
+fn map_usage_failure_code(code: crate::AcpAuthFailureCode) -> crate::AcpUsageFailureCode {
+    match code {
+        crate::AcpAuthFailureCode::Timeout => crate::AcpUsageFailureCode::Timeout,
+        crate::AcpAuthFailureCode::ResourceLimit => crate::AcpUsageFailureCode::ResourceLimit,
+        crate::AcpAuthFailureCode::Transport => crate::AcpUsageFailureCode::Transport,
+        _ => crate::AcpUsageFailureCode::Query,
+    }
+}
+
+/// ConfigRuntime owns connection revisions; auth only tracks its admitted identity, enabled state, and configured template kind.
+/// Does NOT encode mutable on-disk server patch version so upgrades never trigger `StaleRevision` on Settings views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConnectionIdentity {
     revision: u64,
     pub(super) enabled: bool,
-    release: Option<super::super::acp_install::ReleaseIdentity>,
+    template: Option<crate::config::AcpProvider>,
 }
 impl ConnectionIdentity {
     pub(super) fn of(entry: &AcpDefinitionEntry) -> Self {
         Self {
             revision: entry.connection_revision,
             enabled: entry.definition.enabled,
-            release: entry
-                .definition
-                .template_kind()
-                .and_then(super::super::acp_install::release_identity),
+            template: entry.definition.template_kind(),
         }
     }
 }
@@ -119,6 +182,7 @@ pub(super) struct Operation {
     /// 受理时冻结的启动意图；快照投影与收尾裁决都消费它，不重新读取 state。
     pub(super) action: crate::AcpAuthAction,
     pub(super) cancel: CancellationToken,
+    pub(super) cancel_requested: AtomicBool,
     pub(super) authentication: tokio::sync::mpsc::Sender<pl_acp::auth::AuthCommand>,
     /// 关闭编排显式重试实际清理错误；不按固定间隔轮询。
     pub(super) cleanup_retry: tokio::sync::Notify,
@@ -439,7 +503,8 @@ impl AcpAccountInner {
         self.emit(snapshot);
     }
 
-    /// 发布协议进度：只允许从活跃阶段推进，取消中/收束中/终态一律不被覆盖。
+    /// 发布协议进度：只允许从活跃阶段推进，取消中/收束中/终态一律不被覆盖；
+    /// 已在就绪连接保持 `Verified` 的额度查询只允许因 `Required` 离开 `Verified`。
     pub(super) fn publish_progress(
         &self,
         account_id: &str,
@@ -456,12 +521,15 @@ impl AcpAccountInner {
                 | AcpAuthState::Required { .. }
                 | AcpAuthState::Authenticating { .. }
                 | AcpAuthState::Verifying { .. } => Some(state),
+                AcpAuthState::Verified { .. } if matches!(state, AcpAuthState::Required { .. }) => {
+                    Some(state)
+                }
                 _ => None,
             },
         );
     }
 
-    /// 进入/更新收束中：busy 非终态，且绝不覆盖已取消代次。
+    /// 进入/更新收束中：busy 非终态，且绝不覆盖已取消代次或保持中的 `Verified`。
     pub(super) fn publish_closing(
         &self,
         account_id: &str,
@@ -482,6 +550,7 @@ impl AcpAccountInner {
                     operation_id: operation_id.clone(),
                     failure,
                 }),
+                AcpAuthState::Verified { .. } => None,
                 _ => None,
             },
         );
@@ -535,6 +604,7 @@ mod tests {
             generation,
             action,
             cancel: CancellationToken::new(),
+            cancel_requested: AtomicBool::new(false),
             authentication: tokio::sync::mpsc::channel(1).0,
             cleanup_retry: tokio::sync::Notify::new(),
             join: tokio::sync::Mutex::new(None),
@@ -550,7 +620,7 @@ mod tests {
             identity: ConnectionIdentity {
                 revision: 7,
                 enabled: true,
-                release: None,
+                template: None,
             },
             revision: 7,
             state,
@@ -576,7 +646,7 @@ mod tests {
                     identity: ConnectionIdentity {
                         revision: 7,
                         enabled: true,
-                        release: None,
+                        template: None,
                     },
                     revision: 7,
                     state: AcpAuthState::Checking {
@@ -614,7 +684,7 @@ mod tests {
                 identity: ConnectionIdentity {
                     revision: 8,
                     enabled: true,
-                    release: None,
+                    template: None,
                 },
                 // observe_committed 的身份变化分支：新修订 + 旧操作仍在收束（Closing）。
                 revision: 8,
@@ -767,6 +837,98 @@ mod tests {
         assert_eq!(stale.state, AcpAuthState::Unchecked);
         assert_eq!(stale.usage, None);
         assert!(stale.operation.is_none());
+    }
+
+    #[test]
+    fn query_usage_on_ready_verified_preserves_verified_across_cancel_and_query_failure() {
+        use crate::{AcpAuthFailureCode, AcpAuthStage, AcpConnectionState};
+
+        let previous = observation(10, AcpUsageState::Unavailable);
+        let mut active = slot(
+            AcpAuthState::Verified {
+                checked_at: 5,
+                server: None,
+            },
+            Some(previous.clone()),
+        );
+        active.lifecycle.state = AcpConnectionState::Ready;
+        if let Some(op) = active.operation.as_ref() {
+            op.cancel_requested.store(true, Ordering::Release);
+        }
+        active.finish_operation(
+            3,
+            7,
+            AcpAuthState::Verified {
+                checked_at: 20,
+                server: None,
+            },
+            None,
+        );
+        assert!(matches!(
+            active.state,
+            AcpAuthState::Verified { checked_at: 5, .. }
+        ));
+        assert_eq!(active.usage, Some(previous));
+
+        let mut query_fail = slot(
+            AcpAuthState::Verified {
+                checked_at: 5,
+                server: None,
+            },
+            None,
+        );
+        query_fail.lifecycle.state = AcpConnectionState::Ready;
+        query_fail.finish_operation(
+            3,
+            7,
+            AcpAuthState::Failed {
+                failure: AcpAuthFailure {
+                    code: AcpAuthFailureCode::Probe,
+                    stage: AcpAuthStage::Probe,
+                    message: "safe".into(),
+                    retryable: true,
+                },
+            },
+            None,
+        );
+        assert!(matches!(
+            query_fail.state,
+            AcpAuthState::Verified { checked_at: 5, .. }
+        ));
+        assert!(matches!(
+            query_fail.usage,
+            Some(AcpUsageObservation {
+                state: AcpUsageState::Failed {
+                    code: AcpUsageFailureCode::Query
+                },
+                ..
+            })
+        ));
+
+        for (code, stage) in [
+            (AcpAuthFailureCode::Transport, AcpAuthStage::Initialize),
+            (AcpAuthFailureCode::Cleanup, AcpAuthStage::Close),
+            (AcpAuthFailureCode::Cleanup, AcpAuthStage::Cleanup),
+        ] {
+            let mut fatal = slot(
+                AcpAuthState::Verified {
+                    checked_at: 5,
+                    server: None,
+                },
+                None,
+            );
+            fatal.lifecycle.state = AcpConnectionState::Ready;
+            let expected = AcpAuthState::Failed {
+                failure: AcpAuthFailure {
+                    code,
+                    stage,
+                    message: "safe".into(),
+                    retryable: true,
+                },
+            };
+            fatal.finish_operation(3, 7, expected.clone(), None);
+            assert_eq!(fatal.state, expected);
+        }
     }
 
     #[test]

@@ -7,15 +7,17 @@ pub mod info;
 pub mod observation;
 mod profile_error;
 
-pub use catalog::{MediaSendOrder, effort_parameter, image_media_profiles, wire_set_one};
+pub use catalog::{
+    MediaSendOrder, effort_parameter, image_media_profiles, media_profile, wire_set_one,
+};
 pub use definition::validate_inventory;
 pub use definition::{BundledModelDefinition, ModelDefinitionError};
 pub use family::ModelFamily;
 pub use info::{
     ChatRequestOptions, GeminiRequestOptions, MaxTokensField, MediaMixPolicy, MediaRepresentation,
-    MediaWireFormat, ModelBinding, ModelInfo, ModelMediaInputProfile, ModelProtocolOptions,
-    ModelRequestProfile, ModelTransportProfile, ResponsesMaxTokensField, ResponsesRequestOptions,
-    TruncationMode, TruncationPolicy,
+    MediaWireFormat, ModelBinding, ModelDefinition, ModelExtras, ModelMediaInputProfile,
+    ModelProtocolOptions, ModelRequestProfile, ModelTransportProfile, ResponsesMaxTokensField,
+    ResponsesRequestOptions, TruncationMode, TruncationPolicy,
 };
 pub use observation::{ModelMetadataField, ModelObservation, ModelParameterDefaultObservation};
 pub use profile_error::ModelProfileError;

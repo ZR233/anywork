@@ -32,6 +32,9 @@ pub struct ModelParameter {
     pub default: Option<String>,
     /// 候选值域（GUI 按声明顺序渲染为下拉选项）。
     pub candidates: Vec<String>,
+    /// Sparse, unmodified provider presentation names keyed by exact candidate ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub candidate_display_names: BTreeMap<String, String>,
     /// 每个候选值对应的 wire 写入规则，key 必须是 candidates 中的值。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub wire: BTreeMap<String, ParameterWire>,

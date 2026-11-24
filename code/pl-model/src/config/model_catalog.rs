@@ -4,7 +4,7 @@
 //! Online observations, explicit local overrides, names, budgets, capabilities, parameters and
 //! prices are resolved inside the owning account only. An account never borrows a field from
 //! another account that happens to declare the same `model_id`.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::{AccountConfig, AccountModelEntry, AgentModelConfig};
 use crate::model::{
@@ -38,14 +38,9 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
     local.clear_model_catalog_overlay();
     // The account's own declaration base: bundled members overlaid by its explicit models.
     let local_entries = local.effective_catalog(None)?;
-    let manual_ids = local_entries
-        .iter()
-        .filter(|entry| entry.origin == crate::config::AccountModelOrigin::Manual)
-        .map(|entry| entry.model.model_id.clone())
-        .collect::<BTreeSet<_>>();
     let mut merged = local_entries
         .into_iter()
-        .map(|entry| (entry.model.model_id.clone(), entry.model))
+        .map(|entry| (entry.model.base.slug.clone(), entry.model))
         .collect::<BTreeMap<_, _>>();
     let entries = account.effective_catalog(None)?;
 
@@ -57,27 +52,31 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
         let Some(observation) = &model.observation else {
             continue;
         };
+        if let Some(target) = merged.get_mut(&model.base.slug) {
+            target.base.fields.extend(model.base.fields.clone());
+            if model.base.model_messages != Default::default() {
+                target.base.model_messages = model.base.model_messages.clone();
+            }
+            if model.base.truncation_policy != Default::default() {
+                target.base.truncation_policy = model.base.truncation_policy.clone();
+            }
+        }
         for (parameter, default) in &observation.parameter_defaults {
             default_observations.push((
                 default.order,
-                model.model_id.clone(),
+                model.base.slug.clone(),
                 parameter.clone(),
                 default.value.clone(),
             ));
         }
         for (&field, &order) in &observation.fields {
-            observations.push((order, model.model_id.clone(), field, model.clone()));
+            observations.push((order, model.base.slug.clone(), field, model.clone()));
         }
     }
     observations.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
 
     let mut winners = BTreeMap::new();
     for (order, model_id, field, observed) in observations {
-        // Manual definitions own their display name, while other online fields retain the
-        // existing field-by-field precedence.
-        if field == ModelMetadataField::DisplayName && manual_ids.contains(&model_id) {
-            continue;
-        }
         let Some(target) = merged.get_mut(&model_id) else {
             continue;
         };
@@ -88,8 +87,8 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
             .and_then(|observation| observation.budgets.get(&field))
         {
             match field {
-                ModelMetadataField::ContextWindow => target.context_window = *value,
-                ModelMetadataField::MaxContextWindow => target.max_context_window = *value,
+                ModelMetadataField::ContextWindow => target.base.context_window = *value,
+                ModelMetadataField::MaxContextWindow => target.base.max_context_window = *value,
                 _ => {}
             }
         }
@@ -97,24 +96,25 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
     }
 
     for (model_id, model) in &mut merged {
-        if let (Some(current), Some(maximum)) = (model.context_window, model.max_context_window)
+        if let (Some(current), Some(maximum)) =
+            (model.base.context_window, model.base.max_context_window)
             && current > maximum
         {
             if winners.get(&(model_id.clone(), ModelMetadataField::ContextWindow))
                 > winners.get(&(model_id.clone(), ModelMetadataField::MaxContextWindow))
             {
-                model.max_context_window = Some(current);
+                model.base.max_context_window = Some(current);
             } else {
-                model.context_window = Some(maximum);
+                model.base.context_window = Some(maximum);
             }
         }
-        if !model.capabilities.reasoning
+        if !model.extra.capabilities.reasoning
             && winners.get(&(model_id.clone(), ModelMetadataField::Reasoning))
                 >= winners.get(&(model_id.clone(), ModelMetadataField::Parameters))
         {
-            model
-                .parameters
-                .retain(|parameter| parameter.name != "effort");
+            model.base.supported_reasoning_levels = None;
+            model.base.default_reasoning_level = None;
+            model.extra.effort_wire.clear();
         }
     }
 
@@ -124,7 +124,13 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
         let Some(model) = merged.get_mut(&model_id) else {
             continue;
         };
+        if name == "effort" {
+            model.base.default_reasoning_level =
+                value.filter(|v| model.supported_efforts().contains(v));
+            continue;
+        }
         if let Some(parameter) = model
+            .extra
             .parameters
             .iter_mut()
             .find(|parameter| parameter.name == name)
@@ -136,33 +142,44 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
     let mut resolved = Vec::with_capacity(entries.len());
     for entry in entries {
         let mut entry = entry;
-        let Some(definition) = merged.get(&entry.model.model_id) else {
+        let Some(definition) = merged.get(&entry.model.base.slug) else {
             resolved.push(entry);
             continue;
         };
+        entry.model.base.fields = definition.base.fields.clone();
+        entry.model.base.model_messages = definition.base.model_messages.clone();
+        entry.model.base.truncation_policy = definition.base.truncation_policy.clone();
         for &field in SHARED_FIELDS {
             apply_field(&mut entry.model, definition, field);
         }
         // Inherited capabilities follow this account's current declaration, even when the
         // inventory was cached before a new media encoder was added. Keep explicit online
         // input declarations authoritative and never borrow codecs across wire APIs/accounts.
-        if !winners.contains_key(&(entry.model.model_id.clone(), ModelMetadataField::Input))
-            && entry.model.binding.transport.protocol == definition.binding.transport.protocol
+        if !winners.contains_key(&(entry.model.base.slug.clone(), ModelMetadataField::Input))
+            && entry.model.extra.binding.transport.protocol
+                == definition.extra.binding.transport.protocol
         {
-            for profile in &definition.binding.request.media {
+            for profile in &definition.extra.binding.request.media {
                 if entry
                     .model
+                    .extra
                     .binding
                     .request
                     .media_profile(profile.modality)
                     .is_none()
                 {
-                    entry.model.binding.request.media.push(profile.clone());
+                    entry
+                        .model
+                        .extra
+                        .binding
+                        .request
+                        .media
+                        .push(profile.clone());
                 }
             }
         }
         apply_parameter_defaults(&mut entry.model, definition);
-        let model_id = entry.model.model_id.clone();
+        let model_id = entry.model.base.slug.clone();
         let fields = winners
             .iter()
             .filter(|((observed_model, _), _)| observed_model == &model_id)
@@ -174,11 +191,19 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
             observation.budgets.clear();
         }
         // Withdraw unused encoders, but never borrow a codec from another account.
-        entry.model.binding.request.media.retain(|profile| {
+        entry.model.extra.binding.request.media.retain(|profile| {
             definition
+                .extra
                 .capabilities
                 .supports_input_modality(profile.modality)
         });
+        if let Some(manual) = account
+            .model_overrides()
+            .iter()
+            .find(|manual| manual.base.slug == entry.model.base.slug)
+        {
+            manual.apply(&mut entry.model)?;
+        }
         resolved.push(entry);
     }
     let mut resolved: Vec<AccountModelEntry> = resolved;
@@ -186,7 +211,7 @@ fn reconcile_account(account: &mut AccountConfig) -> Result<()> {
         entry.context = entry.model.resolve_context(
             account
                 .auto_compact_overrides()
-                .get(&entry.model.model_id)
+                .get(&entry.model.base.slug)
                 .copied(),
         );
     }

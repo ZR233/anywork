@@ -390,6 +390,7 @@ async fn execute_observed(
                         },
                         mode: request.mode,
                         route: request.route,
+                        service_tier: None,
                         delegation_mode: None,
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,
@@ -751,7 +752,7 @@ mod tests {
     use super::*;
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
-        model::{ModelInfo, ModelTransportProfile},
+        model::{ModelDefinition, ModelTransportProfile},
     };
 
     #[tokio::test]
@@ -764,8 +765,9 @@ mod tests {
             let server = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
             let mut config = pl_studio_runtime::StudioConfig::default_config()?;
             config.models.accounts.clear();
-            let mut model = ModelInfo::compatible("startup-test");
+            let mut model = ModelDefinition::compatible("startup-test");
             model
+                .extra
                 .binding
                 .set_transport(ModelTransportProfile::responses_http());
             config.models.accounts.insert(

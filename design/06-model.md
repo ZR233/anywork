@@ -56,7 +56,7 @@ Responses 的工具输出声明与实际交给模型的内容必须一致：工�
 
 - **基础能力**：流式输出（`streaming`）、采样温度控制（`temperature`）、推理思考（`reasoning`）、联网搜索（`web_search`）。
 - **输入与输出模态**：`input` 与 `output` 集合，取值为 `text`、`image`、`audio`、`video`、`pdf`。
-- **工具调用能力**：函数调用（`function_calling`）、并行工具调用（`parallel_tool_calls`）、自定义工具（`custom_tools`）、自由格式工具（`freeform_tools`）、编程式工具调用（`programmatic_tool_calling`）。
+- **工具调用能力**：函数调用（`function_calling`）、并行工具调用（`base.supports_parallel_tool_calls`）、自定义工具（`custom_tools`）、自由格式工具（`freeform_tools`）、编程式工具调用（`programmatic_tool_calling`）。
 - **交错推理字段**：`interleaved.field`，当前支持 `reasoning`、`reasoning_content`、`reasoning_details`。
 
 Studio 读取能力矩阵用于会话装配校验与界面展示：图片输入要求目标模型声明 `image` 输入能力，工具调用需匹配工具能力，推理强度配置需匹配 `reasoning` 能力；厂商私有差异归对应协议 crate，`pl-core` 消费统一的模型契约。
@@ -94,8 +94,16 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 ### 附件准备与文件输入协议
 
 附件输入在核心层仅描述资源来源（远程 URL、Base64、共享字节块或宿主资源引用），在模型请求准备阶段才解析为具体发送形态（远程 URL、Data URL 或上传后的文件 ID）：
-- **会话级上传缓存**：持久化历史仅保存资源引用与快照，上传所得的 `file_id` 作为按「端点、凭据身份、内容摘要」隔离的可重建会话缓存维护。DeepSeek 文件上传使用 `user_data` 用途与 24 小时租期；遇到用户取消或上传结果未知时严禁盲目重复发起 `POST`，仅当端点明确不支持文件上传时才允许在推理请求发出前回退至内联（inline）编码。
+- **会话级上传缓存**：持久化历史仅保存资源引用与快照，上传所得的 `file_id` 作为按「端点、凭据身份、内容摘要」隔离的可重建会话缓存维护。DeepSeek 文件上传按 MIME 类型选择用途并申请 24 小时租期；遇到用户取消或上传结果未知时严禁盲目重复发起 `POST`，仅当端点明确不支持文件上传时才允许在推理请求发出前回退至内联（inline）编码。
 - **OpenAI Responses 文件输入**：采用官方 `input_file` 结构（参考[官方文件输入规范](https://developers.openai.com/api/docs/guides/file-inputs)），根据已冻结的媒体表示发送 `file_data`（附 `filename`）、`file_url` 或 `file_id`，与图片输入共享资源解析、体积限制及重放链路。内置视觉文本模型显式声明支持 PDF 与 UTF-8 文本文件，单文件及单次请求文件总大小上限均为 50 MB；未声明支持的文件类型在附件准入阶段直接拒绝，禁止将普通文档伪装成图片发送。若历史资源缺失文件名，则按明确的媒体类型补齐 `.pdf` 或 `.txt` 默认后缀。当同一账号的在线目录缓存未显式声明输入模态能力时，继承当前本地目录的模态声明及同协议缺失的媒体编码规则；若在线目录已显式声明则以在线声明为准，禁止跨账号或跨线协议借用编码规则。
+
+Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Responses 端点还可以通过 `input_file` 把文档解析为模型输入。合成时保留同一账号、同一模型已经声明的文档类型、发送方式和大小限制。在线或手填的 `capabilities.input` 可以显式指定完整准入集合。标准模型声明也可通过 `input_modalities = ["text", "file"]` 为 Responses 模型启用文件输入。Web Search 消费明确的 `supports_web_search`、`web_search_tool_type` 或 `capabilities.web_search` 声明，显式账号服务策略优先。独立搜索 API 与 Responses 托管搜索分别解析。
+
+| 已验证的 Responses 路径 | 文件输入 | 搜索 |
+| --- | --- | --- |
+| DeepSeek Flash | UTF-8 文本以 `user_data` 上传，PDF 以 `text_recognition` 上传。multipart 的 `purpose` 在 `file` 前发送，两者都用 `input_file.file_id` 读取 | 独立 Search API |
+| GLM Coding Plan Flash | PDF 使用 `input_file.file_data` 或 `file_url`。该端点拒绝内联纯文本文件 | Responses `web_search` |
+| GPT-6.2 Sol | UTF-8 文本和 PDF 均可使用 `input_file.file_data`。可用的上传接口取决于账号端点 | Responses `web_search` |
 
 ### 账号身份绑定与历史载荷版本解码
 
@@ -113,7 +121,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 账号声明允许暂时没有模型，宿主可以保存和重载未被路由引用的空账号；声明校验成功不授予模型选择或执行资格。严格可用性校验仍拒绝空目录，新增或改变路由必须解析到该账号的真实可用模型。空目录不豁免名称、模板、模型声明及覆盖引用的其他校验，已有 Explicit 路由引用缺失模型仍为配置错误，不借用在线目录撤下后的不可用保留策略。
 
 各内置账号模板与自定义协议约束如下：
-- **OpenAI 兼容（OpenAI-compatible）自定义模型**：每个已添加的模型成员必须显式声明完整的传输配置（Chat 模型仅允许 `ChatCompletions + HTTP`；Responses 模型可声明 `Responses + HTTP` 或同时支持 `HTTP/WebSocket` 并指定默认连接模式），基础 URL、请求头、工具策略与端点能力由所属账号提供；账号创建时可以尚未添加模型。
+- **OpenAI 兼容自定义模型**。手填成员只需要模型标识。账号提供基础地址、认证和默认线协议。用户可以单独指定使用 Chat Completions HTTP 或 Responses，以及该模型的连接方式。
 - **智谱（Zhipu）与智谱 Coding Plan**：共用智谱协议适配器。普通智谱模板指向通用 Chat Completions 端点及通用目录；Coding Plan 模板默认指向官方 Responses 协议端点（`https://open.bigmodel.cn/api/v1`）并绑定独立的智谱 Responses 目录（含 `GLM-5.3` 与 `GLM-5.3-Flash`）。
 - **MiMo**：MiMo API 与 Token Plan 为两个独立账号模板，共享同一份 MiMo 模型目录。
 - **xAI**：默认指向 `https://api.x.ai/v1` 并绑定独立的 xAI Responses 目录；官方规范端点声明支持 Responses `prompt_cache_key`（用户覆盖自定义 `base_url` 后自动关闭该继承能力），不声明托管搜索、文件上传、远程压缩或 WebSocket。
@@ -129,7 +137,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 各厂商默认连接绑定如下：
 - **OpenAI**：使用 Responses 协议，同时支持 WebSocket 与 HTTP 且默认采用 WebSocket；当切换为 HTTP 时仍调用 `/responses` 端点消费 SSE，绝不隐式降级为 Chat Completions。
-- **GPT-6.1 Terra**：作为 OpenAI 目录的独立型号沿用上述 Responses 绑定，工具调用不走 Chat Completions；支持文本、图片及已声明的 PDF/文本文件输入，输出为文本。其 `effort` 候选为 `none`、`low`、`medium`、`high`、`xhigh`、`max`，独立默认值为 `medium`，不因 `none` 排在首位而改变默认推理强度。模型未预设自动压缩阈值，按 §6.7 安全输入上限推导，不继承其他型号的预设；新增目录成员不改变推荐型号或已有路由。能力与参数依据 [Terra 模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-terra)及 [GPT-6 指南](https://developers.openai.com/api/docs/guides/latest-model)，价格及核验时间由内置目录维护。
+- **GPT-6.1 Terra**：作为 OpenAI 目录的独立型号沿用上述 Responses 绑定，工具调用不走 Chat Completions；支持文本、图片及已声明的 PDF/文本文件输入，输出为文本。其 `effort` 候选为 `none`、`low`、`medium`、`high`、`xhigh`、`max`，独立默认值为 `medium`，不因 `none` 排在首位而改变默认推理强度。模型未预设自动压缩阈值，按 §6.7 的 Codex 公式推导，不继承其他型号的预设；新增目录成员不改变推荐型号或已有路由。能力与参数依据 [Terra 模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-terra)及 [GPT-6 指南](https://developers.openai.com/api/docs/guides/latest-model)，价格及核验时间由内置目录维护。
 - **DeepSeek / xAI / 智谱 Coding Plan**：使用 `Responses + HTTP`。
 - **智谱通用目录 / MiMo**：使用 `Chat Completions + HTTP`。
 - **Google Gemini / Vertex AI**：使用 `GeminiGenerateContent + HTTP`（调用 `/models/{model}:streamGenerateContent?alt=sse`）。
@@ -183,7 +191,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 ### 用户展示与模型输入分离
 
-`show_files` 归档的文件属于明确选择的用户展示事实，按 [09](./09-tool-runtime.md) 的版本化回执保存，并不因此成为模型多模态输入。工具向模型提供有界的归档／失败摘要，文件正文不自动注入上下文。文件的精确字节与原资源引用由同一可靠资源 owner 保留；桌面预览、保存和渠道上传均读取该原件，不重新读取已变化的源文件。供本地文件管理器定位的来源路径仅属于展示回执元数据，不进入附件消息内容，也不发送给外部渠道。
+`show_files` 按 [09](./09-tool-runtime.md) 保存用户展示事实，并向模型提供有界的逐项结果摘要。归档项保留精确字节和原资源引用。待下载项和网络图片保留来源元数据，分别由桌面下载操作和图片呈现读取。上述来源信息归展示回执所有，文件内容和来源定位都不会作为模型多模态输入或随文件名发送至外部渠道。
 
 ### 各厂商图像传输路线
 
@@ -197,16 +205,19 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 产品宿主负责读取并校验本地配置文件，解析出完整的模型路由后再交由 `pl-model` 构造运行时；`pl-core` 与 `pl-model` 均不直接读取 `~/.anywork/config.toml`。可调用模型统一使用 `AccountModelKey(account_id, model_id)` 复合身份，其中 `model_id`（JSON 协议字段为 `modelId`）按原始字符串大小写敏感精确匹配。内置只读模型定义可被多个账号模板引用，但在线目录观察、用户覆盖项、显示名称、上下文预算、模态能力、可调参数候选及默认值、凭据、传输方式与价格均严格限制在各自账号内部解析，绝不跨账号借用或覆盖。
 
-每个账号的唯一有效目录由 `pl-model` 的统一合成入口产出，合并优先级如下：
-1. **用户手动附加模型（`manual`）**：通过 `additional_models` 配置，享有最高优先级；当与在线名单或内置目录同名时，手动条目优先，在线同名条目不进入有效目录。
-2. **在线发现目录（`online`）与内置定义（`bundled`）**：按「本次在线探测成功 → 同一查询身份最近一次成功缓存 → 从未成功时回退内置默认定义」的顺序选择在线观察。每次成功的在线名单整体替换上一份 API 名单，不累加历史已下线的在线独有模型；管理目录始终保留账号绑定的内置定义，在线名单缺失的内置项以 `bundled` 来源展示，仍按用户启用意图参与选择资格判断。成功空名单同样构成有效观察。在线声明仅进入内存覆盖层（overlay），不写回用户的 `additional_models` 配置。
-3. **字段级合并规则**：在同一账号内，在线明确声明的字段优先于本地配置与内置定义；缺失字段继承本地定义，而显式的 `false`、空集合或可空字段的 `null` 均视为有效在线声明。HTTP `304 Not Modified` 仅刷新检查时间戳。当目录归一化规则升级时，旧缓存的实体标签（ETag）自动失效并重新拉取完整报文。
+手填、在线、内置模型都生成同一个 `ModelDefinition`。它有三个部分：
 
-`Explicit` 目录只包含用户声明的成员，允许为空；空目录不获得在线发现能力，不回退到内置或其他账号的模型，也不提供可选候选。该状态与在线发现得到的成功空名单分别保留各自来源语义。
+| 成员 | 内容与所有者 |
+| --- | --- |
+| `base` | Codex 订阅目录的一条模型记录。唯一必填字段是 `slug`。名称、描述、`supported_reasoning_levels[].effort`、`default_reasoning_level`、上下文字段、`model_messages`、`truncation_policy` 和供应商增加的其他 JSON 字段按原字段名保存。推理档位为字符串，顺序与描述随模型更新。`supports_parallel_tool_calls` 直接供路由、界面和请求校验读取。 |
+| `extra` | 可选的项目扩展。包括 `pricing`、`max_output_tokens`、`default_temperature`、传输和请求绑定 `binding`、本地可实际编码的媒体和工具能力 `capabilities`、非标准推理档位编码 `effort_wire`、参数名称 `effort_label` 及其他参数 `parameters`。 |
+| `observation` | 在线缓存中记录哪些字段由服务端声明、获取顺序及独立的参数默认值。用户配置只保存声明的 `base`、`extra` 和账号上的独立覆盖。 |
+
+默认向每个 OpenAI 兼容账号的模型列表端点发送 `GET /models?client_version=0.170.0`。服务端以 400 或 422 拒绝扩展查询时，在同一时限内重试标准 `GET /models`。已配置的模型调用独立于同步结果。同一账号的手填字段优先，其次是在线明确声明的字段和内置值。成功观察整体替换在线成员，保留手填和内置成员。同步失败继续使用上次成功缓存；首次失败仍可用本地声明。HTTP 304 复用同一查询的缓存，目录格式升级后重新获取 ETag。
 
 展示名称按「已有手动模型定义的名称 → 在线名称 → 同账号内置名称 → 原始 `model_id`」解析。手动定义复用现有 `additional_models` 或显式模型定义的 `display_name`，不新增独立的内置或在线模型改名设置；在线名称不能覆盖已有手动名称。没有手动名称时，在线 `display_name` 或其协议别名明确提供的非空白值优先，即使该值恰好等于原始 `model_id` 也原样展示；仅在在线未提供名称、为空或仅含空白时回退内置名称。字段是否由在线明确声明与解码器的默认名称须区分，不能仅凭名称与 ID 相同判定缺失。不改变有效名称的大小写、空格或标点，不根据模型 ID 猜测命名，也不得从其他账号补齐名称。此规则同时适用于新发现与既有成功缓存，直接账号查询和规范目录重建须保持一致；不重写在线观察、用户配置、路由或历史快照，模型身份与其他字段的合成规则不受影响。
 
-在线发现请求直接调用账号端点下的 `/models` 路径（保留自定义反向代理路径前缀、查询参数与鉴权头），单次请求总超时为 10 秒、响应体上限为 4 MiB，禁止自动重试与重定向。各厂商协议各自解析返回报文（OpenAI 解析标准 `data/id` 及 Codex 富声明 `models/slug`；DeepSeek 解析 `data/id`、推理强度与显式能力；xAI 解析 `data/id`、`context_length`、原生能力与计价单位；智谱通用 API 与 Coding Plan 在未声明公开列表接口时直接使用内置目录）。在线成员在发现与缓存阶段不按模型家族、模态或工具能力预先裁剪，生图、向量嵌入、语音等非对话模型完整保留在有效目录中，作为端点服务能力的核验依据。
+在线请求保留账号端点的反向代理路径、查询参数与鉴权头。发现操作总时限为 10 秒，响应体上限为 4 MiB，禁用重定向。兼容端点共用 Codex 富目录解码器，支持标准列表的协议可补充解释自己的计价单位或字段别名。各协议共享带币种和 token 价格区间的 `pricing.kind = "rates"` 结构。缓存保留发现的全部模型，调用方按用途筛选。
 
 ### 模型启用状态与统一选择资格
 
@@ -215,7 +226,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 线上缺失的内置项使用当前内置定义进入正常选择与路由解析；上游是否列出它不等同于实际调用是否受支持。显式开关在来源变为 `online` 或 `bundled`、重启及模型重新出现后继续生效；覆盖本身不能创建未知成员，也不能保留已撤下的在线独有模型。内置成员的只读资料可供配置页查看，与选择资格独立。
 
 对话模型的选择资格由**文本类型过滤**与**用户启用状态**先后叠加决定：
-1. 首先筛选最终合并结果同时支持文本输入（`text` input）与文本输出（`text` output）、且已解析上下文容量为正整数的模型；
+1. 首先筛选最终合并结果同时支持文本输入（`text` input）与文本输出（`text` output）、且无相互矛盾的容量声明的模型；
 2. 再排除 `enabled == false` 的被禁用模型。
 
 会话路由、智能体预设与自动子智能体派发共用该资格入口。禁用某个模型不会中断已在途的请求，但后续新轮次、冷恢复激活与子智能体派发将在准入边界拒绝使用该模型，并保留用户的原始配置选择（标记为不可用状态，不自动替换为其他模型）。
@@ -227,13 +238,26 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 ### 上下文窗口、自动压缩阈值与远程压缩
 
-模型的上下文容量以 `context_window` 为准，缺失时回退至 `max_context_window`（严禁以更大的最大容量覆盖当前有效窗口）。自动压缩阈值（`auto_compact_limit`）的解析规则如下：
-- **安全输入上限**：取「有效上下文容量的 90%（向下取整）」与「有效上下文容量减去模型声明的最大输出词元数」两者的较小值（若未声明最大输出词元数，则仅取 90%）。
-- **默认与用户覆盖**：默认阈值优先取模型显式声明的 `auto_compact_token_limit`，未声明时取上述安全输入上限（不再使用硬编码的固定词元数兜底；内置 `GPT-6.1 Sol` 的 475,000 词元为产品目录预设）。用户可按 `(account_id, model_id)` 配置自定义阈值覆盖默认值，最终生效阈值取「所选阈值」与「安全输入上限」的较小值。若模型上下文容量未知或计算出的安全输入上限非正，则不启用本地阈值压缩。
+设置和调用使用同一份解析结果，数值单位均为 token。
+
+- 最大上下文取 `max_context_window`，缺失时取 `context_window`。两者都缺失时保留未知，允许发起文本调用。
+- 默认压缩遵循 Codex 的 `ModelInfo::auto_compact_token_limit()`。优先用 `context_window`，缺失时用 `max_context_window`，乘以 9 再除以 10 向下取整。在线字段 `auto_compact_token_limit` 和计算结果都存在时取较小值，只存在一个时取该值。
+- 用户可按账号和模型保存正整数阈值，最大为最大上下文的 90%（含边界，向下取整）。新阈值超限会提示修改。目录之后降容会约束生效阈值，保留用户原设置。删除覆盖即恢复当时的目录默认。最大输出只描述一次生成的输出限制。
 - **请求期冻结**：每次模型调用在请求准备阶段将已解析的 `context_window`、`max_context_window` 与 `auto_compact_limit` 一并冻结到请求及结果回执中，历史记录解码时若缺失这些可选字段则保持为未知，绝不读取当前目录或当前配置回填历史。
 - **远程压缩能力**：完成请求输入支持携带含 `encryptedContent` 的专用压缩条目（`Compaction`），该条目可映射为 Responses 原生输入，而在 Chat Completions 协议下会被明确拒绝。端点是否支持远程压缩须显式声明，执行时复用共享执行器并固定走 HTTP 通道。
 
-## 6.8 模型可调参数（推理强度机制）
+#### 迁移计划的线上算例
+
+2026-11-23 用同一账号的在线目录核对了下面三条记录。三者均未给出更低的显式压缩值。下表数值单位为 token，属于当次观测，后续同步会重新计算。
+
+| 模型 | 目录 `context_window` | 最大上下文 | 默认压缩阈值 | 用户可设上限 |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6.2-astra` | 272,000 | 872,000 | 244,800 | 784,800 |
+| `gpt-6.2-sol` | 500,000 | 872,000 | 450,000 | 784,800 |
+| `gpt-6-luna` | 272,000 | 872,000 | 244,800 | 784,800 |
+
+
+## 6.8 模型可调参数
 
 推理强度（`effort`）并非全局固定的静态枚举，而是由模型自身声明的可调参数（通用参数机制的首个应用，同一结构可扩展至 `thinking`、`verbosity` 等参数）。模型目录独占维护参数的候选值域、显示名称、默认候选值以及线协议写入规则表（`wire` 规则），角色路由仅保存当前选中的候选值：
 
@@ -253,6 +277,14 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 | MiMo | `disabled` / `enabled` | `thinking.type` = 选中值 | — |
 
 内置模型的候选值按思考强度从弱到强排列，在线发现的候选集保持服务端返回的原始顺序。内部摘要类辅助请求（如会话自动生成标题）复用探索智能体（`explorer`）路由所绑定的模型，并固定选取该模型候选列表的首项（最轻量档位）。
+
+### 会话速度档位
+
+速度（`service_tier`）选择同一模型的服务档位，与推理强度独立。提速可能影响额度或费用。同一账号的在线目录通过结构化 `service_tiers` 声明有序候选，`id` 是选择和发送的精确值，`name` 是可选展示名。`default_service_tier` 只在命中候选时作为目录元数据。共享目录按记录中的声明读取，厂商专有目录由对应适配器解释。账号登录方式、厂商标识和 HTTP／WebSocket 连接方式本身不决定候选。缺失字段不创建候选，显式空列表撤回该模型的候选。模型名字、套餐、旧 `additional_speed_tiers` 和其他账号的目录不参与合成。请求层只接受该字段的固定顶层写入规则。
+
+选择标准速度时，请求不携带显式档位。显式选择需要命中该账号模型的候选，并随该轮模型绑定冻结。会话保留已撤回的保存值，下一轮准入时要求重新选择。Responses HTTP、Responses WebSocket 和 Chat Completions 的完成请求将选择写入顶层 `service_tier`，例如 `priority`（Fast）或 `ultrafast`（Ultrafast）。目录升级后首次刷新获取完整正文，失败时保留上次成功快照。请求值与上游实际处理档位可能不同。[OpenAI Fast](https://developers.openai.com/api/docs/guides/fast-mode) · [Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode) · [Responses WebSocket](https://developers.openai.com/api/reference/resources/responses/websocket-events)
+
+模型性能统计按调用发出前冻结的**请求**速度档位归组，不读取响应的 `service_tier` 来决定样本归属。适用的请求未选择加速即为标准；不适用的调用与没有历史请求档位证据的调用均不得归入标准。实测速率和时延用于计算组内指标，不参与归组。样本保留及分组见 [17](./17-studio-storage.md)。
 
 ## 6.9 模型家族预设与完整助手回放
 

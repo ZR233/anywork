@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::definition::{AgentDefinitionIdentity, ResolvedAgentDefinition};
@@ -26,7 +26,7 @@ pub struct InstructionAssemblyRequest<'a> {
     pub agent: &'a ResolvedAgentDefinition,
     /// 当前根会话 Mode 的执行方式指令；child 没有。
     pub mode: Option<ModeInstructionProfile<'a>>,
-    pub model: &'a ModelInfo,
+    pub model: &'a ModelDefinition,
     pub workspace_root: &'a Path,
     pub current_dir: &'a Path,
     /// 已由宿主读取的项目说明文档。

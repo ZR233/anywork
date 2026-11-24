@@ -149,7 +149,8 @@ impl ContextPreparationHook for CapacityRecovery {
         );
         ContextPreparation::Prepared {
             excluded_tool_ids: Vec::new(),
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: Some(pl_core::thread::ReplaceContext {
                 expected_revision: request.committed_context.revision,
@@ -318,7 +319,8 @@ impl ContextPreparationHook for ObserveFilteredUsage {
             .unwrap()
             .push(request.previous_usage.is_some());
         ContextPreparation::Prepared {
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: None,
             facts: request.current_facts.to_vec(),
@@ -503,10 +505,11 @@ struct ObservePreview(Arc<Mutex<Vec<pl_core::context::ContextSnapshot>>>);
 #[derive(Debug)]
 struct RestoreFactAuthority;
 impl ContextPreparationHook for RestoreFactAuthority {
-    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+    async fn before_step(&self, _request: ContextPreparationRequest) -> ContextPreparation {
         ContextPreparation::Prepared {
             excluded_tool_ids: Vec::new(),
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: None,
             facts: vec![RuntimeFact {
@@ -614,7 +617,8 @@ impl ContextPreparationHook for CancelCandidate {
         }
         ContextPreparation::Prepared {
             excluded_tool_ids: Vec::new(),
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![cost],
             replacement: None,
             facts: vec![RuntimeFact {
@@ -653,49 +657,91 @@ async fn cancelled_candidate_keeps_accounting_without_committing_state_or_succes
 }
 
 #[derive(Debug)]
-struct ConflictOnce(std::sync::atomic::AtomicUsize);
-impl ContextPreparationHook for ConflictOnce {
+struct ChangeReadInput {
+    thread: ThreadHandle,
+    by_format: bool,
+}
+impl ContextPreparationHook for ChangeReadInput {
     async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
-        let first = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+        use pl_core::{
+            context::OpaquePayload,
+            thread::extensions::{ExtensionInputs, ExtensionMutation},
+        };
+        let mut inputs = ExtensionInputs::default();
+        if self.by_format {
+            inputs.include_format(&request.extensions, "test.skill");
+        } else {
+            inputs.include_keys(&request.extensions, &["selected"]);
+        }
+        let value = request.extensions.get("selected");
+        let current = value.is_some_and(|entry| entry.payload.content() == "current approved");
+        if !current {
+            self.thread
+                .mutate_extensions(vec![ExtensionMutation::Put {
+                    id: "selected".into(),
+                    expected_revision: value.map(|entry| entry.revision),
+                    payload: OpaquePayload::new("test.skill", 1, "current approved").unwrap(),
+                }])
+                .await
+                .unwrap();
+        }
         ContextPreparation::Prepared {
             excluded_tool_ids: Vec::new(),
-            expected_extension_sequence: request.extension_sequence + u64::from(first),
+            inputs,
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: None,
             facts: vec![RuntimeFact {
                 source_id: "state".into(),
-                content: vec![text(if first { "stale" } else { "current approved" })],
+                content: vec![text(if current { "current approved" } else { "stale" })],
             }],
-            mutations: vec![],
+            mutations: Vec::new(),
         }
     }
 }
 
 #[tokio::test]
 async fn a_conflict_refreezes_once_without_admitting_stale_state_or_duplicate_input() {
-    let (model, observed) = ScriptedModel::new(&[]);
-    let thread = ThreadHandle::start("conflict".into(), DynModelSession::new(model)).unwrap();
-    thread
-        .set_context_preparation(Some(ContextPreparer::new(ConflictOnce(Default::default()))))
-        .await
-        .unwrap();
-    thread.run_turn(turn("retry-preparation")).await.unwrap();
-    {
-        let requests = observed.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0]
-                .records
-                .iter()
-                .filter(|record| record.source == ContextSource::User)
-                .count(),
-            1
-        );
-        let encoded = serde_json::to_string(&requests[0]).unwrap();
-        assert!(encoded.contains("current approved"));
-        assert!(!encoded.contains("stale"));
+    use pl_core::{context::OpaquePayload, thread::extensions::ExtensionMutation};
+    for (by_format, preexisting) in [(false, true), (false, false), (true, false)] {
+        let (model, observed) = ScriptedModel::new(&[]);
+        let thread = ThreadHandle::start("conflict".into(), DynModelSession::new(model)).unwrap();
+        if preexisting {
+            thread
+                .mutate_extensions(vec![ExtensionMutation::Put {
+                    id: "selected".into(),
+                    expected_revision: None,
+                    payload: OpaquePayload::text("old"),
+                }])
+                .await
+                .unwrap();
+        }
+        thread
+            .set_context_preparation(Some(ContextPreparer::new(ChangeReadInput {
+                thread: thread.clone(),
+                by_format,
+            })))
+            .await
+            .unwrap();
+        thread.run_turn(turn("retry-preparation")).await.unwrap();
+        thread.set_context_preparation(None).await.unwrap();
+        {
+            let requests = observed.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                requests[0]
+                    .records
+                    .iter()
+                    .filter(|record| record.source == ContextSource::User)
+                    .count(),
+                1
+            );
+            let encoded = serde_json::to_string(&requests[0]).unwrap();
+            assert!(encoded.contains("current approved"));
+            assert!(!encoded.contains("stale"));
+        }
+        thread.close().await.unwrap();
     }
-    thread.close().await.unwrap();
 }
 
 #[derive(Debug)]
@@ -769,7 +815,8 @@ struct HideTool;
 impl ContextPreparationHook for HideTool {
     async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
         ContextPreparation::Prepared {
-            expected_extension_sequence: request.extension_sequence,
+            inputs: Default::default(),
+            instruction_binding: None,
             rejected_mutations: vec![],
             replacement: None,
             facts: request.current_facts.to_vec(),
@@ -964,5 +1011,66 @@ async fn manual_compaction_commits_without_new_input_or_model_turn_and_can_conti
     assert_eq!(thread.snapshot().context.revision, reduced.revision);
     thread.run_turn(turn("continue")).await.unwrap();
     assert_eq!(observed.lock().unwrap().len(), 2);
+    thread.close().await.unwrap();
+}
+
+#[derive(Debug)]
+struct ParallelBilling {
+    thread: ThreadHandle,
+}
+
+impl ContextPreparationHook for ParallelBilling {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        use pl_core::{context::OpaquePayload, thread::extensions::ExtensionMutation};
+        let id = "studio.auxiliary-billing.title";
+        self.thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: id.into(),
+                expected_revision: request.extensions.get(id).map(|entry| entry.revision),
+                payload: OpaquePayload::text("recorded"),
+            }])
+            .await
+            .unwrap();
+        ContextPreparation::Prepared {
+            inputs: Default::default(),
+            instruction_binding: None,
+            rejected_mutations: vec![],
+            replacement: None,
+            facts: request.current_facts.to_vec(),
+            mutations: vec![],
+            excluded_tool_ids: vec![],
+        }
+    }
+}
+
+#[tokio::test]
+async fn unrelated_billing_during_preparation_preserves_the_model_request() {
+    let (model, observed) = ScriptedModel::new(&[]);
+    let thread =
+        ThreadHandle::start("parallel-billing".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(ParallelBilling {
+            thread: thread.clone(),
+        })))
+        .await
+        .unwrap();
+    let result = thread.run_turn(turn("prompt")).await;
+    thread.set_context_preparation(None).await.unwrap();
+    result.unwrap();
+    let snapshot = thread.snapshot();
+    assert_eq!(
+        snapshot.extensions["studio.auxiliary-billing.title"].revision,
+        1
+    );
+    let requests = observed.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .records
+            .iter()
+            .filter(|record| record.source == ContextSource::User)
+            .count(),
+        1
+    );
     thread.close().await.unwrap();
 }

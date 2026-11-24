@@ -32,4 +32,15 @@ abstract final class AccountViewKeyValues {
   static String manualField(String editorKey, String field) =>
       'accounts-manual-field:${jsonEncode([editorKey, field])}';
   static String acpAction(String action) => 'accounts-acp-action:$action';
+
+  static String rowUpgrade(String kind, String id) =>
+      'account-row-upgrade:$kind/$id';
+
+  static String rowCancelUpgrade(String kind, String id) =>
+      'account-row-cancel-upgrade:$kind/$id';
+
+  static String rowCheckUpdate(String kind, String id) =>
+      'account-row-check-update:$kind/$id';
+
+  static String categoryChip(String category) => 'accounts-category:$category';
 }

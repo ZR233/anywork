@@ -27,6 +27,8 @@ mod operation;
 mod projection;
 mod registry;
 mod strategy;
+#[cfg(all(test, target_os = "linux"))]
+mod upgrade_tests;
 
 pub(crate) use admission::AcpAccountRuntime;
 pub(crate) use connection::AccountConnection;

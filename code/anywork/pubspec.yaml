@@ -4,7 +4,7 @@ publish_to: 'none'
 
 # Release Please updates this stable SemVer in its reviewed Release PR.
 # Windows uses these major, minor, and patch components for product and file versions.
-version: 6.45.0 # x-release-please-version
+version: 6.48.0 # x-release-please-version
 
 environment:
   sdk: ^3.14.0
@@ -39,6 +39,7 @@ dependencies:
   path: 1.9.1
   material_ui: ^1.11.0
   riverpod: ^3.5.0
+  duration: ^4.0.3
 dependency_overrides:
   cross_cache:
     path: packages/cross_cache

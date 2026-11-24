@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -10,23 +10,41 @@ use crate::model::parameter::ModelParameter;
 use crate::model::profile_error::ModelProfileError;
 use crate::protocol::{ConnectionMode, WireApi};
 
-/// OpenAI-family specialization of the common model declaration.
+/// One model declaration shared by bundled, discovered and manually supplied members.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ModelInfo(pub super::ModelMetadata<ModelBinding>);
-
-impl std::ops::Deref for ModelInfo {
-    type Target = super::ModelMetadata<ModelBinding>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+#[serde(deny_unknown_fields)]
+pub struct ModelDefinition {
+    pub base: super::CodexModel,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub extra: ModelExtras,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<super::ModelObservation>,
 }
 
-impl std::ops::DerefMut for ModelInfo {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+/// Runtime bindings and metadata with no corresponding Codex field.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelExtras {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "is_default")]
+    pub pricing: super::ModelPricing,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<ModelParameter>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub effort_wire: BTreeMap<String, super::ParameterWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort_label: Option<String>,
+    #[serde(skip_serializing_if = "is_default")]
+    pub binding: ModelBinding,
+    #[serde(skip_serializing_if = "is_default")]
+    pub capabilities: ModelCapabilities,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 pub use pl_model_types::model::{TruncationMode, TruncationPolicy};
@@ -37,6 +55,21 @@ pub use pl_model_types::model::{TruncationMode, TruncationPolicy};
 pub struct ModelBinding {
     pub transport: ModelTransportProfile,
     pub request: ModelRequestProfile,
+}
+
+impl Default for ModelBinding {
+    fn default() -> Self {
+        Self {
+            transport: Default::default(),
+            request: ModelRequestProfile {
+                protocol: ModelProtocolOptions::ChatCompletions(ChatRequestOptions {
+                    include_usage: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }
+    }
 }
 
 impl ModelBinding {
@@ -312,13 +345,13 @@ impl ResponsesMaxTokensField {
     }
 }
 
-impl ModelInfo {
+impl ModelDefinition {
     pub fn validate_media_contract(&self) -> Result<(), ModelProfileError> {
         let mut modalities = Vec::new();
-        for capability in &self.capabilities.input {
+        for capability in &self.extra.capabilities.input {
             if modalities.contains(&capability.modality) {
                 return Err(ModelProfileError::DuplicateInputModality {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
@@ -326,54 +359,55 @@ impl ModelInfo {
             if capability.modality == ModelModality::Text {
                 if !capability.sources.is_empty() {
                     return Err(ModelProfileError::TextInputDeclaresMediaSources {
-                        model: self.model_id.clone(),
+                        model: self.base.slug.clone(),
                     });
                 }
                 continue;
             }
             let profile = self
+                .extra
                 .binding
                 .request
                 .media_profile(capability.modality)
                 .ok_or_else(|| ModelProfileError::ModalityWithoutMediaProfile {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 })?;
             if capability.sources.is_empty() {
                 return Err(ModelProfileError::ModalityWithoutAdmittedSources {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.first_send.is_empty() || profile.replay.is_empty() {
                 return Err(ModelProfileError::MissingSendOrReplayRepresentations {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.wire.modality() != profile.modality {
                 return Err(ModelProfileError::WireModalityMismatch {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                     wire: profile.wire,
                 });
             }
-            if profile.wire.protocol() != self.binding.transport.protocol {
+            if profile.wire.protocol() != self.extra.binding.transport.protocol {
                 return Err(ModelProfileError::WireProtocolMismatch {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     wire: profile.wire,
-                    protocol: self.binding.transport.protocol,
+                    protocol: self.extra.binding.transport.protocol,
                 });
             }
             if has_duplicates(&profile.first_send) || has_duplicates(&profile.replay) {
                 return Err(ModelProfileError::RepeatedMediaRepresentation {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
             if profile.replay.contains(&MediaRepresentation::RemoteUrl) {
                 return Err(ModelProfileError::ReplayUsesRemoteUrl {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
@@ -388,7 +422,7 @@ impl ModelInfo {
                 })
             {
                 return Err(ModelProfileError::LocalSourceWithoutDurableRepresentation {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
@@ -398,7 +432,7 @@ impl ModelInfo {
                     .contains(&crate::model::ModelInputSource::RemoteUrl)
             {
                 return Err(ModelProfileError::RemoteUrlStrategyWithoutAdmission {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
@@ -408,23 +442,27 @@ impl ModelInfo {
                 .all(|representation| *representation == MediaRepresentation::RemoteUrl)
             {
                 return Err(ModelProfileError::ReplayNotDurable {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: capability.modality,
                 });
             }
         }
         let mut profile_modalities = Vec::new();
-        for profile in &self.binding.request.media {
+        for profile in &self.extra.binding.request.media {
             if profile_modalities.contains(&profile.modality) {
                 return Err(ModelProfileError::DuplicateMediaProfile {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: profile.modality,
                 });
             }
             profile_modalities.push(profile.modality);
-            if !self.capabilities.supports_input_modality(profile.modality) {
+            if !self
+                .extra
+                .capabilities
+                .supports_input_modality(profile.modality)
+            {
                 return Err(ModelProfileError::MediaProfileForUndeclaredModality {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                     modality: profile.modality,
                 });
             }
@@ -437,26 +475,27 @@ impl ModelInfo {
     /// Returns the inconsistent transport, media or tariff contract, or a
     /// non-positive default auto-compact token limit.
     pub fn validate(&self) -> Result<(), ModelProfileError> {
-        if self.auto_compact_token_limit == Some(0) {
+        if self.base.auto_compact_token_limit == Some(0) {
             return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
-                model: self.model_id.clone(),
+                model: self.base.slug.clone(),
             });
         }
         if self.resolve_context(None).unavailable
             == Some(crate::model::ModelContextUnavailable::InvalidParameters)
             || self
+                .extra
                 .default_temperature
                 .is_some_and(|t| !t.is_finite() || t < 0.0)
         {
             return Err(ModelProfileError::InvalidBudget {
-                model: self.model_id.clone(),
+                model: self.base.slug.clone(),
             });
         }
         let mut names = std::collections::BTreeSet::new();
-        for parameter in &self.parameters {
+        for parameter in self.parameters() {
             let mut candidates = std::collections::BTreeSet::new();
             if parameter.name.trim().is_empty()
-                || !names.insert(&parameter.name)
+                || !names.insert(parameter.name.clone())
                 || parameter.candidates.is_empty()
                 || parameter
                     .default
@@ -479,15 +518,15 @@ impl ModelInfo {
                 })
             {
                 return Err(ModelProfileError::InvalidParameter {
-                    model: self.model_id.clone(),
+                    model: self.base.slug.clone(),
                 });
             }
         }
-        self.binding.transport.validate(&self.model_id)?;
+        self.extra.binding.transport.validate(&self.base.slug)?;
         if !matches!(
             (
-                &self.binding.request.protocol,
-                self.binding.transport.protocol
+                &self.extra.binding.request.protocol,
+                self.extra.binding.transport.protocol
             ),
             (ModelProtocolOptions::Responses(_), WireApi::Responses)
                 | (
@@ -500,14 +539,15 @@ impl ModelInfo {
                 )
         ) {
             return Err(ModelProfileError::ProtocolOptionsMismatch {
-                model: self.model_id.clone(),
-                protocol: self.binding.transport.protocol,
+                model: self.base.slug.clone(),
+                protocol: self.extra.binding.transport.protocol,
             });
         }
-        self.pricing
+        self.extra
+            .pricing
             .validate()
             .map_err(|source| ModelProfileError::InvalidPricing {
-                model: self.model_id.clone(),
+                model: self.base.slug.clone(),
                 source,
             })?;
         self.validate_media_contract()
@@ -521,87 +561,135 @@ impl ModelInfo {
         use crate::model::{
             ModelContextAdjustment, ModelContextResolution, ModelContextUnavailable,
         };
-        let window = self.context_window.or(self.max_context_window);
+        let window = self.base.context_window.or(self.base.max_context_window);
         let invalid = [
-            self.context_window,
-            self.max_context_window,
-            self.max_output_tokens,
-            self.auto_compact_token_limit,
+            self.base.context_window,
+            self.base.max_context_window,
+            self.extra.max_output_tokens,
+            self.base.auto_compact_token_limit,
             override_limit,
         ]
         .contains(&Some(0))
             || self
+                .base
                 .context_window
-                .zip(self.max_context_window)
+                .zip(self.base.max_context_window)
                 .is_some_and(|(current, maximum)| current > maximum);
-        let input = window.map(|window| window.saturating_sub(self.max_output_tokens.unwrap_or(0)));
-        let unavailable = if invalid {
-            Some(ModelContextUnavailable::InvalidParameters)
-        } else if window.is_none() {
-            Some(ModelContextUnavailable::WindowUnknown)
-        } else if input == Some(0) {
-            Some(ModelContextUnavailable::InputBudgetExhausted)
-        } else {
-            None
+        let capacity = self.base.max_context_window.or(window);
+        let default_ceiling = window.map(ninety_percent);
+        let default_limit = match (self.base.auto_compact_token_limit, default_ceiling) {
+            (Some(limit), Some(ceiling)) => Some(limit.min(ceiling)),
+            (limit, ceiling) => limit.or(ceiling),
         };
-        let safe = window
-            .zip(input)
-            .filter(|_| unavailable.is_none())
-            .map(|(window, input)| (((u128::from(window) * 90) / 100) as u64).min(input))
-            .filter(|limit| *limit > 0);
-        let selected = override_limit.or(self.auto_compact_token_limit).or(safe);
+        let requested = override_limit.or(default_limit);
+        let maximum = capacity.map(ninety_percent);
+        let effective = requested.map(|limit| maximum.map_or(limit, |max| limit.min(max)));
         ModelContextResolution {
-            unavailable,
-            context_window: window,
-            input_token_limit: input.filter(|_| !invalid),
-            auto_compact_limit: selected
-                .zip(safe)
-                .map(|(selected, safe)| selected.min(safe)),
-            adjustment: selected
-                .zip(safe)
-                .filter(|(selected, safe)| selected > safe)
-                .map(|_| ModelContextAdjustment::SafetyLimit),
+            unavailable: invalid.then_some(ModelContextUnavailable::InvalidParameters),
+            context_window: capacity,
+            auto_compact_limit: effective.filter(|limit| !invalid && *limit > 0),
+            adjustment: (effective != requested).then_some(ModelContextAdjustment::SafetyLimit),
         }
     }
 
-    /// Basic compatible model with configurable local 32K/4K budgets.
+    pub fn max_auto_compact_override(&self) -> Option<u64> {
+        self.base
+            .max_context_window
+            .or(self.base.context_window)
+            .map(ninety_percent)
+    }
+
+    /// A manually entered model starts with unknown capacities.
     pub fn compatible(model_id: &str) -> Self {
-        Self(crate::model::ModelMetadata {
+        Self {
             observation: None,
-            model_id: model_id.to_string(),
-            display_name: model_id.to_string(),
-            description: None,
-            context_window: Some(32_000),
-            max_context_window: Some(32_000),
-            auto_compact_token_limit: None,
-            default_temperature: None,
-            max_output_tokens: Some(4096),
-            pricing: super::pricing::ModelPricing::Unknown,
-            parameters: Vec::new(),
-            binding: ModelBinding {
-                transport: ModelTransportProfile::default(),
-                request: ModelRequestProfile {
-                    protocol: ModelProtocolOptions::ChatCompletions(ChatRequestOptions {
-                        include_usage: true,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
+            base: super::CodexModel {
+                slug: model_id.to_owned(),
+                ..Default::default()
             },
-            capabilities: ModelCapabilities::text_only(),
-            truncation_policy: TruncationPolicy {
-                mode: TruncationMode::Bytes,
-                limit: 10_000,
-            },
-            base_instructions: String::new(),
-        })
+            extra: Default::default(),
+        }
     }
 
     /// 返回名为 "effort" 的参数声明，若模型未声明则返回 None。
-    pub fn effort_parameter(&self) -> Option<&ModelParameter> {
-        self.parameters
+    pub fn effort_parameter(&self) -> Option<ModelParameter> {
+        let levels = self.base.supported_reasoning_levels.as_ref()?;
+        if levels.is_empty() {
+            return None;
+        }
+        let path = match self.extra.binding.transport.protocol {
+            WireApi::Responses => "reasoning.effort",
+            WireApi::ChatCompletions => "reasoning_effort",
+            WireApi::GeminiGenerateContent => "generationConfig.thinkingConfig.thinkingLevel",
+        };
+        let candidates: Vec<_> = levels.iter().map(|level| level.effort.clone()).collect();
+        let wire = candidates
             .iter()
-            .find(|parameter| parameter.name == "effort")
+            .map(|id| {
+                let rule = self.extra.effort_wire.get(id).cloned().unwrap_or_else(|| {
+                    super::ParameterWire {
+                        set: vec![super::WireAssignment {
+                            path: path.into(),
+                            value: Value::String(id.clone()),
+                        }],
+                        remove: Vec::new(),
+                    }
+                });
+                (id.clone(), rule)
+            })
+            .collect();
+        Some(ModelParameter {
+            name: "effort".into(),
+            label: self.extra.effort_label.clone(),
+            default: self.base.default_reasoning_level.clone(),
+            candidates,
+            wire,
+            candidate_display_names: Default::default(),
+        })
+    }
+
+    pub fn parameters(&self) -> impl Iterator<Item = ModelParameter> + '_ {
+        self.effort_parameter()
+            .into_iter()
+            .chain(self.extra.parameters.iter().cloned())
+    }
+
+    /// Split a protocol parameter projection back into Codex reasoning metadata and wire bindings.
+    pub fn set_parameters(&mut self, parameters: Vec<ModelParameter>) {
+        let old = self.base.supported_reasoning_levels.take();
+        self.base.default_reasoning_level = None;
+        self.extra.effort_wire.clear();
+        self.extra.effort_label = None;
+        self.extra.parameters.clear();
+        for parameter in parameters {
+            if parameter.name != "effort" {
+                self.extra.parameters.push(parameter);
+                continue;
+            }
+            self.base.default_reasoning_level = parameter.default;
+            self.extra.effort_label = parameter.label;
+            self.base.supported_reasoning_levels = Some(
+                parameter
+                    .candidates
+                    .into_iter()
+                    .map(|effort| {
+                        old.as_ref()
+                            .and_then(|levels| levels.iter().find(|level| level.effort == effort))
+                            .cloned()
+                            .unwrap_or_else(|| super::ReasoningLevel {
+                                effort,
+                                ..Default::default()
+                            })
+                    })
+                    .collect(),
+            );
+            let standard = self.effort_parameter().map(|p| p.wire).unwrap_or_default();
+            self.extra.effort_wire = parameter
+                .wire
+                .into_iter()
+                .filter(|(candidate, rule)| standard.get(candidate) != Some(rule))
+                .collect();
+        }
     }
 
     /// 返回 effort 参数的候选值字符串列表（GUI 下拉渲染用）。
@@ -624,4 +712,8 @@ fn has_duplicates<T: PartialEq>(values: &[T]) -> bool {
         .iter()
         .enumerate()
         .any(|(index, value)| values[..index].contains(value))
+}
+
+fn ninety_percent(tokens: u64) -> u64 {
+    (u128::from(tokens) * 9 / 10) as u64
 }

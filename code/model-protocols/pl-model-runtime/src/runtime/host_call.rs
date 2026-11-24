@@ -43,8 +43,14 @@ impl ModelTurnRequest {
     pub fn from_route(route: &ResolvedModelRoute) -> Self {
         let reasoning = route.reasoning_config();
         Self::new()
-            .with_parallel_tool_calls(route.model.capabilities.tools.parallel_tool_calls)
-            .with_max_tokens(route.model.max_output_tokens)
+            .with_parallel_tool_calls(
+                route
+                    .model
+                    .base
+                    .supports_parallel_tool_calls
+                    .unwrap_or_default(),
+            )
+            .with_max_tokens(route.model.extra.max_output_tokens)
             .with_reasoning(reasoning)
     }
 

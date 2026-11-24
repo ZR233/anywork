@@ -7,9 +7,7 @@ use pl_model::{
         Message, MessageContent, MessageRole, ReasoningConfig, SystemPrompt, ToolCallKind,
         ToolResultReceipt, ToolResultRecord, ToolSpec,
     },
-    config::{
-        AccountConfig, AccountModelCatalogConfig, ModelCatalogId, builtin_account_catalog,
-    },
+    config::{AccountConfig, AccountModelCatalogConfig, ModelCatalogId, builtin_account_catalog},
     model::bundled_model_definition,
     protocol::{
         WireApi,
@@ -49,18 +47,16 @@ fn builtin_catalog_includes_and_validates_vertex_ai_and_gemini() {
     assert_eq!(gemini.suggested_model_id, "gemini-3.7-flash");
 
     let snap = registry.snapshot().expect("snapshot serializes");
-    let vertex_desc = snap
-        .templates
-        .iter()
-        .find(|t| t.id == "vertex-ai")
-        .unwrap();
+    let vertex_desc = snap.templates.iter().find(|t| t.id == "vertex-ai").unwrap();
     assert!(!vertex_desc.supports_model_discovery);
     let gemini_desc = snap.templates.iter().find(|t| t.id == "gemini").unwrap();
     assert!(gemini_desc.supports_model_discovery);
     let gemini_models = &snap.model_catalogs["gemini"].models;
-    assert!(gemini_models
-        .iter()
-        .any(|m| m.transport.protocol == "gemini_generate_content"));
+    assert!(
+        gemini_models
+            .iter()
+            .any(|m| m.transport.protocol == "gemini_generate_content")
+    );
 }
 
 #[tokio::test]
@@ -131,12 +127,12 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
 
     let mut ep = gemini_api_endpoint(Some(base));
     ep.bearer_token = Some("test-goog-secret".into());
-    let account = AccountConfig::from_bundled_catalog(
-        ep,
-        ModelCatalogId::new("gemini").unwrap(),
-        Vec::new(),
-    );
-    assert!(matches!(account.catalog, AccountModelCatalogConfig::Bundled { .. }));
+    let account =
+        AccountConfig::from_bundled_catalog(ep, ModelCatalogId::new("gemini").unwrap(), Vec::new());
+    assert!(matches!(
+        account.catalog,
+        AccountModelCatalogConfig::Bundled { .. }
+    ));
     let query = ModelCatalogQuery::for_account(&account).unwrap();
     let result = query.execute(None).await.unwrap();
     let seen = tokio::time::timeout(Duration::from_secs(5), server)
@@ -145,8 +141,16 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
         .unwrap();
 
     assert!(seen[0].contains("GET /v1beta/models?pageSize=1000 "));
-    assert!(seen[0].to_ascii_lowercase().contains("x-goog-api-key: test-goog-secret"));
-    assert!(!seen[0].to_ascii_lowercase().contains("authorization: bearer"));
+    assert!(
+        seen[0]
+            .to_ascii_lowercase()
+            .contains("x-goog-api-key: test-goog-secret")
+    );
+    assert!(
+        !seen[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer")
+    );
     assert!(seen[1].contains("pageSize=1000&pageToken=page-2-tok"));
 
     let ModelCatalogQueryResult::Updated { etag, models, .. } = result else {
@@ -158,25 +162,34 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
     );
     let flash = models
         .iter()
-        .find(|m| m.model_id == "gemini-3.7-flash")
+        .find(|m| m.base.slug == "gemini-3.7-flash")
         .expect("gemini-3.7-flash present");
-    assert_eq!(flash.capabilities.output, vec![pl_model::model::ModelModality::Text]);
-    assert!(flash
-        .capabilities
-        .supports_input_modality(pl_model::model::ModelModality::File));
+    assert_eq!(
+        flash.extra.capabilities.output,
+        vec![pl_model::model::ModelModality::Text]
+    );
+    assert!(
+        flash
+            .extra
+            .capabilities
+            .supports_input_modality(pl_model::model::ModelModality::File)
+    );
 
     let pro = models
         .iter()
-        .find(|m| m.model_id == "gemini-2.5-pro")
+        .find(|m| m.base.slug == "gemini-2.5-pro")
         .expect("gemini-2.5-pro present");
-    assert_eq!(pro.capabilities.output, vec![pl_model::model::ModelModality::Text]);
+    assert_eq!(
+        pro.extra.capabilities.output,
+        vec![pl_model::model::ModelModality::Text]
+    );
 
     let embedding = models
         .iter()
-        .find(|m| m.model_id == "embedding-001")
+        .find(|m| m.base.slug == "embedding-001")
         .expect("non-generative entry preserved for capability inspection");
     assert!(
-        embedding.capabilities.output.is_empty(),
+        embedding.extra.capabilities.output.is_empty(),
         "non-generative embedding model must declare empty text output so chat routing excludes it"
     );
 }
@@ -184,7 +197,10 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
 #[tokio::test]
 async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1/publishers/google", listener.local_addr().unwrap());
+    let base = format!(
+        "http://{}/v1/publishers/google",
+        listener.local_addr().unwrap()
+    );
 
     let server = tokio::spawn(async move {
         let mut captured_bodies = Vec::new();
@@ -198,7 +214,11 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
                 }
             };
             let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
-            assert!(header_text.to_ascii_lowercase().contains("x-goog-api-key: gcp-secret"));
+            assert!(
+                header_text
+                    .to_ascii_lowercase()
+                    .contains("x-goog-api-key: gcp-secret")
+            );
             let content_len: usize = header_text
                 .lines()
                 .find_map(|l| {
@@ -224,9 +244,7 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
                     "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"q\":\"hi\"},\"id\":\"call_abc\"},\"thoughtSignature\":\"SIG_XYZ\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":6,\"totalTokenCount\":22}}\n\n"
                 )
             } else {
-                concat!(
-                    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"All done.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":0,\"totalTokenCount\":23}}\n\n"
-                )
+                "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"All done.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":0,\"totalTokenCount\":23}}\n\n"
             };
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-goog-request-id: goog-req-{step}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
@@ -241,9 +259,12 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
     let model = bundled
         .models
         .into_iter()
-        .find(|m| m.model_id == "gemini-3.7-flash")
+        .find(|m| m.base.slug == "gemini-3.7-flash")
         .unwrap();
-    assert_eq!(model.binding.transport.protocol, WireApi::GeminiGenerateContent);
+    assert_eq!(
+        model.extra.binding.transport.protocol,
+        WireApi::GeminiGenerateContent
+    );
 
     let mut ep = vertex_endpoint(Some(base));
     ep.bearer_token = Some("gcp-secret".into());
@@ -310,34 +331,35 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
 
     let isolation = pl_model::runtime::binding_cache_namespace("acct-vertex", runtime.endpoint());
     req.append_response_from(&resp1, Some(&isolation)).unwrap();
-    req.input.push(pl_model::completion::ModelContextItem::ToolResult {
-        message: Message {
-            role: MessageRole::Tool,
-            content: MessageContent::text("found item"),
-            presentation: Default::default(),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_result: Some(ToolResultRecord {
-                item_id: "call_abc".into(),
+    req.input
+        .push(pl_model::completion::ModelContextItem::ToolResult {
+            message: Message {
+                role: MessageRole::Tool,
+                content: MessageContent::text("found item"),
+                presentation: Default::default(),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_result: Some(ToolResultRecord {
+                    item_id: "call_abc".into(),
+                    call_id: "call_abc".into(),
+                    name: "lookup".into(),
+                    kind: ToolCallKind::Function,
+                }),
+                metadata: Default::default(),
+            },
+            receipt: ToolResultReceipt {
                 call_id: "call_abc".into(),
-                name: "lookup".into(),
-                kind: ToolCallKind::Function,
-            }),
-            metadata: Default::default(),
-        },
-        receipt: ToolResultReceipt {
-            call_id: "call_abc".into(),
-            tool_name: "lookup".into(),
-            arguments_hash: "h1".into(),
-            result_hash: "h2".into(),
-            total_bytes: 10,
-            visible_bytes: 10,
-            truncated: false,
-            artifacts: Vec::new(),
-            continuation: None,
-            reused_from_call_id: None,
-        },
-    });
+                tool_name: "lookup".into(),
+                arguments_hash: "h1".into(),
+                result_hash: "h2".into(),
+                total_bytes: 10,
+                visible_bytes: 10,
+                truncated: false,
+                artifacts: Vec::new(),
+                continuation: None,
+                reused_from_call_id: None,
+            },
+        });
 
     let resp2 = runtime.complete(req, ctx).await.unwrap();
     assert_eq!(resp2.content.as_deref(), Some("All done."));

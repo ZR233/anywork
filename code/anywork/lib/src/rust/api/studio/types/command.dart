@@ -19,7 +19,7 @@ import 'settings.dart';
 import 'thread_stream.dart';
 part 'command.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeArchiveThreadCommandReply {
   final ArchiveThreadResult result;
@@ -240,6 +240,50 @@ class BridgeResourceStamp {
           resourceKey == other.resourceKey &&
           ownerEpoch == other.ownerEpoch &&
           revision == other.revision;
+}
+
+/// A root Thread's model selection and the revisions it was based on.
+class BridgeSetThreadModelRouteRequest {
+  final String operationId;
+  final String threadId;
+  final BigInt expectedModelRouteRevision;
+  final String accountId;
+  final String modelId;
+  final String? effort;
+  final String? serviceTier;
+
+  const BridgeSetThreadModelRouteRequest({
+    required this.operationId,
+    required this.threadId,
+    required this.expectedModelRouteRevision,
+    required this.accountId,
+    required this.modelId,
+    this.effort,
+    this.serviceTier,
+  });
+
+  @override
+  int get hashCode =>
+      operationId.hashCode ^
+      threadId.hashCode ^
+      expectedModelRouteRevision.hashCode ^
+      accountId.hashCode ^
+      modelId.hashCode ^
+      effort.hashCode ^
+      serviceTier.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeSetThreadModelRouteRequest &&
+          runtimeType == other.runtimeType &&
+          operationId == other.operationId &&
+          threadId == other.threadId &&
+          expectedModelRouteRevision == other.expectedModelRouteRevision &&
+          accountId == other.accountId &&
+          modelId == other.modelId &&
+          effort == other.effort &&
+          serviceTier == other.serviceTier;
 }
 
 class BridgeSettingsCommandReply {

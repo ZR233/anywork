@@ -6,7 +6,7 @@ pub(super) const MODEL: Definition = Definition {
     description: "OpenAI versatile model for everyday coding, writing, and multi-step agent tasks.",
     context: EXTENDED_CONTEXT,
     max_output_tokens: Some(128_000),
-    auto_compact_token_limit: Some(475_000),
+    auto_compact_token_limit: None,
     efforts: COMMON_EFFORTS,
     default_effort: Some("medium"),
     cache_write_tokens: true,

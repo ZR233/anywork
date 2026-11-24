@@ -2876,6 +2876,7 @@ mod storage_fault_tests {
                 model_id: Some("frozen-model".into()),
                 model_observation: None,
                 effort: None,
+                requested_service_tier: None,
                 context_window: None,
                 accounting: crate::InferenceAccounting {
                     usage: crate::UsageReport {
@@ -5610,6 +5611,7 @@ mod storage_fault_tests {
                     model_id: Some("frozen-model".into()),
                     model_observation: None,
                     effort: None,
+                    requested_service_tier: None,
                     context_window: Some(64_000),
                     accounting: crate::InferenceAccounting {
                         usage: crate::UsageReport {
@@ -5646,6 +5648,7 @@ mod storage_fault_tests {
                     auto_compact_limit: None,
                 },
                 reasoning_effort: None,
+                requested_service_tier: None,
                 context_window: Some(64_000),
                 turn_id: "frozen-turn".into(),
                 accounting: receipt.billing.accounting.clone(),
@@ -5799,24 +5802,26 @@ mod storage_fault_tests {
             (2, true, true),
         ] {
             let directory = tempfile::tempdir()?;
-            let expected_route = pl_model::config::ModelRouteConfig {
-                account_id: pl_model::config::AccountId::new(if has_saved_route {
-                    "saved-account"
-                } else {
-                    "frozen-account"
-                })?,
-                model_id: if has_saved_route {
-                    "saved-model"
-                } else {
-                    "frozen-model"
-                }
-                .into(),
-                effort: Some(pl_model::config::ReasoningEffort::new(if has_saved_route {
-                    "low"
-                } else {
-                    "high"
-                })),
-            };
+            let expected_route = crate::studio::model_route::ThreadModelSelection::from(
+                pl_model::config::ModelRouteConfig {
+                    account_id: pl_model::config::AccountId::new(if has_saved_route {
+                        "saved-account"
+                    } else {
+                        "frozen-account"
+                    })?,
+                    model_id: if has_saved_route {
+                        "saved-model"
+                    } else {
+                        "frozen-model"
+                    }
+                    .into(),
+                    effort: Some(pl_model::config::ReasoningEffort::new(if has_saved_route {
+                        "low"
+                    } else {
+                        "high"
+                    })),
+                },
+            );
             let mut snapshot = ThreadSnapshot::default();
             snapshot.context.records = vec![pl_core::context::ContextRecord {
                 id: "retained".into(),

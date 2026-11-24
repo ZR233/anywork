@@ -31,9 +31,8 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
     frb.SettingsFieldInput.skillsProjectDir(value: value),
   SkillsExternalDirsCommand(:final value) =>
     frb.SettingsFieldInput.skillsExternalDirs(value: value),
-  SkillsDisabledCommand(:final value) => frb.SettingsFieldInput.skillsDisabled(
-    value: value,
-  ),
+  SkillDisabledCommand(:final id, :final value) =>
+    frb.SettingsFieldInput.skillDisabled(id: id, value: value),
   SkillsAutoLearnMinToolCallsCommand(:final value) =>
     frb.SettingsFieldInput.skillsAutoLearnMinToolCalls(value: value),
   GeneralFollowActiveTurnCommand(:final value) =>
@@ -50,10 +49,10 @@ frb.SettingsFieldInput _settingsFieldInputFromDomain(
     ),
   GeneralSidebarWidthCommand(:final value) =>
     frb.SettingsFieldInput.generalSidebarWidth(value: value),
-  GeneralPinnedThreadIdsCommand(:final value) =>
-    frb.SettingsFieldInput.generalPinnedThreadIds(value: value),
-  GeneralPinnedProjectIdsCommand(:final value) =>
-    frb.SettingsFieldInput.generalPinnedProjectIds(value: value),
+  ThreadPinnedCommand(:final id, :final value) =>
+    frb.SettingsFieldInput.threadPinned(id: id, value: value),
+  ProjectPinnedCommand(:final id, :final value) =>
+    frb.SettingsFieldInput.projectPinned(id: id, value: value),
   WebSearchModeCommand(:final value) => frb.SettingsFieldInput.webSearchMode(
     value: value,
   ),

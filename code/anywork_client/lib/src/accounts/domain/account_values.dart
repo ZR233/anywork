@@ -40,6 +40,7 @@ final class AccountSummary {
     this.usageQueryRevision,
     this.acpEnabled,
     this.acpConnectionRevision,
+    this.acpTemplate,
     required this.capabilities,
   });
   final AccountIdentity identity;
@@ -62,6 +63,9 @@ final class AccountSummary {
 
   /// Native is null; ACP carries its canonical owner's connection revision.
   final int? acpConnectionRevision;
+
+  /// Non-null when this ACP account uses a managed template; null for Local/Native.
+  final AcpProviderView? acpTemplate;
   final AccountCapabilities capabilities;
 }
 

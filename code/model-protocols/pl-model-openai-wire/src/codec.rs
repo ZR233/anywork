@@ -1,6 +1,6 @@
-use pl_model_wire::completion::{CompletionRequest, ModelContextItem, ToolSpec};
 use pl_model_wire::completion::stream::event::ModelStreamEvent;
-use pl_model_wire::model::{ModelInfo, reasoning_fields};
+use pl_model_wire::completion::{CompletionRequest, ModelContextItem, ToolSpec};
+use pl_model_wire::model::{ModelDefinition, reasoning_fields};
 use pl_model_wire::protocol::{ProtocolEndpoint, WireApi};
 use pl_model_wire::transport::{SseContentTypePolicy, default_parse_http_error};
 use pl_model_wire::wire_codec::{
@@ -47,7 +47,7 @@ impl WireCodec for OpenAiWireCodec {
     fn validate_context(
         &self,
         endpoint: &ProtocolEndpoint,
-        model: &ModelInfo,
+        model: &ModelDefinition,
         isolation: &str,
         request: &CompletionRequest,
     ) -> Result<()> {
@@ -65,9 +65,10 @@ impl WireCodec for OpenAiWireCodec {
                 ));
             }
         }
-        self.validate_context_items(model.binding.transport.protocol, &request.input)?;
-        if model.binding.transport.protocol == WireApi::ChatCompletions
+        self.validate_context_items(model.extra.binding.transport.protocol, &request.input)?;
+        if model.extra.binding.transport.protocol == WireApi::ChatCompletions
             && model
+                .extra
                 .capabilities
                 .interleaved
                 .as_ref()
@@ -92,9 +93,10 @@ impl WireCodec for OpenAiWireCodec {
             span.source_isolation
                 .as_deref()
                 .is_some_and(|source| source != isolation)
-                && span.output.iter().any(|item| {
-                    item.get("type").and_then(Value::as_str) == Some("reasoning")
-                })
+                && span
+                    .output
+                    .iter()
+                    .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
         }) {
             return Err(PureError::ConfigError(
                 "this request cannot replay native reasoning from a different credential owner"
@@ -104,8 +106,11 @@ impl WireCodec for OpenAiWireCodec {
         Ok(())
     }
 
-    fn encode_http_request(&self, input: EncodeHttpRequestInput<'_>) -> Result<PreparedHttpRequest> {
-        let api = input.model.binding.transport.protocol;
+    fn encode_http_request(
+        &self,
+        input: EncodeHttpRequestInput<'_>,
+    ) -> Result<PreparedHttpRequest> {
+        let api = input.model.extra.binding.transport.protocol;
         let mut body = build_request(
             api,
             input.endpoint.instruction_wire_role(api),
@@ -129,12 +134,9 @@ impl WireCodec for OpenAiWireCodec {
             SseContentTypePolicy::Required
         };
         let (path_and_query, map, capture_protocol, close_on_terminal) = match body {
-            OpenAiRequestBody::Responses(map) => (
-                "/responses".to_owned(),
-                map,
-                "responsesHttp",
-                true,
-            ),
+            OpenAiRequestBody::Responses(map) => {
+                ("/responses".to_owned(), map, "responsesHttp", true)
+            }
             OpenAiRequestBody::Chat(map) => (
                 "/chat/completions".to_owned(),
                 map,

@@ -99,7 +99,6 @@ void main() {
         context: const ModelContextView(
           unavailable: null,
           contextWindow: 1050000,
-          inputTokenLimit: 922000,
           autoCompactLimit: 14780,
         ),
       );

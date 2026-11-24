@@ -49,10 +49,7 @@ AccountStrings accountStrings(AppLocalizations l10n) => AccountStrings({
   'protocol': l10n.settingsAccountProtocol,
   'context': l10n.settingsContextBudget,
   'maxContext': l10n.statusModelMaxContextLabel,
-  'inputBudget': l10n.statusInputTokensLabel,
-  'contextUnavailable.windowUnknown': l10n.modelContextWindowUnknown,
   'contextUnavailable.invalidParameters': l10n.modelContextParametersInvalid,
-  'contextUnavailable.inputBudgetExhausted': l10n.modelInputBudgetExhausted,
   'efforts': l10n.modelDetailEfforts,
   'verified': l10n.modelDetailVerifiedAt,
   'output': l10n.settingsOutputBudget,
@@ -130,4 +127,7 @@ AccountStrings accountStrings(AppLocalizations l10n) => AccountStrings({
   'acp.method.oauth-business': l10n.acpMethodOauthBusinessDesc,
   'acp.method.gemini-api-key': l10n.acpMethodGeminiApiKeyDesc,
   'acp.method.agent-platform': l10n.acpMethodAgentPlatformDesc,
+  'acp.managed': l10n.acpManagedBadge,
+  'acp.local': l10n.acpLocalBadge,
+  'acp.upgrade.checkFailed': l10n.acpUpgradeCheckFailed,
 }, retryCount: l10n.acpInstallRetryValue);

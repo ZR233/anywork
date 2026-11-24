@@ -1,5 +1,7 @@
 use pl_model_wire::{
-    adapter::Adapter, discovery::DiscoveryPolicy, model::MediaSendOrder,
+    adapter::Adapter,
+    discovery::DiscoveryPolicy,
+    model::MediaSendOrder,
     protocol::{ApiKeyHeaderScheme, InstructionWireRole},
 };
 

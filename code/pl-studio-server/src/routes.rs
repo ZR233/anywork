@@ -13,19 +13,19 @@ use pl_studio_runtime::{
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AcpLocalDetectionCommandReply,
     AcpLocalDetectionSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
     CancelAcpAuthRequest, CancelAcpInstallRequest, CancelAcpLocalDetectionRequest,
-    ContinuationOperationView, ContinueAcpAuthRequest, ContinueThreadRequest,
-    ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest, CreateThreadRequest,
-    DelegationModelDetail, DelegationModelDetails, DelegationModelList, DeleteMcpDocumentRequest,
-    GetDelegationModelRequest, GetDelegationModelsRequest, HealthResponse,
-    ListDelegationModelsRequest, LspResetRequest, McpCatalogSnapshot, McpDocumentCommitReceipt,
-    McpDocumentContent, McpDocumentRef, McpScope, OpenProjectRequest, PatchAccountRequest,
-    ReconnectThreadMcpRequest, RemoveAccountModelRequest, RemoveAccountRequest,
-    RemoveAcpAccountRequest, ResolveInteractionRequest, SetAccountBillingKindRequest,
-    SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest,
-    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest, StopThreadResponse,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioError,
+    CheckAcpInstallUpdateRequest, ContinuationOperationView, ContinueAcpAuthRequest,
+    ContinueThreadRequest, ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest,
+    CreateThreadRequest, DelegationModelDetail, DelegationModelDetails, DelegationModelList,
+    DeleteMcpDocumentRequest, GetDelegationModelRequest, GetDelegationModelsRequest,
+    HealthResponse, ListDelegationModelsRequest, LspResetRequest, McpCatalogSnapshot,
+    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope, OpenProjectRequest,
+    PatchAccountRequest, ReconnectThreadMcpRequest, RemoveAccountModelRequest,
+    RemoveAccountRequest, RemoveAcpAccountRequest, ResolveInteractionRequest,
+    SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
+    SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
+    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
+    StartAcpAuthRequest, StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest,
+    StopThreadResponse, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioError,
     SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest, ThreadLspResetRequest,
     ThreadMcpStateSnapshot, ThreadModelRouteCommandReply, UpdateAcpAccountRequest,
     UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
@@ -418,6 +418,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_acp_install))
         .routes(routes!(start_acp_install))
         .routes(routes!(cancel_acp_install))
+        .routes(routes!(check_acp_install_update))
         .routes(routes!(read_acp_local_detection))
         .routes(routes!(start_acp_local_detection))
         .routes(routes!(cancel_acp_local_detection))
@@ -1420,6 +1421,19 @@ async fn cancel_acp_install(
     ))
 }
 
+#[utoipa::path(post, path = "/api/v1/runtime/acp-install/check-update", operation_id = "acpInstall.checkUpdate", request_body = CheckAcpInstallUpdateRequest, responses(StudioApiErrors, (status = 200, body = AcpInstallCommandReply)))]
+async fn check_acp_install_update(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CheckAcpInstallUpdateRequest>,
+) -> Result<Json<AcpInstallCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .check_acp_install_update(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
 #[utoipa::path(get, path = "/api/v1/acp/local-detection", operation_id = "acpLocalDetection.read", responses(StudioApiErrors, (status = 200, body = AcpLocalDetectionSnapshot)))]
 async fn read_acp_local_detection(
     State(state): State<AppState>,
@@ -1914,7 +1928,6 @@ mod tests {
     async fn acp_account_http_input_preserves_sources_launch_literals_and_document_cas() {
         let request = extract::<UpdateAcpAccountRequest>(serde_json::json!({
             "operationId": "save-op",
-            "expectedRevision": 6,
             "expectedDocumentRevision": 19,
             "account": {
                 "accountId": "custom-agent",
@@ -1929,7 +1942,6 @@ mod tests {
         .await
         .unwrap_or_else(|_| panic!("valid generic account rejected"));
         assert_eq!(request.operation_id, "save-op");
-        assert_eq!(request.expected_revision, 6);
         assert_eq!(request.expected_document_revision, Some(19));
         assert_eq!(request.account.template, None);
         assert_eq!(request.account.command.as_deref(), Some("/a path/agent"));
@@ -1942,7 +1954,6 @@ mod tests {
 
         let managed = extract::<UpdateAcpAccountRequest>(serde_json::json!({
             "operationId": "create-op",
-            "expectedRevision": 7,
             "expectedDocumentRevision": null,
             "account": {
                 "accountId": "managed",
@@ -1959,7 +1970,6 @@ mod tests {
 
         let remove = extract::<RemoveAcpAccountRequest>(serde_json::json!({
             "operationId": "remove-op",
-            "expectedRevision": 8,
             "accountId": "custom-agent",
             "expectedDocumentRevision": 19
         }))

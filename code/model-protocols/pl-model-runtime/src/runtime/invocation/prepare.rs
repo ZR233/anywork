@@ -56,6 +56,11 @@ impl ModelRuntime {
         prompt_cache_key: Option<&str>,
         purpose: &InvocationPurpose,
     ) -> Result<(PreparedHttpRequest, InferenceModelObservation)> {
+        if request.service_tier.is_some() && !matches!(purpose, InvocationPurpose::Completion) {
+            return Err(PureError::ConfigError(
+                "service_tier is only supported for completions".into(),
+            ));
+        }
         let prompt_cache_key = prompt_cache_key.filter(|_| {
             self.endpoint
                 .effective_prompt_cache_policy(&self.model)
@@ -84,7 +89,7 @@ impl ModelRuntime {
         Ok((
             prepared,
             InferenceModelObservation {
-                configured_model: self.model.model_id.clone(),
+                configured_model: self.model.base.slug.clone(),
                 sent_model,
                 reported_model: None,
             },

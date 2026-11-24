@@ -36,9 +36,11 @@ impl GeminiUsageMetadata {
         }
         let output_tokens = match (self.candidates_token_count, self.thoughts_token_count) {
             (None, None) => None,
-            (candidates, thoughts) => {
-                Some(candidates.unwrap_or(0).saturating_add(thoughts.unwrap_or(0)))
-            }
+            (candidates, thoughts) => Some(
+                candidates
+                    .unwrap_or(0)
+                    .saturating_add(thoughts.unwrap_or(0)),
+            ),
         };
         Some(UsageReport {
             input_tokens: self.prompt_token_count,

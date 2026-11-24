@@ -13,6 +13,12 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get composerSpeed => '速度';
+
+  @override
+  String get composerSpeedStandard => '标准';
+
+  @override
   String get acpConnectionReconnecting => '重连中';
 
   @override
@@ -1618,7 +1624,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsStatisticsTitle => '统计';
 
   @override
-  String get settingsStatisticsSubtitle => '按账号、配置模型与组内思考强度汇总最近成功调用。';
+  String get settingsStatisticsSubtitle => '按账号和配置模型汇总最近成功调用，并按思考强度与请求速度档位细分。';
 
   @override
   String get settingsStatisticsSummaryTitle => '模型性能';
@@ -1861,6 +1867,27 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineRemoteImageOpen => '点击后加载并预览';
 
   @override
+  String get timelineRemoteImageLoading => '正在加载图片';
+
+  @override
+  String get timelineRemoteImageRejected => '无法加载此外部图片。';
+
+  @override
+  String get timelineFileDownload => '下载';
+
+  @override
+  String get timelineFileDownloadPause => '暂停下载';
+
+  @override
+  String get timelineFileDownloadResume => '继续下载';
+
+  @override
+  String get timelineFileDownloadStop => '停止下载';
+
+  @override
+  String get timelineFileDownloadComplete => '下载完成';
+
+  @override
   String get timelineJumpToLatest => '跳到最新';
 
   @override
@@ -1903,61 +1930,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineReasoningElapsedUnderSecond => '思考了不到 1 秒';
 
   @override
-  String timelineReasoningElapsedSeconds(int seconds) {
-    return '思考了 $seconds 秒';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutes(int minutes) {
-    return '思考了 $minutes 分';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
-    return '思考了 $minutes 分 $seconds 秒';
+  String timelineReasoningElapsedDuration(String duration) {
+    return '思考了 $duration';
   }
 
   @override
   String get timelineGroupWorkedUnderSecond => '工作了不到 1 秒';
 
   @override
-  String timelineGroupWorkedSeconds(int seconds) {
-    return '工作了 $seconds 秒';
-  }
-
-  @override
-  String timelineGroupWorkedMinutes(int minutes) {
-    return '工作了 $minutes 分';
-  }
-
-  @override
-  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
-    return '工作了 $minutes 分 $seconds 秒';
+  String timelineGroupWorkedDuration(String duration) {
+    return '工作了 $duration';
   }
 
   @override
   String get timelineGroupExecutingUnderSecond => '执行了不到 1 秒';
 
   @override
-  String timelineGroupExecutingSeconds(int seconds) {
-    return '执行了 $seconds 秒';
-  }
-
-  @override
-  String timelineGroupExecutingMinutes(int minutes) {
-    return '执行了 $minutes 分';
-  }
-
-  @override
-  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
-    return '执行了 $minutes 分 $seconds 秒';
+  String timelineGroupExecutingDuration(String duration) {
+    return '执行了 $duration';
   }
 
   @override
   String get timelineGroupClosing => '正在收束';
-
-  @override
-  String get timelineGroupUnrestored => '上次执行未收束，尚未恢复';
 
   @override
   String get timelineReasoningSummary => '概要';
@@ -2089,18 +2083,8 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolElapsedUnderSecond => '用时不到 1 秒';
 
   @override
-  String timelineToolElapsedSeconds(int seconds) {
-    return '用时 $seconds 秒';
-  }
-
-  @override
-  String timelineToolElapsedMinutes(int minutes) {
-    return '用时 $minutes 分';
-  }
-
-  @override
-  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
-    return '用时 $minutes 分 $seconds 秒';
+  String timelineToolElapsedDuration(String duration) {
+    return '用时 $duration';
   }
 
   @override
@@ -3529,7 +3513,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactInvalid => '请输入正整数词元数。';
 
   @override
-  String get settingsModelAutoCompactHelp => '实际阈值不超过上下文容量的 90%，并预留最大输出预算。';
+  String get settingsModelAutoCompactHelp => '留空使用模型默认值。自定义阈值最多为最大上下文的 90%。';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity => '上下文容量未知，无法计算自动压缩阈值。';
@@ -4071,9 +4055,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modelTextOutputUnsupported => '不支持文本输出';
-
-  @override
-  String get modelContextWindowUnknown => '上下文大小未知';
 
   @override
   String get modelTextFilterEmpty => '没有符合文本条件的模型，请在账号设置中查看参数';
@@ -4707,7 +4688,22 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsAllEfforts => '全部强度';
 
   @override
-  String get statisticsEffortBreakdownTitle => '组内思考强度';
+  String get statisticsEffortBreakdownTitle => '组内思考强度与请求档位';
+
+  @override
+  String get statisticsRequestedServiceTier => '请求速度档位';
+
+  @override
+  String get statisticsAllServiceTiers => '全部请求档位';
+
+  @override
+  String get statisticsServiceTierStandard => '标准';
+
+  @override
+  String get statisticsServiceTierUnrecorded => '未记录';
+
+  @override
+  String get statisticsServiceTierNotApplicable => '不适用';
 
   @override
   String get accountProtocolOpenAi => 'OpenAI';
@@ -4815,13 +4811,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityWaitingTimer => '计时器';
 
   @override
-  String get settingsModelAutoCompactAdjusted => '已根据模型上下文容量与输出预留调整生效阈值。';
+  String get settingsModelAutoCompactAdjusted => '已按模型最新的最大上下文调整生效阈值。';
 
   @override
   String get modelContextParametersInvalid => '上下文参数不一致';
-
-  @override
-  String get modelInputBudgetExhausted => '预留输出后没有可用输入容量';
 
   @override
   String get statusCompactNow => '立即压缩';
@@ -5939,7 +5932,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpEditorStepPrepareSubtitle =>
-      '糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（v1.4.5）。';
+      '糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（1.x）。';
 
   @override
   String get acpEditorStepConnectTitle => '3. 保存并登录 Google 账号';
@@ -6042,9 +6035,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineGroupUnfinished => '工作未完成';
-
-  @override
-  String get timelineGroupWorking => '工作中';
 
   @override
   String get timelineGroupRecord => '工作记录';
@@ -6393,7 +6383,59 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get acpProcessGroupRunning => '执行中';
+  String acpProcessGroupToolsOnly(int toolCount) {
+    return '执行了 $toolCount 个工具';
+  }
+
+  @override
+  String acpProcessGroupThoughtsOnly(int count) {
+    return '思考了 $count 段';
+  }
+
+  @override
+  String acpProcessGroupActivitiesOnly(int count) {
+    return '过程 · $count 项活动';
+  }
+
+  @override
+  String acpProcessGroupRunningToolsMeta(int toolCount) {
+    return '$toolCount 个工具';
+  }
+
+  @override
+  String acpProcessGroupRunningActivitiesMeta(int count) {
+    return '$count 项活动';
+  }
+
+  @override
+  String get acpToolKindRead => '读取';
+
+  @override
+  String get acpToolKindEdit => '编辑';
+
+  @override
+  String get acpToolKindDelete => '删除';
+
+  @override
+  String get acpToolKindMove => '移动';
+
+  @override
+  String get acpToolKindSearch => '搜索';
+
+  @override
+  String get acpToolKindExecute => '执行';
+
+  @override
+  String get acpToolKindThink => '思考';
+
+  @override
+  String get acpToolKindFetch => '获取';
+
+  @override
+  String get acpToolKindSwitchMode => '切换模式';
+
+  @override
+  String get acpToolKindOther => '工具';
 
   @override
   String get acpContentAudioLabel => '音频内容';
@@ -7251,4 +7293,424 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
+
+  @override
+  String get liveStatusConnectionDisconnected => '实时同步已断开';
+
+  @override
+  String get liveStatusConnectionReconnecting => '正在重连实时同步';
+
+  @override
+  String get liveStatusMembersUnavailable => '成员读取尚未就绪';
+
+  @override
+  String get liveStatusMembersLoading => '正在读取封存观察…';
+
+  @override
+  String get liveStatusRetryAction => '重试';
+
+  @override
+  String liveStatusContentRangeWindow(int start, int end, int total) {
+    return '字节 $start–$end / $total';
+  }
+
+  @override
+  String get liveStatusContentFirstSegment => '第一段';
+
+  @override
+  String get liveStatusContentNextSegment => '下一段';
+
+  @override
+  String get timelinePatchUnavailableHint => '补丁片段不可用：内容不完整或无法完整解析';
+
+  @override
+  String get timelinePatchFileAdd => '新增';
+
+  @override
+  String get timelinePatchFileUpdate => '更新';
+
+  @override
+  String get timelinePatchFileDelete => '删除';
+
+  @override
+  String get timelineToolCallFallback => '工具调用';
+
+  @override
+  String get timelineToolArgumentsIncompleteTitle => '工具参数不完整';
+
+  @override
+  String get timelineToolArgumentsIncompleteDetail => '参数窗口未包含完整正文';
+
+  @override
+  String get timelineToolIdentityMismatchTitle => '工具内容身份不一致';
+
+  @override
+  String get timelineToolIdentityMismatchDetail => '声明的调用身份与完成载荷不同';
+
+  @override
+  String timelineToolMalformedLabel(String name) {
+    return '$name · 内容格式错误';
+  }
+
+  @override
+  String timelineToolDeferredLabel(String name) {
+    return '$name · 正文按需读取';
+  }
+
+  @override
+  String get timelineToolDeferredReason => '参数按需读取，尚未取得完整业务内容';
+
+  @override
+  String timelineToolParseFailed(String reason) {
+    return '当前工具内容无法解析：$reason';
+  }
+
+  @override
+  String get acpContextWindowTitle => '上下文窗口';
+
+  @override
+  String get acpSnapshotLiveBadge => '实时';
+
+  @override
+  String get acpSnapshotRetainedBadge => '上次快照';
+
+  @override
+  String acpContextRemainingLabel(String tokens) {
+    return '剩余可用 $tokens';
+  }
+
+  @override
+  String acpContextOverCapacityLabel(String tokens) {
+    return '超出容量 $tokens';
+  }
+
+  @override
+  String get acpContextNotReported => '对端暂未报告上下文占用';
+
+  @override
+  String acpContextExactTokens(String used, String size) {
+    return '精确 $used / $size 词元';
+  }
+
+  @override
+  String get acpMetricSpeedTitle => '正文估算速度';
+
+  @override
+  String acpMetricSpeedDetail(String tokens, String duration) {
+    return '≈ $tokens 词元 · $duration';
+  }
+
+  @override
+  String get acpMetricCostTitle => '累计费用';
+
+  @override
+  String get acpMetricCostSubtitle => '对端累计报告';
+
+  @override
+  String get acpMetricTurnsTitle => '已完成轮次';
+
+  @override
+  String acpMetricTurnsValue(int count) {
+    return '$count 轮';
+  }
+
+  @override
+  String get acpDetailSessionSection => '会话与运行配置';
+
+  @override
+  String get acpDetailLastStopReason => '上次结束';
+
+  @override
+  String get acpDetailUpdatedAt => '最近更新';
+
+  @override
+  String get acpDetailCapabilitiesSection => '协议能力与标识';
+
+  @override
+  String get acpDetailSessionId => '远端会话';
+
+  @override
+  String get acpContextDetailSection => '上下文明细';
+
+  @override
+  String get acpContextUsedLabel => '已用词元';
+
+  @override
+  String get acpContextCapacityLabel => '窗口容量';
+
+  @override
+  String get acpContextDeltaLabel => '较上次变化';
+
+  @override
+  String get acpThroughputDetailSection => '最近样本';
+
+  @override
+  String get acpThroughputFormulaNote => '按每 4 个字符约计 1 词元估算，含首段等待耗时';
+
+  @override
+  String get acpThroughputTokensLabel => '估算输出词元';
+
+  @override
+  String get acpThroughputDurationLabel => '响应耗时';
+
+  @override
+  String get acpCostDetailSection => '费用明细';
+
+  @override
+  String get acpCostCurrencyLabel => '币种';
+
+  @override
+  String get acpCostRawLabel => '原始读数';
+
+  @override
+  String get acpCostScopeLabel => '统计口径';
+
+  @override
+  String get acpSessionDetailTitle => '会话信息';
+
+  @override
+  String get accountsCategoryAll => '全部';
+
+  @override
+  String get accountsCategoryAcp => 'ACP 智能体';
+
+  @override
+  String get accountsCategoryNative => 'API 账户';
+
+  @override
+  String accountsUpgradableCount(int count) {
+    return '$count 项可升级';
+  }
+
+  @override
+  String get acpManagedBadge => '官方受管';
+
+  @override
+  String get acpLocalBadge => '本地服务';
+
+  @override
+  String acpVersionTag(String version) {
+    return 'v$version';
+  }
+
+  @override
+  String get acpUpgradeCheck => '检查更新';
+
+  @override
+  String get acpUpgradeChecking => '正在检查新版本…';
+
+  @override
+  String acpUpgradeUpToDate(String version) {
+    return '已是最新 · v$version';
+  }
+
+  @override
+  String get acpUpgradeAvailableTitle => '发现官方新版本';
+
+  @override
+  String acpUpgradeAvailableVersions(String current, String latest) {
+    return 'v$current → v$latest';
+  }
+
+  @override
+  String acpUpgradeAction(String version) {
+    return '升级到 v$version';
+  }
+
+  @override
+  String get acpUpgradeActionGeneric => '立即升级';
+
+  @override
+  String acpUpgradeUpgrading(String version) {
+    return '正在升级到 v$version';
+  }
+
+  @override
+  String acpUpgradePendingSwitch(String version) {
+    return '已安装 v$version，当前会话结束后自动切换';
+  }
+
+  @override
+  String acpUpgradeIncompatibleMajor(String version) {
+    return '官方已发布 v$version（需更新应用以支持大版本 2）';
+  }
+
+  @override
+  String get acpUpgradeCheckFailed => '版本检查失败，请重试';
+
+  @override
+  String get acpUpgradeRetryCheck => '重试检查';
+
+  @override
+  String get acpManagedServerTitle => '受管组件与版本';
+
+  @override
+  String get timelineTurnFailed => '轮次失败';
+
+  @override
+  String get timelineTurnCompleted => '轮次已完成';
+
+  @override
+  String get timelineTurnBudgetLimited => '轮次达到预算上限';
+
+  @override
+  String timelineTurnOutcomeFallback(String state) {
+    return '轮次 · $state';
+  }
+
+  @override
+  String get timelineOutcomeNoMessage => '未提供详细错误信息。';
+
+  @override
+  String get timelineOutcomeTechnicalDetails => '技术详情';
+
+  @override
+  String get timelineOutcomeRawRecord => '公开原始记录';
+
+  @override
+  String get timelineOutcomeCopyMessage => '复制错误信息';
+
+  @override
+  String get timelineOutcomeCopied => '已复制';
+
+  @override
+  String get timelineOutcomeShowMore => '展开全部';
+
+  @override
+  String get timelineOutcomeShowLess => '收起';
+
+  @override
+  String get timelineFailureCategoryProvider => '模型服务';
+
+  @override
+  String get timelineFailureCategoryProviderCapacity => '服务容量';
+
+  @override
+  String get timelineFailureCategoryTool => '工具执行';
+
+  @override
+  String get timelineFailureCategoryValidation => '参数校验';
+
+  @override
+  String get timelineFailureCategoryProtocol => '协议异常';
+
+  @override
+  String get timelineFailureCategoryInternal => '内部错误';
+
+  @override
+  String get timelineProviderKindAuth => '身份认证';
+
+  @override
+  String get timelineProviderKindAuthz => '权限不足';
+
+  @override
+  String get timelineProviderKindCapacity => '服务繁忙 / 限流';
+
+  @override
+  String get timelineProviderKindConfig => '配置错误';
+
+  @override
+  String get timelineProviderKindTransport => '网络传输';
+
+  @override
+  String get timelineProviderKindProtocol => '响应协议';
+
+  @override
+  String get timelineRetryableHint => '可重试';
+
+  @override
+  String timelineRetryAfterSeconds(int seconds) {
+    return '建议 $seconds 秒后重试';
+  }
+
+  @override
+  String get timelineRetryPermanent => '不自动重试';
+
+  @override
+  String get timelineBudgetLimitModelStep => '模型步数';
+
+  @override
+  String get timelineBudgetLimitToolCall => '工具调用次数';
+
+  @override
+  String get timelineBudgetLimitWait => '等待步数';
+
+  @override
+  String get timelineBudgetLimitWallClock => '运行耗时';
+
+  @override
+  String get timelineBudgetLimitAgentCount => '子智能体数量';
+
+  @override
+  String get timelineBudgetLimitAgentDepth => '子智能体层级';
+
+  @override
+  String get timelineBudgetLimitFinalization => '收尾阶段';
+
+  @override
+  String timelineBudgetLimitMessage(String limit) {
+    return '已达到$limit上限，本轮执行已停止。';
+  }
+
+  @override
+  String timelineBudgetUsageModelSteps(int count) {
+    return '模型 $count 步';
+  }
+
+  @override
+  String timelineBudgetUsageToolCalls(int count) {
+    return '工具 $count 次';
+  }
+
+  @override
+  String timelineBudgetUsageWaitCalls(int count) {
+    return '等待 $count 次';
+  }
+
+  @override
+  String get timelineBudgetRolloverSucceeded => '已整理上下文';
+
+  @override
+  String timelineBudgetRolloverFailed(String error) {
+    return '上下文整理失败：$error';
+  }
+
+  @override
+  String get timelineDetailCategory => '错误来源';
+
+  @override
+  String get timelineDetailProviderKind => '细分类型';
+
+  @override
+  String get timelineDetailCode => '错误码';
+
+  @override
+  String get timelineDetailHttpStatus => 'HTTP 状态';
+
+  @override
+  String get timelineDetailRetry => '重试策略';
+
+  @override
+  String get timelineDetailDuration => '耗时';
+
+  @override
+  String get timelineDetailBudgetKind => '触发上限';
+
+  @override
+  String get timelineDetailRollover => '上下文整理';
+
+  @override
+  String get timelineOutcomeStatusFailed => '失败';
+
+  @override
+  String get timelineOutcomeStatusDenied => '已拒绝';
+
+  @override
+  String get timelineOutcomeStatusCancelled => '已取消';
+
+  @override
+  String get timelineOutcomeStatusCompleted => '已完成';
+
+  @override
+  String get timelineOutcomeStatusSucceeded => '已成功';
 }

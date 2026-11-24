@@ -155,17 +155,18 @@ impl StudioRuntime {
             .resolve(&request.input.attachment_draft_ids)
             .await?;
         let config = self.config_runtime.read()?;
-        let selector = super::super::settings_api::validated_route(
+        let model = super::super::settings_api::validated_route(
             &config.config,
             "new Thread",
             &request.route.account_id,
             &request.route.model_id,
             request.route.effort.as_deref(),
         )?;
-        let route = config
-            .config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
+        let selector = crate::studio::model_route::ThreadModelSelection {
+            model,
+            service_tier: request.service_tier,
+        };
+        let route = selector.resolve(&config.config)?;
         crate::studio::delegation::validate_credential(&route)?;
         self.thread_modes
             .snapshot()
@@ -409,20 +410,24 @@ impl StudioRuntime {
         if session.archived {
             bail!("archived Threads cannot be renamed");
         }
-        let baseline = session.clone();
-        // A user edit is authoritative: stop the best-effort Explorer task
-        // before publishing the canonical manual title.
-        self.title_tasks
-            .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
-            .await;
-        let changed = session.title != title;
-        session.title = title;
-        session.updated_at = crate::studio::unix_seconds();
-        let committed = self
-            .agent_facility
-            .product_events
-            .commit_session_update(baseline, session)
-            .await?;
+        let events = &self.agent_facility.product_events;
+        let (committed, changed) = if matches!(agent.backend, crate::AgentBackend::Acp { .. }) {
+            events.rename_acp_root_title(&thread_id, title).await?
+        } else {
+            let baseline = session.clone();
+            // A user edit is authoritative: stop the best-effort Explorer task
+            // before publishing the canonical manual title.
+            self.title_tasks
+                .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
+                .await;
+            let changed = session.title != title;
+            session.title = title;
+            session.updated_at = crate::studio::unix_seconds();
+            (
+                events.commit_session_update(baseline, session).await?,
+                changed,
+            )
+        };
         let crate::StudioProductEventKind::ThreadDirectoryChanged(delta) = &committed.kind else {
             bail!("thread rename did not publish its directory result");
         };

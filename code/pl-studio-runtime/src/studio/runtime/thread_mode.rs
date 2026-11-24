@@ -56,10 +56,7 @@ impl StudioRuntime {
             .mode(&mode_id)
             .context("selected Thread Mode is unavailable")?;
         let config = self.config_runtime.read()?.config;
-        let route_selector = config.mode_model_route(&mode_id)?.clone();
-        let route = config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &route_selector)?;
+        let model = config.mode_model_route(&mode_id)?.clone();
 
         let thread = self.ensure_thread_owner(thread_id).await?;
         let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
@@ -69,6 +66,19 @@ impl StudioRuntime {
             guard = gate.lock_owned() => guard,
         };
         let state = thread.snapshot();
+        let saved_route = crate::studio::model_route::saved(&state)?;
+        let service_tier = saved_route
+            .as_ref()
+            .filter(|saved| {
+                saved.route.model.account_id == model.account_id
+                    && saved.route.model.model_id == model.model_id
+            })
+            .and_then(|saved| saved.route.service_tier.clone());
+        let route_selector = crate::studio::model_route::ThreadModelSelection {
+            model,
+            service_tier,
+        };
+        let route = route_selector.resolve(&config)?;
         let instruction_model = model_binding::validate_context(&state, &route)?;
         let previous = state
             .extensions
@@ -78,12 +88,12 @@ impl StudioRuntime {
         let mut instructions = crate::instruction::decode_snapshot(&previous.payload)?;
         let mode_changed =
             instructions.set_mode_instruction(&mode.descriptor().display_name, mode.prompt())?;
-        let base_changed = instructions.rebind_model_base(&route.model.base_instructions);
+        let base_changed =
+            instructions.rebind_model_base(&route.model.base.model_messages.instructions_template);
         let prompt_changed = mode_changed | base_changed;
         let complete = instructions.trusted_text();
         let hash = instructions.trusted_content_hash();
-        let same_route = crate::studio::model_route::saved(&state)?
-            .is_some_and(|saved| saved.route == route_selector);
+        let same_route = saved_route.is_some_and(|saved| saved.route == route_selector);
         let binding = crate::compaction::instruction_binding(&route, &instruction_model);
         let binding_record = state.extensions.get("studio.instructions.binding");
         let saved_binding = binding_record
@@ -114,19 +124,14 @@ impl StudioRuntime {
             && same_route
             && current.is_canonical_for(&complete)
             && (binding_matches || (binding_missing && !has_latest_snapshot));
-        let instruction_replace = if instruction_unchanged {
-            None
+        let (instruction_replace, instruction_binding) = if instruction_unchanged {
+            (None, None)
         } else {
-            // The instruction Put is third in this atomic extension batch.
-            let instruction_revision = state
-                .extension_sequence
-                .checked_add(3)
-                .context("instruction revision exhausted")?;
             let snapshot = pl_core::context::ContextRecord {
-                id: format!("instruction:{thread_id}:revision:{instruction_revision}"),
+                id: format!("instruction:{thread_id}:{}", uuid::Uuid::new_v4()),
                 turn_id: None,
                 source: pl_core::context::ContextSource::InstructionSnapshot {
-                    revision: instruction_revision,
+                    revision: previous.revision,
                     content_hash: hash.clone(),
                     replaces: latest_hash,
                 },
@@ -134,6 +139,10 @@ impl StudioRuntime {
                     text: complete.clone().into(),
                 }],
                 tool_calls: Vec::new(),
+            };
+            let version_binding = pl_core::thread::extensions::InstructionRevisionBinding {
+                record_id: snapshot.id.clone(),
+                extension_id: "studio.instructions".into(),
             };
             let append = same_route && binding_matches && binding.append_snapshots;
             let mut records = if append {
@@ -158,11 +167,14 @@ impl StudioRuntime {
             } else {
                 records.insert(0, snapshot);
             }
-            Some(ReplaceContext {
-                expected_revision: state.context.revision,
-                reason: ContextReplacementReason::Rebuild,
-                records,
-            })
+            (
+                Some(ReplaceContext {
+                    expected_revision: state.context.revision,
+                    reason: ContextReplacementReason::Rebuild,
+                    records,
+                }),
+                Some(version_binding),
+            )
         };
         let workflow_record = state
             .extensions
@@ -211,12 +223,7 @@ impl StudioRuntime {
                 )?,
             });
         }
-        let mut facts = state
-            .runtime_facts
-            .iter()
-            .filter(|fact| fact.source_id != "studio.workflow")
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut facts = Vec::new();
         if let Some(workflow) = &workflow {
             mutations.push(ExtensionMutation::Put {
                 id: crate::workflow_tool::WORKFLOW_EXTENSION.into(),
@@ -232,13 +239,17 @@ impl StudioRuntime {
                 });
             }
         }
-        let facts_changed = facts.len() != state.runtime_facts.len()
-            || facts.iter().any(|fact| {
-                !state
-                    .runtime_facts
-                    .iter()
-                    .any(|current| current.source_id == fact.source_id && current == fact)
+        let old_workflow = state
+            .runtime_facts
+            .iter()
+            .find(|fact| fact.source_id == "studio.workflow");
+        if facts.is_empty() && old_workflow.is_some_and(|fact| !fact.content.is_empty()) {
+            facts.push(RuntimeFact {
+                source_id: "studio.workflow".into(),
+                content: Vec::new(),
             });
+        }
+        let facts_changed = facts.first().is_some_and(|fact| Some(fact) != old_workflow);
         // The history writer needs an explicit context effect for changed runtime facts, even
         // when the instruction authority itself is already canonical and unchanged.
         let context_update = match instruction_replace {
@@ -254,14 +265,14 @@ impl StudioRuntime {
         candidate.extensions.insert(
             "studio.mode".into(),
             pl_core::thread::extensions::ExtensionRecord {
-                revision: state.extension_sequence.saturating_add(1),
+                revision: mode_record.map_or(1, |record| record.revision),
                 payload: mode_payload,
             },
         );
         candidate.extensions.insert(
             crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
             pl_core::thread::extensions::ExtensionRecord {
-                revision: state.extension_sequence.saturating_add(2),
+                revision: route_record.revision,
                 payload: route_payload,
             },
         );
@@ -283,8 +294,17 @@ impl StudioRuntime {
                 || true,
             )
             .await?;
+        update.base = crate::studio::model_binding::bundle_base(&thread, &state);
+        update.base.extension_inputs.include_keys(
+            &state.extensions,
+            &[
+                "studio.instructions",
+                "studio.instructions.binding",
+                crate::workflow_tool::WORKFLOW_EXTENSION,
+            ],
+        );
         update.application = Some(RuntimeApplication {
-            expected_sequence: state.commit_sequence,
+            instruction_binding,
             update: ApplicationUpdate { mutations, facts },
             context: context_update,
         });

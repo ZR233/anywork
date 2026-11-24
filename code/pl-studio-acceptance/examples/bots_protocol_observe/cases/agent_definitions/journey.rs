@@ -51,6 +51,7 @@ impl Observation<'_> {
                         model_id: ROOT_MODEL.into(),
                         effort: None,
                     },
+                    service_tier: None,
                     delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                     delegation_preference: Some(pl_studio_runtime::DelegationPreference::Balanced),
                     workspace_mode: pl_studio_runtime::ThreadWorkspaceMode::Local,
@@ -830,7 +831,6 @@ impl Observation<'_> {
                 .http()?
                 .update_settings_field(&UpdateSettingsFieldRequest {
                     operation_id: format!("agent-empty-route-{role}"),
-                    expected_revision: current.config.revision,
                     update: SettingsFieldUpdate::RoleModel {
                         role: role.clone(),
                         account_id: config::CHILD_ACCOUNT.into(),
@@ -864,7 +864,6 @@ impl Observation<'_> {
             .http()?
             .update_settings_field(&UpdateSettingsFieldRequest {
                 operation_id: "agent-base-override".into(),
-                expected_revision: current.config.revision,
                 update: SettingsFieldUpdate::InstructionBaseOverride {
                     value: value.into(),
                 },

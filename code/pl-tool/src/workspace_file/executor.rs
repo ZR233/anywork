@@ -1,5 +1,7 @@
 //! Workspace policy over one immutable executor and target root.
+mod deferred;
 mod directory;
+pub use deferred::DeferredWorkspaceFile;
 mod download;
 mod patch;
 mod policy;
@@ -303,6 +305,9 @@ impl ExecutorWorkspaceFileBackend {
 }
 
 impl WorkspaceFileBackend for ExecutorWorkspaceFileBackend {
+    async fn defer_file(&self, path: &str) -> Result<DeferredWorkspaceFile> {
+        self.freeze_deferred_file(path).await.map_err(file_error)
+    }
     async fn apply_patch(
         &self,
         cwd: String,
@@ -368,9 +373,14 @@ impl WorkspaceFileBackend for ExecutorWorkspaceFileBackend {
             .path_request(request.path, request.cwd)
             .map_err(file_error)?;
         let mut bytes = Vec::new();
-        self.copy_capture_bounded(path.as_str(), &mut bytes, request.max_bytes as u64)
-            .await
-            .map_err(file_error)?;
+        let copied = match request.max_bytes {
+            Some(limit) => {
+                self.copy_capture_bounded(path.as_str(), &mut bytes, limit as u64)
+                    .await
+            }
+            None => self.copy_file_to(path.as_str(), &mut bytes).await,
+        };
+        copied.map_err(file_error)?;
         Ok(bytes)
     }
     async fn write_text(&self, request: WorkspaceFileWriteRequest) -> Result<()> {

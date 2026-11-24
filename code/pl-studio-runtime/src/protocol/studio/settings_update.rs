@@ -45,8 +45,9 @@ pub enum SettingsFieldUpdate {
     SkillsExternalDirs {
         value: Vec<String>,
     },
-    SkillsDisabled {
-        value: Vec<String>,
+    SkillDisabled {
+        id: String,
+        value: bool,
     },
     SkillsAutoLearnMinToolCalls {
         value: u32,
@@ -63,11 +64,13 @@ pub enum SettingsFieldUpdate {
     GeneralSidebarWidth {
         value: Option<u16>,
     },
-    GeneralPinnedThreadIds {
-        value: Vec<String>,
+    ThreadPinned {
+        id: String,
+        value: bool,
     },
-    GeneralPinnedProjectIds {
-        value: Vec<String>,
+    ProjectPinned {
+        id: String,
+        value: bool,
     },
     WebSearchMode {
         value: String,
@@ -128,7 +131,6 @@ pub enum SettingsFieldUpdate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateSettingsFieldRequest {
     pub operation_id: String,
-    pub expected_revision: u64,
     pub update: SettingsFieldUpdate,
 }
 
@@ -136,22 +138,23 @@ pub struct UpdateSettingsFieldRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdatePermissionSettingsRequest {
     pub operation_id: String,
-    pub expected_revision: u64,
     pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Existing Thread 的模型路由是一个原子资源：模型、思考强度和其对应的
+/// Existing Thread 的模型路由是一个原子资源：模型、思考强度、速度和其对应的
 /// runtime route 必须在同一次 CAS 中通过联合校验。新会话/Mode 默认值和
 /// Agent role 则使用上面的单字段更新，选择模型不会重放旧思考强度。
 pub struct SetThreadModelRouteRequest {
     pub operation_id: String,
     pub expected_model_route_revision: u64,
-    pub expected_settings_revision: u64,
     pub account_id: String,
     pub model_id: String,
     pub effort: Option<String>,
+    /// Thread-local choice; omission clears any previous acceleration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]

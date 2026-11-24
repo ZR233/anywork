@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
@@ -20,6 +21,7 @@ final class _AcpTransport extends AccountsTestTransport {
   final removedDocumentRevisions = <BigInt>[];
   int startCalls = 0;
   int cancelCalls = 0;
+  bool preserveVerifiedOnQueryUsage = false;
   Object? saveFailure;
   final List<OperationId> saveOperations = [];
   final saveEntered = Completer<void>();
@@ -95,7 +97,6 @@ final class _AcpTransport extends AccountsTestTransport {
 
   @override
   Future<SettingsCommandReply> saveAcpAccount(
-    int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
     required BigInt? expectedDocumentRevision,
@@ -134,7 +135,6 @@ final class _AcpTransport extends AccountsTestTransport {
 
   @override
   Future<SettingsCommandReply> removeAcpAccount(
-    int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
     required BigInt expectedDocumentRevision,
@@ -160,11 +160,22 @@ final class _AcpTransport extends AccountsTestTransport {
     lastConnectionRevision = expectedConnectionRevision;
     final failure = startFailure;
     if (failure != null) throw failure;
+    final current = authAccounts[accountId];
+    final preserveVerified =
+        preserveVerifiedOnQueryUsage &&
+        action is AcpQueryUsageActionView &&
+        current?.connectionRevision == expectedConnectionRevision &&
+        current?.state is AcpVerifiedState;
     authAccounts[accountId] = AcpAuthAccountView(
-      connection: const AcpConnectionStoppedState(),
+      connection: preserveVerified
+          ? current!.connection
+          : const AcpConnectionStoppedState(),
       accountId: accountId,
       connectionRevision: expectedConnectionRevision,
-      state: AcpCheckingState(operationId: operationId.value),
+      state: preserveVerified
+          ? current!.state
+          : AcpCheckingState(operationId: operationId.value),
+      usage: current?.usage,
       // 与真实 owner 同一契约：busy 状态与活动操作投影来自同一受理身份。
       activeOperation: AcpAuthActiveOperationView(
         operationId: operationId.value,
@@ -250,11 +261,19 @@ final class _AcpTransport extends AccountsTestTransport {
     }
     // revision 在真正完成时分配，模拟运行期按提交顺序发布。
     final revision = cancelRevision++;
+    final current = authAccounts[accountId];
+    final preserveVerified =
+        preserveVerifiedOnQueryUsage &&
+        current?.activeOperation?.action is AcpQueryUsageActionView &&
+        current?.state is AcpVerifiedState;
     authAccounts[accountId] = AcpAuthAccountView(
-      connection: const AcpConnectionStoppedState(),
+      connection: preserveVerified
+          ? current!.connection
+          : const AcpConnectionStoppedState(),
       accountId: accountId,
       connectionRevision: cancelConnectionRevisions[accountId] ?? 7,
-      state: const AcpCancelledState(),
+      state: preserveVerified ? current!.state : const AcpCancelledState(),
+      usage: preserveVerified ? current!.usage : null,
     );
     return AcpAuthCommandReply(
       receipt: StudioCommandReceipt(
@@ -1489,5 +1508,210 @@ void main() {
     ]);
     expect(transport.saveCalls, 1);
     expect(client.domains.accounts.state.value.accounts, isEmpty);
+  });
+
+  test(
+    'saveAndConnect merges matching busy check from automatic background check',
+    () async {
+      final transport = _AcpTransport()
+        ..startFailure = StudioFailure(
+          code: StudioFailureCode.busy,
+          message: 'check already active',
+          retryable: false,
+          correlationId: 'test-busy-check',
+          detailsJson: jsonEncode({
+            'acpAuthBusy': {
+              'accountId': 'acp-1',
+              'connectionRevision': 7,
+              'snapshotRevision': 1,
+              'activeOperation': {
+                'operationId': 'bg-check-1',
+                'connectionRevision': 7,
+                'action': {'action': 'check'},
+              },
+            },
+          }),
+        );
+      final client = _client(transport);
+      final result = await client.domains.acp.saveAndConnect(
+        _update,
+        expectedDocumentRevision: null,
+      );
+      expect(transport.startCalls, 1);
+      expect(result.saved?.accountId, 'acp-1');
+      expect(result.checkFailure, isNull);
+    },
+  );
+
+  test('saveAndConnect skips check when disabled or current connection already verified or checking', () async {
+    final disabledTransport = _AcpTransport();
+    final disabledClient = _client(disabledTransport);
+    final disabledResult = await disabledClient.domains.acp.saveAndConnect(
+      const AcpAccountUpdateView(
+        accountId: 'acp-1',
+        name: 'Antigravity',
+        template: AcpProviderView.antigravity,
+        enabled: false,
+      ),
+      expectedDocumentRevision: null,
+    );
+    expect(disabledResult.saved?.enabled, isFalse);
+    expect(disabledResult.checkFailure, isNull);
+    expect(disabledTransport.startCalls, 0);
+
+    final verifiedTransport = _AcpTransport()
+      ..authAccounts['acp-1'] = AcpAuthAccountView(
+        connection: const AcpConnectionReadyState(),
+        accountId: 'acp-1',
+        connectionRevision: 7,
+        state: const AcpVerifiedState(checkedAt: 10, server: null),
+      );
+    final verifiedClient = _client(verifiedTransport);
+    verifiedClient.domains.acp.observeAuth();
+    _apply(
+      verifiedClient,
+      AcpAuthSnapshotView(
+        revision: 1,
+        updatedAt: 1,
+        accounts: [verifiedTransport.authAccounts['acp-1']!],
+      ),
+    );
+    final verifiedResult = await verifiedClient.domains.acp.saveAndConnect(
+      _update,
+      expectedDocumentRevision: null,
+    );
+    expect(verifiedResult.checkFailure, isNull);
+    expect(verifiedTransport.startCalls, 0);
+
+    final checkingTransport = _AcpTransport()
+      ..authAccounts['acp-1'] = const AcpAuthAccountView(
+        connection: AcpConnectionStartingState(),
+        accountId: 'acp-1',
+        connectionRevision: 7,
+        state: AcpCheckingState(operationId: 'bg-check-1'),
+        activeOperation: AcpAuthActiveOperationView(
+          operationId: 'bg-check-1',
+          connectionRevision: 7,
+          action: AcpCheckActionView(),
+        ),
+      );
+    final checkingClient = _client(checkingTransport);
+    checkingClient.domains.acp.observeAuth();
+    _apply(
+      checkingClient,
+      AcpAuthSnapshotView(
+        revision: 1,
+        updatedAt: 1,
+        accounts: [checkingTransport.authAccounts['acp-1']!],
+      ),
+    );
+    final checkingResult = await checkingClient.domains.acp.saveAndConnect(
+      _update,
+      expectedDocumentRevision: null,
+    );
+    expect(checkingResult.checkFailure, isNull);
+    expect(checkingTransport.startCalls, 0);
+  });
+
+  test('saveAndConnect keeps checkFailure when busy facet does not match a check on saved revision', () async {
+    final transport = _AcpTransport()
+      ..startFailure = StudioFailure(
+        code: StudioFailureCode.busy,
+        message: 'usage query active',
+        retryable: false,
+        correlationId: 'test-busy-usage',
+        detailsJson: jsonEncode({
+          'acpAuthBusy': {
+            'accountId': 'acp-1',
+            'connectionRevision': 7,
+            'snapshotRevision': 1,
+            'activeOperation': {
+              'operationId': 'usage-op-1',
+              'connectionRevision': 7,
+              'action': {'action': 'queryUsage'},
+            },
+          },
+        }),
+      );
+    final client = _client(transport);
+    final result = await client.domains.acp.saveAndConnect(
+      _update,
+      expectedDocumentRevision: null,
+    );
+    expect(result.saved?.accountId, 'acp-1');
+    expect(result.checkFailure?.code, StudioFailureCode.busy);
+  });
+
+  test('queryUsage and cancelAuth settle via activeOperation while state stays Verified', () async {
+    final transport = _AcpTransport()..preserveVerifiedOnQueryUsage = true;
+    final client = _client(transport);
+    client.domains.acp.observeAuth();
+    await client.domains.acp.save(_update, expectedDocumentRevision: null);
+    const verified = AcpVerifiedState(checkedAt: 10, server: null);
+    _apply(
+      client,
+      const AcpAuthSnapshotView(
+        revision: 1,
+        updatedAt: 1,
+        accounts: [
+          AcpAuthAccountView(
+            connection: AcpConnectionReadyState(),
+            accountId: 'acp-1',
+            connectionRevision: 7,
+            state: verified,
+          ),
+        ],
+      ),
+    );
+    transport.startRevision = 2;
+    transport.cancelRevision = 3;
+    await client.domains.acp.queryUsage(const AcpAccountIdentity('acp-1'));
+    final activeRow = client.domains.acp.auth.value.value!.account(
+      'acp-1',
+      connectionRevision: 7,
+    )!;
+    expect(activeRow.state, isA<AcpVerifiedState>());
+    expect(activeRow.activeOperation?.action, isA<AcpQueryUsageActionView>());
+    final activeOpId = activeRow.activeOperation!.operationId;
+
+    final settled = await client.domains.acp.cancelAuth(
+      const AcpAccountIdentity('acp-1'),
+    );
+    expect(transport.cancelRequests, [
+      (accountId: 'acp-1', targetOperationId: activeOpId),
+    ]);
+    final afterCancel = settled.account('acp-1', connectionRevision: 7)!;
+    expect(afterCancel.state, isA<AcpVerifiedState>());
+    expect(afterCancel.activeOperation, isNull);
+
+    transport.startRevision = 4;
+    await client.domains.acp.queryUsage(const AcpAccountIdentity('acp-1'));
+    final secondOpId = client.domains.acp.auth.value.value!
+        .account('acp-1', connectionRevision: 7)!
+        .activeOperation!
+        .operationId;
+    expect(secondOpId, isNot(activeOpId));
+    _apply(
+      client,
+      const AcpAuthSnapshotView(
+        revision: 5,
+        updatedAt: 5,
+        accounts: [
+          AcpAuthAccountView(
+            connection: AcpConnectionReadyState(),
+            accountId: 'acp-1',
+            connectionRevision: 7,
+            state: verified,
+          ),
+        ],
+      ),
+    );
+    expect(transport.startCalls, 2);
+    expect(
+      client.domains.acp.auth.value.value!
+          .account('acp-1', connectionRevision: 7)!
+          .activeOperation,
+      isNull,
+    );
   });
 }

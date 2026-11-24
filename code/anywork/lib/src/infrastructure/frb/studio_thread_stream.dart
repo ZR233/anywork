@@ -568,6 +568,7 @@ ThreadModelRouteView? _threadModelRouteFromFrb(
     accountId: value.accountId,
     modelId: value.modelId,
     effort: value.effort,
+    serviceTier: value.serviceTier,
     revision: _exactTimelineInt(value.revision, 'state counter'),
     available: value.available,
     unavailableReason: value.unavailableReason,

@@ -108,6 +108,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) {
     _ensureOpen();
     final targetThreadId = threadId ?? _client.selection.state.selectedThreadId;
@@ -119,7 +120,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     );
     _client.settings.beginCommand(
       'thread-route:$targetThreadId',
-      CommandTarget(accountId: accountId, modelId: modelId, effort: effort),
+      CommandTarget(
+        accountId: accountId,
+        modelId: modelId,
+        effort: effort,
+        serviceTier: serviceTier,
+      ),
     );
     _watchObservation(operation, () {
       if (_client.settingsWrites.isCurrentOwner(owner)) {
@@ -135,6 +141,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
           accountId: accountId,
           modelId: modelId,
           effort: effort,
+          serviceTier: serviceTier,
         ),
       ),
     );
@@ -354,6 +361,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     required StudioPromptInput input,
     required ThreadModeId mode,
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -386,6 +394,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             input,
             mode,
             route: route,
+            serviceTier: serviceTier,
             delegationMode: delegationMode,
             delegationPreference: delegationPreference,
             workspaceMode: workspaceMode,
@@ -1220,12 +1229,14 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     final key = 'thread-route:$threadId';
     final target = CommandTarget(
       accountId: accountId,
       modelId: modelId,
       effort: effort,
+      serviceTier: serviceTier,
     );
     final settings = _client.settings;
     var issued = false;
@@ -1259,6 +1270,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             accountId: accountId,
             modelId: modelId,
             effort: effort,
+            serviceTier: serviceTier,
           );
         } catch (error) {
           if (attemptIssued) requestFailure = error;
@@ -1303,6 +1315,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     _client.settingsWrites.requireOwner(owner);
     _throwIfAccessBlockedForThread(threadId);
@@ -1319,12 +1332,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       operationId: operationId,
       threadId: threadId,
       expectedModelRouteRevision: route.revision,
-      expectedSettingsRevision:
-          _client.settingsWrites.stamp?.revision ??
-          _client.settings.state.settingsRevision,
       accountId: accountId,
       modelId: modelId,
       effort: effort ?? target.reasoningEfforts.firstOrNull,
+      serviceTier: serviceTier,
     );
   }
 

@@ -55,11 +55,11 @@ async fn model_sse(
     pl_model_wire::completion::CompletionResponse,
     pl_model_wire::completion::CompletionFailure,
 > {
+    use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime};
     use pl_model_wire::{
         completion::{CompletionRequest, Message, MessageContent, MessageRole},
-        model::{ModelInfo, ModelTransportProfile},
+        model::{ModelDefinition, ModelTransportProfile},
     };
-    use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime};
     let body = events
         .into_iter()
         .map(|event| format!("data: {event}\n\n"))
@@ -69,8 +69,9 @@ async fn model_sse(
     let mut endpoint =
         pl_model_openai::endpoint::compatible_endpoint("terminal diagnostic fixture", url);
     endpoint.bearer_token = Some(SYNTHETIC_BEARER.into());
-    let mut model = ModelInfo::compatible("synthetic-model");
+    let mut model = ModelDefinition::compatible("synthetic-model");
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = ModelRuntime::bind(

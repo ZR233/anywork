@@ -28,7 +28,7 @@ async fn gui_files_continuation_accepts_the_completed_tool_result() {
                 {
                     "type": "function_call_output",
                     "call_id": "file-display-call",
-                    "output": "File display archived: 3 ready, 0 failed."
+                    "output": "File display: 3 archived, 0 network previews, 0 deferred, 0 failed."
                 }
             ]
         }))

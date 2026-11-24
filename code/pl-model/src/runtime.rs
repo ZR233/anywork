@@ -1,5 +1,7 @@
 //! Product model assembly over the shared invocation runtime.
-use crate::{Result, config::ResolvedModelRoute, model::ModelInfo, protocol::ProtocolEndpoint};
+use crate::{
+    Result, config::ResolvedModelRoute, model::ModelDefinition, protocol::ProtocolEndpoint,
+};
 pub use pl_model_runtime::runtime::*;
 
 /// Creates the runtime for the account and model selected by the product.
@@ -16,7 +18,7 @@ pub fn from_route(route: &ResolvedModelRoute) -> Result<ModelRuntime> {
 pub fn new_with_account_id(
     account_id: impl Into<String>,
     endpoint: ProtocolEndpoint,
-    model: ModelInfo,
+    model: ModelDefinition,
 ) -> Result<ModelRuntime> {
     new_with_registry(
         account_id,
@@ -29,7 +31,7 @@ pub fn new_with_account_id(
 pub fn new_with_registry(
     account_id: impl Into<String>,
     mut endpoint: ProtocolEndpoint,
-    mut model: ModelInfo,
+    mut model: ModelDefinition,
     registry: crate::protocol::ProtocolRegistry<'_>,
 ) -> Result<ModelRuntime> {
     let adapter = registry.resolve(&endpoint.protocol)?;

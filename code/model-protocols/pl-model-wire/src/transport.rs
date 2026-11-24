@@ -275,8 +275,7 @@ pub async fn sse_frames(
     }
     let version = response.version();
     let status = response.status().as_u16();
-    let request_id = response_request_id(response.headers())
-        .map(|id| diagnostics.redact_text(&id));
+    let request_id = response_request_id(response.headers()).map(|id| diagnostics.redact_text(&id));
     let started = std::time::Instant::now();
     let mut received_bytes = 0_u64;
     let transport_diagnostics = diagnostics.clone();

@@ -207,7 +207,6 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         };
         runtime.save_acp_account(crate::UpdateAcpAccountRequest {
             operation_id: "save-generic".into(),
-            expected_revision: runtime.config_runtime.read()?.revision,
             expected_document_revision: None,
             account: crate::AcpAccountUpdate {
                 account_id: definition.id,
@@ -318,6 +317,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 generation: 1,
                 action: crate::AcpAuthAction::Check,
                 cancel: CancellationToken::new(),
+                cancel_requested: false.into(),
                 authentication: sender,
                 cleanup_retry: tokio::sync::Notify::new(),
                 join: tokio::sync::Mutex::new(None),
@@ -458,6 +458,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 generation: 1,
                 action: crate::AcpAuthAction::Check,
                 cancel: CancellationToken::new(),
+                cancel_requested: false.into(),
                 authentication: sender,
                 cleanup_retry: tokio::sync::Notify::new(),
                 join: tokio::sync::Mutex::new(None),

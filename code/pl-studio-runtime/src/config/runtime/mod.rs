@@ -50,6 +50,7 @@ pub struct ConfigRuntime {
 }
 
 struct RuntimeState {
+    native_revision: u64,
     desired: StudioConfig,
     snapshot: ConfigRuntimeSnapshot,
     catalog: ModelCatalogRuntimeSnapshot,
@@ -57,6 +58,21 @@ struct RuntimeState {
     closing: bool,
     /// Target delivery metadata from the original settings/catalog clocks; no business mirror.
     account_projection_revisions: BTreeMap<crate::AccountIdentity, (u64, u64)>,
+}
+
+impl RuntimeState {
+    fn observe_native_config(&mut self, next: &StudioConfig) {
+        let current = &self.snapshot.config;
+        // These are the settings read when building a live provider and its tool registrations.
+        if current.models != next.models
+            || current.runtime != next.runtime
+            || current.skills != next.skills
+            || current.web_search != next.web_search
+            || current.deepseek_web_search != next.deepseek_web_search
+        {
+            self.native_revision = self.native_revision.saturating_add(1);
+        }
+    }
 }
 
 /// canonical Settings 提交的同步观察者。
@@ -149,6 +165,8 @@ pub enum ConfigRuntimeError {
     Migration(#[source] anyhow::Error),
     #[error("work mode configuration requires repair; original files preserved: {0:#}")]
     ModeDefinitions(#[source] anyhow::Error),
+    #[error("Agent Profile {0} changed since it was opened")]
+    ProfileConflict(String),
     #[error("settings revision conflict: expected {expected}, actual {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error(transparent)]
@@ -165,6 +183,7 @@ impl From<ConfigRuntimeError> for PureError {
             ConfigRuntimeError::ModelDiscoveryUnsupported => {
                 PureError::ConfigError("model discovery is unsupported".into())
             }
+            ConfigRuntimeError::ProfileConflict(_) => PureError::ConfigError(error.to_string()),
             ConfigRuntimeError::Core(error) => error,
             ConfigRuntimeError::Migration(error) => match error.downcast::<PureError>() {
                 Ok(error) => error,
@@ -234,6 +253,7 @@ impl ConfigRuntime {
             catalog_updates,
             settings_observer: Arc::new(Mutex::new(Vec::new())),
             state: Arc::new(RwLock::new(RuntimeState {
+                native_revision: 1,
                 account_projection_revisions: initial_account_projection_revisions(
                     &desired,
                     &acp_snapshot,
@@ -323,10 +343,14 @@ impl ConfigRuntime {
         Ok((state.snapshot.clone(), state.catalog.clone()))
     }
 
-    /// The same two revisions used to qualify a prepared Native configuration.
-    pub(crate) fn native_runtime_revision(&self) -> ConfigRuntimeResult<(u64, u64)> {
+    pub(crate) fn native_configuration(&self) -> ConfigRuntimeResult<(StudioConfig, u64)> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-        Ok((state.snapshot.revision, state.catalog.revision))
+        Ok((state.snapshot.config.clone(), state.native_revision))
+    }
+
+    pub(crate) fn native_runtime_revision(&self) -> ConfigRuntimeResult<u64> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(state.native_revision)
     }
 
     /// 安装 Settings 提交观察者，并在同一 command 边界内立即观察当前 canonical 快照。
@@ -834,7 +858,7 @@ impl ConfigRuntime {
     /// 原子创建或替换一个用户 Agent Profile 文件。
     pub fn save_user_agent_profile(
         &self,
-        expected_revision: u64,
+        expected_revision: Option<&str>,
         profile_id: &str,
         profile: &super::UserAgentProfile,
     ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, bool)> {
@@ -843,7 +867,11 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let current = self.read()?;
-        ensure_revision(expected_revision, current.revision)?;
+        let actual =
+            super::agent_profile::current_profile_revision(self.store.paths(), profile_id)?;
+        if expected_revision != actual.as_deref() {
+            return Err(ConfigRuntimeError::ProfileConflict(profile_id.into()));
+        }
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
         let changed = super::save_user_agent_profile(
             self.store.paths(),
@@ -894,7 +922,7 @@ impl ConfigRuntime {
     /// 但提交到磁盘的配置仍只能来自 desired，不能把目录 overlay 写回配置。
     pub fn update_with_effective(
         &self,
-        expected_revision: u64,
+        expected_revision: impl Into<Option<u64>>,
         edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
         self.update_with_credential_intents(
@@ -906,7 +934,7 @@ impl ConfigRuntime {
 
     pub(crate) fn update_with_credential_intents(
         &self,
-        expected_revision: u64,
+        expected_revision: impl Into<Option<u64>>,
         intents: super::credential_commit::CredentialIntents,
         edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
@@ -915,7 +943,9 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let (current, current_catalog) = self.read_with_catalog()?;
-        ensure_revision(expected_revision, current.revision)?;
+        if let Some(expected) = expected_revision.into() {
+            ensure_revision(expected, current.revision)?;
+        }
         let (desired, observations) = {
             let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
             if state.closing {
@@ -972,6 +1002,7 @@ impl ConfigRuntime {
         invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
         update_account_projection_revisions(&mut state, &next, &catalog);
+        state.observe_native_config(&next.config);
         state.desired = next_config;
         state.observations = next_observations;
         state.snapshot = next.clone();
@@ -1030,6 +1061,7 @@ impl ConfigRuntime {
         invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
         update_account_projection_revisions(&mut state, &next, &catalog);
+        state.observe_native_config(&next.config);
         state.desired = desired;
         state.observations = next_observations;
         state.snapshot = next.clone();
@@ -1210,13 +1242,14 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
             }
             let model = models
                 .iter()
-                .find(|model| model.model_id == *model_id)
+                .find(|model| model.base.slug == *model_id)
                 .ok_or_else(|| {
                     PureError::ConfigError(
                         "new connection override references unavailable model".into(),
                     )
                 })?;
             if !model
+                .extra
                 .binding
                 .transport
                 .supported_connection_modes
@@ -1453,10 +1486,53 @@ mod tests {
     }
 
     #[test]
+    fn mode_document_edits_are_independent_and_external_changes_survive_stale_writes()
+    -> anyhow::Result<()> {
+        use crate::mode::ThreadModeId;
+        let (_dir, runtime) = runtime();
+        let mut first = runtime
+            .read_thread_mode_definition(&ThreadModeId::simple())?
+            .document;
+        first.definition.id = ThreadModeId::new("mode.first")?;
+        let mut second = first.clone();
+        second.definition.id = ThreadModeId::new("mode.second")?;
+        let opened = runtime
+            .save_thread_mode_definition(0, first.clone())?
+            .definition
+            .unwrap()
+            .revision;
+        runtime.save_thread_mode_definition(0, second)?;
+        first.definition.prompt.push_str(" edited");
+        let saved = runtime
+            .save_thread_mode_definition(opened, first.clone())?
+            .definition
+            .unwrap()
+            .revision;
+        assert!(
+            runtime
+                .save_thread_mode_definition(0, first.clone())
+                .is_err()
+        );
+        let path = runtime.store.paths().modes_dir().join("mode.first.json");
+        first.definition.prompt.push_str(" externally");
+        let external = serde_json::to_vec_pretty(&first)?;
+        std::fs::write(&path, &external)?;
+        assert!(
+            runtime
+                .delete_thread_mode_definition(saved, &first.definition.id)
+                .is_err()
+        );
+        assert!(runtime.save_thread_mode_definition(saved, first).is_err());
+        assert_eq!(std::fs::read(path)?, external);
+        Ok(())
+    }
+
+    #[test]
     fn scalar_config_mutation_does_not_advance_catalog_clock() {
         let (_directory, runtime) = runtime();
         let before = runtime.read().expect("read config");
         let catalog_before = runtime.read_catalog().expect("read catalog");
+        let native = runtime.native_runtime_revision().unwrap();
         let next = runtime
             .update(before.revision, |config| {
                 let mut next = config.clone();
@@ -1465,6 +1541,7 @@ mod tests {
             })
             .expect("update one field");
 
+        assert_eq!(runtime.native_runtime_revision().unwrap(), native);
         assert_eq!(next.revision, before.revision + 1);
         assert_eq!(
             runtime
@@ -1519,10 +1596,8 @@ mod tests {
     #[test]
     fn acp_profile_dispatch_checks_definitions_in_both_modes_without_native_routes() {
         let (_directory, runtime) = runtime();
-        let before = runtime.read().expect("read config");
-        let configured = runtime
+        runtime
             .save_acp_definition(
-                before.revision,
                 &crate::config::AcpServiceDefinition::template(
                     "acp-fixture".into(),
                     "ACP fixture".into(),
@@ -1541,9 +1616,37 @@ mod tests {
             }),
             workspace_mode: crate::AgentWorkspaceMode::Directory,
         };
-        let (saved, _) = runtime
-            .save_user_agent_profile(configured.revision, "acp-child", &profile)
+        runtime
+            .save_user_agent_profile(None, "acp-child", &profile)
             .expect("ACP Profile is a valid current configuration");
+        let opened = runtime
+            .agent_profiles_snapshot()
+            .unwrap()
+            .catalog
+            .profiles
+            .into_iter()
+            .find(|item| item.definition.definition_id == "acp-child")
+            .unwrap()
+            .definition
+            .revision;
+        runtime
+            .save_user_agent_profile(None, "another-child", &profile)
+            .unwrap();
+        let mut edited = profile.clone();
+        edited.description.push_str(" updated");
+        runtime
+            .save_user_agent_profile(Some(&opened), "acp-child", &edited)
+            .unwrap();
+        assert!(matches!(
+            runtime.save_user_agent_profile(Some(&opened), "acp-child", &profile),
+            Err(ConfigRuntimeError::ProfileConflict(_))
+        ));
+        let path = runtime.store.paths().agents_dir().join("acp-child.toml");
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .contains(&edited.description)
+        );
 
         let catalog = runtime
             .agent_profiles_snapshot()
@@ -1584,7 +1687,7 @@ mod tests {
         let mut disabled = definition;
         disabled.enabled = false;
         runtime
-            .save_acp_definition(saved.revision, &disabled, Some(entry.document_revision))
+            .save_acp_definition(&disabled, Some(entry.document_revision))
             .expect("disable definition");
         for mode in [
             crate::DelegationMode::Profile,

@@ -1,5 +1,6 @@
 use pl_model_wire::{
-    adapter::Adapter, discovery::DiscoveryPolicy,
+    adapter::Adapter,
+    discovery::DiscoveryPolicy,
     protocol::{ApiKeyHeaderScheme, InstructionWireRole},
 };
 

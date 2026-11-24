@@ -8,7 +8,7 @@ pub(super) const MODEL: Definition = Definition {
     description: "OpenAI frontier model for complex reasoning, coding, and professional work.",
     context: EXTENDED_CONTEXT,
     max_output_tokens: Some(128_000),
-    auto_compact_token_limit: Some(475_000),
+    auto_compact_token_limit: None,
     efforts: COMMON_EFFORTS,
     default_effort: Some("medium"),
     cache_write_tokens: true,

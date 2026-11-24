@@ -7,6 +7,7 @@ mod discovery_policy;
 pub mod files;
 pub mod model;
 pub mod protocol;
+pub mod service_tiers;
 pub mod wire_codec;
 pub use pl_model_types::authorization;
 pub use pl_model_types::{

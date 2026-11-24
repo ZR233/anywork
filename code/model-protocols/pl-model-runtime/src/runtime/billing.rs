@@ -22,6 +22,7 @@ use serde::Deserialize;
 struct BillingRequest {
     binding: ModelCallBinding,
     reasoning: Option<crate::completion::ReasoningConfig>,
+    requested_service_tier: Option<String>,
     prompt: Option<super::ThreadPromptSnapshot>,
 }
 
@@ -311,6 +312,9 @@ pub fn model_attempt_billing(
             .as_ref()
             .and_then(|request| request.reasoning.as_ref())
             .and_then(|reasoning| reasoning.effort.clone()),
+        requested_service_tier: request
+            .as_ref()
+            .and_then(|request| request.requested_service_tier.clone()),
         context_window: binding
             .as_ref()
             .and_then(|binding| binding.context_window)
@@ -457,6 +461,43 @@ mod tests {
         let error = model_attempt_billing(attempt, 42)
             .expect_err("conflicting facts must not produce a bill");
         assert_eq!(error.kind, ModelFailureKind::UnsupportedContent);
+    }
+
+    #[test]
+    fn billing_takes_speed_from_the_frozen_request_not_the_response() {
+        for returned_tier in [None, Some("default"), Some("ultrafast")] {
+            let mut output = bound_output(binding());
+            let ContextContent::Opaque { payload } = &mut output.content[1] else {
+                panic!("missing response receipt");
+            };
+            if let Some(tier) = returned_tier {
+                let mut body: serde_json::Value = serde_json::from_str(payload.content()).unwrap();
+                body["receipt"]["response"]["service_tier"] = json!(tier);
+                *payload =
+                    OpaquePayload::new(payload.format(), payload.version(), body.to_string())
+                        .unwrap();
+            }
+            let mut attempt = attempt(AttemptOutcome::Committed(output));
+            assert_eq!(
+                model_attempt_billing(&attempt, 42)
+                    .unwrap()
+                    .unwrap()
+                    .requested_service_tier,
+                None
+            );
+
+            let payload = attempt.request_metadata.as_mut().unwrap();
+            let mut metadata: serde_json::Value = serde_json::from_str(payload.content()).unwrap();
+            metadata["requestedServiceTier"] = json!("tier:priority");
+            *payload =
+                OpaquePayload::new(payload.format(), payload.version(), metadata.to_string())
+                    .unwrap();
+            let billing = model_attempt_billing(&attempt, 42).unwrap().unwrap();
+            assert_eq!(
+                billing.requested_service_tier.as_deref(),
+                Some("tier:priority")
+            );
+        }
     }
 
     #[test]

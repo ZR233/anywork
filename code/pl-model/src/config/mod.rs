@@ -13,3 +13,6 @@ pub use catalog::*;
 pub use descriptor::*;
 pub use pl_model_wire::config::*;
 pub use route::*;
+
+mod model_override;
+pub use model_override::{AccountModelOverride, ModelBaseOverride};

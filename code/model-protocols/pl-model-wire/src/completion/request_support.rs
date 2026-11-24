@@ -12,7 +12,7 @@ use crate::completion::{
     MessageContent, MessageRole, ModelContextItem, ReasoningConfig, ResolvedAttachment,
     ToolCallCaller, ToolCallKind, ToolMediaContext,
 };
-use crate::model::info::{MediaMixPolicy, MediaRepresentation, MediaWireFormat, ModelInfo};
+use crate::model::info::{MediaMixPolicy, MediaRepresentation, MediaWireFormat, ModelDefinition};
 
 fn protocol_error(message: impl Into<String>) -> PureError {
     PureError::LlmError(format!("request protocol error: {}", message.into()))
@@ -51,10 +51,10 @@ pub fn to_object_map<T: Serialize>(value: &T) -> Result<Map<String, Value>> {
 
 pub fn finalize_body(
     body: &mut Map<String, Value>,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     reasoning: &Option<ReasoningConfig>,
 ) {
-    merge_base_body(body, &model.binding.request.body);
+    merge_base_body(body, &model.extra.binding.request.body);
     apply_parameters(body, model, reasoning);
 }
 
@@ -73,10 +73,10 @@ pub fn merge_base_body(target: &mut Map<String, Value>, source: &Map<String, Val
 
 pub fn apply_parameters(
     body: &mut Map<String, Value>,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     reasoning: &Option<ReasoningConfig>,
 ) {
-    for parameter in &model.parameters {
+    for parameter in model.parameters() {
         let selected = if parameter.name == "effort" {
             reasoning
                 .as_ref()
@@ -151,7 +151,9 @@ pub fn validate_tool_history(messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
-pub fn tool_callers_by_result_position(items: &[ModelContextItem]) -> BTreeMap<usize, ToolCallCaller> {
+pub fn tool_callers_by_result_position(
+    items: &[ModelContextItem],
+) -> BTreeMap<usize, ToolCallCaller> {
     let mut calls = VecDeque::new();
     let mut results = BTreeMap::new();
     for (position, item) in items.iter().enumerate() {
@@ -205,7 +207,7 @@ pub struct MediaRepresentationPlan {
 }
 
 impl MediaRepresentationPlan {
-    pub fn for_request(request: &CompletionRequest, model: &ModelInfo) -> Result<Self> {
+    pub fn for_request(request: &CompletionRequest, model: &ModelDefinition) -> Result<Self> {
         let mut attachment_ids = HashMap::<AttachmentModality, Vec<String>>::new();
         let mut seen = HashMap::<String, AttachmentModality>::new();
 
@@ -235,7 +237,7 @@ impl MediaRepresentationPlan {
                     if existing != *modality {
                         return Err(protocol_error(format!(
                             "model={} attachment modality conflict for attachment {attachment_id}",
-                            model.model_id
+                            model.base.slug
                         )));
                     }
                     continue;
@@ -247,12 +249,12 @@ impl MediaRepresentationPlan {
             }
         }
 
-        if model.binding.request.media_mix_policy == MediaMixPolicy::SingleModality
+        if model.extra.binding.request.media_mix_policy == MediaMixPolicy::SingleModality
             && attachment_ids.len() > 1
         {
             return Err(protocol_error(format!(
                 "model={} rejects mixed media modalities",
-                model.model_id
+                model.base.slug
             )));
         }
 
@@ -264,13 +266,14 @@ impl MediaRepresentationPlan {
                 .map(|attachment_id| prepared_content(request, attachment_id, modality, model))
                 .collect::<Result<Vec<_>>>()?;
             let profile = model
+                .extra
                 .binding
                 .request
                 .media_profile(model_modality(modality))
                 .ok_or_else(|| {
                     protocol_error(format!(
                         "model={} modality={} count={} has no media request profile",
-                        model.model_id,
+                        model.base.slug,
                         modality_label(modality),
                         media.len()
                     ))
@@ -286,17 +289,21 @@ impl MediaRepresentationPlan {
             let representation = candidates
                 .iter()
                 .copied()
-                .find(|candidate| media.iter().all(|item| has_representation(item, *candidate)))
+                .find(|candidate| {
+                    media
+                        .iter()
+                        .all(|item| has_representation(item, *candidate))
+                })
                 .ok_or_else(|| {
                     protocol_error(format!(
                         "model={} modality={} count={} has no common media representation",
-                        model.model_id,
+                        model.base.slug,
                         modality_label(modality),
                         media.len()
                     ))
                 })?;
             tracing::info!(
-                model = %model.model_id,
+                model = %model.base.slug,
                 modality = modality_label(modality),
                 representation = representation_label(representation),
                 count = media.len(),
@@ -458,7 +465,7 @@ fn prepared_content<'a>(
     request: &'a CompletionRequest,
     attachment_id: &str,
     modality: AttachmentModality,
-    model: &ModelInfo,
+    model: &ModelDefinition,
 ) -> Result<&'a ResolvedAttachment> {
     let matching = request
         .prepared_content
@@ -468,14 +475,14 @@ fn prepared_content<'a>(
     let [media] = matching.as_slice() else {
         return Err(protocol_error(format!(
             "model={} modality={} attachment {attachment_id} must have exactly one prepared payload",
-            model.model_id,
+            model.base.slug,
             modality_label(modality)
         )));
     };
     if media.modality != modality {
         return Err(protocol_error(format!(
             "model={} attachment {attachment_id} prepared modality does not match message content",
-            model.model_id
+            model.base.slug
         )));
     }
     Ok(media)

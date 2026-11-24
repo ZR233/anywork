@@ -1,9 +1,9 @@
+use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime, ModelSession};
 use pl_model_wire::completion::stream::event::{ModelBlockKind, ModelStreamEvent};
 use pl_model_wire::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
 };
-use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime, ModelSession};
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::json;
 use std::sync::Arc;
@@ -25,11 +25,12 @@ fn request() -> CompletionRequest {
 }
 
 fn runtime(base: String, native: bool) -> ModelRuntime {
-    let mut model = ModelInfo::compatible("http-model");
+    let mut model = ModelDefinition::compatible("http-model");
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    model.capabilities.web_search = true;
+    model.extra.capabilities.web_search = true;
     let mut endpoint = pl_model_openai::endpoint::compatible_endpoint("fixture", base);
     endpoint.service_capabilities.remote_compaction = native;
     ModelRuntime::bind(

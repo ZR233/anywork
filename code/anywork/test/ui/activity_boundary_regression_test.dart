@@ -137,17 +137,35 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('accepted partial text'), findsOneWidget);
-      expect(find.textContaining('$state-terminal-proof'), findsNothing);
-      await tester.tap(
-        find
-            .descendant(
-              of: find.byKey(const ValueKey('chat-item:terminal')),
-              matching: find.byType(InkWell),
-            )
-            .first,
-      );
-      await tester.pumpAndSettle();
-      expect(find.textContaining('$state-terminal-proof'), findsOneWidget);
+      if (state == 'failed') {
+        expect(find.textContaining('$state-terminal-proof'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('chat-item:partial')),
+            matching: find.textContaining('$state-terminal-proof'),
+          ),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('chat-item:terminal')),
+            matching: find.textContaining('$state-terminal-proof'),
+          ),
+          findsOneWidget,
+        );
+      } else {
+        expect(find.textContaining('$state-terminal-proof'), findsNothing);
+        await tester.tap(
+          find
+              .descendant(
+                of: find.byKey(const ValueKey('chat-item:terminal')),
+                matching: find.byType(InkWell),
+              )
+              .first,
+        );
+        await tester.pumpAndSettle();
+        expect(find.textContaining('$state-terminal-proof'), findsOneWidget);
+      }
       expect(find.text('accepted partial text'), findsOneWidget);
     });
 

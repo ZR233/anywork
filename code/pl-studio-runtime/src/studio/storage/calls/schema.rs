@@ -133,6 +133,14 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
                     "legacy calls fence shape is invalid; existing data preserved"
                 );
             }
+            if version >= 10 {
+                ensure!(
+                    table_columns(db, "performance_samples")
+                        .await?
+                        .contains("requested_service_tier"),
+                    "current performance request tier column is missing; existing data preserved"
+                );
+            }
         }
         Some(version)
     } else {
@@ -169,7 +177,9 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
         );
     } else {
         ensure!(
-            version != Some(9),
+            version != Some(CALLS_SCHEMA_VERSION)
+                && (version != Some(9)
+                    || (pending.len() == 1 && pending[0].name() == RequestedServiceTier.name())),
             "calls format conflicts with pending migrations; existing data preserved"
         );
     }
@@ -205,6 +215,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(ThroughputEpoch),
             Box::new(MaterialProvenance),
             Box::new(LegacyCallFences),
+            Box::new(RequestedServiceTier),
         ]
     }
 }
@@ -414,6 +425,29 @@ impl MigrationTrait for LegacyCallFences {
              UPDATE calls_meta SET schema_version=9 WHERE id=1;",
         )
         .await?;
+        Ok(())
+    }
+}
+
+struct RequestedServiceTier;
+impl MigrationName for RequestedServiceTier {
+    fn name(&self) -> &str {
+        "m20261026_000008_calls_requested_service_tier"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for RequestedServiceTier {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "ALTER TABLE performance_samples ADD COLUMN requested_service_tier TEXT;
+             UPDATE calls_meta SET schema_version=10 WHERE id=1;",
+            )
+            .await?;
         Ok(())
     }
 }
@@ -831,6 +865,7 @@ pub(super) fn legacy_record(row: &QueryResult) -> Result<CallLogRecord> {
         sent_model: row.try_get("", "sent_model")?,
         reported_model: row.try_get("", "reported_model")?,
         effort: row.try_get("", "reasoning_effort")?,
+        requested_service_tier: None,
         usage: Some(event::CallUsageRecord {
             input_tokens: opt_u64(row, "input_tokens")?,
             output_tokens: opt_u64(row, "output_tokens")?,
@@ -970,13 +1005,13 @@ pub(super) async fn seed_version_for_test(
     .await?;
     options.sqlx_logging(false);
     let db = Database::connect(options).await?;
-    if schema_version == 8 {
+    if (8..=9).contains(&schema_version) {
         // Build the published schema through its real migrations, including bookkeeping.
         // This keeps current auxiliary payloads out of the historical v7 conversion.
         Migrator {
             log_dir: path.parent().unwrap().join(CALL_LOG_DIR_NAME),
         }
-        .up(&db, Some(6))
+        .up(&db, Some((schema_version - 2) as u32))
         .await?;
         db.execute_unprepared(seed_sql).await?;
         db.close().await?;
@@ -1308,7 +1343,15 @@ mod storage_fault_tests {
                 throughput_epoch: event::THROUGHPUT_EPOCH,
                 ..Default::default()
             })?;
-            apply_billing(&mut log, &tx, &billing).await?;
+            // Write the historical v8 shape explicitly: the current sample writer
+            // requires the v10 column that this migration fixture must not have yet.
+            append_record(&tx, &mut log, &billing, billing.recorded_at).await?;
+            tx.execute_raw(statement(
+                "INSERT INTO performance_samples(thread_id,call_id,completed_at,account_id,
+                    model_id,output_tokens,response_millis,usage_status,first_output_source,throughput_valid)
+                 VALUES('current','call',?,'account','model',25,100,'partial','unobserved',1)",
+                vec![billing.recorded_at.into()],
+            )).await?;
             apply_attempt(
                 &tx,
                 &mut log,
@@ -1352,7 +1395,8 @@ mod storage_fault_tests {
     }
 
     // Compare every stored column, including hashes, locators, raw sample provenance,
-    // legacy payloads and both fence values. The fence table's name alone changes.
+    // legacy payloads and both fence values. The new nullable request-tier column
+    // is checked independently by the v9 migration regression.
     async fn material_snapshot(
         db: &DatabaseConnection,
     ) -> Result<BTreeMap<String, Vec<Vec<String>>>> {
@@ -1369,7 +1413,11 @@ mod storage_fault_tests {
             "call_usage_summary",
             "legacy_auxiliary_usage",
         ] {
-            let columns = table_columns(db, table).await?;
+            let columns: Vec<_> = table_columns(db, table)
+                .await?
+                .into_iter()
+                .filter(|column| column != "requested_service_tier")
+                .collect();
             let selection = columns
                 .iter()
                 .map(|column| format!("quote(\"{column}\")"))
@@ -1422,7 +1470,7 @@ mod storage_fault_tests {
             let logs = log_snapshot(temp.path()).await?;
             initialize(&db, temp.path()).await?;
             preflight(&db).await?;
-            assert_eq!(format_version(&db).await?, 9);
+            assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
             assert!(!table_exists(&db, "call_watermarks").await?);
             assert!(table_exists(&db, "legacy_call_fences").await?);
             assert_eq!(material_snapshot(&db).await?, before);
@@ -1434,7 +1482,7 @@ mod storage_fault_tests {
                 .get_applied_migrations_read_only(&db)
                 .await?
                 .len(),
-                7,
+                8,
             );
             db.close().await?;
             let store = CallsStore::prepare(&path).await?;
@@ -1460,6 +1508,160 @@ mod storage_fault_tests {
             assert!(store.legacy_session_costs("absent", 0).await?.is_empty());
             store.close().await?;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema_nine_adds_only_request_tier_and_replays_rolling_logs_without_rebilling()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        seed_version_for_test(&path, 9,
+            "INSERT INTO performance_samples(thread_id,call_id,completed_at,account_id,model_id,
+                effort,output_tokens,response_millis,usage_status,throughput_valid,purpose)
+             VALUES('thread','native',1,'account','model','high',25,100,'partial',1,NULL),
+                   ('thread','acp',2,'account','model','high',9999,1,'partial',1,'acpTextEstimate'),
+                   ('thread','new-log',3,'account','model','high',10,100,'partial',1,NULL);
+             INSERT INTO call_usage_summary(root_thread_id,thread_id,purpose,cost_currency,amount,revision)
+             VALUES('root','thread','','USD',4.5,0);"
+        ).await?;
+        let db = connect_fixture(&path).await?;
+        let columns = table_columns(&db, "performance_samples").await?;
+        let before = material_snapshot(&db).await?;
+        let now = crate::studio::unix_seconds();
+        let mut log = CallLog::prepare(temp.path().join(CALL_LOG_DIR_NAME)).await?;
+        for (id, at, tier) in [
+            ("old-log", now - 86_400, None),
+            ("new-log", now, Some("tier:ultrafast")),
+        ] {
+            let record = CallLogRecord {
+                version: event::CALL_LOG_RECORD_VERSION,
+                kind: "billing".into(),
+                thread_id: "thread".into(),
+                call_id: id.into(),
+                status: "committed".into(),
+                recorded_at: at,
+                account_id: Some("account".into()),
+                model_id: Some("model".into()),
+                effort: Some("high".into()),
+                requested_service_tier: tier.map(str::to_owned),
+                usage: Some(event::CallUsageRecord {
+                    output_tokens: Some(10),
+                    ..Default::default()
+                }),
+                usage_status: Some(pl_core::usage::UsageStatus::Partial),
+                timing: Some(event::CallTimingRecord {
+                    response_millis: Some(100),
+                    ..Default::default()
+                }),
+                throughput_epoch: event::THROUGHPUT_EPOCH,
+                ..Default::default()
+            };
+            let (line, _) = event::encode_record(&record)?;
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line)?
+                    .get("requestedServiceTier")
+                    .and_then(|value| value.as_str()),
+                tier
+            );
+            log.append(event::record_day(at), at, &line).await?;
+        }
+        log.sync_pending().await?;
+        log.close();
+        let logs = log_snapshot(temp.path()).await?;
+        assert_eq!(logs.len(), 2, "the fixture spans two daily segments");
+        initialize(&db, temp.path()).await?;
+        assert_eq!(format_version(&db).await?, 10);
+        assert_eq!(material_snapshot(&db).await?, before);
+        let mut expected_columns = columns;
+        expected_columns.insert("requested_service_tier".into());
+        assert_eq!(
+            table_columns(&db, "performance_samples").await?,
+            expected_columns
+        );
+        assert!(
+            db.query_one_raw(statement(
+                "SELECT 1 FROM performance_samples WHERE requested_service_tier IS NOT NULL",
+                vec![]
+            ))
+            .await?
+            .is_none()
+        );
+        assert_eq!(log_snapshot(temp.path()).await?, logs);
+        db.close().await?;
+
+        for _ in 0..2 {
+            let store = CallsStore::open(&path).await?;
+            let samples = store.recent_performance_samples(100).await?;
+            assert_eq!(samples.len(), 4);
+            for (id, tier) in [
+                ("native", None),
+                ("acp", Some("notApplicable")),
+                ("old-log", None),
+                ("new-log", Some("tier:ultrafast")),
+            ] {
+                assert_eq!(
+                    samples
+                        .iter()
+                        .find(|sample| sample.call_id == id)
+                        .unwrap()
+                        .requested_service_tier
+                        .as_deref(),
+                    tier,
+                    "{id}"
+                );
+            }
+            let summary = store
+                .read_statistics(StatisticsReadRequest {
+                    costs: false,
+                    performance: true,
+                })
+                .await?
+                .summary
+                .unwrap();
+            assert_eq!(summary.len(), 2);
+            assert_eq!(summary[0].requested_service_tier, None);
+            assert_eq!(summary[0].sample_count, 2);
+            assert_eq!(summary[0].completion_tokens, 35);
+            assert_eq!(
+                summary[1].requested_service_tier.as_deref(),
+                Some("tier:ultrafast")
+            );
+            assert_eq!(summary[1].sample_count, 1);
+            assert_eq!(
+                store.session_cost_rollups().await?[0].estimated_costs[0].amount,
+                4.5
+            );
+            assert_eq!(log_snapshot(temp.path()).await?, logs);
+            store.close().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn request_tier_migration_failure_preserves_v9_rows_and_can_retry() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        seed_version_for_test(&path, 9,
+            "INSERT INTO performance_samples(thread_id,call_id,completed_at) VALUES('thread','call',1);
+             CREATE TRIGGER reject_request_tier BEFORE UPDATE OF schema_version ON calls_meta
+             WHEN NEW.schema_version=10 BEGIN SELECT RAISE(ABORT,'injected tier migration failure'); END;"
+        ).await?;
+        let db = connect_fixture(&path).await?;
+        let before = material_snapshot(&db).await?;
+        let columns = table_columns(&db, "performance_samples").await?;
+        let error = initialize(&db, temp.path()).await.unwrap_err();
+        assert!(format!("{error:#}").contains("injected tier migration failure"));
+        assert_eq!(format_version(&db).await?, 9);
+        assert_eq!(table_columns(&db, "performance_samples").await?, columns);
+        assert_eq!(material_snapshot(&db).await?, before);
+        preflight(&db).await?;
+        db.execute_unprepared("DROP TRIGGER reject_request_tier")
+            .await?;
+        initialize(&db, temp.path()).await?;
+        assert_eq!(format_version(&db).await?, 10);
+        assert_eq!(material_snapshot(&db).await?, before);
+        db.close().await?;
         Ok(())
     }
 
@@ -1500,7 +1702,7 @@ mod storage_fault_tests {
         db.execute_unprepared("DROP TRIGGER reject_retirement")
             .await?;
         initialize(&db, temp.path()).await?;
-        assert_eq!(format_version(&db).await?, 9);
+        assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
         assert_eq!(material_snapshot(&db).await?, before);
         assert_eq!(log_snapshot(temp.path()).await?, logs);
         db.close().await?;
@@ -1530,7 +1732,7 @@ mod storage_fault_tests {
         db.close().await?;
         assert!(CallsStore::prepare(&path).await.is_err());
         let db = connect_fixture(&path).await?;
-        assert_eq!(format_version(&db).await?, 9);
+        assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
         assert!(!table_exists(&db, "call_watermarks").await?);
         assert_eq!(material_snapshot(&db).await?, before);
         assert_eq!(log_snapshot(temp.path()).await?, logs);

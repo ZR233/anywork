@@ -500,24 +500,23 @@ pub(super) fn request(
                 let mut encoded = CompletionRequest::builder().input(input).build();
                 encoded.replay_spans = replay_spans;
                 let target = super::receipt::ModelCallBinding::capture(runtime, "replay");
-                let native_reasoning = frame
-                    .receipt
-                    .response
-                    .responses_context_items
-                    .iter()
-                    .any(|item| item.value["type"] == "reasoning")
-                    || frame
+                let native_reasoning =
+                    frame
                         .receipt
                         .response
-                        .replay
-                        .as_ref()
-                        .is_some_and(crate::completion::AssistantReplay::has_opaque_provider_state);
+                        .responses_context_items
+                        .iter()
+                        .any(|item| item.value["type"] == "reasoning")
+                        || frame.receipt.response.replay.as_ref().is_some_and(
+                            crate::completion::AssistantReplay::has_opaque_provider_state,
+                        );
                 if native_reasoning
                     && !frame.receipt.binding.native_context_compatible(
                         &target,
                         frame.compatibility_family.as_deref(),
                         runtime
                             .model()
+                            .extra
                             .capabilities
                             .native_context_family
                             .as_deref(),

@@ -4,11 +4,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pl_model_gemini::{adapter::ADAPTER, bundled_definition, endpoint};
 use pl_model_runtime::runtime::{CancellationToken, ModelInvocationContext, ModelRuntime};
 use pl_model_wire::completion::{
-    AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest, ContentPart,
-    Message, MessageContent, MessageRole, ModelContextItem, ReasoningConfig, SystemPrompt,
-    ToolResultRecord, ToolSpec, completion_response_message_text,
+    AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest, ContentPart, Message,
+    MessageContent, MessageRole, ModelContextItem, ReasoningConfig, SystemPrompt, ToolResultRecord,
+    ToolSpec, completion_response_message_text,
 };
-use pl_model_wire::model::ModelInfo;
+use pl_model_wire::model::ModelDefinition;
 use serde_json::json;
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -56,16 +56,21 @@ fn read_api_key(flavor: TargetFlavor) -> Result<String, Box<dyn std::error::Erro
     Err(format!("set one of {vars:?} before running gemini-live").into())
 }
 
-fn resolve_model(model_id: &str) -> Result<ModelInfo, Box<dyn std::error::Error>> {
+fn resolve_model(model_id: &str) -> Result<ModelDefinition, Box<dyn std::error::Error>> {
     let bundled = bundled_definition()?;
     Ok(bundled
         .models
         .into_iter()
-        .find(|m| m.model_id == model_id)
+        .find(|m| m.base.slug == model_id)
         .unwrap_or_else(|| {
-            let mut m = bundled_definition().unwrap().models.into_iter().next().unwrap();
-            m.model_id = model_id.to_owned();
-            m.display_name = model_id.to_owned();
+            let mut m = bundled_definition()
+                .unwrap()
+                .models
+                .into_iter()
+                .next()
+                .unwrap();
+            m.base.slug = model_id.to_owned();
+            m.base.display_name = model_id.to_owned();
             m
         }))
 }
@@ -92,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     endpoint.bearer_token = Some(key);
     let model = resolve_model(&args.model)?;
     let runtime = ModelRuntime::bind("gemini-live", endpoint, model, ADAPTER.codec, None)?;
-    let context = || ModelInvocationContext::default().with_cancellation(Some(CancellationToken::new()));
+    let context =
+        || ModelInvocationContext::default().with_cancellation(Some(CancellationToken::new()));
 
     match args.command {
         Command::Chat { prompt } => {
@@ -152,7 +158,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build();
             let resp1 = runtime.complete(req1.clone(), context()).await?;
             println!("turn1 tool_calls={}", resp1.tool_calls.len());
-            assert!(!resp1.tool_calls.is_empty(), "expected at least one tool call");
+            assert!(
+                !resp1.tool_calls.is_empty(),
+                "expected at least one tool call"
+            );
             req1.append_response(&resp1)?;
             for call in &resp1.tool_calls {
                 req1.input.push(ModelContextItem::ToolResult {
@@ -186,7 +195,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let resp2 = runtime.complete(req1, context()).await?;
             println!("turn2 text: {}", completion_response_message_text(&resp2));
-            println!("turn2 usage: {}", serde_json::to_string(&resp2.accounting.usage)?);
+            println!(
+                "turn2 usage: {}",
+                serde_json::to_string(&resp2.accounting.usage)?
+            );
         }
         Command::Multimodal => {
             let req = CompletionRequest::builder()
@@ -239,8 +251,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .build();
             let resp = runtime.complete(req, context()).await?;
-            println!("multimodal text: {}", completion_response_message_text(&resp));
-            println!("multimodal usage: {}", serde_json::to_string(&resp.accounting.usage)?);
+            println!(
+                "multimodal text: {}",
+                completion_response_message_text(&resp)
+            );
+            println!(
+                "multimodal usage: {}",
+                serde_json::to_string(&resp.accounting.usage)?
+            );
         }
     }
     Ok(())

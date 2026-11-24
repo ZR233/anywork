@@ -44,8 +44,14 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   }
 
   @override
-  Future<void> commitDraft(AcpSessionTargetView target) async {
-    calls.add(('commitDraft', target));
+  Future<void> commitDraft(
+    AcpSessionTargetView target, {
+    required String firstPromptText,
+  }) async {
+    calls.add((
+      'commitDraft',
+      (target: target, firstPromptText: firstPromptText),
+    ));
     if (!enteredCommit.isCompleted) enteredCommit.complete();
     if (commitDraftError case final error?) throw error;
     await commitDraftResult?.future;

@@ -22,8 +22,11 @@ final class _AuthenticationAttempt {
   String? operationId;
   AcpAuthStateView? settled;
 
-  bool observe(AcpAuthStateView auth) {
-    final operation = auth.operationId;
+  bool observe(
+    AcpAuthStateView auth, {
+    AcpAuthActiveOperationView? activeOperation,
+  }) {
+    final operation = activeOperation?.operationId ?? auth.operationId;
     if (operation != null) {
       if (settled != null) return false;
       operationId ??= operation;
@@ -56,6 +59,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   _AuthenticationAttempt? _authenticating;
   ({int sequence, String operation})? _cancelInstall;
   ({int sequence, String operation})? _cancelAuth;
+  bool _checkingUpdate = false;
+  String? _checkUpdateError;
   bool _finished = false;
   String? _authOwnerEpoch;
   String? _installOwnerEpoch;
@@ -150,26 +155,26 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
           ? null
           : _service.install.value.value?.stateOf(_provider!)) ??
       const AcpInstallIdleState();
-  AcpAuthStateView get _auth {
-    if (_key.creating || _service.auth.value.stale) {
-      return const AcpUncheckedState();
-    }
-    return _service.auth.value.value?.stateOf(
-          _key.target.id,
-          connectionRevision: _key.connectionRevision,
-        ) ??
-        const AcpUncheckedState();
-  }
-
-  AcpConnectionStateView? get _connection =>
+  AcpAuthAccountView? get _authAccount =>
       _key.creating || _service.auth.value.stale
       ? null
-      : _service.auth.value.value
-            ?.account(
-              _key.target.id,
-              connectionRevision: _key.connectionRevision,
-            )
-            ?.connection;
+      : _service.auth.value.value?.account(
+          _key.target.id,
+          connectionRevision: _key.connectionRevision,
+        );
+
+  AcpAuthStateView get _auth =>
+      _authAccount?.state ?? const AcpUncheckedState();
+
+  AcpAuthActiveOperationView? get _activeOperation =>
+      _authAccount?.activeOperation;
+
+  String? get _activeOperationId =>
+      _activeOperation?.operationId ?? _auth.operationId;
+
+  bool get _operationBusy => _activeOperation != null || _auth.isBusy;
+
+  AcpConnectionStateView? get _connection => _authAccount?.connection;
 
   bool get _preparedForEditor =>
       !_service.install.value.stale &&
@@ -207,7 +212,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       return;
     }
     final known = _service.install.value;
-    if (known.loaded && known.value?.stateOf(_provider!).server != null) return;
+    final knownHasUpdate =
+        known.loaded &&
+        known.value?.updateOf(_provider!) is AcpInstallUpdateAvailableState;
+    if (known.loaded &&
+        known.value?.stateOf(_provider!).server != null &&
+        !knownHasUpdate) {
+      return;
+    }
     final attempt = ++_sequence;
     _preparing = attempt;
     _intent = _intent?.renewed();
@@ -227,10 +239,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         _error = _strings['stale'];
         return;
       }
-      // Shared Ready is a real, unclaimed installation. Starting another
-      // operation merely to obtain a receipt would bypass explicit usePrepared.
+      // Shared Ready is a real, unclaimed installation unless an approved 1.x
+      // update is available to download.
       final installation = current.value!.stateOf(_provider!);
-      if (installation.server != null || installation.isBusy) return;
+      final canUpgrade =
+          current.value!.updateOf(_provider!) is AcpInstallUpdateAvailableState;
+      if (installation.isBusy || (installation.server != null && !canUpgrade)) {
+        return;
+      }
       final snapshot = await _service.prepare(_provider!);
       if (!_ownsPrepare(attempt, generation)) return;
       final operation = snapshot.stateOf(_provider!).operationId;
@@ -378,19 +394,24 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     return detail is AcpAccountDetails ? detail.account : null;
   }
 
-  AcpCommandNotice _notice(Object error, {required String? operation}) =>
-      AcpCommandNotice(
-        kind: AcpCommandNoticeKind.authentication,
-        summary: safeAccountError(error, _strings),
-        accountId: _key.target.id,
-        connectionRevision: _key.connectionRevision,
-        operationId: operation,
-      );
+  AcpCommandNotice _notice(
+    Object error, {
+    required String? operation,
+    bool clearOnVerified = true,
+  }) => AcpCommandNotice(
+    kind: AcpCommandNoticeKind.authentication,
+    summary: safeAccountError(error, _strings),
+    accountId: _key.target.id,
+    connectionRevision: _key.connectionRevision,
+    operationId: operation,
+    clearOnVerified: clearOnVerified,
+  );
 
   Future<void> authenticate({bool login = false}) async {
-    if (_service.auth.value.stale ||
+    if (!(_account?.enabled ?? true) ||
+        _service.auth.value.stale ||
         _authenticating != null ||
-        (_auth.isBusy && !(login && _auth is AcpRequiredState)) ||
+        (_operationBusy && !(login && _auth is AcpRequiredState)) ||
         !_currentConnection) {
       return;
     }
@@ -427,6 +448,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
           requestConnectionRevision: _key.connectionRevision,
           account: _account,
           auth: _auth,
+          activeOperation: _activeOperation,
         )) {
           _authNotice = _notice(error, operation: attempt.operationId);
         }
@@ -446,10 +468,10 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       _currentConnection;
 
   Future<void> cancelAuthentication() async {
-    final operation = _auth.operationId;
+    final operation = _activeOperationId;
     if (_service.auth.value.stale ||
         operation == null ||
-        !_auth.isBusy ||
+        !_operationBusy ||
         _cancelAuth?.operation == operation ||
         !_currentConnection) {
       return;
@@ -460,7 +482,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     try {
       if (_finished ||
           _cancelAuth != attempt ||
-          _auth.operationId != operation ||
+          _activeOperationId != operation ||
           !_currentConnection) {
         return;
       }
@@ -469,7 +491,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       if (ref.mounted &&
           !_finished &&
           _cancelAuth == attempt &&
-          _auth.operationId == operation &&
+          _activeOperationId == operation &&
           _currentConnection) {
         _authNotice = _notice(error, operation: operation);
       }
@@ -485,8 +507,9 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   /// an explicit refresh and never creates a local quota cache.
   Future<void> queryUsage() async {
     if (_provider == null ||
+        !(_account?.enabled ?? true) ||
         _service.auth.value.stale ||
-        _auth.isBusy ||
+        _operationBusy ||
         _auth is! AcpVerifiedState ||
         !_currentConnection) {
       return;
@@ -497,7 +520,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       await _service.queryUsage(AcpAccountIdentity(_key.target.id));
     } catch (error) {
       if (ref.mounted && !_finished && _currentConnection) {
-        _authNotice = _notice(error, operation: _auth.operationId);
+        _authNotice = _notice(error, operation: null, clearOnVerified: false);
         _publish();
       }
     }
@@ -512,11 +535,21 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         auth is AcpFailedState &&
         (auth.failure.code == AcpAuthFailureCodeView.preparationRequired ||
             auth.failure.code == AcpAuthFailureCodeView.installationInvalid);
+    final hasInstalledServer =
+        (_provider != null &&
+            (_service.install.value.value?.installedOf(_provider!) != null ||
+                _service.install.value.value?.stateOf(_provider!).server !=
+                    null)) ||
+        switch (auth) {
+          AcpVerifiedState(:final server) ||
+          AcpRequiredState(:final server) => server != null,
+          _ => false,
+        };
     final showInstall =
         _provider != null &&
         (_key.creating ||
-            preparing ||
-            (requiresPreparation && !_preparedForEditor));
+            (requiresPreparation && !_preparedForEditor) ||
+            (preparing && !hasInstalledServer));
     final methods = auth is AcpRequiredState
         ? auth.agentMethods
         : const <AcpAuthMethodView>[];
@@ -548,6 +581,9 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             (_, AcpFailedState()) => AcpPresentationPhase.failed,
             _ => AcpPresentationPhase.idle,
           };
+    final account = _account;
+    final enabled = account?.enabled ?? true;
+    final supportsUsage = _provider != null && enabled;
     final actions = <AcpAccountAction>[
       if (showInstall && !_service.install.value.stale) ...[
         if (install.isBusy && _cancelInstall?.operation != install.operationId)
@@ -559,20 +595,22 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             _template?.automaticInstall.isAvailable == true)
           AcpAccountAction.prepare,
       ] else if (!showInstall) ...[
-        if (auth.isBusy && _cancelAuth?.operation != auth.operationId)
+        if (_operationBusy && _cancelAuth?.operation != _activeOperationId)
           AcpAccountAction.cancelAuthentication,
-        if (_provider != null &&
+        if (supportsUsage &&
             auth is AcpVerifiedState &&
-            !auth.isBusy &&
+            !_operationBusy &&
             !_service.auth.value.stale &&
             _currentConnection)
           AcpAccountAction.queryUsage,
-        if (auth is AcpRequiredState &&
+        if (enabled &&
+            auth is AcpRequiredState &&
             methods.isNotEmpty &&
             _authenticating == null &&
             !_service.auth.value.stale)
           AcpAccountAction.login,
-        if (!auth.isBusy &&
+        if (enabled &&
+            !_operationBusy &&
             _authenticating == null &&
             !_service.auth.value.stale) ...[
           AcpAccountAction.check,
@@ -581,8 +619,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         ],
       ],
       if (showInstall &&
-          auth.isBusy &&
-          _cancelAuth?.operation != auth.operationId)
+          _operationBusy &&
+          _cancelAuth?.operation != _activeOperationId)
         AcpAccountAction.cancelAuthentication,
       if (_template?.installUrl.isNotEmpty == true) AcpAccountAction.openGuide,
       if (_template?.termsUrl.isNotEmpty == true) AcpAccountAction.openTerms,
@@ -590,7 +628,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
     if (_templateError != null &&
         !_loadingTemplates &&
         !preparing &&
-        !auth.isBusy &&
+        !_operationBusy &&
         !actions.contains(AcpAccountAction.retry)) {
       actions.add(AcpAccountAction.retry);
     }
@@ -607,10 +645,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       AcpVerifiedState(:final server) => server,
       _ => null,
     };
-    final account = _account;
     final notice = account == null
         ? null
-        : visibleAcpCommandNotice(_authNotice, account, auth);
+        : visibleAcpCommandNotice(
+            _authNotice,
+            account,
+            auth,
+            activeOperation: _activeOperation,
+          );
     final localError =
         _error ??
         notice?.summary ??
@@ -631,13 +673,15 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             _service.auth.value.stale
         ? _strings['stale']
         : localError ?? canonicalError;
-    final usage = projectAcpUsage(
-      snapshot: _service.auth.value.value,
-      stale: _service.auth.value.stale,
-      accountId: _key.target.id,
-      connectionRevision: _key.connectionRevision,
-      strings: _strings,
-    );
+    final usage = supportsUsage
+        ? projectAcpUsage(
+            snapshot: _service.auth.value.value,
+            stale: _service.auth.value.stale,
+            accountId: _key.target.id,
+            connectionRevision: _key.connectionRevision,
+            strings: _strings,
+          )
+        : const AcpUsagePresentation();
     return AccountAcpViewState(
       preparedForEditor: _preparedForEditor,
       claimedOperationId: _intent?.operationId,
@@ -645,7 +689,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       panel: AcpAccountPresentation(
         phase: phase,
         usage: usage,
-        status: _preparing != null && !install.isBusy
+        supportsUsage: supportsUsage,
+        status: showInstall && _preparing != null && !install.isBusy
             ? _strings['pendingPreparation']
             : showInstall && install.stage != null
             ? _strings['stage.${install.stage!.name}']
@@ -656,7 +701,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         subtitle: null,
         message: _template?.automaticInstall.isAvailable == false && showInstall
             ? _strings['unsupportedPlatform']
-            : preparing
+            : showInstall && preparing
             ? _strings['sharedPreparation']
             : auth is AcpRequiredState && auth.agentMethods.isEmpty
             ? (auth.terminalOnly
@@ -664,10 +709,10 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
                   : _strings['noAuthMethods'])
             : null,
         error: error,
-        progress: progress?.fraction,
-        progressLabel: progress == null
-            ? null
-            : '${progress.completedBytes}${progress.totalBytes == null ? '' : ' / ${progress.totalBytes}'} B',
+        progress: showInstall ? progress?.fraction : null,
+        progressLabel: showInstall
+            ? formatInstallProgressLabel(progress)
+            : null,
         facts: [
           if (install is AcpDownloadingState)
             AccountDisplayFact(
@@ -691,11 +736,16 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
               label: _strings['stage'],
               value: _strings['stage.${stage.name}'],
             ),
-          if (_template?.supportedVersion.isNotEmpty == true)
-            AccountDisplayFact(
-              label: _strings['version'],
-              value: _template!.supportedVersion,
-            ),
+          if ((_provider == null
+                      ? null
+                      : _service.install.value.value
+                            ?.installedOf(_provider!)
+                            ?.release
+                            .version) ??
+                  server?.version ??
+                  _template?.supportedVersion
+              case final version? when version.isNotEmpty)
+            AccountDisplayFact(label: _strings['version'], value: version),
           if (install.release case final release?)
             AccountDisplayFact(
               label: _strings['platform'],
@@ -730,8 +780,39 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             methods.length > 1 &&
             auth is AcpRequiredState &&
             _authenticating == null,
+        upgrade: showInstall || _provider == null
+            ? null
+            : projectAcpUpgrade(
+                snapshot: _service.install.value.value,
+                installStale: _service.install.value.stale,
+                template: _provider,
+                connection: _connection,
+                runningVersion: server?.version,
+                strings: _strings,
+                busyCheck: _checkingUpdate,
+                commandError: _checkUpdateError,
+              ),
       ),
     );
+  }
+
+  Future<void> checkUpdate() async {
+    if (_provider == null || _checkingUpdate || _finished) return;
+    _checkingUpdate = true;
+    _checkUpdateError = null;
+    _publish();
+    try {
+      await _service.checkUpdate(_provider!);
+    } catch (error) {
+      if (ref.mounted && !_finished) {
+        _checkUpdateError = safeAccountError(error, _strings);
+      }
+    } finally {
+      if (ref.mounted && !_finished) {
+        _checkingUpdate = false;
+        _publish();
+      }
+    }
   }
 
   void _publish() {
@@ -770,7 +851,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       _authenticating = null;
       _cancelAuth = null;
       _authNotice = null;
-    } else if (attempt != null && !attempt.observe(_auth)) {
+    } else if (attempt != null &&
+        !attempt.observe(_auth, activeOperation: _activeOperation)) {
       _authenticating = null;
       if (_authNotice?.operationId == attempt.operationId) {
         _authNotice = null;

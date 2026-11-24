@@ -3,6 +3,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_clock.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_writing_indicator.dart';
@@ -128,10 +129,11 @@ void main() {
   }
 }
 
-String _runTitle(WidgetTester tester, int count) {
-  final l10n = AppLocalizations.of(tester.element(find.byType(Scaffold)));
-  return l10n.timelineGroupWorkedSeconds(1);
-}
+String _runTitle(WidgetTester tester, int count) => activityDurationLabel(
+  tester.element(find.byType(Scaffold)),
+  1,
+  kind: ActivityDurationKind.worked,
+);
 
 class _Body extends StatefulWidget {
   const _Body({required this.onDispose});

@@ -39,6 +39,10 @@ impl ToolWorkspace {
 
     /// Non-secret execution-policy identity; reconnecting services does not change it.
     pub fn authorization(&self) -> pl_core::tool::opaque::ToolAuthorization {
+        pl_core::tool::opaque::ToolAuthorization::new(self.authorization_identity())
+    }
+
+    pub(crate) fn authorization_identity(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();
         let mut part = |bytes: &[u8]| {
@@ -75,10 +79,7 @@ impl ToolWorkspace {
                 part(files.thread_key().as_bytes());
             }
         }
-        pl_core::tool::opaque::ToolAuthorization::new(format!(
-            "pl.workspace:{}",
-            hex::encode(hash.finalize())
-        ))
+        format!("pl.workspace:{}", hex::encode(hash.finalize()))
     }
 
     pub fn root(&self) -> &std::path::Path {

@@ -1,6 +1,6 @@
 use clap::Parser;
-use pl_model_wire::protocol::WireApi;
 use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
+use pl_model_wire::protocol::WireApi;
 
 #[derive(Parser)]
 struct Args {

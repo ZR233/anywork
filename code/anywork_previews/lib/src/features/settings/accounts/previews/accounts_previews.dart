@@ -758,3 +758,70 @@ Widget accountAcpLocalMissingPreview() => accountAcpEditorPreviewHost(
     saveAndConnect: true,
   ),
 );
+
+@Preview(
+  name: 'List / Managed ACP 1.x update available / 960',
+  group: 'Accounts · List',
+  size: Size(960, 960),
+)
+Widget accountsListManagedAcpWidePreview() =>
+    accountListPreview(AccountPreviewFixtures.listWithManagedAcp);
+
+@Preview(
+  name: 'List / Managed ACP 1.x update available / 408',
+  group: 'Accounts · List',
+  size: Size(408, 920),
+)
+Widget accountsListManagedAcpNarrowPreview() =>
+    accountListPreview(AccountPreviewFixtures.listWithManagedAcp);
+
+@Preview(
+  name: 'List / Managed ACP states / 960',
+  group: 'Accounts · List',
+  size: Size(960, 980),
+)
+Widget accountsListManagedStatesPreview() => accountListPreview(
+  AccountListPreviewData(
+    canRefresh: true,
+    category: AccountListCategory.acp,
+    rows: [
+      AccountPreviewFixtures.acpManagedUpdateRow,
+      AccountPreviewFixtures.acpManagedUpgradingRow.copyWith(
+        key: const AccountDisplayKey(
+          kind: AccountKind.acp,
+          id: 'synthetic-agy-upgrading',
+        ),
+        name: 'Antigravity · 正在下载升级',
+      ),
+      AccountPreviewFixtures.acpManagedPendingSwitchRow.copyWith(
+        key: const AccountDisplayKey(
+          kind: AccountKind.acp,
+          id: 'synthetic-agy-pending',
+        ),
+        name: 'Antigravity · 等待活跃会话结束切换',
+      ),
+      AccountPreviewFixtures.acpManagedUpToDateRow.copyWith(
+        key: const AccountDisplayKey(
+          kind: AccountKind.acp,
+          id: 'synthetic-agy-current',
+        ),
+        name: 'Antigravity · 已升级至最新 1.x',
+      ),
+      AccountPreviewFixtures.acpManagedIncompatibleRow.copyWith(
+        key: const AccountDisplayKey(
+          kind: AccountKind.acp,
+          id: 'synthetic-agy-major',
+        ),
+        name: 'Antigravity · 发现 2.0 大版本',
+      ),
+    ],
+  ),
+);
+
+@Preview(
+  name: 'Details / Managed ACP 1.x update / 960',
+  group: 'Accounts · Detail',
+  size: Size(960, 1000),
+)
+Widget accountDetailsManagedAcpPreview() =>
+    accountDetailsPreviewHost(AccountPreviewFixtures.acpDetailsManagedUpdate);

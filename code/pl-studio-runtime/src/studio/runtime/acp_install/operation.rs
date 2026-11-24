@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallProgress, AcpInstallRelease,
-    AcpInstallStage, AcpInstallState, AcpInstalledServer, AcpProvider,
+    AcpInstallStage, AcpInstallState, AcpInstallUpdateState, AcpInstalledServer, AcpProvider,
 };
 use pl_tool::workspace::path_safety;
 use tokio_util::sync::CancellationToken;
@@ -21,11 +21,12 @@ use super::archive::{self, ExpectedInstall, PublishOutcome};
 use super::download::{self, ProgressSink};
 use super::mapping::failure;
 use super::paths::{self, ManagedRoot};
+use super::prepare;
 use super::registry::{
     AcpInstallInner, BusinessOutcome, Operation, PublishRejection, ResidueHold, begin_stage,
     register_lock_file, take_stage,
 };
-use super::source::{self, ResolvedRelease};
+use super::source::{self, RegistryLookup, ResolvedRelease};
 
 /// 资产锁轮询间隔；等待可取消，不删除锁文件。
 const LOCK_POLL: Duration = Duration::from_millis(100);
@@ -55,17 +56,23 @@ pub(super) async fn run(
     let outcome = execute(&inner, &operation, plan).await;
     match release_staging(&inner, &operation).await {
         Ok(()) => {
-            let terminal = match outcome {
-                Ok(server) => AcpInstallState::Ready {
-                    operation_id,
-                    server,
-                },
-                Err(failure) => AcpInstallState::Failed {
-                    operation_id,
-                    failure,
-                },
+            let (terminal, from_online_registry) = match outcome {
+                Ok((server, online)) => (
+                    AcpInstallState::Ready {
+                        operation_id,
+                        server,
+                    },
+                    online,
+                ),
+                Err(failure) => (
+                    AcpInstallState::Failed {
+                        operation_id,
+                        failure,
+                    },
+                    false,
+                ),
             };
-            inner.complete_operation(provider, generation, terminal);
+            inner.complete_operation(provider, generation, terminal, from_online_registry);
         }
         Err(cleanup_failure) => {
             // 两种失败互不覆盖：业务结果原样保管、清理失败作为 typed 摘要保管，两者都等清理
@@ -76,7 +83,10 @@ pub(super) async fn run(
                     operation: Arc::clone(&operation),
                     operation_id,
                     business: match outcome {
-                        Ok(server) => BusinessOutcome::Ready(server),
+                        Ok((server, from_online_registry)) => BusinessOutcome::Ready {
+                            server,
+                            from_online_registry,
+                        },
                         Err(failure) => BusinessOutcome::Failed(failure),
                     },
                     cleanup_failure,
@@ -90,7 +100,7 @@ async fn execute(
     inner: &Arc<AcpInstallInner>,
     operation: &Arc<Operation>,
     plan: OperationPlan,
-) -> Result<AcpInstalledServer, AcpInstallFailure> {
+) -> Result<(AcpInstalledServer, bool), AcpInstallFailure> {
     let provider = plan.provider;
     let generation = operation.generation;
     let operation_id = operation.operation_id.clone();
@@ -108,11 +118,34 @@ async fn execute(
     publish_state(AcpInstallState::Resolving {
         operation_id: operation_id.clone(),
     });
-    // 客户端构造失败即 typed 失败传播，不回退到更弱的默认 client。
-    // 产品固定清单：纯本地解析，不联网、不接受任意版本或地址。
-    let resolved = source::resolve(provider)?;
+    let policy = inner.policy();
+    let (resolved, from_online_registry) =
+        match source::fetch_latest_from_registry(&policy, provider, &cancel).await {
+            Ok(RegistryLookup::Release(resolved)) => (resolved, true),
+            Ok(RegistryLookup::IncompatibleMajor { version }) => {
+                inner.note_update_state(
+                    provider,
+                    AcpInstallUpdateState::IncompatibleMajor {
+                        checked_at: crate::studio::unix_seconds(),
+                        latest_version: version,
+                    },
+                );
+                let fallback = match prepare::best_local_release(
+                    &inner.store,
+                    policy.clone(),
+                    provider,
+                    &cancel,
+                )
+                .await
+                {
+                    Some(local) => local,
+                    None => source::resolve_bundled(provider)?,
+                };
+                (fallback, false)
+            }
+            Err(error) => return Err(error),
+        };
     let installation_id = source::installation_id(provider, &resolved);
-    // 存储键必须是 `sha256:` + 64 位小写十六进制；不合格身份不参与任何路径拼接。
     // 存储键必须是 `sha256:` + 64 位小写十六进制；不合格身份不参与任何路径拼接。
     // installation id 由本模块的 canonical 摘要产生，正常情况必然合格：该分支是不变量护栏，
     // 因此按"存储身份不可用"归类为不可重试失败。
@@ -142,7 +175,7 @@ async fn execute(
 
     let installed = installed_dir(&root, provider, &resolved, &storage_key)?;
     if root.probe(&installed, AcpInstallStage::Verify)?.is_some() {
-        return reuse_installed(
+        let server = reuse_installed(
             inner,
             &root,
             &installed,
@@ -150,7 +183,8 @@ async fn execute(
             &installation_id,
             operation,
         )
-        .await;
+        .await?;
+        return Ok((server, from_online_registry));
     }
 
     publish_state(AcpInstallState::Downloading {
@@ -167,7 +201,7 @@ async fn execute(
     validate_download_paths(&root, &archive_path)?;
     let sink = download_sink(inner, operation, &resolved.release);
     let client = downlowd::Client::builder()
-        .reqwest_client(source::archive_client()?)
+        .reqwest_client(policy.archive_client()?)
         .max_retries(Some(3))
         .build()
         .map_err(|_| {
@@ -344,13 +378,16 @@ async fn execute(
     }
 
     let program = installed.join(&receipt.command);
-    Ok(AcpInstalledServer {
-        installation_id,
-        release: resolved.release,
-        program: program.to_string_lossy().into_owned(),
-        ready_at: crate::studio::unix_seconds(),
-        reused: false,
-    })
+    Ok((
+        AcpInstalledServer {
+            installation_id,
+            release: resolved.release,
+            program: program.to_string_lossy().into_owned(),
+            ready_at: crate::studio::unix_seconds(),
+            reused: false,
+        },
+        from_online_registry,
+    ))
 }
 
 /// 复用既有完整安装：冻结描述符、完整树集合、mode/size/hash 与入口全部复核，损坏保留现场。

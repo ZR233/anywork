@@ -213,6 +213,7 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
                     model_id: support::MODEL.into(),
                     effort: None,
                 },
+                service_tier: None,
                 delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                 delegation_preference: None,
                 workspace_mode: ThreadWorkspaceMode::Worktree,
@@ -251,21 +252,21 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
             pl_studio_runtime::config::ConfigPaths::from_config_dir(&env.home),
         );
         let mut config = config_store.load()?;
-        let mut model = pl_model::model::ModelInfo::compatible(support::MODEL);
+        let mut model = pl_model::model::ModelDefinition::compatible(support::MODEL);
         model
-            .binding
+            .extra.binding
             .set_transport(pl_model::model::ModelTransportProfile::responses_http());
-        model.capabilities.instruction_snapshot_overrides = true;
-        model.base_instructions = "Lifecycle fixture model base".into();
+        model.extra.capabilities.instruction_snapshot_overrides = true;
+        model.base.model_messages.instructions_template = "Lifecycle fixture model base".into();
         model
-            .capabilities
+            .extra.capabilities
             .input
             .push(pl_model::model::ModelInputCapability::media(
                 pl_model::model::ModelModality::File,
                 vec![pl_model::model::ModelInputSource::Local],
             ));
         model
-            .binding
+            .extra.binding
             .request
             .media
             .push(pl_model::model::ModelMediaInputProfile {
@@ -330,6 +331,7 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
                     },
                     mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
                     route,
+                    service_tier: None,
                     delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                     delegation_preference: None,
                     workspace_mode: ThreadWorkspaceMode::Worktree,

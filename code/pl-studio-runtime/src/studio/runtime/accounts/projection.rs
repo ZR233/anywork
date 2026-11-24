@@ -73,6 +73,7 @@ pub(super) fn read(
                             usage_query_revision: config.usage_query_revision(id),
                             acp_enabled: None,
                             acp_connection_revision: None,
+                            acp_template: None,
                             capabilities: AccountCapabilities {
                                 set_default: true,
                                 edit: true,
@@ -88,6 +89,16 @@ pub(super) fn read(
                         .acp_accounts
                         .settings_view(config.revision, &config.acp)?
                     {
+                        let supports_usage = config
+                            .acp
+                            .definitions
+                            .get(&account.account_id)
+                            .is_some_and(|entry| {
+                                entry.definition.enabled
+                                    && crate::studio::runtime::acp_accounts::AcpAccountRuntime::definition_supports_usage(
+                                        &entry.definition,
+                                    )
+                            });
                         accounts.push(AccountSummary {
                             identity: AccountIdentity::Acp {
                                 account_id: account.account_id,
@@ -105,11 +116,12 @@ pub(super) fn read(
                             usage_query_revision: None,
                             acp_enabled: Some(account.enabled),
                             acp_connection_revision: Some(account.connection_revision),
+                            acp_template: account.template,
                             capabilities: AccountCapabilities {
                                 set_default: false,
                                 edit: true,
                                 remove: true,
-                                query_usage: false,
+                                query_usage: supports_usage,
                                 sync_models: false,
                                 edit_models: false,
                                 acp_auth: true,

@@ -37,6 +37,8 @@ mod current_reader;
 pub use current_reader::{CurrentBodyWatch, CurrentReader, CurrentWatch};
 mod delegation_models;
 mod directory_observation;
+mod file_display;
+pub use file_display::{DisplayDownloadOutcome, DisplayDownloadRequest};
 mod history;
 pub(crate) use history::history_turn;
 mod lifecycle;
@@ -112,6 +114,7 @@ pub struct StudioStartNewThreadRequest {
     pub input: StudioPromptInput,
     pub mode: crate::mode::ThreadModeId,
     pub route: crate::NewThreadModelRoute,
+    pub service_tier: Option<String>,
     pub delegation_mode: Option<crate::DelegationMode>,
     pub delegation_preference: Option<crate::DelegationPreference>,
     pub workspace_mode: crate::ThreadWorkspaceMode,
@@ -317,16 +320,14 @@ impl StudioRuntime {
     pub fn save_user_agent_profile(
         &self,
         operation_id: String,
-        expected_settings_revision: u64,
+        expected_revision: Option<&str>,
         profile_id: &str,
         profile: &crate::config::UserAgentProfile,
     ) -> Result<crate::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
-        let (state, changed) = self.config_runtime.save_user_agent_profile(
-            expected_settings_revision,
-            profile_id,
-            profile,
-        )?;
+        let (state, changed) =
+            self.config_runtime
+                .save_user_agent_profile(expected_revision, profile_id, profile)?;
         self.publish_settings_state()?;
         self.settings_command_reply(
             operation_id,
@@ -340,7 +341,6 @@ impl StudioRuntime {
     pub fn set_system_agent_enabled(
         &self,
         operation_id: String,
-        expected_settings_revision: u64,
         profile_id: &str,
         enabled: bool,
     ) -> Result<crate::SettingsCommandReply> {
@@ -352,7 +352,7 @@ impl StudioRuntime {
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(expected_settings_revision, |config| {
+            .update_with_effective(None, |config, _| {
                 let mut config = config.clone();
                 if enabled {
                     changed = config.disabled_system_agents.remove(&profile_id);
@@ -517,7 +517,7 @@ pub(crate) mod bot_archive_test_host {
 
     use anyhow::Result;
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-    use pl_model::model::ModelInfo;
+    use pl_model::model::ModelDefinition;
 
     use super::StudioRuntime;
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
@@ -548,22 +548,31 @@ pub(crate) mod bot_archive_test_host {
             };
             let mut config = StudioConfig::default_config()?;
             config.models.accounts.clear();
-            let mut model = ModelInfo::compatible(&route.model_id);
+            let mut model = ModelDefinition::compatible(&route.model_id);
             if file_input {
                 use pl_model::model::{
                     MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
                     ModelMediaInputProfile, ModelModality,
                 };
-                model.capabilities.input.push(ModelInputCapability::media(
-                    ModelModality::File,
-                    vec![ModelInputSource::Local],
-                ));
-                model.binding.request.media.push(ModelMediaInputProfile {
-                    modality: ModelModality::File,
-                    wire: MediaWireFormat::ChatFileUrl,
-                    first_send: vec![MediaRepresentation::DataUrl],
-                    replay: vec![MediaRepresentation::DataUrl],
-                });
+                model
+                    .extra
+                    .capabilities
+                    .input
+                    .push(ModelInputCapability::media(
+                        ModelModality::File,
+                        vec![ModelInputSource::Local],
+                    ));
+                model
+                    .extra
+                    .binding
+                    .request
+                    .media
+                    .push(ModelMediaInputProfile {
+                        modality: ModelModality::File,
+                        wire: MediaWireFormat::ChatFileUrl,
+                        first_send: vec![MediaRepresentation::DataUrl],
+                        replay: vec![MediaRepresentation::DataUrl],
+                    });
             }
             config.models.accounts.insert(
                 account_id,

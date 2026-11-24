@@ -23,19 +23,23 @@ pub fn parse_google_http_error(body: &[u8]) -> Option<ParsedHttpError> {
         _ => None,
     }?;
     let rpc = envelope.error;
-    let status_str = rpc.status.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let status_str = rpc
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let numeric_code = rpc.code.as_ref().and_then(|v| {
         v.as_u64()
             .and_then(|n| u16::try_from(n).ok())
             .or_else(|| v.as_str()?.parse::<u16>().ok())
     });
-    let code = status_str
-        .map(ToOwned::to_owned)
-        .or_else(|| rpc.code.as_ref().and_then(|v| match v {
+    let code = status_str.map(ToOwned::to_owned).or_else(|| {
+        rpc.code.as_ref().and_then(|v| match v {
             serde_json::Value::String(s) => Some(s.clone()),
             serde_json::Value::Number(n) => Some(n.to_string()),
             _ => None,
-        }));
+        })
+    });
     let message = rpc.message.clone();
     let (code_override, force_kind, force_retry) =
         classify_google_error(status_str, numeric_code, message.as_deref());
@@ -52,7 +56,11 @@ fn classify_google_error(
     status: Option<&str>,
     numeric_code: Option<u16>,
     message: Option<&str>,
-) -> (Option<&'static str>, Option<ProviderFailureKind>, Option<RetryDisposition>) {
+) -> (
+    Option<&'static str>,
+    Option<ProviderFailureKind>,
+    Option<RetryDisposition>,
+) {
     match status {
         Some("UNAUTHENTICATED") => {
             return (
@@ -143,13 +151,15 @@ mod tests {
 
     #[test]
     fn parses_google_rpc_object_and_array_envelopes() {
-        let obj = br#"{"error":{"code":404,"message":"Publisher model not found","status":"NOT_FOUND"}}"#;
+        let obj =
+            br#"{"error":{"code":404,"message":"Publisher model not found","status":"NOT_FOUND"}}"#;
         let parsed = parse_google_http_error(obj).unwrap();
         assert_eq!(parsed.code.as_deref(), Some("NOT_FOUND"));
         assert_eq!(parsed.force_kind, Some(ProviderFailureKind::Configuration));
         assert_eq!(parsed.force_retry, Some(RetryDisposition::Permanent));
 
-        let arr = br#"[{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}]"#;
+        let arr =
+            br#"[{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}]"#;
         let parsed = parse_google_http_error(arr).unwrap();
         assert_eq!(parsed.code.as_deref(), Some("RESOURCE_EXHAUSTED"));
         assert_eq!(parsed.force_kind, Some(ProviderFailureKind::Capacity));

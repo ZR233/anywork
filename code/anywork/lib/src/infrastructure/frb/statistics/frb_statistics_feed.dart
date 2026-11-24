@@ -267,6 +267,7 @@ final class _FrbStatisticsReadScope implements StatisticsReadScope {
         for (final item in page.items)
           StatisticsEffortSummary(
             effort: item.effort,
+            requestedServiceTier: item.requestedServiceTier,
             sampleCount: item.sampleCount.toInt(),
             completionTokens: item.completionTokens.toInt(),
             totalTtftMillis: item.totalTtftMillis.toInt(),
@@ -347,6 +348,7 @@ StatisticsSample _sampleFromFrb(frb_types.BridgeStatisticsSample value) =>
           StatisticsModelMatchState.legacyUnknown,
       },
       effort: value.effort,
+      requestedServiceTier: value.requestedServiceTier,
       completionTokens: value.completionTokens?.toInt(),
       ttftMillis: value.ttftMillis?.toInt(),
       decodeMillis: value.decodeMillis?.toInt(),

@@ -61,13 +61,11 @@ pub(crate) fn bridge_acp_account_catalog(
 /// 保存意图 → wire 请求；`expected_revision` 是调用方观察到的 Settings revision。
 pub(crate) fn update_acp_account_request(
     operation_id: String,
-    expected_revision: u64,
     expected_document_revision: Option<u64>,
     account: BridgeAcpAccountUpdate,
 ) -> pl_studio_runtime::UpdateAcpAccountRequest {
     pl_studio_runtime::UpdateAcpAccountRequest {
         operation_id,
-        expected_revision,
         expected_document_revision,
         account: pl_studio_runtime::AcpAccountUpdate {
             account_id: account.account_id,
@@ -394,7 +392,6 @@ mod tests {
                     // unchanged: validation is not a second bridge state machine.
                     let request = update_acp_account_request(
                         "save-op".into(),
-                        8,
                         expected_document_revision,
                         BridgeAcpAccountUpdate {
                             account_id: "agent-id".into(),
@@ -407,7 +404,6 @@ mod tests {
                         },
                     );
                     assert_eq!(request.operation_id, "save-op");
-                    assert_eq!(request.expected_revision, 8);
                     assert_eq!(
                         request.expected_document_revision,
                         expected_document_revision
@@ -442,7 +438,6 @@ mod tests {
         assert!(mapped.args.is_empty());
         let request = update_acp_account_request(
             "managed-create".into(),
-            9,
             None,
             BridgeAcpAccountUpdate {
                 account_id: "managed".into(),

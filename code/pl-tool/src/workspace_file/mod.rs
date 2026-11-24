@@ -21,8 +21,8 @@ pub use backend::*;
 pub use container::ContainerWorkspaceFileBackend;
 pub(crate) use executor::file_error;
 pub use executor::{
-    ExecutorWorkspaceFileBackend, WorkspaceDirectoryReader, WorkspaceDownloadError,
-    WorkspaceFileError, load_workspace_instructions,
+    DeferredWorkspaceFile, ExecutorWorkspaceFileBackend, WorkspaceDirectoryReader,
+    WorkspaceDownloadError, WorkspaceFileError, load_workspace_instructions,
 };
 pub use ops::WorkspaceFileToolExecution;
 pub use patch::apply_patch_to_backend;

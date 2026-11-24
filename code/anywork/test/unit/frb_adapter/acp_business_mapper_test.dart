@@ -6,6 +6,7 @@ import 'package:anywork/src/rust/api/studio/types/acp_business/content.dart'
 import 'package:anywork/src/rust/api/studio/types/acp_business/notification.dart'
     as n;
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 final maxU64 = (BigInt.one << 64) - BigInt.one;
@@ -941,4 +942,107 @@ void main() {
       }
     },
   );
+
+  test('session info snapshot and initialized server info round-trip through FRB mapper', () {
+    final wireSnapshot = b.BridgeAcpSessionInfoSnapshot(
+      usage: b.BridgeAcpUsageSnapshot(
+        used: BigInt.from(12000),
+        size: BigInt.from(200000),
+        updatedAt: PlatformInt64Util.from(1700000010),
+      ),
+      cost: b.BridgeAcpCostSnapshot(
+        amount: 0.42,
+        currency: 'USD',
+        updatedAt: PlatformInt64Util.from(1700000012),
+      ),
+      textPerformance: b.BridgeAcpTextPerformanceSnapshot(
+        estimatedOutputTokens: BigInt.from(320),
+        responseMillis: BigInt.from(4000),
+        updatedAt: PlatformInt64Util.from(1700000015),
+      ),
+      lastStopReason: 'end_turn',
+      serverInfo: const b.BridgeAcpServerInfoSnapshot(
+        name: 'codex-acp',
+        version: '0.9.4',
+        title: 'Codex CLI',
+      ),
+      activeConfig: const [
+        b.BridgeAcpConfigItemSnapshot(
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          valueId: 'gpt-5',
+          valueLabel: 'GPT-5',
+        ),
+      ],
+      completedTurns: BigInt.from(3),
+      updatedAt: PlatformInt64Util.from(1700000020),
+    );
+
+    final mappedSnapshot = acpSnapshotFromFrb(
+      b.BridgeAcpBusinessSnapshot(
+        target: target,
+        acpSessionId: const b.BridgeAcpRemoteSessionId(value: 'remote'),
+        ready: true,
+        closing: false,
+        configPending: false,
+        authMethods: const [],
+        infoSnapshot: wireSnapshot,
+      ),
+    );
+    final info = mappedSnapshot.infoSnapshot!;
+    expect(info.usage!.used, BigInt.from(12000));
+    expect(info.usage!.size, BigInt.from(200000));
+    expect(info.usage!.updatedAt, 1700000010);
+    expect(info.cost!.amount, 0.42);
+    expect(info.cost!.currency, 'USD');
+    expect(info.cost!.updatedAt, 1700000012);
+    expect(info.textPerformance!.estimatedOutputTokens, 320);
+    expect(info.textPerformance!.responseMillis, 4000);
+    expect(info.textPerformance!.updatedAt, 1700000015);
+    expect(info.lastStopReason, 'end_turn');
+    expect(info.serverInfo!.name, 'codex-acp');
+    expect(info.serverInfo!.version, '0.9.4');
+    expect(info.serverInfo!.title, 'Codex CLI');
+    expect(info.activeConfig.single.id, 'model');
+    expect(info.activeConfig.single.valueLabel, 'GPT-5');
+    expect(info.completedTurns, 3);
+    expect(info.updatedAt, 1700000020);
+
+    final acceptedFrame = acpFrameFromFrb(
+      b.BridgeAcpSessionFrame.accepted(
+        target: target,
+        hasObservation: true,
+        infoSnapshot: wireSnapshot,
+      ),
+    ) as AcpAcceptedFrameView;
+    expect(acceptedFrame.infoSnapshot, info);
+
+    final initFrame = acpFrameFromFrb(
+      const b.BridgeAcpSessionFrame.event(
+        event: b.BridgeAcpSessionEvent.initialized(
+          capabilities: b.BridgeAcpAgentCapabilities(
+            image: true,
+            audio: false,
+            embeddedContext: true,
+            loadSession: true,
+            listSessions: true,
+            resumeSession: true,
+            closeSession: false,
+            mcpHttp: false,
+            mcpSse: false,
+          ),
+          serverInfo: b.BridgeAcpServerInfoSnapshot(
+            name: 'claude-acp',
+            version: '1.2.0',
+            title: 'Claude Code',
+          ),
+        ),
+      ),
+    ) as AcpEventFrameView;
+    final initEvent = initFrame.event as AcpInitializedEventView;
+    expect(initEvent.serverInfo!.name, 'claude-acp');
+    expect(initEvent.serverInfo!.version, '1.2.0');
+    expect(initEvent.serverInfo!.title, 'Claude Code');
+  });
 }

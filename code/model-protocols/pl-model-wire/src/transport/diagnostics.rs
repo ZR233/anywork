@@ -59,9 +59,9 @@ impl RequestDiagnostics {
             serde_json::Value::Array(values) => {
                 values.iter_mut().for_each(|value| self.redact_value(value))
             }
-            serde_json::Value::Object(values) => {
-                values.values_mut().for_each(|value| self.redact_value(value))
-            }
+            serde_json::Value::Object(values) => values
+                .values_mut()
+                .for_each(|value| self.redact_value(value)),
             _ => {}
         }
     }

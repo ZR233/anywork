@@ -382,6 +382,7 @@ fn model_route_snapshot(
         account_id: route.account_id,
         model_id: route.model_id,
         effort: route.effort,
+        service_tier: route.service_tier,
         revision: route.revision,
         available: route.available,
         unavailable_reason: route.unavailable_reason,

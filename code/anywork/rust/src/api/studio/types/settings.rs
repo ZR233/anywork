@@ -123,8 +123,9 @@ pub enum SettingsFieldInput {
     SkillsExternalDirs {
         value: Vec<String>,
     },
-    SkillsDisabled {
-        value: Vec<String>,
+    SkillDisabled {
+        id: String,
+        value: bool,
     },
     SkillsAutoLearnMinToolCalls {
         value: u32,
@@ -141,11 +142,13 @@ pub enum SettingsFieldInput {
     GeneralSidebarWidth {
         value: Option<u16>,
     },
-    GeneralPinnedThreadIds {
-        value: Vec<String>,
+    ThreadPinned {
+        id: String,
+        value: bool,
     },
-    GeneralPinnedProjectIds {
-        value: Vec<String>,
+    ProjectPinned {
+        id: String,
+        value: bool,
     },
     WebSearchMode {
         value: String,
@@ -226,7 +229,7 @@ impl From<SettingsFieldInput> for pl_studio_runtime::SettingsFieldUpdate {
             SettingsFieldInput::SkillsExternalDirs { value } => {
                 Update::SkillsExternalDirs { value }
             }
-            SettingsFieldInput::SkillsDisabled { value } => Update::SkillsDisabled { value },
+            SettingsFieldInput::SkillDisabled { id, value } => Update::SkillDisabled { id, value },
             SettingsFieldInput::SkillsAutoLearnMinToolCalls { value } => {
                 Update::SkillsAutoLearnMinToolCalls { value }
             }
@@ -242,12 +245,8 @@ impl From<SettingsFieldInput> for pl_studio_runtime::SettingsFieldUpdate {
             SettingsFieldInput::GeneralSidebarWidth { value } => {
                 Update::GeneralSidebarWidth { value }
             }
-            SettingsFieldInput::GeneralPinnedThreadIds { value } => {
-                Update::GeneralPinnedThreadIds { value }
-            }
-            SettingsFieldInput::GeneralPinnedProjectIds { value } => {
-                Update::GeneralPinnedProjectIds { value }
-            }
+            SettingsFieldInput::ThreadPinned { id, value } => Update::ThreadPinned { id, value },
+            SettingsFieldInput::ProjectPinned { id, value } => Update::ProjectPinned { id, value },
             SettingsFieldInput::WebSearchMode { value } => Update::WebSearchMode { value },
             SettingsFieldInput::WebSearchContextSize { value } => {
                 Update::WebSearchContextSize { value }
@@ -720,6 +719,7 @@ pub struct BridgeModelDescriptor {
     pub transport: BridgeModelTransportDescriptor,
     pub capabilities: BridgeModelCapabilities,
     pub reasoning: Option<BridgeModelReasoningDescriptor>,
+    pub service_tiers: Option<BridgeModelServiceTierParameterDescriptor>,
     pub pricing: Option<BridgeModelPricing>,
 }
 
@@ -728,16 +728,13 @@ pub struct BridgeModelDescriptor {
 pub struct BridgeModelContextResolution {
     pub unavailable: Option<BridgeModelContextUnavailable>,
     pub context_window: Option<u64>,
-    pub input_token_limit: Option<u64>,
     pub auto_compact_limit: Option<u64>,
     pub adjustment: Option<BridgeModelContextAdjustment>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeModelContextUnavailable {
-    WindowUnknown,
     InvalidParameters,
-    InputBudgetExhausted,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -756,9 +753,7 @@ pub enum BridgeModelType {
 pub enum BridgeModelTypeExclusion {
     TextInputUnsupported,
     TextOutputUnsupported,
-    ContextWindowUnknown,
     ContextParametersInvalid,
-    InputBudgetExhausted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -822,6 +817,20 @@ pub struct BridgeModelReasoningDescriptor {
     pub label: String,
     pub default_candidate: Option<String>,
     pub candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelServiceTierParameterDescriptor {
+    pub default_candidate: Option<String>,
+    pub candidates: Vec<BridgeModelServiceTierDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelServiceTierDescriptor {
+    pub id: String,
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -922,12 +931,6 @@ impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
                             pl_studio_runtime::ModelTypeExclusion::ContextParametersInvalid => {
                                 BridgeModelTypeExclusion::ContextParametersInvalid
                             }
-                            pl_studio_runtime::ModelTypeExclusion::InputBudgetExhausted => {
-                                BridgeModelTypeExclusion::InputBudgetExhausted
-                            }
-                            pl_studio_runtime::ModelTypeExclusion::ContextWindowUnknown => {
-                                BridgeModelTypeExclusion::ContextWindowUnknown
-                            }
                         })
                         .collect(),
                 })
@@ -939,18 +942,11 @@ impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
             max_context_window: model.max_context_window,
             context: BridgeModelContextResolution {
                 unavailable: model.context.unavailable.map(|reason| match reason {
-                    pl_studio_runtime::ModelContextUnavailable::WindowUnknown => {
-                        BridgeModelContextUnavailable::WindowUnknown
-                    }
                     pl_studio_runtime::ModelContextUnavailable::InvalidParameters => {
                         BridgeModelContextUnavailable::InvalidParameters
                     }
-                    pl_studio_runtime::ModelContextUnavailable::InputBudgetExhausted => {
-                        BridgeModelContextUnavailable::InputBudgetExhausted
-                    }
                 }),
                 context_window: model.context.context_window,
-                input_token_limit: model.context.input_token_limit,
                 auto_compact_limit: model.context.auto_compact_limit,
                 adjustment: model.context.adjustment.map(|reason| match reason {
                     pl_studio_runtime::ModelContextAdjustment::SafetyLimit => {
@@ -981,6 +977,19 @@ impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
                     default_candidate: reasoning.default,
                     candidates: reasoning.candidates,
                 }),
+            service_tiers: model.service_tiers.map(|parameter| {
+                BridgeModelServiceTierParameterDescriptor {
+                    default_candidate: parameter.default,
+                    candidates: parameter
+                        .candidates
+                        .into_iter()
+                        .map(|tier| BridgeModelServiceTierDescriptor {
+                            id: tier.id,
+                            display_name: tier.display_name,
+                        })
+                        .collect(),
+                }
+            }),
             pricing: model.pricing.map(Into::into),
         }
     }

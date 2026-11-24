@@ -72,7 +72,9 @@ pub(crate) struct StudioThreadFactory {
     // Immutable assembly inputs admitted before a new directory identity is
     // published. Every concurrent activation sees the same frozen selector.
     initial_routes: Arc<
-        std::sync::Mutex<std::collections::BTreeMap<String, pl_model::config::ModelRouteConfig>>,
+        std::sync::Mutex<
+            std::collections::BTreeMap<String, super::model_route::ThreadModelSelection>,
+        >,
     >,
 }
 impl StudioThreadFactory {
@@ -243,7 +245,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) fn stage_initial_route(
         &self,
         id: &str,
-        route: pl_model::config::ModelRouteConfig,
+        route: super::model_route::ThreadModelSelection,
     ) {
         self.initial_routes
             .lock()
@@ -258,7 +260,7 @@ impl StudioThreadFactory {
             .remove(id);
     }
 
-    fn initial_route(&self, id: &str) -> Option<pl_model::config::ModelRouteConfig> {
+    fn initial_route(&self, id: &str) -> Option<super::model_route::ThreadModelSelection> {
         self.initial_routes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

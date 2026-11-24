@@ -2375,6 +2375,7 @@ _mountRouter(WidgetTester tester, {bool manualModel = false}) async {
                   displayName: 'Manual model',
                   reasoningEfforts: [],
                   origin: ModelOrigin.manual,
+                  maxContextWindow: 2000,
                   context: ModelContextView(
                     unavailable: null,
                     contextWindow: 2000,

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use pl_model_openai::{images, search};
-use pl_model_wire::protocol::{ImageGenerationCapabilities, WireApi};
 use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
+use pl_model_wire::protocol::{ImageGenerationCapabilities, WireApi};
 use pl_tool_search::tools::web_search::{SearchCommands, SearchQuery};
 
 #[derive(Parser)]

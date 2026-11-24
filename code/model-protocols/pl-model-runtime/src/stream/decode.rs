@@ -68,17 +68,17 @@ pub(crate) fn decode_wire_stream(
             };
 
             let redact = |text: &str| frame.diagnostics.redact_text(text);
-            let decoded = match state.decoder.decode_frame(
-                &frame.data,
-                frame.request_id.as_deref(),
-                &redact,
-            ) {
-                Ok(decoded) => decoded,
-                Err(mut error) => {
-                    frame.diagnostics.redact_error(&mut error);
-                    return Some((Err(error), state));
-                }
-            };
+            let decoded =
+                match state
+                    .decoder
+                    .decode_frame(&frame.data, frame.request_id.as_deref(), &redact)
+                {
+                    Ok(decoded) => decoded,
+                    Err(mut error) => {
+                        frame.diagnostics.redact_error(&mut error);
+                        return Some((Err(error), state));
+                    }
+                };
             if let Some(usage) = decoded.usage_capture.as_ref()
                 && let Err(error) = crate::runtime::wire_capture::capture_usage_observation(
                     usage,

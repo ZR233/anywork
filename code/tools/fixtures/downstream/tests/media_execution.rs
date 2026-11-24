@@ -78,11 +78,12 @@ impl view_image::ImageReader for Reader {
 }
 
 struct DisplaySource {
-    reads: Arc<Mutex<Vec<(String, usize)>>>,
+    reads: Arc<Mutex<Vec<String>>>,
 }
 
 impl show_files::FileSource for DisplaySource {
     type Reference = usize;
+    type Deferred = String;
     type Error = std::io::Error;
 
     async fn stat(&self, path: &str) -> Result<show_files::FileStat, Self::Error> {
@@ -94,20 +95,19 @@ impl show_files::FileSource for DisplaySource {
         }
         Ok(show_files::FileStat {
             is_file: path != "directory",
-            len: Some(if path == "large" {
-                show_files::MAX_SOURCE_BYTES as u64 + 1
-            } else {
-                3
-            }),
         })
+    }
+
+    async fn defer_file(&self, path: &str) -> Result<Self::Deferred, Self::Error> {
+        Ok(format!("frozen:{path}"))
     }
 
     async fn local_file_path(&self, path: &str) -> Result<Option<String>, Self::Error> {
         Ok((path == "local.txt").then(|| "/verified/local.txt".into()))
     }
 
-    async fn read_bytes(&self, path: &str, max_bytes: usize) -> Result<Arc<[u8]>, Self::Error> {
-        self.reads.lock().unwrap().push((path.into(), max_bytes));
+    async fn read_bytes(&self, path: &str) -> Result<Arc<[u8]>, Self::Error> {
+        self.reads.lock().unwrap().push(path.into());
         Ok(Arc::from(&b"abc"[..]))
     }
 
@@ -167,9 +167,9 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
                 "files":[
                     {"kind":"workspace","path":"local.txt"},
                     {"kind":"workspace","path":"denied"},
-                    {"kind":"workspace","path":"remote.txt"},
+                    {"kind":"workspace","path":"remote.md"},
                     {"kind":"attachment","attachmentId":"saved"},
-                    {"kind":"workspace","path":"large"},
+                    {"kind":"workspace","path":"report.pdf"},
                     {"kind":"workspace","path":"directory"},
                     {"kind":"workspace","path":"corrupt.png"},
                     {"kind":"attachment","attachmentId":"foreign"}
@@ -195,10 +195,17 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
     assert_eq!(files[3]["origin"], serde_json::json!({"kind":"archive"}));
     assert_eq!(files[3]["resource"], 42);
     assert_eq!(files[3]["filename"], "saved.pdf");
-    for file in &files[4..] {
+    assert_eq!(
+        files[4],
+        serde_json::json!({
+            "status": "deferred",
+            "filename": "report.pdf",
+            "target": "frozen:report.pdf"
+        })
+    );
+    for file in &files[5..] {
         assert_eq!(file["status"], "failed");
     }
-    assert!(files[4]["message"].as_str().unwrap().contains("50 MiB"));
     assert!(
         files[5]["message"]
             .as_str()
@@ -219,18 +226,14 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
     );
     assert_eq!(
         reads.lock().unwrap().as_slice(),
-        &[
-            ("/verified/local.txt".into(), show_files::MAX_SOURCE_BYTES),
-            ("remote.txt".into(), show_files::MAX_SOURCE_BYTES),
-            ("corrupt.png".into(), show_files::MAX_SOURCE_BYTES),
-        ]
+        &["/verified/local.txt", "remote.md", "corrupt.png"]
     );
     {
         let retained = archive.media.lock().unwrap();
         assert_eq!(retained.len(), 2);
-        for media in retained.iter() {
+        for (media, media_type) in retained.iter().zip(["text/plain", "text/markdown"]) {
             assert_eq!(media.bytes.as_ref(), b"abc");
-            assert_eq!(media.media_type, "text/plain");
+            assert_eq!(media.media_type, media_type);
             assert!(media.model_image.is_none());
         }
     }
@@ -238,7 +241,7 @@ async fn show_files_preserves_order_exact_bytes_sources_and_partial_failures() {
     archive.fail.store(true, Ordering::SeqCst);
     let output = show
         .execute(
-            r#"{"files":[{"kind":"workspace","path":"remote.txt"}]}"#.into(),
+            r#"{"files":[{"kind":"workspace","path":"remote.md"}]}"#.into(),
             context(),
         )
         .await

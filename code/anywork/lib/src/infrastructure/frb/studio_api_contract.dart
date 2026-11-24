@@ -733,7 +733,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> saveAcpAccount(
-    int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
     required BigInt? expectedDocumentRevision,
@@ -743,7 +742,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.saveAcpAccount(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           expectedDocumentRevision: expectedDocumentRevision,
           account: _acpAccountUpdateToFrb(account),
         ),
@@ -753,7 +751,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> removeAcpAccount(
-    int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
     required BigInt expectedDocumentRevision,
@@ -763,7 +760,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.removeAcpAccount(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           expectedDocumentRevision: expectedDocumentRevision,
           accountId: accountId,
         ),
@@ -866,6 +862,22 @@ class FrbStudioTransport
   }
 
   @override
+  Future<AcpInstallCommandReply> checkAcpInstallUpdate({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    await _ensureReady();
+    return _acpInstallReplyFromFrb(
+      await _bridgeCall(
+        () => frb.checkAcpInstallUpdate(
+          operationId: operationId.value,
+          provider: _acpProviderToFrb(provider),
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<AgentProfilesStateView> readAgentProfilesState() async {
     await _ensureReady();
     return _agentProfilesStateFromFrb(
@@ -881,7 +893,6 @@ class FrbStudioTransport
   @override
   Future<SettingsCommandReply> setSystemAgentEnabled({
     required OperationId operationId,
-    required int expectedSettingsRevision,
     required String profileId,
     required bool enabled,
   }) async {
@@ -890,7 +901,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.setSystemAgentEnabled(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           profileId: profileId,
           enabled: enabled,
         ),
@@ -900,7 +910,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> saveUserAgentProfile(
-    int expectedSettingsRevision,
     AgentProfileDraft draft, {
     required OperationId operationId,
   }) async {
@@ -909,7 +918,9 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.saveUserAgentProfile(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          expectedDocumentRevision: draft.definition.revision.isEmpty
+              ? null
+              : draft.definition.revision,
           profileId: draft.id,
           enabled: draft.enabled,
           displayName: draft.definition.displayName,
@@ -1227,6 +1238,7 @@ class FrbStudioTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -1241,6 +1253,7 @@ class FrbStudioTransport
           accountId: route.accountId,
           modelId: route.modelId,
           effort: route.effort.isEmpty ? null : route.effort,
+          serviceTier: serviceTier,
           workspaceMode: workspaceMode,
           delegationMode: _delegationModeToFrb(delegationMode),
           delegationPreference: _delegationPreferenceToFrb(
@@ -1382,21 +1395,23 @@ class FrbStudioTransport
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     await _ensureReady();
     final response = await _bridgeCall(
       () => frb.setThreadModelRoute(
-        operationId: operationId.value,
-        threadId: threadId,
-        accountId: accountId,
-        modelId: modelId,
-        effort: effort,
-        expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
-        expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+        request: frb_command.BridgeSetThreadModelRouteRequest(
+          operationId: operationId.value,
+          threadId: threadId,
+          expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
+          accountId: accountId,
+          modelId: modelId,
+          effort: effort,
+          serviceTier: serviceTier,
+        ),
       ),
     );
     return ThreadModelRouteCommandReply(
@@ -1927,7 +1942,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> saveRuntimePermissionMode(
-    int expectedSettingsRevision,
     PermissionMode mode, {
     required OperationId operationId,
   }) async {
@@ -1936,7 +1950,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.saveRuntimePermissionMode(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           mode: _permissionModeLabel(mode),
         ),
       ),
@@ -2033,7 +2046,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> setAccountModelEnabled(
-    int expectedSettingsRevision,
     String accountId,
     String modelId,
     bool enabled, {
@@ -2044,7 +2056,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.setAccountModelEnabled(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           accountId: accountId,
           modelId: modelId,
           enabled: enabled,
@@ -2055,7 +2066,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> setAccountBillingKind(
-    int expectedSettingsRevision,
     String accountId,
     BillingKind? billingKind, {
     required OperationId operationId,
@@ -2065,7 +2075,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.setAccountBillingKind(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           accountId: accountId,
           billingKind: billingKind == null
               ? null
@@ -2130,7 +2139,6 @@ class FrbStudioTransport
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int expectedSettingsRevision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) async {
@@ -2139,7 +2147,6 @@ class FrbStudioTransport
       await _bridgeCall(
         () => frb.applySettingsField(
           operationId: operationId.value,
-          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           input: _settingsFieldInputFromDomain(command),
         ),
       ),

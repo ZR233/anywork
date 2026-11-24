@@ -1,5 +1,5 @@
 use pl_model_wire::completion::{CompletionRequest, ModelContextItem};
-use pl_model_wire::model::ModelInfo;
+use pl_model_wire::model::ModelDefinition;
 use pl_model_wire::protocol::{ProtocolEndpoint, WireApi};
 use pl_model_wire::wire_codec::{
     EncodeHttpRequestInput, ParsedHttpError, PreparedHttpRequest, WireCodec, WireStreamDecoder,
@@ -43,11 +43,11 @@ impl WireCodec for GeminiWireCodec {
     fn validate_context(
         &self,
         _endpoint: &ProtocolEndpoint,
-        model: &ModelInfo,
+        model: &ModelDefinition,
         isolation: &str,
         request: &CompletionRequest,
     ) -> Result<()> {
-        self.validate_context_items(model.binding.transport.protocol, &request.input)?;
+        self.validate_context_items(model.extra.binding.transport.protocol, &request.input)?;
         if request.replay_spans.iter().any(|span| {
             span.source_isolation
                 .as_deref()
@@ -66,7 +66,10 @@ impl WireCodec for GeminiWireCodec {
         Ok(())
     }
 
-    fn encode_http_request(&self, input: EncodeHttpRequestInput<'_>) -> Result<PreparedHttpRequest> {
+    fn encode_http_request(
+        &self,
+        input: EncodeHttpRequestInput<'_>,
+    ) -> Result<PreparedHttpRequest> {
         if input.is_compaction || input.compaction_body.is_some() {
             return Err(PureError::ConfigError(
                 "Gemini generateContent does not support remote compaction".into(),

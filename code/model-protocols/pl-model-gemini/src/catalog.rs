@@ -1,8 +1,14 @@
 use pl_model_wire::discovery::{
-    ModelCatalogQueryError, ParsedCatalogPage, Record, presentation_name, required_id,
+    ModelCatalogQueryError, ParsedCatalogPage, Record, presentation_name,
 };
 use pl_model_wire::model::ModelModality;
 use serde::Deserialize;
+
+fn required_id(raw: Option<String>) -> Result<String, ModelCatalogQueryError> {
+    raw.map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or(ModelCatalogQueryError::Protocol)
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +70,11 @@ fn build_record(
                 .any(|m| matches!(m.as_str(), "generateContent" | "streamGenerateContent"))
             {
                 (
-                    Some(vec![ModelModality::Text, ModelModality::Image, ModelModality::File]),
+                    Some(vec![
+                        ModelModality::Text,
+                        ModelModality::Image,
+                        ModelModality::File,
+                    ]),
                     Some(vec![ModelModality::Text]),
                 )
             } else {
@@ -160,7 +170,10 @@ mod tests {
         assert_eq!(page.next_page_token.as_deref(), Some("page-2"));
         assert_eq!(page.records.len(), 2);
         assert_eq!(page.records[0].id, "gemini-2.5-flash");
-        assert_eq!(page.records[0].display_name.as_deref(), Some("Gemini 2.5 Flash"));
+        assert_eq!(
+            page.records[0].display_name.as_deref(),
+            Some("Gemini 2.5 Flash")
+        );
         assert_eq!(page.records[0].context_window, Some(Some(1_048_576)));
         assert_eq!(page.records[0].max_output_tokens, Some(Some(65_536)));
         assert_eq!(

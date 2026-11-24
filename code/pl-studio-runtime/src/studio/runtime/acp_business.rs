@@ -4,6 +4,8 @@ mod api;
 mod observation;
 mod projection;
 mod resources;
+#[cfg(all(test, target_os = "linux"))]
+mod title_tests;
 
 pub(crate) use api::AcpBusinessOwner;
 pub use api::AcpSessionOpen;
@@ -253,7 +255,7 @@ mod mixed_tests {
     fn save_profile(fixture: &Fixture) -> Result<()> {
         fixture.runtime.save_user_agent_profile(
             "save-acp-child".into(),
-            fixture.runtime.read_settings()?.config.revision,
+            None,
             "acp-child",
             &crate::config::UserAgentProfile {
                 enabled: true,
@@ -770,7 +772,7 @@ mod mixed_tests {
     async fn acp_root_reads_native_failed_report_from_child_history_and_closes_without_parent_ack()
     -> Result<()> {
         use pl_model::config::{AccountConfig, AccountId};
-        use pl_model::model::ModelInfo;
+        use pl_model::model::ModelDefinition;
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
 
         let fixture = Fixture::new("replay").await?;
@@ -790,12 +792,12 @@ mod mixed_tests {
             let mut config = config.clone();
             config.models.accounts.insert(account_id.clone(), AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint("Mixed Native fixture", provider.base_url()),
-                vec![ModelInfo::compatible("mixed-native-model")],
+                vec![ModelDefinition::compatible("mixed-native-model")],
             ));
             Ok(config)
         })?;
         fixture.runtime.save_user_agent_profile(
-            "save-native-child".into(), fixture.runtime.read_settings()?.config.revision,
+            "save-native-child".into(), None,
             "native-child", &crate::config::UserAgentProfile {
                 enabled: true, display_name: "Native child".into(),
                 description: "Ordinary native task".into(), when_to_use: "Native report fixture".into(),
@@ -996,7 +998,6 @@ mod tests {
         ] {
             fixture.runtime.save_acp_account(UpdateAcpAccountRequest {
                 operation_id: format!("save-{account_id}"),
-                expected_revision: fixture.runtime.read_settings()?.config.revision,
                 expected_document_revision: None,
                 account: AcpAccountUpdate {
                     account_id: account_id.into(),
@@ -1114,16 +1115,13 @@ mod tests {
         assert_eq!(error.kind, AcpBusinessFailureKind::NotReady);
         fixture
             .runtime
-            .commit_acp_draft(open.target.clone())
+            .commit_acp_draft(open.target.clone(), "")
             .await?;
-        assert_eq!(
-            fixture
-                .runtime
-                .store
-                .directory_members_for_project(&fixture.workspace.id)?
-                .len(),
-            1
-        );
+        let members = fixture
+            .runtime
+            .store
+            .directory_members_for_project(&fixture.workspace.id)?;
+        assert_eq!(members.len(), 1);
         let committed = fixture
             .runtime
             .acp_session_snapshot(open.target.clone())
@@ -1131,6 +1129,7 @@ mod tests {
         assert_eq!(snapshot.acp_session_id, committed.acp_session_id);
         fixture.runtime.close_acp_session(open.target).await?;
         fixture.runtime.shutdown_runtime().await?;
+        assert_eq!(members[0].session.title, "New Session");
         Ok(())
     }
 
@@ -1258,7 +1257,7 @@ mod tests {
         Fixture::ready(&mut committed).await?;
         fixture
             .runtime
-            .commit_acp_draft(committed.target.clone())
+            .commit_acp_draft(committed.target.clone(), "Start work in the ACP worktree")
             .await?;
         assert!(
             !fixture
@@ -1392,11 +1391,10 @@ mod tests {
             .clone();
         let mut disabled = entry.definition;
         disabled.enabled = false;
-        fixture.runtime.config_runtime.save_acp_definition(
-            fixture.runtime.config_runtime.read()?.revision,
-            &disabled,
-            Some(entry.document_revision),
-        )?;
+        fixture
+            .runtime
+            .config_runtime
+            .save_acp_definition(&disabled, Some(entry.document_revision))?;
         assert!(
             fixture
                 .runtime

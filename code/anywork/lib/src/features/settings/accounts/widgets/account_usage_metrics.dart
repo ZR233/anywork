@@ -375,6 +375,7 @@ TextStyle _readingStyle(
               ? 30
               : 22,
           fontWeight: primary ? FontWeight.w700 : FontWeight.w600,
+          fontFeatures: const [FontFeature.tabularFigures()],
           height: 1.25,
         );
 

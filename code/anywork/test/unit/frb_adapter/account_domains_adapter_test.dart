@@ -17,6 +17,7 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/accounts/types.dart'
     as frb_accounts;
+import 'package:anywork/src/rust/api/studio/types/acp.dart' as frb_acp;
 import 'package:anywork/src/rust/api/studio/types/command.dart' as frb_command;
 import 'package:anywork/src/rust/frb_generated.dart' show RustLib, RustLibApi;
 
@@ -94,6 +95,7 @@ void main() {
             capabilities: capabilities,
             acpEnabled: false,
             acpConnectionRevision: BigInt.from(connectionRevision),
+            acpTemplate: frb_acp.BridgeAcpProvider.antigravity,
           ),
         ],
         acpDiagnostics: const [
@@ -114,7 +116,9 @@ void main() {
       );
       expect(native.acpConnectionRevision, isNull);
       expect(native.acpEnabled, isNull);
+      expect(native.acpTemplate, isNull);
       expect(acp.acpEnabled, isFalse);
+      expect(acp.acpTemplate, AcpProviderView.antigravity);
       expect(frame.acpDiagnostics.single.fileName, 'broken.toml');
       expect(frame.acpDiagnostics.single.message, 'Invalid ACP definition');
       expect(
@@ -325,7 +329,6 @@ void main() {
       BigInt? documentRevision;
       for (final name in ['Original', 'Renamed only']) {
         final reply = await transport.saveAcpAccount(
-          revision,
           AcpAccountUpdateView(
             accountId: native.identity.accountId,
             name: name,

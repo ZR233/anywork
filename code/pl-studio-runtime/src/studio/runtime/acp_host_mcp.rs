@@ -1028,7 +1028,7 @@ mod tests {
     fn save_acp_child_profile(fixture: &Fixture) -> Result<()> {
         fixture.runtime.save_user_agent_profile(
             "save-http-acp-child".into(),
-            fixture.runtime.read_settings()?.config.revision,
+            None,
             "acp-child",
             &crate::config::UserAgentProfile {
                 enabled: true,

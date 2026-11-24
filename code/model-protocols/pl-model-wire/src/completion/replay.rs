@@ -89,10 +89,9 @@ impl AssistantReplay {
                             .get("name")
                             .and_then(Value::as_str)
                             .ok_or_else(|| invalid("gemini functionCall missing name"))?;
-                        let call = response
-                            .tool_calls
-                            .get(call_index)
-                            .ok_or_else(|| invalid("gemini replay call has no submitted binding"))?;
+                        let call = response.tool_calls.get(call_index).ok_or_else(|| {
+                            invalid("gemini replay call has no submitted binding")
+                        })?;
                         call_index += 1;
                         if call.kind() != ToolCallKind::Function || call.name != name {
                             return Err(invalid(

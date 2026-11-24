@@ -19,6 +19,14 @@ Future<List<String>> pickLocalAttachmentPaths({
 Future<String?> pickLocalProjectDirectory() =>
     _fileDialogs.invokeMethod<String>('pickDirectory');
 
+Future<String?> pickLocalSavePath(String filename) async {
+  final path = await _fileDialogs.invokeMethod<String>('saveFile', filename);
+  if (path != null && !p.isAbsolute(path)) {
+    throw StateError('保存位置不是绝对路径');
+  }
+  return path;
+}
+
 /// The native chooser owns overwrite confirmation. No bytes are read and no
 /// file is created when the user cancels or the original display retires.
 Future<bool> saveArchivedFile({
@@ -27,9 +35,8 @@ Future<bool> saveArchivedFile({
   required bool Function() isActive,
 }) async {
   if (!isActive()) return false;
-  final path = await _fileDialogs.invokeMethod<String>('saveFile', filename);
+  final path = await pickLocalSavePath(filename);
   if (path == null || !isActive()) return false;
-  if (!p.isAbsolute(path)) throw StateError('保存位置不是绝对路径');
   final bytes = await readBytes();
   if (!isActive()) return false;
   await File(path).writeAsBytes(bytes, flush: true);

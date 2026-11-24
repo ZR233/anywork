@@ -23,6 +23,11 @@ its sessions and pending reconnects; see the ACP account lifecycle in the refere
 Remote workspace tools use the ordinary session execution binding through Host MCP;
 see the ACP section in the main configuration reference, not remote agent setup.
 
+An account model needs only `base.slug`. Set `base.supports_parallel_tool_calls`
+to override the catalog declaration for parallel tool calls.
+
+When editing a Mode, Agent Profile or ACP account through Studio, open its current document before saving. Another editor can save a different document independently. If the same document changed, keep your draft and reopen the current version to reconcile the edits. A new document requires an unused ID. Ordinary settings switches and sidebar pins save individual changes.
+
 ## Find the correct location
 
 `<studio-home>` is the running application's configuration root, resolved in order:
@@ -46,7 +51,7 @@ configuration are different locations:
 
 | Configure | Current file/location | Read next |
 | --- | --- | --- |
-| Native accounts, routes, runtime, skills, UI, search | `<studio-home>/config.toml`, TOML schema 33 | [Main configuration](references/main-config.md) |
+| Native accounts, routes, runtime, skills, UI, search | `<studio-home>/config.toml`, TOML schema 34 | [Main configuration](references/main-config.md) |
 | Desktop diagnostic logging | Studio host process startup environment; no TOML key | [Diagnostic logging](references/main-config.md#desktop-diagnostic-logging) |
 | Noninteractive `anywk exec` | Explicit `--studio-home`, existing native config, environment-only credentials, runtime-only skill options and optional version-3 run export | [CLI execution](references/main-config.md#noninteractive-cli-execution) |
 | ACP definitions | `<studio-home>/acp/<id>.toml`, TOML schema 1 | [Main configuration](references/main-config.md#acp-accounts) |

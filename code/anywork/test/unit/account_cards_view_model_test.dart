@@ -56,6 +56,8 @@ void _summaries(
   int? revision = 1,
   bool alpha = true,
   bool beta = true,
+  bool acpEnabled = true,
+  bool queryUsage = true,
   String owner = 'owner',
   bool stale = false,
 }) => h.accounts.state.publish(
@@ -70,8 +72,16 @@ void _summaries(
           const AcpAccountIdentity('alpha'),
           name: 'Alpha',
           acpRevision: revision,
+          acpEnabled: acpEnabled,
+          queryUsage: queryUsage,
         ),
-      if (beta) vmSummary(const AcpAccountIdentity('beta'), name: 'Beta'),
+      if (beta)
+        vmSummary(
+          const AcpAccountIdentity('beta'),
+          name: 'Beta',
+          acpEnabled: acpEnabled,
+          queryUsage: queryUsage,
+        ),
     ],
   ),
 );
@@ -556,5 +566,124 @@ void main() {
     await h.container.pump();
     expect(h.rows.map((row) => row.key), [nativeKey]);
     expect(h.acp.authCancels, isEmpty);
+  });
+
+  test('generic ACP account without queryUsage never auto-refreshes, exposes no refresh action, and hides usage while checking', () async {
+    final h = _harness(beta: false);
+    _summaries(h, beta: false, acpEnabled: true, queryUsage: false);
+    _auth(
+      h,
+      accounts: const [
+        AcpAuthAccountView(
+          connection: AcpConnectionStartingState(),
+          accountId: 'alpha',
+          connectionRevision: 1,
+          state: AcpCheckingState(operationId: 'check-1'),
+          activeOperation: AcpAuthActiveOperationView(
+            operationId: 'check-1',
+            connectionRevision: 1,
+            action: AcpCheckActionView(),
+          ),
+        ),
+      ],
+    );
+    final owner = await h.listOwner();
+    await h.container.pump();
+    expect(_requests(h, 'alpha'), isEmpty);
+    expect(_usage(h, _alpha), isNull);
+    expect(_row(h, _alpha).actions, isNot(contains(AccountRowAction.refresh)));
+    expect(_row(h, _alpha).actions, contains(AccountRowAction.edit));
+    expect(_row(h, _alpha).actions, contains(AccountRowAction.delete));
+
+    await owner.refreshAll();
+    expect(_requests(h, 'alpha'), isEmpty);
+    expect(h.usage.refreshes, hasLength(2));
+  });
+
+  test(
+    'disabled ACP account never refreshes and exposes no refresh action',
+    () async {
+      final h = _harness(beta: false);
+      _summaries(h, beta: false, acpEnabled: false, queryUsage: false);
+      _auth(h);
+      final owner = await h.listOwner();
+      await h.container.pump();
+      expect(_requests(h, 'alpha'), isEmpty);
+      expect(
+        _row(h, _alpha).actions,
+        isNot(contains(AccountRowAction.refresh)),
+      );
+
+      await owner.refresh(_alpha);
+      await owner.refreshAll();
+      expect(_requests(h, 'alpha'), isEmpty);
+    },
+  );
+
+  test('managed ACP account queries once on first open without cached usage, reuses cache on reopen, and allows manual refresh', () async {
+    final first = _harness(beta: false);
+    _summaries(first, beta: false, acpEnabled: true, queryUsage: true);
+    _auth(
+      first,
+      accounts: const [
+        AcpAuthAccountView(
+          connection: AcpConnectionReadyState(),
+          accountId: 'alpha',
+          connectionRevision: 1,
+          state: AcpVerifiedState(checkedAt: 1, server: null),
+        ),
+      ],
+    );
+    await first.listOwner();
+    await first.container.pump();
+    expect(_requests(first, 'alpha'), hasLength(1));
+
+    final reopen = _harness(beta: false);
+    _summaries(reopen, beta: false, acpEnabled: true, queryUsage: true);
+    _auth(reopen, accounts: [_authAccount('alpha', revision: 1)]);
+    final owner = await reopen.listOwner();
+    await reopen.container.pump();
+    expect(_requests(reopen, 'alpha'), isEmpty);
+
+    final manual = owner.refresh(_alpha);
+    await reopen.container.pump();
+    expect(_requests(reopen, 'alpha'), hasLength(1));
+    _requests(
+      reopen,
+      'alpha',
+    ).single.completion.complete(AcpUsageRefreshDisposition.started);
+    await manual;
+  });
+
+  test('Verified ACP account running QueryUsage keeps Connected status and shows usage busy', () async {
+    final h = _harness(beta: false);
+    _summaries(h, beta: false, acpEnabled: true, queryUsage: true);
+    _auth(
+      h,
+      accounts: const [
+        AcpAuthAccountView(
+          connection: AcpConnectionReadyState(),
+          accountId: 'alpha',
+          connectionRevision: 1,
+          state: AcpVerifiedState(checkedAt: 1, server: null),
+          usage: _quota,
+          activeOperation: AcpAuthActiveOperationView(
+            operationId: 'usage-1',
+            connectionRevision: 1,
+            action: AcpQueryUsageActionView(),
+          ),
+        ),
+      ],
+    );
+    final owner = await h.listOwner();
+    owner.setStrings(const AccountStrings({'acp.connected': 'Connected'}));
+    await h.container.pump();
+    expect(
+      (_row(h, _alpha).content as AcpAccountRowContent).status,
+      'Connected',
+    );
+    expect(_usage(h, _alpha)!.queried, isTrue);
+    expect(_usage(h, _alpha)!.busy, isTrue);
+    expect(_requests(h, 'alpha'), isEmpty);
   });
 }

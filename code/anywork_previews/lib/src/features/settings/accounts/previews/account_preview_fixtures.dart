@@ -307,6 +307,234 @@ abstract final class AccountPreviewFixtures {
       AccountDisplayFact(label: '受管服务器', value: '合成版本 1.4.5 · linux-x64'),
     ],
   );
+  static const acpSubscriptionUsage = AcpUsagePresentation(
+    status: '已连接',
+    updatedLabel: '10/26 12:34',
+    queried: true,
+    groups: [
+      AccountQuotaGroupPresentation(
+        name: 'Claude',
+        quotas: [
+          AccountQuotaPresentation(
+            label: 'Claude Opus 4.5 / Sonnet 4.5',
+            remaining: '92%',
+            remainingFraction: .92,
+            resetLabel: '14:12',
+          ),
+        ],
+      ),
+      AccountQuotaGroupPresentation(
+        name: 'Gemini',
+        quotas: [
+          AccountQuotaPresentation(
+            label: 'Gemini 3.1 Pro (High)',
+            remaining: '18%',
+            remainingFraction: .18,
+            resetLabel: '今天 18:00',
+            low: true,
+          ),
+          AccountQuotaPresentation(
+            label: 'Gemini 3 Flash',
+            remaining: '100%',
+            remainingFraction: 1,
+            resetLabel: '16:30',
+          ),
+        ],
+      ),
+    ],
+  );
+  static const acpManagedKey = AccountDisplayKey(
+    kind: AccountKind.acp,
+    id: 'synthetic-agy-managed',
+  );
+  static const acpManagedUpdateRow = AccountRowPresentation(
+    key: acpManagedKey,
+    name: 'Antigravity (受管)',
+    iconKey: 'antigravity',
+    content: AccountRowContent.acp(
+      status: '已连接',
+      phase: AcpPresentationPhase.connected,
+      isManaged: true,
+      sourceLabel: '官方受管 · 1.x',
+      versionLabel: 'v1.4.5',
+      upgrade: AcpCardUpgradePresentation(
+        phase: AcpUpgradePhase.updateAvailable,
+        installedVersion: '1.4.5',
+        runningVersion: '1.4.5',
+        latestVersion: '1.5.2',
+        canUpgrade: true,
+        canCheck: true,
+      ),
+      usage: acpSubscriptionUsage,
+    ),
+    actions: [
+      AccountRowAction.refresh,
+      AccountRowAction.upgrade,
+      AccountRowAction.checkUpdate,
+      AccountRowAction.edit,
+      AccountRowAction.delete,
+    ],
+  );
+  static const acpManagedUpgradingRow = AccountRowPresentation(
+    key: acpManagedKey,
+    name: 'Antigravity (受管)',
+    iconKey: 'antigravity',
+    content: AccountRowContent.acp(
+      status: '已连接',
+      phase: AcpPresentationPhase.connected,
+      isManaged: true,
+      sourceLabel: '官方受管 · 1.x',
+      versionLabel: 'v1.4.5',
+      upgrade: AcpCardUpgradePresentation(
+        phase: AcpUpgradePhase.upgrading,
+        installedVersion: '1.4.5',
+        runningVersion: '1.4.5',
+        latestVersion: '1.5.2',
+        stageLabel: '下载官方安装包',
+        progress: .64,
+        progressLabel: '44.8 MB / 70.0 MB · 14.2 MB/s',
+        canCancel: true,
+      ),
+      usage: acpSubscriptionUsage,
+    ),
+    actions: [
+      AccountRowAction.cancelUpgrade,
+      AccountRowAction.edit,
+      AccountRowAction.delete,
+    ],
+  );
+  static const acpManagedPendingSwitchRow = AccountRowPresentation(
+    key: acpManagedKey,
+    name: 'Antigravity (受管)',
+    iconKey: 'antigravity',
+    content: AccountRowContent.acp(
+      status: '已连接',
+      phase: AcpPresentationPhase.connected,
+      isManaged: true,
+      sourceLabel: '官方受管 · 1.x',
+      versionLabel: 'v1.4.5',
+      upgrade: AcpCardUpgradePresentation(
+        phase: AcpUpgradePhase.pendingSwitch,
+        installedVersion: '1.5.2',
+        runningVersion: '1.4.5',
+        latestVersion: '1.5.2',
+        canCheck: true,
+      ),
+      usage: acpSubscriptionUsage,
+    ),
+    actions: [
+      AccountRowAction.refresh,
+      AccountRowAction.checkUpdate,
+      AccountRowAction.edit,
+      AccountRowAction.delete,
+    ],
+  );
+  static const acpManagedUpToDateRow = AccountRowPresentation(
+    key: acpManagedKey,
+    name: 'Antigravity (受管)',
+    iconKey: 'antigravity',
+    content: AccountRowContent.acp(
+      status: '已连接',
+      phase: AcpPresentationPhase.connected,
+      isManaged: true,
+      sourceLabel: '官方受管 · 1.x',
+      versionLabel: 'v1.5.2',
+      upgrade: AcpCardUpgradePresentation(
+        phase: AcpUpgradePhase.upToDate,
+        installedVersion: '1.5.2',
+        runningVersion: '1.5.2',
+        latestVersion: '1.5.2',
+        canCheck: true,
+      ),
+      usage: acpSubscriptionUsage,
+    ),
+    actions: [
+      AccountRowAction.refresh,
+      AccountRowAction.checkUpdate,
+      AccountRowAction.edit,
+      AccountRowAction.delete,
+    ],
+  );
+  static const acpManagedIncompatibleRow = AccountRowPresentation(
+    key: acpManagedKey,
+    name: 'Antigravity (受管)',
+    iconKey: 'antigravity',
+    content: AccountRowContent.acp(
+      status: '已连接',
+      phase: AcpPresentationPhase.connected,
+      isManaged: true,
+      sourceLabel: '官方受管 · 1.x',
+      versionLabel: 'v1.5.2',
+      upgrade: AcpCardUpgradePresentation(
+        phase: AcpUpgradePhase.incompatibleMajor,
+        installedVersion: '1.5.2',
+        runningVersion: '1.5.2',
+        latestVersion: '2.0.0',
+        canCheck: true,
+      ),
+      usage: acpSubscriptionUsage,
+    ),
+    actions: [
+      AccountRowAction.refresh,
+      AccountRowAction.checkUpdate,
+      AccountRowAction.edit,
+      AccountRowAction.delete,
+    ],
+  );
+  static const acpLocalRow = AccountRowPresentation(
+    key: AccountDisplayKey(kind: AccountKind.acp, id: 'synthetic-agy-local'),
+    name: '本机 agy CLI',
+    iconKey: 'antigravity',
+    content: AccountRowContent.acp(
+      status: '需要登录',
+      phase: AcpPresentationPhase.needsLogin,
+      isManaged: false,
+      sourceLabel: '本机命令 · agy',
+      versionLabel: 'v1.5.2',
+    ),
+    actions: [AccountRowAction.edit, AccountRowAction.delete],
+  );
+  static final listWithManagedAcp = AccountListPreviewData(
+    canRefresh: true,
+    rows: [acpManagedUpdateRow, acpLocalRow, ...list.rows],
+  );
+  static final acpDetailsManagedUpdate = AccountDetailsPresentation(
+    key: acpManagedKey,
+    name: 'Antigravity (受管)',
+    iconKey: 'antigravity',
+    canEdit: true,
+    canDelete: true,
+    content: AccountDetailsContent.acp(
+      acp.copyWith(
+        phase: AcpPresentationPhase.connected,
+        status: '已连接',
+        subtitle: '受管服务器已就绪并在后台保持单例连接。',
+        message: '当前运行版本 v1.4.5，已发现 1.x 新版本 v1.5.2。',
+        primaryAction: AcpAccountAction.check,
+        supportsUsage: true,
+        usage: acpSubscriptionUsage,
+        upgrade: const AcpCardUpgradePresentation(
+          phase: AcpUpgradePhase.updateAvailable,
+          installedVersion: '1.4.5',
+          runningVersion: '1.4.5',
+          latestVersion: '1.5.2',
+          canUpgrade: true,
+          canCheck: true,
+        ),
+        availableActions: const [
+          AcpAccountAction.check,
+          AcpAccountAction.queryUsage,
+          AcpAccountAction.openGuide,
+          AcpAccountAction.openTerms,
+        ],
+        facts: const [
+          AccountDisplayFact(label: '模板', value: 'Antigravity (受管 1.x)'),
+          AccountDisplayFact(label: '安装版本', value: 'v1.4.5'),
+          AccountDisplayFact(label: '目标平台', value: 'linux-x86_64'),
+        ],
+      ),
+    ),
+  );
   static final list = AccountListPreviewData(
     canRefresh: true,
     rows: [

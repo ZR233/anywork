@@ -10,7 +10,11 @@ use pl_model_wire::{
 pub const CATALOG: DiscoveryPolicy = DiscoveryPolicy {
     responses_effort: false,
     media_send_order: MediaSendOrder::DataUrlOnly,
-    unknown_input: &[ModelModality::Text, ModelModality::Image, ModelModality::File],
+    unknown_input: &[
+        ModelModality::Text,
+        ModelModality::Image,
+        ModelModality::File,
+    ],
 };
 
 pub static ADAPTER: Adapter = Adapter {

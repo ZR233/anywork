@@ -5,6 +5,7 @@
 //! 因此"canonical 提交 → 身份撤代 → 本次准入"是同一个不可分割的序列，不会有提交插在中间。
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{
     AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest, StudioErrorCode,
@@ -93,7 +94,7 @@ impl AcpAccountRuntime {
         ensure_operation_id(&request.operation_id)?;
         ensure_operation_id(&request.target_operation_id)?;
         let mut registry = self.inner.lock();
-        let (target, cancel, already, closing) = {
+        let (target, cancel, already, closing, preserve_verified) = {
             let Some(slot) = registry.slots.get(&request.account_id) else {
                 return Err(acp_error(
                     StudioErrorCode::NotFound,
@@ -115,21 +116,26 @@ impl AcpAccountRuntime {
                     false,
                 ));
             }
-            let already = matches!(
-                &slot.state,
-                AcpAuthState::Cancelling { operation_id }
-                    if operation_id == &request.target_operation_id
-            );
+            let already = operation.cancel_requested.load(Ordering::Acquire)
+                || operation.cancel.is_cancelled()
+                || matches!(
+                    &slot.state,
+                    AcpAuthState::Cancelling { operation_id }
+                        if operation_id == &request.target_operation_id
+                );
             let closing = matches!(
                 &slot.state,
                 AcpAuthState::Closing { operation_id, .. }
                     if operation_id == &request.target_operation_id
             );
+            let preserve_verified = matches!(operation.action, crate::AcpAuthAction::QueryUsage)
+                && matches!(&slot.state, AcpAuthState::Verified { .. });
             (
                 operation.operation_id.clone(),
                 operation.cancel.clone(),
                 already,
                 closing,
+                preserve_verified,
             )
         };
         if already {
@@ -157,9 +163,14 @@ impl AcpAccountRuntime {
                     false,
                 ));
             };
-            slot.state = AcpAuthState::Cancelling {
-                operation_id: target.clone(),
-            };
+            if let Some(operation) = slot.operation.as_ref() {
+                operation.cancel_requested.store(true, Ordering::Release);
+            }
+            if !preserve_verified {
+                slot.state = AcpAuthState::Cancelling {
+                    operation_id: target.clone(),
+                };
+            }
         }
         registry.bump();
         let snapshot = registry.snapshot();
@@ -231,42 +242,49 @@ impl AcpAccountRuntime {
         };
         let mut issues: Vec<String> = Vec::new();
         let deadline = tokio::time::Instant::now() + PROCESS_CLEANUP_LIMIT;
-        for operation in operations {
-            // Tokio 的异步互斥锁只串行化这一任务的 join。句柄一直留在 owner 内；
-            // 外层关闭取消本 future 或预算到期都只释放借用，不 detach 任务。
-            let completed = tokio::time::timeout_at(deadline, async {
-                let mut handle = operation.join.lock().await;
-                let result = match handle.as_mut() {
-                    Some(task) => Some(task.await.is_ok()),
-                    None => None,
-                };
-                handle.take();
-                result
-            })
-            .await;
-            match completed {
-                Ok(Some(true)) => {}
-                Ok(Some(false)) => issues.push(format!(
-                    "ACP auth operation {} ended without a clean join",
-                    operation.operation_id
-                )),
-                Ok(None) => issues.push(format!(
-                    "ACP auth operation {} has no join handle",
-                    operation.operation_id
-                )),
-                Err(_) => {
-                    issues.push(format!(
+        let operation_issues =
+            futures::future::join_all(operations.into_iter().map(|operation| async move {
+                // Tokio 的异步互斥锁只串行化这一任务的 join。句柄一直留在 owner 内；
+                // 外层关闭取消本 future 或预算到期都只释放借用，不 detach 任务。
+                let completed = tokio::time::timeout_at(deadline, async {
+                    let mut handle = operation.join.lock().await;
+                    let result = match handle.as_mut() {
+                        Some(task) => Some(task.await.is_ok()),
+                        None => None,
+                    };
+                    handle.take();
+                    result
+                })
+                .await;
+                match completed {
+                    Ok(Some(true)) => None,
+                    Ok(Some(false)) => Some(format!(
+                        "ACP auth operation {} ended without a clean join",
+                        operation.operation_id
+                    )),
+                    Ok(None) => Some(format!(
+                        "ACP auth operation {} has no join handle",
+                        operation.operation_id
+                    )),
+                    Err(_) => Some(format!(
                         "ACP auth operation {} did not finish within the shutdown budget",
                         operation.operation_id
-                    ));
+                    )),
                 }
-            }
-        }
-        for connection in self.connections() {
-            if let Err(error) = connection.close().await {
-                issues.push(error.to_string());
-            }
-        }
+            }))
+            .await;
+        issues.extend(operation_issues.into_iter().flatten());
+        let connection_issues = futures::future::join_all(self.connections().into_iter().map(
+            |connection| async move {
+                connection
+                    .close()
+                    .await
+                    .err()
+                    .map(|error| error.to_string())
+            },
+        ))
+        .await;
+        issues.extend(connection_issues.into_iter().flatten());
         if let Err(error) = self.join_lifecycle_driver(deadline).await {
             issues.push(error.to_string());
         }
@@ -474,6 +492,7 @@ impl AcpAccountInner {
             // 冻结准入意图：后续快照投影与收尾裁决都以此为准，不回读 state。
             action: request.action.clone(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            cancel_requested: AtomicBool::new(false),
             authentication,
             cleanup_retry: tokio::sync::Notify::new(),
             join: tokio::sync::Mutex::new(None),
@@ -487,8 +506,13 @@ impl AcpAccountInner {
                     true,
                 ));
             };
+            let preserve_verified = matches!(request.action, crate::AcpAuthAction::QueryUsage)
+                && matches!(slot.state, AcpAuthState::Verified { .. })
+                && matches!(slot.lifecycle.state, crate::AcpConnectionState::Ready);
             slot.operation = Some(Arc::clone(&operation));
-            slot.state = initial;
+            if !preserve_verified {
+                slot.state = initial;
+            }
             // An explicit check/login supersedes a scheduled initial check, without a second
             // command identity or a second process. Background work has no public dedup entry.
             slot.background_scheduled = true;
@@ -583,6 +607,7 @@ mod tests {
             generation,
             action,
             cancel: CancellationToken::new(),
+            cancel_requested: AtomicBool::new(false),
             authentication: sender,
             cleanup_retry: tokio::sync::Notify::new(),
             join: tokio::sync::Mutex::new(None),

@@ -52,14 +52,20 @@ impl Owner {
         candidate: &mut ThreadSnapshot,
         update: extensions::ApplicationUpdate,
         context: Option<ReplaceContext>,
+        binding: Option<extensions::InstructionRevisionBinding>,
         fact_changes: Vec<RuntimeFact>,
     ) -> Result<(), ThreadError> {
         extensions::stage_extensions(candidate, update.mutations)?;
-        facts::stage_facts(candidate, update.facts)?;
+        if !update.facts.is_empty() {
+            facts::stage_fact_changes(candidate, update.facts)?;
+        }
         if !fact_changes.is_empty() {
             facts::stage_fact_changes(candidate, fact_changes)?;
         }
-        if let Some(replacement) = context {
+        if let Some(mut replacement) = context {
+            if let Some(binding) = binding {
+                binding.resolve(&mut replacement, candidate)?;
+            }
             candidate.context = self.state.context.clone();
             replacement::stage_replacement(candidate, replacement)?;
         }

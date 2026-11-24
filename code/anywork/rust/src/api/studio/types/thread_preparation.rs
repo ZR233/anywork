@@ -13,6 +13,7 @@ pub struct BridgeStartNewThreadRequest {
     pub account_id: String,
     pub model_id: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     pub workspace_mode: Option<String>,
     pub delegation_mode: BridgeDelegationMode,
     pub delegation_preference: BridgeDelegationPreference,

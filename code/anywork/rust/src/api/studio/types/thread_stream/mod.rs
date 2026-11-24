@@ -309,6 +309,7 @@ pub struct BridgeThreadModelRouteSnapshot {
     pub account_id: String,
     pub model_id: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     pub revision: u64,
     pub available: bool,
     pub unavailable_reason: Option<String>,
