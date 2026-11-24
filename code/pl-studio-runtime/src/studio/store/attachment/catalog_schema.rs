@@ -142,7 +142,11 @@ impl From<AttachmentCatalogV2> for AttachmentCatalog {
     }
 }
 
-fn migrator() -> Result<Migrator> {
+fn migrator() -> Result<&'static Migrator> {
+    static MIGRATOR: std::sync::OnceLock<Migrator> = std::sync::OnceLock::new();
+    if let Some(migrator) = MIGRATOR.get() {
+        return Ok(migrator);
+    }
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -153,14 +157,14 @@ fn migrator() -> Result<Migrator> {
                 .into::<AttachmentCatalogV2>(),
         )
         .map_err(|error| crate::toml_schema::chain_error(ENTITY, error))?;
-    Ok(migrator)
+    Ok(MIGRATOR.get_or_init(|| migrator))
 }
 
 pub(super) fn decode_v2(path: &std::path::Path, content: &str) -> Result<AttachmentCatalog> {
     let loaded = crate::toml_schema::load::<AttachmentCatalogV1, AttachmentCatalogV2>(
         path,
         content,
-        &migrator()?,
+        migrator()?,
         ENTITY,
         VERSION_KEY,
     )?;
@@ -168,9 +172,9 @@ pub(super) fn decode_v2(path: &std::path::Path, content: &str) -> Result<Attachm
 }
 
 pub(super) fn decode(path: &std::path::Path, content: &str) -> Result<AttachmentCatalog> {
-    let document = decode_v2(path, content)?;
-    let version: toml::Table = toml::from_str(content)?;
-    if version.get(VERSION_KEY).and_then(toml::Value::as_integer) != Some(2) {
+    let target = crate::toml_schema::integer_version(AttachmentCatalogV2::VERSION)?;
+    let table = crate::toml_schema::parse(path, content, ENTITY, target)?;
+    if crate::toml_schema::integer_header(&table, VERSION_KEY) != Some(target) {
         return Err(crate::toml_schema::migration_error(
             path,
             ENTITY,
@@ -180,7 +184,9 @@ pub(super) fn decode(path: &std::path::Path, content: &str) -> Result<Attachment
             anyhow::anyhow!("legacy attachment catalog requires explicit layout migration"),
         ));
     }
-    Ok(document)
+    let document: AttachmentCatalogV2 =
+        crate::toml_schema::decode_current_table(path, table, ENTITY, VERSION_KEY)?;
+    Ok(document.into())
 }
 pub(super) fn encode(document: &AttachmentCatalog) -> Result<String> {
     crate::toml_schema::encode(&from_domain(document), VERSION_KEY)

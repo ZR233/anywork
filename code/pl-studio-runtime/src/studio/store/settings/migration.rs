@@ -138,7 +138,11 @@ impl MigratesTo<SettingsDocument> for SettingsV1 {
 
 /// The typed Settings chain. Registration failure is an internal chain defect, never a
 /// document error.
-pub(super) fn migrator() -> Result<Migrator> {
+pub(super) fn migrator() -> Result<&'static Migrator> {
+    static MIGRATOR: std::sync::OnceLock<Migrator> = std::sync::OnceLock::new();
+    if let Some(migrator) = MIGRATOR.get() {
+        return Ok(migrator);
+    }
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -149,7 +153,39 @@ pub(super) fn migrator() -> Result<Migrator> {
                 .into::<SettingsDocument>(),
         )
         .map_err(|error| crate::toml_schema::chain_error(ENTITY, anyhow::anyhow!(error)))?;
-    Ok(migrator)
+    Ok(MIGRATOR.get_or_init(|| migrator))
+}
+
+/// One validated V1 conversion. The hot loader must not deserialize the same table again.
+pub(super) fn migrate_v1(
+    path: &std::path::Path,
+    mut table: toml::Table,
+    target: u32,
+) -> Result<SettingsDocument> {
+    let first = crate::toml_schema::integer_version(SettingsV1::VERSION)?;
+    table.remove(VERSION_KEY);
+    let wire: SettingsV1Wire = toml::Value::Table(table).try_into().map_err(|error| {
+        crate::toml_schema::migration_error(
+            path,
+            ENTITY,
+            Some(first),
+            target,
+            "validate payload",
+            error,
+        )
+    })?;
+    SettingsV1::try_from(wire)
+        .map(|document| document.migrate())
+        .map_err(|error| {
+            crate::toml_schema::migration_error(
+                path,
+                ENTITY,
+                Some(first),
+                target,
+                "validate payload",
+                error,
+            )
+        })
 }
 
 #[cfg(test)]
