@@ -86,10 +86,10 @@ jobs:
 
       - name: Build native release CLI
         if: runner.os != 'Linux'
-        run: cargo xtask build-anywk --output target/studio-anywk
+        run: cargo xtask build-anywk --output dist/studio-anywk
       - name: Build Linux release CLI in the verified image
         if: runner.os == 'Linux'
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo xtask build-anywk --output target/studio-anywk
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo xtask build-anywk --output dist/studio-anywk
 
       - name: Archive CLI and identify tar payload
         id: checkpoint

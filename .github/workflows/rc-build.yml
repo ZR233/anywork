@@ -246,7 +246,7 @@ jobs:
       - name: Assemble GUI from verified prebuilt inputs
         shell: pwsh
         run: |
-          & $env:STUDIO_RELEASE_TOOL assemble-gui --bundle $env:STUDIO_RELEASE_BUNDLE --anywk target/studio-anywk --source-sha $env:SOURCE_SHA
+          & $env:STUDIO_RELEASE_TOOL assemble-gui --bundle $env:STUDIO_RELEASE_BUNDLE --anywk dist/studio-anywk --source-sha $env:SOURCE_SHA
           if ($LASTEXITCODE -ne 0) { throw "GUI assembly exited with $LASTEXITCODE" }
 
       - name: Install Inno Setup
