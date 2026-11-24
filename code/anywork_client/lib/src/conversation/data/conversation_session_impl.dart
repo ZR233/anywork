@@ -115,7 +115,11 @@ final class ConversationSessionImpl implements ConversationSession {
     _source.publish(
       state.copyWith(
         streamEpoch: null,
-        sync: const DomainSyncStatus(phase: DomainSyncPhase.connecting),
+        // A replacement reader is still reconnecting until it delivers a
+        // baseline. Starting each attempt must not hide the recovery state.
+        sync: state.sync.phase == DomainSyncPhase.reconnecting
+            ? state.sync
+            : const DomainSyncStatus(phase: DomainSyncPhase.connecting),
       ),
     );
   }

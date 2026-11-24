@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
@@ -16,6 +15,7 @@ import '../state/timeline_display_unit.dart';
 import '../view_models/display_member_controller.dart';
 import '../view_models/timeline_view_model.dart';
 import '../widgets/completion_run_view.dart';
+import 'live_status_machine.dart';
 import 'live_status_state.dart';
 import 'live_status_surface_view.dart';
 import 'live_status_view_model.dart';
@@ -38,7 +38,10 @@ class LiveStatusBar extends ConsumerWidget {
     final session = conversations.existingSession(threadId);
     if (session == null) return const SizedBox.shrink();
 
-    final sessionState = ref.watch(threadSessionStoreProvider(threadId));
+    final reference = ref.watch(
+      threadSessionStoreProvider(threadId)
+          .select((session) => session.businessRefs?.interactions),
+    );
     final owner = ref.read(timelineSessionOwnerProvider);
     final detailLease = owner.lease(threadId);
 
@@ -54,7 +57,6 @@ class LiveStatusBar extends ConsumerWidget {
       return bytes;
     }
 
-    final reference = sessionState.businessRefs?.interactions;
     final Widget? detailsSlot =
         aggregate.gate.showInteractionDetails &&
             reference != null &&
@@ -87,7 +89,7 @@ class LiveStatusBar extends ConsumerWidget {
       liveWorkBuilder: detailLease == null
           ? null
           : (_, work) => _LiveWorkGroupHost(
-              key: ValueKey(('live-work', threadId, detailLease.generation)),
+              key: ValueKey(detailLease),
               threadId: threadId,
               lease: detailLease,
               phase: work,
@@ -151,7 +153,7 @@ class LiveStatusBar extends ConsumerWidget {
 }
 
 /// 实时开放工作组的租约与成员分页桥接壳：自身不绘制任何业务外观，只向共享
-/// [CompletionRunView] + [WorkGroupMemberList] 注入 [TimelineExpansionIntent] 与实时增量原子。
+/// [CompletionRunView] + [WorkGroupMemberList] 注入 [TimelineExpansionIntent]。
 class _LiveWorkGroupHost extends StatefulWidget {
   const _LiveWorkGroupHost({
     required this.threadId,
@@ -182,13 +184,9 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
   final TimelineExpansionIntent _intent = TimelineExpansionIntent();
   final Object _visibility = Object();
   bool _expanded = false;
+  Widget? _memberList;
 
-  WorkDisplayBlock? get _workBody => widget.phase.block.body is WorkDisplayBlock
-      ? widget.phase.block.body as WorkDisplayBlock
-      : null;
-
-  bool get _hasBoundBlock =>
-      widget.phase.block.id != 'live-work:${widget.threadId}';
+  WorkDisplayBlock get _workBody => widget.phase.block.body as WorkDisplayBlock;
 
   void _updateIntentCurrent() {
     _intent.current = TimelineDisplayUnit(
@@ -197,30 +195,48 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
     );
   }
 
-  void _ensureMembers() {
-    final workBody = _workBody;
-    if (!_expanded ||
-        !_hasBoundBlock ||
-        workBody == null ||
-        _intent.isRetired) {
-      return;
-    }
-    _intent.members ??= DisplayMemberController(
-      reference: workBody.members,
+  void _updateMembers() {
+    if (!_expanded || _intent.isRetired) return;
+    final reference = _workBody.members;
+    final controller = _intent.members ??= DisplayMemberController(
+      reference: reference,
       groupClosed: false,
       demand: const ReadDemand(maxItems: 12, maxBytes: 32 * 1024),
-      open: (reference, demand, _) => widget.lease.openLiveWorkMembers(
-        reference: reference,
-        demand: demand,
+      readHistory: widget.phase.id != 'live-work:${widget.threadId}',
+      open: _intent.openDisplayMembers!,
+    );
+    controller.rebase(reference, groupClosed: false);
+    _updateCurrentMembers();
+
+    // The header and connection attention can update without rebuilding the
+    // member subtree. Its controller notifies the list or the changed row.
+    _memberList ??= TimelineGroupBodyIntent(
+      intent: _intent,
+      child: WorkGroupMemberList(
+        controller: controller,
+        showLoadingIndicator: false,
+        blockReference: null,
+        executionPresent: true,
+        threadId: widget.threadId,
+        currentReader: widget.lease.current,
+        retirement: _intent.retirement,
+        isActive: () => _expanded && widget.isActive(),
+        images: widget.lease.imageResources,
+        readAttachment: (id) => widget.readAttachment(id),
+        monotonicMicros: () => widget.monotonicMicros(),
+        onCurrentContentLayout: (id, time) =>
+            widget.onCurrentContentLayout(id, time),
+        onCurrentContentUnmounted: (id) => widget.onCurrentContentUnmounted(id),
       ),
     );
   }
 
-  void _closeMembers() {
-    final previous = _intent.members;
-    _intent.members = null;
-    previous?.retire();
-    if (previous != null) unawaited(previous.close());
+  void _updateCurrentMembers() {
+    final current = widget.lease.live.value;
+    _intent.members?.updateLive(
+      atoms: LiveStatusMachine.workMembers(current),
+      current: current,
+    );
   }
 
   @override
@@ -236,32 +252,12 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
   void didUpdateWidget(covariant _LiveWorkGroupHost oldWidget) {
     super.didUpdateWidget(oldWidget);
     _updateIntentCurrent();
-    if (!_expanded) return;
-    final oldWorkBody = oldWidget.phase.block.body is WorkDisplayBlock
-        ? oldWidget.phase.block.body as WorkDisplayBlock
-        : null;
-    final newWorkBody = _workBody;
-    if (!_hasBoundBlock || newWorkBody == null) {
-      _closeMembers();
-      return;
-    }
-    if (_intent.members == null) {
-      _ensureMembers();
-    } else if (oldWorkBody?.members != newWorkBody.members ||
-        !_sameLiveAtomRefs(
-          oldWidget.phase.liveWorkAtoms,
-          widget.phase.liveWorkAtoms,
-        )) {
-      _intent.members!.rebase(
-        newWorkBody.members,
-        groupClosed: false,
-        force: oldWorkBody?.members == newWorkBody.members,
-      );
-    }
+    _updateMembers();
   }
 
   @override
   void dispose() {
+    if (_expanded) widget.lease.live.removeListener(_updateCurrentMembers);
     _intent.setBodyVisible(_visibility, false);
     _intent.retire();
     super.dispose();
@@ -274,7 +270,11 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
       _intent.expanded = expanded;
       _intent.setBodyVisible(_visibility, expanded);
       if (expanded) {
-        _ensureMembers();
+        widget.lease.live.addListener(_updateCurrentMembers);
+        _updateMembers();
+      } else {
+        widget.lease.live.removeListener(_updateCurrentMembers);
+        _memberList = null;
       }
     });
   }
@@ -290,50 +290,6 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
     thinkingSummary: widget.phase.thinkingSummary,
     initiallyExpanded: _expanded,
     onExpandedChanged: _onExpandedChanged,
-    childBuilder: (_) {
-      if (_intent.isRetired) return const SizedBox.shrink();
-      final controller = _intent.members;
-      return TimelineGroupBodyIntent(
-        intent: _intent,
-        child: WorkGroupMemberList(
-          controller: controller,
-          showLoadingIndicator: false,
-          blockReference: controller?.reference,
-          executionPresent: widget.phase.executionPresent,
-          threadId: widget.threadId,
-          currentReader: widget.lease.current,
-          retirement: _intent.retirement,
-          isActive: () => _expanded && widget.isActive(),
-          images: widget.lease.imageResources,
-          readAttachment: widget.readAttachment,
-          monotonicMicros: widget.monotonicMicros,
-          onCurrentContentLayout: widget.onCurrentContentLayout,
-          onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
-          extraLiveAtoms: widget.phase.liveWorkAtoms,
-        ),
-      );
-    },
+    childBuilder: (_) => _memberList ?? const SizedBox.shrink(),
   );
-}
-
-bool _sameLiveAtomRefs(List<CurrentAtom> a, List<CurrentAtom> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    final x = a[i];
-    final y = b[i];
-    if (x.id != y.id ||
-        x.kind != y.kind ||
-        x.lifecycle.runtimeType != y.lifecycle.runtimeType ||
-        x.tool?.callId != y.tool?.callId ||
-        x.contents.length != y.contents.length) {
-      return false;
-    }
-    for (var j = 0; j < x.contents.length; j++) {
-      if (x.contents[j].role != y.contents[j].role ||
-          x.contents[j].reference != y.contents[j].reference) {
-        return false;
-      }
-    }
-  }
-  return true;
 }

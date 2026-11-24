@@ -36,6 +36,44 @@ Widget _host(
 );
 
 void main() {
+  testWidgets('reconnecting preserves the status row across retries', (
+    tester,
+  ) async {
+    LiveStatusGateState reconnecting(String detail, {bool blocking = false}) =>
+        LiveStatusMachine.project(
+          threadId: 'thread-1',
+          inputs: LiveStatusInputs(
+            connectionStatus: LiveConnectionStatus.reconnecting,
+            connectionDetail: detail,
+            storage: blocking
+                ? const ThreadStorageStateView(
+                    execution: ThreadStorageExecution.paused,
+                  )
+                : null,
+          ),
+        ).gate;
+    Future<void> show(LiveStatusGateState gate) =>
+        tester.pumpWidget(_host(LiveStatusSurfaceView(gate: gate)));
+
+    await show(reconnecting('first failure'));
+    final label = find.text('正在重连实时同步');
+    final row = find.ancestor(
+      of: label,
+      matching: find.byType(TimelineActivityRow),
+    );
+    final element = tester.element(row);
+    expect(tester.widget<TimelineActivityRow>(row).tooltip, 'first failure');
+
+    await show(reconnecting('second failure', blocking: true));
+    expect(label, findsOneWidget);
+    expect(tester.element(row), same(element));
+    expect(tester.widget<TimelineActivityRow>(row).tooltip, 'second failure');
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await show(const LiveStatusIdle());
+    expect(label, findsNothing);
+  });
+
   group('LiveStatusSurfaceView', () {
     testWidgets(
       'stopping renders neutral spinner and static icon under reduced motion',

@@ -217,7 +217,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
 
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required bool groupClosed,
     required ReadDemand demand,
   }) async {
     final scope = _historyQueries;
@@ -227,31 +226,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     return HistoryWorkRangeMembers.open(
       scope,
       reference: reference,
-      groupClosed: true,
       demand: demand,
-      currentAtoms: () => const <CurrentAtom>[],
-      currentOwnerId: () => null,
-    );
-  }
-
-  Future<DisplayMembers> openLiveWorkMembers({
-    required DisplayBlockRef reference,
-    required ReadDemand demand,
-  }) async {
-    final scope = _historyQueries;
-    if (scope == null || _retired) {
-      throw const StaleConversationScope();
-    }
-    return HistoryWorkRangeMembers.open(
-      scope,
-      reference: reference,
-      groupClosed: false,
-      demand: demand,
-      currentAtoms: () {
-        final direct = _latestCurrentProjection?.atoms ?? const <CurrentAtom>[];
-        return direct.isNotEmpty ? direct : _loadedCurrentAtoms;
-      },
-      currentOwnerId: () => _latestCurrentRevision?.ownerId,
     );
   }
 
@@ -260,32 +235,14 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       : _groupDisplays.where((display) => display.isCurrent);
 
   void bindLiveWorkIntent(TimelineExpansionIntent intent) =>
-      _bindExpansionIntent(
-        intent,
-        requireLiveMode: false,
-        openMembers: (reference, demand, _) =>
-            openLiveWorkMembers(reference: reference, demand: demand),
-      );
+      _bindExpansionIntent(intent, requireLiveMode: false);
 
-  void _bindUnit(TimelineDisplayUnit unit) => _bindExpansionIntent(
-    unit.expansion,
-    requireLiveMode: true,
-    openMembers: (reference, demand, groupClosed) => openDisplayMembers(
-      reference: reference,
-      groupClosed: groupClosed,
-      demand: demand,
-    ),
-  );
+  void _bindUnit(TimelineDisplayUnit unit) =>
+      _bindExpansionIntent(unit.expansion, requireLiveMode: true);
 
   void _bindExpansionIntent(
     TimelineExpansionIntent intent, {
     required bool requireLiveMode,
-    required Future<DisplayMembers> Function(
-      DisplayBlockRef reference,
-      ReadDemand demand,
-      bool groupClosed,
-    )
-    openMembers,
   }) {
     // The same disclosure capability crosses live/history parents. Its queries
     // and callbacks are installed once, independent of header replacements.
@@ -355,11 +312,11 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.openDisplayMembers = (reference, demand, groupClosed) {
+    intent.openDisplayMembers = (reference, demand, _) {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
-      return openMembers(reference, demand, groupClosed);
+      return openDisplayMembers(reference: reference, demand: demand);
     };
   }
 
@@ -2402,42 +2359,22 @@ final class _TimelineRead {
 }
 
 final class HistoryWorkRangeMembers implements DisplayMembers {
-  HistoryWorkRangeMembers._(
-    this.scope,
-    this.reference,
-    this.groupClosed,
-    this.demand,
-    this.currentAtoms,
-    this.currentOwnerId,
-  );
+  HistoryWorkRangeMembers._(this.scope, this.reference, this.demand);
 
   static Future<HistoryWorkRangeMembers> open(
     HistoryReadScope scope, {
     required DisplayBlockRef reference,
-    required bool groupClosed,
     required ReadDemand demand,
-    required List<CurrentAtom> Function() currentAtoms,
-    required String? Function() currentOwnerId,
   }) async {
     if (reference.blockId.isEmpty || !scope.isActive) {
       throw const StaleConversationScope();
     }
-    return HistoryWorkRangeMembers._(
-      scope,
-      reference,
-      groupClosed,
-      demand,
-      currentAtoms,
-      currentOwnerId,
-    );
+    return HistoryWorkRangeMembers._(scope, reference, demand);
   }
 
   final HistoryReadScope scope;
   final DisplayBlockRef reference;
-  final bool groupClosed;
   final ReadDemand demand;
-  final List<CurrentAtom> Function() currentAtoms;
-  final String? Function() currentOwnerId;
   List<DisplayMemberHead>? _folded;
   int _offset = 0;
   bool _done = false;
@@ -2458,10 +2395,6 @@ final class HistoryWorkRangeMembers implements DisplayMembers {
         rangeEvents: rangeEvents,
         backfilledCallEvents: backfilledByCall,
         attemptedCallBackfills: attemptedBackfills,
-        currentAtoms: groupClosed ? const [] : currentAtoms(),
-        currentOwnerId: groupClosed ? null : currentOwnerId(),
-        groupClosed: groupClosed,
-        workRangeRunId: reference.runId,
       );
       if (result.missingCallIds.isNotEmpty) {
         var added = false;
@@ -2479,10 +2412,6 @@ final class HistoryWorkRangeMembers implements DisplayMembers {
             rangeEvents: rangeEvents,
             backfilledCallEvents: backfilledByCall,
             attemptedCallBackfills: attemptedBackfills,
-            currentAtoms: groupClosed ? const [] : currentAtoms(),
-            currentOwnerId: groupClosed ? null : currentOwnerId(),
-            groupClosed: groupClosed,
-            workRangeRunId: reference.runId,
           );
         }
       }

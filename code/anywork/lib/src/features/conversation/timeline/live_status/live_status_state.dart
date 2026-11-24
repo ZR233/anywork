@@ -67,17 +67,15 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
   LiveWorkPhase({
     required this.id,
     required this.block,
-    List<CurrentAtom> liveWorkAtoms = const [],
     required this.mode,
     required this.timing,
     this.activity,
     this.thinkingSummary,
     required this.executionPresent,
-  }) : liveWorkAtoms = List.unmodifiable(liveWorkAtoms);
+  });
 
   final String id;
   final DisplayBlock block;
-  final List<CurrentAtom> liveWorkAtoms;
   final LiveWorkGroupMode mode;
   final WorkTiming timing;
   final ConversationActivityView? activity;
@@ -90,7 +88,6 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
       other is LiveWorkPhase &&
           id == other.id &&
           sameDisplayBlock(block, other.block) &&
-          listEquals(liveWorkAtoms, other.liveWorkAtoms) &&
           mode == other.mode &&
           timing == other.timing &&
           activity == other.activity &&
@@ -102,7 +99,6 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
     id,
     block.id,
     block.blockOrder,
-    Object.hashAll(liveWorkAtoms),
     mode,
     timing,
     activity,

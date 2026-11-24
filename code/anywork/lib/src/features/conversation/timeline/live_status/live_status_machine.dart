@@ -50,11 +50,7 @@ abstract final class LiveStatusMachine {
     final liveAtoms = executionPresent
         ? current?.currentAtoms ?? const <CurrentAtom>[]
         : const <CurrentAtom>[];
-    final liveWorkAtoms = <CurrentAtom>[
-      for (final atom in liveAtoms)
-        if (atom.lifecycle is ActiveChatAtom && _isLiveWorkKind(atom.kind))
-          atom,
-    ];
+    final liveWorkAtoms = workMembers(current);
     final liveResponseAtoms = <CurrentAtom>[
       for (final atom in liveAtoms)
         if (atom.lifecycle is ActiveChatAtom &&
@@ -173,6 +169,15 @@ abstract final class LiveStatusMachine {
     );
   }
 
+  static List<CurrentAtom> workMembers(CurrentAtomSnapshot? current) =>
+      current == null || !current.executionPresent
+      ? const []
+      : [
+          for (final atom in current.currentAtoms)
+            if (atom.lifecycle is ActiveChatAtom && _isLiveWorkKind(atom.kind))
+              atom,
+        ];
+
   static bool _isLiveWorkKind(ChatAtomKind kind) => switch (kind) {
     ChatAtomKind.reasoning ||
     ChatAtomKind.toolCall ||
@@ -274,7 +279,6 @@ abstract final class LiveStatusMachine {
     return LiveWorkPhase(
       id: id,
       block: effectiveBlock,
-      liveWorkAtoms: liveWorkAtoms,
       mode: mode,
       timing: timing,
       activity: headerActivity,

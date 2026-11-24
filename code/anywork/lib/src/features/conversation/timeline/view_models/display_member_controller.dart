@@ -3,8 +3,9 @@ import 'dart:async';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart';
 
-import 'conversation_current_owner.dart';
+import '../state/timeline_current_projection.dart';
 import '../state/timeline_display_unit.dart';
+import 'conversation_current_owner.dart';
 
 /// One display-lease-owned complete member result, stable across live/history.
 /// ReadDemand limits each transport batch, not the accepted group size.
@@ -14,22 +15,29 @@ final class DisplayMemberController extends ChangeNotifier {
     required bool groupClosed,
     required this.demand,
     required this.open,
-  }) : _groupClosed = groupClosed {
+    bool readHistory = true,
+  }) : _groupClosed = groupClosed,
+       loading = readHistory {
     _requiresSealed = groupClosed;
-    _restart();
+    if (readHistory) _restart();
   }
   DisplayBlockRef reference;
   bool _groupClosed;
   final ReadDemand demand;
   final Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand, bool) open;
   List<DisplayMemberHead> _entries = const [];
+  List<DisplayMemberHead> _history = const [];
+  List<CurrentAtom> _liveAtoms = const [];
+  Map<String, CurrentAtom> _currentById = const {};
+  Map<String, CurrentAtom> _currentByCall = const {};
+  CurrentAtomSnapshot? _current;
   List<DisplayMemberHead> get entries => _entries;
   bool sealed = false;
   bool hasSnapshot = false;
   Object? _error;
   Object? cleanupError;
   Object? get error => cleanupError ?? _error;
-  bool loading = true;
+  bool loading;
   bool _retired = false;
   bool _requiresSealed = false;
   Object _qualification = Object();
@@ -44,29 +52,52 @@ final class DisplayMemberController extends ChangeNotifier {
   bool get awaitingSealed => _requiresSealed && !sealed;
   ValueListenable<DisplayMemberHead?> member(String key) =>
       _rows.putIfAbsent(key, () => ValueNotifier(null));
-  void rebase(
-    DisplayBlockRef next, {
-    required bool groupClosed,
-    bool force = false,
-  }) {
-    if (_retired ||
-        !force && reference == next && _groupClosed == groupClosed) {
+  void rebase(DisplayBlockRef next, {required bool groupClosed}) {
+    if (_retired || reference == next && _groupClosed == groupClosed) {
       return;
     }
+    final sameOpenGroup =
+        !_groupClosed && !groupClosed && reference.blockId == next.blockId;
     reference = next;
     _groupClosed = groupClosed;
     _requiresSealed = groupClosed;
     hasSnapshot = false;
     sealed = false;
-    final expanded = {
-      for (final entry in _disclosures.entries) entry.key: entry.value.expanded,
-    };
-    _retireDisclosures();
-    for (final entry in expanded.entries) {
-      _disclosures[entry.key] = TimelineMemberDisclosure()
-        ..expanded = entry.value;
+    if (!sameOpenGroup) {
+      final expanded = {
+        for (final entry in _disclosures.entries)
+          entry.key: entry.value.expanded,
+      };
+      _retireDisclosures();
+      for (final entry in expanded.entries) {
+        _disclosures[entry.key] = TimelineMemberDisclosure()
+          ..expanded = entry.value;
+      }
     }
-    _restart();
+    _restart(notify: !sameOpenGroup);
+  }
+
+  /// Apply Current values to the accepted History cut without reopening it.
+  void updateLive({
+    required List<CurrentAtom> atoms,
+    required CurrentAtomSnapshot? current,
+  }) {
+    if (_retired ||
+        _groupClosed ||
+        identical(current, _current) && listEquals(atoms, _liveAtoms)) {
+      return;
+    }
+    _liveAtoms = atoms;
+    _current = current;
+    _currentById = {
+      for (final atom in current?.currentAtoms ?? const <CurrentAtom>[])
+        if (atom.contents.isNotEmpty) atom.id: atom,
+    };
+    _currentByCall = {
+      for (final atom in _currentById.values)
+        if (atom.tool?.callId case final callId?) callId: atom,
+    };
+    _publishRows(_qualification);
   }
 
   TimelineMemberDisclosure disclosure(String memberKey) =>
@@ -96,14 +127,15 @@ final class DisplayMemberController extends ChangeNotifier {
     }
   }
 
-  void _restart() {
+  void _restart({bool notify = true}) {
     if (_retired) return;
     _qualification = Object();
     final qualification = _qualification;
     _closeHandle();
+    final hadError = _error != null;
     _error = null;
     loading = true;
-    notifyListeners();
+    if (notify || hadError) notifyListeners();
     final pull = _pull(qualification);
     _pulls.add(pull);
     unawaited(pull.whenComplete(() => _pulls.remove(pull)));
@@ -171,36 +203,14 @@ final class DisplayMemberController extends ChangeNotifier {
         pending.sort(
           (left, right) => left.memberOrder.compareTo(right.memberOrder),
         );
-        final next = List<DisplayMemberHead>.unmodifiable(pending);
-        final structural =
-            loading ||
-            _error != null ||
-            sealed != closedGroup ||
-            !listEquals(
-              entries.map((e) => e.memberKey).toList(),
-              next.map((e) => e.memberKey).toList(),
-            );
-        _entries = next;
+        _history = pending;
         hasSnapshot = true;
+        final statusChanged = closedGroup && (loading || !sealed);
         sealed = closedGroup;
-        _retireDisclosures(keep: keys);
         loading = false;
         _error = null;
-        // Publish the complete accepted cut before any synchronous callbacks.
-        for (final entry in next) {
-          if (!_eligible(qualification)) return;
-          final row = _rows.putIfAbsent(
-            entry.memberKey,
-            () => ValueNotifier(null),
-          );
-          if (!_sameMember(row.value, entry)) row.value = entry;
-        }
-        if (!_eligible(qualification)) return;
-        for (final key in _rows.keys.toList()) {
-          if (!keys.contains(key)) _rows[key]!.value = null;
-        }
         _closeHandle();
-        if (structural) notifyListeners();
+        _publishRows(qualification, statusChanged: statusChanged);
         return;
       }
     } catch (failure) {
@@ -210,6 +220,76 @@ final class DisplayMemberController extends ChangeNotifier {
         _closeHandle();
         notifyListeners();
       }
+    }
+  }
+
+  void _publishRows(Object qualification, {bool statusChanged = false}) {
+    final ownerId = _current?.ownerId;
+    final next = <DisplayMemberHead>[
+      for (final entry in _history)
+        if (_groupClosed || ownerId == null || _currentById.isEmpty)
+          entry
+        else
+          DisplayMemberHead(
+            memberKey: entry.memberKey,
+            memberOrder: entry.memberOrder,
+            record: TimelineCurrentProjection.overlayRecord(
+              entry.record,
+              current: _currentById,
+              currentByCall: _currentByCall,
+              ownerId: ownerId,
+              fallbackRunId: reference.runId,
+            ),
+          ),
+    ];
+    if (!_groupClosed && _liveAtoms.isNotEmpty) {
+      final representedIds = {for (final entry in next) entry.record.atom.id};
+      final representedCalls = {
+        for (final entry in next)
+          entry.record.callId ?? entry.record.atom.tool?.callId,
+      };
+      final representedKeys = {for (final entry in next) entry.memberKey};
+      for (final atom in _liveAtoms) {
+        final callId = atom.tool?.callId;
+        final key = callId == null ? 'entity:${atom.id}' : 'call:$callId';
+        if (representedIds.contains(atom.id) ||
+            (callId != null && representedCalls.contains(callId)) ||
+            !representedKeys.add(key)) {
+          continue;
+        }
+        next.add(
+          DisplayMemberHead(
+            memberKey: key,
+            memberOrder: next.isEmpty ? 0 : next.last.memberOrder + 1,
+            record: DisplayRecord(
+              atom: TimelineCurrentProjection.toChatAtom(atom),
+              contentSource: const CurrentAtomSource(),
+              currentContents: atom.contents,
+            ),
+          ),
+        );
+      }
+    }
+
+    final structural = !listEquals(
+      [for (final entry in entries) entry.memberKey],
+      [for (final entry in next) entry.memberKey],
+    );
+    final keys = {for (final entry in next) entry.memberKey};
+    // Publish the complete accepted rows before any synchronous callbacks.
+    _entries = List.unmodifiable(next);
+    _retireDisclosures(keep: keys);
+    for (final entry in next) {
+      if (!_eligible(qualification)) return;
+      final row = _rows.putIfAbsent(entry.memberKey, () => ValueNotifier(null));
+      if (!_sameMember(row.value, entry)) row.value = entry;
+    }
+    for (final key in _rows.keys.toList()) {
+      if (!_eligible(qualification)) return;
+      if (!keys.contains(key)) _rows[key]!.value = null;
+    }
+    if (_eligible(qualification) && (structural || statusChanged)) {
+      notifyListeners();
     }
   }
 
@@ -247,6 +327,11 @@ final class DisplayMemberController extends ChangeNotifier {
     _qualification = Object();
     _closeHandle();
     _entries = const [];
+    _history = const [];
+    _liveAtoms = const [];
+    _currentById = const {};
+    _currentByCall = const {};
+    _current = null;
     hasSnapshot = false;
     sealed = false;
     for (final row in _rows.values) {
@@ -271,6 +356,10 @@ bool _sameMember(DisplayMemberHead? a, DisplayMemberHead b) =>
     a.memberOrder == b.memberOrder &&
     _recordValue(a.record) == _recordValue(b.record) &&
     _samePayload(a.record.atom.payload, b.record.atom.payload) &&
+    listEquals(
+      a.record.currentContents.map((c) => (c.role, c.reference)).toList(),
+      b.record.currentContents.map((c) => (c.role, c.reference)).toList(),
+    ) &&
     listEquals(
       a.record.atom.contents.map((c) => (c.role, c.reference)).toList(),
       b.record.atom.contents.map((c) => (c.role, c.reference)).toList(),
@@ -324,11 +413,6 @@ Object _recordValue(DisplayRecord record) {
     record.callId,
     record.predecodedPresentation?.raw,
     record.predecodedPresentation?.compatibility,
-    Object.hashAll(
-      record.currentContents.map(
-        (content) => (content.role, content.reference),
-      ),
-    ),
     atom.source,
     _sourceState(atom.sourceState),
     atom.sourceOrder,

@@ -7,6 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -721,6 +722,17 @@ void main() {
             .evaluate()
             .isNotEmpty,
         'open live tool folded inside LiveStatusBar',
+      );
+      final liveTool = find.descendant(
+        of: find.byType(LiveStatusBar),
+        matching: find.byType(TimelineToolItemView),
+      );
+      expect(
+        find.descendant(
+          of: liveTool,
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsOneWidget,
       );
 
       // Main Timeline must remain completely untouched (only immutable input-1).

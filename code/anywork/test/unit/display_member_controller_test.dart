@@ -165,9 +165,11 @@ void main() {
       old.reply.complete(_batch([_head(1), _head(2)]));
       await _drain();
       var first = 0, last = 0;
+      var listUpdates = 0;
+      controller.addListener(() => listUpdates++);
       controller.member('row-1').addListener(() => first++);
       controller.member('row-2').addListener(() => last++);
-      controller.disclosure('row-1').expanded = true;
+      final disclosure = controller.disclosure('row-1')..expanded = true;
       controller.rebase(_nextRef, groupClosed: false);
       await next.pulling.future;
       next.reply.complete(
@@ -175,10 +177,94 @@ void main() {
       );
       await _drain();
       expect((first, last), (1, 0));
-      expect(controller.disclosure('row-1').expanded, isTrue);
+      expect(listUpdates, 0);
+      expect(controller.disclosure('row-1'), same(disclosure));
       expect(controller.error, isNull);
     },
   );
+
+  test('Current updates one open member without rereading History', () async {
+    final handle = _Handle();
+    var reads = 0;
+    final controller = DisplayMemberController(
+      reference: _ref,
+      groupClosed: false,
+      demand: _demand,
+      open: (_, _, _) async {
+        reads++;
+        return handle;
+      },
+    );
+    addTearDown(controller.close);
+    await handle.pulling.future;
+    handle.reply.complete(_batch([_head(1)]));
+    await handle.closed.future;
+
+    CurrentAtom tool(String generation) => CurrentAtom(
+      id: 'atom-tool',
+      source: const ForegroundTurnChatSource(turnId: 'turn'),
+      sourceOrder: 10,
+      kind: ChatAtomKind.toolCall,
+      delivery: ChatDeliveryKind.foreground,
+      lifecycle: const ActiveChatAtom(
+        started: null,
+        status: ChatActiveStatus.running,
+      ),
+      tool: const ChatToolIdentity(callId: 'c1', name: 'read_file'),
+      contents: [
+        CurrentAtomContent(
+          role: ChatContentRole.toolOutput,
+          reference: CurrentContentRef(
+            ownerId: 'run',
+            domain: 'tool',
+            entityId: 'atom-tool',
+            contentKey: 'tool.result',
+            generation: generation,
+          ),
+        ),
+      ],
+    );
+    void publish(int revision, List<CurrentAtom> atoms) =>
+        controller.updateLive(
+          atoms: atoms,
+          current: CurrentAtomSnapshot(
+            revision: revision,
+            ownerId: 'run',
+            currentAtoms: atoms,
+          ),
+        );
+
+    final historyRow = controller.member('row-1');
+    final acceptedHistory = historyRow.value;
+    final liveRow = controller.member('call:c1');
+    var listUpdates = 0, liveUpdates = 0, historyUpdates = 0;
+    controller.addListener(() => listUpdates++);
+    liveRow.addListener(() => liveUpdates++);
+    historyRow.addListener(() => historyUpdates++);
+    publish(1, [tool('1')]);
+    final disclosure = controller.disclosure('call:c1')..expanded = true;
+    expect(controller.entries.map((entry) => entry.memberKey), [
+      'row-1',
+      'call:c1',
+    ]);
+
+    publish(2, [tool('2')]);
+    publish(3, [tool('2')]);
+    expect(reads, 1);
+    expect((listUpdates, liveUpdates, historyUpdates), (1, 2, 0));
+    expect(historyRow.value, same(acceptedHistory));
+    expect(
+      liveRow.value!.record.currentContents.single.reference.generation,
+      '2',
+    );
+    expect(controller.disclosure('call:c1'), same(disclosure));
+
+    publish(4, []);
+    expect(controller.entries.single.memberKey, 'row-1');
+    expect(liveRow.value, isNull);
+    expect(listUpdates, 2);
+    expect(disclosure.retired, isTrue);
+  });
 
   for (final fault in ['cut', 'offset', 'key', 'order', 'empty']) {
     test(

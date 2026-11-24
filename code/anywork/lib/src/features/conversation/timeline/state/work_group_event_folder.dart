@@ -1,7 +1,6 @@
 import 'package:anywork_client/conversation.dart';
 
 import 'chat_item_presentation.dart';
-import 'timeline_current_projection.dart';
 import 'timeline_display_models.dart';
 import 'timeline_history_projection.dart';
 
@@ -22,10 +21,6 @@ abstract final class WorkGroupEventFolder {
     required List<HistoryEventRecord> rangeEvents,
     Map<String, List<HistoryEventRecord>> backfilledCallEvents = const {},
     Set<String> attemptedCallBackfills = const {},
-    List<CurrentAtom> currentAtoms = const [],
-    String? currentOwnerId,
-    bool groupClosed = true,
-    String? workRangeRunId,
   }) {
     final buckets = <String, _FoldBucket>{};
     for (final event in rangeEvents) {
@@ -51,13 +46,6 @@ abstract final class WorkGroupEventFolder {
       bucket.inRange.add(event);
     }
 
-    final currentById = !groupClosed && currentOwnerId != null
-        ? {
-            for (final atom in currentAtoms)
-              if (atom.contents.isNotEmpty) atom.id: atom,
-          }
-        : const <String, CurrentAtom>{};
-
     final missingCallIds = <String>[];
     final entries = <DisplayMemberHead>[];
     for (final bucket in buckets.values) {
@@ -75,20 +63,11 @@ abstract final class WorkGroupEventFolder {
         }
       }
 
-      var record = _mergeEvents(combined, memberKey: bucket.key);
-      if (!groupClosed && currentOwnerId != null) {
-        record = TimelineCurrentProjection.overlayRecord(
-          record,
-          current: currentById,
-          ownerId: currentOwnerId,
-          fallbackRunId: workRangeRunId,
-        );
-      }
       entries.add(
         DisplayMemberHead(
           memberKey: bucket.key,
           memberOrder: bucket.firstSeqInRange,
-          record: record,
+          record: _mergeEvents(combined, memberKey: bucket.key),
         ),
       );
     }

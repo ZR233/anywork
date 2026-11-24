@@ -458,7 +458,7 @@ final class LiveStatusHeaderSpec {
           isIssue: true,
         ),
         LiveConnectionStatus.reconnecting => LiveStatusHeaderSpec(
-          label: detail ?? l10n.liveStatusConnectionReconnecting,
+          label: l10n.liveStatusConnectionReconnecting,
           icon: Icons.sync_outlined,
           indicatorStyle: TimelineActivityIndicatorStyle.circularProgress,
           active: !reducedMotion,

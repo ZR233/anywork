@@ -123,7 +123,9 @@ class LiveStatusSurfaceView extends StatelessWidget {
 
     for (var i = 0; i < presenting.attentions.length; i++) {
       final attention = presenting.attentions[i];
-      final key = ValueKey(('live-attention', i));
+      final key = attention is LiveConnectionAttention
+          ? const ValueKey(LiveConnectionAttention)
+          : ValueKey(('live-attention', i));
       barChildren.add(
         Flexible(
           key: key,

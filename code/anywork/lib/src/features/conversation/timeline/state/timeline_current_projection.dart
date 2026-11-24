@@ -10,25 +10,18 @@ abstract final class TimelineCurrentProjection {
   static DisplayRecord overlayRecord(
     DisplayRecord record, {
     required Map<String, CurrentAtom> current,
+    required Map<String, CurrentAtom> currentByCall,
     required String ownerId,
     String? fallbackRunId,
   }) {
     final history = record.immutableRecord ?? record;
-    if (history.isTerminalHistory || history.isFrozenHistory) {
+    if (history.isTerminalHistory ||
+        history.isFrozenHistory ||
+        (history.runId ?? fallbackRunId) != ownerId) {
       return history;
     }
-    final atom =
-        current[history.atom.id] ??
-        (history.callId == null
-            ? null
-            : current.values
-                  .where(
-                    (candidate) => candidate.tool?.callId == history.callId,
-                  )
-                  .firstOrNull);
-    if (atom == null || (history.runId ?? fallbackRunId) != ownerId) {
-      return history;
-    }
+    final atom = current[history.atom.id] ?? currentByCall[history.callId];
+    if (atom == null) return history;
     return DisplayRecord(
       atom: toChatAtom(atom),
       contentSource: const CurrentAtomSource(),
