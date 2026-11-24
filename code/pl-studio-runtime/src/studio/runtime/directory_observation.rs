@@ -42,7 +42,8 @@ struct MetadataInner {
     thread_id: String,
     #[cfg_attr(not(test), allow(dead_code))]
     cancellation: CancellationToken,
-    next: PullObservation<ThreadMetadataSignal, Option<crate::SessionDirectoryRow>>,
+    // Outer Option is delivery memory: None means unseen, Some(None) is a delivered absence.
+    next: PullObservation<ThreadMetadataSignal, Option<Option<crate::SessionDirectoryRow>>>,
 }
 
 impl StudioRuntime {
