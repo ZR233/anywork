@@ -125,15 +125,6 @@ const WORK_SNAPSHOTS: &str = "m20261113_000001_work_snapshots";
 
 struct Migrator {
     thread_id: String,
-    bot_root: Option<crate::studio::startup::storage_layout::bot_roots::BotRootMove>,
-    // Immutable recovery candidates are shared by the migrator's repeated pending-step queries.
-    // An inline pair also bloats content-only preparation, even when this option is None.
-    execution_identity: Option<
-        std::sync::Arc<(
-            pl_core::thread::ThreadCheckpoint,
-            pl_core::thread::ThreadCheckpoint,
-        )>,
-    >,
 }
 
 /// Frozen migration definitions used to recognize already-applied v24 ledger entries.
@@ -141,8 +132,6 @@ struct Migrator {
 pub(super) fn migrations_for_upgrade(thread_id: &str) -> Vec<Box<dyn MigrationTrait>> {
     Migrator {
         thread_id: thread_id.to_owned(),
-        bot_root: None,
-        execution_identity: None,
     }
     .migrations()
 }
@@ -225,11 +214,9 @@ impl MigratorTraitSelf for Migrator {
             }),
             Box::new(BotRootRelocation {
                 thread_id: self.thread_id.clone(),
-                mapping: self.bot_root.clone(),
             }),
             Box::new(ExecutionIdentity {
                 thread_id: self.thread_id.clone(),
-                candidate: self.execution_identity.clone(),
             }),
         ]
     }
@@ -276,8 +263,6 @@ pub(super) async fn prepare_published17_fixture(
 ) -> Result<()> {
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
-        execution_identity: None,
-        bot_root: None,
     };
     let steps = migrator
         .migrations()
@@ -300,14 +285,42 @@ fn is_lifecycle_migration(name: &str) -> bool {
     )
 }
 
+/// Schema preparation never runs these four. They stay as migration names so an old ledger can
+/// still recognize them; `ReviewReceipt` applies `WorkspaceReceipt` directly.
+fn schema_phase_skips(name: &str) -> bool {
+    matches!(
+        name,
+        PROJECT_KIND | MODEL_ACCESS | BOT_ROOT | EXECUTION_IDENTITY
+    )
+}
+
+fn already_applied_lifecycle(name: &str, thread_id: &str) -> Result<(), DbErr> {
+    Err(DbErr::Migration(format!(
+        "expected {name} for {thread_id} to already be applied; schema preparation does not run this lifecycle step"
+    )))
+}
+
+/// Records the four unreachable lifecycle names without running them.
+///
+/// Schema preparation stops before these names. Test phases that still open the lifecycle boundary
+/// must not invoke their `up` methods; `WorkspaceReceipt` remains a real step.
+#[cfg(test)]
+pub(super) async fn mark_schema_phase_skips_applied(db: &impl ConnectionTrait) -> Result<()> {
+    for name in [PROJECT_KIND, MODEL_ACCESS, BOT_ROOT, EXECUTION_IDENTITY] {
+        db.execute_unprepared(&format!(
+            "INSERT INTO seaql_migrations(version,applied_at) SELECT '{name}',1 WHERE NOT EXISTS (SELECT 1 FROM seaql_migrations WHERE version='{name}')"
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn needs_content_preparation(
     db: &impl ConnectionTrait,
     thread_id: &str,
 ) -> Result<bool> {
     Ok(Migrator {
         thread_id: thread_id.to_owned(),
-        execution_identity: None,
-        bot_root: None,
     }
     .get_pending_migrations_read_only(db)
     .await?
@@ -319,41 +332,35 @@ pub(super) async fn prepare(
     db: &DatabaseConnection,
     thread_id: &str,
     phase: Preparation,
-    execution_identity: Option<
-        std::sync::Arc<(
-            pl_core::thread::ThreadCheckpoint,
-            pl_core::thread::ThreadCheckpoint,
-        )>,
-    >,
 ) -> Result<()> {
-    prepare_with_bot_root(db, thread_id, phase, execution_identity, None).await
+    prepare_with_bot_root(db, thread_id, phase).await
 }
 
 pub(super) async fn prepare_with_bot_root(
     db: &DatabaseConnection,
     thread_id: &str,
     phase: Preparation,
-    execution_identity: Option<
-        std::sync::Arc<(
-            pl_core::thread::ThreadCheckpoint,
-            pl_core::thread::ThreadCheckpoint,
-        )>,
-    >,
-    bot_root: Option<crate::studio::startup::storage_layout::bot_roots::BotRootMove>,
 ) -> Result<()> {
     preflight(db, thread_id)
         .await
         .map_err(|error| crate::studio::startup::migration_error("history", "preflight", error))?;
+    #[cfg(test)]
+    if matches!(
+        phase,
+        Preparation::ModelAccess | Preparation::ExecutionIdentity
+    ) {
+        mark_schema_phase_skips_applied(db).await?;
+    }
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
-        execution_identity,
-        bot_root,
     };
     let pending = migrator.get_pending_migrations_read_only(db).await?;
     let steps = match phase {
         Preparation::Schema => pending
             .iter()
-            .take_while(|step| !is_lifecycle_migration(step.name()))
+            .take_while(|step| {
+                !schema_phase_skips(step.name()) && !is_lifecycle_migration(step.name())
+            })
             .count(),
         #[cfg(test)]
         Preparation::ModelAccess => pending
@@ -393,7 +400,7 @@ pub(super) async fn prepare_with_bot_root(
 }
 
 pub(crate) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<(String, i64)> {
-    prepare(db, thread_id, Preparation::Schema, None).await?;
+    prepare(db, thread_id, Preparation::Schema).await?;
     // Publish only the actual identity/format verified after the content migrations, never an
     // assumed current version derived from a successful (possibly zero-step) preparation.
     validate_existing(db, thread_id).await
@@ -432,8 +439,6 @@ pub(crate) async fn validate_layout_source(db: &DatabaseConnection, thread_id: &
 async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     let migrator = Migrator {
         thread_id: thread_id.to_owned(),
-        execution_identity: None,
-        bot_root: None,
     };
     let meta = db
         .query_one_raw(statement(
@@ -1401,8 +1406,6 @@ impl MigrationTrait for AtomicTimeline {
         let source_version = version(db).await?;
         let metering_applied = Migrator {
             thread_id: self.thread_id.clone(),
-            execution_identity: None,
-            bot_root: None,
         }
         .get_applied_migrations_read_only(db)
         .await?
@@ -1443,8 +1446,6 @@ impl MigrationTrait for CombinedContent {
         let db = manager.get_connection();
         let migrator = Migrator {
             thread_id: self.thread_id.clone(),
-            execution_identity: None,
-            bot_root: None,
         };
         if version(db).await? != 10
             || migrator
@@ -1786,18 +1787,8 @@ impl MigrationTrait for ProjectKind {
     }
 
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        let Some(original) = checkpoint::read(db, &self.thread_id)
-            .await
-            .map_err(conversion)?
-        else {
-            return Ok(());
-        };
-        let mut migrated = original.clone();
-        crate::studio::producer_migration::project_kind(&mut migrated).map_err(conversion)?;
-        checkpoint::write_representation(db, &original, &migrated)
-            .await
-            .map_err(conversion)
+        let _ = manager;
+        already_applied_lifecycle(PROJECT_KIND, &self.thread_id)
     }
 }
 
@@ -1815,20 +1806,8 @@ impl MigrationTrait for ModelAccess {
         Some(true)
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        let Some(original) = checkpoint::read(db, &self.thread_id)
-            .await
-            .map_err(conversion)?
-        else {
-            return Ok(());
-        };
-        let mut migrated = original.clone();
-        // Absence of explicit close remains absence; core Closed never invents Studio intent.
-        crate::studio::agent_close::is_explicitly_closed(&migrated.state).map_err(conversion)?;
-        crate::studio::delegation::migrate(&mut migrated.state).map_err(conversion)?;
-        checkpoint::write_representation(db, &original, &migrated)
-            .await
-            .map_err(conversion)
+        let _ = manager;
+        already_applied_lifecycle(MODEL_ACCESS, &self.thread_id)
     }
 }
 
@@ -1887,12 +1866,6 @@ impl MigrationTrait for WorkspaceReceipt {
 
 struct ExecutionIdentity {
     thread_id: String,
-    candidate: Option<
-        std::sync::Arc<(
-            pl_core::thread::ThreadCheckpoint,
-            pl_core::thread::ThreadCheckpoint,
-        )>,
-    >,
 }
 impl MigrationName for ExecutionIdentity {
     fn name(&self) -> &str {
@@ -1905,30 +1878,13 @@ impl MigrationTrait for ExecutionIdentity {
         Some(true)
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let (original, migrated) = self.candidate.as_deref().ok_or_else(|| {
-            DbErr::Migration("execution identity requires explicit recovery preparation".into())
-        })?;
-        let db = manager.get_connection();
-        let current = checkpoint::read(db, &self.thread_id)
-            .await
-            .map_err(conversion)?
-            .ok_or_else(|| DbErr::Migration("recovery checkpoint is absent".into()))?;
-        if serde_json::to_vec(&current).map_err(|error| DbErr::Migration(error.to_string()))?
-            != serde_json::to_vec(original).map_err(|error| DbErr::Migration(error.to_string()))?
-        {
-            return Err(DbErr::Migration(
-                "checkpoint changed during recovery migration; original data preserved".into(),
-            ));
-        }
-        checkpoint::write_representation(db, original, migrated)
-            .await
-            .map_err(conversion)
+        let _ = manager;
+        already_applied_lifecycle(EXECUTION_IDENTITY, &self.thread_id)
     }
 }
 
 struct BotRootRelocation {
     thread_id: String,
-    mapping: Option<crate::studio::startup::storage_layout::bot_roots::BotRootMove>,
 }
 impl MigrationName for BotRootRelocation {
     fn name(&self) -> &str {
@@ -1941,22 +1897,8 @@ impl MigrationTrait for BotRootRelocation {
         Some(true)
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let Some(mapping) = &self.mapping else {
-            return Ok(());
-        };
-        let db = manager.get_connection();
-        let Some(original) = checkpoint::read(db, &self.thread_id)
-            .await
-            .map_err(conversion)?
-        else {
-            return Ok(());
-        };
-        let mut migrated = original.clone();
-        crate::studio::producer_migration::relocate_bot_checkpoint(&mut migrated, mapping)
-            .map_err(conversion)?;
-        checkpoint::write_representation(db, &original, &migrated)
-            .await
-            .map_err(conversion)
+        let _ = manager;
+        already_applied_lifecycle(BOT_ROOT, &self.thread_id)
     }
 }
 
@@ -1974,8 +1916,6 @@ mod atomic_tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -2004,18 +1944,12 @@ mod atomic_tests {
         }
     }
 
-    struct PublishedV9 {
-        checkpoint: Option<pl_core::thread::ThreadCheckpoint>,
-    }
+    struct PublishedV9;
 
     impl MigratorTraitSelf for PublishedV9 {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: self.checkpoint.as_ref().map(|checkpoint| {
-                    std::sync::Arc::new((checkpoint.clone(), checkpoint.clone()))
-                }),
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -2060,8 +1994,6 @@ mod atomic_tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -2098,7 +2030,7 @@ mod atomic_tests {
 
     async fn v9(path: &Path, cold: bool) -> Result<DatabaseConnection> {
         let db = connect(path, crate::studio::paths::SqliteFileMode::Create).await?;
-        let published = PublishedV9 { checkpoint: None };
+        let published = PublishedV9;
         let content_steps = published
             .migrations()
             .iter()
@@ -2114,25 +2046,9 @@ mod atomic_tests {
                 pl_core::thread::ThreadSnapshot::default(),
             )?;
             write_published_checkpoint(&db, &checkpoint).await?;
-            // Lifecycle preparation may normalize the checkpoint before execution identity recovery.
-            // Supply the actual post-preparation representation as the explicit recovery candidate.
-            let lifecycle_steps = published
-                .migrations()
-                .iter()
-                .position(|migration| migration.name() == EXECUTION_IDENTITY)
-                .context("published execution boundary")?
-                - content_steps;
-            published
-                .up(&db, Some(u32::try_from(lifecycle_steps)?))
-                .await?;
-            let checkpoint = checkpoint::read(&db, THREAD)
-                .await?
-                .context("prepared recovery checkpoint")?;
-            PublishedV9 {
-                checkpoint: Some(*checkpoint),
-            }
-            .up(&db, None)
-            .await?;
+            // The four lifecycle names are ledger placeholders. Only WorkspaceReceipt still runs.
+            mark_schema_phase_skips_applied(&db).await?;
+            published.up(&db, None).await?;
         }
         assert_eq!(version(&db).await?, 9);
         Ok(db)
@@ -2250,7 +2166,7 @@ mod atomic_tests {
         for populated in [false, true] {
             let directory = tempfile::tempdir()?;
             let db = v9(&directory.path().join("history.sqlite"), true).await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             db.execute_unprepared(
             "DROP TABLE timeline_records;
              CREATE TABLE timeline_records(
@@ -2324,7 +2240,7 @@ mod atomic_tests {
                     let path = directory.path().join("history.sqlite");
                     let db = v9(&path, true).await?;
                     if current {
-                        prepare(&db, THREAD, Preparation::Schema, None).await?;
+                        prepare(&db, THREAD, Preparation::Schema).await?;
                     }
                     let turn_collation = if column == "turn_id" {
                         "COLLATE NOCASE"
@@ -2471,7 +2387,7 @@ mod atomic_tests {
             "integrity checks alone do not establish application key constraints"
         );
         let before = schema_state(&db).await?;
-        let error = prepare(&db, THREAD, Preparation::Schema, None)
+        let error = prepare(&db, THREAD, Preparation::Schema)
             .await
             .expect_err("missing ordinal primary key must fail before content DDL");
         assert!(format!("{error:#}").contains("history_items primary key"));
@@ -2712,7 +2628,7 @@ mod atomic_tests {
             ))
             .await?;
             let before = schema_state(&db).await?;
-            let error = prepare(&db, THREAD, Preparation::Schema, None)
+            let error = prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .expect_err("same columns without primary keys must not be adopted");
             assert!(format!("{error:#}").contains(&format!("table {table} primary key")));
@@ -2737,7 +2653,7 @@ mod atomic_tests {
                         let path = directory.path().join("history.sqlite");
                         let db = v9(&path, true).await?;
                         if current {
-                            prepare(&db, THREAD, Preparation::Schema, None).await?;
+                            prepare(&db, THREAD, Preparation::Schema).await?;
                         }
                         let first_notnull = if missing == keys[0] { "" } else { "NOT NULL" };
                         let second_notnull = if missing == keys[1] { "" } else { "NOT NULL" };
@@ -2861,7 +2777,7 @@ mod atomic_tests {
                 db.execute_unprepared(unique_index).await?;
             }
             let before = schema_state(&db).await?;
-            let result = prepare(&db, THREAD, Preparation::Schema, None).await;
+            let result = prepare(&db, THREAD, Preparation::Schema).await;
             if unique_index == "CREATE UNIQUE INDEX arbitrary ON history_items(item_id)" {
                 result?;
                 validate_current(&db, THREAD).await?;
@@ -2904,11 +2820,7 @@ mod atomic_tests {
             .await?;
             let before = schema_state(&db).await?;
             assert!(validate_tables(&db).await.is_err());
-            assert!(
-                prepare(&db, THREAD, Preparation::Schema, None)
-                    .await
-                    .is_err()
-            );
+            assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
             assert_eq!(schema_state(&db).await?, before);
             assert_eq!(version(&db).await?, 11);
             assert!(applied(&db, ATOMIC_TIMELINE).await?);
@@ -2932,7 +2844,7 @@ mod atomic_tests {
             let directory = tempfile::tempdir()?;
             let db = v9(&directory.path().join("history.sqlite"), cold).await?;
             preflight(&db, THREAD).await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
             assert!(applied(&db, ATOMIC_TIMELINE).await?);
             assert!(applied(&db, METERING_FACTS).await?);
@@ -2941,7 +2853,7 @@ mod atomic_tests {
             assert_eq!(applied(&db, MODEL_ACCESS).await?, !cold);
             validate_current(&db, THREAD).await?;
             assert_eq!(super::super::timeline::latest_append_seq(&db).await?, 0);
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             assert_eq!(super::super::timeline::latest_append_seq(&db).await?, 0);
             db.close().await?;
         }
@@ -3081,7 +2993,7 @@ mod atomic_tests {
              BEGIN SELECT RAISE(ABORT,'injected combined marker failure'); END",
         )
         .await?;
-            let error = prepare(&db, THREAD, Preparation::Schema, None)
+            let error = prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .expect_err("combination publication must be transactional");
             assert!(format!("{error:#}").contains("injected combined marker failure"));
@@ -3089,7 +3001,7 @@ mod atomic_tests {
             assert!(applied(&db, ATOMIC_TIMELINE).await?);
             assert!(applied(&db, METERING_FACTS).await?);
             let before_failure = schema_state(&db).await?;
-            let error = prepare(&db, THREAD, Preparation::Schema, None)
+            let error = prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .expect_err("failed combination must be retryable without rebuilding content");
             assert!(format!("{error:#}").contains("injected combined marker failure"));
@@ -3097,7 +3009,7 @@ mod atomic_tests {
             assert!(!applied(&db, COMBINED_CONTENT).await?);
             db.execute_unprepared("DROP TRIGGER fail_combined_marker")
                 .await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
             assert!(applied(&db, ATOMIC_TIMELINE).await?);
             assert!(applied(&db, METERING_FACTS).await?);
@@ -3160,7 +3072,7 @@ mod atomic_tests {
                 );
             }
             let prepared = schema_state(&db).await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             assert_eq!(schema_state(&db).await?, prepared);
             db.close().await?;
         }
@@ -3199,7 +3111,7 @@ mod atomic_tests {
          CREATE TABLE history_ordinals(item_id TEXT PRIMARY KEY,ordinal INTEGER NOT NULL)",
         )
         .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         validate_current(&db, THREAD).await?;
         assert!(
             !SchemaManager::new(&db)
@@ -3286,9 +3198,7 @@ mod atomic_tests {
                 db.execute_unprepared(corruption).await?;
                 let before = schema_state(&db).await?;
                 assert!(
-                    prepare(&db, THREAD, Preparation::Schema, None)
-                        .await
-                        .is_err(),
+                    prepare(&db, THREAD, Preparation::Schema).await.is_err(),
                     "must reject v10 atomic={atomic}: {corruption}",
                 );
                 assert_eq!(schema_state(&db).await?, before);
@@ -3331,7 +3241,7 @@ mod atomic_tests {
          BEGIN SELECT RAISE(ABORT,'injected atomic marker failure'); END",
         )
         .await?;
-        let error = prepare(&db, THREAD, Preparation::Schema, None)
+        let error = prepare(&db, THREAD, Preparation::Schema)
             .await
             .expect_err("schema marker failure must roll back the whole content step");
         assert!(format!("{error:#}").contains("injected atomic marker failure"));
@@ -3351,9 +3261,9 @@ mod atomic_tests {
         assert_eq!(serde_json::from_str::<ExecutionItem>(&payload)?, input);
         db.execute_unprepared("DROP TRIGGER fail_atomic_marker")
             .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(super::super::timeline::latest_append_seq(&db).await?, 1);
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(super::super::timeline::latest_append_seq(&db).await?, 1);
         db.close().await?;
         Ok(())
@@ -3385,11 +3295,7 @@ mod atomic_tests {
             vec![corrupt.into()],
         ))
         .await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
+        assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
         assert_eq!(version(&db).await?, 10);
         assert!(applied(&db, METERING_FACTS).await?);
         assert!(
@@ -3412,7 +3318,7 @@ mod atomic_tests {
             vec![serde_json::to_string(&items[1])?.into()],
         ))
         .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let page = super::super::timeline::page(&db, THREAD, None, 2, 10).await?;
         assert_eq!(
             page.items
@@ -3531,7 +3437,7 @@ mod atomic_tests {
             .into_iter()
             .map(|row| row.try_get("", "payload"))
             .collect::<std::result::Result<_, _>>()?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let page = super::super::timeline::page(&db, THREAD, None, 3, 10).await?;
         assert_eq!(page.items.len(), 3);
         assert!(!page.has_more);

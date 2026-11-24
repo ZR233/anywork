@@ -365,8 +365,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -401,8 +399,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -487,7 +483,7 @@ mod tests {
             tx.commit().await?;
             assert_eq!(version(&db).await?, 11);
             let started = std::time::Instant::now();
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             let migration_us = started.elapsed().as_micros();
             assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
             assert_eq!(conversation::latest_append_seq(&db).await?, count);
@@ -887,11 +883,7 @@ mod tests {
         let (_dir, db) = source().await?;
         db.execute_unprepared("UPDATE history_meta SET schema_version=99")
             .await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
+        assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
         assert_eq!(version(&db).await?, 99);
         assert!(
             !SchemaManager::new(&db)
@@ -926,7 +918,7 @@ mod tests {
     async fn current_admission_neither_quick_checks_nor_decodes_recovery_checkpoint() -> Result<()>
     {
         let (_dir, db) = source().await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let checkpoint = pl_core::thread::ThreadCheckpoint::capture(
             THREAD.into(),
             0,

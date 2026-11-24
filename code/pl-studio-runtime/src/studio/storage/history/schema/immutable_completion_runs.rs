@@ -409,8 +409,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                bot_root: None,
-                execution_identity: None,
             }
             .migrations()
             .into_iter()
@@ -488,8 +486,6 @@ mod tests {
         preflight(db, THREAD).await?;
         let migrator = Migrator {
             thread_id: THREAD.into(),
-            execution_identity: None,
-            bot_root: None,
         };
         let steps = migrator
             .get_pending_migrations_read_only(db)

@@ -57,8 +57,6 @@ pub(in crate::studio::storage::history) async fn applied(
 ) -> Result<bool> {
     Ok(Migrator {
         thread_id: String::new(),
-        bot_root: None,
-        execution_identity: None,
     }
     .get_applied_migrations_read_only(db)
     .await?
@@ -355,8 +353,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                bot_root: None,
-                execution_identity: None,
             }
             .migrations()
             .into_iter()
@@ -611,11 +607,7 @@ mod tests {
             seed(&db).await?;
             db.execute_unprepared(damage).await?;
             let before = originals(&db).await?;
-            assert!(
-                prepare(&db, THREAD, Preparation::Schema, None)
-                    .await
-                    .is_err()
-            );
+            assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
             assert!(!applied(&db).await?);
             assert_eq!(originals(&db).await?, before);
             assert!(
@@ -682,7 +674,7 @@ mod tests {
             .await?
             .is_none()
         );
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert!(applied(&db).await?);
         db.close().await?;
         Ok(())
@@ -779,7 +771,7 @@ mod tests {
             )
             .await?;
 
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
 
             assert_eq!(originals(&db).await?, before);
             assert_eq!(

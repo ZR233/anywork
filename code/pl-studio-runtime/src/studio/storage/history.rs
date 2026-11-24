@@ -38,11 +38,7 @@ pub(crate) use checkpoint::SessionAccounting;
 
 #[cfg(test)]
 mod legacy_evidence;
-#[cfg(test)]
-mod parent_report;
 mod producer;
-#[cfg(test)]
-mod review_delivery;
 pub(crate) mod schema;
 mod timeline;
 pub(crate) use schema::validate_layout_source;
@@ -1384,38 +1380,6 @@ impl HistoryStore {
         Ok(page)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn execution_sources(
-        &self,
-        sources: &[crate::ChatSourceId],
-        effect_cut: u64,
-    ) -> Result<Vec<crate::ChatSourceState>> {
-        if sources.is_empty() {
-            return Ok(Vec::new());
-        }
-        pl_core::chat::ReadDemand::new(sources.len(), 1).validate()?;
-        let Some(connection) = self.reader().await? else {
-            let mut seen = std::collections::BTreeSet::new();
-            return Ok(sources
-                .iter()
-                .filter(|source| seen.insert((*source).clone()))
-                .cloned()
-                .map(|source| crate::ChatSourceState {
-                    source,
-                    lifecycle: crate::ChatSourceLifecycle::Unknown,
-                    started: None,
-                    ended: None,
-                })
-                .collect());
-        };
-        let tx = connection.db.begin().await?;
-        let states =
-            crate::studio::storage::history::execution_sources::read(&tx, sources, effect_cut)
-                .await?;
-        tx.commit().await?;
-        Ok(states)
-    }
-
     /// Latest real terminal effect, using the same partial index as terminal paging.
     #[cfg(test)]
     pub(crate) async fn latest_terminal_report_sequence(&self) -> Result<Option<u64>> {
@@ -1460,45 +1424,6 @@ impl HistoryStore {
                 u64::try_from(sequence).context("negative terminal report sequence")
             })
             .collect()
-    }
-
-    /// Reads complete original reports under the caller's serialized-report byte budget.
-    /// Callers supply the bounded terminal keyset. A report that does not fit stays unreturned and
-    /// therefore cannot advance their cursor; an oversized first report is an explicit error.
-    #[cfg(test)]
-    pub(crate) async fn terminal_reports(
-        &self,
-        sequences: &[u64],
-        max_bytes: usize,
-    ) -> Result<Vec<(u64, pl_core::thread::inbox::ThreadMessage)>> {
-        let mut remaining = max_bytes as u64;
-        let mut reports = Vec::new();
-        for &sequence in sequences {
-            // The receipt is immutable. Its persisted payload is the serialized original
-            // ThreadMessage, so this body-free query bounds both loading and report output.
-            let bytes = self.parent_report_bytes(sequence).await?;
-            if bytes > remaining {
-                ensure!(
-                    !reports.is_empty(),
-                    "terminal report {sequence} exceeds report byte budget ({max_bytes} bytes)"
-                );
-                break;
-            }
-            let report = self.parent_report(sequence).await?.with_context(|| {
-                format!("terminal effect {sequence} has no original parent report")
-            })?;
-            let output_bytes = serde_json::to_vec(&report)?.len() as u64;
-            if output_bytes > remaining {
-                ensure!(
-                    !reports.is_empty(),
-                    "terminal report {sequence} exceeds report byte budget ({max_bytes} bytes)"
-                );
-                break;
-            }
-            remaining -= output_bytes;
-            reports.push((sequence, report));
-        }
-        Ok(reports)
     }
 
     /// Reads one committed timeline item by its durable identity.
@@ -3199,7 +3124,7 @@ mod storage_fault_tests {
                  BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;",
                 )
                 .await?;
-            let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema, None)
+            let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema)
                 .await
                 .expect_err("checkpoint failure must fail the representation migration");
             assert!(
@@ -3220,7 +3145,7 @@ mod storage_fault_tests {
                 .db
                 .execute_unprepared("DROP TRIGGER reject_review_upgrade")
                 .await?;
-            schema::prepare(&connection.db, &id, schema::Preparation::Schema, None).await?;
+            schema::prepare(&connection.db, &id, schema::Preparation::Schema).await?;
             let migrated = checkpoint::read(&connection.db, &id)
                 .await?
                 .context("migrated checkpoint")?;
@@ -3323,7 +3248,7 @@ mod storage_fault_tests {
             .await?;
         // Reproduce a v8 DB which already completed *all* published lifecycle steps. The new
         // content step must still run without asking for a new execution-identity candidate.
-        store.prepare_execution_identity(|_| Ok(())).await?;
+        store.prepare_execution_identity().await?;
         let mut legacy =
             serde_json::to_value(store.checkpoint().await?.context("saved checkpoint")?)?;
         // The migration normalizes the legacy envelope, then inserts the current typed usage.
@@ -4560,386 +4485,6 @@ mod storage_fault_tests {
                 .context("missing retried receipt")?
                 .payload,
             "{}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn terminal_report_byte_budget_preserves_unreturned_source_positions() -> Result<()> {
-        use pl_core::{
-            context::{AgentMessageKind, OpaquePayload},
-            thread::inbox::ThreadMessage,
-        };
-        let directory = tempfile::tempdir()?;
-        let store = HistoryStore::open(&directory.path().join("history.sqlite"), "child").await?;
-        let budget = 64 * 1024;
-        for sequence in 1..=5 {
-            let terminal = ExecutionItem::new(
-                format!("turn:{sequence}"),
-                crate::ItemStamp {
-                    thread_id: std::borrow::Cow::Borrowed("child"),
-                    turn_id: std::borrow::Cow::Owned(sequence.to_string()),
-                    ordinal: sequence,
-                    revision: 1,
-                    created_at: 1,
-                    updated_at: 1,
-                },
-                ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
-                    crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
-                ))),
-            );
-            let mut message = ThreadMessage {
-                kind: AgentMessageKind::Report,
-                id: crate::studio::agent_close::terminal_report_id("child", sequence),
-                source_id: "studio.child:child".into(),
-                payload: OpaquePayload::new("pl.studio.turn-report", 1, "")?,
-                context: vec![],
-            };
-            let target_bytes = match sequence {
-                1 | 2 => budget / 2,
-                3 => budget / 2 + 1,
-                4 => budget,
-                _ => budget + 1,
-            };
-            let padding = target_bytes - serde_json::to_vec(&message)?.len();
-            message.payload = OpaquePayload::new(
-                "pl.studio.turn-report",
-                1,
-                format!("{}{}", "原".repeat(padding / 3), "a".repeat(padding % 3)),
-            )?;
-            assert_eq!(serde_json::to_vec(&message)?.len(), target_bytes);
-            let receipts = [FactReceiptWrite {
-                item_id: message.id.clone(),
-                revision: 1,
-                kind: "parentReport",
-                payload: serde_json::to_string(&message)?,
-            }];
-            store
-                .commit_effect(
-                    sequence,
-                    EffectCommit {
-                        current: &test_current(sequence),
-                        completions: &[],
-                        turns: &crate::studio::storage::history::test_turns(
-                            sequence,
-                            std::slice::from_ref(&terminal),
-                        ),
-                        execution_order: terminal.ordinal,
-                        rolled_back_turns: &Default::default(),
-                        identities: &[],
-                        messages: &[],
-                        receipts: &receipts,
-                        tasks: &[],
-                        deliveries: &[],
-                        delivery_repairs: &[],
-                        attempt: None,
-                    },
-                )
-                .await?;
-        }
-        let first = store
-            .terminal_reports(&store.terminal_report_sequences(0).await?, budget)
-            .await?;
-        assert_eq!(first.len(), 2);
-        assert_eq!(first[0].0, 1);
-        assert_eq!(first[1].0, 2);
-        assert_eq!(
-            serde_json::to_vec(&first[0].1)?.len() + serde_json::to_vec(&first[1].1)?.len(),
-            budget
-        );
-        assert_eq!(
-            first[0].1.digest(),
-            store.parent_report(1).await?.unwrap().digest()
-        );
-        let second = store
-            .terminal_reports(&store.terminal_report_sequences(first[1].0).await?, budget)
-            .await?;
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].0, 3);
-        assert_eq!(
-            second[0].1.digest(),
-            store.parent_report(3).await?.unwrap().digest()
-        );
-        let third = store
-            .terminal_reports(&store.terminal_report_sequences(second[0].0).await?, budget)
-            .await?;
-        assert_eq!(third.len(), 1);
-        assert_eq!(third[0].0, 4);
-        assert_eq!(serde_json::to_vec(&third[0].1)?.len(), budget);
-        let remaining = store.terminal_report_sequences(third[0].0).await?;
-        assert_eq!(remaining, vec![5]);
-        let error = store
-            .terminal_reports(&remaining, budget)
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("terminal report 5 exceeds report byte budget (65536 bytes)")
-        );
-        // No-after must also reject a latest report that cannot be returned whole.
-        let latest = store.latest_terminal_report_sequence().await?.unwrap();
-        assert!(store.terminal_reports(&[latest], budget).await.is_err());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn terminal_parent_report_is_atomic_immutable_and_reopens_without_reconstruction()
-    -> Result<()> {
-        use pl_core::{
-            context::{AgentMessageKind, ContextContent, OpaquePayload},
-            thread::inbox::ThreadMessage,
-        };
-        async fn commit(
-            store: &HistoryStore,
-            sequence: u64,
-            message: &ThreadMessage,
-        ) -> Result<()> {
-            let terminal = ExecutionItem::new(
-                "turn:original".into(),
-                crate::ItemStamp {
-                    thread_id: std::borrow::Cow::Borrowed("child-报告"),
-                    turn_id: std::borrow::Cow::Borrowed("original"),
-                    ordinal: 1,
-                    revision: 1,
-                    created_at: 1,
-                    updated_at: 1,
-                },
-                ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
-                    crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
-                ))),
-            );
-            let receipts = [FactReceiptWrite {
-                item_id: message.id.clone(),
-                revision: 1,
-                kind: "parentReport",
-                payload: serde_json::to_string(message)?,
-            }];
-            store
-                .commit_effect(
-                    sequence,
-                    EffectCommit {
-                        current: &crate::studio::storage::history::test_current(sequence),
-                        completions: &[],
-                        turns: &crate::studio::storage::history::test_turns(
-                            sequence,
-                            std::slice::from_ref(&terminal),
-                        ),
-                        execution_order: terminal.ordinal,
-                        rolled_back_turns: &Default::default(),
-                        identities: &[],
-                        messages: &[],
-                        receipts: &receipts,
-                        tasks: &[],
-                        deliveries: &[],
-                        delivery_repairs: &[],
-                        attempt: None,
-                    },
-                )
-                .await
-        }
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("history.sqlite");
-        let store = HistoryStore::open(&path, "child-报告").await?;
-        save_receipt(&store, 1, "initial").await?;
-        let body = format!("\0{}", "original terminal facts".repeat(8_000));
-        let message = ThreadMessage {
-            kind: AgentMessageKind::Report,
-            id: crate::studio::agent_close::terminal_report_id("child-报告", 2),
-            source_id: "studio.child:child-报告".into(),
-            payload: OpaquePayload::new("pl.studio.turn-report", 1, body.clone())?,
-            context: vec![ContextContent::Text { text: body.into() }],
-        };
-        store.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_parent_report BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='parentReport' BEGIN SELECT RAISE(ABORT,'controlled report rejection'); END").await?;
-        assert!(commit(&store, 2, &message).await.is_err());
-        assert_eq!(store.watermark().await?, 1);
-        assert_eq!(store.latest_terminal_report_sequence().await?, None);
-        assert!(store.parent_report(2).await?.is_none());
-        store
-            .writer()
-            .await?
-            .db
-            .execute_unprepared("DROP TRIGGER reject_parent_report")
-            .await?;
-        commit(&store, 2, &message).await?;
-        assert_eq!(store.watermark().await?, 2);
-        assert_eq!(store.latest_terminal_report_sequence().await?, Some(2));
-        assert_eq!(store.terminal_report_sequences(0).await?, vec![2]);
-        let mut conflicting = message.clone();
-        conflicting.payload =
-            OpaquePayload::new("pl.studio.turn-report", 1, "not the original body")?;
-        assert!(commit(&store, 3, &conflicting).await.is_err());
-        assert_eq!(store.watermark().await?, 2);
-        drop(store);
-        let reopened = HistoryStore::open(&path, "child-报告").await?;
-        assert_eq!(reopened.latest_terminal_report_sequence().await?, Some(2));
-        assert_eq!(
-            reopened.parent_report(2).await?.unwrap().digest(),
-            message.digest()
-        );
-        assert!(reopened.parent_report(3).await?.is_none());
-        reopened
-            .writer()
-            .await?
-            .db
-            .execute_unprepared(
-                "UPDATE history_fact_receipts SET payload='{}' WHERE kind='parentReport'",
-            )
-            .await?;
-        assert!(reopened.parent_report(2).await.is_err());
-        drop(reopened);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn review_exception_receipts_are_atomic_immutable_and_bounded() -> Result<()> {
-        use crate::thread_assembler::{
-            agent_review::{ReviewDeliverySource, ReviewForward, ReviewForwardReason},
-            review_delivery::ReviewDeliveryException,
-        };
-        async fn commit(
-            store: &HistoryStore,
-            sequence: u64,
-            payload: &str,
-            id: &str,
-        ) -> Result<()> {
-            store
-                .commit_effect(
-                    sequence,
-                    EffectCommit {
-                        current: &crate::studio::storage::history::test_current(sequence),
-                        completions: &[],
-                        turns: &[],
-                        execution_order: 0,
-                        rolled_back_turns: &Default::default(),
-                        identities: &[],
-                        messages: &[],
-                        receipts: &[FactReceiptWrite {
-                            item_id: id.into(),
-                            revision: 1,
-                            kind: "reviewDeliveryException",
-                            payload: payload.into(),
-                        }],
-                        tasks: &[],
-                        deliveries: &[],
-                        delivery_repairs: &[],
-                        attempt: None,
-                    },
-                )
-                .await
-        }
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("history.sqlite");
-        let store = HistoryStore::open(&path, "review-原文").await?;
-        save_receipt(&store, 1, "original-terminal").await?;
-        let make_fact = |turn: &str| -> Result<_> {
-            ReviewDeliveryException::from_forward(
-                "review-原文",
-                turn,
-                None,
-                1,
-                "executor",
-                ReviewDeliverySource::LiveTerminal,
-                &ReviewForward::Rejected {
-                    message_id: crate::thread_assembler::agent_review::review_message_id(
-                        "review-原文",
-                        turn,
-                        1,
-                    ),
-                    reason: ReviewForwardReason::TargetChanged,
-                },
-            )
-            .context("missing exception")?
-            .into_fact()
-        };
-        let fact = make_fact("turn-original")?;
-        let payload = serde_json::to_string(&fact)?;
-        store.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_review_exception BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='reviewDeliveryException' BEGIN SELECT RAISE(ABORT,'controlled exception rejection'); END").await?;
-        assert!(commit(&store, 2, &payload, &fact.message.id).await.is_err());
-        assert_eq!(store.watermark().await?, 1);
-        assert!(
-            store
-                .review_delivery_exception(&fact.message.id)
-                .await?
-                .is_none()
-        );
-        store
-            .writer()
-            .await?
-            .db
-            .execute_unprepared("DROP TRIGGER reject_review_exception")
-            .await?;
-        commit(&store, 2, &payload, &fact.message.id).await?;
-        // A later identical carrier cannot rewrite the original source effect watermark.
-        commit(&store, 3, &payload, &fact.message.id).await?;
-        let source = store
-            .writer()
-            .await?
-            .db
-            .query_one_raw(statement(
-                "SELECT last_write_seq FROM history_fact_receipts WHERE item_id=?",
-                vec![fact.message.id.clone().into()],
-            ))
-            .await?
-            .unwrap()
-            .try_get::<i64>("", "last_write_seq")?;
-        assert_eq!(source, 2);
-        let mut conflicting = fact.clone();
-        conflicting.message.context.clear();
-        assert!(
-            commit(
-                &store,
-                4,
-                &serde_json::to_string(&conflicting)?,
-                &fact.message.id
-            )
-            .await
-            .is_err()
-        );
-        assert_eq!(store.watermark().await?, 3);
-        let mut expected = std::collections::BTreeSet::from([fact.message.id.clone()]);
-        for number in 0..20 {
-            let next = make_fact(&format!("turn-{number}"))?;
-            commit(
-                &store,
-                number + 4,
-                &serde_json::to_string(&next)?,
-                &next.message.id,
-            )
-            .await?;
-            expected.insert(next.message.id);
-        }
-        drop(store);
-        let store = HistoryStore::open(&path, "review-原文").await?;
-        assert_eq!(
-            store
-                .review_delivery_exception(&fact.message.id)
-                .await?
-                .unwrap()
-                .message
-                .digest(),
-            fact.message.digest()
-        );
-        let mut cursor = String::new();
-        let mut actual = std::collections::BTreeSet::new();
-        loop {
-            let page = store.review_delivery_exceptions(&cursor).await?;
-            assert!(page.len() <= 16);
-            if page.is_empty() {
-                break;
-            }
-            for fact in page {
-                cursor = fact.message.id.clone();
-                assert!(actual.insert(fact.message.id));
-            }
-        }
-        assert_eq!(actual, expected);
-        store.writer().await?.db.execute_unprepared("UPDATE history_fact_receipts SET payload='{}' WHERE kind='reviewDeliveryException'").await?;
-        assert!(
-            store
-                .review_delivery_exception(&fact.message.id)
-                .await
-                .is_err()
         );
         Ok(())
     }

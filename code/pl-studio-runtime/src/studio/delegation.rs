@@ -1,10 +1,7 @@
 //! Immutable dispatch provenance. The selected child route belongs only to its saved Profile.
 use crate::{DelegationMode, DelegationPreference, DelegationSettings};
 use anyhow::{Result, ensure};
-use pl_core::{
-    context::OpaquePayload,
-    thread::{ThreadSnapshot, extensions::ExtensionRecord},
-};
+use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
 
 pub(crate) const EXTENSION: &str = "studio.delegation";
 const FORMAT: &str = "pl.studio.delegation";
@@ -33,8 +30,11 @@ pub(crate) fn decode(payload: &OpaquePayload) -> Result<DelegationSettings> {
     Ok(serde_json::from_str(payload.content())?)
 }
 
-/// Invoked only by the versioned history recovery writer, never by default inheritance.
+/// Seeds delegation provenance in frozen history fixtures.
+#[cfg(test)]
 pub(crate) fn migrate(state: &mut ThreadSnapshot) -> Result<()> {
+    use pl_core::thread::extensions::ExtensionRecord;
+
     if saved(state)?.is_none() {
         state.extension_sequence = state
             .extension_sequence

@@ -302,7 +302,7 @@ mod tests {
         ))
         .await?;
         let rejected = raw(db).await?;
-        let error = schema::prepare(db, "producer", schema::Preparation::Schema, None)
+        let error = schema::prepare(db, "producer", schema::Preparation::Schema)
             .await
             .expect_err("unsupported required producer version must fail");
         assert!(
@@ -316,7 +316,7 @@ mod tests {
         ))
         .await?;
         db.execute_unprepared("CREATE TRIGGER reject_producer BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'producer fault'); END").await?;
-        let error = schema::prepare(db, "producer", schema::Preparation::Schema, None)
+        let error = schema::prepare(db, "producer", schema::Preparation::Schema)
             .await
             .expect_err("injected producer update failure must roll back the content step");
         assert!(
@@ -331,7 +331,7 @@ mod tests {
         assert!(db.query_one_raw(statement("SELECT 1 FROM seaql_migrations WHERE version='m20261027_000002_history_producer_payloads'",vec![])).await?.is_none());
         db.execute_unprepared("DROP TRIGGER reject_producer")
             .await?;
-        schema::prepare(db, "producer", schema::Preparation::Schema, None).await?;
+        schema::prepare(db, "producer", schema::Preparation::Schema).await?;
         let current = store.checkpoint().await?.context("prepared checkpoint")?;
         assert_eq!(current.state_revision, old.state_revision);
         assert_eq!(current.history_fence, old.history_fence);
@@ -383,7 +383,7 @@ mod tests {
         restore_published_v9(db).await?;
         db.execute_unprepared("CREATE TRIGGER no_current_checkpoint_rewrite BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'current checkpoint rewritten'); END;
             CREATE TRIGGER no_current_context_rewrite BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'current context rewritten'); END;").await?;
-        schema::prepare(db, "producer", schema::Preparation::Schema, None).await?;
+        schema::prepare(db, "producer", schema::Preparation::Schema).await?;
         assert_eq!(
             raw(db).await?,
             prepared,

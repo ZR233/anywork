@@ -232,8 +232,6 @@ pub(in crate::studio::storage::history) mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -263,10 +261,10 @@ pub(in crate::studio::storage::history) mod tests {
         super::initialize(&db).await?;
         db.execute_unprepared("UPDATE history_meta SET schema_version=21 WHERE id=1")
             .await?;
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         super::super::execution_facts::validate(&db).await?;
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema).await?;
         assert!(
         db.query_one_raw(statement(
             "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='conversation_display_blocks'",

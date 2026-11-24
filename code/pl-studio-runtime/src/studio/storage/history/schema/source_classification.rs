@@ -292,8 +292,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -710,7 +708,7 @@ mod tests {
         db.execute_unprepared(&format!("CREATE TRIGGER reject_source_receipt BEFORE INSERT ON seaql_migrations
         WHEN NEW.version='{SOURCE_CLASSIFICATION}' BEGIN SELECT RAISE(ABORT,'source receipt fault'); END;")).await?;
         assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
+            prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -721,7 +719,7 @@ mod tests {
         assert_eq!(ledger(&db).await?, old_ledger);
         db.execute_unprepared("DROP TRIGGER reject_source_receipt")
             .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert!(!needs_content_preparation(&db, THREAD).await?);
         db.close().await?;
         Ok(())
@@ -745,9 +743,7 @@ mod tests {
             let frozen = derived(&db).await?;
             let old_ledger = ledger(&db).await?;
             assert!(
-                prepare(&db, THREAD, Preparation::Schema, None)
-                    .await
-                    .is_err(),
+                prepare(&db, THREAD, Preparation::Schema).await.is_err(),
                 "{corruption}"
             );
             assert_eq!(originals(&db).await?, original);
@@ -766,14 +762,10 @@ mod tests {
         ] {
             let (_directory, path) = fixture(7).await?;
             let db = open(&path).await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             let old_ledger = ledger(&db).await?;
             db.execute_unprepared(corruption).await?;
-            assert!(
-                prepare(&db, THREAD, Preparation::Schema, None)
-                    .await
-                    .is_err()
-            );
+            assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
             assert_eq!(ledger(&db).await?, old_ledger);
             db.close().await?;
         }

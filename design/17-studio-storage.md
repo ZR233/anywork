@@ -191,6 +191,8 @@ SQLite 分类使用官方主错误码而非诊断文案：具名数据迁移中�
 
 `m20261108_000001_history_source_classification` 等已发布步骤只属于 v24 冻结输入，消费已保存的来源类型证据修正迁移分类；不改变旧正文与旧 Applied 记录。schema 24 到 25 再到 26 的转换统一按 [17.21](#1721-独立当前状态与追加历史的升级边界) 与 [17.22](#1722-schema-25-到-26-原子事件迁移边界) 处理，不再产生 v24 运行期派生代际。
 
+冻结迁移表保留旧 Project Kind、Model Access、Bot Root Relocation 和 Execution Identity 已发布的名称，以识别旧库中的迁移记录。历史内容升级直接转换保存的会话事实。旧 Review Receipt 转换仍调用 Workspace Receipt 的实际转换逻辑，以便保留工作区归属和审查回执。
+
 显式打开单个会话（`Thread`）按以下步骤有序执行：
 
 1. 校验 `catalog.toml` 中的会话身份与父子祖先归属关系；
