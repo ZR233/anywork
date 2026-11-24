@@ -1,10 +1,6 @@
 //! Studio adapter bridging the standalone `pl-tool-plan` tool family onto `CallContext`.
 
-use super::types::{
-    AgentSessionPlanState, LegacyAgentSessionPlanState, Plan, PlanActor, PlanHistoryArgs,
-    PlanHistoryResponse, PlanNextResponse, PlanSnapshot, PlanState, PlanTransitionArgs,
-    PlanTransitionCommand, PlanTransitionOutcome,
-};
+use super::types::{AgentSessionPlanState, LegacyAgentSessionPlanState};
 use crate::plan_tool::state::AgentSessionPlanOptions;
 use crate::thread_assembler::ThreadAssemblyError;
 use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
@@ -21,7 +17,11 @@ use pl_core::{
 };
 use pl_model::completion::ToolCallPolicy;
 use pl_tool::binding::prepare_registration;
-use pl_tool_plan::{PlanCurrentTool, PlanHistoryTool, PlanHost, PlanNextTool, PlanTransitionTool};
+use pl_tool_plan::{
+    Plan, PlanActor, PlanCurrentTool, PlanHistoryArgs, PlanHistoryResponse, PlanHistoryTool,
+    PlanHost, PlanNextResponse, PlanNextTool, PlanSnapshot, PlanTransitionArgs,
+    PlanTransitionCommand, PlanTransitionOutcome, PlanTransitionTool,
+};
 use std::sync::{Arc, Mutex};
 
 pub const PLAN_EXTENSION: &str = "studio.plan";
@@ -220,8 +220,6 @@ impl PlanHost for StudioPlanHost {
                 );
             }
             guard.next = next_state;
-        } else if outcome.snapshot.state != PlanState::AwaitingConfirmation {
-            guard.next.pending_interaction_id = None;
         }
         Ok(outcome)
     }

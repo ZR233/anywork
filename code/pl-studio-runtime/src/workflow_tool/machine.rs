@@ -478,16 +478,15 @@ impl RestartInput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkflowMutationResponse {
-    pub accepted: bool,
-    pub code: &'static str,
-    #[serde(default)]
-    pub forced: bool,
-    pub operation_revision: u64,
-    pub snapshot: serde_json::Value,
+    pub(crate) accepted: bool,
+    pub(crate) code: &'static str,
+    pub(crate) forced: bool,
+    pub(crate) operation_revision: u64,
+    pub(crate) snapshot: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_action: Option<String>,
+    pub(crate) recovery_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<WorkflowTransitionError>,
+    pub(crate) error: Option<WorkflowTransitionError>,
 }
 
 struct WorkflowCas<'a> {

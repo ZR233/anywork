@@ -343,9 +343,7 @@ pub(in crate::studio) fn removal_definitely_refused(
 ) -> bool {
     use crate::agent::worktree::{ExecutionFailure, WorktreeError};
     match error {
-        WorktreeError::GitExited { args, .. } | WorktreeError::GitLaunchFailed { args, .. } => {
-            args.starts_with("worktree remove ")
-        }
+        WorktreeError::GitExited { args, .. } => args.starts_with("worktree remove "),
         WorktreeError::Execution {
             args,
             source:

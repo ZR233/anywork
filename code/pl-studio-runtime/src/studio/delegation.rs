@@ -80,7 +80,7 @@ pub(crate) fn resolve_current_child_route(
 ) -> crate::Result<pl_model::config::ResolvedModelRoute> {
     let crate::AgentBinding::Native(native) = &profile.binding else {
         return Err(crate::PureError::ConfigError(
-            "ACP execution is not supported before S4".into(),
+            "ACP profiles do not use the Native child model route".into(),
         ));
     };
     let route = native.route.as_ref().ok_or_else(|| {

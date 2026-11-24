@@ -8,12 +8,6 @@ impl WorktreeError {
             Self::MissingHead => "工作区没有有效的 HEAD commit；请先完成初始 commit 后重试".into(),
             // Identity messages are produced only from fixed application vocabulary, never stderr.
             Self::IdentityMismatch(reason) => format!("worktree identity: {reason}"),
-            Self::GitLaunchFailed { args, message } => format!(
-                "git {}: launch failed; {}",
-                git_operation(args),
-                safe_command_cause(message)
-            ),
-            Self::GitTimedOut { args } => format!("git {}: timed out", git_operation(args)),
             Self::GitExited {
                 args,
                 exit_code,

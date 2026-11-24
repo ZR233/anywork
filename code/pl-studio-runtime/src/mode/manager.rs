@@ -1,6 +1,6 @@
 //! Thread Mode 的原子内存注册表。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use crate::mode::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId};
@@ -89,11 +89,6 @@ impl RegisteredThreadMode {
         &self.descriptor
     }
 
-    /// 返回提供该 Mode 的注册来源。
-    pub fn source(&self) -> &ThreadModeSource {
-        &self.source
-    }
-
     /// 返回当前 Mode Prompt；Prompt 不参与图 hash。
     pub fn prompt(&self) -> &str {
         &self.prompt
@@ -150,17 +145,11 @@ impl RegisteredThreadMode {
 /// 读取方可跨 `.await` 持有的不可变注册表快照。
 #[derive(Debug, Clone, Default)]
 pub struct ThreadModeRegistrySnapshot {
-    revision: u64,
     modes: BTreeMap<ThreadModeId, Arc<RegisteredThreadMode>>,
     catalog: ThreadModeCatalogSnapshot,
 }
 
 impl ThreadModeRegistrySnapshot {
-    /// 返回整个注册表快照的 revision。
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     /// 按 ID 取得可跨 `.await` 持有的 Mode 快照。
     pub fn mode(&self, id: &ThreadModeId) -> Option<Arc<RegisteredThreadMode>> {
         self.modes.get(id).cloned()
@@ -434,10 +423,7 @@ fn publish(state: &mut ThreadModeManagerState) {
             right.id.as_str(),
         ))
     });
-    let ids = modes.keys().cloned().collect::<BTreeSet<_>>();
-    debug_assert_eq!(ids.len(), modes.len());
     state.snapshot = Arc::new(ThreadModeRegistrySnapshot {
-        revision: state.revision,
         modes,
         catalog: ThreadModeCatalogSnapshot {
             revision: state.revision,
