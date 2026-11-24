@@ -4933,6 +4933,99 @@ mod migration_tests {
         Ok(count)
     }
 
+    async fn upgrade_published_snapshot(version: i64, fail_once: bool) -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "published-snapshot";
+        let record = ContextRecord {
+            id: "saved-user-input".into(),
+            turn_id: None,
+            source: ContextSource::User,
+            content: vec![ContextContent::Text {
+                text: Arc::from("Preserve the saved context"),
+            }],
+            tool_calls: Vec::new(),
+        };
+        let state = ThreadSnapshot {
+            commit_sequence: 1,
+            context: ContextSnapshot {
+                revision: 1,
+                records: vec![record].into(),
+            },
+            ..Default::default()
+        };
+        let checkpoint = ThreadCheckpoint::capture(thread_id.into(), 1, state.clone())
+            .map_err(|error| HistoryError::Storage(error.into()))?;
+        let db = schema::connect(&path, false, true).await?;
+        crate::studio::storage::history::schema::seed_pre24_fixture(&db, version, &checkpoint)
+            .await
+            .map_err(HistoryError::Storage)?;
+        let identity = read_legacy_identity(&db).await?;
+        assert_eq!(identity.version, version);
+        if fail_once {
+            let before = db
+                .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
+                .await?
+                .unwrap()
+                .try_get::<String>("", "payload")?;
+            db.execute_unprepared(
+                "CREATE TRIGGER reject_schema24 BEFORE UPDATE OF schema_version ON history_meta
+                 WHEN NEW.schema_version=24 BEGIN SELECT RAISE(ABORT,'reject schema24'); END;",
+            )
+            .await?;
+            let error = upgrade_history(&path, thread_id, directory.path())
+                .await
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("reject schema24"));
+            assert!(read_legacy_identity(&db).await? == identity);
+            let after = db
+                .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
+                .await?
+                .unwrap()
+                .try_get::<String>("", "payload")?;
+            assert_eq!(after, before);
+            assert!(!directory.path().join("current.json").exists());
+            db.execute_unprepared("DROP TRIGGER reject_schema24")
+                .await?;
+        }
+        db.close().await?;
+
+        let report = upgrade_history(&path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(report.database_id, identity.database_id);
+        let current = ThreadCurrent::from_json(
+            &tokio::fs::read(directory.path().join("current.json")).await?,
+            thread_id,
+        )
+        .map_err(|error| HistoryError::Storage(error.into()))?;
+        assert_eq!(current.state.context, state.context);
+        assert!(current.state.execution.is_none());
+        let store = CurrentHistoryStore::open(&path, thread_id, HistoryLimits::default()).await?;
+        assert_eq!(store.reader().database_id(), identity.database_id);
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn published_schema_eight_restores_through_schema26() -> Result<()> {
+        upgrade_published_snapshot(8, false).await
+    }
+
+    #[tokio::test]
+    async fn published_schema_seventeen_restores_through_schema26() -> Result<()> {
+        upgrade_published_snapshot(17, false).await
+    }
+
+    #[tokio::test]
+    async fn published_schema_twenty_three_restores_through_schema26() -> Result<()> {
+        upgrade_published_snapshot(23, false).await
+    }
+
+    #[tokio::test]
+    async fn published_schema_twenty_three_rolls_back_before_retry() -> Result<()> {
+        upgrade_published_snapshot(23, true).await
+    }
+
     #[tokio::test]
     async fn unadopted_legacy_original_stops_upgrade_without_discarding_its_bytes() -> Result<()> {
         let directory = tempfile::tempdir()?;

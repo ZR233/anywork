@@ -257,23 +257,36 @@ const IMMUTABLE_COMPLETION_RUNS: &str = "m20261110_000001_history_immutable_comp
 const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 
 #[cfg(test)]
-pub(super) async fn prepare_published17_fixture(
+pub(crate) async fn seed_pre24_fixture(
     db: &DatabaseConnection,
-    thread_id: &str,
+    version: i64,
+    checkpoint: &pl_core::thread::ThreadCheckpoint,
 ) -> Result<()> {
+    let milestone = match version {
+        8 => RETIRE_ORDINALS,
+        17 => COMPLETION_BOUNDARY,
+        23 => EXECUTION_FACTS,
+        _ => anyhow::bail!("unknown pre-24 fixture version {version}"),
+    };
     let migrator = Migrator {
-        thread_id: thread_id.to_owned(),
+        thread_id: checkpoint.thread_id.clone(),
     };
     let steps = migrator
         .migrations()
         .iter()
-        .take_while(|step| step.name() != COMPLETION_BOUNDARY)
-        .count();
+        .position(|step| step.name() == milestone)
+        .context("fixture migration milestone is missing")?;
     migrator.up(db, Some(u32::try_from(steps)?)).await?;
     ensure!(
-        version(db).await? == 17,
-        "fixture must stop at published schema 17"
+        self::version(db).await? == version,
+        "fixture must stop at published schema {version}"
     );
+    write_published_checkpoint(db, checkpoint).await?;
+    db.execute_raw(statement(
+        "UPDATE history_meta SET applied_write_seq=? WHERE id=1",
+        vec![integer(checkpoint.history_fence)?.into()],
+    ))
+    .await?;
     Ok(())
 }
 

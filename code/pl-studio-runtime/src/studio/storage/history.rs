@@ -3535,7 +3535,12 @@ mod storage_fault_tests {
             // Exercise damage to the actual published pre-completion layout. A current
             // writer has archived these tables and cannot stand in for this old schema.
             let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
-            schema::prepare_published17_fixture(&db, thread_id).await?;
+            let checkpoint = pl_core::thread::ThreadCheckpoint::capture(
+                thread_id.into(),
+                0,
+                pl_core::thread::ThreadSnapshot::default(),
+            )?;
+            schema::seed_pre24_fixture(&db, 17, &checkpoint).await?;
             let mut item = ExecutionItem::completed_user_message(
                 "preserved-input".into(),
                 thread_id.into(),
