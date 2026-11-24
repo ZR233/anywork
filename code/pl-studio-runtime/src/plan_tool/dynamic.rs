@@ -516,6 +516,7 @@ mod argument_tests {
 
 #[cfg(test)]
 mod migration_tests {
+    use super::super::types::PlanState;
     use super::*;
     use pl_core::context::OpaquePayload;
 

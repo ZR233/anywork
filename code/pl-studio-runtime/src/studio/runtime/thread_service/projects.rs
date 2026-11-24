@@ -1242,12 +1242,7 @@ mod standalone_tests {
                 .await
                 .is_err()
         );
-        assert!(
-            runtime
-                .find_owned_thread("occupied-thread")
-                .await?
-                .is_none()
-        );
+        assert!(runtime.find_owned_thread("occupied-thread")?.is_none());
         assert_eq!(
             tokio::fs::read(collision.join("unknown")).await?,
             b"keep unknown leftovers"

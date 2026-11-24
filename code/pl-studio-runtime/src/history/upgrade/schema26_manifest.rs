@@ -371,6 +371,7 @@ async fn stored_bodies(db: &impl ConnectionTrait, event_id: &str) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     fn usage_payload(database_id: &str) -> String {
         serde_json::json!({

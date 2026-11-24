@@ -379,12 +379,14 @@ mod tests {
             ],
             legacy_unbound: None,
         };
-        let error = load(
+        let error = match load(
             &serde_json::to_string(&duplicate).unwrap(),
             &accounts,
             |probe| (probe.as_str() == id.as_str()).then_some(revision),
-        )
-        .expect_err("duplicate account identity is rejected");
+        ) {
+            Ok(_) => panic!("duplicate account identity must be rejected"),
+            Err(error) => error,
+        };
         assert!(
             error
                 .to_string()

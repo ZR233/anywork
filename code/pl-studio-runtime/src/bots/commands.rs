@@ -2883,18 +2883,15 @@ pub(super) mod archive_tests {
             matches!(outcome, InboundWorkOutcome::NeedsAttention { diagnostic }
         if diagnostic.contains("registered reply owner"))
         );
-        assert!(
-            fixture
-                .host
-                .runtime
-                .bot_input_fact(
-                    &bound.creation_id,
-                    &format!(
-                        "bot:{}:{}:{}",
-                        bound.bot_id, bound.chat_id, bound.message_id
-                    ),
-                )
-                .eq(&crate::bots::BotInputRead::Absent)
+        assert_eq!(
+            fixture.host.runtime.bot_input_fact(
+                &bound.creation_id,
+                &format!(
+                    "bot:{}:{}:{}",
+                    bound.bot_id, bound.chat_id, bound.message_id
+                ),
+            )?,
+            crate::bots::BotInputRead::Absent,
         );
         fixture
             .managed

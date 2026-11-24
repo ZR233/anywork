@@ -1096,7 +1096,7 @@ mod archive_cancellation_tests {
                 fixture
                     .host
                     .runtime
-                    .bot_input_fact(&run.thread_id, &run.original_input),
+                    .bot_input_fact(&run.thread_id, &run.original_input)?,
                 BotInputRead::Absent,
             );
         }

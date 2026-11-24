@@ -11,6 +11,7 @@ use super::{StudioThreadFactory, mcp::ThreadMcpOwner, mcp_refresh_tool::McpToolC
 use crate::thread_assembler::ThreadAssemblyError;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReconnectMcpInput {
     #[schemars(length(min = 1))]

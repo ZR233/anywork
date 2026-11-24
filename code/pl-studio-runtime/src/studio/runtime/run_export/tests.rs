@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UnpricedReason,
-    UsageReport,
+    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 use pl_core::thread::{ThreadEffectBatch, UsageSummary};
+use pl_model::model::UnpricedReason;
 use sha2::{Digest, Sha256};
 
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};

@@ -46,8 +46,8 @@ impl StudioRuntime {
 #[cfg(test)]
 mod projection {
     use crate::config::{ConfigPaths, ConfigRuntime, ConfigStore, StudioConfig};
-    use crate::studio::worktree::ThreadWriteBehindWriter;
-    use crate::studio::{ProductEventBus, StudioStore};
+    use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
+    use crate::studio::{ModelPerformanceOwner, ProductEventBus, StudioStore};
     use crate::thread_assembler::delegation_models::DelegationModels;
     use crate::{
         DelegationModelResult, GetDelegationModelRequest, GetDelegationModelsRequest,
@@ -128,7 +128,7 @@ mod projection {
         let events =
             ProductEventBus::new(store.clone(), ThreadWriteBehindWriter::new(store.clone()));
         let performance =
-            super::ModelPerformanceOwner::new(store.clone(), events, "projection-test".into());
+            ModelPerformanceOwner::new(store.clone(), events, "projection-test".into());
         Ok(Projection {
             models: DelegationModels {
                 config,
