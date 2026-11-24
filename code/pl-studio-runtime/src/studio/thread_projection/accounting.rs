@@ -206,7 +206,7 @@ impl MergeableCost for pl_core::thread::UsageCost {
     }
 }
 
-pub(super) fn merge_runtime_costs(
+pub(in crate::studio) fn merge_runtime_costs(
     target: &mut Vec<crate::RuntimeCostAmount>,
     incoming: &[crate::RuntimeCostAmount],
 ) {

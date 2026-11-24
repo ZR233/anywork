@@ -104,7 +104,6 @@ pub(crate) struct BuiltinAgentDefinition {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
 struct Declaration {
     id: &'static str,
     scope: DeclarationScope,

@@ -6,7 +6,10 @@
 //! in one immediate transaction, keeps event and body identity, and restores the append-only
 //! trigger before commit. Body rows and chunks are not updated.
 
-use sea_orm::{ConnectionTrait, SqliteTransactionMode, TransactionOptions, TransactionTrait};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, SqliteTransactionMode, TransactionOptions,
+    TransactionTrait,
+};
 
 use super::super::{HistoryError, Result, db::statement};
 
@@ -81,9 +84,7 @@ pub(in crate::history) async fn mark_repaired(
     Ok(())
 }
 
-pub(in crate::history) async fn repair(
-    db: &(impl ConnectionTrait + TransactionTrait),
-) -> Result<()> {
+pub(in crate::history) async fn repair(db: &DatabaseConnection) -> Result<()> {
     let tx = db
         .begin_with_options(TransactionOptions {
             sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),

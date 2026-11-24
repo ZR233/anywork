@@ -71,7 +71,6 @@ use std::{
 pub use tools::{StudioCommandBinding, StudioGitBinding, StudioThreadTools, StudioWorkspaceTools};
 
 pub use crate::studio::WorkspaceUsageLease;
-pub use crate::{DelegationSettings, PureError};
 use pl_core::{
     context::ResourceAccess,
     thread::{

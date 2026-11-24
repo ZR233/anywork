@@ -80,8 +80,7 @@ pub use run_export::{
     RunExporter, RunInvocationV3, RunManifestV3, SealedMemberCutV3, SkillSearchManifestV3,
     ThreadUsageExportV3, TimingReportV3, TraceSummaryV3, UsageCoverage, UsageExportV3,
     UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
-    format_utc_rfc3339 as format_export_utc_rfc3339,
-    prepare_output_dir as prepare_export_output_dir, sha256_hex as export_sha256_hex,
+    format_utc_rfc3339 as format_export_utc_rfc3339, sha256_hex as export_sha256_hex,
     validate_output_dir_preflight as validate_export_output_dir_preflight,
 };
 pub(crate) mod thread_observation;

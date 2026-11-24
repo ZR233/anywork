@@ -8,7 +8,7 @@ use crate::{
 use anyhow::Result;
 use pl_model::protocol::{ConnectionMode, WireApi};
 
-use crate::{AccountEdit, AccountModelEdit};
+use crate::config_editor::{AccountEdit, AccountModelEdit};
 use pl_model::config::AccountTemplateId;
 use pl_model::protocol::ProtocolId;
 

@@ -48,7 +48,7 @@ impl StudioStore {
         let home = tempfile::Builder::new()
             .prefix("anywork-memory-store-")
             .tempdir()?;
-        let paths = StudioPaths::resolve(Some(home.path()))?;
+        let paths = StudioPaths::resolve(Some(home.path().to_path_buf()))?;
         let calls =
             crate::studio::storage::calls::CallsStore::open(&paths.calls_database()).await?;
         // A brand-new in-memory store for tests starts from empty canonical documents and never
@@ -65,7 +65,7 @@ impl StudioStore {
             attachment_lock: Default::default(),
             history_admission: Default::default(),
             paths,
-            memory_home: Some(home),
+            _memory_home: Some(std::sync::Arc::new(home)),
         };
         Ok(store)
     }
@@ -181,7 +181,7 @@ impl StudioStore {
             attachment_lock: Default::default(),
             history_admission: Default::default(),
             paths,
-            memory_home: None,
+            _memory_home: None,
         };
         Ok(store)
     }

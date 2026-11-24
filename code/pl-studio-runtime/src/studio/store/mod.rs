@@ -37,7 +37,7 @@ pub struct StudioStore {
     paths: StudioPaths,
     // Only the in-memory test store owns a temporary home. Drop recycles it after the
     // database fields above have closed their files.
-    memory_home: Option<tempfile::TempDir>,
+    _memory_home: Option<std::sync::Arc<tempfile::TempDir>>,
 }
 
 pub use error::{SessionLayoutMigrationFailed, StudioDatabaseError};

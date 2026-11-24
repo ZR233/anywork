@@ -6,7 +6,7 @@ pub(crate) use item::{ExecutionItem, ExecutionKind, ExecutionShape, ItemStamp};
 mod accounting;
 mod billing;
 pub(crate) use accounting::PreparedAccounting;
-pub(crate) use accounting::merge_runtime_costs;
+pub(in crate::studio) use accounting::merge_runtime_costs;
 pub(crate) use billing::AuxiliaryBillingReceipt;
 pub(in crate::studio) use billing::BillingFact;
 #[cfg(test)]
