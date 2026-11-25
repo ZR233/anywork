@@ -247,3 +247,6 @@ fn migrate_timing(object: &mut RawObject) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
