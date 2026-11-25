@@ -37,13 +37,7 @@ fn require_format(
     payload: &OpaquePayload,
     expected: &str,
 ) -> Result<(), PermissionProjectionError> {
-    if payload.format() != expected || payload.version() != 1 {
-        return Err(PermissionProjectionError::Unsupported {
-            format: payload.format().into(),
-            version: payload.version(),
-        });
-    }
-    Ok(())
+    super::interaction_projection::require_format(payload, expected).map_err(Into::into)
 }
 
 /// The decision frozen into a permission record, in the one shape this host writes and reads.
@@ -132,7 +126,7 @@ pub fn project_execution_permission(
         return Err(PermissionProjectionError::Identity);
     }
     let wire_id = super::interaction_key::encode(thread_id, &record.id);
-    let mut projected = InteractionRequest::tool_approval(
+    let projected = InteractionRequest::tool_approval(
         wire_id.clone(),
         InteractionScope {
             thread_id: thread_id.into(),
@@ -150,7 +144,6 @@ pub fn project_execution_permission(
         },
         record.created_at,
     );
-    projected.revision = 1;
     let command = match record.state {
         PermissionState::Pending => None,
         PermissionState::Allowed | PermissionState::Denied => {
@@ -191,14 +184,8 @@ pub fn project_execution_permission(
             cancelled_at: record.updated_at,
         })),
     };
-    if let Some(command) = command {
-        let decision = projected.decide(command)?;
-        projected.apply(decision, record.updated_at);
-    }
-    if projected.revision != record.revision {
-        return Err(PermissionProjectionError::Identity);
-    }
-    Ok(projected)
+    super::interaction_projection::replay(projected, command, record.revision, record.updated_at)
+        .map_err(Into::into)
 }
 
 impl SessionRuntime {
@@ -217,10 +204,15 @@ impl SessionRuntime {
         }
         resolution.interaction_id = local_id.to_owned();
         let thread = {
-            self.0.state().entries.get(thread_id).and_then(|entry| {
-                let native = entry.native().ok()?;
-                Some(native.thread.clone())
-            })
+            self.0
+                .state()
+                .members
+                .entries
+                .get(thread_id)
+                .and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some(native.thread.clone())
+                })
         }
         .ok_or_else(|| PermissionProjectionError::MissingThread(thread_id.into()))?;
         let snapshot = thread.snapshot();
@@ -253,5 +245,24 @@ impl SessionRuntime {
             })
             .await?;
         project_execution_permission(thread_id, &record)
+    }
+}
+
+impl From<super::interaction_projection::DecodeError> for PermissionProjectionError {
+    fn from(error: super::interaction_projection::DecodeError) -> Self {
+        use super::interaction_projection::DecodeError;
+        match error {
+            DecodeError::Unsupported { format, version } => Self::Unsupported { format, version },
+            DecodeError::Json(error) => Self::Decode(error),
+        }
+    }
+}
+impl From<super::interaction_projection::ReplayError> for PermissionProjectionError {
+    fn from(error: super::interaction_projection::ReplayError) -> Self {
+        use super::interaction_projection::ReplayError;
+        match error {
+            ReplayError::Transition(error) => Self::Projection(error),
+            ReplayError::Revision => Self::Identity,
+        }
     }
 }

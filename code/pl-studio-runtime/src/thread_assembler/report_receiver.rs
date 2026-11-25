@@ -42,7 +42,7 @@ impl SessionRuntime {
     /// A saved receipt does not discharge a cancelled/failed receiver cleanup. Both ACK recovery
     /// and normal activation retry this responsibility; neither may return the receiver as ready.
     pub(super) async fn finish_report_receiver(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        let incarnation = self.0.state().entries.get(id).and_then(|entry| {
+        let incarnation = self.0.state().members.entries.get(id).and_then(|entry| {
             (entry.native().ok()?.purpose == EntryPurpose::ReportReceiver)
                 .then_some(entry.native().ok()?.incarnation.clone())
         });
@@ -60,7 +60,7 @@ impl SessionRuntime {
         id: &str,
         incarnation: &Arc<()>,
     ) -> Result<(), ThreadAssemblyError> {
-        let retained = self.0.state().entries.get(id).is_some_and(|entry| {
+        let retained = self.0.state().members.entries.get(id).is_some_and(|entry| {
             entry.native().is_ok_and(|native| {
                 native.purpose == EntryPurpose::ReportReceiver
                     && Arc::ptr_eq(&native.incarnation, incarnation)
@@ -78,13 +78,13 @@ impl SessionRuntime {
         self.join_close_storage(id).await?;
         let removed = {
             let mut state = self.0.state();
-            if state.entries.get(id).is_some_and(|entry| {
+            if state.members.entries.get(id).is_some_and(|entry| {
                 entry.native().is_ok_and(|native| {
                     native.purpose == EntryPurpose::ReportReceiver
                         && Arc::ptr_eq(&native.incarnation, incarnation)
                 })
             }) {
-                state.remove_entry(id)
+                state.members.remove_entry(id)
             } else {
                 None
             }
@@ -112,9 +112,15 @@ impl AgentServices {
                 .events
                 .agent_execution_identity(parent)
                 .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
-                && !owner.0.state().entries.get(parent).is_some_and(|entry| {
-                    matches!(entry.runtime, crate::session::AgentRuntime::Acp(_))
-                }),
+                && !owner
+                    .0
+                    .state()
+                    .members
+                    .entries
+                    .get(parent)
+                    .is_some_and(|entry| {
+                        matches!(entry.runtime, crate::session::AgentRuntime::Acp(_))
+                    }),
             "Native report inbox requires a Native recipient"
         );
         self.deliver_pending_native(
@@ -209,6 +215,147 @@ impl AgentServices {
     /// All operations use the same installation, attachment and cleanup owner. Recipient and
     /// source-owned markers commit through Current; the review receipt carrier remains source-owned.
     /// The caller must not hold the source/recipient identity gate while joining this.
+    async fn apply_storage_write(
+        &self,
+        owner: &SessionRuntime,
+        parent: &str,
+        thread: &ThreadHandle,
+        write: &StorageWrite,
+        allow_wake: bool,
+    ) -> Result<()> {
+        owner.attach_close_storage(parent).await?;
+        match write {
+            StorageWrite::Pending(pending) => {
+                super::pending_delivery::complete_pending_native_delivery(
+                    self,
+                    owner,
+                    parent,
+                    thread,
+                    pending.clone(),
+                    allow_wake,
+                )
+                .await?;
+            }
+            StorageWrite::PendingSource(pending) => {
+                super::pending_delivery::persist_pending_marker(thread, pending).await?;
+            }
+            StorageWrite::ClearPendingSource(pending) => {
+                super::pending_delivery::clear_pending_marker(thread, pending).await?;
+            }
+            StorageWrite::ReviewSettlement(settlement) => {
+                use pl_core::thread::extensions::ExtensionMutation;
+                let extension_id = settlement.extension_id();
+                if !thread.snapshot().extensions.contains_key(&extension_id) {
+                    thread
+                        .mutate_extensions(vec![ExtensionMutation::Put {
+                            id: extension_id.clone(),
+                            expected_revision: None,
+                            payload: settlement.encode()?,
+                        }])
+                        .await?;
+                }
+                let saved = thread
+                    .snapshot()
+                    .extensions
+                    .get(&extension_id)
+                    .map(|record| ReviewFeedbackSettlement::decode(&extension_id, &record.payload))
+                    .transpose()?
+                    .context("review feedback settlement was not committed")?;
+                anyhow::ensure!(
+                    saved == *settlement,
+                    "review feedback settlement conflicts with its Current marker"
+                );
+            }
+            StorageWrite::ClearReviewSettlement(settlement) => {
+                use pl_core::thread::extensions::ExtensionMutation;
+                let extension_id = settlement.extension_id();
+                if let Some(record) = thread.snapshot().extensions.get(&extension_id).cloned() {
+                    let saved = ReviewFeedbackSettlement::decode(&extension_id, &record.payload)?;
+                    anyhow::ensure!(
+                        saved == *settlement,
+                        "review feedback settlement changed before cleanup"
+                    );
+                    thread
+                        .mutate_extensions(vec![ExtensionMutation::Delete {
+                            id: extension_id,
+                            expected_revision: record.revision,
+                        }])
+                        .await?;
+                }
+            }
+            StorageWrite::ClearReviewReceipt { message, sequence } => {
+                use pl_core::thread::extensions::ExtensionMutation;
+                let extension_id = review_feedback_receipt_extension_id(&message.id);
+                if let Some(record) = thread.snapshot().extensions.get(&extension_id).cloned() {
+                    let receipt = pl_core::thread::inbox::message_receipt(
+                        &thread.snapshot(),
+                        &extension_id,
+                        message,
+                    )?
+                    .context("review feedback receipt extension is unreadable")?;
+                    anyhow::ensure!(
+                        receipt.sequence == *sequence,
+                        "review feedback receipt changed before cleanup"
+                    );
+                    thread
+                        .mutate_extensions(vec![ExtensionMutation::Delete {
+                            id: extension_id,
+                            expected_revision: record.revision,
+                        }])
+                        .await?;
+                }
+            }
+            StorageWrite::ReviewDelivery(fact) => {
+                use pl_core::thread::extensions::ExtensionMutation;
+                let extension_id = fact.extension_id();
+                if !thread.snapshot().extensions.contains_key(&extension_id) {
+                    thread
+                        .mutate_extensions(vec![ExtensionMutation::Put {
+                            id: extension_id.clone(),
+                            expected_revision: None,
+                            payload: fact.encode()?,
+                        }])
+                        .await?;
+                }
+                let saved = thread
+                    .snapshot()
+                    .extensions
+                    .get(&extension_id)
+                    .map(|record| {
+                        super::review_delivery::ReviewDeliveryFact::decode(&record.payload)
+                    })
+                    .transpose()?
+                    .context("review delivery CAS has no current carrier")?;
+                anyhow::ensure!(
+                    saved.message.digest() == fact.message.digest(),
+                    "review delivery identity conflicts with its current carrier"
+                );
+                if let Some(record) = thread.snapshot().extensions.get(&extension_id) {
+                    let carrier =
+                        super::review_delivery::ReviewDeliveryFact::decode(&record.payload)?;
+                    anyhow::ensure!(
+                        carrier.message.digest() == saved.message.digest(),
+                        "review delivery carrier conflicts with durable original"
+                    );
+                    thread
+                        .mutate_extensions(vec![ExtensionMutation::Delete {
+                            id: extension_id,
+                            expected_revision: record.revision,
+                        }])
+                        .await?;
+                }
+            }
+        }
+        if !matches!(write, StorageWrite::Pending(_)) {
+            self.store
+                .conversation_store(parent)
+                .await?
+                .flush_current(thread.runtime_epoch())
+                .await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+
     async fn write_storage_message(
         &self,
         owner: &SessionRuntime,
@@ -225,18 +372,19 @@ impl AgentServices {
                 // Final close rejects new execution but still owns the original
                 // admitted report. This private storage write never resumes it.
                 let closing_inbox = matches!(write, StorageWrite::Pending(_))
-                    && (state.sealed_agents.contains_key(parent) || state.closing)
-                    && !state.unpublished_children.contains_key(parent)
-                    && !state.preparing_children.contains_key(parent);
+                    && (state.close.sealed_agents.contains_key(parent) || state.close.closing)
+                    && !state.activation.unpublished_children.contains_key(parent)
+                    && !state.activation.preparing_children.contains_key(parent);
                 let source_write = !matches!(write, StorageWrite::Pending(_));
                 if state
+                    .activation
                     .creating
                     .get(parent)
                     .is_some_and(|preparation| preparation.settlement.is_none())
                 {
                     Recipient::Preparing
                 } else {
-                    match state.entries.get(parent) {
+                    match state.members.entries.get(parent) {
                         None => Recipient::Cold(EntryPurpose::ReportReceiver),
                         Some(entry) => match entry.native()?.purpose {
                             EntryPurpose::ReportReceiver => {
@@ -330,7 +478,7 @@ impl AgentServices {
                         Err(error) => return Err(error.into()),
                     };
                     let incarnation = (purpose == EntryPurpose::ReportReceiver).then_some(
-                        owner.0.state().entries[parent]
+                        owner.0.state().members.entries[parent]
                             .native()?
                             .incarnation
                             .clone(),
@@ -338,171 +486,9 @@ impl AgentServices {
                     (thread, incarnation, false)
                 }
             };
-            let delivery = async {
-                owner.attach_close_storage(parent).await?;
-                match &write {
-                    StorageWrite::Pending(pending) => {
-                        super::pending_delivery::complete_pending_native_delivery(
-                            self,
-                            owner,
-                            parent,
-                            &thread,
-                            pending.clone(),
-                            allow_wake,
-                        )
-                        .await?;
-                    }
-                    StorageWrite::PendingSource(pending) => {
-                        super::pending_delivery::persist_pending_marker(&thread, pending).await?;
-                        self.store
-                            .conversation_store(parent)
-                            .await?
-                            .flush_current(thread.runtime_epoch())
-                            .await?;
-                    }
-                    StorageWrite::ClearPendingSource(pending) => {
-                        super::pending_delivery::clear_pending_marker(&thread, pending).await?;
-                        self.store
-                            .conversation_store(parent)
-                            .await?
-                            .flush_current(thread.runtime_epoch())
-                            .await?;
-                    }
-                    StorageWrite::ReviewSettlement(settlement) => {
-                        use pl_core::thread::extensions::ExtensionMutation;
-                        let extension_id = settlement.extension_id();
-                        if !thread.snapshot().extensions.contains_key(&extension_id) {
-                            thread
-                                .mutate_extensions(vec![ExtensionMutation::Put {
-                                    id: extension_id.clone(),
-                                    expected_revision: None,
-                                    payload: settlement.encode()?,
-                                }])
-                                .await?;
-                        }
-                        let saved = thread
-                            .snapshot()
-                            .extensions
-                            .get(&extension_id)
-                            .map(|record| {
-                                ReviewFeedbackSettlement::decode(&extension_id, &record.payload)
-                            })
-                            .transpose()?
-                            .context("review feedback settlement was not committed")?;
-                        anyhow::ensure!(
-                            saved == *settlement,
-                            "review feedback settlement conflicts with its Current marker"
-                        );
-                        self.store
-                            .conversation_store(parent)
-                            .await?
-                            .flush_current(thread.runtime_epoch())
-                            .await?;
-                    }
-                    StorageWrite::ClearReviewSettlement(settlement) => {
-                        use pl_core::thread::extensions::ExtensionMutation;
-                        let extension_id = settlement.extension_id();
-                        if let Some(record) =
-                            thread.snapshot().extensions.get(&extension_id).cloned()
-                        {
-                            let saved =
-                                ReviewFeedbackSettlement::decode(&extension_id, &record.payload)?;
-                            anyhow::ensure!(
-                                saved == *settlement,
-                                "review feedback settlement changed before cleanup"
-                            );
-                            thread
-                                .mutate_extensions(vec![ExtensionMutation::Delete {
-                                    id: extension_id,
-                                    expected_revision: record.revision,
-                                }])
-                                .await?;
-                        }
-                        self.store
-                            .conversation_store(parent)
-                            .await?
-                            .flush_current(thread.runtime_epoch())
-                            .await?;
-                    }
-                    StorageWrite::ClearReviewReceipt { message, sequence } => {
-                        use pl_core::thread::extensions::ExtensionMutation;
-                        let extension_id = review_feedback_receipt_extension_id(&message.id);
-                        if let Some(record) =
-                            thread.snapshot().extensions.get(&extension_id).cloned()
-                        {
-                            let receipt = pl_core::thread::inbox::message_receipt(
-                                &thread.snapshot(),
-                                &extension_id,
-                                message,
-                            )?
-                            .context("review feedback receipt extension is unreadable")?;
-                            anyhow::ensure!(
-                                receipt.sequence == *sequence,
-                                "review feedback receipt changed before cleanup"
-                            );
-                            thread
-                                .mutate_extensions(vec![ExtensionMutation::Delete {
-                                    id: extension_id,
-                                    expected_revision: record.revision,
-                                }])
-                                .await?;
-                        }
-                        self.store
-                            .conversation_store(parent)
-                            .await?
-                            .flush_current(thread.runtime_epoch())
-                            .await?;
-                    }
-                    StorageWrite::ReviewDelivery(fact) => {
-                        use pl_core::thread::extensions::ExtensionMutation;
-                        let extension_id = fact.extension_id();
-                        if !thread.snapshot().extensions.contains_key(&extension_id) {
-                            thread
-                                .mutate_extensions(vec![ExtensionMutation::Put {
-                                    id: extension_id.clone(),
-                                    expected_revision: None,
-                                    payload: fact.encode()?,
-                                }])
-                                .await?;
-                        }
-                        let saved = thread
-                            .snapshot()
-                            .extensions
-                            .get(&extension_id)
-                            .map(|record| {
-                                super::review_delivery::ReviewDeliveryFact::decode(&record.payload)
-                            })
-                            .transpose()?
-                            .context("review delivery CAS has no current carrier")?;
-                        anyhow::ensure!(
-                            saved.message.digest() == fact.message.digest(),
-                            "review delivery identity conflicts with its current carrier"
-                        );
-                        if let Some(record) = thread.snapshot().extensions.get(&extension_id) {
-                            let carrier = super::review_delivery::ReviewDeliveryFact::decode(
-                                &record.payload,
-                            )?;
-                            anyhow::ensure!(
-                                carrier.message.digest() == saved.message.digest(),
-                                "review delivery carrier conflicts with durable original"
-                            );
-                            thread
-                                .mutate_extensions(vec![ExtensionMutation::Delete {
-                                    id: extension_id,
-                                    expected_revision: record.revision,
-                                }])
-                                .await?;
-                        }
-                        self.store
-                            .conversation_store(parent)
-                            .await?
-                            .flush_current(thread.runtime_epoch())
-                            .await?;
-                    }
-                }
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
+            let delivery = self
+                .apply_storage_write(owner, parent, &thread, &write, allow_wake)
+                .await;
             let cleanup = match temporary {
                 Some(incarnation) => owner
                     .release_report_receiver(parent, &incarnation)
@@ -520,3 +506,7 @@ impl AgentServices {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "report_receiver/storage_report_tests.rs"]
+mod storage_report_tests;

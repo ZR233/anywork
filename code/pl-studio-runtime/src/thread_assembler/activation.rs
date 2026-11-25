@@ -1,5 +1,35 @@
 //! Owned, coalesced preparation before publishing a root or restored Thread.
 use super::*;
+
+#[derive(Debug, Default)]
+pub(super) struct ActivationCoordinator {
+    pub(super) creating: BTreeMap<String, Preparation>,
+    pub(super) preparing_children: BTreeMap<String, children::PreparingChild>,
+    pub(super) unpublished_children: BTreeMap<String, child_resources::UnpublishedChild>,
+    pub(super) pending_activation: BTreeMap<String, crate::thread_assembler::ThreadActivation>,
+    pub(super) failed_preparations: BTreeMap<String, Arc<FailedPreparation>>,
+}
+
+impl ActivationCoordinator {
+    pub(super) fn release_reservation(&mut self, id: &str, registered_owner: bool) {
+        if let Some(preparation) = self.creating.remove(id)
+            && (preparation.settlement.is_some()
+                || (!registered_owner && preparation.resources.has_obligations()))
+        {
+            self.failed_preparations.insert(
+                id.to_owned(),
+                Arc::new(FailedPreparation {
+                    resources: preparation.resources,
+                    identity: preparation.identity,
+                    settlement: preparation.settlement,
+                    gate: Default::default(),
+                }),
+            );
+        }
+        self.pending_activation.remove(id);
+    }
+}
+
 use futures::FutureExt;
 use std::future::Future;
 
@@ -109,10 +139,10 @@ impl SessionRuntime {
             changed.as_mut().enable();
             let waiting = {
                 let state = self.0.state();
-                if state.closing {
+                if state.close.closing {
                     return Err(ThreadAssemblyError::Closed);
                 }
-                if let Some(entry) = state.entries.get(identity.id()) {
+                if let Some(entry) = state.members.entries.get(identity.id()) {
                     if entry.native()?.parent_id.as_deref() != identity.parent_id()
                         || entry.identity != identity.agent
                         || entry.binding != identity.binding
@@ -126,12 +156,12 @@ impl SessionRuntime {
                         return Ok(entry.native()?.thread.clone());
                     }
                     if entry.native()?.purpose != super::EntryPurpose::ReportReceiver
-                        && !state.creating.contains_key(identity.id())
+                        && !state.activation.creating.contains_key(identity.id())
                     {
                         return Err(ThreadAssemblyError::Unpublished(identity.id().to_owned()));
                     }
                 }
-                let preparation = match state.creating.get(identity.id()) {
+                let preparation = match state.activation.creating.get(identity.id()) {
                     Some(preparation)
                         if preparation.parent_id.as_deref() == identity.parent_id() =>
                     {
@@ -141,11 +171,15 @@ impl SessionRuntime {
                     None => None,
                 };
                 (
-                    state.entries.get(identity.id()).is_some_and(|entry| {
-                        entry.native().is_ok_and(|native| {
-                            native.purpose == super::EntryPurpose::ReportReceiver
-                        })
-                    }),
+                    state
+                        .members
+                        .entries
+                        .get(identity.id())
+                        .is_some_and(|entry| {
+                            entry.native().is_ok_and(|native| {
+                                native.purpose == super::EntryPurpose::ReportReceiver
+                            })
+                        }),
                     preparation,
                 )
             };
@@ -168,8 +202,8 @@ impl SessionRuntime {
                 Err(ThreadAssemblyError::Identity(_))
                     if {
                         let state = self.0.state();
-                        state.creating.contains_key(identity.id())
-                            || state.entries.contains_key(identity.id())
+                        state.activation.creating.contains_key(identity.id())
+                            || state.members.entries.contains_key(identity.id())
                     } =>
                 {
                     continue;
@@ -180,6 +214,7 @@ impl SessionRuntime {
             let cancellation = {
                 let mut state = self.0.state();
                 let preparation = state
+                    .activation
                     .creating
                     .get_mut(identity.id())
                     .ok_or(ThreadAssemblyError::Closed)?;
@@ -192,7 +227,13 @@ impl SessionRuntime {
                 let workspace_owner = super::WorkspacePreparationOwner::default();
                 let operation = std::panic::AssertUnwindSafe(async {
                     let _operation = owner.agent_operation(identity.id()).await;
-                    if owner.0.state().sealed_agents.contains_key(identity.id()) {
+                    if owner
+                        .0
+                        .state()
+                        .close
+                        .sealed_agents
+                        .contains_key(identity.id())
+                    {
                         return Err(ThreadAssemblyError::Closed);
                     }
                     let (delegation, root_current) = if identity.agent.parent_agent_id.is_none() {
@@ -201,18 +242,19 @@ impl SessionRuntime {
                     } else {
                         (None, None)
                     };
+                    let resources = owner
+                        .0
+                        .state()
+                        .activation
+                        .creating
+                        .get(identity.id())
+                        .ok_or(ThreadAssemblyError::Closed)?
+                        .resources
+                        .require_native()?
+                        .clone();
                     let agent_controls = match delegation {
                         Some(selection) => {
                             let profiles = owner.agent_profiles_snapshot()?;
-                            let resources = owner
-                                .0
-                                .state()
-                                .creating
-                                .get(identity.id())
-                                .ok_or(ThreadAssemblyError::Closed)?
-                                .resources
-                                .require_native()?
-                                .clone();
                             owner.agent_control_tools(
                                 &identity.agent,
                                 &resources,
@@ -222,15 +264,6 @@ impl SessionRuntime {
                         }
                         None => Vec::new(),
                     };
-                    let resources = owner
-                        .0
-                        .state()
-                        .creating
-                        .get(identity.id())
-                        .expect("reserved preparation")
-                        .resources
-                        .require_native()?
-                        .clone();
                     workspace_owner.bind_native_resources(resources);
                     workspace_owner.bind_admission(&owner, identity.id(), &cancellation)?;
                     let spec = factory
@@ -261,10 +294,16 @@ impl SessionRuntime {
                     owner
                         .0
                         .state()
+                        .activation
                         .pending_activation
                         .insert(identity.id().to_owned(), identity.clone());
                     let assembled = owner.assemble_reserved(spec, &reservation).await;
-                    owner.0.state().pending_activation.remove(identity.id());
+                    owner
+                        .0
+                        .state()
+                        .activation
+                        .pending_activation
+                        .remove(identity.id());
                     assembled
                 })
                 .catch_unwind()
@@ -274,6 +313,7 @@ impl SessionRuntime {
                     let cancellation = {
                         let mut state = owner.0.state();
                         let preparation = state
+                            .activation
                             .creating
                             .get_mut(identity.id())
                             .expect("settlement retains its original preparation");
@@ -292,6 +332,7 @@ impl SessionRuntime {
                             owner
                                 .0
                                 .state()
+                                .activation
                                 .creating
                                 .get_mut(identity.id())
                                 .expect("settlement retains its original preparation")
@@ -418,7 +459,7 @@ mod backend_tests {
         assert_eq!(child_delegation_reads.load(Ordering::SeqCst), 0);
         assert_eq!(child_preparations.load(Ordering::SeqCst), 0);
         let state = child_owner.0.state();
-        assert!(!state.creating.contains_key("acp-child"));
-        assert!(!state.entries.contains_key("acp-child"));
+        assert!(!state.activation.creating.contains_key("acp-child"));
+        assert!(!state.members.entries.contains_key("acp-child"));
     }
 }

@@ -704,6 +704,7 @@ fn native_execution_options(
 ) -> Result<pl_core::thread::input::InputDriverOptions> {
     let state = owner.0.state();
     let native = state
+        .members
         .entries
         .get(recipient)
         .ok_or_else(|| anyhow::anyhow!("pending delivery recipient is unavailable"))?

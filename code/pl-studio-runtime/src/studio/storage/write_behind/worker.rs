@@ -12,7 +12,6 @@ use std::time::Duration;
 use crate::PureError;
 use crate::studio::PersistenceState;
 
-use super::apply::apply_batch;
 use super::handle::WriterShared;
 use super::queue::{
     FAST_BATCH_RETRIES, FLUSH_INTERVAL, MAX_BATCH_BYTES, MAX_BATCH_COMMITS, MAX_QUEUE_BYTES,
@@ -102,26 +101,8 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
         }
         let started_at = std::time::Instant::now();
         let commit_count = batch.commit_count();
-        match apply_batch(&shared.store, &batch).await {
+        match shared.persistence.apply(&batch).await {
             Ok(()) => {
-                #[cfg(test)]
-                {
-                    let gate = {
-                        let mut gate = shared.lease_ack_gate.lock().unwrap();
-                        if gate.as_ref().is_some_and(|gate| batch.entries.iter().any(|entry| {
-                            matches!(entry.mutation.as_ref(), super::queue::StudioMutation::WorktreeLease(lease)
-                                if lease.state == gate.state)
-                        })) {
-                            gate.take()
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(gate) = gate {
-                        let _ = gate.entered.send(());
-                        let _ = gate.release.await;
-                    }
-                }
                 let was_unhealthy = matches!(
                     shared.state.borrow().state,
                     PersistenceState::Degraded(_) | PersistenceState::Recovering(_)

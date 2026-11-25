@@ -56,6 +56,22 @@ pub(super) struct ApprovalPrompt {
     pub working_directory: Option<String>,
 }
 
+fn validated_command_input(
+    name: &str,
+    input: &OpaquePayload,
+) -> Result<Option<pl_tool::exec::ValidatedExecInput>, ToolError> {
+    if name == pl_tool::exec::TOOL_EXEC {
+        return pl_tool::exec::parse_and_validate_exec_input(input.content())
+            .map(Some)
+            .map_err(pl_tool::exec::ExecInputError::into_tool_error);
+    }
+    if name == pl_tool::exec::TOOL_WRITE_STDIN {
+        pl_tool::exec::parse_and_validate_stdin_input(input.content())
+            .map_err(pl_tool::exec::ExecInputError::into_tool_error)?;
+    }
+    Ok(None)
+}
+
 impl StudioExecutionPolicy {
     fn denied(&self, reason: impl Into<String>) -> ToolError {
         let error = PermissionDenied(reason.into());
@@ -85,18 +101,7 @@ impl ExecutionPolicy for StudioExecutionPolicy {
             )
             .await;
         }
-        let exec = if self.tool_id == pl_tool::exec::TOOL_EXEC {
-            Some(
-                pl_tool::exec::parse_and_validate_exec_input(input.content())
-                    .map_err(pl_tool::exec::ExecInputError::into_tool_error)?,
-            )
-        } else {
-            if self.tool_id == pl_tool::exec::TOOL_WRITE_STDIN {
-                pl_tool::exec::parse_and_validate_stdin_input(input.content())
-                    .map_err(pl_tool::exec::ExecInputError::into_tool_error)?;
-            }
-            None
-        };
+        let exec = validated_command_input(&self.tool_id, input)?;
         let may_escape = matches!(self.options.host, ApprovalHost::Local)
             && self
                 .options
@@ -197,18 +202,7 @@ pub(crate) async fn authorize_remote_workspace(
     root: &std::path::Path,
 ) -> Result<ExecutionGrant, ToolError> {
     let is_exec = name == pl_tool::exec::TOOL_EXEC;
-    let exec = if is_exec {
-        Some(
-            pl_tool::exec::parse_and_validate_exec_input(input.content())
-                .map_err(pl_tool::exec::ExecInputError::into_tool_error)?,
-        )
-    } else {
-        if name == pl_tool::exec::TOOL_WRITE_STDIN {
-            pl_tool::exec::parse_and_validate_stdin_input(input.content())
-                .map_err(pl_tool::exec::ExecInputError::into_tool_error)?;
-        }
-        None
-    };
+    let exec = validated_command_input(name, input)?;
     if mode == PermissionMode::FullAccess {
         return Ok(ExecutionGrant::default());
     }

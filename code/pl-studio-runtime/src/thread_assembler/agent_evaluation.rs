@@ -29,23 +29,25 @@ impl AgentServices {
         );
         let thread = {
             let state = owner.0.state();
-            ensure!(!state.closing, "agent coordinator is closing");
+            ensure!(!state.close.closing, "agent coordinator is closing");
             let parent = state
+                .members
                 .entries
                 .get(caller)
                 .context("evaluation caller is not active")?;
             ensure!(
                 parent.native()?.ready
-                    && !state.sealed_agents.contains_key(caller)
+                    && !state.close.sealed_agents.contains_key(caller)
                     && parent.identity.parent_agent_id.is_none()
                     && parent.native()?.thread.snapshot().lifecycle == ThreadLifecycle::Open,
                 "only an active parent root may evaluate its direct child"
             );
             ensure!(
-                !state.sealed_agents.contains_key(&request.target) && !record.archived,
+                !state.close.sealed_agents.contains_key(&request.target) && !record.archived,
                 "evaluation target is closing or archived"
             );
             let target = state
+                .members
                 .entries
                 .get(&request.target)
                 .context("evaluation target has no current owner")?
@@ -204,6 +206,7 @@ impl SessionRuntime {
                         owner
                             .0
                             .state()
+                            .members
                             .entries
                             .get(&root)
                             .is_some_and(|entry| entry.identity.parent_agent_id.is_none()),

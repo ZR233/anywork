@@ -64,7 +64,7 @@ pub(crate) enum ReviewForwardReason {
 }
 
 use std::sync::Arc;
-fn error_chain(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
+pub(super) fn error_chain(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
     let mut source = Some(error);
     let mut chain = Vec::new();
     while let Some(error) = source {
@@ -297,11 +297,72 @@ impl SessionRuntime {
     }
 
     /// Restricted host send. The only recipient and parent come from the frozen review relationship.
+    fn adjudicate_review_forward(
+        &self,
+        target_id: &str,
+        delivery: &ThreadMessage,
+        receipt_extension_id: &str,
+        id: &str,
+    ) -> Option<ReviewForward> {
+        use super::observation::DeliveryDisposition;
+        match self.adjudicate_review_message(target_id, delivery, receipt_extension_id) {
+            Ok(DeliveryDisposition::Receipt(sequence)) => Some(ReviewForward::Accepted {
+                message_id: id.to_owned(),
+                sequence,
+            }),
+            Ok(DeliveryDisposition::Conflict) => Some(ReviewForward::Rejected {
+                message_id: id.to_owned(),
+                reason: ReviewForwardReason::IdentityConflict,
+            }),
+            Err(error) => Some(ReviewForward::Unconfirmed {
+                message_id: id.to_owned(),
+                reason: ReviewForwardReason::StorageUnavailable(Arc::new(error)),
+            }),
+            Ok(DeliveryDisposition::New) => None,
+        }
+    }
+
+    async fn validate_review_relationship(
+        &self,
+        services: &super::agent_services::AgentServices,
+        request: &ReviewFeedbackDelivery<'_>,
+        target_id: &str,
+    ) -> Result<String> {
+        let reviewer = services.record(request.reviewer).await?;
+        self.ensure_agent_admission_open(request.reviewer)?;
+        let reviewer_thread = self
+            .thread(request.reviewer)
+            .context("reviewer is not resident")?;
+        let reviewer_snapshot = reviewer_thread.snapshot();
+        validate_idle(&reviewer_snapshot)?;
+        ensure!(
+            crate::studio::workspace_receipt::from_snapshot(&reviewer_snapshot)?.as_ref()
+                == Some(request.assignment)
+                && request.assignment.mode == crate::AgentWorkspaceMode::Review
+                && crate::studio::model_route::saved_profile(&reviewer_snapshot)?.is_some_and(
+                    |(profile, _)| profile.workspace_mode == crate::AgentWorkspaceMode::Review
+                ),
+            "reviewer frozen authority is no longer valid"
+        );
+        let parent = reviewer
+            .parent_thread_id
+            .context("reviewer has no parent")?;
+        let target = services.record(target_id).await?;
+        ensure!(
+            !target.archived
+                && services.direct_child(&parent, target_id)?
+                && target.root_thread_id == reviewer.root_thread_id
+                && target.workspace_id == reviewer.workspace_id,
+            "review relationship is no longer valid"
+        );
+        self.ensure_agent_admission_open(&parent)?;
+        Ok(parent)
+    }
+
     pub(crate) async fn forward_review(
         &self,
         request: ReviewFeedbackDelivery<'_>,
     ) -> ReviewForward {
-        use super::observation::DeliveryDisposition;
         let id = review_message_id(request.reviewer, request.turn_id, request.terminal_sequence);
         let receipt_extension_id = review_feedback_receipt_extension_id(&id);
         let reject = |reason| ReviewForward::Rejected {
@@ -332,20 +393,10 @@ impl SessionRuntime {
             request.body,
         );
         // Receipt adjudication precedes idle/version/availability checks, including cold activation.
-        match self.adjudicate_review_message(target_id, &delivery, &receipt_extension_id) {
-            Ok(DeliveryDisposition::Receipt(sequence)) => {
-                return ReviewForward::Accepted {
-                    message_id: id,
-                    sequence,
-                };
-            }
-            Ok(DeliveryDisposition::Conflict) => {
-                return reject(ReviewForwardReason::IdentityConflict);
-            }
-            Err(error) => {
-                return unknown(ReviewForwardReason::StorageUnavailable(Arc::new(error)));
-            }
-            Ok(DeliveryDisposition::New) => {}
+        if let Some(outcome) =
+            self.adjudicate_review_forward(target_id, &delivery, &receipt_extension_id, &id)
+        {
+            return outcome;
         }
         if request.source != ReviewDeliverySource::LiveTerminal
             || request.revocation.is_some_and(|fence| {
@@ -357,38 +408,9 @@ impl SessionRuntime {
         let Some(services) = self.0.state().agent_services.clone() else {
             return reject(ReviewForwardReason::TargetUnavailable);
         };
-        let relationship = async {
-            let reviewer = services.record(request.reviewer).await?;
-            self.ensure_agent_admission_open(request.reviewer)?;
-            let reviewer_thread = self
-                .thread(request.reviewer)
-                .context("reviewer is not resident")?;
-            let reviewer_snapshot = reviewer_thread.snapshot();
-            validate_idle(&reviewer_snapshot)?;
-            ensure!(
-                crate::studio::workspace_receipt::from_snapshot(&reviewer_snapshot)?.as_ref()
-                    == Some(request.assignment)
-                    && request.assignment.mode == crate::AgentWorkspaceMode::Review
-                    && crate::studio::model_route::saved_profile(&reviewer_snapshot)?
-                        .is_some_and(|(profile, _)| profile.workspace_mode
-                            == crate::AgentWorkspaceMode::Review),
-                "reviewer frozen authority is no longer valid"
-            );
-            let parent = reviewer
-                .parent_thread_id
-                .context("reviewer has no parent")?;
-            let target = services.record(target_id).await?;
-            ensure!(
-                !target.archived
-                    && services.direct_child(&parent, target_id)?
-                    && target.root_thread_id == reviewer.root_thread_id
-                    && target.workspace_id == reviewer.workspace_id,
-                "review relationship is no longer valid"
-            );
-            self.ensure_agent_admission_open(&parent)?;
-            Ok::<_, anyhow::Error>(parent)
-        }
-        .await;
+        let relationship = self
+            .validate_review_relationship(&services, &request, target_id)
+            .await;
         let parent = match relationship {
             Ok(parent) => parent,
             Err(error) => {
@@ -403,20 +425,10 @@ impl SessionRuntime {
         let _operation = self.agent_operation(target_id).await;
         // Another incarnation's notification may have won while this sender waited for the gate.
         // Its original receipt wins before a busy/changed target can reject a replay.
-        match self.adjudicate_review_message(target_id, &delivery, &receipt_extension_id) {
-            Ok(DeliveryDisposition::Receipt(sequence)) => {
-                return ReviewForward::Accepted {
-                    message_id: id,
-                    sequence,
-                };
-            }
-            Ok(DeliveryDisposition::Conflict) => {
-                return reject(ReviewForwardReason::IdentityConflict);
-            }
-            Err(error) => {
-                return unknown(ReviewForwardReason::StorageUnavailable(Arc::new(error)));
-            }
-            Ok(DeliveryDisposition::New) => {}
+        if let Some(outcome) =
+            self.adjudicate_review_forward(target_id, &delivery, &receipt_extension_id, &id)
+        {
+            return outcome;
         }
         if self.ensure_agent_admission_open(target_id).is_err() {
             return reject(ReviewForwardReason::TargetUnavailable);
@@ -450,10 +462,10 @@ impl SessionRuntime {
         };
         let options = {
             let state = self.0.state();
-            let Some(entry) = state.entries.get(target_id).filter(|entry| {
+            let Some(entry) = state.members.entries.get(target_id).filter(|entry| {
                 entry.native().is_ok_and(|native| {
                     native.ready
-                        && super::State::membership_parent(&state.by_agent, entry)
+                        && super::EntryRegistry::membership_parent(&state.members.by_agent, entry)
                             == Some(parent.as_str())
                 })
             }) else {

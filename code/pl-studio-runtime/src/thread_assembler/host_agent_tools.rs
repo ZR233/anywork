@@ -1,4 +1,5 @@
 //! One collaboration catalog consumed by Native and Host MCP without protocol-specific authors.
+pub(super) mod query;
 use std::{marker::PhantomData, sync::Arc};
 
 use anyhow::Result;

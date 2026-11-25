@@ -46,12 +46,57 @@ impl std::fmt::Debug for CloseStorage {
     }
 }
 
-#[cfg(test)]
-#[derive(Debug)]
-pub(super) struct AttachmentAckGate {
-    pub(super) thread_id: String,
-    pub(super) attached: tokio::sync::oneshot::Sender<()>,
-    pub(super) release: tokio::sync::oneshot::Receiver<()>,
+/// Owns the physical history/current attachment acknowledgement for one exact Core instance.
+/// Implementations must not retain a Registry or call back while the session transaction is held.
+pub(super) trait StorageAttachment: std::fmt::Debug + Send + Sync {
+    fn attach(
+        &self,
+        thread: pl_core::thread::ThreadHandle,
+        storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+        current: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
+    ) -> BoxFuture<'static, Result<(), Arc<ThreadError>>>;
+}
+#[derive(Debug, Default)]
+pub(super) struct NativeStorageAttachment;
+impl StorageAttachment for NativeStorageAttachment {
+    fn attach(
+        &self,
+        thread: pl_core::thread::ThreadHandle,
+        storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+        current: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
+    ) -> BoxFuture<'static, Result<(), Arc<ThreadError>>> {
+        Box::pin(async move {
+            thread
+                .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
+                    storage,
+                ))
+                .await
+                .map_err(Arc::new)?;
+            if let Some(current) = current {
+                current.attach_current(thread).await.map_err(|source| {
+                    Arc::new(ThreadError::Storage(Arc::new(
+                        pl_core::thread::cold::ColdStoreError {
+                            source: source.into_boxed_dyn_error(),
+                        },
+                    )))
+                })?;
+            }
+            Ok(())
+        })
+    }
+}
+
+fn retain_attachment(
+    attachment: Arc<dyn StorageAttachment>,
+    thread: pl_core::thread::ThreadHandle,
+    storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+    current: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
+) -> AttachmentCompletion {
+    // Invocation is deferred until poll, outside the registration transaction. This future owns
+    // the exact writer/core pair and its result survives cancellation of every external waiter.
+    async move { attachment.attach(thread, storage, current).await }
+        .boxed()
+        .shared()
 }
 
 impl SessionRuntime {
@@ -62,8 +107,6 @@ impl SessionRuntime {
     ) -> Result<(), ThreadAssemblyError> {
         use crate::studio::store::thread_preparation::PreparationSave;
         let purpose = self.operation_close_purpose(id, ClosePurpose::Preserve);
-        #[cfg(test)]
-        self.s2_activation_settlement_checkpoint(id).await?;
         if self.observed_thread(id).is_some() {
             self.close(id).await?;
         }
@@ -188,6 +231,7 @@ impl SessionRuntime {
         let (thread, channel) = {
             let state = self.0.state();
             let entry = state
+                .members
                 .entries
                 .get(id)
                 .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
@@ -222,28 +266,11 @@ impl SessionRuntime {
             ))
         });
         let current = binding.as_ref().map(|binding| binding.conversation.clone());
-        let completion = async move {
-            thread
-                .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
-                    storage,
-                ))
-                .await
-                .map_err(Arc::new)?;
-            if let Some(current) = current {
-                current.attach_current(thread).await.map_err(|source| {
-                    Arc::new(ThreadError::Storage(Arc::new(
-                        pl_core::thread::cold::ColdStoreError {
-                            source: source.into_boxed_dyn_error(),
-                        },
-                    )))
-                })?;
-            }
-            Ok(())
-        }
-        .boxed()
-        .shared();
+        let attachment = self.0.state().close.attachment.clone();
+        let completion = retain_attachment(attachment, thread, storage, current);
         self.0
             .state()
+            .members
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?
@@ -322,7 +349,7 @@ impl SessionRuntime {
         purpose: ClosePurpose,
     ) -> Result<(), ThreadAssemblyError> {
         loop {
-            let owned = self.0.state().entries.get(id).and_then(|entry| {
+            let owned = self.0.state().members.entries.get(id).and_then(|entry| {
                 let native = entry.native().ok()?;
                 Some({
                     (
@@ -359,7 +386,7 @@ impl SessionRuntime {
                     return Ok(());
                 }
                 None => {
-                    if self.0.state().entries.get(id).is_some_and(|entry| {
+                    if self.0.state().members.entries.get(id).is_some_and(|entry| {
                         entry
                             .native()
                             .is_ok_and(|native| native.purpose == EntryPurpose::Execution)
@@ -384,6 +411,7 @@ impl SessionRuntime {
                     {
                         let mut state = self.0.state();
                         let entry = state
+                            .members
                             .entries
                             .get_mut(id)
                             .filter(|entry| {
@@ -401,6 +429,7 @@ impl SessionRuntime {
                 Some(CloseStorage::Initialized(binding)) => {
                     let mut state = self.0.state();
                     let entry = state
+                        .members
                         .entries
                         .get(id)
                         .filter(|entry| {
@@ -414,41 +443,15 @@ impl SessionRuntime {
                     {
                         continue;
                     }
-                    #[cfg(test)]
-                    let gate = state
-                        .storage_attachment_gate
-                        .take_if(|gate| gate.thread_id == id);
-                    let conversation = binding.conversation.clone();
-                    let sink = binding.storage.clone();
-                    // No Registry/Entry owner is captured, so retaining this future cannot form
-                    // a cycle. A completed result is retained even if no waiter remains.
-                    let completion: AttachmentCompletion = async move {
-                        thread
-                            .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
-                                sink,
-                            ))
-                            .await
-                            .map_err(Arc::new)?;
-                        conversation
-                            .attach_current(thread)
-                            .await
-                            .map_err(|source| {
-                                Arc::new(ThreadError::Storage(Arc::new(
-                                    pl_core::thread::cold::ColdStoreError {
-                                        source: source.into_boxed_dyn_error(),
-                                    },
-                                )))
-                            })?;
-                        #[cfg(test)]
-                        if let Some(gate) = gate {
-                            let _ = gate.attached.send(());
-                            let _ = gate.release.await;
-                        }
-                        Ok(())
-                    }
-                    .boxed()
-                    .shared();
+                    let attachment = state.close.attachment.clone();
+                    let completion = retain_attachment(
+                        attachment,
+                        thread,
+                        binding.storage.clone(),
+                        Some(binding.conversation.clone()),
+                    );
                     let entry = state
+                        .members
                         .entries
                         .get_mut(id)
                         .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
@@ -476,6 +479,7 @@ impl SessionRuntime {
                     }
                     let mut state = self.0.state();
                     let entry = state
+                        .members
                         .entries
                         .get_mut(id)
                         .filter(|entry| {
@@ -500,6 +504,7 @@ impl SessionRuntime {
     ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {
         let state = self.0.state();
         let entry = state
+            .members
             .entries
             .get(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
@@ -523,6 +528,7 @@ impl SessionRuntime {
     ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {
         let state = self.0.state();
         let entry = state
+            .members
             .entries
             .get(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
@@ -573,6 +579,7 @@ impl SessionRuntime {
             let binding = {
                 let state = self.0.state();
                 match state
+                    .members
                     .entries
                     .get(id)
                     .and_then(|entry| entry.native().ok()?.close_storage.as_ref())
@@ -604,6 +611,7 @@ impl SessionRuntime {
             if let Some(CloseStorage::Execution { joined, .. }) = self
                 .0
                 .state()
+                .members
                 .entries
                 .get_mut(id)
                 .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())
@@ -615,6 +623,7 @@ impl SessionRuntime {
         let original = {
             let state = self.0.state();
             match state
+                .members
                 .entries
                 .get(id)
                 .and_then(|entry| entry.native().ok()?.close_storage.as_ref())
@@ -694,6 +703,7 @@ impl SessionRuntime {
         if let Some(CloseStorage::Execution { joined, .. }) = self
             .0
             .state()
+            .members
             .entries
             .get_mut(id)
             .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())

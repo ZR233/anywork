@@ -120,7 +120,7 @@ impl StudioThreadFactory {
                 &parent.root_thread_id,
                 &mut project,
                 &workspace_usage,
-                super::root_resources::BotWorkspacePreparation::New,
+                super::bot_workspace::BotWorkspacePreparation::New,
             )
             .await?;
         let local_root = bot_root

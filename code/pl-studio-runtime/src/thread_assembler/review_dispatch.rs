@@ -162,11 +162,39 @@ fn original_report(
     Ok(Some(original))
 }
 
+#[derive(Clone, Copy)]
+struct DeliveryMark {
+    committed_sequence: u64,
+    fault_generation: u64,
+    has_error: bool,
+    queued_bytes: u64,
+    _process_bytes: u64,
+}
+impl From<(u64, u64, bool, u64, u64)> for DeliveryMark {
+    fn from(
+        (committed_sequence, fault_generation, has_error, queued_bytes, process_bytes): (
+            u64,
+            u64,
+            bool,
+            u64,
+            u64,
+        ),
+    ) -> Self {
+        Self {
+            committed_sequence,
+            fault_generation,
+            has_error,
+            queued_bytes,
+            _process_bytes: process_bytes,
+        }
+    }
+}
+
 struct TerminalResources {
     source: Option<Arc<HistoryChannel>>,
     parent: Option<Arc<HistoryChannel>>,
-    source_mark: Option<(u64, u64, bool, u64, u64)>,
-    parent_mark: Option<(u64, u64, bool, u64, u64)>,
+    source_mark: Option<DeliveryMark>,
+    parent_mark: Option<DeliveryMark>,
     process_bytes: u64,
     source_incarnation: Option<Arc<()>>,
     parent_incarnation: Option<Arc<()>>,
@@ -183,21 +211,23 @@ impl TerminalResources {
             }
         }
         fn progressed(
-            now: Option<(u64, u64, bool, u64, u64)>,
-            before: Option<(u64, u64, bool, u64, u64)>,
+            now: Option<DeliveryMark>,
+            before: Option<DeliveryMark>,
             budget: bool,
         ) -> bool {
             match (now, before) {
-                (Some(now), Some(before)) if budget => now.3 < before.3,
+                (Some(now), Some(before)) if budget => now.queued_bytes < before.queued_bytes,
                 (Some(now), Some(before)) => {
-                    now.0 > before.0 || (before.2 && !now.2) || now.1 > before.1
+                    now.committed_sequence > before.committed_sequence
+                        || (before.has_error && !now.has_error)
+                        || now.fault_generation > before.fault_generation
                 }
                 _ => false,
             }
         }
         if budget {
             // A failed speculative reservation releases its own bytes. Comparing with the mark
-            // taken *before* the attempt, rather than an epoch alone, excludes that self-wakeup.
+            // taken *before* the attempt, rather than an fault_generation alone, excludes that self-wakeup.
             self.process_bytes < before.process_bytes
                 || progressed(self.source_mark, before.source_mark, true)
                 || progressed(self.parent_mark, before.parent_mark, true)
@@ -334,11 +364,15 @@ impl SessionRuntime {
         let (source_incarnation, parent_incarnation) = {
             let state = self.0.state();
             (
-                state.entries.get(&terminal.thread.id).and_then(|entry| {
-                    let native = entry.native().ok()?;
-                    Some(native.incarnation.clone())
-                }),
-                state.entries.get(parent).and_then(|entry| {
+                state
+                    .members
+                    .entries
+                    .get(&terminal.thread.id)
+                    .and_then(|entry| {
+                        let native = entry.native().ok()?;
+                        Some(native.incarnation.clone())
+                    }),
+                state.members.entries.get(parent).and_then(|entry| {
                     let native = entry.native().ok()?;
                     Some(native.incarnation.clone())
                 }),
@@ -346,10 +380,12 @@ impl SessionRuntime {
         };
         TerminalResources {
             process_bytes: services.store.thread_persistence().delivery_process_bytes(),
-            source_mark: source.as_ref().map(|channel| channel.delivery_retry_mark()),
+            source_mark: source
+                .as_ref()
+                .map(|channel| channel.delivery_retry_mark().into()),
             parent_mark: parent_channel
                 .as_ref()
-                .map(|channel| channel.delivery_retry_mark()),
+                .map(|channel| channel.delivery_retry_mark().into()),
             source,
             parent: parent_channel,
             parent_incarnation,
@@ -554,9 +590,76 @@ impl SessionRuntime {
     }
     // Keep this owned handoff out of the much larger close/recovery future's inline state.
     // Otherwise nested cold close/ACK construction can overflow the default executor stack.
-    fn perform_review_delivery(
+    async fn reconcile_review_without_finish(
         &self,
         request: ReviewDispatch,
+        review: OriginalReview,
+    ) -> Result<()> {
+        if request.source == ReviewDeliverySource::Reconciliation
+            && let Some(target) = review.target.as_ref().filter(|target| {
+                target.feedback == Some(crate::AgentReviewFeedback::ToExecutor)
+                    && review.disposition == ReviewDisposition::NeedsChanges
+            })
+        {
+            // Cold recovery owns the saved decision marker, not a new execution grant.
+            // Report its scheduling obligation without re-reading a historical finish or
+            // manufacturing the missing live feedback body.
+            let services = self
+                .0
+                .state()
+                .agent_services
+                .clone()
+                .context("review services unavailable")?;
+            let forward = ReviewForward::Unconfirmed {
+                message_id: super::agent_review::review_message_id(
+                    &request.reviewer.id,
+                    &request.turn.turn_id,
+                    request.terminal_sequence,
+                ),
+                reason: ReviewForwardReason::RecoveryRequiresScheduling,
+            };
+            let fact = ReviewDeliveryException::from_forward(
+                &request.reviewer.id,
+                &request.turn.turn_id,
+                request.turn.input_id.as_deref(),
+                request.terminal_sequence,
+                &target.agent_id,
+                request.source,
+                &forward,
+            )
+            .context("recovery exception identity missing")?
+            .into_fact()?;
+            let fact = services
+                .persist_review_delivery(self, &request.reviewer.id, fact)
+                .await?;
+            let parent = request
+                .reviewer
+                .parent_thread_id
+                .as_deref()
+                .context("reviewer has no parent")?;
+            self.acknowledge_review_exception(parent, fact.message, false)
+                .await?;
+            services
+                .clear_pending_native_source(
+                    self,
+                    &request.reviewer.id,
+                    PendingNativeDelivery::review_decision(request.original)?,
+                )
+                .await?;
+            return Ok(());
+        }
+        ensure!(
+            review.reason.is_some() || review.disposition == ReviewDisposition::Inconclusive,
+            TerminalIntegrityError(
+                "immutable structured review has no successful committed finish receipt"
+            )
+        );
+        Ok(())
+    }
+
+    fn perform_review_delivery(
+        &self,
+        mut request: ReviewDispatch,
     ) -> futures::future::BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let Some(original) = original_report(&request.original)? else {
@@ -572,68 +675,8 @@ impl SessionRuntime {
                     && original.input_id == request.turn.input_id,
                 TerminalIntegrityError("review dispatch differs from its immutable terminal")
             );
-            let Some(finish) = request.finish else {
-                if request.source == ReviewDeliverySource::Reconciliation
-                    && let Some(target) = review.target.as_ref().filter(|target| {
-                        target.feedback == Some(crate::AgentReviewFeedback::ToExecutor)
-                            && review.disposition == ReviewDisposition::NeedsChanges
-                    })
-                {
-                    // Cold recovery owns the saved decision marker, not a new execution grant.
-                    // Report its scheduling obligation without re-reading a historical finish or
-                    // manufacturing the missing live feedback body.
-                    let services = self
-                        .0
-                        .state()
-                        .agent_services
-                        .clone()
-                        .context("review services unavailable")?;
-                    let forward = ReviewForward::Unconfirmed {
-                        message_id: super::agent_review::review_message_id(
-                            &request.reviewer.id,
-                            &request.turn.turn_id,
-                            request.terminal_sequence,
-                        ),
-                        reason: ReviewForwardReason::RecoveryRequiresScheduling,
-                    };
-                    let fact = ReviewDeliveryException::from_forward(
-                        &request.reviewer.id,
-                        &request.turn.turn_id,
-                        request.turn.input_id.as_deref(),
-                        request.terminal_sequence,
-                        &target.agent_id,
-                        request.source,
-                        &forward,
-                    )
-                    .context("recovery exception identity missing")?
-                    .into_fact()?;
-                    let fact = services
-                        .persist_review_delivery(self, &request.reviewer.id, fact)
-                        .await?;
-                    let parent = request
-                        .reviewer
-                        .parent_thread_id
-                        .as_deref()
-                        .context("reviewer has no parent")?;
-                    self.acknowledge_review_exception(parent, fact.message, false)
-                        .await?;
-                    services
-                        .clear_pending_native_source(
-                            self,
-                            &request.reviewer.id,
-                            PendingNativeDelivery::review_decision(request.original)?,
-                        )
-                        .await?;
-                    return Ok(());
-                }
-                ensure!(
-                    review.reason.is_some()
-                        || review.disposition == ReviewDisposition::Inconclusive,
-                    TerminalIntegrityError(
-                        "immutable structured review has no successful committed finish receipt"
-                    )
-                );
-                return Ok(());
+            let Some(finish) = request.finish.take() else {
+                return self.reconcile_review_without_finish(request, review).await;
             };
             let Some(conclusion) = finish.review else {
                 return Ok(());
@@ -944,14 +987,7 @@ impl SessionRuntime {
 mod future_sizes {
     use super::*;
 
-    fn check<Input, F: std::future::Future + Send>(name: &str, _: impl FnOnce(Input) -> F) {
-        let bytes = std::mem::size_of::<F>();
-        eprintln!("{name}: {bytes} bytes");
-        assert!(
-            bytes <= 16 * 1024,
-            "{name} has {bytes} bytes of inline state"
-        );
-    }
+    use crate::thread_assembler::test_support::bounded_future as check;
 
     #[test]
     fn review_settlement_futures_remain_bounded() {

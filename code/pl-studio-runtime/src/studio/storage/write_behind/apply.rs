@@ -11,6 +11,24 @@ use crate::studio::store::directory::apply_directory_delta;
 use crate::studio::store::object::put_object;
 use sea_orm::TransactionTrait;
 
+/// Acknowledges one atomic directory/lease batch only after its persistence obligation finishes.
+pub(super) trait BatchPersistence: Send + Sync {
+    fn apply<'a>(
+        &'a self,
+        batch: &'a PendingBatch,
+    ) -> futures::future::BoxFuture<'a, Result<(), BatchError>>;
+}
+
+pub(super) struct StorePersistence(pub(super) StudioStore);
+impl BatchPersistence for StorePersistence {
+    fn apply<'a>(
+        &'a self,
+        batch: &'a PendingBatch,
+    ) -> futures::future::BoxFuture<'a, Result<(), BatchError>> {
+        Box::pin(apply_batch(&self.0, batch))
+    }
+}
+
 pub(super) async fn apply_batch(
     store: &StudioStore,
     batch: &PendingBatch,
@@ -21,7 +39,7 @@ pub(super) async fn apply_batch(
             StudioMutation::Delta(delta) => {
                 apply_directory_delta(store, &tx, delta)
                     .await
-                    .map_err(|error| classify_store_error(store_error(error)))?;
+                    .map_err(classify_store_error)?;
             }
             StudioMutation::WorktreeLease(lease) => {
                 put_object(
@@ -31,7 +49,7 @@ pub(super) async fn apply_batch(
                     crate::studio::unix_seconds(),
                 )
                 .await
-                .map_err(|error| classify_store_error(store_error(error)))?;
+                .map_err(classify_store_error)?;
             }
         }
     }
@@ -44,14 +62,11 @@ fn classify_db_error(error: sea_orm::DbErr) -> BatchError {
     classified_store_error(disposition, store_error(error))
 }
 
-fn classify_store_error(error: PureError) -> BatchError {
-    let message = error.to_string().to_ascii_lowercase();
-    let disposition = if contains_retryable_sqlite_error(&message) {
-        PersistenceDisposition::Retryable
-    } else {
-        PersistenceDisposition::Blocked
-    };
-    classified_store_error(disposition, error)
+fn classify_store_error(error: anyhow::Error) -> BatchError {
+    let disposition = error
+        .downcast_ref::<sea_orm::DbErr>()
+        .map_or(PersistenceDisposition::Blocked, db_error_disposition);
+    classified_store_error(disposition, store_error(error))
 }
 
 fn classified_store_error(disposition: PersistenceDisposition, error: PureError) -> BatchError {
@@ -87,13 +102,6 @@ fn db_error_disposition(error: &sea_orm::DbErr) -> PersistenceDisposition {
             SqlxError::PoolTimedOut => PersistenceDisposition::Retryable,
             _ => PersistenceDisposition::Blocked,
         },
-        DbErr::Conn(RuntimeErr::Internal(message))
-        | DbErr::Exec(RuntimeErr::Internal(message))
-        | DbErr::Query(RuntimeErr::Internal(message))
-            if contains_retryable_sqlite_error(&message.to_ascii_lowercase()) =>
-        {
-            PersistenceDisposition::Retryable
-        }
         _ => PersistenceDisposition::Blocked,
     }
 }
@@ -107,12 +115,38 @@ fn sqlite_code_disposition(extended_code: i32) -> PersistenceDisposition {
     }
 }
 
-fn contains_retryable_sqlite_error(message: &str) -> bool {
-    message.contains("database is locked")
-        || message.contains("database table is locked")
-        || message.contains("database is busy")
-        || message.contains("disk i/o error")
-        || message.contains("sqlite_busy")
-        || message.contains("sqlite_locked")
-        || message.contains("sqlite_ioerr")
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::{ConnAcquireErr, DbErr, RuntimeErr};
+
+    #[test]
+    fn retry_classification_preserves_typed_sources_through_context() {
+        let cases = [
+            (
+                "pool timeout",
+                DbErr::ConnectionAcquire(ConnAcquireErr::Timeout),
+                true,
+            ),
+            (
+                "diagnostic text cannot authorize retry",
+                DbErr::Exec(RuntimeErr::Internal("database is locked".into())),
+                false,
+            ),
+            (
+                "constraint failure",
+                DbErr::Custom("constraint violation".into()),
+                false,
+            ),
+        ];
+        for (name, source, retryable) in cases {
+            let error =
+                classify_store_error(anyhow::Error::new(source).context("persist directory"));
+            assert_eq!(
+                matches!(error, BatchError::RetryableStore(_)),
+                retryable,
+                "{name}"
+            );
+        }
+    }
 }

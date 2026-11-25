@@ -6,7 +6,7 @@ use crate::{
     GetDelegationModelsRequest, ListDelegationModelsRequest, LocalModelPerformanceSummary,
     ModelCapabilitiesDto, ModelModalityDto,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pl_model::{
     config::{AccountId, AccountModelEntry, AccountModelKey, ModelRouteConfig, ReasoningEffort},
     model::ModelType,
@@ -66,18 +66,13 @@ impl DelegationModels {
                         model_id: entry.model.base.slug.clone(),
                     },
                     entry,
+                    account,
                 ));
             }
         }
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
         let mut models = Vec::with_capacity(candidates.len());
-        for (key, entry) in candidates {
-            let account = snapshot
-                .config
-                .models
-                .accounts
-                .get(&AccountId::new(key.account_id.clone())?)
-                .context("candidate account missing")?;
+        for (key, entry, account) in candidates {
             let guide = account.model_selection_guide(&key.model_id)?;
             let descriptor = pl_model::config::model_descriptor(&entry);
             models.push(DelegationModelListItem {

@@ -1,6 +1,6 @@
 //! Product-owned relationship checks and descendant shutdown over generic Thread handles.
 use super::observation::DeliveryDisposition;
-use super::{Registry, SessionRuntime, State, ThreadAssemblyError};
+use super::{EntryRegistry, Registry, SessionRuntime, State, ThreadAssemblyError};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{ThreadLifecycle, input::InputState, task::TaskStatus},
@@ -57,10 +57,13 @@ impl AgentHost {
         let state = owner.0.state();
         let id = self.identity.thread_id.as_str();
         let entry = state
+            .members
             .entries
             .get(id)
             .ok_or_else(|| ControlError::Missing(id.into()))?;
-        if state.closing || state.sealed_agents.contains_key(id) || entry.identity != self.identity
+        if state.close.closing
+            || state.close.sealed_agents.contains_key(id)
+            || entry.identity != self.identity
         {
             return Err(ControlError::Closed);
         }
@@ -117,8 +120,8 @@ impl AgentHost {
         let owner = self.owner()?;
         let state = owner.0.state();
         let agent = crate::AgentId::new(target).map_err(ControlError::service)?;
-        if let Some(id) = state.by_agent.get(&agent)
-            && let Some(entry) = state.entries.get(id)
+        if let Some(id) = state.members.by_agent.get(&agent)
+            && let Some(entry) = state.members.entries.get(id)
             && entry.identity.session_id == self.identity.session_id
         {
             return Ok(entry.identity.clone());
@@ -145,6 +148,7 @@ impl AgentHost {
         owner
             .0
             .state()
+            .members
             .entries
             .get(thread)
             .map(|entry| entry.identity.agent_id.clone())
@@ -168,6 +172,7 @@ fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ControlError> {
             return Err(ControlError::Ancestry);
         }
         let identity = state
+            .members
             .entries
             .get(&id)
             .map(|entry| entry.identity.clone())
@@ -191,6 +196,7 @@ fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ControlError> {
         cursor = match identity.parent_agent_id {
             Some(parent) => Some(
                 state
+                    .members
                     .by_agent
                     .get(&parent)
                     .cloned()
@@ -211,7 +217,7 @@ fn ancestry(state: &State, id: &str) -> Result<Vec<String>, ControlError> {
 }
 
 fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ControlError> {
-    if !state.entries.get(caller).is_some_and(member_open) {
+    if !state.members.entries.get(caller).is_some_and(member_open) {
         return Err(ControlError::Missing(caller.into()));
     }
     ancestry(state, caller)?;
@@ -253,11 +259,13 @@ fn push_preparing_row(
     };
     if ancestry(state, parent)?.last().is_some_and(|id| id == root) {
         let identity = state
+            .members
             .entries
             .get(id)
             .map(|entry| entry.identity.clone())
             .or_else(|| {
                 state
+                    .activation
                     .pending_activation
                     .get(id)
                     .map(|activation| activation.agent.clone())
@@ -276,6 +284,7 @@ fn push_preparing_row(
             .as_ref()
             .map_or(id, |identity| identity.agent_id.as_str());
         let parent = state
+            .members
             .entries
             .get(parent)
             .ok_or_else(|| ControlError::Missing(parent.into()))?
@@ -345,6 +354,76 @@ async fn cleanup_spawn_failure(
             cleanup,
         }),
     }
+}
+
+/// Cancellation seals the original reservation but still joins the admitted factory future.
+async fn settle_child_preparation<T, E, F>(
+    owner: &SessionRuntime,
+    context: &AgentCallContext,
+    reservation: &super::children::ChildReservation,
+    preparation: F,
+    map_error: impl FnOnce(E) -> ThreadAssemblyError,
+) -> Result<T, ControlError>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    tokio::pin!(preparation);
+    let result = tokio::select! {
+        result = &mut preparation => result,
+        () = context.cancellation.cancelled() => {
+            reservation.cancellation.cancel();
+            preparation.await
+        }
+    };
+    match result {
+        Ok(prepared) => Ok(prepared),
+        Err(error) => Err(cleanup_spawn_failure(owner, &reservation.id, map_error(error)).await),
+    }
+}
+
+async fn configure_acp_child(
+    session: &pl_acp::session::Session,
+    options: Vec<pl_tool::collaboration::thread::AcpSessionConfig>,
+) -> Result<(), ControlError> {
+    let mut requested = Vec::new();
+    for option in options {
+        use pl_tool::collaboration::thread::AcpSessionConfigValue;
+        let value = match option.value {
+            AcpSessionConfigValue::Select(value) => {
+                crate::acp_schema::SessionConfigOptionValue::ValueId {
+                    value: value.into(),
+                }
+            }
+            AcpSessionConfigValue::Boolean(value) => {
+                crate::acp_schema::SessionConfigOptionValue::Boolean { value }
+            }
+        };
+        // The original SDK checks the current declaration before issuing this RPC.
+        session
+            .set_config(option.id.clone().into(), value.clone())
+            .await
+            .map_err(ControlError::service)?;
+        let snapshot = session.snapshot().await.map_err(ControlError::service)?;
+        if !acp_config_matches(&snapshot, &option.id, &value) {
+            return Err(ControlError::service(std::io::Error::other(
+                "ACP child configuration readback differs from the request",
+            )));
+        }
+        requested.retain(|(id, _)| id != &option.id);
+        requested.push((option.id, value));
+    }
+    if !requested.is_empty() {
+        let snapshot = session.snapshot().await.map_err(ControlError::service)?;
+        if requested
+            .iter()
+            .any(|(id, value)| !acp_config_matches(&snapshot, id, value))
+        {
+            return Err(ControlError::service(std::io::Error::other(
+                "later ACP child options changed an explicit selection; message not submitted",
+            )));
+        }
+    }
+    Ok::<_, ControlError>(())
 }
 
 /// Releases only setup admission on every return path; the session still owns accepted RPCs.
@@ -422,7 +501,7 @@ impl AgentHost {
             .begin_child_preparation(&caller, &reservation.id)
             .await
             .map_err(ControlError::service)?;
-        let workspace_owner = owner.0.state().unpublished_children[&reservation.id]
+        let workspace_owner = owner.0.state().activation.unpublished_children[&reservation.id]
             .workspace
             .clone();
         let child_request = super::ChildThreadRequest {
@@ -448,28 +527,17 @@ impl AgentHost {
             .map_err(ControlError::service)?,
         };
         let preparation = business.open_child(&owner, &child_request, &profile, definition);
-        tokio::pin!(preparation);
-        let result = tokio::select! {
-            result = &mut preparation => result,
-            () = context.cancellation.cancelled() => {
-                reservation.cancellation.cancel();
-                preparation.await
-            }
-        };
-        let (resources, workspace) = match result {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return Err(cleanup_spawn_failure(
-                    &owner,
-                    &reservation.id,
-                    ThreadAssemblyError::Resource {
-                        operation: "prepare ACP child",
-                        source: error.into_boxed_dyn_error(),
-                    },
-                )
-                .await);
-            }
-        };
+        let (resources, workspace) = settle_child_preparation(
+            &owner,
+            &context,
+            &reservation,
+            preparation,
+            |error: anyhow::Error| ThreadAssemblyError::Resource {
+                operation: "prepare ACP child",
+                source: error.into_boxed_dyn_error(),
+            },
+        )
+        .await?;
         let _configuration_admission = InitialAcpConfiguration(&resources);
         let agent = self.target_agent(&owner, &reservation.id)?;
         let mut receipt = SpawnReceipt {
@@ -496,49 +564,12 @@ impl AgentHost {
             if context.cancellation.is_cancelled() {
                 return Err(ControlError::Closed);
             }
-            let session = resources
-                .session()
-                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?;
+            let session = resources.session().map_err(|error| {
+                ControlError::service(super::agent_services::ServiceError(error))
+            })?;
             // Config RPCs remain owned by the session driver. Close must be able to acquire
             // the member operation lock even when the peer never answers a configuration.
-            let configuration = async {
-            let mut requested = Vec::new();
-            for option in request.acp_config {
-                use pl_tool::collaboration::thread::AcpSessionConfigValue;
-                let value = match option.value {
-                    AcpSessionConfigValue::Select(value) => {
-                        crate::acp_schema::SessionConfigOptionValue::ValueId {
-                            value: value.into(),
-                        }
-                    }
-                    AcpSessionConfigValue::Boolean(value) => {
-                        crate::acp_schema::SessionConfigOptionValue::Boolean { value }
-                    }
-                };
-                // The original SDK checks the current declaration before issuing this RPC.
-                session
-                    .set_config(option.id.clone().into(), value.clone())
-                    .await
-                    .map_err(ControlError::service)?;
-                let snapshot = session.snapshot().await.map_err(ControlError::service)?;
-                if !acp_config_matches(&snapshot, &option.id, &value) {
-                    return Err(ControlError::service(std::io::Error::other(
-                        "ACP child configuration readback differs from the request",
-                    )));
-                }
-                requested.retain(|(id, _)| id != &option.id);
-                requested.push((option.id, value));
-            }
-            if !requested.is_empty() {
-                let snapshot = session.snapshot().await.map_err(ControlError::service)?;
-                if requested.iter().any(|(id, value)| !acp_config_matches(&snapshot, id, value)) {
-                    return Err(ControlError::service(std::io::Error::other(
-                        "later ACP child options changed an explicit selection; message not submitted",
-                    )));
-                }
-            }
-            Ok::<_, ControlError>(())
-            };
+            let configuration = configure_acp_child(session, request.acp_config);
             tokio::select! { biased;
                 () = context.cancellation.cancelled() => return Err(ControlError::Closed),
                 () = resources.cancellation.cancelled() => return Err(ControlError::Closed),
@@ -587,6 +618,41 @@ impl AgentHost {
                 })?;
         }
         Ok(())
+    }
+
+    fn native_spawn_receipt(
+        &self,
+        owner: &SessionRuntime,
+        id: &str,
+        child: &pl_core::thread::ThreadHandle,
+        profile_id: String,
+        delegation: crate::DelegationSettings,
+    ) -> Result<SpawnReceipt, ThreadAssemblyError> {
+        let workspace = assigned_workspace(&child.snapshot())?;
+        let profile = crate::studio::model_route::saved_profile(&child.snapshot())
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "decode frozen child Profile",
+                source: source.into(),
+            })?
+            .ok_or_else(|| ThreadAssemblyError::Identity("child has no frozen Profile".into()))?
+            .0;
+        let model = crate::studio::delegation::profile_model(&profile);
+        let agent_id = self
+            .target_agent(owner, id)
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "resolve prepared child identity",
+                source: Box::new(source),
+            })?
+            .to_string();
+        Ok(SpawnReceipt {
+            agent_id,
+            profile_id,
+            model: Some(model),
+            delegation,
+            workspace,
+            message_accepted: false,
+            message_sequence: None,
+        })
     }
 
     async fn spawn_owned(
@@ -686,6 +752,7 @@ impl AgentHost {
             owner
                 .0
                 .state()
+                .activation
                 .unpublished_children
                 .get(&reservation.id)
                 .ok_or_else(|| ControlError::Missing(reservation.id.clone()))?
@@ -714,21 +781,14 @@ impl AgentHost {
             )
             .map_err(ControlError::service)?,
         });
-        tokio::pin!(preparation);
-        let spec = tokio::select! {
-            result = &mut preparation => result,
-            () = context.cancellation.cancelled() => {
-                reservation.cancellation.cancel();
-                // Keep the original factory future and its resource owner until it settles.
-                preparation.await
-            }
-        };
-        let spec = match spec {
-            Ok(spec) => spec,
-            Err(error) => {
-                return Err(cleanup_spawn_failure(&owner, &reservation.id, error).await);
-            }
-        };
+        let spec = settle_child_preparation(
+            &owner,
+            &context,
+            &reservation,
+            preparation,
+            std::convert::identity,
+        )
+        .await?;
         if reservation.cancellation.is_cancelled() {
             drop(spec);
             return Err(cleanup_spawn_failure(
@@ -764,20 +824,14 @@ impl AgentHost {
         }
         let options = spec.execution;
         let assembly = owner.assemble_child(spec, &context);
-        tokio::pin!(assembly);
-        let child = tokio::select! {
-            result = &mut assembly => result,
-            () = context.cancellation.cancelled() => {
-                reservation.cancellation.cancel();
-                assembly.await
-            }
-        };
-        let child = match child {
-            Ok(child) => child,
-            Err(error) => {
-                return Err(cleanup_spawn_failure(&owner, &reservation.id, error).await);
-            }
-        };
+        let child = settle_child_preparation(
+            &owner,
+            &context,
+            &reservation,
+            assembly,
+            std::convert::identity,
+        )
+        .await?;
         if reservation.cancellation.is_cancelled() {
             return Err(cleanup_spawn_failure(
                 &owner,
@@ -786,58 +840,11 @@ impl AgentHost {
             )
             .await);
         }
-        let workspace = match assigned_workspace(&child.snapshot()) {
-            Ok(workspace) => workspace,
-            Err(error) => return Err(cleanup_spawn_failure(&owner, &id, error).await),
-        };
-        let profile = match crate::studio::model_route::saved_profile(&child.snapshot()) {
-            Ok(Some((profile, _))) => profile,
-            Ok(None) => {
-                return Err(cleanup_spawn_failure(
-                    &owner,
-                    &id,
-                    ThreadAssemblyError::Identity("child has no frozen Profile".into()),
-                )
-                .await);
-            }
-            Err(source) => {
-                return Err(cleanup_spawn_failure(
-                    &owner,
-                    &id,
-                    ThreadAssemblyError::Resource {
-                        operation: "decode frozen child Profile",
-                        source: source.into(),
-                    },
-                )
-                .await);
-            }
-        };
-        let model = crate::studio::delegation::profile_model(&profile);
-        let agent_id = match self.target_agent(&owner, &id) {
-            Ok(agent) => agent.to_string(),
-            Err(source) => {
-                return Err(cleanup_spawn_failure(
-                    &owner,
-                    &id,
-                    ThreadAssemblyError::Resource {
-                        operation: "resolve prepared child identity",
-                        source: Box::new(source),
-                    },
-                )
-                .await);
-            }
-        };
-        // Freeze every creation fact before publication. Nothing after the handoff may
-        // turn a real published member into an error without its creation receipt.
-        let mut receipt = SpawnReceipt {
-            agent_id,
-            profile_id: request.profile_id,
-            model: Some(model),
-            delegation,
-            workspace,
-            message_accepted: false,
-            message_sequence: None,
-        };
+        let mut receipt =
+            match self.native_spawn_receipt(&owner, &id, &child, request.profile_id, delegation) {
+                Ok(receipt) => receipt,
+                Err(error) => return Err(cleanup_spawn_failure(&owner, &id, error).await),
+            };
         if let Some(check) = &review_check
             && let Err(error) = check.confirm().await
         {
@@ -1011,6 +1018,7 @@ impl AgentControlHost for AgentHost {
         }) || owner
             .0
             .state()
+            .members
             .entries
             .get(&message.target)
             .is_some_and(|entry| matches!(entry.runtime, crate::session::AgentRuntime::Acp(_)));
@@ -1066,17 +1074,19 @@ impl AgentControlHost for AgentHost {
             .map_err(ControlError::service)?;
         let (target, options) = {
             let state = owner.0.state();
-            if state.closing {
+            if state.close.closing {
                 return Err(ControlError::Closed);
             }
             descendant(&state, caller, &message.target)?;
             let entry = state
+                .members
                 .entries
                 .get(&message.target)
                 .filter(|entry| {
                     entry.native().is_ok_and(|native| {
                         native.ready
-                            && State::membership_parent(&state.by_agent, entry) == Some(caller)
+                            && EntryRegistry::membership_parent(&state.members.by_agent, entry)
+                                == Some(caller)
                     })
                 })
                 .ok_or_else(|| ControlError::Relationship {
@@ -1137,10 +1147,10 @@ impl AgentControlHost for AgentHost {
         let mut acp_members = Vec::new();
         let mut rows = {
             let state = owner.0.state();
-            if state.closing {
+            if state.close.closing {
                 return Err(ControlError::Closed);
             }
-            if !state.entries.get(caller).is_some_and(member_open) {
+            if !state.members.entries.get(caller).is_some_and(member_open) {
                 return Err(ControlError::Missing(caller.into()));
             }
             let path = ancestry(&state, caller)?;
@@ -1149,10 +1159,10 @@ impl AgentControlHost for AgentHost {
             // activations that already hold tree capacity but are not published yet. They carry
             // no Thread snapshot, so only identity and the explicit preparing fact are projected.
             let mut rows = std::collections::BTreeMap::new();
-            for (id, child) in &state.unpublished_children {
+            for (id, child) in &state.activation.unpublished_children {
                 push_preparing_row(&state, root, &mut rows, id, Some(child.parent.as_str()))?;
             }
-            for (id, preparation) in &state.creating {
+            for (id, preparation) in &state.activation.creating {
                 push_preparing_row(
                     &state,
                     root,
@@ -1161,7 +1171,7 @@ impl AgentControlHost for AgentHost {
                     preparation.parent_id.as_deref(),
                 )?;
             }
-            for (id, entry) in &state.entries {
+            for (id, entry) in &state.members.entries {
                 if ancestry(&state, id)?.last() != Some(root) {
                     continue;
                 }
@@ -1180,7 +1190,7 @@ impl AgentControlHost for AgentHost {
                             root,
                             &mut rows,
                             id,
-                            State::membership_parent(&state.by_agent, entry),
+                            EntryRegistry::membership_parent(&state.members.by_agent, entry),
                         )?;
                     }
                     continue;
@@ -1272,6 +1282,7 @@ impl AgentControlHost for AgentHost {
             let state = owner.0.state();
             descendant(&state, caller, target)?;
             state
+                .members
                 .entries
                 .get(target)
                 .and_then(|entry| match &entry.runtime {
@@ -1303,11 +1314,12 @@ impl AgentControlHost for AgentHost {
         // interfaces use. A superseded identity fails instead of cancelling whatever runs now.
         let (thread, execution) = {
             let state = owner.0.state();
-            if state.closing {
+            if state.close.closing {
                 return Err(ControlError::Closed);
             }
             descendant(&state, caller, target)?;
             let entry = state
+                .members
                 .entries
                 .get(target)
                 .ok_or_else(|| ControlError::Missing(target.into()))?;
@@ -1370,6 +1382,7 @@ impl AgentControlHost for AgentHost {
                             admission
                                 .0
                                 .state()
+                                .members
                                 .entries
                                 .get(&root)
                                 .is_some_and(|entry| entry.identity.parent_agent_id.is_none()),
@@ -1467,6 +1480,7 @@ impl SessionRuntime {
         let (identity, resources) = {
             let state = self.0.state();
             let entry = state
+                .members
                 .entries
                 .get(id)
                 .filter(|entry| {
@@ -1515,7 +1529,7 @@ pub(crate) mod archive_tests {
 
     fn host(owner: &SessionRuntime, id: &str) -> AgentHost {
         let state = owner.0.state();
-        let entry = &state.entries[id];
+        let entry = &state.members.entries[id];
         AgentHost {
             registry: Arc::downgrade(&owner.0),
             identity: entry.identity.clone(),
@@ -1532,7 +1546,6 @@ pub(crate) mod archive_tests {
     use crate::thread_assembler::{ChildThreadRequest, StudioChildFactory, StudioThreadSpec};
     use pl_core::thread::extensions::ExtensionMutation;
     use std::{
-        collections::BTreeMap,
         future::Future,
         sync::{
             Mutex,
@@ -1541,67 +1554,7 @@ pub(crate) mod archive_tests {
         task::Poll,
     };
 
-    pub(crate) fn spec(
-        id: String,
-        parent_id: Option<String>,
-        root: &std::path::Path,
-    ) -> StudioThreadSpec {
-        let info = pl_model::model::ModelDefinition::compatible("archive-fixture");
-        let route = pl_model::config::ResolvedModelRoute {
-            pricing_mode: Default::default(),
-            role: crate::config::root_agent_route_id(),
-            account_id: pl_model::config::AccountId::new("archive-fixture").unwrap(),
-            endpoint: pl_model::protocol::providers::openai::compatible_endpoint(
-                "archive fixture",
-                "http://127.0.0.1:0",
-            ),
-            context: info.resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled),
-            model: info,
-            effort: None,
-            service_tier: None,
-        };
-        let profile = crate::AgentProfileSnapshot {
-            profile_id: "fixture".into(),
-            display_name: "fixture".into(),
-            description: String::new(),
-            when_to_use: String::new(),
-            system_instructions: String::new(),
-            account_id: "archive-fixture".into(),
-            model_id: "archive-fixture".into(),
-            effort: None,
-            source: "fixture".into(),
-            revision: "1".into(),
-            content_hash: "fixture".into(),
-            system: false,
-            enabled: true,
-            workspace_mode: crate::AgentWorkspaceMode::Directory,
-        };
-        StudioThreadSpec {
-            workspace_usage: None,
-            preparation_guard: None,
-            agent_controls: Vec::new(),
-            execution: pl_core::thread::input::InputDriverOptions {
-                max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
-            },
-            id,
-            parent_id,
-            route,
-            model: None,
-            current: None,
-            initial_context: Vec::new(),
-            initial_runtime_facts: Vec::new(),
-            initial_extensions: BTreeMap::from([(
-                crate::studio::model_route::AGENT_PROFILE_EXTENSION.into(),
-                crate::studio::model_route::encode_profile(&profile).unwrap(),
-            )]),
-            tools: Vec::new(),
-            resources: pl_core::context::ResourceAccess::new(
-                crate::resource_store::FileResourceStore::new(root.join("resources")),
-            ),
-            capacity: Default::default(),
-            history_sink: None,
-        }
-    }
+    pub(crate) use crate::thread_assembler::test_support::archive_spec as spec;
 
     #[derive(Debug)]
     struct SpawnFactory {
@@ -1760,9 +1713,9 @@ pub(crate) mod archive_tests {
             })
         ));
         let state = owner.0.state();
-        assert!(state.preparing_children.is_empty());
-        assert!(state.unpublished_children.is_empty());
-        assert_eq!(state.entries.len(), 1);
+        assert!(state.activation.preparing_children.is_empty());
+        assert!(state.activation.unpublished_children.is_empty());
+        assert_eq!(state.members.entries.len(), 1);
     }
 
     #[tokio::test]
@@ -1967,6 +1920,7 @@ pub(crate) mod archive_tests {
             owner
                 .0
                 .state()
+                .members
                 .entries
                 .get_mut(&protocol.id)
                 .unwrap()
@@ -2033,7 +1987,7 @@ pub(crate) mod archive_tests {
             if !execution {
                 assert!(
                     matches!(
-                        owner.0.state().entries[&protocol.id]
+                        owner.0.state().members.entries[&protocol.id]
                             .native()
                             .unwrap()
                             .close_storage,
@@ -2140,7 +2094,10 @@ pub(crate) mod archive_tests {
         {
             let state = owner.0.state();
             assert!(matches!(
-                state.entries[&protocol.id].native().unwrap().close_storage,
+                state.members.entries[&protocol.id]
+                    .native()
+                    .unwrap()
+                    .close_storage,
                 Some(crate::thread_assembler::CloseStorage::Execution {
                     observation_installed: false,
                     joined: false,
@@ -2217,7 +2174,7 @@ mod control_tests {
 
     fn host(owner: &SessionRuntime, thread: &str) -> Arc<AgentHost> {
         let state = owner.0.state();
-        let entry = &state.entries[thread];
+        let entry = &state.members.entries[thread];
         Arc::new(AgentHost {
             registry: Arc::downgrade(&owner.0),
             identity: entry.identity.clone(),
@@ -2290,6 +2247,7 @@ mod control_tests {
             let mut state = owner.0.state();
             // Native binding metadata cannot redefine the product member tree.
             state
+                .members
                 .entries
                 .get_mut("native-root")
                 .unwrap()
@@ -2297,6 +2255,7 @@ mod control_tests {
                 .unwrap()
                 .parent_id = Some("irrelevant".into());
             state
+                .members
                 .entries
                 .get_mut("native-child")
                 .unwrap()
@@ -2376,10 +2335,11 @@ mod control_tests {
         owner
             .0
             .state()
+            .close
             .sealed_agents
             .insert("native-root".into(), 1);
         assert!(current.list(call("root-member")).await.is_err());
-        owner.0.state().sealed_agents.remove("native-root");
+        owner.0.state().close.sealed_agents.remove("native-root");
         crate::studio::agent_close::commit(&owner.thread("native-root").unwrap())
             .await
             .unwrap();
@@ -2476,7 +2436,7 @@ mod control_tests {
             let owner = SessionRuntime(self.owner.upgrade().unwrap());
             activation.agent.session_id = owner.id().clone();
             activation.agent.parent_agent_id = Some(
-                owner.0.state().entries[&request.caller]
+                owner.0.state().members.entries[&request.caller]
                     .identity
                     .agent_id
                     .clone(),
@@ -2552,7 +2512,7 @@ mod control_tests {
             error,
             ControlError::Service(source) if matches!(source.downcast_ref::<ThreadAssemblyError>(), Some(ThreadAssemblyError::ReviewTargetInvalid(_)))
         ));
-        assert!(owner.0.state().unpublished_children.is_empty());
+        assert!(owner.0.state().activation.unpublished_children.is_empty());
         member(
             &owner,
             dir.path(),
@@ -2564,6 +2524,7 @@ mod control_tests {
         {
             let mut state = owner.0.state();
             state
+                .members
                 .entries
                 .get_mut("native-root")
                 .unwrap()
@@ -2571,6 +2532,7 @@ mod control_tests {
                 .unwrap()
                 .parent_id = Some("irrelevant".into());
             state
+                .members
                 .entries
                 .get_mut("native-child")
                 .unwrap()
@@ -2622,7 +2584,7 @@ mod control_tests {
         let spawn = host.spawn(context, request);
         tokio::pin!(spawn);
         assert!(futures::poll!(&mut spawn).is_pending());
-        assert_eq!(owner.0.state().unpublished_children.len(), 1);
+        assert_eq!(owner.0.state().activation.unpublished_children.len(), 1);
         cancellation.cancel();
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(2), spawn)
@@ -2630,8 +2592,8 @@ mod control_tests {
                 .unwrap()
                 .is_err()
         );
-        assert!(owner.0.state().unpublished_children.is_empty());
-        assert!(owner.0.state().preparing_children.is_empty());
+        assert!(owner.0.state().activation.unpublished_children.is_empty());
+        assert!(owner.0.state().activation.preparing_children.is_empty());
         assert!(owner.close_session().await.is_empty());
     }
 
@@ -2833,11 +2795,11 @@ mod control_tests {
                 "{error:?}"
             );
             assert_eq!(
-                owner.0.state().entries.len(),
+                owner.0.state().members.entries.len(),
                 2,
                 "the child was already published"
             );
-            assert!(owner.0.state().unpublished_children.is_empty());
+            assert!(owner.0.state().activation.unpublished_children.is_empty());
             assert_eq!(
                 delivery.output.payload().format(),
                 "pl.studio.agent-control"
@@ -2854,7 +2816,14 @@ mod control_tests {
                 .as_str()
                 .expect("published member identity");
             let child = owner.thread(id).expect("memory publication remains ready");
-            assert!(!owner.0.state().unpublished_children.contains_key(id));
+            assert!(
+                !owner
+                    .0
+                    .state()
+                    .activation
+                    .unpublished_children
+                    .contains_key(id)
+            );
             assert!(!store.thread_preparation(id).await?.unwrap().published);
             assert!(child.snapshot().inbox.is_empty());
             assert!(child.snapshot().inputs.is_empty());
@@ -2877,11 +2846,7 @@ mod control_tests {
 mod future_sizes {
     use super::*;
 
-    fn bounded<Input, F: std::future::Future + Send>(name: &str, _: impl FnOnce(Input) -> F) {
-        let bytes = std::mem::size_of::<F>();
-        eprintln!("{name}: {bytes} bytes");
-        assert!(bytes <= 16 * 1024, "{name} inlines {bytes} bytes");
-    }
+    use crate::thread_assembler::test_support::bounded_future as bounded;
 
     #[test]
     fn spawn_handoff_future_remains_bounded() {
