@@ -301,16 +301,10 @@ jobs:
           '
       - name: Check workspace Clippy
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Build the current-source remote helper
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
       - name: Run workspace behavior and documentation tests
         env:
           ANYWORK_CONTAINER_TMPFS: '1'
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PWD/target/debug:$PATH"
-            cargo test --locked --workspace --features pl-core/sqlite
-          '
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked --workspace --features pl-core/sqlite
       - name: Verify real PackageKit updates across supported distributions
         run: |
           executable=$(bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-update --lib --no-run --message-format=json |
@@ -613,7 +607,6 @@ jobs:
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
             ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
@@ -728,7 +721,6 @@ jobs:
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
             ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite native --set full --output "$2"
@@ -788,8 +780,6 @@ jobs:
         uses: ./.github/actions/setup-studio-rust
         with:
           cache-key: rust-checks-${{ runner.os }}
-      - name: Prepare Clippy
-        run: rustup component add clippy
       - name: Check isolated pl-core without default features
         run: cargo check --locked -p pl-core --no-default-features --all-targets
       - name: Check workspace Clippy
