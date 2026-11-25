@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mode::ThreadModeId;
+use crate::thread_mode_id::ThreadModeId;
 
 /// 一个 state 在状态机中的语义种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -47,6 +47,18 @@ pub struct WorkflowDefinition {
     pub states: Vec<WorkflowState>,
     #[serde(default)]
     pub transitions: Vec<WorkflowTransition>,
+}
+
+/// Result of an isolated replay using the production transition machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowPreviewSnapshot {
+    pub accepted: bool,
+    pub message: String,
+    pub current_state: Option<WorkflowState>,
+    pub transitions: Vec<WorkflowTransition>,
+    pub path: Vec<String>,
+    pub terminal: bool,
 }
 
 /// 当前 run 的主生命周期。
@@ -253,8 +265,13 @@ fn push_unique_state(visited: &mut Vec<String>, state_id: &str) {
     }
 }
 
-impl From<&WorkflowSessionState> for WorkflowRuntimeSnapshot {
-    fn from(state: &WorkflowSessionState) -> Self {
+impl WorkflowRuntimeSnapshot {
+    pub(crate) fn from_state(
+        state: &WorkflowSessionState,
+        current_state_title: &str,
+        mode_display_name: &str,
+        mode_deleted: bool,
+    ) -> Self {
         Self {
             revision: state.revision,
             current_run: state.current_run.as_ref().map(|run| {
@@ -276,9 +293,9 @@ impl From<&WorkflowSessionState> for WorkflowRuntimeSnapshot {
                     graph_hash: run.graph_hash.clone(),
                     lifecycle: run.lifecycle,
                     current_state_id: run.current_state_id.clone(),
-                    current_state_title: String::new(),
-                    mode_display_name: String::new(),
-                    mode_deleted: false,
+                    current_state_title: current_state_title.to_string(),
+                    mode_display_name: mode_display_name.to_string(),
+                    mode_deleted,
                     visited_state_ids: visited,
                     last_transition_forced,
                     started_at: run.started_at,

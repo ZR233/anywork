@@ -1,11 +1,15 @@
 import 'package:flutter/widget_previews.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:anywork_client/studio_client.dart'
+    show DomainSyncPhase, DomainSyncStatus;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/status/context_usage_readout.dart';
 import 'package:anywork/src/features/status/status_bar_item.dart';
+import 'package:anywork/src/features/status/started_items_panel.dart';
+import 'package:anywork/src/features/status/started_items_state.dart';
 import 'package:anywork/src/features/status/thread_status_bar.dart';
 
 final _statusFixture = StatusBarView(
@@ -33,10 +37,10 @@ final _statusFixture = StatusBarView(
 const _contextProjection = StudioContextProjection(
   threadId: 'preview-thread',
   modelId: 'preview-model',
-  contextTokens: 4200,
-  contextWindow: 32000,
-  maxContextWindow: 64000,
-  autoCompactLimit: 48000,
+  contextTokens: 28400,
+  contextWindow: 128000,
+  maxContextWindow: 128000,
+  autoCompactLimit: 96000,
   totalTokens: 9200,
   costLabel: '',
   promptTokens: 5800,
@@ -52,53 +56,107 @@ const _contextProjection = StudioContextProjection(
   hasIncompleteUsage: false,
 );
 
-Widget _threadStatusBarPreview({VoidCallback? onOpenPlan}) => MaterialApp(
-  debugShowCheckedModeBanner: false,
-  locale: const Locale('zh'),
-  theme: pureStudioTheme(locale: const Locale('zh')),
-  localizationsDelegates: [
-    AppLocalizations.delegate,
-    ...GlobalMaterialLocalizations.delegates,
-  ],
-  supportedLocales: AppLocalizations.supportedLocales,
-  home: Scaffold(
-    body: Column(
-      children: [
-        const Spacer(),
-        ThreadStatusBar(
-          key: const ValueKey('thread-status-bar-preview'),
-          status: _statusFixture,
-          contextReadout: const ContextUsageReadout(
-            projection: _contextProjection,
-          ),
-          throughputReadout: const TokenThroughputReadout(tokensPerSecond: 42),
-          startedItemsEntry: const StatusBarItem(
-            icon: Icons.tune_outlined,
-            label: '能力与已启动项目（合成图标槽位，无 Provider）',
-          ),
-          workflowReadout: const WorkflowStatusReadout(
-            stateTitle: '规划',
-            modeName: '任务流程',
-            deleted: true,
-          ),
-          showTodo: true,
-          onToggleTodo: () {},
-          showPlanEntry: true,
-          onOpenPlan: onOpenPlan ?? () {},
-          hasSidebarPanels: true,
-          onToggleSidebar: () {},
-        ),
-      ],
+const _services = StartedItemsState(
+  skills: ['frontend-design', 'flutter-add-widget-preview'],
+  skillsTotal: 2,
+  mcpStateTotal: 2,
+  lspStateTotal: 2,
+  mcpSync: DomainSyncStatus(phase: DomainSyncPhase.ready),
+  lspSync: DomainSyncStatus(phase: DomainSyncPhase.ready),
+  mcp: [
+    StartedService(
+      id: 'dart',
+      name: 'Dart & Flutter',
+      status: StartedServiceStatus.ready,
     ),
-  ),
+    StartedService(
+      id: 'browser',
+      name: 'Browser',
+      status: StartedServiceStatus.failed,
+      diagnostic: 'Connection closed',
+    ),
+  ],
+  lsp: [
+    StartedService(
+      id: 'dart-analysis',
+      name: 'Dart Analysis Server',
+      status: StartedServiceStatus.ready,
+    ),
+    StartedService(
+      id: 'rust-analyzer',
+      name: 'rust-analyzer',
+      status: StartedServiceStatus.indexing,
+      percentage: 64,
+    ),
+  ],
 );
+
+Widget _threadStatusBarPreview({VoidCallback? onOpenPlan, bool dark = false}) =>
+    MaterialApp(
+      debugShowCheckedModeBanner: false,
+      locale: const Locale('zh'),
+      theme: dark
+          ? ThemeData.dark(useMaterial3: true).copyWith(
+              extensions: pureStudioTheme(locale: const Locale('zh'))
+                  .extensions
+                  .values,
+            )
+          : pureStudioTheme(locale: const Locale('zh')),
+      localizationsDelegates: [
+        AppLocalizations.delegate,
+        ...GlobalMaterialLocalizations.delegates,
+      ],
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: Scaffold(
+        body: Column(
+          children: [
+            const Spacer(),
+            ThreadStatusBar(
+              key: const ValueKey('thread-status-bar-preview'),
+              status: _statusFixture,
+              contextReadout: const ContextUsageReadout(
+                projection: _contextProjection,
+              ),
+              throughputReadout: const TokenThroughputReadout(
+                tokensPerSecond: 42,
+              ),
+              startedItemsEntry: StartedItemsMenu(
+                panelBuilder: (context) => StartedItemsPanel(
+                  state: _services,
+                  onLoadMoreSkills: () {},
+                  onLoadMoreMcpState: () {},
+                  onLoadMoreLspState: () {},
+                  onReconnectMcp: (_) {},
+                  onReconnectLsp: (_) {},
+                ),
+              ),
+              workflowReadout: WorkflowStatusReadout(
+                stateTitle: '规划',
+                modeName: '任务流程',
+                deleted: true,
+                onTap: () {},
+              ),
+              showTodo: true,
+              onToggleTodo: () {},
+              showPlanEntry: true,
+              onOpenPlan: onOpenPlan ?? () {},
+              hasSidebarPanels: true,
+              onToggleSidebar: () {},
+            ),
+          ],
+        ),
+      ),
+    );
 
 /// Test fixture can observe the production Plan action without a Client/provider.
 Widget threadStatusBarLayoutFixture({VoidCallback? onOpenPlan}) =>
     _threadStatusBarPreview(onOpenPlan: onOpenPlan);
 
-@Preview(name: '底部状态栏 / 宽屏', group: 'Status · 底部状态栏', size: Size(1000, 180))
+@Preview(name: '底部状态栏 / 宽屏', group: 'Status · 底部状态栏', size: Size(1000, 560))
 Widget threadStatusBarWidePreview() => threadStatusBarLayoutFixture();
 
-@Preview(name: '底部状态栏 / 窄屏可滚动', group: 'Status · 底部状态栏', size: Size(320, 180))
+@Preview(name: '底部状态栏 / 窄屏可滚动', group: 'Status · 底部状态栏', size: Size(320, 560))
 Widget threadStatusBarNarrowPreview() => threadStatusBarLayoutFixture();
+
+@Preview(name: '底部状态栏 / 深色组件检查', group: 'Status · 底部状态栏', size: Size(800, 560))
+Widget threadStatusBarDarkPreview() => _threadStatusBarPreview(dark: true);

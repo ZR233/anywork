@@ -168,31 +168,18 @@ fn project_with_mode(
             pl_tool::todo::saved_snapshot(&record.payload, call_id)
         })
         .transpose()?;
-    let mut workflow = state
+    let workflow = state
         .extensions
         .get(crate::workflow_tool::WORKFLOW_EXTENSION)
         .map(|record| {
-            crate::workflow_tool::decode_workflow_state(&record.payload)
-                .map(|state| crate::workflow_tool::WorkflowRuntimeSnapshot::from(&state))
+            crate::workflow_tool::decode_workflow_state(&record.payload).map(|state| match mode {
+                Some(mode) => mode.project_workflow_state(&state, false),
+                None => {
+                    crate::workflow_tool::WorkflowRuntimeSnapshot::from_state(&state, "", "", false)
+                }
+            })
         })
         .transpose()?;
-    if let Some(run) = workflow
-        .as_mut()
-        .and_then(|workflow| workflow.current_run.as_mut())
-        && let Some(mode) = mode
-    {
-        // Recovery/preparation owns compilation. Token projections only read saved metadata.
-        run.mode_display_name
-            .clone_from(&mode.definition.display_name);
-        if let Some(current) = mode.definition.workflow.as_ref().and_then(|graph| {
-            graph
-                .states
-                .iter()
-                .find(|state| state.id == run.current_state_id)
-        }) {
-            run.current_state_title.clone_from(&current.title);
-        }
-    }
     let plan = state
         .extensions
         .get(crate::plan_tool::PLAN_EXTENSION)
@@ -214,27 +201,7 @@ fn project_with_mode(
         deferred: Vec::new(),
         // The execution identity is a fact of this Thread's own state, so the same per-Thread
         // projection that publishes usage also publishes what a precise stop would target.
-        execution: state.execution.as_ref().map(|execution| {
-            crate::AgentExecution::new(
-                execution.id.clone(),
-                match execution.phase {
-                    pl_core::thread::ExecutionPhase::Preparing => {
-                        crate::AgentExecutionPhase::Preparing
-                    }
-                    pl_core::thread::ExecutionPhase::AwaitingStorage => {
-                        crate::AgentExecutionPhase::AwaitingStorage
-                    }
-                    pl_core::thread::ExecutionPhase::AwaitingAdmission => {
-                        crate::AgentExecutionPhase::AwaitingAdmission
-                    }
-                    pl_core::thread::ExecutionPhase::Running => crate::AgentExecutionPhase::Running,
-                    pl_core::thread::ExecutionPhase::Stopping => {
-                        crate::AgentExecutionPhase::Stopping
-                    }
-                },
-                execution.turn_id.clone(),
-            )
-        }),
+        execution: super::agent_directory::project_execution(state),
         // The owed work is part of this Thread's own state: the client's first continue needs this
         // identity, and only the owner can publish it. It is never derived from history or guessed
         // locally. Acceptance consumes the token and retains the original operation receipt.

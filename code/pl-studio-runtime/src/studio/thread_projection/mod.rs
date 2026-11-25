@@ -9,6 +9,8 @@ pub(crate) use accounting::PreparedAccounting;
 pub(in crate::studio) use accounting::merge_runtime_costs;
 pub(crate) use billing::AuxiliaryBillingReceipt;
 pub(in crate::studio) use billing::BillingFact;
+#[cfg(test)]
+pub(in crate::studio) use billing::billing_facts;
 mod activity;
 pub(in crate::studio) use activity::project_activity;
 mod completions;
@@ -40,6 +42,7 @@ pub(in crate::studio) mod order;
 mod tool_media;
 pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
 mod inputs;
+mod observation_parts;
 mod responses;
 pub(in crate::studio) mod tools;
 mod turns;
@@ -110,7 +113,48 @@ pub(crate) enum ProjectionError {
     MissingDuration(String),
 }
 
-pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::ThreadRawPayload {
+pub(in crate::studio) use inputs::{InputProjection, project_input_shape};
+
+pub(in crate::studio) fn parent_message_text(
+    payload: &pl_core::context::OpaquePayload,
+) -> Option<&str> {
+    (payload.format() == "text/plain" && payload.version() == 1).then(|| payload.content())
+}
+
+pub(in crate::studio) fn parent_message_shape(
+    payload: &pl_core::context::OpaquePayload,
+    timestamp: i64,
+    opaque_notice: &str,
+) -> ExecutionShape {
+    if let Some(text) = parent_message_text(payload) {
+        ExecutionShape::Text(crate::ThreadTextItem::new(
+            crate::ThreadTextChannel::ParentAgent,
+            text.into(),
+            Vec::new(),
+            crate::ThreadContentLifecycle::completed(timestamp),
+        ))
+    } else {
+        ExecutionShape::Raw(crate::ThreadRawItem::stored(
+            vec![raw_payload(payload)],
+            opaque_notice,
+            timestamp,
+        ))
+    }
+}
+
+pub(in crate::studio) fn matches_parent_message(
+    thread: &crate::Thread,
+    message: &pl_core::thread::inbox::ThreadMessage,
+) -> bool {
+    thread
+        .parent_thread_id
+        .as_ref()
+        .is_some_and(|parent| message.source_id == format!("agent:{parent}"))
+}
+
+pub(in crate::studio) fn raw_payload(
+    payload: &pl_core::context::OpaquePayload,
+) -> crate::ThreadRawPayload {
     crate::ThreadRawPayload {
         format: payload.format().into(),
         version: payload.version(),
@@ -118,4 +162,4 @@ pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::T
     }
 }
 
-pub(crate) use tool_media::{resource_references, resource_references_for_deliveries};
+pub(crate) use tool_media::resource_references;

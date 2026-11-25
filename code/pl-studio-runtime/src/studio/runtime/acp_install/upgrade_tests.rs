@@ -13,32 +13,39 @@ use axum::routing::get;
 use serde_json::json;
 use sha2::Digest;
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(any(target_os = "linux", windows))]
 use super::prepare::{self, PrepareFailure};
 #[cfg(any(target_os = "linux", windows))]
 use super::seed_synthetic_install_version;
-use super::source::{self, RegistryLookup, SourcePolicy, TestSourceOverride};
-use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+use super::source::{self, RegistryLookup, ReleaseTransport};
+use crate::studio::runtime::acp_accounts::test_support::test_runtime;
 use crate::{
     AcpInstallFailureCode, AcpInstallSnapshot, AcpInstallState, AcpInstallUpdateState, AcpProvider,
-    CheckAcpInstallUpdateRequest, StartAcpInstallRequest, StudioHostKind,
-    StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
-    StudioRuntime, StudioRuntimeOptions,
+    CheckAcpInstallUpdateRequest, StartAcpInstallRequest, StudioProductBaselineState,
+    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioRuntime,
 };
 
 #[derive(Clone, Default)]
 struct MockServerState {
     registry_body: Arc<Mutex<Vec<u8>>>,
     archives: Arc<Mutex<HashMap<String, Vec<u8>>>>,
-    registry_delay: Arc<Mutex<Option<Duration>>>,
+    registry_gate: Option<Arc<RegistryGate>>,
+}
+
+#[derive(Default)]
+struct RegistryGate {
+    entered: Notify,
+    release: Notify,
 }
 
 async fn serve_registry(State(state): State<MockServerState>) -> impl IntoResponse {
-    let delay = *state.registry_delay.lock().unwrap();
-    if let Some(delay) = delay {
-        tokio::time::sleep(delay).await;
+    if let Some(gate) = &state.registry_gate {
+        gate.entered.notify_one();
+        gate.release.notified().await;
     }
     let body = state.registry_body.lock().unwrap().clone();
     (StatusCode::OK, body)
@@ -55,24 +62,44 @@ async fn serve_archive(
     }
 }
 
-async fn start_mock_server(
-    state: MockServerState,
-) -> Result<(String, String, tokio::task::JoinHandle<()>)> {
+#[derive(Clone)]
+struct LoopbackTransport(reqwest::Url);
+
+impl ReleaseTransport for LoopbackTransport {
+    fn connect(
+        &self,
+        builder: reqwest::ClientBuilder,
+        logical_url: reqwest::Url,
+    ) -> Result<(reqwest::Client, reqwest::Url), reqwest::Error> {
+        // Keep fixtures on a literal loopback origin. Only the outbound connection is routed;
+        // the registry payload, release identity and receipt all use official HTTPS URLs.
+        let mut url = self.0.clone();
+        url.set_path(logical_url.path());
+        url.set_query(logical_url.query());
+        Ok((builder.no_proxy().build()?, url))
+    }
+}
+
+async fn start_mock_server(state: MockServerState) -> Result<(LoopbackTransport, JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let app = Router::new()
-        .route("/registry.json", get(serve_registry))
-        .route("/archives/{name}", get(serve_archive))
+        .route("/registry/v1/latest/registry.json", get(serve_registry))
+        .route("/agy-extensions/releases/{name}", get(serve_archive))
         .with_state(state);
-    let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    let base = format!("http://{address}");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     Ok((
-        format!("{base}/registry.json"),
-        format!("{base}/archives/"),
-        handle,
+        LoopbackTransport(reqwest::Url::parse(&format!("http://{address}"))?),
+        server,
     ))
+}
+
+async fn stop_mock_server(server: JoinHandle<()>) -> Result<()> {
+    server.abort();
+    match server.await {
+        Err(error) if error.is_cancelled() => Ok(()),
+        result => Ok(result?),
+    }
 }
 
 fn crc32_ieee(bytes: &[u8]) -> u32 {
@@ -189,20 +216,6 @@ fn registry_json(
     .unwrap()
 }
 
-async fn test_runtime() -> Result<(tempfile::TempDir, StudioRuntime)> {
-    let home = tempfile::tempdir()?;
-    let config = StudioConfig::default_config()?;
-    let paths = ConfigPaths::from_config_dir(home.path());
-    ConfigStore::new(paths).save(&config)?;
-    let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
-        studio_home: Some(home.path().to_owned()),
-        host: StudioHostKind::Test,
-        ..StudioRuntimeOptions::desktop()
-    })
-    .await?;
-    Ok((home, runtime))
-}
-
 async fn wait_install_snapshot(
     runtime: &StudioRuntime,
     predicate: impl Fn(&AcpInstallSnapshot) -> bool,
@@ -240,7 +253,6 @@ async fn wait_install_snapshot(
 
 #[tokio::test]
 async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Result<()> {
-    let policy = SourcePolicy::official();
     let target = "linux-x86_64";
     let sha = "0".repeat(64);
     let official_url = "https://dl.google.com/agy-extensions/releases/antigravity-acp/1.5.2/agy-acp-server-1.5.2-linux-x86_64.zip";
@@ -254,7 +266,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
         &["--uid="],
         &sha,
     );
-    match source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &valid)
+    match source::parse_registry_payload(AcpProvider::Antigravity, target, &valid)
         .expect("1.5.2 registry parses")
     {
         RegistryLookup::Release(resolved) => {
@@ -276,7 +288,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
             &sha,
         );
         assert_eq!(
-            source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &too_old)
+            source::parse_registry_payload(AcpProvider::Antigravity, target, &too_old)
                 .unwrap_err()
                 .code,
             AcpInstallFailureCode::SourceRejected
@@ -293,7 +305,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
         &sha,
     );
     assert_eq!(
-        source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &major_two)
+        source::parse_registry_payload(AcpProvider::Antigravity, target, &major_two)
             .expect("2.0.0 registry classifies as IncompatibleMajor"),
         RegistryLookup::IncompatibleMajor {
             version: "2.0.0".to_string()
@@ -310,7 +322,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
         &sha,
     );
     assert_eq!(
-        source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &untrusted)
+        source::parse_registry_payload(AcpProvider::Antigravity, target, &untrusted)
             .unwrap_err()
             .code,
         AcpInstallFailureCode::SourceRejected
@@ -326,7 +338,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
         "BAD",
     );
     assert_eq!(
-        source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &bad_sha)
+        source::parse_registry_payload(AcpProvider::Antigravity, target, &bad_sha)
             .unwrap_err()
             .code,
         AcpInstallFailureCode::SourceRejected
@@ -335,7 +347,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
     // Disallowed command / args -> SourceRejected
     let bad_cmd = registry_json("1.5.2", target, official_url, "evil.sh", &["--uid="], &sha);
     assert_eq!(
-        source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &bad_cmd)
+        source::parse_registry_payload(AcpProvider::Antigravity, target, &bad_cmd)
             .unwrap_err()
             .code,
         AcpInstallFailureCode::SourceRejected
@@ -350,7 +362,7 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
             &sha,
         );
         assert_eq!(
-            source::parse_registry_payload(&policy, AcpProvider::Antigravity, target, &bad_arg)
+            source::parse_registry_payload(AcpProvider::Antigravity, target, &bad_arg)
                 .unwrap_err()
                 .code,
             AcpInstallFailureCode::SourceRejected
@@ -362,16 +374,12 @@ async fn registry_parsing_enforces_major_version_and_security_boundaries() -> Re
         registry_body: Arc::new(Mutex::new(vec![b' '; 2 * 1024 * 1024 + 1024])),
         ..Default::default()
     };
-    let (registry_url, archive_base_url, handle) = start_mock_server(state).await?;
-    let test_policy = SourcePolicy::for_test(TestSourceOverride {
-        registry_url,
-        archive_base_url,
-    });
+    let (transport, handle) = start_mock_server(state).await?;
     let cancel = CancellationToken::new();
-    let error = source::fetch_latest_from_registry(&test_policy, AcpProvider::Antigravity, &cancel)
+    let error = source::fetch_latest_from_registry(&transport, AcpProvider::Antigravity, &cancel)
         .await
         .unwrap_err();
-    handle.abort();
+    stop_mock_server(handle).await?;
     assert_eq!(error.code, AcpInstallFailureCode::TooLarge);
     Ok(())
 }
@@ -389,29 +397,25 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
         archives.insert("agy-1.5.2.zip".into(), zip_152);
         archives.insert("agy-1.5.3.zip".into(), zip_153);
     }
-    let (registry_url, archive_base_url, server_handle) = start_mock_server(state.clone()).await?;
+    let (transport, server_handle) = start_mock_server(state.clone()).await?;
     *state.registry_body.lock().unwrap() = registry_json(
         "1.5.2",
         target,
-        &format!("{archive_base_url}agy-1.5.2.zip"),
+        "https://dl.google.com/agy-extensions/releases/agy-1.5.2.zip",
         cmd,
         &args,
         &sha_152,
     );
 
-    let (_home, runtime) = test_runtime().await?;
-    runtime
-        .acp_install
-        .set_test_source_override(TestSourceOverride {
-            registry_url,
-            archive_base_url: archive_base_url.clone(),
-        });
-
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     // Step 1: initial install 1.5.2
-    runtime.start_acp_install(StartAcpInstallRequest {
-        operation_id: "install-152".into(),
-        provider: AcpProvider::Antigravity,
-    })?;
+    runtime.acp_install.start_with_transport(
+        StartAcpInstallRequest {
+            operation_id: "install-152".into(),
+            provider: AcpProvider::Antigravity,
+        },
+        transport.clone(),
+    )?;
     let after_install = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             &snapshot.state_of(AcpProvider::Antigravity),
@@ -434,15 +438,18 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
     *state.registry_body.lock().unwrap() = registry_json(
         "1.5.3",
         target,
-        &format!("{archive_base_url}agy-1.5.3.zip"),
+        "https://dl.google.com/agy-extensions/releases/agy-1.5.3.zip",
         cmd,
         &args,
         &sha_153,
     );
-    runtime.check_acp_install_update(CheckAcpInstallUpdateRequest {
-        operation_id: "check-153".into(),
-        provider: AcpProvider::Antigravity,
-    })?;
+    runtime.acp_install.check_update_with_transport(
+        CheckAcpInstallUpdateRequest {
+            operation_id: "check-153".into(),
+            provider: AcpProvider::Antigravity,
+        },
+        transport.clone(),
+    )?;
     let after_check = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.update_of(AcpProvider::Antigravity),
@@ -458,10 +465,13 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
     );
 
     // Step 3: one-click upgrade installs 1.5.3 & updates installed/update facts
-    runtime.start_acp_install(StartAcpInstallRequest {
-        operation_id: "upgrade-153".into(),
-        provider: AcpProvider::Antigravity,
-    })?;
+    runtime.acp_install.start_with_transport(
+        StartAcpInstallRequest {
+            operation_id: "upgrade-153".into(),
+            provider: AcpProvider::Antigravity,
+        },
+        transport.clone(),
+    )?;
     let after_upgrade = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.state_of(AcpProvider::Antigravity),
@@ -483,12 +493,14 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
     *state.registry_body.lock().unwrap() = registry_json(
         "2.0.0",
         target,
-        &format!("{archive_base_url}agy-1.5.3.zip"),
+        "https://dl.google.com/agy-extensions/releases/agy-1.5.3.zip",
         cmd,
         &args,
         &sha_153,
     );
-    runtime.acp_install.start_background_check(true);
+    runtime
+        .acp_install
+        .start_background_check_with_transport(true, transport);
     let after_major = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.update_of(AcpProvider::Antigravity),
@@ -504,14 +516,14 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
     );
 
     runtime.shutdown_runtime().await?;
-    server_handle.abort();
+    stop_mock_server(server_handle).await?;
     Ok(())
 }
 
 #[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_latest() -> Result<()> {
-    let (_home, runtime) = test_runtime().await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     let retired =
         seed_synthetic_install_version(&runtime.store, "1.4.5", b"#!/bin/sh\necho 1.4.5\n");
     seed_synthetic_install_version(&runtime.store, "1.5.2", b"#!/bin/sh\necho 1.5.2\n");
@@ -546,7 +558,7 @@ async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_late
 #[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn offline_scan_distinguishes_unsupported_versions_from_invalid_receipts() -> Result<()> {
-    let (_home, runtime) = test_runtime().await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     let retired = seed_synthetic_install_version(&runtime.store, "1.4.5", b"retired");
     for version in ["0.9.0", "1.5.1", "1.6.0-beta.1", "1.6.0+build.1", "2.0.0"] {
         seed_synthetic_install_version(&runtime.store, version, b"unsupported");
@@ -580,20 +592,17 @@ async fn offline_scan_distinguishes_unsupported_versions_from_invalid_receipts()
 
 #[tokio::test]
 async fn background_check_cancels_and_joins_cleanly_on_shutdown() -> Result<()> {
+    let gate = Arc::new(RegistryGate::default());
     let state = MockServerState {
-        registry_delay: Arc::new(Mutex::new(Some(Duration::from_secs(30)))),
+        registry_gate: Some(gate.clone()),
         ..Default::default()
     };
-    let (registry_url, archive_base_url, server_handle) = start_mock_server(state).await?;
-    let (_home, runtime) = test_runtime().await?;
+    let (transport, server_handle) = start_mock_server(state).await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
+
     runtime
         .acp_install
-        .set_test_source_override(TestSourceOverride {
-            registry_url,
-            archive_base_url,
-        });
-
-    runtime.acp_install.start_background_check(true);
+        .start_background_check_with_transport(true, transport);
     let _ = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.update_of(AcpProvider::Antigravity),
@@ -602,9 +611,13 @@ async fn background_check_cancels_and_joins_cleanly_on_shutdown() -> Result<()> 
     })
     .await?;
 
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .expect("registry request reached the HTTP fixture");
     tokio::time::timeout(Duration::from_secs(5), runtime.shutdown_runtime())
         .await
         .expect("shutdown cancels in-flight update check promptly")?;
-    server_handle.abort();
+    gate.release.notify_one();
+    stop_mock_server(server_handle).await?;
     Ok(())
 }

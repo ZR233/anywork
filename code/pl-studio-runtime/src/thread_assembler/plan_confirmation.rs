@@ -56,13 +56,7 @@ fn decode<T: serde::de::DeserializeOwned>(
     payload: &OpaquePayload,
     format: &str,
 ) -> Result<T, PlanInteractionError> {
-    if payload.format() != format || payload.version() != 1 {
-        return Err(PlanInteractionError::Unsupported {
-            format: payload.format().into(),
-            version: payload.version(),
-        });
-    }
-    Ok(serde_json::from_str(payload.content())?)
+    super::interaction_projection::decode(payload, format).map_err(Into::into)
 }
 
 fn prompt(record: &InteractionRecord) -> Result<PlanConfirmationPrompt, PlanInteractionError> {
@@ -100,7 +94,7 @@ pub fn project_plan_confirmation(
 ) -> Result<InteractionRequest, PlanInteractionError> {
     let prompt = prompt(record)?;
     let wire_id = super::interaction_key::encode(thread_id, &record.request.id);
-    let mut projected = InteractionRequest::user_input(
+    let projected = InteractionRequest::user_input(
         wire_id.clone(),
         InteractionScope {
             thread_id: thread_id.into(),
@@ -126,7 +120,6 @@ pub fn project_plan_confirmation(
         crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID,
         prompt.presentation,
     ));
-    projected.revision = 1;
     let command = match &record.state {
         InteractionState::Pending => None,
         InteractionState::Resolved(response) => {
@@ -148,14 +141,8 @@ pub fn project_plan_confirmation(
             cancelled_at: record.updated_at,
         })),
     };
-    if let Some(command) = command {
-        let decision = projected.decide(command)?;
-        projected.apply(decision, record.updated_at);
-    }
-    if projected.revision != record.revision {
-        return Err(PlanInteractionError::Identity);
-    }
-    Ok(projected)
+    super::interaction_projection::replay(projected, command, record.revision, record.updated_at)
+        .map_err(Into::into)
 }
 
 #[derive(serde::Serialize)]
@@ -291,16 +278,21 @@ impl SessionRuntime {
         resolution.interaction_id = local_id.to_owned();
         let _operation = self.agent_operation(thread_id).await;
         let (thread, execution, is_root) = {
-            self.0.state().entries.get(thread_id).and_then(|entry| {
-                let native = entry.native().ok()?;
-                Some({
-                    (
-                        native.thread.clone(),
-                        native.execution,
-                        entry.identity.parent_agent_id.is_none(),
-                    )
+            self.0
+                .state()
+                .members
+                .entries
+                .get(thread_id)
+                .and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some({
+                        (
+                            native.thread.clone(),
+                            native.execution,
+                            entry.identity.parent_agent_id.is_none(),
+                        )
+                    })
                 })
-            })
         }
         .ok_or(PlanInteractionError::Identity)?;
         // A plan answer decides the main session's own workflow. A child can never own that
@@ -333,5 +325,24 @@ impl SessionRuntime {
         let committed = thread.resolve_interaction(prepared).await?;
         thread.resume_inputs(execution).await?;
         project_plan_confirmation(thread_id, &committed)
+    }
+}
+
+impl From<super::interaction_projection::DecodeError> for PlanInteractionError {
+    fn from(error: super::interaction_projection::DecodeError) -> Self {
+        use super::interaction_projection::DecodeError;
+        match error {
+            DecodeError::Unsupported { format, version } => Self::Unsupported { format, version },
+            DecodeError::Json(error) => Self::Decode(error),
+        }
+    }
+}
+impl From<super::interaction_projection::ReplayError> for PlanInteractionError {
+    fn from(error: super::interaction_projection::ReplayError) -> Self {
+        use super::interaction_projection::ReplayError;
+        match error {
+            ReplayError::Transition(error) => Self::Projection(error),
+            ReplayError::Revision => Self::Identity,
+        }
     }
 }

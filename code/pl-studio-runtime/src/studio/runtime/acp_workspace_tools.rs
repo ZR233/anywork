@@ -62,6 +62,7 @@ pub(super) struct WorkspaceTools {
     closed: CancellationToken,
     faults: Mutex<Vec<Arc<OutputStorageFault>>>,
     repairs: Mutex<Vec<OutputRepair>>,
+    foreground_handoff_timeout: Duration,
 }
 impl std::fmt::Debug for WorkspaceTools {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,6 +78,25 @@ impl WorkspaceTools {
         binding: PreparedAcpWorkspace,
         config: &crate::config::StudioConfig,
     ) -> Arc<Self> {
+        Self::new_with_handoff(thread_id, binding, config, Duration::from_secs(1))
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn new_with_handoff_timeout(
+        thread_id: String,
+        binding: PreparedAcpWorkspace,
+        config: &crate::config::StudioConfig,
+        foreground_handoff_timeout: Duration,
+    ) -> Arc<Self> {
+        Self::new_with_handoff(thread_id, binding, config, foreground_handoff_timeout)
+    }
+
+    fn new_with_handoff(
+        thread_id: String,
+        binding: PreparedAcpWorkspace,
+        config: &crate::config::StudioConfig,
+        foreground_handoff_timeout: Duration,
+    ) -> Arc<Self> {
         Arc::new(Self {
             thread_id,
             binding,
@@ -86,6 +106,7 @@ impl WorkspaceTools {
             closed: CancellationToken::new(),
             faults: Mutex::new(Vec::new()),
             repairs: Mutex::new(Vec::new()),
+            foreground_handoff_timeout,
         })
     }
 
@@ -402,7 +423,7 @@ impl WorkspaceTools {
                 Ok((reply.value, reply.is_error))
             },
             _ = observer.cancelled() => Err(ControlError::Closed),
-            _ = tokio::time::sleep(Duration::from_secs(1)) => Ok((serde_json::json!({"taskId":task_id,"status":"running","message":"Execution is owned by this instance; observe with anywork_wait and anywork_get_tool_task."}), false)),
+            _ = tokio::time::sleep(self.foreground_handoff_timeout) => Ok((serde_json::json!({"taskId":task_id,"status":"running","message":"Execution is owned by this instance; observe with anywork_wait and anywork_get_tool_task."}), false)),
         }
     }
 

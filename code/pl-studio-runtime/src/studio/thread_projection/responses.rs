@@ -177,14 +177,37 @@ pub(super) fn project_attempt(
     let AttemptStamp {
         thread_id,
         attempt,
+        created_at,
+        revision,
+        updated_at,
+        ..
+    } = stamp;
+    let mut items = vec![inference_item(
+        thread_id, attempt, created_at, updated_at, revision,
+    )?];
+    if let Some(opaque) = project_opaque_attempt(stamp)? {
+        items.push(opaque);
+        return Ok(items);
+    }
+    let Some((response, lifecycle, channel)) = select_response(snapshot, stamp)? else {
+        return Ok(items);
+    };
+    items.extend(project_recovery(stamp, &response.observation)?);
+    project_response_channels(stamp, finalize, response, lifecycle, channel, &mut items)?;
+    Ok(items)
+}
+
+fn project_opaque_attempt(
+    stamp: AttemptStamp<'_>,
+) -> Result<Option<ExecutionItem>, ProjectionError> {
+    let AttemptStamp {
+        thread_id,
+        attempt,
         ordinal,
         created_at,
         revision,
         updated_at,
     } = stamp;
-    let mut items = vec![inference_item(
-        thread_id, attempt, created_at, updated_at, revision,
-    )?];
     let output = match &attempt.outcome {
         AttemptOutcome::Committed(output)
         | AttemptOutcome::Rejected { output, .. }
@@ -204,7 +227,7 @@ pub(super) fn project_attempt(
                 .and_then(|output| response_content(output).err())
                 .map(|error| error.to_string())
         });
-    if let Some(notice) = decoding_error {
+    Ok(if let Some(notice) = decoding_error {
         let mut payloads = attempt
             .request_metadata
             .iter()
@@ -227,7 +250,7 @@ pub(super) fn project_attempt(
                 });
             }
         }
-        items.push(ExecutionItem::new(
+        Some(ExecutionItem::new(
             super::order::response_id(&attempt.attempt_id, "text"),
             crate::ItemStamp {
                 thread_id: std::borrow::Cow::Owned(thread_id.into()),
@@ -238,10 +261,22 @@ pub(super) fn project_attempt(
                 updated_at,
             },
             ExecutionShape::Raw(crate::ThreadRawItem::stored(payloads, notice, updated_at)),
-        ));
-        return Ok(items);
-    }
-    let (response, lifecycle, channel) = match &attempt.outcome {
+        ))
+    } else {
+        None
+    })
+}
+
+fn select_response(
+    snapshot: &ThreadSnapshot,
+    stamp: AttemptStamp<'_>,
+) -> Result<Option<(ResponseContent, ThreadContentLifecycle, ThreadTextChannel)>, ProjectionError> {
+    let AttemptStamp {
+        attempt,
+        updated_at,
+        ..
+    } = stamp;
+    Ok(Some(match &attempt.outcome {
         AttemptOutcome::Committed(output) => (
             response_content(output)?,
             ThreadContentLifecycle::completed(updated_at),
@@ -271,7 +306,7 @@ pub(super) fn project_attempt(
                 .as_ref()
                 .filter(|preview| preview.attempt_id == attempt.attempt_id)
             else {
-                return Ok(items);
+                return Ok(None);
             };
             (
                 progress_content(&preview.progress)?,
@@ -303,8 +338,25 @@ pub(super) fn project_attempt(
             ThreadContentLifecycle::cancelled(updated_at, error.to_string()),
             ThreadTextChannel::Commentary,
         ),
-    };
-    items.extend(project_recovery(stamp, &response.observation)?);
+    }))
+}
+
+fn project_response_channels(
+    stamp: AttemptStamp<'_>,
+    finalize: &BTreeSet<String>,
+    response: ResponseContent,
+    lifecycle: ThreadContentLifecycle,
+    channel: ThreadTextChannel,
+    items: &mut Vec<ExecutionItem>,
+) -> Result<(), ProjectionError> {
+    let AttemptStamp {
+        thread_id,
+        attempt,
+        ordinal,
+        created_at,
+        revision,
+        updated_at,
+    } = stamp;
     let text_id =
         super::order::observation_id(&attempt.attempt_id, response.observation.generation, "text");
     let reasoning_id = super::order::observation_id(
@@ -370,7 +422,7 @@ pub(super) fn project_attempt(
                 )),
             ));
         }
-        return Ok(items);
+        return Ok(());
     }
     // The provider itemized this attempt, so its canonical content is the provider parts — never a
     // second aggregate identity for the same text, and never an empty `reasoning` row that no provider
@@ -384,7 +436,7 @@ pub(super) fn project_attempt(
     }
     if finalize.iter().any(|id| id.starts_with(&current_prefix)) {
         if keeps_bounded_preview(&attempt.outcome) {
-            return Ok(items);
+            return Ok(());
         }
         return Err(ProjectionError::UnsupportedOutput(
             "terminal receipt lost its committed provider presentation identity".into(),
@@ -462,7 +514,7 @@ pub(super) fn project_attempt(
             )),
         ));
     }
-    Ok(items)
+    Ok(())
 }
 
 struct PresentationStamp<'a> {
@@ -555,13 +607,7 @@ fn project_presentation_items(
                         ..
                     }),
                 ) => {
-                    let channel = match channel {
-                        pl_model::completion::ModelTextChannel::User => ThreadTextChannel::User,
-                        pl_model::completion::ModelTextChannel::Commentary => {
-                            ThreadTextChannel::Commentary
-                        }
-                        pl_model::completion::ModelTextChannel::Final => ThreadTextChannel::Final,
-                    };
+                    let channel = super::observation_parts::text_channel(channel);
                     ExecutionShape::Text(ThreadTextItem::new(
                         channel,
                         part.map_or_else(String::new, |part| part.text.clone()),
@@ -635,46 +681,12 @@ fn project_recovery(
             if part.is_empty() {
                 continue;
             }
-            let Some((id, field, shape)) = super::live::observation_preview(
+            let (id, state) = super::observation_parts::failed_preview(
                 &attempt.attempt_id,
                 failed.generation,
                 part,
                 &lifecycle,
-            ) else {
-                return Err(ProjectionError::UnsupportedOutput(
-                    "failed observation has invalid part identity".into(),
-                ));
-            };
-            let state = match shape {
-                ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
-                    text.channel(),
-                    part.text(),
-                    Vec::new(),
-                    lifecycle.clone(),
-                )),
-                ExecutionShape::Thinking(_) => {
-                    let (summary, reasoning) = if matches!(
-                        field,
-                        crate::studio::runtime::chat_item::BodyKey::Part(
-                            pl_core::chat::PresentationPart::SummaryText(_)
-                        )
-                    ) {
-                        (vec![part.text()], Vec::new())
-                    } else {
-                        (Vec::new(), vec![part.text()])
-                    };
-                    ExecutionShape::Thinking(ThreadThinkingItem::new(
-                        summary,
-                        reasoning,
-                        lifecycle.clone(),
-                    ))
-                }
-                _ => {
-                    return Err(ProjectionError::UnsupportedOutput(
-                        "failed observation has invalid content state".into(),
-                    ));
-                }
-            };
+            )?;
             items.push(ExecutionItem::new(
                 id,
                 crate::ItemStamp {
@@ -830,17 +842,7 @@ fn progress_content(
             ObservedPartKind::ReasoningText => CompletionPresentationPartKind::ReasoningText,
             ObservedPartKind::SummaryText => CompletionPresentationPartKind::SummaryText,
         };
-        if !matches!(
-            (identity.item_kind, part_kind),
-            (
-                ObservedItemKind::Text(_),
-                CompletionPresentationPartKind::OutputText
-            ) | (
-                ObservedItemKind::Reasoning,
-                CompletionPresentationPartKind::ReasoningText
-                    | CompletionPresentationPartKind::SummaryText
-            )
-        ) {
+        if super::observation_parts::classify(part.identity()).is_none() {
             return Err(ProjectionError::UnsupportedOutput(
                 "provider presentation part does not match its item".into(),
             ));

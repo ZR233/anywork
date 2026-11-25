@@ -17,13 +17,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::acp_ops::{LedgerCheck, LedgerError, RetainedJoin, RetainedTask};
 use super::mapping::{command_error, ensure_operation_id, failure, failure_command_error};
-use super::operation::{self, JOIN_BUDGET, OperationPlan};
+use super::operation::{self, JOIN_BUDGET};
 use super::prepare;
 use super::registry::{
     AcpInstallInner, BusinessOutcome, CheckTask, CommandIntent, Operation, Registry, ResidueHold,
     Slot,
 };
-use super::source;
+use super::source::{self, OfficialTransport, ReleaseTransport};
 
 /// 安装 owner 本体；`Clone` 只克隆共享句柄，不复制事实。
 #[derive(Clone)]
@@ -52,6 +52,14 @@ impl AcpInstallRuntime {
 
     /// 受理一次准备操作；命令立即返回受理身份，不等待下载或发布。
     pub(crate) fn start(&self, request: StartAcpInstallRequest) -> Result<AcpInstallAcceptance> {
+        self.start_with_transport(request, OfficialTransport)
+    }
+
+    pub(super) fn start_with_transport(
+        &self,
+        request: StartAcpInstallRequest,
+        transport: impl ReleaseTransport,
+    ) -> Result<AcpInstallAcceptance> {
         ensure_operation_id(&request.operation_id)?;
         let target = source::current_target().ok_or_else(|| {
             failure_command_error(&failure(
@@ -132,9 +140,7 @@ impl AcpInstallRuntime {
         let task = tokio::spawn(supervise(
             Arc::clone(&inner),
             Arc::clone(&operation),
-            OperationPlan {
-                provider: request.provider,
-            },
+            transport,
         ));
         // 在持有 registry 锁时记录 join 出口：并发关闭不会看到"有操作但没有句柄"的中间态。
         operation.join.install(task);
@@ -241,6 +247,14 @@ impl AcpInstallRuntime {
 
     /// 并行启动后台版本发现（本地最高 `1.x` 扫描 + 可选远端官方注册表检查）；非阻塞且幂等去重。
     pub(crate) fn start_background_check(&self, allow_remote: bool) {
+        self.start_background_check_with_transport(allow_remote, OfficialTransport);
+    }
+
+    pub(super) fn start_background_check_with_transport(
+        &self,
+        allow_remote: bool,
+        transport: impl ReleaseTransport,
+    ) {
         let provider = AcpProvider::Antigravity;
         let snapshot = {
             let mut registry = self.inner.lock();
@@ -254,7 +268,13 @@ impl AcpInstallRuntime {
             {
                 return;
             }
-            spawn_check_task(&mut registry, &self.inner, provider, allow_remote)
+            spawn_check_task(
+                &mut registry,
+                &self.inner,
+                provider,
+                allow_remote,
+                transport,
+            )
         };
         if let Some(snapshot) = snapshot {
             self.inner.emit(snapshot);
@@ -265,6 +285,14 @@ impl AcpInstallRuntime {
     pub(crate) fn check_update(
         &self,
         request: CheckAcpInstallUpdateRequest,
+    ) -> Result<AcpInstallAcceptance> {
+        self.check_update_with_transport(request, OfficialTransport)
+    }
+
+    pub(super) fn check_update_with_transport(
+        &self,
+        request: CheckAcpInstallUpdateRequest,
+        transport: impl ReleaseTransport,
     ) -> Result<AcpInstallAcceptance> {
         ensure_operation_id(&request.operation_id)?;
         let intent = CommandIntent::CheckUpdate {
@@ -306,7 +334,13 @@ impl AcpInstallRuntime {
             });
         }
 
-        let emitted = spawn_check_task(&mut registry, &self.inner, request.provider, true);
+        let emitted = spawn_check_task(
+            &mut registry,
+            &self.inner,
+            request.provider,
+            true,
+            transport,
+        );
         let changed = emitted.is_some();
         let snapshot = emitted.unwrap_or_else(|| registry.snapshot());
         drop(registry);
@@ -314,14 +348,6 @@ impl AcpInstallRuntime {
             self.inner.emit(snapshot.clone());
         }
         Ok(AcpInstallAcceptance { snapshot, changed })
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio::runtime) fn set_test_source_override(
-        &self,
-        override_source: source::TestSourceOverride,
-    ) {
-        self.inner.set_test_policy(override_source);
     }
 
     /// 原子封闭准入并只发取消信号（early-exit 广播与关闭编排的取消阶段）。
@@ -501,39 +527,31 @@ impl AcpInstallRuntime {
         for operation in self.inner.retired_operations() {
             let operation_id = operation.operation_id.clone();
             match operation.join.join_until(deadline).await {
-                RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) => {
-                    operation.mark_supervisor_joined();
-                    self.inner.remove_retired(&operation_id);
-                }
+                RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(_) => {}
                 RetainedJoin::Observed(Err(_)) => {
                     // 终态已发布但 task 异常结束：不吞，如实报告非 Clean。
-                    operation.mark_supervisor_joined();
-                    self.inner.remove_retired(&operation_id);
                     issues.push(format!(
                         "ACP install retired supervisor {operation_id} terminated without a clean join"
                     ));
                 }
-                RetainedJoin::Settled(Err(_)) => {
-                    // 上一轮已观察并清槽。重试不再把 JoinError 说成没有句柄，也不重复报同一终态。
-                    operation.mark_supervisor_joined();
-                    self.inner.remove_retired(&operation_id);
-                }
                 RetainedJoin::Absent => {
-                    if operation.supervisor_joined() {
-                        self.inner.remove_retired(&operation_id);
+                    if !operation.supervisor_joined() {
+                        issues.push(format!(
+                            "ACP install retired supervisor {operation_id} is neither joined nor confirmed finished"
+                        ));
                         continue;
                     }
-                    issues.push(format!(
-                        "ACP install retired supervisor {operation_id} is neither joined nor confirmed finished"
-                    ));
                 }
                 RetainedJoin::TimedOut => {
                     // 句柄留在退休登记里，下一次关闭继续等同一个 owner。
                     issues.push(format!(
                         "ACP install retired supervisor {operation_id} did not finish within the shutdown budget"
                     ));
+                    continue;
                 }
             }
+            operation.mark_supervisor_joined();
+            self.inner.remove_retired(&operation_id);
         }
 
         // 清理未收束的残留：owner 仍持有真实 Operation（含未删除的暂存与资产锁）。这里在本 stage 的
@@ -601,6 +619,7 @@ fn spawn_check_task(
     inner: &Arc<AcpInstallInner>,
     provider: AcpProvider,
     allow_remote: bool,
+    transport: impl ReleaseTransport,
 ) -> Option<AcpInstallSnapshot> {
     let previous = registry.check_tasks.remove(&provider).map(|old| {
         old.cancel.cancel();
@@ -632,16 +651,14 @@ fn spawn_check_task(
         if task_cancel.is_cancelled() {
             return;
         }
-        let policy = task_inner.policy();
-        let scanned =
-            prepare::scan_installed(&task_inner.store, policy.clone(), provider, &task_cancel)
-                .await;
+        let scanned = prepare::scan_installed(&task_inner.store, provider, &task_cancel).await;
         if task_cancel.is_cancelled() {
             return;
         }
         task_inner.publish_local_scan(provider, generation, scanned);
         if allow_remote && !task_cancel.is_cancelled() {
-            let remote = source::fetch_latest_from_registry(&policy, provider, &task_cancel).await;
+            let remote =
+                source::fetch_latest_from_registry(&transport, provider, &task_cancel).await;
             if !task_cancel.is_cancelled() {
                 task_inner.finish_remote_check(provider, generation, remote);
             }
@@ -660,13 +677,17 @@ fn spawn_check_task(
 }
 
 /// 观测 supervisor 的 JoinError：panic/取消都是句柄终态，必须清槽并发布可观察失败。
-async fn supervise(inner: Arc<AcpInstallInner>, operation: Arc<Operation>, plan: OperationPlan) {
+async fn supervise(
+    inner: Arc<AcpInstallInner>,
+    operation: Arc<Operation>,
+    transport: impl ReleaseTransport,
+) {
     let provider = operation.provider;
     let generation = operation.generation;
     let worker = tokio::spawn(operation::run(
         Arc::clone(&inner),
         Arc::clone(&operation),
-        plan,
+        transport,
     ));
     // 注意：这里**不**记录“已终止”事实。supervisor 自己不能声明自己结束了；只有关闭 owner
     // 真的 await 到这个 JoinHandle 返回，才由它发布 joined 事实。

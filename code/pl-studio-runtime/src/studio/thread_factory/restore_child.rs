@@ -93,7 +93,7 @@ impl StudioThreadFactory {
                 &thread.root_thread_id,
                 &mut project,
                 &workspace_usage,
-                super::root_resources::BotWorkspacePreparation::Existing,
+                super::bot_workspace::BotWorkspacePreparation::Existing,
             )
             .await?;
         let saved = restored
@@ -264,8 +264,7 @@ impl StudioThreadFactory {
                 route: &route,
                 project: &project,
                 root_thread_id: &thread.root_thread_id,
-                workspace: ToolWorkspace::new(workspace)
-                    .with_lsp_runtime(Some(self.services.lsp_runtime.clone())),
+                workspace: ToolWorkspace::new(workspace),
                 store: resources.clone(),
                 assignment: Some(&assignment),
             })
@@ -347,7 +346,7 @@ impl StudioThreadFactory {
             reason: reason.to_owned(),
         };
         // Resolve through the current Project before accepting the saved lease and receipt.
-        let (repository_root, _repository) = self.restored_child_repository(project).await?;
+        let (repository_root, project_endpoint) = self.restored_child_repository(project).await?;
         let lease = self.services.worktrees.get(child_id).ok_or_else(|| {
             missing(
                 "the saved child worktree has no session lease; a normal continuation does not create one",
@@ -377,6 +376,7 @@ impl StudioThreadFactory {
             &self.services.store,
             &self.services.ssh_manager,
             &lease,
+            Some(&project_endpoint),
         )
         .await
         .map_err(|error| resource_error("open restored child workspace manager", error))?;
@@ -391,24 +391,29 @@ impl StudioThreadFactory {
         Ok(lease)
     }
 
-    /// The repository the current Project really resolves to, plus a manager anchored on it.
+    /// The repository and endpoint the current Project resolves to.
     ///
     /// This is resolved through the Project's own backend, never from what a lease or its receipt
     /// claim, so every site check compares against the repository the user's project points at today.
     async fn restored_child_repository(
         &self,
         project: &crate::studio::WorkspaceRecord,
-    ) -> Result<(PathBuf, crate::agent::worktree::WorktreeManager), ThreadAssemblyError> {
+    ) -> Result<
+        (
+            PathBuf,
+            crate::studio::worktree::worktree_lease::WorkspaceEndpoint,
+        ),
+        ThreadAssemblyError,
+    > {
         let project_root =
             crate::studio::worktree::workspace_preparation::resolved_project_root(project)
                 .map_err(|error| resource_error("resolve restored child project root", error))?;
-        crate::studio::worktree::workspace_preparation::repository_manager(
+        crate::studio::worktree::workspace_preparation::project_repository(
             &self.services.ssh_manager,
             project.ssh_alias.as_deref(),
             &project_root,
         )
         .await
-        .map(|(repository, manager, _)| (repository, manager))
         .map_err(|error| resource_error("resolve restored child repository", error))
     }
 }

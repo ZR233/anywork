@@ -71,7 +71,7 @@ pub async fn start_new_thread(
                 pl_studio_runtime::CreateThreadRequest {
                     title: None,
                     input: input.into(),
-                    mode: mode.label().to_string(),
+                    mode: mode.as_str().to_string(),
                     route: pl_studio_runtime::NewThreadModelRoute {
                         account_id,
                         model_id,

@@ -4,6 +4,81 @@ import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_hover_detail.dart';
 
+/// A panel action in the conversation strip. Material owns its interaction state.
+class StatusBarButton extends StatelessWidget {
+  const StatusBarButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.selected = false,
+    this.iconOnly = false,
+    this.tooltip,
+    super.key,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool selected;
+  final bool iconOnly;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextButton.styleFrom(
+      foregroundColor: selected
+          ? context.colors.primary
+          : context.colors.onSurfaceVariant,
+      disabledForegroundColor: context.colors.onSurfaceVariant,
+      backgroundColor: selected
+          ? context.colors.secondaryContainer
+          : Colors.transparent,
+      minimumSize: Size(iconOnly ? 30 : 0, 30),
+      padding: iconOnly
+          ? EdgeInsets.zero
+          : const EdgeInsets.symmetric(horizontal: 8),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: context.text.labelMedium,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(StudioRadii.sm),
+      ),
+    );
+    return Semantics(
+      selected: selected,
+      label: tooltip ?? label,
+      excludeSemantics: true,
+      button: true,
+      enabled: onPressed != null,
+      onTap: onPressed,
+      child: Tooltip(
+        message: tooltip ?? label,
+        excludeFromSemantics: true,
+        child: iconOnly
+            ? IconButton(
+                onPressed: onPressed,
+                style: style,
+                visualDensity: VisualDensity.standard,
+                iconSize: 16,
+                icon: Icon(icon),
+              )
+            : TextButton.icon(
+                onPressed: onPressed,
+                style: style,
+                icon: Icon(icon, size: 16),
+                label: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 180),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+}
+
 /// Compact readout with an optional short text and a complete explanation.
 class StatusBarItem extends StatelessWidget {
   const StatusBarItem({

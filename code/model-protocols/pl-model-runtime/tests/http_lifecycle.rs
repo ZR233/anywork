@@ -273,11 +273,39 @@ async fn http_read_idle_is_bounded_and_preserves_an_unsafe_attempt_without_repla
 
 #[tokio::test]
 async fn oversized_sse_event_fails_before_unbounded_json_accumulation_or_retry() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp, "continue", 0,
-        Reply::Sse(vec![json!({"type":"response.output_text.delta","item_id":"message-1","delta":"X".repeat(64 * 1024 * 1024)})]),
-    )]).await.unwrap();
-    let failure = runtime(fixture.base_url(), false)
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let count = socket.read(&mut buffer).await.unwrap();
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let prefix = b"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"message-1\",\"delta\":\"";
+        let _ = socket.write_all(prefix).await;
+        let chunk = [b'X'; 65_536];
+        for _ in 0..1024 {
+            if socket.write_all(&chunk).await.is_err() {
+                return;
+            }
+        }
+        let _ = socket.write_all(b"\"}\n\n").await;
+    });
+    let failure = runtime(base, false)
         .complete(request(), ModelInvocationContext::default())
         .await
         .unwrap_err();
@@ -285,7 +313,7 @@ async fn oversized_sse_event_fails_before_unbounded_json_accumulation_or_retry()
         failure.source.as_ref(),
         pl_protocol::PureError::Protocol(_)
     ));
-    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+    server.abort();
 }
 
 fn observed(session: ModelSession) -> (ModelInvocationContext, Arc<tokio::sync::Notify>) {

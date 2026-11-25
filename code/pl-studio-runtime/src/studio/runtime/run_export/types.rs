@@ -222,6 +222,17 @@ pub struct ExecutionErrorV3 {
     pub turn_failure: Option<TurnFailure>,
 }
 
+impl ExecutionErrorV3 {
+    pub(super) fn export(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            stage: ExecutionErrorStage::Export,
+            code: code.to_owned(),
+            message: message.into(),
+            turn_failure: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimingReportV3 {

@@ -82,6 +82,25 @@ pub(crate) fn atom_content_role(key: &BodyKey) -> Option<crate::ChatContentRole>
     }
 }
 
+pub(in crate::studio) fn atom_contents<'a>(
+    database_id: &'a str,
+    owner: &'a ContentOwner,
+    fields: impl Iterator<Item = &'a BodyKey> + 'a,
+) -> impl Iterator<Item = crate::ChatAtomContent> + 'a {
+    fields.filter_map(move |key| {
+        Some(crate::ChatAtomContent {
+            role: atom_content_role(key)?,
+            reference: ContentRef {
+                database_id: database_id.into(),
+                target: ContentTarget::Body {
+                    owner: owner.clone(),
+                    key: key.as_key(),
+                },
+            },
+        })
+    })
+}
+
 pub(crate) fn atom_content_role_by_key(key: &str) -> Option<crate::ChatContentRole> {
     let parsed = if key == "body" {
         BodyKey::Body
@@ -337,21 +356,7 @@ fn freeze(
             outcome: crate::ChatTerminalOutcome::Transferred,
         };
     }
-    atom.contents = bodies
-        .keys()
-        .filter_map(|key| {
-            Some(crate::ChatAtomContent {
-                role: atom_content_role(key)?,
-                reference: ContentRef {
-                    database_id: database_id.into(),
-                    target: ContentTarget::Body {
-                        owner: owner.clone(),
-                        key: key.as_key(),
-                    },
-                },
-            })
-        })
-        .collect();
+    atom.contents = atom_contents(database_id, &owner, bodies.keys()).collect();
     Ok(ChatDraft {
         item_id: id.into(),
         query_class: if atom.kind == crate::ChatAtomKind::Inference {

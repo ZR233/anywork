@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use pl_tool::workspace::resolve_workspace_root;
 
 use super::super::StudioRuntime;
-use super::super::lsp_state::health;
 use super::super::{SkillSearchResult, SkillsStateSnapshot};
 
 #[derive(serde::Serialize)]
@@ -14,6 +13,30 @@ use super::super::{SkillSearchResult, SkillsStateSnapshot};
 struct ProjectActivationRecoveryBlock<'a> {
     workspace_id: &'a str,
     issues: Vec<crate::StudioRecoveryIssue>,
+}
+
+struct ProjectSkillsTarget {
+    root: PathBuf,
+    remote: Option<RemoteProjectSkills>,
+}
+
+struct RemoteProjectSkills {
+    alias: String,
+    files: Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
+}
+
+impl ProjectSkillsTarget {
+    fn fingerprint(&self, settings: &str) -> String {
+        let root = self.root.display();
+        match &self.remote {
+            Some(remote) => format!(
+                "ssh:{}:{root}:{}:{settings}",
+                remote.alias,
+                remote.files.executor().id()
+            ),
+            None => format!("{root}:{settings}"),
+        }
+    }
 }
 
 impl StudioRuntime {
@@ -52,56 +75,9 @@ impl StudioRuntime {
             })?)
             .into());
         }
-        let project = self.project_record(workspace_id).await?;
-        if let Some(server_id) = &project.ssh_alias {
-            let host = self
-                .ssh_manager
-                .open_workspace_binding(server_id, project.path.clone())
-                .await?;
-            let workspace_root = std::path::PathBuf::from(host.files().canonical_path());
-            let settings = self.config_runtime.read()?;
-            let fingerprint = format!(
-                "ssh:{server_id}:{}:{}:{}",
-                workspace_root.display(),
-                host.files().executor().id().to_string().as_str(),
-                self.skills.fingerprint(&settings.config.skills)?,
-            );
-            let _activation_command = self.activation.command_lock.lock().await;
-            if self
-                .activation
-                .applied
-                .read()
-                .await
-                .as_ref()
-                .is_some_and(|applied| {
-                    applied.workspace_id == workspace_id && applied.fingerprint == fingerprint
-                })
-            {
-                return Ok(());
-            }
-            let _ = self
-                .skills
-                .discover_remote(
-                    workspace_id,
-                    &workspace_root,
-                    &settings.config.skills,
-                    tokio_util::sync::CancellationToken::new(),
-                    Arc::new(host.files().clone()),
-                )
-                .await?;
-            *self.activation.applied.write().await = Some(super::super::ProjectActivation {
-                workspace_id: workspace_id.to_string(),
-                fingerprint,
-            });
-            return Ok(());
-        }
-        let workspace_root = resolve_workspace_root(Path::new(&project.path))?;
-        let settings = self.config_runtime.read()?;
-        let fingerprint = format!(
-            "{}:{}",
-            workspace_root.display(),
-            self.skills.fingerprint(&settings.config.skills)?,
-        );
+        let target = self.project_skills_target(workspace_id).await?;
+        let settings = self.config_runtime.read()?.config.skills;
+        let fingerprint = target.fingerprint(&self.skills.fingerprint(&settings)?);
         let _activation_command = self.activation.command_lock.lock().await;
         if self
             .activation
@@ -115,9 +91,7 @@ impl StudioRuntime {
         {
             return Ok(());
         }
-        let _ = self
-            .skills
-            .discover(workspace_id, &workspace_root, &settings.config.skills)
+        self.discover_project_skills(workspace_id, target, &settings)
             .await?;
         *self.activation.applied.write().await = Some(super::super::ProjectActivation {
             workspace_id: workspace_id.to_string(),
@@ -127,30 +101,55 @@ impl StudioRuntime {
     }
 
     pub async fn discover_skills(&self, workspace_id: &str) -> Result<SkillsStateSnapshot> {
+        let target = self.project_skills_target(workspace_id).await?;
+        let settings = self.config_runtime.read()?.config.skills;
+        self.discover_project_skills(workspace_id, target, &settings)
+            .await
+    }
+
+    async fn project_skills_target(&self, workspace_id: &str) -> Result<ProjectSkillsTarget> {
         let project = self.project_record(workspace_id).await?;
-        if let Some(server_id) = &project.ssh_alias {
+        if let Some(alias) = project.ssh_alias {
             let host = self
                 .ssh_manager
-                .open_workspace_binding(server_id, project.path.clone())
+                .open_workspace_binding(&alias, project.path)
                 .await?;
-            let workspace_root = std::path::PathBuf::from(host.files().canonical_path());
-            let settings = self.config_runtime.read()?;
-            return self
-                .skills
-                .discover_remote(
-                    workspace_id,
-                    &workspace_root,
-                    &settings.config.skills,
-                    tokio_util::sync::CancellationToken::new(),
-                    Arc::new(host.files().clone()),
-                )
-                .await;
+            let root = PathBuf::from(host.files().canonical_path());
+            let remote = Some(RemoteProjectSkills {
+                alias,
+                files: Arc::new(host.files().clone()),
+            });
+            Ok(ProjectSkillsTarget { root, remote })
+        } else {
+            let root = resolve_workspace_root(Path::new(&project.path))?;
+            Ok(ProjectSkillsTarget { root, remote: None })
         }
-        let workspace_root = resolve_workspace_root(Path::new(&project.path))?;
-        let settings = self.config_runtime.read()?;
-        self.skills
-            .discover(workspace_id, &workspace_root, &settings.config.skills)
-            .await
+    }
+
+    async fn discover_project_skills(
+        &self,
+        workspace_id: &str,
+        target: ProjectSkillsTarget,
+        settings: &pl_tool::skill::SkillsConfig,
+    ) -> Result<SkillsStateSnapshot> {
+        match target.remote {
+            Some(remote) => {
+                self.skills
+                    .discover_remote(
+                        workspace_id,
+                        &target.root,
+                        settings,
+                        tokio_util::sync::CancellationToken::new(),
+                        remote.files,
+                    )
+                    .await
+            }
+            None => {
+                self.skills
+                    .discover(workspace_id, &target.root, settings)
+                    .await
+            }
+        }
     }
 
     pub async fn search_skills(
@@ -163,133 +162,10 @@ impl StudioRuntime {
         self.skills.search(workspace_id, query, limit).await
     }
 
-    pub async fn probe_lsp_server(&self, workspace_id: &str) -> Result<()> {
-        let project = self.project_record(workspace_id).await?;
-        let lsp = self.external_runtimes.lsp.execution_scope(
-            &super::super::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
-        );
-        let (workspace_root, host, defaults) = if let Some(alias) = &project.ssh_alias {
-            let host = self
-                .ssh_manager
-                .open_workspace_binding(alias, project.path.clone())
-                .await?;
-            (
-                std::path::PathBuf::from(host.files().canonical_path()),
-                Some(Arc::new(pl_lsp::host::ExecutorLspHost::new(
-                    host.files().executor().clone(),
-                    host.files().canonical_path(),
-                )?) as Arc<dyn pl_lsp::host::LspHostBackend>),
-                None,
-            )
-        } else {
-            let root = resolve_workspace_root(Path::new(&project.path))?;
-            let host = self.local_lsp_host(&root).await;
-            (root, host, Some(self.store.paths().home().join("lsp/host")))
-        };
-        let _command = self.external_runtimes.lsp_state.command().await;
-        self.external_runtimes
-            .lsp_state
-            .begin(crate::StateOperation::Probe)
-            .await?;
-        let result = async {
-            let lease = lsp
-                .acquire_workspace(&workspace_root, host, defaults)
-                .await?;
-            lsp.retry_workspace_configuration(&workspace_root).await;
-            let initialized = lease.wait_initialized().await;
-            let closed = lease.close().await;
-            initialized?;
-            closed
-        }
-        .await;
-        if let Err(error) = result {
-            let error = anyhow::Error::from(error);
-            self.external_runtimes.lsp_state.failed(&error).await?;
-            return Err(error);
-        }
-        let health = health(&self.external_runtimes.lsp).await;
-        self.external_runtimes.lsp_state.ready(health, true).await?;
-        Ok(())
-    }
-
-    async fn reset_lsp(
+    pub(in crate::studio::runtime) async fn project_record(
         &self,
-        lsp: pl_lsp::runtime::LspRuntimeRegistry,
-        scope: pl_lsp::runtime::LspScope,
-    ) -> Result<()> {
-        let _command = self.external_runtimes.lsp_state.command().await;
-        self.external_runtimes
-            .lsp_state
-            .begin(crate::StateOperation::Reset)
-            .await?;
-        let result = lsp.reset_lsp(scope).await.map_err(anyhow::Error::from);
-        match result {
-            Ok(()) => {
-                let health = health(&self.external_runtimes.lsp).await;
-                self.external_runtimes
-                    .lsp_state
-                    .ready(health, false)
-                    .await?;
-                Ok(())
-            }
-            Err(error) => {
-                self.external_runtimes.lsp_state.failed(&error).await?;
-                Err(error)
-            }
-        }
-    }
-
-    /// Resolves transport-neutral Project identities into an internal LSP reset scope.
-    pub async fn reset_lsp_request(&self, request: crate::LspResetRequest) -> Result<()> {
-        let workspace_id = match &request {
-            crate::LspResetRequest::Server { workspace_id, .. }
-            | crate::LspResetRequest::Workspace { workspace_id } => Some(workspace_id),
-            crate::LspResetRequest::All => None,
-        };
-        let lsp = if let Some(id) = workspace_id {
-            let project = self.project_record(id).await?;
-            self.external_runtimes.lsp.execution_scope(
-                &super::super::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
-            )
-        } else {
-            self.external_runtimes.lsp.clone()
-        };
-        let scope = match request {
-            crate::LspResetRequest::Server {
-                workspace_id,
-                server_id,
-            } => pl_lsp::runtime::LspScope::Server {
-                workspace_root: self.project_workspace_root(&workspace_id).await?,
-                server_id,
-            },
-            crate::LspResetRequest::Workspace { workspace_id } => {
-                pl_lsp::runtime::LspScope::Workspace {
-                    workspace_root: self.project_workspace_root(&workspace_id).await?,
-                }
-            }
-            crate::LspResetRequest::All => pl_lsp::runtime::LspScope::All,
-        };
-        self.reset_lsp(lsp, scope).await
-    }
-
-    async fn project_workspace_root(&self, workspace_id: &str) -> Result<std::path::PathBuf> {
-        let project = self.project_record(workspace_id).await?;
-        if project.ssh_alias.is_some() {
-            Ok(std::path::PathBuf::from(project.path))
-        } else {
-            Ok(resolve_workspace_root(Path::new(&project.path))?)
-        }
-    }
-
-    async fn local_lsp_host(&self, root: &Path) -> Option<Arc<dyn pl_lsp::host::LspHostBackend>> {
-        let root = root.to_str()?;
-        pl_lsp::host::ExecutorLspHost::new(self.thread_factory.local_executor(), root)
-            .map(|host| Arc::new(host) as Arc<dyn pl_lsp::host::LspHostBackend>)
-            .map_err(|error| tracing::warn!(%error, "LSP host preparation failed"))
-            .ok()
-    }
-
-    async fn project_record(&self, workspace_id: &str) -> Result<crate::WorkspaceRecord> {
+        workspace_id: &str,
+    ) -> Result<crate::WorkspaceRecord> {
         self.agent_facility
             .product_events
             .project_snapshot()

@@ -254,7 +254,7 @@ jobs:
       archiveSha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
 
   rust-checks:
-    name: Rust quality, workspace tests and server (Linux)
+    name: Rust quality and workspace tests (Linux)
     needs: [changes, linux-environment]
     if: needs.changes.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
@@ -301,24 +301,18 @@ jobs:
           '
       - name: Check workspace Clippy
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Build the current-source remote helper
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
       - name: Run workspace behavior and documentation tests
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PWD/target/debug:$PATH"
-            cargo test --locked --workspace --features pl-core/sqlite
-          '
+        env:
+          ANYWORK_CONTAINER_TMPFS: '1'
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked --workspace --features pl-core/sqlite
       - name: Verify real PackageKit updates across supported distributions
         run: |
           executable=$(bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-update --lib --no-run --message-format=json |
             python3 -c 'import json,sys; messages=(json.loads(line) for line in sys.stdin if line.startswith("{")); paths=[m["executable"] for m in messages if m.get("reason")=="compiler-artifact" and m.get("executable") and m.get("profile",{}).get("test")]; assert len(paths)==1,paths; print(paths[0])')
           bash .github/scripts/test-linux-updater.sh "$executable"
-      - name: Build the standalone server
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-server
 
   linux-inputs:
-    name: Compile Linux engineering tool and bundled helpers
+    name: Compile Linux engineering tool
     needs: [changes, linux-environment]
     if: needs.changes.outputs.linux_inputs == 'true'
     runs-on: ubuntu-latest
@@ -335,9 +329,6 @@ jobs:
       sourceSha: ${{ steps.checkpoint.outputs.sourceSha }}
       workspace: ${{ steps.checkpoint.outputs.workspace }}
       environment: ${{ steps.checkpoint.outputs.environment }}
-      helperArtifactId: ${{ steps.helper-archive.outputs.artifact-id }}
-      helperArchiveSha256: ${{ steps.helper-checkpoint.outputs.archiveSha256 }}
-      helperSourceSha: ${{ steps.helper-checkpoint.outputs.sourceSha }}
     steps:
       - name: Check out the tested source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -350,13 +341,6 @@ jobs:
           image-id: ${{ needs.linux-environment.outputs.imageId }}
           artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
           archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: false
-          cache-bin: false
       - name: Cache the separate engineering-tool target directory
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -366,36 +350,8 @@ jobs:
           cache-bin: false
           workspaces: |
             . -> target/xtask
-      - name: Cache the x64 remote-helper cross-compilation target
-        if: needs.changes.outputs.remote_helpers == 'true'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-x86_64-unknown-linux-musl
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
-          workspaces: |
-            . -> target/x86_64-unknown-linux-musl
-      - name: Cache the arm64 remote-helper cross-compilation target
-        if: needs.changes.outputs.remote_helpers == 'true'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-aarch64-unknown-linux-musl
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
-          workspaces: |
-            . -> target/aarch64-unknown-linux-musl
-      - name: Build xtask and selected helper targets in one container
-        env:
-          BUILD_HELPERS: ${{ needs.changes.outputs.remote_helpers }}
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            cargo build --locked --target-dir target/xtask -p pl-xtask
-            if [ "$1" = true ]; then
-              PURE_REMOTE_HELPER_BUILDER=zigbuild target/xtask/debug/pl-xtask build-remote-helper --all-targets
-            fi
-          ' -- "$BUILD_HELPERS"
+      - name: Build xtask
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked --target-dir target/xtask -p pl-xtask
       - name: Checkpoint only the engineering executable
         id: checkpoint
         env:
@@ -414,9 +370,76 @@ jobs:
           compression-level: 0
           retention-days: 3
 
+  # Tool consumers can start as soon as linux-inputs finishes; only native
+  # application tests also wait for the bundled remote-helper resources.
+  remote-helpers:
+    name: Compile bundled remote helpers
+    needs: [changes, linux-environment, linux-inputs]
+    if: needs.changes.outputs.remote_helpers == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    permissions:
+      contents: read
+    outputs:
+      helperArtifactId: ${{ steps.helper-archive.outputs.artifact-id }}
+      helperArchiveSha256: ${{ steps.helper-checkpoint.outputs.archiveSha256 }}
+      helperSourceSha: ${{ steps.helper-checkpoint.outputs.sourceSha }}
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore exact Linux environment
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
+          image-id: ${{ needs.linux-environment.outputs.imageId }}
+          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
+          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
+      - name: Restore this run's Linux engineering tool
+        uses: ./.github/actions/restore-quality-artifact
+        with:
+          kind: tool
+          artifact-id: ${{ needs.linux-inputs.outputs.artifactId }}
+          sha256: ${{ needs.linux-inputs.outputs.archiveSha256 }}
+          source-sha: ${{ needs.linux-inputs.outputs.sourceSha }}
+          workspace: ${{ needs.linux-inputs.outputs.workspace }}
+          environment: ${{ needs.linux-inputs.outputs.environment }}
+      - name: Cache container Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: false
+          cache-bin: false
+      - name: Cache the x64 remote-helper cross-compilation target
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-x86_64-unknown-linux-musl
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+          workspaces: |
+            . -> target/x86_64-unknown-linux-musl
+      - name: Cache the arm64 remote-helper cross-compilation target
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-helper-${{ needs.linux-environment.outputs.key }}-aarch64-unknown-linux-musl
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+          workspaces: |
+            . -> target/aarch64-unknown-linux-musl
+      - name: Build both helper targets with this run's engineering tool
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env PURE_REMOTE_HELPER_BUILDER=zigbuild \
+            "$PR_QUALITY_XTASK" build-remote-helper --all-targets
       - name: Checkpoint the two target resources
         id: helper-checkpoint
-        if: needs.changes.outputs.remote_helpers == 'true'
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
@@ -425,7 +448,6 @@ jobs:
             --archive "$RUNNER_TEMP/helpers/quality.tar.gz" --source-sha "$SOURCE_SHA"
       - name: Share the exact helper archive
         id: helper-archive
-        if: needs.changes.outputs.remote_helpers == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-bundled-helpers-${{ github.sha }}-${{ github.run_attempt }}
@@ -539,7 +561,7 @@ jobs:
 
   linux-desktop:
     name: Desktop integration (Linux, shard ${{ matrix.shard }})
-    needs: [changes, linux-environment, linux-inputs, linux-test-inputs]
+    needs: [changes, linux-environment, linux-inputs, remote-helpers, linux-test-inputs]
     if: needs.changes.outputs.linux_desktop == 'true'
     strategy:
       fail-fast: false
@@ -580,9 +602,9 @@ jobs:
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
-          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
-          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
-          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
+          artifact-id: ${{ needs.remote-helpers.outputs.helperArtifactId }}
+          sha256: ${{ needs.remote-helpers.outputs.helperArchiveSha256 }}
+          source-sha: ${{ needs.remote-helpers.outputs.helperSourceSha }}
       - name: Restore this run's test inputs
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -611,7 +633,6 @@ jobs:
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
             ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-desktop-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite desktop --set full \
@@ -662,7 +683,7 @@ jobs:
 
   linux-native:
     name: Native lifecycle integration (Linux)
-    needs: [changes, linux-environment, linux-inputs, linux-test-inputs]
+    needs: [changes, linux-environment, linux-inputs, remote-helpers, linux-test-inputs]
     if: needs.changes.outputs.linux_native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 150
@@ -699,9 +720,9 @@ jobs:
         uses: ./.github/actions/restore-quality-artifact
         with:
           kind: helpers
-          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
-          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
-          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
+          artifact-id: ${{ needs.remote-helpers.outputs.helperArtifactId }}
+          sha256: ${{ needs.remote-helpers.outputs.helperArchiveSha256 }}
+          source-sha: ${{ needs.remote-helpers.outputs.helperSourceSha }}
       - name: Restore this run's test inputs
         uses: ./.github/actions/restore-quality-artifact
         with:
@@ -726,7 +747,6 @@ jobs:
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" env \
             ANYWORK_CI_TEST_INPUTS="$ANYWORK_CI_TEST_INPUTS" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             LINUX_BUILD_IMAGE="$LINUX_BUILD_IMAGE" bash -euo pipefail -c '
-            export PATH="$PURE_REMOTE_HELPER_PREBUILT_DIR/x86_64-unknown-linux-musl:$PATH"
             bash .github/scripts/linux-desktop-session.sh output/ci-native-secret-service \
               xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
               "$1" test-project --suite native --set full --output "$2"
@@ -786,8 +806,6 @@ jobs:
         uses: ./.github/actions/setup-studio-rust
         with:
           cache-key: rust-checks-${{ runner.os }}
-      - name: Prepare Clippy
-        run: rustup component add clippy
       - name: Check isolated pl-core without default features
         run: cargo check --locked -p pl-core --no-default-features --all-targets
       - name: Check workspace Clippy
@@ -808,6 +826,7 @@ jobs:
       - rust-checks
       - rust-scale
       - linux-inputs
+      - remote-helpers
       - linux-test-inputs
       - gui-generated
       - linux-desktop
@@ -835,6 +854,7 @@ jobs:
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           RUST_SCALE_RESULT: ${{ needs.rust-scale.result }}
           LINUX_INPUTS_RESULT: ${{ needs.linux-inputs.result }}
+          REMOTE_HELPERS_RESULT: ${{ needs.remote-helpers.result }}
           LINUX_TEST_INPUTS_RESULT: ${{ needs.linux-test-inputs.result }}
           GUI_GENERATED_RESULT: ${{ needs.gui-generated.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux-desktop.result }}

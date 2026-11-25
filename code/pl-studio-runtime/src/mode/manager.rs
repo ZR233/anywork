@@ -6,9 +6,9 @@ use std::sync::{Arc, RwLock};
 use crate::mode::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId};
 use thiserror::Error;
 
-use super::{
-    CompiledWorkflowDefinition, ThreadModeDefinition, WorkflowCompilerError,
-    compile_workflow_definition,
+use super::ThreadModeDefinition;
+use crate::workflow_tool::{
+    CompiledWorkflowDefinition, WorkflowBinding, WorkflowCompilerError, compile_workflow_definition,
 };
 
 const MAX_MODE_PROMPT_BYTES: usize = 128 * 1024;
@@ -137,6 +137,14 @@ impl RegisteredThreadMode {
     /// 返回已校验并编译的不可变状态图。
     pub fn workflow(&self) -> Option<&Arc<CompiledWorkflowDefinition>> {
         self.workflow.as_ref()
+    }
+
+    pub(crate) fn workflow_binding(&self) -> Option<WorkflowBinding> {
+        Some(WorkflowBinding {
+            mode_id: self.descriptor.id.clone(),
+            graph_revision: self.graph_revision,
+            graph: self.workflow.as_ref()?.clone(),
+        })
     }
 }
 
@@ -352,7 +360,7 @@ fn validate_registration(
             "display name must contain 1 to {MAX_MODE_DISPLAY_NAME_CHARS} characters"
         )));
     }
-    if registration.description.len() > MAX_MODE_DESCRIPTION_BYTES {
+    if registration.description.trim().len() > MAX_MODE_DESCRIPTION_BYTES {
         return Err(error(format!(
             "description exceeds {MAX_MODE_DESCRIPTION_BYTES} bytes"
         )));

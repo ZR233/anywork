@@ -26,7 +26,7 @@ impl StudioRuntime {
         }
         self.session_of(&member.root_thread_id)
             .and_then(|session| session.observed_thread(&member.root_thread_id))
-            .map(|owner| crate::studio::model_route::bot_owner(&owner.snapshot()))
+            .map(|owner| crate::studio::bot_owner::bot_owner(&owner.snapshot()))
             .transpose()
             .map(Option::flatten)
     }
@@ -95,7 +95,7 @@ impl StudioRuntime {
             && saved.service_tier.is_none()
             && state
                 .extensions
-                .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
+                .contains_key(crate::studio::bot_owner::BOT_OWNER_EXTENSION)
         {
             return Ok(());
         }
@@ -112,12 +112,12 @@ impl StudioRuntime {
         }];
         if !state
             .extensions
-            .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
+            .contains_key(crate::studio::bot_owner::BOT_OWNER_EXTENSION)
         {
             mutations.push(pl_core::thread::extensions::ExtensionMutation::Put {
-                id: crate::studio::model_route::BOT_OWNER_EXTENSION.into(),
+                id: crate::studio::bot_owner::BOT_OWNER_EXTENSION.into(),
                 expected_revision: None,
-                payload: crate::studio::model_route::encode_bot_owner(&bot.id)?,
+                payload: crate::studio::bot_owner::encode_bot_owner(&bot.id)?,
             });
         }
         thread.mutate_extensions(mutations).await?;

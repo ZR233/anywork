@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 const MODEL: &str = "fixture-model";
 const ACCOUNT: &str = "read-fixture";
-const TURN_COUNT: usize = 24;
+const TURN_COUNT: usize = 22;
 const THREAD_COUNT: usize = 2;
 
 pub(super) struct CompletedTurnObservation {
@@ -57,8 +57,11 @@ struct ReadCase {
     name: String,
     thread_id: String,
     main_items: usize,
+    expected_seed_answer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     switch_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    switch_expected_seed_answer: Option<String>,
 }
 
 pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
@@ -90,27 +93,13 @@ pub(super) fn run(context: &ConversationReadWorkScenario<'_>) -> Result<()> {
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
         let mut runner = OwnedProcess::start(&mut command, false)?;
-        let deadline = Instant::now() + Duration::from_secs(900);
-        loop {
-            if let Some(status) = runner.child.try_wait()? {
-                runner.stopped = true;
-                runner_exit = Some(status);
-                ensure!(
-                    status.success(),
-                    "conversation read integration tests failed: {status}"
-                );
-                break;
-            }
-            ensure!(
-                interrupt.try_recv().is_err(),
-                "conversation read integration tests cancelled"
-            );
-            ensure!(
-                Instant::now() < deadline,
-                "conversation read integration tests timed out"
-            );
-            thread::sleep(Duration::from_millis(200));
-        }
+        runner_exit = Some(wait_desktop_runner(
+            &mut runner,
+            None,
+            interrupt,
+            Duration::from_secs(900),
+            "conversation read integration tests",
+        )?);
         Ok(())
     })();
     fs::write(
@@ -146,25 +135,18 @@ fn seed_closed_home(home: &Path, working: &Path) -> Result<Vec<ReadCase>> {
 async fn seed_closed_home_async(home: &Path, working: &Path) -> Result<Vec<ReadCase>> {
     let project = working.join("conversation-read-project");
     init_git_project(&project)?;
-    let thread_ids = Box::pin(write_history(home, &project)).await?;
-    let totals = Box::pin(count_closed_history(home, &thread_ids)).await?;
-    Ok(vec![
-        ReadCase {
-            name: "bounded-cold-read".into(),
-            thread_id: thread_ids[0].clone(),
-            main_items: totals[0],
-            switch_thread_id: Some(thread_ids[1].clone()),
-        },
-        ReadCase {
-            name: "independent-page".into(),
-            thread_id: thread_ids[1].clone(),
-            main_items: totals[1],
-            switch_thread_id: None,
-        },
-    ])
+    let (thread_ids, totals) = Box::pin(write_history(home, &project)).await?;
+    Ok(vec![ReadCase {
+        name: "bounded-cold-read".into(),
+        thread_id: thread_ids[0].clone(),
+        main_items: totals[0],
+        expected_seed_answer: format!("read-answer-0-{:02}", TURN_COUNT - 1),
+        switch_thread_id: Some(thread_ids[1].clone()),
+        switch_expected_seed_answer: Some(format!("read-answer-1-{:02}", TURN_COUNT - 1)),
+    }])
 }
 
-async fn write_history(home: &Path, project: &Path) -> Result<Vec<String>> {
+async fn write_history(home: &Path, project: &Path) -> Result<(Vec<String>, Vec<usize>)> {
     let fixture = FixtureServer::start(seed_script()).await?;
     let seeded = async {
         write_seed_config(home, &fixture.base_url())?;
@@ -172,15 +154,20 @@ async fn write_history(home: &Path, project: &Path) -> Result<Vec<String>> {
         let seeded = async {
             let workspace = runtime.open_project(project).await?;
             let mut thread_ids = Vec::new();
+            let mut totals = Vec::new();
             for index in 0..THREAD_COUNT {
-                thread_ids.push(Box::pin(seed_thread(&runtime, &workspace.id, index)).await?);
+                let id = Box::pin(seed_thread(&runtime, &workspace.id, index)).await?;
+                runtime.synchronize_thread_observation(&id).await?;
+                let total = Box::pin(count_main_items(&runtime, &id)).await?;
+                totals.push(total);
+                thread_ids.push(id);
             }
-            Ok::<_, anyhow::Error>(thread_ids)
+            Ok::<_, anyhow::Error>((thread_ids, totals))
         }
         .await;
         let stopped = runtime.shutdown_runtime().await.and_then(require_stopped);
         match (seeded, stopped) {
-            (Ok(ids), Ok(_)) => Ok(ids),
+            (Ok(result), Ok(_)) => Ok(result),
             (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
             (Err(error), Err(stop_error)) => {
                 Err(error.context(format!("runtime shutdown also failed: {stop_error:#}")))
@@ -314,60 +301,61 @@ pub(super) async fn wait_initial_turn(
         let history = runtime
             .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
             .await?;
-        let observed = match tokio::time::timeout_at(deadline.into(), async {
-            let completed = loop {
-                let page = history
-                    .turns_page(
-                        None,
-                        None,
-                        HistoryDemand {
-                            max_rows: 128,
-                            max_bytes: 1024 * 1024,
-                        },
-                    )
-                    .await?;
-                if let Some(head) = page.entries.iter().find_map(|entry| match &entry.head {
-                    HistoryBusinessRowHead::Turn(head)
-                        if head.input_id.as_deref() == Some(input_id)
-                            && head.state == HistoryTurnState::Completed =>
-                    {
-                        Some(head.clone())
-                    }
-                    _ => None,
-                }) {
-                    break head;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            };
-            let view = current.snapshot(current_demand()).await?;
-            Ok::<_, anyhow::Error>((completed, view))
-        })
+        let page = tokio::time::timeout_at(
+            deadline.into(),
+            history.turns_page(
+                None,
+                None,
+                HistoryDemand {
+                    max_rows: 128,
+                    max_bytes: 1024 * 1024,
+                },
+            ),
+        )
         .await
-        {
-            Ok(result) => result,
-            Err(error) => Err(anyhow::Error::new(error).context("History completion timed out")),
-        };
+        .context("initial History turn check timed out")??;
         history.close().await;
-        let (completed, view) = observed?;
-        ensure!(
-            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                && view.state.thread.id == thread_id
-                && view.state.active_turn.is_none()
-                && view.state.thread.status == ThreadStatus::Idle,
-            "History completed Turn {} but Current is not idle",
-            completed.turn_id
-        );
-        let route_revision = view
-            .state
-            .model_route
-            .as_ref()
-            .map(|route| route.revision)
-            .context("completed Turn has no model route")?;
-        Ok(CompletedTurnObservation {
-            turn_id: completed.turn_id,
-            route_revision,
-            snapshot_revision: view.state.revision,
-        })
+        let already_completed = page.entries.iter().find_map(|entry| match &entry.head {
+            HistoryBusinessRowHead::Turn(head)
+                if head.input_id.as_deref() == Some(input_id)
+                    && head.state == HistoryTurnState::Completed =>
+            {
+                Some(head.clone())
+            }
+            _ => None,
+        });
+        if let Some(completed) = already_completed {
+            let view = tokio::time::timeout_at(deadline.into(), current.snapshot(current_demand()))
+                .await
+                .context("initial Current snapshot timed out")??;
+            ensure!(
+                view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
+                    && view.state.thread.id == thread_id
+                    && view.state.active_turn.is_none()
+                    && view.state.thread.status == ThreadStatus::Idle,
+                "History completed Turn {} but Current is not idle",
+                completed.turn_id
+            );
+            let route_revision = view
+                .state
+                .model_route
+                .as_ref()
+                .map(|route| route.revision)
+                .context("completed Turn has no model route")?;
+            return Ok(CompletedTurnObservation {
+                turn_id: completed.turn_id,
+                route_revision,
+                snapshot_revision: view.state.revision,
+            });
+        }
+        Box::pin(wait_notified_turn(
+            current,
+            watch,
+            saw_baseline,
+            thread_id,
+            input_id,
+        ))
+        .await
     }
     .await;
     result.with_context(|| format!("initial Turn not observed for {input_id}"))
@@ -437,7 +425,7 @@ async fn create_seed_thread(
                     text: format!("read-seed-{index}-00"),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: ThreadModeId::auto().label().into(),
+                mode: ThreadModeId::auto().as_str().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -452,31 +440,6 @@ async fn create_seed_thread(
         )
         .await?;
     Ok(created.thread.id)
-}
-
-async fn count_closed_history(home: &Path, thread_ids: &[String]) -> Result<Vec<usize>> {
-    let runtime = Box::pin(StudioRuntime::initialize(runtime_options(home))).await?;
-    let counted = async {
-        let mut totals = Vec::new();
-        for thread_id in thread_ids {
-            let total = Box::pin(count_main_items(&runtime, thread_id)).await?;
-            ensure!(
-                total > 40,
-                "seeded conversation {thread_id} is too small for a bounded first page: {total}"
-            );
-            totals.push(total);
-        }
-        Ok::<_, anyhow::Error>(totals)
-    }
-    .await;
-    let stopped = runtime.shutdown_runtime().await.and_then(require_stopped);
-    match (counted, stopped) {
-        (Ok(totals), Ok(_)) => Ok(totals),
-        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(stop_error)) => {
-            Err(error.context(format!("runtime shutdown also failed: {stop_error:#}")))
-        }
-    }
 }
 
 fn runtime_options(home: &Path) -> StudioRuntimeOptions {

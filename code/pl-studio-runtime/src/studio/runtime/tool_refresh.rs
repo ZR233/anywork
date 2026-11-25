@@ -177,13 +177,21 @@ fn model_catalog_witness(
     serde_json::json!({ "accounts": accounts })
 }
 
+#[derive(Clone, Default)]
+pub(super) struct ToolRefresh {
+    task: background_task::BackgroundTaskSlot,
+    stopping: tokio_util::sync::CancellationToken,
+}
+
 impl StudioRuntime {
     pub(super) async fn start_tool_refresh(&self) {
-        let mut slot = self.tool_refresh.lock().await;
-        if slot.as_ref().is_some_and(|task| !task.is_finished()) {
+        let mut slot = self.tool_refresh.task.lock().await;
+        if self.tool_refresh.stopping.is_cancelled()
+            || slot.as_ref().is_some_and(|task| !task.is_finished())
+        {
             return;
         }
-        let stopping = self.rejected_tools.start();
+        let stopping = self.tool_refresh.stopping.clone();
         let mut settings = self.settings_updates.subscribe();
         let mut profiles = self.config_runtime.subscribe_agent_profiles();
         let mut events = self.agent_facility.product_events.subscribe_internal();
@@ -259,7 +267,7 @@ impl StudioRuntime {
                             return;
                         };
                         let mut snapshots = thread.subscribe();
-                        let mut attempted = BTreeMap::new();
+                        let mut attempted = None;
                         loop {
                             if stopping.is_cancelled() || lifetime.is_cancelled() {
                                 break;
@@ -267,10 +275,11 @@ impl StudioRuntime {
                             let sources = receiver.borrow_and_update().clone();
                             let cleanup_was_pending = thread.snapshot().tool_cleanup.pending > 0;
                             runtime
-                                .refresh_selected_catalogs(
+                                .refresh_thread_catalog(
                                     &sources,
                                     &mut attempted,
-                                    vec![(id.clone(), thread.clone())],
+                                    &id,
+                                    &thread,
                                     &stopping,
                                     &receiver,
                                 )
@@ -303,8 +312,9 @@ impl StudioRuntime {
                     changed = settings.changed() => if changed.is_err() { break; },
                     changed = profiles.changed() => if changed.is_err() { break; },
                     changed = ssh_ready.changed() => if changed.is_err() { break; },
-                    event = events.recv() => match event {
-                        Ok(event) => sources.observe(event.kind),
+                    event = events.recv_catalog_change() => match event {
+                        Ok(Some(kind)) => sources.observe(kind),
+                        Ok(None) => {},
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sources.0.insert("lag".into(), runtime.agent_facility.product_events.current_sequence().to_string()); },
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     },
@@ -319,156 +329,139 @@ impl StudioRuntime {
         })));
     }
 
-    async fn refresh_selected_catalogs(
+    async fn refresh_thread_catalog(
         &self,
         sources: &CatalogSources,
-        attempted: &mut BTreeMap<String, (ThreadHandle, String)>,
-        active: Vec<(String, ThreadHandle)>,
+        attempted: &mut Option<String>,
+        id: &str,
+        thread: &ThreadHandle,
         stopping: &tokio_util::sync::CancellationToken,
         latest: &tokio::sync::watch::Receiver<CatalogSources>,
     ) {
-        let ids: std::collections::BTreeSet<_> = active.iter().map(|(id, _)| id.clone()).collect();
-        attempted.retain(|id, _| ids.contains(id));
-        for (id, thread) in active {
-            let Some(resources_scope) = self
-                .session_of(&id)
-                .and_then(|session| session.native_resources(&thread).ok())
-            else {
-                continue;
-            };
-            let Ok((gate, cancellation)) = self.thread_factory.tool_operation(&id) else {
-                continue;
-            };
-            let _installation = tokio::select! {
-                biased;
-                () = stopping.cancelled() => continue,
-                () = cancellation.cancelled() => continue,
-                guard = gate.lock_owned() => guard,
-            };
-            let cleanup = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.rejected_tools.retry(Some(&thread)),
-            )
-            .await;
-            if !matches!(cleanup, Ok(Ok(()))) {
-                tracing::warn!(thread_id = %id, error = ?cleanup, "candidate cleanup remains pending");
-                continue;
-            }
-            let snapshot = thread.snapshot();
-            let authority_invalidated = self
-                .thread_factory
-                .binding_snapshot(&id)
-                .is_some_and(|binding| !binding.authorization.is_active());
-            if snapshot.tool_cleanup.pending > 0 && !authority_invalidated {
-                continue;
-            }
-            if snapshot.lifecycle != ThreadLifecycle::Open {
-                continue;
-            }
-            let fingerprint = catalog_fingerprint(sources, &snapshot);
-            if attempted.get(&id).is_some_and(|(previous, key)| {
-                previous.same_instance(&thread) && key == &fingerprint
-            }) {
-                continue;
-            }
-            tracing::debug!(target: "thread_preparation", thread_id = %id, stage = "catalog_refresh", "starting");
-            let attempt = cancellation.child_token();
-            let result = {
-                let desired = sources.clone();
-                let latest_revision = latest.clone();
-                let preparation = async {
-                    let session = self.require_session(&id)?;
-                    let configuration =
-                        NativeModelConfiguration::resolve(&self.config_runtime, &snapshot)?;
-                    let identity = format!("{}:{fingerprint}", configuration.desired()).into();
-                    configuration
-                        .prepare_bundle(
-                            NativeBundleOwner {
-                                id: &id,
-                                session: &session,
-                                factory: &self.thread_factory,
-                                config: &self.config_runtime,
-                                thread: &thread,
-                                snapshot: &snapshot,
-                            },
-                            attempt.clone(),
-                            identity,
-                            move || latest_revision.borrow().0 == desired.0,
-                        )
-                        .await
-                };
-                tokio::pin!(preparation);
-                let mut changes = latest.clone();
-                tokio::select! {
-                    result = &mut preparation => result,
-                    _ = changes.changed() => {
-                        attempt.cancel();
-                        preparation.await
-                    },
-                    () = stopping.cancelled() => {
-                        attempt.cancel();
-                        preparation.await
-                    },
-                }
-            };
-            // Release the producer permit after handing off the candidate. The old package
-            // remains available for input, including write_stdin, while Core defers its swap.
-            let transfer = match result {
-                Ok(candidate) => {
-                    resources_scope
-                        .candidates
-                        .stage_runtime_bundle(thread.clone(), candidate)
-                        .await
-                }
-                Err(error) => Err(error),
-            };
-            drop(_installation);
-            let result = match transfer {
-                Ok(receipt) => {
-                    let mut changed = latest.clone();
-                    tokio::select! {
-                        biased;
-                        () = stopping.cancelled() => continue,
-                        () = cancellation.cancelled() => continue,
-                        _ = changed.changed() => continue,
-                        result = receipt.installed() => result.map(|_| ()).map_err(anyhow::Error::new),
-                    }
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error) = &result
-                && error.chain().any(|cause| {
-                    let error = cause.downcast_ref::<ThreadError>().or_else(|| {
-                        cause
-                            .downcast_ref::<std::sync::Arc<ThreadError>>()
-                            .map(std::sync::Arc::as_ref)
-                    });
-                    matches!(
-                        error,
-                        Some(ThreadError::StaleRuntimeBundle | ThreadError::ContextConflict { .. })
-                    )
-                })
-            {
-                // A fresher snapshot or source superseded the candidate after preparation.
-                // Its resources remain under the original installation owner's cleanup.
-                continue;
-            }
-            if result.is_ok() {
-                self.thread_factory.notify_lsp_binding_changed();
-                tracing::debug!(target: "thread_preparation", thread_id = id, stage = "catalog_install", "completed");
-            }
-            // Cache attempts, including failures, until an input revision changes.
-            // Recovery issues remain visible; only successful transfer commits a binding.
-            if stopping.is_cancelled()
-                || cancellation.is_cancelled()
-                || sources.0 != latest.borrow().0
-                || thread.snapshot().lifecycle != ThreadLifecycle::Open
-            {
-                continue;
-            }
-            attempted.insert(id.clone(), (thread.clone(), fingerprint));
-            self.publish_tool_refresh_result(&id, &thread, result.as_ref().err());
+        let Some(resources_scope) = self
+            .session_of(id)
+            .and_then(|session| session.native_resources(thread).ok())
+        else {
+            return;
+        };
+        let Ok((gate, cancellation)) = self.thread_factory.tool_operation(id) else {
+            return;
+        };
+        let _installation = tokio::select! {
+            biased;
+            () = stopping.cancelled() => return,
+            () = cancellation.cancelled() => return,
+            guard = gate.lock_owned() => guard,
+        };
+        let cleanup = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.rejected_tools.retry(Some(thread)),
+        )
+        .await;
+        if !matches!(cleanup, Ok(Ok(()))) {
+            tracing::warn!(thread_id = %id, error = ?cleanup, "candidate cleanup remains pending");
+            return;
         }
+        let snapshot = thread.snapshot();
+        let authority_invalidated = self
+            .thread_factory
+            .binding_snapshot(id)
+            .is_some_and(|binding| !binding.authorization.is_active());
+        if snapshot.tool_cleanup.pending > 0 && !authority_invalidated {
+            return;
+        }
+        if snapshot.lifecycle != ThreadLifecycle::Open {
+            return;
+        }
+        let fingerprint = catalog_fingerprint(sources, &snapshot);
+        if attempted.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        tracing::debug!(target: "thread_preparation", thread_id = %id, stage = "catalog_refresh", "starting");
+        let attempt = cancellation.child_token();
+        let result = {
+            let desired = sources.clone();
+            let latest_revision = latest.clone();
+            let preparation = async {
+                let session = self.require_session(id)?;
+                let configuration =
+                    NativeModelConfiguration::resolve(&self.config_runtime, &snapshot)?;
+                let identity = format!("{}:{fingerprint}", configuration.desired()).into();
+                configuration
+                    .prepare_bundle(
+                        NativeBundleOwner {
+                            id,
+                            session: &session,
+                            factory: &self.thread_factory,
+                            config: &self.config_runtime,
+                            thread,
+                            snapshot: &snapshot,
+                        },
+                        attempt.clone(),
+                        identity,
+                        move || latest_revision.borrow().0 == desired.0,
+                    )
+                    .await
+            };
+            tokio::pin!(preparation);
+            let mut changes = latest.clone();
+            tokio::select! {
+                result = &mut preparation => result,
+                _ = changes.changed() => {
+                    attempt.cancel();
+                    preparation.await
+                },
+                () = stopping.cancelled() => {
+                    attempt.cancel();
+                    preparation.await
+                },
+            }
+        };
+        // Release the producer permit after handing off the candidate. The old package
+        // remains available for input, including write_stdin, while Core defers its swap.
+        let transfer = match result {
+            Ok(candidate) => {
+                resources_scope
+                    .candidates
+                    .stage_runtime_bundle(thread.clone(), candidate)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        drop(_installation);
+        let result = match transfer {
+            Ok(receipt) => {
+                let mut changed = latest.clone();
+                tokio::select! {
+                    biased;
+                    () = stopping.cancelled() => return,
+                    () = cancellation.cancelled() => return,
+                    _ = changed.changed() => return,
+                    result = receipt.installed() => result.map(|_| ()).map_err(anyhow::Error::new),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        if result.as_ref().is_err_and(refresh_was_interrupted) {
+            // Leave interrupted attempts eligible for retry. The original owner retains
+            // responsibility for candidate cleanup.
+            return;
+        }
+        if result.is_ok() {
+            self.thread_factory.notify_lsp_binding_changed();
+            tracing::debug!(target: "thread_preparation", thread_id = id, stage = "catalog_install", "completed");
+        }
+        // Cache attempts, including failures, until an input revision changes.
+        // Recovery issues remain visible; only successful transfer commits a binding.
+        if stopping.is_cancelled()
+            || cancellation.is_cancelled()
+            || sources.0 != latest.borrow().0
+            || thread.snapshot().lifecycle != ThreadLifecycle::Open
+        {
+            return;
+        }
+        *attempted = Some(fingerprint);
+        self.publish_tool_refresh_result(id, thread, result.as_ref().err());
     }
 
     pub(in crate::studio::runtime) fn publish_tool_refresh_result(
@@ -509,13 +502,31 @@ impl StudioRuntime {
     }
 
     pub(super) async fn stop_tool_refresh(&self) -> anyhow::Result<()> {
-        self.rejected_tools.stop();
+        self.tool_refresh.stopping.cancel();
         self.thread_factory.stop_all_tool_operations();
-        background_task::finish(&self.tool_refresh)
+        background_task::finish(&self.tool_refresh.task)
             .await
             .map_err(anyhow::Error::new)?;
         self.rejected_tools.retry(None).await
     }
+}
+
+fn refresh_was_interrupted(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let error = cause.downcast_ref::<ThreadError>().or_else(|| {
+            cause
+                .downcast_ref::<std::sync::Arc<ThreadError>>()
+                .map(std::sync::Arc::as_ref)
+        });
+        matches!(
+            error,
+            Some(
+                ThreadError::Cancelled
+                    | ThreadError::StaleRuntimeBundle
+                    | ThreadError::ContextConflict { .. }
+            )
+        )
+    })
 }
 
 fn catalog_fingerprint(
@@ -555,8 +566,11 @@ fn catalog_fingerprint(
         "sources": sources.0,
         "skillMutation": mutation,
         "workspaceMutation": workspace_mutation,
-        "mode": snapshot.extensions.get("studio.mode"),
+        "mode": snapshot.extensions.get(crate::mode::MODE_EXTENSION),
         "modelRoute": snapshot.extensions.get(crate::studio::model_route::MODEL_ROUTE_EXTENSION),
         "agentProfile": snapshot.extensions.get(crate::studio::model_route::AGENT_PROFILE_EXTENSION),
     }))
 }
+
+#[cfg(test)]
+mod tests;

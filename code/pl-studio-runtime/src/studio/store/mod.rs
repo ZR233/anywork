@@ -12,6 +12,7 @@ pub(crate) mod attachment;
 pub(in crate::studio) mod catalog;
 pub(in crate::studio) mod directory;
 mod error;
+mod lifecycle;
 pub(in crate::studio) mod object;
 mod project;
 pub(in crate::studio) use project::ProjectRow;
@@ -43,6 +44,16 @@ pub struct StudioStore {
 
 pub use error::{SessionLayoutMigrationFailed, StudioDatabaseError};
 impl StudioStore {
+    /// Reads only an already complete Current document; never prepares or migrates storage.
+    pub(crate) async fn load_current_read_only(
+        &self,
+        thread: &crate::Thread,
+    ) -> anyhow::Result<Option<pl_core::thread::current::ThreadCurrent>> {
+        self.state_for(&thread.workspace_id, &thread.id)?
+            .load_current()
+            .await
+    }
+
     pub(crate) fn database(&self) -> &DatabaseConnection {
         &self.db
     }

@@ -24,12 +24,15 @@ class ComposerDockView extends StatelessWidget {
           ? const EdgeInsets.fromLTRB(12, 4, 12, 6)
           : const EdgeInsets.fromLTRB(12, 7, 12, 12),
       child: Align(
-        alignment: Alignment.center,
+        alignment: Alignment.bottomCenter,
+        heightFactor: 1,
         child: ConstrainedBox(
           constraints: const BoxConstraints(
             maxWidth: StudioLayout.conversationWidth,
           ),
           child: SingleChildScrollView(
+            primary: false,
+            reverse: true,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,

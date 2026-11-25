@@ -466,7 +466,7 @@ void main() {
       expect(find.byTooltip('compiler executable not found'), findsOneWidget);
       for (final id in ['dart', 'python', 'off', 'busy', 'bad']) {
         final row = find.byKey(StudioDriverKeys.statusLspServer(id));
-        expect(tester.getSize(row).height, 32);
+        expect(tester.getSize(row).height, 36);
         for (final text in tester.widgetList<Text>(
           find.descendant(of: row, matching: find.byType(Text)),
         )) {

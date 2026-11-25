@@ -311,43 +311,6 @@ pub(crate) struct HostMcp {
 }
 
 impl HostMcp {
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) async fn start(
-        host: AgentHost,
-        caller: crate::AgentId,
-        domain_closed: CancellationToken,
-        is_root: bool,
-        frontend: Option<&std::path::Path>,
-    ) -> Result<(Self, schema::McpServer)> {
-        Self::start_bound(host, caller, domain_closed, is_root, frontend, None).await
-    }
-
-    #[cfg(all(test, target_os = "linux"))]
-    async fn start_with_workflow(
-        host: AgentHost,
-        caller: crate::AgentId,
-        domain_closed: CancellationToken,
-        is_root: bool,
-        frontend: Option<&std::path::Path>,
-        workflow_plan: Option<Arc<super::acp_business::AcpWorkflowPlanOwner>>,
-    ) -> Result<(Self, schema::McpServer)> {
-        let mut service = Self::pending(host, caller, domain_closed);
-        match service.launch(is_root, frontend, None, workflow_plan).await {
-            Ok(definition) => Ok((service, definition)),
-            Err(error) => {
-                service
-                    .close()
-                    .await
-                    .context("failed to reclaim rejected MCP transport")?;
-                service
-                    .close_tools()
-                    .await
-                    .context("failed to reclaim rejected MCP tools")?;
-                Err(error)
-            }
-        }
-    }
-
     /// Attach this owner to AcpResources before any fallible setup or await.
     pub(super) fn pending(
         host: AgentHost,
@@ -366,32 +329,6 @@ impl HostMcp {
             domain_closed,
             tools: Arc::new(BTreeMap::new()),
             protocol_closed: false,
-        }
-    }
-
-    #[cfg(all(test, target_os = "linux"))]
-    async fn start_bound(
-        host: AgentHost,
-        caller: crate::AgentId,
-        domain_closed: CancellationToken,
-        is_root: bool,
-        frontend: Option<&std::path::Path>,
-        workspace: Option<Arc<super::acp_workspace_tools::WorkspaceTools>>,
-    ) -> Result<(Self, schema::McpServer)> {
-        let mut service = Self::pending(host, caller, domain_closed);
-        match service.launch(is_root, frontend, workspace, None).await {
-            Ok(definition) => Ok((service, definition)),
-            Err(error) => {
-                service
-                    .close()
-                    .await
-                    .context("failed to reclaim rejected MCP transport")?;
-                service
-                    .close_tools()
-                    .await
-                    .context("failed to reclaim rejected MCP tools")?;
-                Err(error)
-            }
         }
     }
 
@@ -1127,7 +1064,97 @@ mod tests {
 
     use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
 
-    use super::HostMcp;
+    use super::{AgentHost, HostMcp};
+    use crate::studio::runtime::acp_workspace_tools::WorkspaceTools;
+    use crate::studio::thread_factory::PreparedAcpWorkspace;
+    use pl_tool::{
+        command::WorkspaceExecutionBinding,
+        environment::{ExecutionEnvironment, ExecutionOs, ShellDialect},
+        remote::{SshServerProfile, SshWorkspaceBinding},
+        workspace::{AgentWorkspace, SessionFiles, ToolWorkspace},
+    };
+    use std::{path::PathBuf, time::Duration};
+
+    impl HostMcp {
+        async fn start(
+            host: AgentHost,
+            caller: crate::AgentId,
+            domain_closed: CancellationToken,
+            is_root: bool,
+            frontend: Option<&std::path::Path>,
+        ) -> Result<(Self, schema::McpServer)> {
+            Self::start_bound(host, caller, domain_closed, is_root, frontend, None).await
+        }
+
+        async fn start_with_workflow(
+            host: AgentHost,
+            caller: crate::AgentId,
+            domain_closed: CancellationToken,
+            is_root: bool,
+            frontend: Option<&std::path::Path>,
+            workflow_plan: Option<Arc<crate::studio::runtime::acp_business::AcpWorkflowPlanOwner>>,
+        ) -> Result<(Self, schema::McpServer)> {
+            Self::start_fixture(
+                host,
+                caller,
+                domain_closed,
+                is_root,
+                frontend,
+                None,
+                workflow_plan,
+            )
+            .await
+        }
+
+        async fn start_bound(
+            host: AgentHost,
+            caller: crate::AgentId,
+            domain_closed: CancellationToken,
+            is_root: bool,
+            frontend: Option<&std::path::Path>,
+            workspace: Option<Arc<WorkspaceTools>>,
+        ) -> Result<(Self, schema::McpServer)> {
+            Self::start_fixture(
+                host,
+                caller,
+                domain_closed,
+                is_root,
+                frontend,
+                workspace,
+                None,
+            )
+            .await
+        }
+
+        async fn start_fixture(
+            host: AgentHost,
+            caller: crate::AgentId,
+            domain_closed: CancellationToken,
+            is_root: bool,
+            frontend: Option<&std::path::Path>,
+            workspace: Option<Arc<WorkspaceTools>>,
+            workflow_plan: Option<Arc<crate::studio::runtime::acp_business::AcpWorkflowPlanOwner>>,
+        ) -> Result<(Self, schema::McpServer)> {
+            let mut service = Self::pending(host, caller, domain_closed);
+            match service
+                .launch(is_root, frontend, workspace, workflow_plan)
+                .await
+            {
+                Ok(definition) => Ok((service, definition)),
+                Err(error) => {
+                    service
+                        .close()
+                        .await
+                        .context("failed to reclaim rejected MCP transport")?;
+                    service
+                        .close_tools()
+                        .await
+                        .context("failed to reclaim rejected MCP tools")?;
+                    Err(error)
+                }
+            }
+        }
+    }
 
     #[derive(Clone, Default)]
     struct EvidenceBuffer(Arc<Mutex<Vec<u8>>>);
@@ -1438,18 +1465,57 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn ssh_workspace_mcp_uses_real_helper_tasks_inputs_captures_and_permissions() -> Result<()>
-    {
-        use crate::studio::runtime::acp_workspace_tools::WorkspaceTools;
-        use crate::studio::thread_factory::PreparedAcpWorkspace;
-        use pl_tool::{
-            command::WorkspaceExecutionBinding,
-            environment::{ExecutionEnvironment, ExecutionOs, ShellDialect},
-            remote::{SshServerProfile, SshWorkspaceBinding},
-            workspace::{AgentWorkspace, SessionFiles, ToolWorkspace},
-        };
-        use std::{sync::Arc, time::Duration};
+    struct SshWorkspaceMcp<'a> {
+        fixture: &'a Fixture,
+        root: PathBuf,
+        target: crate::AcpSessionTarget,
+        host: crate::thread_assembler::AgentHost,
+        caller: crate::AgentId,
+        cancellation: CancellationToken,
+        executor: pl_remote_helper::Executor,
+        binding: PreparedAcpWorkspace,
+        config: crate::config::StudioConfig,
+        services: &'a mut Vec<(HostMcp, Arc<WorkspaceTools>)>,
+    }
+
+    impl SshWorkspaceMcp<'_> {
+        async fn start(
+            &mut self,
+            config: &crate::config::StudioConfig,
+            binding: PreparedAcpWorkspace,
+        ) -> Result<HttpMcp> {
+            let tools = WorkspaceTools::new_with_handoff_timeout(
+                self.target.thread_id.clone(),
+                binding,
+                config,
+                Duration::from_millis(250),
+            );
+            let (service, definition) = HostMcp::start_bound(
+                self.host.clone(),
+                self.caller.clone(),
+                self.cancellation.clone(),
+                true,
+                None,
+                Some(tools.clone()),
+            )
+            .await?;
+            self.services.push((service, tools));
+            let mut peer = HttpMcp::from_definition(definition)?;
+            peer.initialize().await?;
+            Ok(peer)
+        }
+
+        async fn start_default(&mut self) -> Result<HttpMcp> {
+            self.start(&self.config.clone(), self.binding.clone()).await
+        }
+    }
+
+    async fn with_ssh_workspace(
+        check: impl for<'a, 'f> FnOnce(
+            &'a mut SshWorkspaceMcp<'f>,
+        ) -> futures::future::BoxFuture<'a, Result<()>>,
+    ) -> Result<()> {
+        use futures::FutureExt;
 
         let fixture = Fixture::new("replay").await?;
         let root = fixture.home.path().join("business-target");
@@ -1458,56 +1524,140 @@ mod tests {
         let helper = tokio::spawn(pl_remote_helper::serve_connection(server));
         let executor = pl_remote_helper::Executor::remote(client).await?;
         let mut target = None;
-        let mut service = None;
-        let mut workspace_tools = None;
-        let mut extra_services = Vec::new();
-        let mut extra_tools = Vec::new();
-        let result = async {
+        let mut services = Vec::new();
+        let result = std::panic::AssertUnwindSafe(async {
             let mut open = fixture.open().await?;
             Fixture::ready(&mut open).await?;
             target = Some(open.target.clone());
-            let owner = fixture.runtime.sessions.get(&crate::SessionId::new(open.target.session_id.clone())?).context("session owner")?;
-            let resources = owner.resident_acp(&open.target.thread_id)?.context("ACP resources")?;
-            let identity = fixture.runtime.agent_facility.product_events.agent_execution_identity(&open.target.thread_id).context("member identity")?.0;
-            let host = owner.acp_agent_host(&identity, &resources, &fixture.runtime.config_runtime.agent_profiles_snapshot()?, fixture.runtime.config_runtime.read()?.config.delegation)?;
-            let forged = pl_tool::collaboration::control::AgentCallContext {
-                caller: crate::AgentId::new("forged-agent")?, call_id: "not-a-transport-id".into(), cancellation: CancellationToken::new(),
-            };
-            ensure!(host.authorize_workspace_call(&forged).await.is_err(), "forged caller acquired workspace tools");
-            let execution = WorkspaceExecutionBinding::new(executor.clone(), root.to_str().context("business root")?)?;
+            let owner = fixture
+                .runtime
+                .sessions
+                .get(&crate::SessionId::new(open.target.session_id.clone())?)
+                .context("session owner")?;
+            let resources = owner
+                .resident_acp(&open.target.thread_id)?
+                .context("ACP resources")?;
+            let identity = fixture
+                .runtime
+                .agent_facility
+                .product_events
+                .agent_execution_identity(&open.target.thread_id)
+                .context("member identity")?
+                .0;
+            let host = owner.acp_agent_host(
+                &identity,
+                &resources,
+                &fixture.runtime.config_runtime.agent_profiles_snapshot()?,
+                fixture.runtime.config_runtime.read()?.config.delegation,
+            )?;
+            let execution = WorkspaceExecutionBinding::new(
+                executor.clone(),
+                root.to_str().context("business root")?,
+            )?;
             let files = SessionFiles::new(&open.target.thread_id);
             pl_tool::workspace::prepare_session_files(&execution.files(), &files).await?;
             let mut config = fixture.runtime.config_runtime.read()?.config;
             config.runtime.tool_capabilities.git = true;
-            let tools = WorkspaceTools::new(open.target.thread_id.clone(), PreparedAcpWorkspace {
-                workspace: ToolWorkspace::new(AgentWorkspace::local(&root).with_session_files(files)),
+            let binding = PreparedAcpWorkspace {
+                workspace: ToolWorkspace::new(
+                    AgentWorkspace::local(&root).with_session_files(files),
+                ),
                 execution: execution.clone(),
-                environment: ExecutionEnvironment::for_ssh(ExecutionOs::Linux, ShellDialect::Bash, "/bin/bash"),
+                environment: ExecutionEnvironment::for_ssh(
+                    ExecutionOs::Linux,
+                    ShellDialect::Bash,
+                    "/bin/bash",
+                ),
                 skills: None,
                 lsp: None,
                 remote: Some(SshWorkspaceBinding {
-                    profile: Arc::new(SshServerProfile { alias: "in-process-helper".into(), host_name: "fixture".into(), port: 22, username: "fixture".into(), identity_file: None }),
+                    profile: Arc::new(SshServerProfile {
+                        alias: "in-process-helper".into(),
+                        host_name: "fixture".into(),
+                        port: 22,
+                        username: "fixture".into(),
+                        identity_file: None,
+                    }),
                     execution: execution.clone(),
-                    execution_environment: ExecutionEnvironment::for_ssh(ExecutionOs::Linux, ShellDialect::Bash, "/bin/bash"),
+                    execution_environment: ExecutionEnvironment::for_ssh(
+                        ExecutionOs::Linux,
+                        ShellDialect::Bash,
+                        "/bin/bash",
+                    ),
                 }),
-                store: crate::resource_store::FileResourceStore::new(fixture.runtime.store.session_resources_dir_for(&fixture.workspace.id, &open.target.thread_id)?),
-                host_scratch: fixture.runtime.store.session_scratch_dir_for(&fixture.workspace.id, &open.target.thread_id)?,
-            }, &config);
-            workspace_tools = Some(tools.clone());
-            let mut remote_project = fixture.workspace.clone();
+                store: crate::resource_store::FileResourceStore::new(
+                    fixture
+                        .runtime
+                        .store
+                        .session_resources_dir_for(&fixture.workspace.id, &open.target.thread_id)?,
+                ),
+                host_scratch: fixture
+                    .runtime
+                    .store
+                    .session_scratch_dir_for(&fixture.workspace.id, &open.target.thread_id)?,
+            };
+            let mut workspace = SshWorkspaceMcp {
+                fixture: &fixture,
+                root,
+                target: open.target,
+                host,
+                caller: identity.agent_id,
+                cancellation: resources.cancellation.clone(),
+                executor: executor.clone(),
+                binding,
+                config,
+                services: &mut services,
+            };
+            check(&mut workspace).await
+        })
+        .catch_unwind()
+        .await;
+        let mut cleanup = Ok(());
+        for (mut service, tools) in services {
+            if let Err(error) = tools.close().await {
+                cleanup = cleanup.and(Err(error));
+            }
+            if let Err(error) = service.close().await {
+                cleanup = cleanup.and(Err(error));
+            }
+        }
+        if let Some(target) = target {
+            match fixture.runtime.close_acp_session(target).await {
+                Ok(close) if close.local_complete => {}
+                Ok(close) => cleanup = cleanup.and(Err(anyhow::anyhow!("ACP close: {close:?}"))),
+                Err(error) => cleanup = cleanup.and(Err(error)),
+            }
+        }
+        let closed = executor.close().await;
+        let helper = tokio::time::timeout(Duration::from_secs(5), helper).await;
+        let shutdown = fixture.runtime.shutdown_runtime().await;
+        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+        cleanup?;
+        closed?;
+        helper???;
+        shutdown?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ssh_workspace_mcp_enforces_host_admission_paths_and_tool_capabilities() -> Result<()> {
+        with_ssh_workspace(|h| Box::pin(async move {
+            let forged = pl_tool::collaboration::control::AgentCallContext {
+                caller: crate::AgentId::new("forged-agent")?, call_id: "not-a-transport-id".into(), cancellation: CancellationToken::new(),
+            };
+            ensure!(h.host.authorize_workspace_call(&forged).await.is_err(), "forged caller acquired workspace tools");
+            let mut remote_project = h.fixture.workspace.clone();
             remote_project.ssh_alias = Some("in-process-helper".into());
-            let protocol_cwd = fixture.runtime.thread_factory.prepare_acp_protocol_cwd(
-                &open.target.thread_id, &remote_project, "/not-a-host-directory/business-root", None,
+            let protocol_cwd = h.fixture.runtime.thread_factory.prepare_acp_protocol_cwd(
+                &h.target.thread_id, &remote_project, "/not-a-host-directory/business-root", None,
             ).await?;
             ensure!(std::path::Path::new(&protocol_cwd).is_dir() && protocol_cwd.ends_with("/acp-cwd"));
             ensure!(!std::path::Path::new("/not-a-host-directory/business-root").exists());
-            ensure!(fixture.runtime.thread_factory.prepare_acp_protocol_cwd(
-                &open.target.thread_id, &remote_project, "/not-a-host-directory/business-root", Some(&fixture.workspace.path),
+            ensure!(h.fixture.runtime.thread_factory.prepare_acp_protocol_cwd(
+                &h.target.thread_id, &remote_project, "/not-a-host-directory/business-root", Some(&h.fixture.workspace.path),
             ).await.is_err(), "load accepted a business root as host protocol cwd");
-            let (transport, definition) = HostMcp::start_bound(host.clone(), identity.agent_id.clone(), resources.cancellation.clone(), true, None, Some(tools.clone())).await?;
-            service = Some(transport);
-            let mut peer = HttpMcp::from_definition(definition)?;
-            peer.initialize().await?;
+            let mut peer = h.start_default().await?;
+            let config = h.config.clone();
             let catalog = peer.request("tools/list", json!({})).await?;
             let catalog = catalog["result"]["tools"].as_array().context("catalog")?;
             ensure!(catalog.iter().any(|tool| tool["name"] == "anywork_exec_command"));
@@ -1523,30 +1673,37 @@ mod tests {
             peer.tool("anywork_copy_path", json!({"from":"src/file.txt","to":"copy.txt","collision":"failIfExists"})).await?;
             peer.tool("anywork_move_path", json!({"from":"copy.txt","to":"moved.txt","collision":"failIfExists"})).await?;
             peer.tool("anywork_delete_path", json!({"path":"moved.txt","mode":"file"})).await?;
-            ensure!(tokio::fs::read_to_string(root.join("src/file.txt")).await? == "after\n");
-            ensure!(!std::path::Path::new(&fixture.workspace.path).join("src/file.txt").exists(), "file tool used ACP host cwd");
-            tokio::fs::create_dir(fixture.home.path().join("outside")).await?;
-            std::os::unix::fs::symlink(fixture.home.path().join("outside"), root.join("escape"))?;
+            ensure!(tokio::fs::read_to_string(h.root.join("src/file.txt")).await? == "after\n");
+            ensure!(!std::path::Path::new(&h.fixture.workspace.path).join("src/file.txt").exists(), "file tool used ACP host cwd");
+            tokio::fs::create_dir(h.fixture.home.path().join("outside")).await?;
+            std::os::unix::fs::symlink(h.fixture.home.path().join("outside"), h.root.join("escape"))?;
             let denied = peer.completed_tool("anywork_write_file", json!({"path":"escape/forbidden","content":"bad","mode":"create"})).await?;
-            ensure!(denied.is_error && !fixture.home.path().join("outside/forbidden").exists());
+            ensure!(denied.is_error && !h.fixture.home.path().join("outside/forbidden").exists());
             let git = peer.tool("anywork_git_workspace_info", json!({})).await?;
-            ensure!(git["worktree"] == root.to_str().context("Git root")?);
+            ensure!(git["worktree"] == h.root.to_str().context("Git root")?);
 
             // Disabling commands does not turn file permission into unrestricted host access.
             let mut file_config = config.clone();
             file_config.runtime.tool_capabilities.exec = false;
             file_config.runtime.tool_capabilities.git = false;
             file_config.runtime.permission_mode = crate::approval::PermissionMode::FullAccess;
-            let file_tools = WorkspaceTools::new(open.target.thread_id.clone(), tools.binding.clone(), &file_config);
-            extra_tools.push(file_tools.clone());
-            let (transport, definition) = HostMcp::start_bound(host.clone(), identity.agent_id.clone(), resources.cancellation.clone(), true, None, Some(file_tools)).await?;
-            extra_services.push(transport);
-            let mut files_peer = HttpMcp::from_definition(definition)?;
-            files_peer.initialize().await?;
+            let mut files_peer = h.start(&file_config, h.binding.clone()).await?;
             let denied = files_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"false"}})).await?;
             ensure!(denied["error"]["code"] == -32602);
-            let denied = files_peer.completed_tool("anywork_write_file", json!({"path":fixture.home.path().join("outside/full-access-forbidden"),"content":"bad","mode":"create"})).await?;
-            ensure!(denied.is_error && !fixture.home.path().join("outside/full-access-forbidden").exists());
+            let denied = files_peer.completed_tool("anywork_write_file", json!({"path":h.fixture.home.path().join("outside/full-access-forbidden"),"content":"bad","mode":"create"})).await?;
+            ensure!(denied.is_error && !h.fixture.home.path().join("outside/full-access-forbidden").exists());
+            h.executor.close().await?;
+            let stale = peer.completed_tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
+            ensure!(stale.is_error, "stale execution binding silently rebound");
+            Ok(())
+        })).await
+    }
+
+    #[tokio::test]
+    async fn ssh_workspace_mcp_isolates_owned_tasks_and_retains_command_output() -> Result<()> {
+        with_ssh_workspace(|h| Box::pin(async move {
+            let mut peer = h.start_default().await?;
+            let mut files_peer = h.start_default().await?;
             let command = peer.tool("anywork_exec_command", json!({"command":"printf ready; cat; printf done","interactive":true})).await?;
             let task = command["taskId"].as_str().context("running exec receipt")?.to_owned();
             let foreign = files_peer.request("tools/call", json!({"name":"anywork_get_tool_task","arguments":{"taskId":task,"resultCursor":0}})).await?;
@@ -1569,13 +1726,21 @@ mod tests {
             }
             ensure!(output["stdout"]["wasTruncated"] == true && output["stdout"]["content"].as_str().context("preview")?.len() <= 64, "unexpected output preview: {output}");
             let capture = output["stdoutFile"].as_str().context("capture path")?;
-            ensure!(tokio::fs::metadata(root.join(capture)).await?.len() == 70000);
+            ensure!(tokio::fs::metadata(h.root.join(capture)).await?.len() == 70000);
             let cancelled = peer.tool("anywork_exec_command", json!({"command":"cat","interactive":true})).await?;
             let cancelled = cancelled["taskId"].as_str().context("cancellable receipt")?;
             peer.tool("anywork_cancel_tool_task", json!({"taskId":cancelled})).await?;
             let ready = peer.tool("anywork_wait", json!({"taskIds":[cancelled],"timeoutMs":30000})).await?;
             ensure!(ready["tasks"][0]["status"] == "cancelled");
 
+            Ok(())
+        })).await
+    }
+
+    #[tokio::test]
+    async fn ssh_workspace_mcp_request_cancellation_preserves_accepted_command() -> Result<()> {
+        with_ssh_workspace(|h| Box::pin(async move {
+            let mut peer = h.start_default().await?;
             // Official MCP cancellation ends the request observation, not its admitted command.
             let request_id = peer.next_id;
             let mut request_peer = peer.clone();
@@ -1584,85 +1749,60 @@ mod tests {
                 request_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"printf accepted > started; while test ! -e release; do sleep 0.01; done; printf completed > completed"}})).await
             });
             tokio::time::timeout(Duration::from_secs(5), async {
-                while !root.join("started").exists() { tokio::task::yield_now().await; }
+                while !h.root.join("started").exists() { tokio::task::yield_now().await; }
             }).await?;
             peer.cancel_request(request_id).await?;
             pending.abort();
             let _ = pending.await;
-            tokio::fs::write(root.join("release"), b"go").await?;
+            tokio::fs::write(h.root.join("release"), b"go").await?;
             tokio::time::timeout(Duration::from_secs(5), async {
-                while !root.join("completed").exists() { tokio::task::yield_now().await; }
+                while !h.root.join("completed").exists() { tokio::task::yield_now().await; }
             }).await?;
             let listed = peer.tool("anywork_list_tool_tasks", json!({})).await?;
             let listed = listed.as_array().context("task list")?;
             let running = listed.iter().filter_map(|task| task["taskId"].as_str()).map(str::to_owned).collect::<Vec<_>>();
             peer.tool("anywork_wait", json!({"taskIds":running,"timeoutMs":30000})).await?;
+            Ok(())
+        })).await
+    }
+
+    #[tokio::test]
+    async fn ssh_workspace_mcp_repairs_capture_without_replaying_command() -> Result<()> {
+        with_ssh_workspace(|h| Box::pin(async move {
+            let config = h.config.clone();
             // Retention failure owns the original capture and retries storage, not execution.
-            let blocked = fixture.home.path().join("blocked-resource-store");
+            let blocked = h.fixture.home.path().join("blocked-resource-store");
             tokio::fs::write(&blocked, b"block directory creation").await?;
-            let failing = WorkspaceTools::new(open.target.thread_id.clone(), PreparedAcpWorkspace {
+            let binding = PreparedAcpWorkspace {
                 store: crate::resource_store::FileResourceStore::new(blocked.clone()),
-                ..tools.binding.clone()
-            }, &config);
-            extra_tools.push(failing.clone());
-            let (transport, definition) = HostMcp::start_bound(host.clone(), identity.agent_id.clone(), resources.cancellation.clone(), true, None, Some(failing.clone())).await?;
-            extra_services.push(transport);
-            let mut failed_peer = HttpMcp::from_definition(definition)?;
-            failed_peer.initialize().await?;
-            let failed = failed_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"printf once >> mutation-count; printf archive-output"}})).await?;
-            ensure!(failed["result"]["isError"] == true);
-            let failed_task = failed["result"]["structuredContent"]["taskId"].as_str().context("failed original task receipt")?;
+                ..h.binding.clone()
+            };
+            let mut failed_peer = h.start(&config, binding).await?;
+            let failing = h.services.last().context("failing workspace tools")?.1.clone();
+            let response = failed_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"printf once >> mutation-count; printf archive-output"}})).await?;
+            ensure!(response["error"].is_null(), "MCP protocol failure: {response}");
+            let result = &response["result"];
+            let receipt = &result["structuredContent"];
+            let failed_task = receipt["taskId"].as_str().context("original task receipt")?;
+            if receipt["status"] == "running" {
+                ensure!(result["isError"] != true, "running tool reported failure: {response}");
+                failed_peer.tool("anywork_wait", json!({"taskIds":[failed_task],"timeoutMs":30000})).await?;
+            } else {
+                ensure!(result["isError"] == true && receipt["resultArchiveError"].is_string(), "missing archive failure: {response}");
+            }
             let before = failed_peer.tool("anywork_get_tool_task", json!({"taskId":failed_task,"resultCursor":0})).await?;
+            ensure!(before["task"]["status"] == "failed" && before["archiveError"].is_string(), "task did not retain the archive failure: {before}");
+            ensure!(before["result"]["content"].is_string(), "failed task lost its result: {before}");
             ensure!(failing.close().await.is_err(), "unretained command output was treated as closed");
             tokio::fs::remove_file(&blocked).await?;
             failing.close().await?;
             let after = failed_peer.tool("anywork_get_tool_task", json!({"taskId":failed_task,"resultCursor":0})).await?;
-            ensure!(before["result"] == after["result"] && after["outputRepairs"].is_array());
-            ensure!(tokio::fs::read_to_string(root.join("mutation-count")).await? == "once", "archive repair reexecuted a mutation");
+            ensure!(before["result"] == after["result"]);
+            ensure!(after["outputRepairs"].as_array().is_some_and(|repairs| !repairs.is_empty()));
+            ensure!(tokio::fs::read_to_string(h.root.join("mutation-count")).await? == "once", "archive repair reexecuted a mutation");
 
-            executor.close().await?;
-            let stale = peer.completed_tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
-            ensure!(stale.is_error, "stale execution binding silently rebound");
-            tools.close().await?;
-            Ok::<_, anyhow::Error>(())
-        }.await;
-        let mut cleanup = Ok(());
-        for tools in extra_tools {
-            if let Err(error) = tools.close().await {
-                cleanup = cleanup.and(Err(error));
-            }
-        }
-        for mut service in extra_services {
-            if let Err(error) = service.close().await {
-                cleanup = cleanup.and(Err(error));
-            }
-        }
-        if let Some(tools) = workspace_tools
-            && let Err(error) = tools.close().await
-        {
-            cleanup = Err(error);
-        }
-        if let Some(mut service) = service
-            && let Err(error) = service.close().await
-        {
-            cleanup = cleanup.and(Err(error));
-        }
-        if let Some(target) = target {
-            match fixture.runtime.close_acp_session(target).await {
-                Ok(close) if close.local_complete => {}
-                Ok(close) => cleanup = cleanup.and(Err(anyhow::anyhow!("ACP close: {close:?}"))),
-                Err(error) => cleanup = cleanup.and(Err(error)),
-            }
-        }
-        let closed = executor.close().await;
-        let helper = tokio::time::timeout(Duration::from_secs(5), helper).await;
-        let shutdown = fixture.runtime.shutdown_runtime().await;
-        result?;
-        cleanup?;
-        closed?;
-        helper???;
-        shutdown?;
-        Ok(())
+            Ok(())
+        })).await
     }
 
     #[tokio::test]

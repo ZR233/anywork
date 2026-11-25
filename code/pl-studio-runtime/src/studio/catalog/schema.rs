@@ -14,7 +14,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
-use super::CatalogDocument;
+use super::{CatalogDocument, validation::validate};
 use crate::studio::records::{
     AcpDirectoryTitle, AcpPeerTitle, AcpTitleLabel, AgentDirectoryRecord, SessionDirectoryRecord,
 };
@@ -177,132 +177,6 @@ fn validate_v5_inheritance(value: &toml::Table) -> Result<()> {
             "Studio catalog child {} has conflicting inherited session facts",
             child.id
         );
-    }
-    Ok(())
-}
-
-pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
-    ensure!(document.revision >= 1, "Studio catalog revision is invalid");
-    let mut sessions = std::collections::BTreeSet::new();
-    for session in &document.sessions {
-        ensure!(
-            sessions.insert(session.session_id.as_str()),
-            "Studio catalog has a duplicate session identity"
-        );
-        ensure!(
-            !session.session_id.trim().is_empty() && !session.root_agent_id.trim().is_empty(),
-            "Studio catalog session identity is incomplete"
-        );
-        ensure!(
-            session.workspace_mode != ThreadWorkspaceMode::Worktree
-                || !session.workspace_path.is_empty(),
-            "Studio worktree catalog session has no workspace address"
-        );
-    }
-    let mut agents = std::collections::BTreeMap::new();
-    let mut threads = std::collections::BTreeSet::new();
-    for agent in &document.agents {
-        ensure!(
-            !agent.agent_id.trim().is_empty() && !agent.thread_id.trim().is_empty(),
-            "Studio catalog member identity is incomplete"
-        );
-        if let crate::AgentBackend::Native { config: native, .. } = &agent.backend {
-            ensure!(
-                native.system_instructions.is_none(),
-                "Studio catalog cannot contain Native instruction bodies"
-            );
-        }
-        if let crate::AgentBackend::Acp { reference } = &agent.backend {
-            ensure!(
-                !reference.account_id.trim().is_empty()
-                    && !reference.acp_session_id.trim().is_empty()
-                    && !reference.cwd.trim().is_empty(),
-                "Studio catalog ACP reference is incomplete"
-            );
-        }
-        ensure!(
-            agents
-                .insert(agent.agent_id.clone(), agent.parent_agent_id.clone())
-                .is_none(),
-            "Studio catalog has a duplicate agent identity"
-        );
-        ensure!(
-            threads.insert(agent.thread_id.as_str()),
-            "Studio catalog agent identities do not map one-to-one to default threads"
-        );
-        ensure!(
-            sessions.contains(agent.session_id.as_str()),
-            "Studio catalog agent {} references a missing session",
-            agent.agent_id
-        );
-    }
-    // 成员关系唯一归属 agents 记录：parent 必须在同会话内且不构成环。
-    let agent_sessions: std::collections::BTreeMap<String, &str> = document
-        .agents
-        .iter()
-        .map(|agent| (agent.agent_id.clone(), agent.session_id.as_str()))
-        .collect();
-    for agent in &document.agents {
-        if let Some(parent) = &agent.parent_agent_id {
-            let parent_session = agent_sessions.get(parent).copied();
-            ensure!(
-                parent_session == Some(agent.session_id.as_str()),
-                "Studio catalog agent {} has a parent outside its session",
-                agent.agent_id
-            );
-        }
-    }
-    // 会话的主成员必须存在且确为主成员（parent 为空并属于该会话）。
-    for session in &document.sessions {
-        let root = document
-            .agents
-            .iter()
-            .find(|agent| agent.agent_id == session.root_agent_id);
-        if let Some(root) = root {
-            ensure!(
-                session.native_mode.is_some()
-                    == matches!(root.backend, crate::AgentBackend::Native { .. }),
-                "Studio catalog root Native mode does not match its backend"
-            );
-            ensure!(
-                session.acp_title.is_some()
-                    == matches!(root.backend, crate::AgentBackend::Acp { .. }),
-                "Studio catalog ACP title does not match its root backend"
-            );
-        }
-        ensure!(
-            document.agents.iter().any(|agent| {
-                agent.agent_id == session.root_agent_id
-                    && agent.session_id == session.session_id
-                    && agent.parent_agent_id.is_none()
-            }),
-            "Studio catalog session {} has no root member",
-            session.session_id
-        );
-        ensure!(
-            document
-                .agents
-                .iter()
-                .filter(|agent| {
-                    agent.session_id == session.session_id && agent.parent_agent_id.is_none()
-                })
-                .count()
-                == 1,
-            "Studio catalog session {} has multiple root members",
-            session.session_id
-        );
-    }
-    for agent in &document.agents {
-        let mut visited = std::collections::BTreeSet::new();
-        let mut current = agent.parent_agent_id.clone();
-        while let Some(id) = current {
-            ensure!(
-                visited.insert(id.clone()),
-                "Studio catalog member chain from {} is cyclic",
-                agent.agent_id
-            );
-            current = agents.get(&id).cloned().flatten();
-        }
     }
     Ok(())
 }
@@ -1351,6 +1225,34 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn directory_validation_checks_shared_parent_chains_and_disconnected_cycles() -> Result<()> {
+        let legacy = v6_document();
+        let v7 = legacy.migrate();
+        let mut document = CatalogDocument::try_from(v7.migrate())?;
+        let second = document.agents[1].clone();
+        let mut leaf = second.clone();
+        leaf.agent_id = "leaf".into();
+        leaf.thread_id = "thread-leaf".into();
+        leaf.parent_agent_id = Some(second.agent_id.clone());
+        document.agents.insert(0, leaf);
+        validate(&document)?;
+
+        let child = document
+            .agents
+            .iter_mut()
+            .find(|agent| agent.agent_id == second.agent_id)
+            .unwrap();
+        child.parent_agent_id = Some("leaf".into());
+        assert!(
+            validate(&document)
+                .unwrap_err()
+                .to_string()
+                .contains("cyclic")
+        );
+        Ok(())
     }
 
     #[test]

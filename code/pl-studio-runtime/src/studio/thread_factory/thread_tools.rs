@@ -216,11 +216,15 @@ impl StudioThreadFactory {
             .backend
             .is_some()
             .then(|| Arc::new(crate::thread_assembler::media::MediaHost(store.clone())));
-        let lsp = self.services.lsp_runtime.execution_scope(
-            &crate::studio::runtime::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
-        );
-        // File backends, semantic tools and status must retain the same endpoint view.
-        let workspace = workspace.with_lsp_runtime(Some(lsp.clone()));
+        let (workspace, lsp) = match workspace.lsp_runtime() {
+            Some(lsp) => (workspace, lsp),
+            None => {
+                let lsp = self.services.lsp_runtime.execution_scope(
+                    &crate::studio::runtime::lsp::execution_endpoint(project.ssh_alias.as_deref()),
+                );
+                (workspace.with_lsp_runtime(Some(lsp.clone())), lsp)
+            }
+        };
         let root = workspace.root().to_owned();
         let remote = match &preparation {
             CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),

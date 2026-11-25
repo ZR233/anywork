@@ -14,6 +14,7 @@ import '../../presentation/providers/thread_session_store.dart';
 import '../conversation/acp/view_models/acp_session_view_model.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
 import 'status_view.dart';
+import 'status_bar_item.dart';
 
 /// Clickable status bar pill displaying the active workflow mode/state and
 /// toggling the vertical workflow graph side panel.
@@ -39,76 +40,13 @@ class WorkflowStatusPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final tooltip =
         '$modeName · $stateTitle${deleted ? ' · ${context.l10n.modeDeletedUsingSnapshot}' : ''}';
-    final fgColor = expanded
-        ? context.colors.primary
-        : context.colors.onSurfaceVariant;
-    final bgColor = expanded
-        ? context.colors.primaryContainer.withValues(alpha: 0.45)
-        : Colors.transparent;
-    final borderColor = expanded
-        ? context.colors.primary.withValues(alpha: 0.55)
-        : context.colors.outlineVariant.withValues(alpha: 0.65);
-
-    final pill = Material(
-      color: bgColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(StudioRadii.sm),
-        side: BorderSide(color: borderColor),
-      ),
-      child: InkWell(
-        key: const ValueKey('workflow-status-pill'),
-        borderRadius: BorderRadius.circular(StudioRadii.sm),
-        onTap: onTap,
-        child: SizedBox(
-          height: 26,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  terminal
-                      ? Icons.check_circle_outline
-                      : Icons.account_tree_outlined,
-                  size: 14,
-                  color: fgColor,
-                ),
-                const SizedBox(width: 6),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 180),
-                  child: Text(
-                    stateTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.text.labelSmall?.copyWith(
-                      color: fgColor,
-                      fontWeight: expanded ? FontWeight.w600 : FontWeight.w500,
-                    ),
-                  ),
-                ),
-                if (onTap != null) ...[
-                  const SizedBox(width: 4),
-                  Icon(
-                    expanded
-                        ? Icons.chevron_right_rounded
-                        : Icons.schema_outlined,
-                    size: 14,
-                    color: fgColor,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
-    return Semantics(
-      button: onTap != null,
+    return StatusBarButton(
+      key: const ValueKey('workflow-status-pill'),
+      icon: terminal ? Icons.check_circle_outline : Icons.account_tree_outlined,
+      label: stateTitle,
+      tooltip: tooltip,
       selected: expanded,
-      label: tooltip,
-      excludeSemantics: true,
-      child: Tooltip(message: tooltip, excludeFromSemantics: true, child: pill),
+      onPressed: onTap,
     );
   }
 }

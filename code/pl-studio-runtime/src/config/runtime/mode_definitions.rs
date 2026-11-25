@@ -69,10 +69,7 @@ impl ConfigRuntime {
             .ok_or_else(|| thread_mode_not_found(mode_id))?;
         let descriptor = mode.descriptor();
         let document = if descriptor.read_only {
-            ThreadModeDocument {
-                definition: mode.definition(),
-                editor: Default::default(),
-            }
+            ThreadModeDocument::from_parts(mode.definition(), Default::default())
         } else {
             self.mode_documents
                 .read()
@@ -99,7 +96,7 @@ impl ConfigRuntime {
             .map_err(|_| mode_config_error("ConfigRuntime command lock is poisoned"))?;
         self.ensure_mode_command_open()?;
         let current = self.modes.snapshot();
-        let mode_id = document.definition.id.clone();
+        let mode_id = document.id.clone();
         if current
             .mode(&mode_id)
             .is_some_and(|mode| mode.descriptor().read_only)
@@ -305,7 +302,7 @@ fn publish_documents(
             },
             documents
                 .values()
-                .map(|document| document.definition.clone()),
+                .map(|document| document.clone().into_parts().0),
         )
         .context("failed to publish user Thread Modes")?;
     Ok(())
@@ -348,7 +345,7 @@ fn load_documents(paths: &ConfigPaths) -> Result<BTreeMap<ThreadModeId, ThreadMo
         let crate::mode::ThreadModeValidationResult { document, issues } =
             crate::mode::validate_mode_json(&json);
         let document = document.ok_or_else(|| mode_file_validation_error(&path, issues))?;
-        let mode_id = document.definition.id.clone();
+        let mode_id = document.id.clone();
         let expected_name = mode_file_name(&mode_id)?;
         anyhow::ensure!(
             path.file_name().and_then(|value| value.to_str()) == Some(expected_name.as_str()),
@@ -394,11 +391,11 @@ fn restore_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
 
 fn document_revision(document: &ThreadModeDocument) -> Result<u64> {
     // The JSON API also serves JavaScript clients. Keep the opaque version exactly representable.
-    Ok((crate::config::document_revision(
-        document.definition.id.as_str(),
-        &serde_json::to_vec(document)?,
-    ) & ((1_u64 << 53) - 1))
-        .max(1))
+    Ok(
+        (crate::config::document_revision(document.id.as_str(), &serde_json::to_vec(document)?)
+            & ((1_u64 << 53) - 1))
+            .max(1),
+    )
 }
 
 fn check_document_version(path: &Path, previous: Option<&[u8]>, expected: u64) -> Result<()> {

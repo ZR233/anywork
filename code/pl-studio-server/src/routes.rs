@@ -711,7 +711,7 @@ async fn save_thread_mode_definition(
     ApiJson(request): ApiJson<SaveThreadModeDefinitionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let mode_id = parse_mode(&mode_id)?;
-    if request.document.definition.id != mode_id {
+    if request.document.id != mode_id {
         return Err(ApiError(StudioError::invalid_argument(
             "Thread Mode path ID must match document.id",
         )));
@@ -1877,7 +1877,7 @@ async fn check_update(State(state): State<AppState>) -> Result<impl IntoResponse
 }
 
 fn parse_mode(mode: &str) -> Result<ThreadModeId, ApiError> {
-    ThreadModeId::from_label(mode.trim()).map_err(|_| {
+    ThreadModeId::new(mode.trim()).map_err(|_| {
         ApiError(StudioError::invalid_argument(format!(
             "unsupported Thread mode: {}",
             mode.trim()

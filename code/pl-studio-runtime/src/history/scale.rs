@@ -398,7 +398,11 @@ unsafe extern "C" fn trace_callback(
         let stmt = statement.cast::<libsqlite3_sys::sqlite3_stmt>();
         let sql = libsqlite3_sys::sqlite3_sql(stmt);
         if sql.is_null() {
-            state.invalid_counter.store(true, Relaxed);
+            // SQLite can emit row traces without SQL text while loading its schema.
+            // SQLx-prepared page queries retain their text, as do SQLite profile traces.
+            if event != libsqlite3_sys::SQLITE_TRACE_ROW as c_uint {
+                state.invalid_counter.store(true, Relaxed);
+            }
             return 0;
         }
         (state, stmt, CStr::from_ptr(sql).to_bytes())

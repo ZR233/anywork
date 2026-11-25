@@ -537,19 +537,15 @@ Widget sampleAcpConversation({
   ];
   return AcpConversationContentView(
     threadId: id,
-    header: AcpTimelineHeaderViewState(
+    header: const AcpTimelineHeaderViewState(
       ready: true,
       loading: false,
       hasConversationalContent: true,
-      itemCount: rows.length,
     ),
-    itemBuilder: (context, index) => switch (rows[index]) {
-      AcpTimelineMessageRow(:final item) => AcpTimelineEntryView(
-        key: ValueKey(item.id),
-        item: item,
-      ),
+    rows: rows,
+    itemBuilder: (context, row) => switch (row) {
+      AcpTimelineMessageRow(:final item) => AcpTimelineEntryView(item: item),
       final AcpTimelineProcessRow row => AcpTimelineProcessGroupView(
-        key: ValueKey(row.id),
         row: row,
         initiallyExpanded: expanded,
       ),

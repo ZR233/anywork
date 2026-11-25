@@ -17,7 +17,7 @@ pub(in crate::studio) fn awaiting_scheduling(snapshot: &ThreadSnapshot) -> Resul
 pub(in crate::studio) fn native_activity(
     snapshot: &ThreadSnapshot,
 ) -> Result<crate::StudioAgentActivity> {
-    let execution = execution(snapshot);
+    let execution = project_execution(snapshot);
     let can_stop = execution.is_some()
         && snapshot.lifecycle == ThreadLifecycle::Open
         && !crate::studio::agent_close::is_explicitly_closed(snapshot)?;
@@ -33,7 +33,7 @@ pub(in crate::studio) fn native_activity(
 ///
 /// Preparation, storage and admission phases are part of the identity, so a member that has not
 /// created a Turn yet still publishes what a stop would target.
-fn execution(snapshot: &ThreadSnapshot) -> Option<crate::AgentExecution> {
+pub(super) fn project_execution(snapshot: &ThreadSnapshot) -> Option<crate::AgentExecution> {
     snapshot.execution.as_ref().map(|execution| {
         crate::AgentExecution::new(
             execution.id.clone(),

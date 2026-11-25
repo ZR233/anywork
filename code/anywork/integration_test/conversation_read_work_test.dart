@@ -91,18 +91,10 @@ void main() {
     final threadId = fixture['threadId'] as String;
     final total = fixture['mainItems'] as int;
     final switchThreadId = fixture['switchThreadId'] as String?;
-    final switchCaseIndex = switchThreadId == null
-        ? null
-        : cases.indexWhere(
-            (candidate) => candidate['threadId'] == switchThreadId,
-          );
-    if (switchThreadId != null &&
-        (switchCaseIndex == null || switchCaseIndex < 0)) {
-      throw StateError('Switch Thread is missing from prepared read cases');
-    }
-    // The closed fixture writes 24 turns per Thread; its final provider answer
-    // is therefore the deterministic visible text for thread `<caseIndex>`.
-    final expectedSeedAnswer = 'read-answer-$caseIndex-23';
+    final expectedSeedAnswer =
+        fixture['expectedSeedAnswer'] as String? ?? 'read-answer-$caseIndex-20';
+    final switchExpectedSeedAnswer =
+        fixture['switchExpectedSeedAnswer'] as String? ?? 'read-answer-1-20';
     testWidgets('$name: bounded cold read, actual layout and independent page', (
       tester,
     ) async {
@@ -201,7 +193,7 @@ void main() {
             await _showVisibleSeedSingle(
               tester,
               () => graph.timeline.lease(switchThreadId),
-              'read-answer-${switchCaseIndex!}-23',
+              switchExpectedSeedAnswer,
               '$name switch Thread deterministic seed Single',
             );
             final intermediate = graph.timeline.lease(switchThreadId)!;
@@ -336,7 +328,7 @@ Future<void> _until(
     if (clock.elapsed > const Duration(seconds: 30)) {
       fail('Timed out waiting for $description');
     }
-    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(tester.takeException(), isNull);
   }
 }

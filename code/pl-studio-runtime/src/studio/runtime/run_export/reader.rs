@@ -15,11 +15,11 @@ use crate::history::{
     HistoryEventRecord, HistoryEventsQuery, HistoryReader, decode_event_envelope,
 };
 
+use super::blob_sink::{BlobChunkWriter, ContentBlobSink};
 use super::types::{
     CONTENT_EXPORT_CHUNK_BYTES, ChatItemHeaderExportV3, EventSourceV3, ExportedBlobV3,
     ExportedContentV3, ExportedHistoryEventHeaderV3,
 };
-use super::writer::{BlobChunkWriter, ContentBlobSink};
 
 const EXPORT_PAGE_ROWS: u32 = 128;
 const EXPORT_PAGE_BYTES: u32 = 1024 * 1024;

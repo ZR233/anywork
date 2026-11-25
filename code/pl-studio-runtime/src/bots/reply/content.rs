@@ -84,13 +84,19 @@ impl From<HistoryBodyManifestEntry> for Body {
     }
 }
 
-pub(super) async fn history_turn_items(
+pub(super) struct HistoryTurnSnapshot {
+    pub items: Vec<ReplyItem>,
+    pub terminal: Option<ReplyItem>,
+}
+
+pub(super) async fn history_turn_snapshot(
     reader: &HistoryReader,
     turn_id: &str,
     cut: crate::history::HistoryCut,
-) -> Result<Vec<ReplyItem>, FinalError> {
+) -> Result<HistoryTurnSnapshot, FinalError> {
     let mut cursor = None;
     let mut items = Vec::new();
+    let mut terminal = None;
     loop {
         let page = reader
             .events_page(
@@ -107,6 +113,9 @@ pub(super) async fn history_turn_items(
             .await
             .map_err(|error| read_failure("reply Turn originals failed", error))?;
         for detail in page.entries {
+            if terminal.is_none() {
+                terminal = decode_terminal(reader, turn_id, &detail).await?;
+            }
             if detail.original.is_some()
                 && let Some(item) = decode_original(reader, &detail, turn_id).await?
             {
@@ -136,64 +145,42 @@ pub(super) async fn history_turn_items(
             "reply Turn exceeded its body budget".into(),
         ));
     }
-    Ok(items)
+    Ok(HistoryTurnSnapshot { items, terminal })
 }
 
-pub(super) async fn history_turn_terminal(
+async fn decode_terminal(
     reader: &HistoryReader,
     turn_id: &str,
-    cut: crate::history::HistoryCut,
+    entry: &HistoryEventRecord,
 ) -> Result<Option<ReplyItem>, FinalError> {
-    let mut cursor = None;
-    loop {
-        let page = reader
-            .events_page(
-                HistoryEventsQuery::Turn {
-                    turn_id: turn_id.to_owned(),
-                },
-                Some(cut.clone()),
-                cursor,
-                HistoryDemand {
-                    max_rows: 128,
-                    max_bytes: 1024 * 1024,
-                },
-            )
-            .await
-            .map_err(|error| read_failure("reply Turn head failed", error))?;
-        for entry in page.entries {
-            if entry.row_scope != Some(HistoryBusinessRowScope::Turn) {
-                continue;
-            }
-            let HistoryBusinessRowHead::Turn(head) = decode_business_head_from_record(&entry)
-                .map_err(|error| gap(&format!("malformed reply Turn head: {error}")))?
-            else {
-                continue;
-            };
-            if matches!(
-                head.state,
-                HistoryTurnState::Completed
-                    | HistoryTurnState::Cancelled
-                    | HistoryTurnState::Failed
-                    | HistoryTurnState::BudgetLimited
-            ) {
-                let turn = crate::studio::runtime::history_turn(reader, head)
-                    .await
-                    .map_err(|error| read_failure("reply immutable Turn detail failed", error))?;
-                if turn.id != turn_id || turn.state.completed_at().is_none() {
-                    return Err(gap("reply Turn detail does not prove its terminal outcome"));
-                }
-                return Ok(Some(ReplyItem {
-                    member_id: format!("turn:{turn_id}"),
-                    id: entry.event_id,
-                    kind: ReplyItemKind::Terminal(turn.state),
-                }));
-            }
-        }
-        let Some(next) = page.next else {
-            return Ok(None);
-        };
-        cursor = Some(next);
+    if entry.row_scope != Some(HistoryBusinessRowScope::Turn) {
+        return Ok(None);
     }
+    let HistoryBusinessRowHead::Turn(head) = decode_business_head_from_record(entry)
+        .map_err(|error| gap(&format!("malformed reply Turn head: {error}")))?
+    else {
+        return Ok(None);
+    };
+    if matches!(
+        head.state,
+        HistoryTurnState::Completed
+            | HistoryTurnState::Cancelled
+            | HistoryTurnState::Failed
+            | HistoryTurnState::BudgetLimited
+    ) {
+        let turn = crate::studio::runtime::history_turn(reader, head)
+            .await
+            .map_err(|error| read_failure("reply immutable Turn detail failed", error))?;
+        if turn.id != turn_id || turn.state.completed_at().is_none() {
+            return Err(gap("reply Turn detail does not prove its terminal outcome"));
+        }
+        return Ok(Some(ReplyItem {
+            member_id: format!("turn:{turn_id}"),
+            id: entry.event_id.clone(),
+            kind: ReplyItemKind::Terminal(turn.state),
+        }));
+    }
+    Ok(None)
 }
 
 async fn decode_original(

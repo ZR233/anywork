@@ -11,6 +11,7 @@ use std::{
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
+use futures::future::BoxFuture;
 use pl_core::{
     context::{ContextContent, ResourceReader},
     thread::current::{RuntimeEpoch, ThreadCurrent},
@@ -21,9 +22,11 @@ use tokio_util::sync::CancellationToken;
 use crate::resource_store::FileResourceStore;
 use crate::studio::paths::CURRENT_FILE_NAME;
 
-/// The single physical write boundary, replaceable only for fault-injection tests.
+/// The physical writer owns the path and encoded bytes until the complete write settles.
+type CurrentWrite = Arc<dyn Fn(PathBuf, Vec<u8>) -> BoxFuture<'static, Result<()>> + Send + Sync>;
+
 #[cfg(test)]
-pub(super) type CurrentWrite = Arc<dyn Fn(&std::path::Path, &[u8]) -> io::Result<()> + Send + Sync>;
+type BlockingCurrentWrite = Arc<dyn Fn(&std::path::Path, &[u8]) -> io::Result<()> + Send + Sync>;
 
 // Owned by one writer incarnation and one session directory, never shared between owners.
 pub(super) type VerifiedResources = HashSet<(String, String, u64, String)>;
@@ -59,8 +62,7 @@ pub(crate) async fn verify_for_upgrade(
 pub(super) struct CurrentFile {
     directory: PathBuf,
     thread_id: String,
-    #[cfg(test)]
-    write: Option<CurrentWrite>,
+    write: CurrentWrite,
 }
 
 impl std::fmt::Debug for CurrentFile {
@@ -77,14 +79,22 @@ impl CurrentFile {
         Self {
             directory,
             thread_id,
-            #[cfg(test)]
-            write: None,
+            write: Arc::new(|path, bytes| Box::pin(write_current_file(path, bytes))),
         }
     }
 
     #[cfg(test)]
-    pub(super) fn with_write(mut self, write: CurrentWrite) -> Self {
-        self.write = Some(write);
+    pub(super) fn with_write(mut self, write: BlockingCurrentWrite) -> Self {
+        self.write = Arc::new(move |path, bytes| {
+            let write = write.clone();
+            Box::pin(async move {
+                let write_path = path.clone();
+                tokio::task::spawn_blocking(move || write(&write_path, &bytes))
+                    .await
+                    .context("join current write")?
+                    .with_context(|| format!("write Thread current {}", path.display()))
+            })
+        });
         self
     }
 
@@ -180,33 +190,27 @@ impl CurrentFile {
         tokio::fs::create_dir_all(&self.directory)
             .await
             .with_context(|| format!("create current directory {}", self.directory.display()))?;
-        let path = self.directory.join(CURRENT_FILE_NAME);
-        #[cfg(test)]
-        if let Some(write) = self.write.clone() {
-            let write_path = path.clone();
-            return tokio::task::spawn_blocking(move || write(&write_path, &bytes))
-                .await
-                .context("join injected current write")?
-                .with_context(|| format!("write Thread current {}", path.display()));
-        }
-
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        // Preserve the previous private-file creation policy while writing in place.
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options
-            .open(&path)
-            .await
-            .with_context(|| format!("open Thread current {}", path.display()))?;
-        file.write_all(&bytes)
-            .await
-            .with_context(|| format!("write Thread current {}", path.display()))?;
-        // Tokio's file writes may still be running on its blocking pool until flush completes.
-        file.flush()
-            .await
-            .with_context(|| format!("finish Thread current write {}", path.display()))
+        (self.write)(self.directory.join(CURRENT_FILE_NAME), bytes).await
     }
+}
+
+async fn write_current_file(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    // Preserve private-file permissions while writing in place.
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&path)
+        .await
+        .with_context(|| format!("open Thread current {}", path.display()))?;
+    file.write_all(&bytes)
+        .await
+        .with_context(|| format!("write Thread current {}", path.display()))?;
+    // Tokio's file writes may still be running on its blocking pool until flush completes.
+    file.flush()
+        .await
+        .with_context(|| format!("finish Thread current write {}", path.display()))
 }
 
 async fn verify_recovery_resources(

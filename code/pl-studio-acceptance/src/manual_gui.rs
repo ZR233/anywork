@@ -521,7 +521,7 @@ impl OwnedProcess {
             if Instant::now() >= deadline {
                 return Ok(None);
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(15));
         }
     }
 
@@ -545,6 +545,9 @@ impl OwnedProcess {
         #[cfg(not(windows))]
         {
             let signaled = self.kill_tree();
+            if self.stopped {
+                return;
+            }
             match self.child.wait() {
                 Ok(_) => self.stopped = true,
                 Err(error) if signaled => {
@@ -561,7 +564,7 @@ impl OwnedProcess {
         }
     }
 
-    fn kill_tree(&self) -> bool {
+    fn kill_tree(&mut self) -> bool {
         #[cfg(unix)]
         {
             let term = Command::new("kill")
@@ -570,7 +573,16 @@ impl OwnedProcess {
                 .arg(format!("-{}", self.child.id()))
                 .stderr(Stdio::null())
                 .status();
-            thread::sleep(Duration::from_millis(200));
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < deadline {
+                if self.child.try_wait().ok().flatten().is_some()
+                    && self.tree_exited().unwrap_or(false)
+                {
+                    self.stopped = true;
+                    return term.as_ref().is_ok_and(std::process::ExitStatus::success);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
             let kill = Command::new("kill")
                 .arg("-KILL")
                 .arg("--")
@@ -619,7 +631,7 @@ impl OwnedProcess {
                 self.stopped = true;
                 return Ok(status);
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(15));
         }
         status = self.child.try_wait()?;
         let report_visible = report.is_file();
@@ -665,7 +677,16 @@ impl Drop for OwnedProcess {
                 .arg(format!("-{}", self.child.id()))
                 .stderr(Stdio::null())
                 .status();
-            thread::sleep(Duration::from_millis(200));
+            let deadline = Instant::now() + Duration::from_millis(200);
+            while Instant::now() < deadline {
+                if self.child.try_wait().ok().flatten().is_some()
+                    && self.tree_exited().unwrap_or(false)
+                {
+                    self.stopped = true;
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
             let _ = Command::new("kill")
                 .arg("-KILL")
                 .arg("--")
@@ -674,6 +695,29 @@ impl Drop for OwnedProcess {
                 .status();
         }
         let _ = self.child.wait();
+    }
+}
+
+fn wait_desktop_runner(
+    runner: &mut OwnedProcess,
+    mut fixture: Option<&mut OwnedProcess>,
+    interrupt: &mpsc::Receiver<()>,
+    timeout: Duration,
+    label: &str,
+) -> Result<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = runner.child.try_wait()? {
+            runner.stopped = true;
+            ensure!(status.success(), "{label} failed: {status}");
+            return Ok(status);
+        }
+        if let Some(fixture) = fixture.as_deref_mut() {
+            ensure!(!fixture.exited()?, "fixture exited during {label}");
+        }
+        ensure!(interrupt.try_recv().is_err(), "{label} cancelled");
+        ensure!(Instant::now() < deadline, "{label} timed out");
+        thread::sleep(Duration::from_millis(15));
     }
 }
 
@@ -2415,7 +2459,7 @@ fn wait_for_ready(
             "manual GUI cancelled while starting fixture"
         );
         ensure!(Instant::now() < deadline, "fixture ready-file timed out");
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(15));
     }
 }
 
@@ -7008,7 +7052,7 @@ mod manual_startup_tests {
         fs::write(&path, "building native inputs\n")?;
         let writer_path = path.clone();
         let writer = thread::spawn(move || -> std::io::Result<()> {
-            thread::sleep(Duration::from_millis(650));
+            thread::sleep(Duration::from_millis(120));
             fs::write(
                 writer_path,
                 format!(
@@ -7026,7 +7070,7 @@ mod manual_startup_tests {
             &mut fixture,
             &rx,
             VmStartupPhase::NativePreparation,
-            Duration::from_millis(100),
+            Duration::from_millis(25),
         );
         writer.join().unwrap()?;
         assert_eq!(result?, "http://127.0.0.1:1234/synthetic/");

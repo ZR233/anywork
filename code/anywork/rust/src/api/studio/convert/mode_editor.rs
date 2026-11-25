@@ -83,10 +83,10 @@ impl TryFrom<BridgeThreadModeDocument> for ThreadModeDocument {
     type Error = anyhow::Error;
 
     fn try_from(value: BridgeThreadModeDocument) -> Result<Self> {
-        Ok(Self {
-            definition: value.definition.try_into()?,
-            editor: value.editor.into(),
-        })
+        Ok(Self::from_parts(
+            value.definition.try_into()?,
+            value.editor.into(),
+        ))
     }
 }
 
@@ -122,9 +122,10 @@ impl TryFrom<BridgeWorkflowPreviewRequest> for WorkflowPreviewRequest {
 }
 
 pub(crate) fn bridge_thread_mode_document(value: ThreadModeDocument) -> BridgeThreadModeDocument {
+    let (definition, editor) = value.into_parts();
     BridgeThreadModeDocument {
-        definition: bridge_thread_mode_definition(value.definition),
-        editor: bridge_thread_mode_editor_layout(value.editor),
+        definition: bridge_thread_mode_definition(definition),
+        editor: bridge_thread_mode_editor_layout(editor),
     }
 }
 

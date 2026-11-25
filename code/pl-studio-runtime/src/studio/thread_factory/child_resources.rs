@@ -120,7 +120,7 @@ impl StudioThreadFactory {
                 &parent.root_thread_id,
                 &mut project,
                 &workspace_usage,
-                super::root_resources::BotWorkspacePreparation::New,
+                super::bot_workspace::BotWorkspacePreparation::New,
             )
             .await?;
         let local_root = bot_root
@@ -233,8 +233,7 @@ impl StudioThreadFactory {
         let workspace = ToolWorkspace::new(assigned_workspace(
             &assignment,
             root_thread.session.workspace_mode,
-        ))
-        .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
+        ));
         self.assign_native_workspace(&workspace_usage, &project, workspace.root())
             .await?;
         Ok(PreparedChildWorkspace {

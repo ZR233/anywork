@@ -4,7 +4,7 @@
 //! - 在线更新与发现严格固定从官方 ACP 注册表（`cdn.agentclientprotocol.com`）读取，且分发包必须位于
 //!   官方 Google HTTPS 目录（`https://dl.google.com/agy-extensions/releases/`）；
 //! - 保留官方 `1.5.2` 六平台发行清单作为内置兼容基线，保证仅查看/离线复用已装版本时无需硬编码第二套来源；
-//! - 严禁从环境变量、用户输入或任意第三方域名覆盖官方来源（仅单元测试可在 `#[cfg(test)]` 注入本机回环服务）。
+//! - 严禁从环境变量、用户输入或任意第三方域名覆盖官方来源。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -44,97 +44,56 @@ const REGISTRY_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ARGS: usize = 8;
 const MAX_ARG_BYTES: usize = 64;
 
-/// 测试期可注入回环注册表/归档基址；生产编译不包含此类型，绝不开放外部覆盖。
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(in crate::studio::runtime) struct TestSourceOverride {
-    pub registry_url: String,
-    pub archive_base_url: String,
+/// Connects an already validated logical URL using the client's selected HTTP route.
+/// The caller owns origin admission, redirect validation and response limits.
+pub(super) trait ReleaseTransport: Send + Sync + 'static {
+    fn connect(
+        &self,
+        builder: reqwest::ClientBuilder,
+        url: reqwest::Url,
+    ) -> Result<(reqwest::Client, reqwest::Url), reqwest::Error>;
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct SourcePolicy {
-    #[cfg(test)]
-    test_override: Option<TestSourceOverride>,
+pub(super) struct OfficialTransport;
+
+impl ReleaseTransport for OfficialTransport {
+    fn connect(
+        &self,
+        builder: reqwest::ClientBuilder,
+        url: reqwest::Url,
+    ) -> Result<(reqwest::Client, reqwest::Url), reqwest::Error> {
+        Ok((builder.build()?, url))
+    }
 }
 
-impl SourcePolicy {
-    pub(super) const fn official() -> Self {
-        Self {
-            #[cfg(test)]
-            test_override: None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn for_test(override_source: TestSourceOverride) -> Self {
-        Self {
-            test_override: Some(override_source),
-        }
-    }
-
-    fn registry_url(&self) -> &str {
-        #[cfg(test)]
-        if let Some(custom) = &self.test_override {
-            return &custom.registry_url;
-        }
-        REGISTRY_URL
-    }
-
-    fn validate_registry_url(&self, url: &reqwest::Url) -> Result<(), AcpInstallFailure> {
-        #[cfg(test)]
-        if self.test_override.is_some() {
-            return validate_loopback_test_url(url, AcpInstallStage::Resolve, false);
-        }
-        validate_official_https_url(
-            url,
-            REGISTRY_HOST,
-            REGISTRY_PATH_PREFIX,
-            None,
-            AcpInstallStage::Resolve,
-        )
-    }
-
-    pub(super) fn validate_archive_url(&self, url: &reqwest::Url) -> Result<(), AcpInstallFailure> {
-        #[cfg(test)]
-        if let Some(custom) = &self.test_override {
-            validate_loopback_test_url(url, AcpInstallStage::Resolve, true)?;
-            if !url.as_str().starts_with(&custom.archive_base_url) {
-                return Err(failure(
-                    AcpInstallFailureCode::SourceRejected,
-                    AcpInstallStage::Resolve,
-                    false,
-                ));
+pub(super) fn archive_request(
+    transport: &dyn ReleaseTransport,
+    archive_url: &str,
+) -> Result<(reqwest::Client, reqwest::Url), AcpInstallFailure> {
+    let stage = AcpInstallStage::Resolve;
+    let url = reqwest::Url::parse(archive_url)
+        .map_err(|_| failure(AcpInstallFailureCode::SourceRejected, stage, false))?;
+    validate_archive_url(&url)?;
+    let builder = reqwest::Client::builder()
+        .user_agent(user_agent())
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > MAX_REDIRECTS {
+                return attempt.error("too many redirects");
             }
-            return Ok(());
-        }
-        validate_archive_url(url)
-    }
-
-    pub(super) fn archive_client(&self) -> Result<reqwest::Client, AcpInstallFailure> {
-        let policy = self.clone();
-        reqwest::Client::builder()
-            .user_agent(user_agent())
-            .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                if attempt.previous().len() > MAX_REDIRECTS {
-                    return attempt.error("too many redirects");
-                }
-                if policy.validate_archive_url(attempt.url()).is_err() {
-                    return attempt.error("redirect target rejected");
-                }
-                attempt.follow()
-            }))
-            .build()
-            .map_err(|_| {
-                failure(
-                    AcpInstallFailureCode::Network,
-                    AcpInstallStage::Download,
-                    false,
-                )
-            })
-    }
+            if validate_archive_url(attempt.url()).is_err() {
+                return attempt.error("redirect target rejected");
+            }
+            attempt.follow()
+        }));
+    transport.connect(builder, url).map_err(|_| {
+        failure(
+            AcpInstallFailureCode::Network,
+            AcpInstallStage::Download,
+            false,
+        )
+    })
 }
 
 /// 一个固定基线发行目标的静态条目：归档相对路径、包内入口与不可变 argv。
@@ -437,7 +396,7 @@ fn registry_agent_id(provider: AcpProvider) -> &'static str {
 
 /// 向官方 ACP 注册表发起一次有界 HTTPS GET 并解析当前平台的大版本 `1` 最新发行。
 pub(super) async fn fetch_latest_from_registry(
-    policy: &SourcePolicy,
+    transport: &dyn ReleaseTransport,
     provider: AcpProvider,
     cancel: &CancellationToken,
 ) -> Result<RegistryLookup, AcpInstallFailure> {
@@ -449,13 +408,12 @@ pub(super) async fn fetch_latest_from_registry(
             false,
         ));
     };
-    let url = reqwest::Url::parse(policy.registry_url())
+    let url = reqwest::Url::parse(REGISTRY_URL)
         .map_err(|_| failure(AcpInstallFailureCode::SourceRejected, stage, false))?;
-    policy.validate_registry_url(&url)?;
+    validate_registry_url(&url)?;
     let redirect_rejected = Arc::new(AtomicBool::new(false));
-    let client_policy = policy.clone();
     let flag = Arc::clone(&redirect_rejected);
-    let client = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .user_agent(user_agent())
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(15))
@@ -463,13 +421,14 @@ pub(super) async fn fetch_latest_from_registry(
             if attempt.previous().len() > MAX_REDIRECTS {
                 return attempt.error("too many redirects");
             }
-            if client_policy.validate_registry_url(attempt.url()).is_err() {
+            if validate_registry_url(attempt.url()).is_err() {
                 flag.store(true, Ordering::Release);
                 return attempt.error("registry redirect target rejected");
             }
             attempt.follow()
-        }))
-        .build()
+        }));
+    let (client, url) = transport
+        .connect(builder, url)
         .map_err(|_| failure(AcpInstallFailureCode::Network, stage, true))?;
 
     let work = async {
@@ -510,7 +469,7 @@ pub(super) async fn fetch_latest_from_registry(
             }
             body.extend_from_slice(&chunk);
         }
-        parse_registry_payload(policy, provider, target, &body)
+        parse_registry_payload(provider, target, &body)
     };
 
     tokio::select! {
@@ -548,7 +507,6 @@ fn map_registry_reqwest_error(
 }
 
 pub(super) fn parse_registry_payload(
-    policy: &SourcePolicy,
     provider: AcpProvider,
     target: &str,
     bytes: &[u8],
@@ -587,7 +545,7 @@ pub(super) fn parse_registry_payload(
     };
     let archive_url = reqwest::Url::parse(&entry.archive)
         .map_err(|_| failure(AcpInstallFailureCode::SourceRejected, stage, false))?;
-    policy.validate_archive_url(&archive_url)?;
+    validate_archive_url(&archive_url)?;
     let sha256 = validate_optional_sha256(entry.sha256.as_deref(), stage)?;
     let command = validate_target_command_args(target, &entry.cmd, &entry.args, stage)?;
     Ok(RegistryLookup::Release(ResolvedRelease {
@@ -600,6 +558,16 @@ pub(super) fn parse_registry_payload(
         command,
         args: entry.args.clone(),
     }))
+}
+
+fn validate_registry_url(url: &reqwest::Url) -> Result<(), AcpInstallFailure> {
+    validate_official_https_url(
+        url,
+        REGISTRY_HOST,
+        REGISTRY_PATH_PREFIX,
+        None,
+        AcpInstallStage::Resolve,
+    )
 }
 
 /// 分发包来源政策：仅官方 Google HTTPS ZIP 路径，拒绝用户信息、额外端口、fragment 与越界路径。
@@ -650,37 +618,6 @@ fn validate_official_https_url(
     if let Some(suffix) = required_suffix
         && !lowered.ends_with(suffix)
     {
-        return Err(rejected());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn validate_loopback_test_url(
-    url: &reqwest::Url,
-    stage: AcpInstallStage,
-    require_zip: bool,
-) -> Result<(), AcpInstallFailure> {
-    let rejected = || failure(AcpInstallFailureCode::SourceRejected, stage, false);
-    if !matches!(url.scheme(), "http" | "https")
-        || !matches!(url.host_str(), Some("127.0.0.1" | "::1" | "localhost"))
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || authority_has_userinfo(url)
-        || url.fragment().is_some()
-    {
-        return Err(rejected());
-    }
-    let path = url.path();
-    if path.contains('\\')
-        || path.contains("//")
-        || path
-            .split('/')
-            .any(|segment| segment == "." || segment == "..")
-    {
-        return Err(rejected());
-    }
-    if require_zip && !path.to_ascii_lowercase().ends_with(".zip") {
         return Err(rejected());
     }
     Ok(())

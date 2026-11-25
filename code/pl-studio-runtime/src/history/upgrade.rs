@@ -45,12 +45,10 @@ use pl_core::{
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::sync::Mutex;
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -73,16 +71,6 @@ const BACKUP_ROOT: &str = "migration-backups/history-24-to-25";
 const BACKUP_ROOT_V25_TO_V26: &str = "migration-backups/history-25-to-26";
 const BACKUP_ROOT_V26_TO_V27: &str = "migration-backups/history-26-to-27";
 const PENDING_REPORT_FILE: &str = "pending-upgrade-report.json";
-#[cfg(test)]
-static FAIL_NEXT_IMPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
-#[cfg(test)]
-static FAIL_NEXT_BACKUP_PUBLISH_THREAD: Mutex<Option<String>> = Mutex::new(None);
-#[cfg(test)]
-static FAIL_NEXT_CURRENT_PUBLISH: Mutex<Option<(String, bool)>> = Mutex::new(None);
-#[cfg(test)]
-static FAIL_NEXT_DDL_THREAD: Mutex<Option<String>> = Mutex::new(None);
-#[cfg(test)]
-static FAIL_NEXT_REPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
 
 const LEGACY_SOURCE_TABLES: &[&str] = &[
     "history_meta",
@@ -171,6 +159,25 @@ impl ImportCounts {
     }
 }
 
+/// File operations used to publish validated migration artifacts.
+#[derive(Clone, Copy)]
+struct UpgradeFiles {
+    move_owned_path: fn(&Path, &Path) -> io::Result<()>,
+    write_current: fn(&Path, &[u8]) -> io::Result<()>,
+}
+
+impl UpgradeFiles {
+    const DISK: Self = Self {
+        move_owned_path: pl_tool::workspace::move_owned_path,
+        write_current: pl_tool::workspace::write_file_atomically,
+    };
+}
+
+struct PendingReport<'a> {
+    path: &'a Path,
+    backup_name: &'static str,
+}
+
 struct WriterLease {
     _file: File,
 }
@@ -210,14 +217,27 @@ pub async fn upgrade_history(
     thread_id: &str,
     session_dir: impl AsRef<Path>,
 ) -> Result<UpgradeReport> {
-    let history_path = history_path.as_ref().to_path_buf();
-    let session_dir = session_dir.as_ref().to_path_buf();
+    upgrade_history_with_files(
+        history_path.as_ref(),
+        thread_id,
+        session_dir.as_ref(),
+        UpgradeFiles::DISK,
+    )
+    .await
+}
+
+async fn upgrade_history_with_files(
+    history_path: &Path,
+    thread_id: &str,
+    session_dir: &Path,
+    files: UpgradeFiles,
+) -> Result<UpgradeReport> {
     if thread_id.is_empty() {
         return Err(HistoryError::InvalidEvent(
             "Thread identity is empty".into(),
         ));
     }
-    if !preserved_file_exists(&history_path)? {
+    if !preserved_file_exists(history_path)? {
         return Err(HistoryError::NotFound(history_path.display().to_string()));
     }
     let pending_v24 = session_dir.join(BACKUP_ROOT).join(PENDING_REPORT_FILE);
@@ -227,7 +247,7 @@ pub async fn upgrade_history(
     let pending_v26 = session_dir
         .join(BACKUP_ROOT_V26_TO_V27)
         .join(PENDING_REPORT_FILE);
-    let read = schema::connect(&history_path, true, false).await?;
+    let read = schema::connect(history_path, true, false).await?;
     if classify_source(&read).await? == SourceFormat::Schema27
         && !pending_v24.try_exists()?
         && !pending_v25.try_exists()?
@@ -235,19 +255,22 @@ pub async fn upgrade_history(
     {
         let (database_id, _) = schema::identity(&read, thread_id).await?;
         return finish_schema27(
-            &history_path,
+            history_path,
             read,
-            &pending_v24,
+            PendingReport {
+                path: &pending_v24,
+                backup_name: "history.v24.sqlite",
+            },
             thread_id,
             database_id,
-            "history.v24.sqlite",
             false,
+            files,
         )
         .await;
     }
     read.close().await?;
-    let _lease = acquire_writer_lease(&history_path).await?;
-    let read = schema::connect(&history_path, true, false).await?;
+    let _lease = acquire_writer_lease(history_path).await?;
+    let read = schema::connect(history_path, true, false).await?;
     let format = classify_source(&read).await?;
     match format {
         SourceFormat::Schema27 => {
@@ -268,36 +291,51 @@ pub async fn upgrade_history(
             }
             if pending_v26.try_exists()? {
                 return finish_schema27(
-                    &history_path,
+                    history_path,
                     read,
-                    &pending_v26,
+                    PendingReport {
+                        path: &pending_v26,
+                        backup_name: "history.v26.sqlite",
+                    },
                     thread_id,
                     database_id,
-                    "history.v26.sqlite",
                     true,
+                    files,
                 )
                 .await;
             }
             if pending_v25.try_exists()? {
+                if pending_v24.try_exists()? {
+                    read.close().await?;
+                    return Err(HistoryError::Conflict(
+                        "conflicting v24 and v25 pending upgrade reports exist".into(),
+                    ));
+                }
                 return finish_schema27(
-                    &history_path,
+                    history_path,
                     read,
-                    &pending_v25,
+                    PendingReport {
+                        path: &pending_v25,
+                        backup_name: "history.v25.sqlite",
+                    },
                     thread_id,
                     database_id,
-                    "history.v25.sqlite",
                     true,
+                    files,
                 )
                 .await;
             }
             return finish_schema27(
-                &history_path,
+                history_path,
                 read,
-                &pending_v24,
+                PendingReport {
+                    path: &pending_v24,
+                    backup_name: "history.v24.sqlite",
+                },
                 thread_id,
                 database_id,
-                "history.v24.sqlite",
                 true,
+                files,
             )
             .await;
         }
@@ -310,11 +348,12 @@ pub async fn upgrade_history(
                 ));
             }
             return upgrade_v26_to_v27(
-                &history_path,
+                history_path,
                 thread_id,
-                &session_dir,
+                session_dir,
                 &database_id,
                 &pending_v26,
+                files,
             )
             .await;
         }
@@ -327,11 +366,12 @@ pub async fn upgrade_history(
                 ));
             }
             return upgrade_v25_to_v26(
-                &history_path,
+                history_path,
                 thread_id,
-                &session_dir,
+                session_dir,
                 &database_id,
                 &pending_v25,
+                files,
             )
             .await;
         }
@@ -350,8 +390,8 @@ pub async fn upgrade_history(
     let operation_dir = session_dir.join(BACKUP_ROOT).join(&operation_id);
     let identity = if original_identity.version == 24 {
         let identity = original_identity.into_schema24(thread_id)?;
-        discard_rolled_back_pending_report(&pending_v24, thread_id, &identity.0)?;
-        prepare_directory(&session_dir, &operation_dir)?;
+        discard_rolled_back_pending_report(&pending_v24, thread_id, &identity.0, files)?;
+        prepare_directory(session_dir, &operation_dir)?;
         identity
     } else {
         if pending_v24.try_exists()? {
@@ -359,19 +399,27 @@ pub async fn upgrade_history(
                 "pre-schema 24 history has a pending schema 25 report".into(),
             ));
         }
-        prepare_directory(&session_dir, &operation_dir)?;
-        prepare_older_history(&history_path, &operation_dir, thread_id, original_identity).await?
+        prepare_directory(session_dir, &operation_dir)?;
+        prepare_older_history(
+            history_path,
+            &operation_dir,
+            thread_id,
+            original_identity,
+            files,
+        )
+        .await?
     };
     let (backup_path, backup_counts) = make_backup(
-        &history_path,
+        history_path,
         &operation_dir,
         thread_id,
         &identity.0,
         identity.1,
+        files,
     )
     .await?;
 
-    let source = V24HistorySource::open(&history_path, thread_id).await?;
+    let source = V24HistorySource::open(history_path, thread_id).await?;
     let counts = source_table_rows(&source).await?;
     if counts != backup_counts {
         source.close().await?;
@@ -379,9 +427,10 @@ pub async fn upgrade_history(
             "schema 24 source changed while its logical backup was prepared".into(),
         ));
     }
-    let current_backup = prepare_current(&source, thread_id, &session_dir, &operation_dir).await?;
+    let current_backup =
+        prepare_current(&source, thread_id, session_dir, &operation_dir, files).await?;
 
-    let writer = schema::connect_for_migration(&history_path).await?;
+    let writer = schema::connect_for_migration(history_path).await?;
     crate::studio::storage::history::validate_layout_source(&writer, thread_id).await?;
     let database_id = identity.0.clone();
     let report_thread_id = thread_id.to_owned();
@@ -416,7 +465,7 @@ pub async fn upgrade_history(
             imported_categories: imported.imported,
             backup_only_categories,
         };
-        stage_pending_report(&stage_path, &report)
+        stage_pending_report(&stage_path, &report, files)
     });
     match schema::run_upgrade_v24(
         &writer,
@@ -436,7 +485,13 @@ pub async fn upgrade_history(
     let (database_id, _) = schema::identity(&writer, thread_id).await?;
     writer.close().await?;
     source.close().await?;
-    complete_pending_report(&pending_v24, thread_id, &database_id, "history.v24.sqlite")
+    complete_pending_report(
+        &pending_v24,
+        thread_id,
+        &database_id,
+        "history.v24.sqlite",
+        files,
+    )
 }
 
 async fn upgrade_v25_to_v26(
@@ -445,6 +500,7 @@ async fn upgrade_v25_to_v26(
     session_dir: &Path,
     database_id: &str,
     pending_report: &Path,
+    files: UpgradeFiles,
 ) -> Result<UpgradeReport> {
     if pending_report.try_exists()? {
         let bytes = std::fs::read(pending_report)?;
@@ -457,7 +513,7 @@ async fn upgrade_v25_to_v26(
         let op_dir = report_operation_dir(pending_report, &report)?;
         let uncommitted = op_dir.join("uncommitted-report.json");
         if !uncommitted.try_exists()? {
-            backup_exact_bytes(&uncommitted, &bytes)?;
+            backup_exact_bytes(&uncommitted, &bytes, files)?;
         }
         std::fs::remove_file(pending_report)?;
         sync_parent(pending_report)?;
@@ -478,7 +534,7 @@ async fn upgrade_v25_to_v26(
     let source_table_rows = v25_table_rows(&backup_read).await?;
     backup_read.close().await?;
     let backup_path = operation_dir.join("history.v25.sqlite");
-    publish_backup(&temporary, &backup_path, thread_id)?;
+    publish_backup(&temporary, &backup_path, files)?;
 
     let writer = schema::connect_for_migration(history_path).await?;
     let report_thread_id = thread_id.to_owned();
@@ -498,7 +554,7 @@ async fn upgrade_v25_to_v26(
             imported_categories,
             backup_only_categories: BTreeMap::new(),
         };
-        stage_pending_report(&stage_path, &report)
+        stage_pending_report(&stage_path, &report, files)
     });
     schema::run_upgrade_v25(&writer, thread_id, stage_v25_report).await?;
     let (confirmed_db_id, _) = schema::identity(&writer, thread_id).await?;
@@ -508,6 +564,7 @@ async fn upgrade_v25_to_v26(
         thread_id,
         &confirmed_db_id,
         "history.v25.sqlite",
+        files,
     )
 }
 
@@ -517,6 +574,7 @@ async fn upgrade_v26_to_v27(
     session_dir: &Path,
     database_id: &str,
     pending_report: &Path,
+    files: UpgradeFiles,
 ) -> Result<UpgradeReport> {
     if pending_report.try_exists()? {
         let bytes = std::fs::read(pending_report)?;
@@ -529,7 +587,7 @@ async fn upgrade_v26_to_v27(
         let op_dir = report_operation_dir(pending_report, &report)?;
         let uncommitted = op_dir.join("uncommitted-report.json");
         if !uncommitted.try_exists()? {
-            backup_exact_bytes(&uncommitted, &bytes)?;
+            backup_exact_bytes(&uncommitted, &bytes, files)?;
         }
         std::fs::remove_file(pending_report)?;
         sync_parent(pending_report)?;
@@ -550,7 +608,7 @@ async fn upgrade_v26_to_v27(
     let source_table_rows = v25_table_rows(&backup_read).await?;
     backup_read.close().await?;
     let backup_path = operation_dir.join("history.v26.sqlite");
-    publish_backup(&temporary, &backup_path, thread_id)?;
+    publish_backup(&temporary, &backup_path, files)?;
 
     let writer = schema::connect_for_migration(history_path).await?;
     if schema26_manifest::repair_needed(&writer).await? {
@@ -573,7 +631,7 @@ async fn upgrade_v26_to_v27(
             imported_categories,
             backup_only_categories: BTreeMap::new(),
         };
-        stage_pending_report(&stage_path, &report)
+        stage_pending_report(&stage_path, &report, files)
     });
     schema::run_upgrade_v26(&writer, thread_id, stage_v26_report).await?;
     let (confirmed_db_id, _) = schema::identity(&writer, thread_id).await?;
@@ -583,6 +641,7 @@ async fn upgrade_v26_to_v27(
         thread_id,
         &confirmed_db_id,
         "history.v26.sqlite",
+        files,
     )
 }
 
@@ -794,6 +853,7 @@ async fn make_backup(
     thread_id: &str,
     database_id: &str,
     watermark: u64,
+    files: UpgradeFiles,
 ) -> Result<(PathBuf, BTreeMap<String, u64>)> {
     let temporary = vacuum_backup_candidate(history_path, operation_dir, 24).await?;
     let backup_read = schema::connect(&temporary, true, false).await?;
@@ -807,7 +867,7 @@ async fn make_backup(
     let counts = database_table_rows(&backup_read).await?;
     backup_read.close().await?;
     let target = operation_dir.join("history.v24.sqlite");
-    publish_backup(&temporary, &target, thread_id)?;
+    publish_backup(&temporary, &target, files)?;
     Ok((target, counts))
 }
 
@@ -816,6 +876,7 @@ async fn prepare_older_history(
     operation_dir: &Path,
     thread_id: &str,
     original: LegacyIdentity,
+    files: UpgradeFiles,
 ) -> Result<(String, u64)> {
     let version = original.version;
     let temporary = vacuum_backup_candidate(history_path, operation_dir, version).await?;
@@ -829,7 +890,7 @@ async fn prepare_older_history(
     quick_check(&backup).await?;
     backup.close().await?;
     let target = operation_dir.join(format!("history.v{version}.sqlite"));
-    publish_backup(&temporary, &target, thread_id)?;
+    publish_backup(&temporary, &target, files)?;
 
     // The outer upgrade holds the same writer lease across both format changes.
     let writer = schema::connect(history_path, false, false).await?;
@@ -870,11 +931,10 @@ async fn vacuum_backup_candidate(
     Ok(temporary)
 }
 
-fn publish_backup(temporary: &Path, target: &Path, thread_id: &str) -> Result<()> {
+fn publish_backup(temporary: &Path, target: &Path, files: UpgradeFiles) -> Result<()> {
     // Windows FlushFileBuffers requires a writable handle; opening does not truncate.
     File::options().write(true).open(temporary)?.sync_all()?;
-    fail_backup_publish_once(thread_id)?;
-    pl_tool::workspace::move_owned_path(temporary, target)?;
+    (files.move_owned_path)(temporary, target)?;
     sync_parent(target)
 }
 
@@ -953,6 +1013,7 @@ async fn prepare_current(
     thread_id: &str,
     session_dir: &Path,
     operation_dir: &Path,
+    files: UpgradeFiles,
 ) -> Result<Option<PathBuf>> {
     let current_path = session_dir.join("current.json");
     if current_path.is_file() {
@@ -963,7 +1024,7 @@ async fn prepare_current(
             .sync_all()?;
         sync_parent(&current_path)?;
         let backup = operation_dir.join("current.original.json");
-        backup_exact_bytes(&backup, &bytes)?;
+        backup_exact_bytes(&backup, &bytes, files)?;
         return Ok(Some(backup));
     }
     if current_path.exists() {
@@ -977,9 +1038,7 @@ async fn prepare_current(
     let current = build_current(source, checkpoint, thread_id, session_dir).await?;
     crate::studio::storage::verify_for_upgrade(session_dir, thread_id, &current).await?;
     let bytes = serde_json::to_vec(&current)?;
-    fail_current_publish_once(thread_id, false)?;
-    pl_tool::workspace::write_file_atomically(&current_path, &bytes)?;
-    fail_current_publish_once(thread_id, true)?;
+    (files.write_current)(&current_path, &bytes)?;
     let (restored, restored_bytes) =
         crate::studio::storage::read_for_upgrade(session_dir, thread_id).await?;
     if restored.thread_id != thread_id || restored_bytes != bytes {
@@ -1171,7 +1230,7 @@ async fn verify_pending_identities(
     Ok(())
 }
 
-fn backup_exact_bytes(target: &Path, bytes: &[u8]) -> Result<()> {
+fn backup_exact_bytes(target: &Path, bytes: &[u8], files: UpgradeFiles) -> Result<()> {
     let parent = target
         .parent()
         .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("backup has no parent")))?;
@@ -1183,12 +1242,16 @@ fn backup_exact_bytes(target: &Path, bytes: &[u8]) -> Result<()> {
     temporary.as_file().sync_all()?;
     let (file, temporary_path) = temporary.keep().map_err(|error| error.error)?;
     drop(file);
-    pl_tool::workspace::move_owned_path(&temporary_path, target)?;
+    (files.move_owned_path)(&temporary_path, target)?;
     sync_parent(target)?;
     Ok(())
 }
 
-fn stage_pending_report(pending_report: &Path, report: &UpgradeReport) -> Result<()> {
+fn stage_pending_report(
+    pending_report: &Path,
+    report: &UpgradeReport,
+    files: UpgradeFiles,
+) -> Result<()> {
     if pending_report.try_exists()? {
         return Err(HistoryError::Conflict(
             "another schema 24 upgrade report is already pending".into(),
@@ -1201,17 +1264,17 @@ fn stage_pending_report(pending_report: &Path, report: &UpgradeReport) -> Result
         ));
     }
     let bytes = serde_json::to_vec_pretty(report)?;
-    backup_exact_bytes(pending_report, &bytes)
+    backup_exact_bytes(pending_report, &bytes, files)
 }
 
 async fn finish_schema27(
     history_path: &Path,
     read: DatabaseConnection,
-    pending_report: &Path,
+    pending: PendingReport<'_>,
     thread_id: &str,
     database_id: String,
-    expected_backup_name: &str,
     lease_held: bool,
+    files: UpgradeFiles,
 ) -> Result<UpgradeReport> {
     let needed = match schema26_manifest::repair_needed(&read).await {
         Ok(needed) => {
@@ -1224,12 +1287,7 @@ async fn finish_schema27(
         }
     };
     if !needed {
-        return complete_schema27_entry(
-            pending_report,
-            thread_id,
-            database_id,
-            expected_backup_name,
-        );
+        return complete_schema27_entry(pending, thread_id, database_id, files);
     }
     // upgrade_history may already hold this file lease. try_lock is not reentrant.
     let _lease = if lease_held {
@@ -1242,16 +1300,16 @@ async fn finish_schema27(
     let closed = writer.close().await;
     repaired?;
     closed?;
-    complete_schema27_entry(pending_report, thread_id, database_id, expected_backup_name)
+    complete_schema27_entry(pending, thread_id, database_id, files)
 }
 
 fn complete_schema27_entry(
-    pending_report: &Path,
+    pending: PendingReport<'_>,
     thread_id: &str,
     database_id: String,
-    expected_backup_name: &str,
+    files: UpgradeFiles,
 ) -> Result<UpgradeReport> {
-    if !pending_report.try_exists()? {
+    if !pending.path.try_exists()? {
         return Ok(UpgradeReport {
             operation_id: "already-current".into(),
             thread_id: thread_id.to_owned(),
@@ -1265,10 +1323,11 @@ fn complete_schema27_entry(
         });
     }
     let mut report = complete_pending_report(
-        pending_report,
+        pending.path,
         thread_id,
         &database_id,
-        expected_backup_name,
+        pending.backup_name,
+        files,
     )?;
     report.status = UpgradeStatus::AlreadyCurrent;
     Ok(report)
@@ -1302,6 +1361,7 @@ fn complete_pending_report(
     thread_id: &str,
     database_id: &str,
     expected_backup_name: &str,
+    files: UpgradeFiles,
 ) -> Result<UpgradeReport> {
     let bytes = std::fs::read(pending_report)?;
     let report: UpgradeReport = serde_json::from_slice(&bytes)?;
@@ -1341,8 +1401,7 @@ fn complete_pending_report(
             ));
         }
     } else {
-        fail_report_publish_once(thread_id)?;
-        backup_exact_bytes(&target, &bytes)?;
+        backup_exact_bytes(&target, &bytes, files)?;
     }
     std::fs::remove_file(pending_report)?;
     sync_parent(pending_report)?;
@@ -1353,6 +1412,7 @@ fn discard_rolled_back_pending_report(
     pending_report: &Path,
     thread_id: &str,
     database_id: &str,
+    files: UpgradeFiles,
 ) -> Result<()> {
     if !pending_report.try_exists()? {
         return Ok(());
@@ -1395,7 +1455,7 @@ fn discard_rolled_back_pending_report(
             ));
         }
     } else {
-        backup_exact_bytes(&uncommitted, &bytes)?;
+        backup_exact_bytes(&uncommitted, &bytes, files)?;
     }
     std::fs::remove_file(pending_report)?;
     sync_parent(pending_report)?;
@@ -1427,87 +1487,6 @@ fn unix_milliseconds() -> Result<i64> {
 fn opaque_payload(format: &str, content: String) -> Result<OpaquePayload> {
     OpaquePayload::new(format, 1, content)
         .map_err(|error| HistoryError::Storage(anyhow::anyhow!(error)))
-}
-
-#[cfg(test)]
-fn fail_backup_publish_once(thread_id: &str) -> Result<()> {
-    let mut fail = FAIL_NEXT_BACKUP_PUBLISH_THREAD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if fail.as_deref() == Some(thread_id) {
-        fail.take();
-        return Err(HistoryError::Integrity(
-            "injected schema 24 backup publication failure".into(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn fail_backup_publish_once(_thread_id: &str) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(test)]
-fn fail_current_publish_once(thread_id: &str, after_write: bool) -> Result<()> {
-    let mut fail = FAIL_NEXT_CURRENT_PUBLISH
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let selected = fail
-        .as_ref()
-        .is_some_and(|(id, after)| id == thread_id && *after == after_write);
-    if selected {
-        fail.take();
-        return Err(HistoryError::Integrity(if after_write {
-            "injected current publication verification failure".into()
-        } else {
-            "injected current publication failure".into()
-        }));
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn fail_current_publish_once(_thread_id: &str, _after_write: bool) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(test)]
-fn fail_ddl_once(thread_id: &str) -> Result<()> {
-    let mut fail = FAIL_NEXT_DDL_THREAD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if fail.as_deref() == Some(thread_id) {
-        fail.take();
-        return Err(HistoryError::Integrity(
-            "injected schema 24 destructive DDL failure".into(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn fail_ddl_once(_thread_id: &str) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(test)]
-fn fail_report_publish_once(thread_id: &str) -> Result<()> {
-    let mut fail = FAIL_NEXT_REPORT_THREAD
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if fail.as_deref() == Some(thread_id) {
-        fail.take();
-        return Err(HistoryError::Integrity(
-            "injected upgrade report publication failure".into(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn fail_report_publish_once(_thread_id: &str) -> Result<()> {
-    Ok(())
 }
 
 pub(super) async fn import_database(
@@ -1610,19 +1589,7 @@ async fn import_database_with_staging(
     .await?;
     import.finish().await?;
     verify_import(tx, source, database_id, canonical).await?;
-    #[cfg(test)]
-    {
-        let mut fail = FAIL_NEXT_IMPORT_THREAD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if fail.as_deref() == Some(thread_id) {
-            fail.take();
-            return Err(HistoryError::Integrity(
-                "injected schema 24 to 25 import failure".into(),
-            ));
-        }
-    }
-    drop_legacy_tables(tx, thread_id).await?;
+    drop_legacy_tables(tx).await?;
     counts.backup_only("history_meta", 1);
     Ok(counts)
 }
@@ -4158,8 +4125,8 @@ async fn verify_display_tables_are_gone(tx: &impl ConnectionTrait) -> Result<()>
     Ok(())
 }
 
-async fn drop_legacy_tables(tx: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
-    for (index, table) in [
+async fn drop_legacy_tables(tx: &impl ConnectionTrait) -> Result<()> {
+    for table in [
         "conversation_display_members",
         "conversation_display_blocks",
         "conversation_content_chunks",
@@ -4187,16 +4154,12 @@ async fn drop_legacy_tables(tx: &impl ConnectionTrait, thread_id: &str) -> Resul
     ]
     .into_iter()
     .chain(LEGACY_WORK_SNAPSHOT_ARCHIVES.iter().copied())
-    .enumerate()
     {
         tx.execute_raw(statement(
             &format!("DROP TABLE IF EXISTS {table}"),
             Vec::new(),
         ))
         .await?;
-        if index == 0 {
-            fail_ddl_once(thread_id)?;
-        }
     }
     verify_display_tables_are_gone(tx).await?;
     let rows = tx
@@ -5969,20 +5932,63 @@ mod migration_tests {
         Ok(())
     }
 
+    fn move_with_target_conflict(source: &Path, target: &Path, file_name: &str) -> io::Result<()> {
+        let move_owned_path = UpgradeFiles::DISK.move_owned_path;
+        if target.file_name().and_then(|name| name.to_str()) != Some(file_name) {
+            return move_owned_path(source, target);
+        }
+        let original = b"other owner occupies the destination";
+        File::create_new(target)?.write_all(original)?;
+        let result = move_owned_path(source, target);
+        assert_eq!(std::fs::read(target)?, original);
+        std::fs::remove_file(target)?;
+        result
+    }
+
+    fn reject_backup_move(source: &Path, target: &Path) -> io::Result<()> {
+        move_with_target_conflict(source, target, "history.v24.sqlite")
+    }
+
+    fn reject_report_move(source: &Path, target: &Path) -> io::Result<()> {
+        move_with_target_conflict(source, target, "upgrade-report.json")
+    }
+
+    fn reject_current_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        std::fs::create_dir(path)?;
+        let marker = path.join("occupied");
+        std::fs::write(&marker, b"other owner occupies current.json")?;
+        let result = (UpgradeFiles::DISK.write_current)(path, bytes);
+        assert_eq!(
+            std::fs::read(&marker)?,
+            b"other owner occupies current.json"
+        );
+        std::fs::remove_file(marker)?;
+        std::fs::remove_dir(path)?;
+        result
+    }
+
+    fn write_current_with_different_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+        let mut different = bytes.to_vec();
+        different.push(b'\n');
+        (UpgradeFiles::DISK.write_current)(path, &different)
+    }
+
     #[tokio::test]
     async fn backup_publish_failure_leaves_only_an_unpublished_temporary_copy() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let history_path = directory.path().join("history.sqlite");
         let thread_id = "migration-backup-publish";
         write_v24_fixture(&history_path, thread_id, true).await?;
-        *FAIL_NEXT_BACKUP_PUBLISH_THREAD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
-
+        let files = UpgradeFiles {
+            move_owned_path: reject_backup_move,
+            ..UpgradeFiles::DISK
+        };
+        let error = upgrade_history_with_files(&history_path, thread_id, directory.path(), files)
+            .await
+            .expect_err("the validated backup cannot replace an occupied destination");
         assert!(
-            upgrade_history(&history_path, thread_id, directory.path())
-                .await
-                .is_err()
+            matches!(error, HistoryError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists),
+            "{error:#}"
         );
         assert_eq!(schema_version(&history_path).await?, 24);
         assert!(!directory.path().join("current.json").exists());
@@ -5992,15 +5998,23 @@ mod migration_tests {
             .transpose()?
             .ok_or_else(|| HistoryError::NotFound("backup operation directory".into()))?;
         assert!(!operation.path().join("history.v24.sqlite").exists());
-        assert!(
-            std::fs::read_dir(operation.path())?.any(|entry| {
+        let candidate = std::fs::read_dir(operation.path())?
+            .collect::<io::Result<Vec<_>>>()?
+            .into_iter()
+            .find(|entry| {
                 entry
-                    .ok()
-                    .and_then(|entry| entry.file_name().into_string().ok())
-                    .is_some_and(|name| name.starts_with(".history-v24-"))
-            }),
-            "validated temporary backup remains unpublished"
-        );
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".history-v24-")
+            })
+            .expect("validated temporary backup remains unpublished");
+        assert_eq!(schema_version(&candidate.path()).await?, 24);
+        let preserved = std::fs::read(candidate.path())?;
+
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(std::fs::read(candidate.path())?, preserved);
+        assert!(!operation.path().join("history.v24.sqlite").exists());
         Ok(())
     }
 
@@ -6012,24 +6026,32 @@ mod migration_tests {
         let thread_id = "migration-current-publish";
         write_v24_fixture(&history_path, thread_id, true).await?;
 
-        *FAIL_NEXT_CURRENT_PUBLISH
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((thread_id.into(), false));
-        assert!(
-            upgrade_history(&history_path, thread_id, directory.path())
-                .await
-                .is_err()
-        );
+        let files = UpgradeFiles {
+            write_current: reject_current_write,
+            ..UpgradeFiles::DISK
+        };
+        let error = upgrade_history_with_files(&history_path, thread_id, directory.path(), files)
+            .await
+            .expect_err("atomic Current publication must reject an occupied destination");
+        assert!(matches!(error, HistoryError::Io(_)), "{error:#}");
         assert_eq!(schema_version(&history_path).await?, 24);
         assert!(!directory.path().join("current.json").exists());
+        let operation = std::fs::read_dir(directory.path().join(BACKUP_ROOT))?
+            .next()
+            .transpose()?
+            .expect("prepared backup operation");
+        assert!(operation.path().join("history.v24.sqlite").is_file());
 
-        *FAIL_NEXT_CURRENT_PUBLISH
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((thread_id.into(), true));
+        let files = UpgradeFiles {
+            write_current: write_current_with_different_bytes,
+            ..UpgradeFiles::DISK
+        };
+        let error = upgrade_history_with_files(&history_path, thread_id, directory.path(), files)
+            .await
+            .expect_err("readback must detect different published bytes");
         assert!(
-            upgrade_history(&history_path, thread_id, directory.path())
-                .await
-                .is_err()
+            matches!(error, HistoryError::Integrity(ref message) if message == "published current changed"),
+            "{error:#}"
         );
         assert_eq!(schema_version(&history_path).await?, 24);
         let published = tokio::fs::read(directory.path().join("current.json")).await?;
@@ -6051,14 +6073,21 @@ mod migration_tests {
         let history_path = directory.path().join("history.sqlite");
         let thread_id = "migration-ddl-rollback";
         write_v24_fixture(&history_path, thread_id, true).await?;
-        *FAIL_NEXT_DDL_THREAD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+        let writer = schema::connect(&history_path, false, false).await?;
+        // This optional archive name is inspected only when it is a table. SQLite rejects the
+        // later DROP TABLE against this view, after it has executed the real legacy table drops.
+        writer
+            .execute_unprepared("CREATE VIEW work_snapshot_migration_headers AS SELECT 1 AS id")
+            .await?;
+        writer.close().await?;
 
+        let error = upgrade_history(&history_path, thread_id, directory.path())
+            .await
+            .expect_err("SQLite must reject dropping a view as a table");
         assert!(
-            upgrade_history(&history_path, thread_id, directory.path())
-                .await
-                .is_err()
+            format!("{error:#}")
+                .contains("use DROP VIEW to delete view work_snapshot_migration_headers"),
+            "{error:#}"
         );
         assert_eq!(schema_version(&history_path).await?, 24);
         let source = schema::connect(&history_path, true, false).await?;
@@ -6079,6 +6108,11 @@ mod migration_tests {
         source.close().await?;
         assert!(directory.path().join("current.json").is_file());
 
+        let writer = schema::connect(&history_path, false, false).await?;
+        writer
+            .execute_unprepared("DROP VIEW work_snapshot_migration_headers")
+            .await?;
+        writer.close().await?;
         let retried = upgrade_history(&history_path, thread_id, directory.path()).await?;
         assert_eq!(retried.status, UpgradeStatus::Upgraded);
         let target = schema::connect(&history_path, true, false).await?;
@@ -6112,6 +6146,7 @@ mod migration_tests {
             thread_id,
             &fixture.database_id,
             1,
+            UpgradeFiles::DISK,
         )
         .await?;
         let backup_bytes = std::fs::read(&backup)?;
@@ -6158,15 +6193,17 @@ mod migration_tests {
             let history_path = directory.path().join("history.sqlite");
             let thread_id = format!("migration-lost-report-{report_state}");
             let fixture = write_v24_fixture(&history_path, &thread_id, true).await?;
-            *FAIL_NEXT_REPORT_THREAD
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.clone());
-
-            assert!(
-                upgrade_history(&history_path, &thread_id, directory.path())
+            let files = UpgradeFiles {
+                move_owned_path: reject_report_move,
+                ..UpgradeFiles::DISK
+            };
+            let error =
+                upgrade_history_with_files(&history_path, &thread_id, directory.path(), files)
                     .await
-                    .is_err(),
-                "{report_state}: caller must observe the report publication failure"
+                    .expect_err("the final report cannot replace an occupied destination");
+            assert!(
+                matches!(error, HistoryError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists),
+                "{report_state}: {error:#}"
             );
             let current_bytes = std::fs::read(directory.path().join("current.json"))?;
             let committed_events = event_count(&history_path).await?;
@@ -6268,14 +6305,19 @@ mod migration_tests {
         let history_path = directory.path().join("history.sqlite");
         let thread_id = "migration-rollback-retry";
         write_v24_fixture(&history_path, thread_id, true).await?;
-        *FAIL_NEXT_IMPORT_THREAD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+        let writer = schema::connect(&history_path, false, false).await?;
+        // The canonical originals are written before the importer validates cost rows.
+        writer
+            .execute_unprepared("UPDATE session_costs SET amount = -1")
+            .await?;
+        writer.close().await?;
 
+        let error = upgrade_history(&history_path, thread_id, directory.path())
+            .await
+            .expect_err("a negative legacy cost must abort the partially completed import");
         assert!(
-            upgrade_history(&history_path, thread_id, directory.path())
-                .await
-                .is_err()
+            format!("{error:#}").contains("invalid schema 24 cost"),
+            "{error:#}"
         );
         let source = schema::connect(&history_path, true, false).await?;
         let version = source
@@ -6299,9 +6341,23 @@ mod migration_tests {
         source.close().await?;
         assert!(directory.path().join("current.json").is_file());
 
+        let published = std::fs::read(directory.path().join("current.json"))?;
+        let writer = schema::connect(&history_path, false, false).await?;
+        writer
+            .execute_unprepared("UPDATE session_costs SET amount = 1.25")
+            .await?;
+        writer.close().await?;
         let retried = upgrade_history(&history_path, thread_id, directory.path()).await?;
         assert_eq!(retried.status, UpgradeStatus::Upgraded);
         assert_eq!(retried.imported_categories["canonical_originals"], 2);
+        assert_eq!(
+            std::fs::read(directory.path().join("current.json"))?,
+            published
+        );
+        assert_eq!(
+            std::fs::read(retried.current_original_backup.expect("preserved Current"))?,
+            published
+        );
         let target = schema::connect(&history_path, true, false).await?;
         let canonical = target
             .query_one_raw(statement(
@@ -6488,6 +6544,20 @@ mod migration_tests {
         let backup = report.backup.as_ref().expect("v25 backup path");
         assert!(backup.starts_with(directory.path().join(BACKUP_ROOT_V25_TO_V26)));
         assert!(backup.is_file());
+        assert_eq!(
+            backup.file_name().and_then(|name| name.to_str()),
+            Some("history.v25.sqlite")
+        );
+        let backup_db = schema::connect(backup, false, true).await?;
+        let backup_meta = backup_db
+            .query_one_raw(statement(
+                "SELECT schema_version FROM history_store_meta WHERE singleton = 1",
+                vec![],
+            ))
+            .await?
+            .expect("v25 backup meta row");
+        assert_eq!(backup_meta.try_get::<i64>("", "schema_version")?, 25);
+        backup_db.close().await?;
         assert!(!super::requires_history_upgrade(&history_path, thread_id).await?);
 
         // Second call returns AlreadyCurrent cleanly

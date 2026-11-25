@@ -1,5 +1,9 @@
 //! Physical workspace admission shares the canonical lease owner's one short mutex.
-use super::{LeaseOwnerState, WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseOwner};
+mod binding;
+mod retirement;
+use super::{
+    LeaseOwnerState, WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseOwner, lock_state,
+};
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -82,6 +86,21 @@ impl WorkspaceAdmission {
     pub(super) fn is_removing(&self, id: &str) -> bool {
         self.removals.values().any(|(owner, _)| owner == id)
     }
+    fn sealing_owners<'a>(
+        &'a self,
+        identity: &'a WorkspaceIdentity,
+    ) -> impl Iterator<Item = &'a str> {
+        self.seals
+            .iter()
+            .filter(|(_, seal)| identity.within(&seal.identity))
+            .map(|(owner, _)| owner.as_str())
+            .chain(
+                self.removals
+                    .values()
+                    .filter(|(_, target)| identity.within(target))
+                    .map(|(owner, _)| owner.as_str()),
+            )
+    }
     fn next(&mut self) -> Result<u64> {
         self.serial = self
             .serial
@@ -121,12 +140,7 @@ struct UsageToken {
 impl Drop for UsageToken {
     fn drop(&mut self) {
         if let Some(state) = self.state.upgrade() {
-            let removed = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .workspace
-                .active
-                .remove(&self.serial);
+            let removed = lock_state(&state).workspace.active.remove(&self.serial);
             drop(removed);
         }
     }
@@ -186,11 +200,7 @@ impl Drop for WorkspaceRemovalPermit {
     fn drop(&mut self) {
         let usage = self.usage.take();
         let removed = {
-            let mut state = self
-                .owner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = lock_state(&self.owner.state);
             let removed = state.workspace.removals.remove(&self.serial);
             if let Some(resources) = self.resources.take() {
                 state.workspace.resources.insert(self.id.clone(), resources);
@@ -213,11 +223,7 @@ impl Drop for WorkspaceRemovalPermit {
 }
 impl WorkspaceCloseSeal {
     pub(in crate::studio) fn durable(&self) -> Result<()> {
-        let mut state = self
-            .owner
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock_state(&self.owner.state);
         let seal = state
             .workspace
             .seals
@@ -233,142 +239,6 @@ impl WorkspaceCloseSeal {
 }
 
 impl WorktreeLeaseOwner {
-    /// Confirms exactly the binding physically verified by the factory, while its real
-    /// preparation use still protects it. Even an unchanged Active lease waits for its own ACK.
-    pub(in crate::studio) fn prepare_verified_binding(
-        &self,
-        expected: &super::WorktreeLease,
-        usage: &WorkspaceUsageLease,
-    ) -> Result<VerifiedBindingWrite> {
-        expected.validate_identity()?;
-        ensure!(
-            Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state)),
-            "workspace use belongs to another runtime owner"
-        );
-        let (confirmed, ticket, identity) = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let entry = state
-                .workspace
-                .active
-                .get(&usage.0.serial)
-                .context("workspace preparer is no longer registered")?;
-            ensure!(
-                entry.owner == expected.owner_thread_id && entry.purpose == UsagePurpose::Execution,
-                "verified worktree does not belong to this execution use"
-            );
-            let UsageTarget::Assigned(identity) = &entry.target else {
-                anyhow::bail!("verified worktree requires an assigned execution workspace");
-            };
-            ensure!(
-                identity.matches_root(&expected.path)
-                    && matches!(
-                        (&identity.endpoint, &expected.ssh_alias),
-                        (WorkspaceEndpoint::Local, None) | (WorkspaceEndpoint::Ssh { .. }, Some(_))
-                    ),
-                "verified worktree differs from the assigned workspace"
-            );
-            ensure!(
-                !state.workspace.is_retiring(&expected.owner_thread_id)
-                    && !state
-                        .workspace
-                        .seals
-                        .values()
-                        .any(|seal| identity.within(&seal.identity))
-                    && !state
-                        .workspace
-                        .removals
-                        .values()
-                        .any(|(_, target)| identity.within(target)),
-                "verified worktree is sealed for retirement or removal"
-            );
-            ensure!(
-                state
-                    .entries
-                    .get(&expected.owner_thread_id)
-                    .is_some_and(|entry| entry.lease == *expected),
-                "verified worktree binding or revision changed"
-            );
-            ensure!(
-                matches!(
-                    expected.state,
-                    super::WorktreeLeaseState::Prepared
-                        | super::WorktreeLeaseState::Preserved
-                        | super::WorktreeLeaseState::Active
-                ),
-                "cleaned or cleanup-requested worktree cannot be confirmed"
-            );
-            let mut confirmed = expected.clone();
-            if confirmed.state != super::WorktreeLeaseState::Active {
-                confirmed.revision = confirmed
-                    .revision
-                    .checked_add(1)
-                    .context("worktree lease revision exhausted")?;
-                confirmed.state = super::WorktreeLeaseState::Active;
-            }
-            let identity = identity.clone();
-            let ticket = self.record_ticket_locked(&mut state, confirmed.clone())?;
-            (confirmed, ticket, identity)
-        };
-        Ok(VerifiedBindingWrite {
-            confirmed,
-            ticket,
-            identity,
-        })
-    }
-
-    pub(in crate::studio) async fn confirm_prepared_binding(
-        &self,
-        write: VerifiedBindingWrite,
-    ) -> Result<super::WorktreeLease> {
-        let VerifiedBindingWrite {
-            confirmed,
-            ticket,
-            identity,
-        } = write;
-        self.writer.flush_through(ticket).await?;
-        // A real ACK cannot revoke retirement/removal or a newer binding admitted while
-        // this waiter yielded. Do not return a usable proof of that stale generation.
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure!(
-            state
-                .entries
-                .get(&confirmed.owner_thread_id)
-                .is_some_and(|entry| entry.lease == confirmed),
-            "verified worktree binding or revision changed while awaiting durability"
-        );
-        ensure!(
-            !state.workspace.is_retiring(&confirmed.owner_thread_id)
-                && !state
-                    .workspace
-                    .seals
-                    .values()
-                    .any(|seal| identity.within(&seal.identity))
-                && !state
-                    .workspace
-                    .removals
-                    .values()
-                    .any(|(_, target)| identity.within(target)),
-            "verified worktree was sealed for retirement or removal while awaiting durability"
-        );
-        Ok(confirmed)
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) async fn confirm_verified_binding(
-        &self,
-        expected: &super::WorktreeLease,
-        usage: &WorkspaceUsageLease,
-    ) -> Result<super::WorktreeLease> {
-        let write = self.prepare_verified_binding(expected, usage)?;
-        self.confirm_prepared_binding(write).await
-    }
-
     pub(in crate::studio) async fn reserve_project_workspace(
         &self,
         owner: &str,
@@ -393,10 +263,7 @@ impl WorktreeLeaseOwner {
         owner: &str,
         endpoint: WorkspaceEndpoint,
     ) -> Result<WorkspaceUsageLease> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock_state(&self.state);
         let deleting = state
             .workspace
             .removals
@@ -432,10 +299,7 @@ impl WorktreeLeaseOwner {
             Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state)),
             "workspace use belongs to another runtime owner"
         );
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock_state(&self.state);
         let entry = state
             .workspace
             .active
@@ -464,18 +328,7 @@ impl WorktreeLeaseOwner {
         }
         let blocked = state
             .workspace
-            .seals
-            .iter()
-            .filter(|(_, seal)| identity.within(&seal.identity))
-            .map(|(id, _)| id.clone())
-            .chain(
-                state
-                    .workspace
-                    .removals
-                    .values()
-                    .filter(|(_, target)| identity.within(target))
-                    .map(|(owner, _)| owner.clone()),
-            )
+            .sealing_owners(&identity)
             .collect::<Vec<_>>();
         ensure!(
             blocked.is_empty(),
@@ -495,10 +348,7 @@ impl WorktreeLeaseOwner {
         owner: &str,
         identity: WorkspaceIdentity,
     ) -> Result<WorkspaceUsageLease> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock_state(&self.state);
         let serial = state.workspace.next()?;
         state.workspace.active.insert(
             serial,
@@ -518,10 +368,7 @@ impl WorktreeLeaseOwner {
             Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state)),
             "workspace use belongs to another runtime owner"
         );
-        Ok(self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        Ok(lock_state(&self.state)
             .workspace
             .active
             .get(&usage.0.serial)
@@ -535,10 +382,7 @@ impl WorktreeLeaseOwner {
         identity: WorkspaceIdentity,
     ) {
         let old = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = lock_state(&self.state);
             state
                 .workspace
                 .resources
@@ -549,12 +393,7 @@ impl WorktreeLeaseOwner {
 
     /// The tool/process owner joined; Entry/preparer tokens still cover any remaining live work.
     pub(in crate::studio) fn release_stopped_runtime_resources(&self, owner: &str) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .workspace
-            .resources
-            .remove(owner);
+        lock_state(&self.state).workspace.resources.remove(owner);
     }
     /// Caller has joined the real runtime/failed-preparation owner; retained files are not a use.
     pub(in crate::studio) fn release_workspace_resources(
@@ -563,10 +402,7 @@ impl WorktreeLeaseOwner {
         identity: &WorkspaceIdentity,
     ) -> Result<()> {
         let removed = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = lock_state(&self.state);
             ensure!(
                 state.workspace.resources.get(owner).is_none_or(
                     |target| matches!(target, UsageTarget::Assigned(actual) if actual == identity)
@@ -576,242 +412,6 @@ impl WorktreeLeaseOwner {
             state.workspace.resources.remove(owner)
         };
         drop(removed);
-        Ok(())
-    }
-    pub(in crate::studio) fn try_seal_workspace(
-        &self,
-        owner: &str,
-        identity: WorkspaceIdentity,
-        closing: &BTreeSet<String>,
-    ) -> Result<WorkspaceCloseSeal> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let blockers = state.workspace.blockers(&identity, closing);
-        ensure!(
-            blockers.is_empty(),
-            "workspace is still used or resolving by agents: {}",
-            blockers.into_iter().collect::<Vec<_>>().join(", ")
-        );
-        if let Some(seal) = state.workspace.seals.get(owner) {
-            ensure!(
-                seal.identity == identity,
-                "retirement workspace identity changed"
-            );
-            return Ok(WorkspaceCloseSeal {
-                owner: self.clone(),
-                id: owner.into(),
-                serial: seal.serial,
-            });
-        }
-        let serial = state.workspace.next()?;
-        state.workspace.seals.insert(
-            owner.into(),
-            Seal {
-                identity,
-                serial,
-                durable: false,
-            },
-        );
-        Ok(WorkspaceCloseSeal {
-            owner: self.clone(),
-            id: owner.into(),
-            serial,
-        })
-    }
-    pub(in crate::studio) fn restore_workspace_seal(
-        &self,
-        owner: &str,
-        identity: WorkspaceIdentity,
-    ) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(seal) = state.workspace.seals.get_mut(owner) {
-            ensure!(
-                seal.identity == identity,
-                "durable workspace seal changed identity"
-            );
-            seal.durable = true;
-            return Ok(());
-        }
-        let serial = state.workspace.next()?;
-        state.workspace.seals.insert(
-            owner.into(),
-            Seal {
-                identity,
-                serial,
-                durable: true,
-            },
-        );
-        Ok(())
-    }
-
-    /// Physical deletion admission ends after its durable terminal result, not agent reopening.
-    pub(in crate::studio) fn release_workspace_seal(
-        &self,
-        owner: &str,
-        identity: &WorkspaceIdentity,
-    ) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure!(
-            !state.workspace.removals.values().any(|(id, _)| id == owner),
-            "workspace removal owner has not finished"
-        );
-        ensure!(
-            state
-                .workspace
-                .seals
-                .get(owner)
-                .is_none_or(|seal| seal.identity == *identity),
-            "completed workspace seal identity changed"
-        );
-        state.workspace.seals.remove(owner);
-        state.workspace.resources.remove(owner);
-        Ok(())
-    }
-    pub(in crate::studio) fn begin_workspace_removal(
-        &self,
-        owner: &str,
-        identity: &WorkspaceIdentity,
-    ) -> Result<WorkspaceRemovalPermit> {
-        self.begin_removal(owner, identity, None, true)
-    }
-
-    /// A reversible root archive, Recovery cleanup or failed creation does not permanently retire
-    /// the assigned path. Its exact preparer may transfer to cleanup, but no other live use may.
-    pub(in crate::studio) fn begin_workspace_cleanup(
-        &self,
-        owner: &str,
-        identity: &WorkspaceIdentity,
-        usage: Option<&WorkspaceUsageLease>,
-    ) -> Result<WorkspaceRemovalPermit> {
-        self.begin_removal(owner, identity, usage, false)
-    }
-
-    fn begin_removal(
-        &self,
-        owner: &str,
-        identity: &WorkspaceIdentity,
-        usage: Option<&WorkspaceUsageLease>,
-        permanent: bool,
-    ) -> Result<WorkspaceRemovalPermit> {
-        if let Some(usage) = usage {
-            ensure!(
-                Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state))
-                    && Arc::strong_count(&usage.0) == 1,
-                "workspace preparation still has another live owner: {owner}"
-            );
-        }
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if permanent {
-            let seal = state
-                .workspace
-                .seals
-                .get(owner)
-                .context("workspace removal has no retirement seal")?;
-            ensure!(
-                seal.durable && seal.identity == *identity,
-                "workspace removal seal identity or phase changed"
-            );
-        }
-        let serial = state.workspace.next()?;
-        ensure!(
-            state.workspace.resources.get(owner).is_none_or(
-                |target| matches!(target, UsageTarget::Assigned(actual) if actual == identity)
-            ),
-            "workspace removal resource identity changed"
-        );
-        // The caller has joined its actual runtime owners. Transfer only its remaining
-        // Git resource into this cleanup permit atomically; every actual use (including its own
-        // preparer/Entry) and every other pending cleanup owner still has to be absent.
-        if let Some(usage) = usage {
-            let entry = state
-                .workspace
-                .active
-                .get(&usage.0.serial)
-                .context("workspace preparer is no longer registered")?;
-            ensure!(
-                entry.owner == owner
-                    && matches!(&entry.target, UsageTarget::Assigned(actual) if actual == identity),
-                "cleanup preparer identity changed"
-            );
-        }
-        let resources = state.workspace.resources.remove(owner);
-        let transferred = usage.and_then(|usage| state.workspace.active.remove(&usage.0.serial));
-        let blockers = state.workspace.blockers(identity, &BTreeSet::new());
-        if !blockers.is_empty() {
-            if let Some(resources) = resources {
-                state.workspace.resources.insert(owner.into(), resources);
-            }
-            if let Some(entry) = transferred {
-                state
-                    .workspace
-                    .active
-                    .insert(usage.unwrap().0.serial, entry);
-            }
-            anyhow::bail!(
-                "workspace cleanup is blocked by agents: {}",
-                blockers.into_iter().collect::<Vec<_>>().join(", ")
-            );
-        }
-        state
-            .workspace
-            .removals
-            .insert(serial, (owner.into(), identity.clone()));
-        Ok(WorkspaceRemovalPermit {
-            owner: self.clone(),
-            id: owner.into(),
-            serial,
-            resources,
-            usage: transferred.map(|entry| (usage.unwrap().clone(), entry)),
-        })
-    }
-    pub(in crate::studio) fn ensure_thread_workspace_idle(&self, owner: &str) -> Result<()> {
-        self.ensure_thread_workspace_idle_except(owner, None)
-    }
-
-    pub(in crate::studio) fn ensure_thread_workspace_idle_except(
-        &self,
-        owner: &str,
-        usage: Option<&WorkspaceUsageLease>,
-    ) -> Result<()> {
-        if let Some(usage) = usage {
-            ensure!(
-                Weak::ptr_eq(&usage.0.state, &Arc::downgrade(&self.state))
-                    && Arc::strong_count(&usage.0) == 1,
-                "workspace preparation still has another live owner: {owner}"
-            );
-            ensure!(
-                self.usage_owner(usage)? == owner,
-                "workspace cleanup owner changed"
-            );
-        }
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure!(
-            !state
-                .workspace
-                .active
-                .values()
-                .any(|entry| entry.owner == owner
-                    && !usage.is_some_and(|usage| state
-                        .workspace
-                        .active
-                        .get(&usage.0.serial)
-                        .is_some_and(|allowed| std::ptr::eq(allowed, entry)))),
-            "workspace preparation or execution is still owned by {owner}"
-        );
         Ok(())
     }
 }

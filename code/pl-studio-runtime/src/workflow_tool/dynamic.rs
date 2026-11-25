@@ -1,8 +1,10 @@
 //! Dynamic workflow tools own decoding and rendering; core sees only versioned extension mutations.
+use super::WorkflowBinding;
 use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
-use crate::thread_assembler::ThreadAssemblyError;
+use super::state::validate_session_state_size;
+use crate::thread_mode_id::MODE_EXTENSION;
 use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::workflow_tool::WorkflowSessionState;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
@@ -15,7 +17,7 @@ use pl_core::{
     },
 };
 use pl_model::completion::ToolCallPolicy;
-use pl_tool::binding::prepare_registration;
+use pl_tool::binding::{BindingError, prepare_registration};
 
 /// Product-owned extension namespace; it is not a core schema or a database table.
 pub const WORKFLOW_EXTENSION: &str = "studio.workflow";
@@ -36,7 +38,7 @@ enum WorkflowPayloadError {
 /// # Errors
 /// Returns invalid state size or encoding errors.
 pub fn encode_workflow_state(state: &WorkflowSessionState) -> Result<OpaquePayload, ToolError> {
-    crate::mode::state::validate_session_state_size(state).map_err(ToolError::new)?;
+    validate_session_state_size(state).map_err(ToolError::new)?;
     OpaquePayload::new(
         FORMAT,
         1,
@@ -57,7 +59,7 @@ pub fn decode_workflow_state(payload: &OpaquePayload) -> Result<WorkflowSessionS
         }));
     }
     let state = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
-    crate::mode::state::validate_session_state_size(&state).map_err(ToolError::new)?;
+    validate_session_state_size(&state).map_err(ToolError::new)?;
     Ok(state)
 }
 
@@ -122,7 +124,10 @@ impl WorkflowOperationKind {
 struct ThreadWorkflowTool {
     definition: ToolDefinition,
     kind: WorkflowOperationKind,
+    resolve_workflow: ResolveWorkflow,
 }
+
+type ResolveWorkflow = fn(&OpaquePayload) -> Result<Option<WorkflowBinding>, crate::PureError>;
 impl Tool for ThreadWorkflowTool {
     type Input = OpaquePayload;
     type Context = CallContext;
@@ -149,21 +154,17 @@ impl Tool for ThreadWorkflowTool {
         let previous = decode_workflow_state(&saved.payload)?;
         let mode_record = context
             .extensions
-            .get("studio.mode")
+            .get(MODE_EXTENSION)
             .ok_or_else(|| ToolError::new(WorkflowPayloadError::Missing))?;
-        let mode = crate::mode::decode_mode_snapshot(&mode_record.payload)
-            .and_then(|snapshot| snapshot.registered())
-            .map_err(ToolError::new)?;
-        if mode.workflow().is_none() {
-            return Err(ToolError::new(WorkflowPayloadError::Missing));
-        }
-        let mut machine = WorkflowMachine::new(mode.clone(), previous.clone());
+        let binding = (self.resolve_workflow)(&mode_record.payload)
+            .map_err(ToolError::new)?
+            .ok_or_else(|| ToolError::new(WorkflowPayloadError::Missing))?;
         if let Some(run) = &previous.current_run
-            && (run.mode_id != mode.descriptor().id
-                || run.graph_hash != machine.graph().graph_hash())
+            && (run.mode_id != binding.mode_id || run.graph_hash != binding.graph.graph_hash())
         {
             return Err(ToolError::new(WorkflowPayloadError::GraphMismatch));
         }
+        let mut machine = WorkflowMachine::new(binding, previous.clone());
         let identity = WorkflowOperation {
             turn_id: context.turn_id,
             call_id: context.call_id,
@@ -176,10 +177,10 @@ impl Tool for ThreadWorkflowTool {
             | WorkflowOperationKind::History => {
                 let _: EmptyInput = input.decode()?;
                 match self.kind {
-                    WorkflowOperationKind::Current => machine.current_snapshot(&previous),
-                    WorkflowOperationKind::Next => machine.next_snapshot(&previous),
-                    WorkflowOperationKind::Graph => machine.graph_snapshot(&previous),
-                    WorkflowOperationKind::History => machine.history_snapshot(&previous),
+                    WorkflowOperationKind::Current => machine.current_snapshot(),
+                    WorkflowOperationKind::Next => machine.next_snapshot(),
+                    WorkflowOperationKind::Graph => machine.graph_snapshot(),
+                    WorkflowOperationKind::History => machine.history_snapshot(),
                     WorkflowOperationKind::Transition | WorkflowOperationKind::Restart => {
                         return Err(ToolError::new(WorkflowPayloadError::GraphMismatch));
                     }
@@ -187,25 +188,35 @@ impl Tool for ThreadWorkflowTool {
             }
             WorkflowOperationKind::Transition => serde_json::to_value(
                 machine
-                    .apply_transition(input.decode()?, &identity, hash)
+                    .apply_transition(
+                        input.decode()?,
+                        &identity,
+                        hash,
+                        crate::studio::unix_seconds(),
+                    )
                     .map_err(ToolError::new)?,
             )
             .map_err(ToolError::new)?,
             WorkflowOperationKind::Restart => serde_json::to_value(
                 machine
-                    .apply_restart(input.decode()?, &identity, hash)
+                    .apply_restart(
+                        input.decode()?,
+                        &identity,
+                        hash,
+                        crate::studio::unix_seconds(),
+                    )
                     .map_err(ToolError::new)?,
             )
             .map_err(ToolError::new)?,
         };
         let mut output = json_output("pl.studio.workflow-result", &response)?;
         let next = machine.state();
-        if next != previous {
+        if next != &previous {
             output = put_extension(
                 output,
                 WORKFLOW_EXTENSION,
                 Some(saved.revision),
-                encode_workflow_state(&next)?,
+                encode_workflow_state(next)?,
             );
         }
         Ok(output)
@@ -232,7 +243,9 @@ pub(crate) fn workflow_tool_definitions()
 ///
 /// # Errors
 /// Returns model declaration or registration failures.
-pub fn workflow_registrations() -> Result<Vec<Registration>, ThreadAssemblyError> {
+pub(crate) fn workflow_registrations(
+    resolve_workflow: ResolveWorkflow,
+) -> Result<Vec<Registration>, BindingError> {
     [
         WorkflowOperationKind::Current,
         WorkflowOperationKind::Next,
@@ -254,7 +267,11 @@ pub fn workflow_registrations() -> Result<Vec<Registration>, ThreadAssemblyError
             WorkflowOperationKind::Restart => "builtin.workflow_restart@1",
         };
         let registration = prepared
-            .attach(ToolHandle::new(ThreadWorkflowTool { definition, kind }))
+            .attach(ToolHandle::new(ThreadWorkflowTool {
+                definition,
+                kind,
+                resolve_workflow,
+            }))
             .with_presentation_contract(ToolPresentationContract::new(contract));
         Ok(match kind {
             WorkflowOperationKind::Transition | WorkflowOperationKind::Restart => {

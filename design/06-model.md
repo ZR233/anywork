@@ -30,9 +30,14 @@
 完成模块内部的流状态机负责生成稳定的工具调用身份。工具调用一经解码即具备必填的双重标识（条目标识 `item_id` 与调用标识 `call_id`）：
 - **Responses 协议**：直接使用事件携带的 `item_id` 与 `call_id`，两者同时缺失视为协议错误。由于 Responses 可能先下发仅含上游 `item_id` 的 `output_item.added` 事件，在后续增量或完成事件中才补齐独立的 `call_id`，因此同一工具调用一旦通过任一非空标识进入累积器，后续迟到的元数据必须原地升级该累积器并归并至同一未闭合的工具调用中，严禁拆分为第二个工具调用或第二个模型成员。
 - **Chat Completions 协议**：按分块索引（chunk index）确定性构造流内标识与 `item_id`，并令 `call_id = item_id`。系统不存在可选的 `call_id` 或将两个标识互作回退的归一化路径。
+- **Gemini GenerateContent 协议**：完整 `functionCall` 按原始 `parts` 的出现顺序归一化为参数完成与调用就绪事实，不能等响应结束后从无序集合恢复调用顺序。上游 `functionCall.id` 可选；缺省或空串不构成可用的上游身份，内部仍须有稳定的调用标识。解码、回放校验和工具结果投影使用相同的身份规则；出站 `functionResponse.id` 由对应原始调用决定，不通过内部标识的字符串前缀推断。
 - **观察锚点**：模型成员与 Current 中的工具输入保留最早稳定的上游条目标识及实际接纳的身份升级；原始 `item_id` 与 `call_id` 继续进入回执，用于协议回放和工具结果匹配。
 
 上述是 provider 或单次流内部的身份规则；传给 Core 的调用身份还必须限定在其 attempt 内。模型层保存内部身份与原始 `item_id`、`call_id` 的映射，以内部身份关联 Current 上下文和工具结果，出站 Responses、Chat 等协议仍使用各自要求的原始身份。不同 attempt 的同名 provider 调用不能冲突，也不得改写原生 replay、签名或未知字段。完整 Current、effect original cut 与 schema 25 History 的边界见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。
+
+Gemini 的一个模型响应构成一个工具调用批次。工具可并行执行、逆序完成，但提交给模型时，全部结果须按原调用顺序放入紧随其后的一个 `user` Content，并保持名称及可用上游 ID 对应；同名、无 ID 调用仍按原位置配对。下一步依赖工具结果的调用由下一次模型生成决定，各步的原始模型 Parts 分别完整回放，包括首调用签名、空文本尾部签名及未知字段，不能从显示文本重建或合并带签名的 Part。调用就绪不替代整次生成成功，失败、取消或缺失成功终态的响应不进入成功工具派发路径。
+
+当前 Gemini 适配仅接收完整工具参数。普通 SSE 分块与 Vertex 可选的 `streamFunctionCallArguments` 是不同能力；未实现参数增量组装时，开启该模式的请求及带实际 `partialArgs`／参数续片控制的响应必须明确拒绝，不得将缺少完整参数的首片解释为可执行的空参数调用。完整 `args` 对象可携带空 `partialArgs` 或 `willContinue: false` 这些中性值；缺少完整对象时不能以中性控制值冒充完整调用。公开请求构造与历史回放同样遵循调用批次、身份唯一性和完整参数约束。规则依据对应 API 的 [GenerateContent 函数调用](https://aistudio.google.com/docs/function-calling.md?generate-content=true)、[thought signatures](https://aistudio.google.com/docs/thought-signatures.md?generate-content=true) 与 [Vertex 函数调用](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/tools/function-calling)；Interactions API 的结果映射和 SDK 的自动执行策略不改变本契约。
 
 模型生产者拥有完整流合并事实和不透明保存格式：保留已接受的正文、推理、成员关系和阶段、部分工具输入原文、完整调用、原生 replay、已观察用量和来源。部分参数是不可执行的字符串，不解析补全为工具调用。捕获与生产者退出交接遵循 [15](./15-session-storage.md#捕获保存与关闭)；它们不提供跨进程续接，旧流只供暂停展示，新请求使用新的物理会话和累积器。用户继续后采用当前确认的模型和工具配置，通过普通准备流程检查原生上下文的来源隔离及兼容族；必要原生材料不兼容时保留原件并在发送前报错，普通请求也遵循相同规则。
 

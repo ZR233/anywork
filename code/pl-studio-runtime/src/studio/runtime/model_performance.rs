@@ -14,8 +14,11 @@
 //! 查询（snapshot/session_costs_snapshot/published_session_costs）只读已发布值：不写库、
 //! 不推进 revision、不扫描补建作用域、不发事件。
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+mod cache;
+mod recent;
+
+use cache::PerformanceCache;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::{InferenceBillingRecord, InferenceModelObservation, ModelMatchState};
@@ -23,41 +26,26 @@ use pl_studio_statistics::{
     StatisticsFeed, StatisticsPublisher, StudioModelPerformanceEffortSummary,
     StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
 };
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::studio::storage::calls::{
     CallRetention, CallStatus, CallsMaterialVersions, PerformanceSampleRow, PerformanceSummaryRow,
     PurposeCostRollup, SessionCostRollup, StatisticsReadRequest,
 };
-use crate::studio::store::object::{PersistedStudioObject, load_object, put_object};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
 use crate::{PureError, StudioSessionCostSnapshot, StudioSessionCostsState};
 
-pub(in crate::studio) const MODEL_PERFORMANCE_OWNER_ID: &str = "global";
-const CACHE_VERSION: u32 = 4;
-const LEGACY_CACHE_VERSION: u32 = 2;
-/// 产品快照返回的性能历史窗口上限；历史事实源是调用库。
-/// 内存中保留的最近 inference 身份窗口上限。
-///
-/// 持久 idempotency 已由 `calls.sqlite` 的调用身份唯一约束承担；这里只用于抑制同一
-/// 进程内重复投递，因此必须有界，且不参与持久化。
-const RECENT_IDENTITY_LIMIT: usize = 256;
 /// 作用域费用缓存的条目上限；超限时优先淘汰已清除（`cost == None`）的最旧条目。
 const SCOPED_COST_LIMIT: usize = 256;
 
 #[derive(Clone)]
 pub(crate) struct ModelPerformanceOwner {
-    state: Arc<Mutex<ModelPerformanceState>>,
+    cache: Arc<PerformanceCache>,
     store: StudioStore,
     product_events: ProductEventBus,
     /// Only external owners retain this cancellation/join owner. The observer's working clone
     /// carries None, so it cannot keep its own lifetime guard alive.
     observer: Option<Arc<PerformanceObserver>>,
-    /// 已持久化的产品对象 revision，避免同一 revision 重复写盘。
-    persisted_revision: Arc<AtomicU64>,
-    /// 串行化产品对象写入，避免刷新任务与显式快照并发写同一 revision。
-    persist_lock: Arc<tokio::sync::Mutex<()>>,
     /// 串行化投影建立：调用库读取、提交与发布在同 owner 内按序完成。
     project_lock: Arc<tokio::sync::Mutex<()>>,
     /// 已发布的展示投影：全局性能与逐 root 费用同一次发布原子可见。
@@ -134,6 +122,14 @@ impl ScopedCostEntry {
             || self.cost.as_ref() != cost
     }
 
+    fn update(&mut self, revision: u64, pending: bool, gap: bool, read_failed: bool) {
+        self.revision = revision;
+        self.updated_at = unix_seconds();
+        self.statistics_pending = pending;
+        self.statistics_gap = gap;
+        self.read_failed = read_failed;
+    }
+
     fn state(&self, root_thread_id: &str) -> StudioSessionCostsState {
         StudioSessionCostsState {
             root_thread_id: root_thread_id.to_owned(),
@@ -147,108 +143,6 @@ impl ScopedCostEntry {
     }
 }
 
-/// 最近 inference 身份窗口（固定上限、不持久化）。
-///
-/// inference ID 只在执行它的 Thread 内唯一；根 Thread 只用于清理整棵会话树的缓存。
-#[derive(Debug, Clone, Default)]
-struct RecentIdentities {
-    entries: BTreeMap<(String, String), RecentInference>,
-    order: VecDeque<(String, String)>,
-}
-
-#[derive(Debug, Clone)]
-struct RecentInference {
-    root_thread_id: String,
-    fingerprint: String,
-}
-
-impl RecentIdentities {
-    fn get(&self, thread_id: &str, identity: &str) -> Option<&String> {
-        self.entries
-            .get(&(thread_id.to_owned(), identity.to_owned()))
-            .map(|entry| &entry.fingerprint)
-    }
-
-    fn insert(
-        &mut self,
-        root_thread_id: &str,
-        thread_id: &str,
-        identity: &str,
-        fingerprint: String,
-    ) {
-        let key = (thread_id.to_owned(), identity.to_owned());
-        let entry = RecentInference {
-            root_thread_id: root_thread_id.to_owned(),
-            fingerprint,
-        };
-        if self.entries.insert(key.clone(), entry).is_none() {
-            self.order.push_back(key);
-        }
-        while self.order.len() > RECENT_IDENTITY_LIMIT {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            }
-        }
-    }
-
-    fn remove_root(&mut self, root_thread_id: &str) {
-        self.entries
-            .retain(|_, entry| entry.root_thread_id != root_thread_id);
-        self.order.retain(|key| self.entries.contains_key(key));
-    }
-}
-
-/// 模型性能领域的固定上限缓存。
-///
-/// 只保留版本、单调 revision、更新时间与最近身份窗口：历史、汇总、fingerprint 集合与内部
-/// 回执都不在这里持久化，也不从这里恢复（历史/汇总从 `calls.sqlite` 读取，持久幂等由调用身份
-/// 唯一约束承担）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::studio) struct ModelPerformanceState {
-    version: u32,
-    revision: u64,
-    updated_at: i64,
-    #[serde(skip)]
-    recent: RecentIdentities,
-}
-
-/// 仅在 persistence worker 内存在的 object 编码 DTO。
-#[derive(Serialize, Deserialize)]
-#[serde(transparent)]
-pub(in crate::studio) struct ModelPerformanceDto(ModelPerformanceState);
-
-impl Default for ModelPerformanceState {
-    fn default() -> Self {
-        Self {
-            version: CACHE_VERSION,
-            revision: 0,
-            updated_at: 0,
-            recent: RecentIdentities::default(),
-        }
-    }
-}
-
-impl PersistedStudioObject for ModelPerformanceState {
-    type PersistenceDto = ModelPerformanceDto;
-
-    const OWNER_KIND: &'static str = "studio";
-    const OBJECT_KIND: &'static str = "modelPerformance";
-    const SCHEMA_VERSION: i64 = 1;
-
-    fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    fn to_persistence_dto(&self) -> Self::PersistenceDto {
-        ModelPerformanceDto(self.clone())
-    }
-
-    fn from_persistence_dto(dto: Self::PersistenceDto) -> anyhow::Result<Self> {
-        Ok(dto.0)
-    }
-}
-
 impl ModelPerformanceOwner {
     pub(in crate::studio) fn new(
         store: StudioStore,
@@ -258,7 +152,7 @@ impl ModelPerformanceOwner {
         let global = StudioModelPerformanceSnapshot::default();
         let statistics = StatisticsPublisher::new(owner_epoch, &global);
         Self {
-            state: Arc::new(Mutex::new(ModelPerformanceState::default())),
+            cache: Arc::new(PerformanceCache::default()),
             store,
             product_events,
             observer: Some(Arc::new(PerformanceObserver {
@@ -266,8 +160,6 @@ impl ModelPerformanceOwner {
                 changed: Arc::new(tokio::sync::Notify::new()),
                 task: Mutex::new(None),
             })),
-            persisted_revision: Arc::new(AtomicU64::new(0)),
-            persist_lock: Arc::new(tokio::sync::Mutex::new(())),
             project_lock: Arc::new(tokio::sync::Mutex::new(())),
             published: Arc::new(tokio::sync::Mutex::new(PublishedProjection {
                 material_versions: None,
@@ -290,30 +182,9 @@ impl ModelPerformanceOwner {
 
     /// 恢复固定上限缓存；不读取调用库，执行恢复不依赖 calls。
     pub(crate) async fn load_cache(&self) -> anyhow::Result<()> {
-        let Some(restored) =
-            load_object::<ModelPerformanceState>(self.store.database(), MODEL_PERFORMANCE_OWNER_ID)
-                .await?
-        else {
-            return Ok(());
-        };
-        if restored.version < LEGACY_CACHE_VERSION || restored.version > CACHE_VERSION {
-            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
-                "unsupported model performance cache version {}",
-                restored.version
-            )));
+        if let Some(revision) = self.cache.load(&self.store).await? {
+            self.published.lock().await.global.revision = revision;
         }
-        {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            *state = ModelPerformanceState {
-                version: CACHE_VERSION,
-                revision: restored.revision,
-                updated_at: restored.updated_at,
-                recent: RecentIdentities::default(),
-            };
-        }
-        self.persisted_revision
-            .store(restored.revision, Ordering::Release);
-        self.published.lock().await.global.revision = restored.revision;
         Ok(())
     }
 
@@ -441,11 +312,7 @@ impl ModelPerformanceOwner {
                             cost: None,
                         });
                 if entry.differs(flags.0, flags.1, read_failed, Some(&cost)) {
-                    entry.revision = scoped_revision;
-                    entry.updated_at = unix_seconds();
-                    entry.statistics_pending = flags.0;
-                    entry.statistics_gap = flags.1;
-                    entry.read_failed = read_failed;
+                    entry.update(scoped_revision, flags.0, flags.1, read_failed);
                     entry.cost = Some(cost);
                     events.push(entry.state(&root));
                 }
@@ -453,11 +320,7 @@ impl ModelPerformanceOwner {
             for (root, entry) in &mut published.scoped {
                 if !seen.contains(root) && entry.differs(flags.0, flags.1, read_failed, None) {
                     entry.cost = None;
-                    entry.revision = scoped_revision;
-                    entry.updated_at = unix_seconds();
-                    entry.statistics_pending = flags.0;
-                    entry.statistics_gap = flags.1;
-                    entry.read_failed = read_failed;
+                    entry.update(scoped_revision, flags.0, flags.1, read_failed);
                     events.push(entry.state(root));
                 }
             }
@@ -465,11 +328,7 @@ impl ModelPerformanceOwner {
         } else if flags_changed {
             for (root, entry) in &mut published.scoped {
                 if entry.differs(flags.0, flags.1, read_failed, entry.cost.as_ref()) {
-                    entry.revision = scoped_revision;
-                    entry.updated_at = unix_seconds();
-                    entry.statistics_pending = flags.0;
-                    entry.statistics_gap = flags.1;
-                    entry.read_failed = read_failed;
+                    entry.update(scoped_revision, flags.0, flags.1, read_failed);
                     events.push(entry.state(root));
                 }
             }
@@ -518,11 +377,7 @@ impl ModelPerformanceOwner {
             published.global.read_failed = true;
             for (root, entry) in published.scoped.iter_mut() {
                 if entry.differs(pending, gap, true, entry.cost.as_ref()) {
-                    entry.revision = scoped_revision;
-                    entry.updated_at = unix_seconds();
-                    entry.statistics_pending = pending;
-                    entry.statistics_gap = gap;
-                    entry.read_failed = true;
+                    entry.update(scoped_revision, pending, gap, true);
                     events.push(entry.state(root));
                 }
             }
@@ -591,23 +446,22 @@ impl ModelPerformanceOwner {
         }
         let fingerprint =
             billing_fingerprint(root_thread_id, thread_id, billing, status, retention)?;
-        let conflict = {
-            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            match state.recent.get(thread_id, &billing.inference_id) {
-                Some(existing) if existing == &fingerprint => return Ok(()),
-                Some(_) => true,
-                None => false,
+        match self
+            .cache
+            .fingerprint_matches(thread_id, &billing.inference_id, &fingerprint)
+        {
+            Some(true) => return Ok(()),
+            None => {}
+            Some(false) => {
+                // 同一推理身份携带不同内容，是调用方重复投递被拒，而不是已受理事实的持久化失败：
+                // 这次请求从未进入调用库队列，所以只明确拒绝本次请求，绝不把它升级为写者终态。
+                // 终端 `Blocked` 只留给调用库真实不可恢复的持久化冲突，避免一次应用级拒绝让整个
+                // Studio 的写者健康永久失效。已受理事实与写者健康都不因这次拒绝改变。
+                return Err(PureError::MemoryError(format!(
+                    "Thread {thread_id} inference {} conflicts with the model performance owner",
+                    billing.inference_id
+                )));
             }
-        };
-        if conflict {
-            // 同一推理身份携带不同内容，是调用方重复投递被拒，而不是已受理事实的持久化失败：
-            // 这次请求从未进入调用库队列，所以只明确拒绝本次请求，绝不把它升级为写者终态。
-            // 终端 `Blocked` 只留给调用库真实不可恢复的持久化冲突，避免一次应用级拒绝让整个
-            // Studio 的写者健康永久失效。已受理事实与写者健康都不因这次拒绝改变。
-            return Err(PureError::MemoryError(format!(
-                "Thread {thread_id} inference {} conflicts with the model performance owner",
-                billing.inference_id
-            )));
         }
         // 调用库是唯一 writer：计费观察同步受理进调用库有界队列，durability 由这里固定的
         // ticket 在刷新快照 / Thread 关闭 / Studio shutdown 时等待，绝不在受理时提前确认。
@@ -626,47 +480,39 @@ impl ModelPerformanceOwner {
                 error
             })
             .ok();
-        {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            if ticket.is_some() {
-                state.recent.insert(
-                    root_thread_id,
-                    thread_id,
-                    &billing.inference_id,
-                    fingerprint,
-                );
-            }
-            state.revision = state.revision.saturating_add(1);
-            state.updated_at = unix_seconds();
-        }
+        self.cache.record(ticket.map(|_| {
+            (
+                root_thread_id,
+                thread_id,
+                billing.inference_id.as_str(),
+                fingerprint,
+            )
+        }));
         self.emit_snapshot_after_flush();
         Ok(())
     }
 
     /// 归档/删除会话后丢弃该 root 的进程内身份窗口并发布一次领域更新。
     pub(crate) async fn remove_session(&self, root_thread_id: &str) -> Result<(), PureError> {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.recent.remove_root(root_thread_id);
-            state.revision = state.revision.saturating_add(1);
-            state.updated_at = unix_seconds();
-        }
-        // 归档/删除的可见性由调用库 + 目录过滤保证；缓存写盘失败不回滚归档动作。
-        if let Err(error) = self.persist_state().await {
-            tracing::warn!(error = %error, "model performance cache persist failed");
-        }
-        self.emit_snapshot_after_flush();
-        Ok(())
+        self.settle_session_removal(root_thread_id, false).await
     }
 
     pub(crate) async fn delete_session(&self, root_thread_id: &str) -> Result<(), PureError> {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.recent.remove_root(root_thread_id);
-            state.revision = state.revision.saturating_add(1);
-            state.updated_at = unix_seconds();
+        self.settle_session_removal(root_thread_id, true).await
+    }
+
+    async fn settle_session_removal(
+        &self,
+        root_thread_id: &str,
+        require_persistence: bool,
+    ) -> Result<(), PureError> {
+        self.cache.remove(root_thread_id);
+        if let Err(error) = self.cache.persist(&self.store).await {
+            if require_persistence {
+                return Err(error);
+            }
+            tracing::warn!(error = %error, "model performance cache persist failed");
         }
-        self.persist_state().await?;
         self.emit_snapshot_after_flush();
         Ok(())
     }
@@ -729,28 +575,6 @@ impl ModelPerformanceOwner {
             session_costs,
             versions,
         })
-    }
-
-    /// 把进程内有界缓存（revision/更新时间）前移写盘；同 revision 幂等，旧 revision 不回写。
-    async fn persist_state(&self) -> Result<(), PureError> {
-        let _guard = self.persist_lock.lock().await;
-        let (revision, updated_at, snapshot) = {
-            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            (state.revision, state.updated_at, state.clone())
-        };
-        if revision == 0 || revision <= self.persisted_revision.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        put_object(
-            self.store.database(),
-            MODEL_PERFORMANCE_OWNER_ID,
-            &snapshot,
-            updated_at,
-        )
-        .await
-        .map_err(|error| PureError::MemoryError(error.to_string()))?;
-        self.persisted_revision.store(revision, Ordering::Release);
-        Ok(())
     }
 
     /// Start one lifetime-bound material observer. It remains subscribed after a Billing settles,
@@ -849,31 +673,23 @@ impl ModelPerformanceOwner {
     ///
     /// 全局与作用域在同一次锁内采用；锁内不 send/await，发布事实全部在锁外发出。
     async fn publish_locked_projection(&self, force_costs: bool, force_performance: bool) {
-        match self.read_projection(force_costs, force_performance).await {
-            Ok(projection) => {
-                let flags = self.statistics_flags();
-                let (global, scoped_events) = self.commit_projection(projection, flags).await;
-                if let Some(global) = global {
-                    let _ = self.product_events.emit_model_performance_state(global);
-                }
-                for state in scoped_events {
-                    self.product_events.emit_session_costs(state);
-                }
-            }
+        let projection = self.read_projection(force_costs, force_performance).await;
+        let flags = self.statistics_flags();
+        let (global, scoped_events) = match projection {
+            Ok(projection) => self.commit_projection(projection, flags).await,
             Err(ProjectionReadFailure { error, request }) => {
                 tracing::warn!(error = %error, "model performance projection read failed");
-                let (pending, gap) = self.statistics_flags();
-                let (global, scoped_events) = self.commit_read_failure(pending, gap, request).await;
-                if let Some(global) = global {
-                    let _ = self.product_events.emit_model_performance_state(global);
-                }
-                for state in scoped_events {
-                    self.product_events.emit_session_costs(state);
-                }
+                self.commit_read_failure(flags.0, flags.1, request).await
             }
+        };
+        if let Some(global) = global {
+            let _ = self.product_events.emit_model_performance_state(global);
+        }
+        for state in scoped_events {
+            self.product_events.emit_session_costs(state);
         }
         // 有界产品对象（revision/更新时间）只在投影前进点写盘；查询不写盘。
-        if let Err(error) = self.persist_state().await {
+        if let Err(error) = self.cache.persist(&self.store).await {
             tracing::warn!(error = %error, "model performance cache persist failed");
         }
     }

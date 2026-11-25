@@ -735,7 +735,9 @@ fn digest(content: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::credential::{CredentialStore, MemoryCredentialStore};
+    use crate::config::credential::{
+        BotProtectedCredentialStore, CredentialStore, MemoryCredentialStore,
+    };
 
     const LEGACY_CONFIG: &str = r#"
 schema_version = 22
@@ -1348,6 +1350,9 @@ effort = "high"
                 }
             }
         }
+    }
+
+    impl BotProtectedCredentialStore for FaultyStore {
         fn read_bot_system(
             &self,
             bot_id: &str,

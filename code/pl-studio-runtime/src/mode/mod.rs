@@ -1,22 +1,18 @@
-//! Thread 归属的 Mode 注册、状态图编译、Turn 快照与工作流工具。
+//! Thread 工作模式注册、编辑与持久化快照。
 
-mod compiler;
-mod context;
 mod editor;
 mod manager;
 mod registration;
-mod runtime;
-pub mod state;
+mod snapshot;
 mod types;
 
-pub use compiler::{
-    CompiledWorkflowDefinition, MAX_WORKFLOW_DEFINITION_BYTES, MAX_WORKFLOW_STATES,
-    MAX_WORKFLOW_TRANSITIONS, WorkflowCompilerError, WorkflowValidationIssue,
-    compile_workflow_definition,
-};
-pub use context::workflow_model_context_section;
+pub(crate) use crate::thread_mode_id::MODE_EXTENSION;
+pub use crate::thread_mode_id::ThreadModeId;
+pub use crate::workflow_tool::WorkflowPreviewSnapshot;
 pub(crate) use editor::MAX_MODE_DOCUMENT_BYTES;
-pub use editor::{mode_document_schema, validate_mode_document, validate_mode_json};
+pub use editor::{
+    mode_document_schema, preview_workflow, validate_mode_document, validate_mode_json,
+};
 pub use manager::{
     RegisteredThreadMode, ThreadModeManager, ThreadModeManagerError, ThreadModeRegistrySnapshot,
     ThreadModeSource, ThreadModeSourceId, ThreadModeSourceKind,
@@ -25,18 +21,14 @@ pub use registration::{
     StaticThreadModeRegistration, StaticWorkflowDefinition, StaticWorkflowState,
     StaticWorkflowTransition,
 };
-pub use runtime::{new_run, reconcile_workflow_for_turn};
 pub use types::*;
 
-/// 工作流上下文段的稳定标识符。
-pub const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";
-
-mod snapshot;
 pub(crate) use snapshot::{
     SavedThreadMode, decode_mode_snapshot, decode_saved_mode, encode_mode_snapshot,
     migrate_mode_snapshot, presentation_mode, saved_registered_mode,
+    workflow_binding_from_snapshot,
 };
-mod preview;
+#[cfg(test)]
+mod authoring_tests;
 #[cfg(test)]
 mod saved_snapshot_tests;
-pub use preview::preview_workflow;

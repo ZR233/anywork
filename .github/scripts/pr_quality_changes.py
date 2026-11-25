@@ -378,6 +378,7 @@ def _finish(
         ("flutter_checks", "flutter-checks"),
         ("gui_generated", "gui-generated"),
         ("linux_inputs", "linux-inputs"),
+        ("remote_helpers", "remote-helpers"),
         ("linux_desktop", "linux-desktop"),
         ("linux_native", "linux-native"),
         ("pages_preview", "pages-preview"),

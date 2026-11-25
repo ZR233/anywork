@@ -7,6 +7,8 @@
 
 pub(crate) mod addons;
 pub(crate) mod cardkit;
+mod classify;
+pub(in crate::bots) mod download;
 pub(crate) mod endpoint;
 pub(crate) mod error;
 pub(crate) mod files;

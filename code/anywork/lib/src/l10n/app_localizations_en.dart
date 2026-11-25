@@ -8332,16 +8332,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get acpCopyMessage => 'Copy message';
 
   @override
-  String get acpJumpToPendingPermission =>
-      'Jump to latest · Permission requested';
-
-  @override
-  String get acpJumpToRunning => 'Jump to latest · Running';
-
-  @override
-  String get acpJumpToNewOutput => 'Jump to latest · New output';
-
-  @override
   String get acpPlanCompletedHeadline => 'Execution plan completed';
 
   @override

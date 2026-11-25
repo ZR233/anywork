@@ -14,63 +14,39 @@ use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
 use super::ProductEventBus;
 
+// Equivalent typed event adapters share expansion; domain deduplication stays at its owner.
+macro_rules! snapshot_emitters {
+    ($( $(#[$meta:meta])* $name:ident($value:ident: $ty:ty) => $kind:expr; )*) => {
+        impl ProductEventBus {
+            $($(#[$meta])* pub fn $name(&self, $value: $ty) -> StudioProductEventEnvelope {
+                self.emit($kind)
+            })*
+        }
+    };
+}
+
+snapshot_emitters! {
+    /// 发布配置级 Agent Profiles 资源快照。
+    emit_agent_profiles_state(state: StudioAgentProfilesStateSnapshot) =>
+        StudioProductEventKind::AgentProfilesStateChanged(Box::new(state));
+    emit_lsp_state(state: StudioLspStateSnapshot) => StudioProductEventKind::LspStateChanged(state);
+    emit_mcp_catalog(snapshot: crate::McpCatalogSnapshot) => StudioProductEventKind::McpCatalogChanged(snapshot);
+    emit_model_catalog_state(state: StudioModelCatalogStateSnapshot) =>
+        StudioProductEventKind::ModelCatalogStateChanged(Box::new(state));
+    emit_model_performance_state(state: StudioModelPerformanceSnapshot) => StudioProductEventKind::ModelPerformanceStateChanged(state);
+    emit_recovery_state(state: crate::ObservedResource<Vec<crate::StudioRecoveryIssue>>) =>
+        StudioProductEventKind::RecoveryStateChanged(StudioRecoveryStateSnapshot { state });
+    /// 发布一个 root 会话的作用域费用事实；清除（`cost == None`）也是显式事件。
+    emit_session_costs(state: StudioSessionCostsState) => StudioProductEventKind::SessionCostsChanged(state);
+    emit_settings_config_state(state: StudioSettingsConfigStateSnapshot) =>
+        StudioProductEventKind::SettingsConfigStateChanged(Box::new(state));
+    emit_skills_state(state: SkillsStateSnapshot) => StudioProductEventKind::SkillsStateChanged(state.into());
+    emit_thread_lsp_state(state: crate::protocol::StudioThreadLspStateSnapshot) => StudioProductEventKind::ThreadLspStateChanged(state);
+    emit_thread_mcp_state(state: crate::ThreadMcpStateSnapshot) => StudioProductEventKind::ThreadMcpStateChanged(state);
+    emit_updater_state(state: StudioUpdateStateSnapshot) => StudioProductEventKind::UpdaterStateChanged(state);
+}
+
 impl ProductEventBus {
-    pub fn emit_settings_config_state(
-        &self,
-        state: StudioSettingsConfigStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::SettingsConfigStateChanged(
-            Box::new(state),
-        ))
-    }
-
-    pub fn emit_model_catalog_state(
-        &self,
-        state: StudioModelCatalogStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::ModelCatalogStateChanged(Box::new(
-            state,
-        )))
-    }
-
-    pub fn emit_recovery_state(
-        &self,
-        state: crate::ObservedResource<Vec<crate::StudioRecoveryIssue>>,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::RecoveryStateChanged(
-            StudioRecoveryStateSnapshot { state },
-        ))
-    }
-
-    pub fn emit_mcp_catalog(
-        &self,
-        snapshot: crate::McpCatalogSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::McpCatalogChanged(snapshot))
-    }
-
-    pub fn emit_thread_mcp_state(
-        &self,
-        state: crate::ThreadMcpStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::ThreadMcpStateChanged(state))
-    }
-
-    pub fn emit_thread_lsp_state(
-        &self,
-        state: crate::protocol::StudioThreadLspStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::ThreadLspStateChanged(state))
-    }
-
-    pub fn emit_lsp_state(&self, state: StudioLspStateSnapshot) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::LspStateChanged(state))
-    }
-
-    pub fn emit_skills_state(&self, state: SkillsStateSnapshot) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::SkillsStateChanged(state.into()))
-    }
-
     /// Mode catalog 只在真实注册/装载变化时发布；同一 revision 重复装载不产生事件。
     pub fn emit_thread_mode_catalog(
         &self,
@@ -87,39 +63,10 @@ impl ProductEventBus {
         Some(self.emit(StudioProductEventKind::ThreadModeCatalogChanged(state)))
     }
 
-    pub fn emit_model_performance_state(
-        &self,
-        state: StudioModelPerformanceSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::ModelPerformanceStateChanged(state))
-    }
-
-    /// 发布一个 root 会话的作用域费用事实；清除（`cost == None`）也是显式事件。
-    pub fn emit_session_costs(&self, state: StudioSessionCostsState) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::SessionCostsChanged(state))
-    }
-
-    /// 发布配置级 Agent Profiles 资源快照。
-    pub fn emit_agent_profiles_state(
-        &self,
-        state: StudioAgentProfilesStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::AgentProfilesStateChanged(Box::new(
-            state,
-        )))
-    }
-
-    pub fn emit_updater_state(
-        &self,
-        state: StudioUpdateStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::UpdaterStateChanged(state))
-    }
-
     pub fn persistence_state(&self) -> PersistenceStateSnapshot {
         self.persistence_snapshot
             .lock()
-            .expect("persistence snapshot lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -158,7 +105,7 @@ impl ProductEventBus {
     pub fn persistence_queue_state(&self) -> StudioPersistenceQueueStateSnapshot {
         self.persistence_queue
             .lock()
-            .expect("persistence queue lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot
             .clone()
     }
@@ -171,10 +118,14 @@ impl ProductEventBus {
         let coordinator = self.store.thread_persistence();
         coordinator.refresh_calls_metrics(self.store.calls());
         let queue = coordinator.queue_snapshot();
+        self.publish_persistence_queue(queue);
+    }
+
+    fn publish_persistence_queue(&self, queue: crate::PersistenceQueueSnapshot) {
         let mut current = self
             .persistence_queue
             .lock()
-            .expect("persistence queue lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if current.published.as_ref() == Some(&queue) {
             return;
         }
@@ -186,7 +137,6 @@ impl ProductEventBus {
             queue,
         };
         let snapshot = current.snapshot.clone();
-        drop(current);
         self.emit(StudioProductEventKind::PersistenceQueueStateChanged(
             snapshot,
         ));
@@ -231,13 +181,16 @@ impl ProductEventBus {
         let mut current = self
             .persistence_snapshot
             .lock()
-            .expect("persistence snapshot lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.state == current.state {
             return;
         }
         state.revision = current.revision.saturating_add(1);
         *current = state.clone();
-        drop(current);
         self.emit(StudioProductEventKind::PersistenceStateChanged(state));
     }
 }
+
+#[cfg(test)]
+#[path = "snapshots_tests.rs"]
+mod tests;

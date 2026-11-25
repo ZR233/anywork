@@ -63,12 +63,12 @@ pub struct StudioWorkspaceTools {
 /// Ready-to-transfer instances and their matching resource reader.
 #[derive(Debug)]
 pub struct StudioThreadTools {
-    pub(super) registrations: Vec<Registration>,
+    pub(crate) registrations: Vec<Registration>,
     pub(crate) command_processes: Option<StudioCommandProcesses>,
     pub(crate) approval_policies:
         std::collections::BTreeMap<String, pl_core::tool::execution_policy::ExecutionPolicyHandle>,
-    pub(super) store: FileResourceStore,
-    pub(super) capabilities: pl_tool::workspace::ToolCapabilityConfig,
+    pub(crate) store: FileResourceStore,
+    pub(crate) capabilities: pl_tool::workspace::ToolCapabilityConfig,
 }
 
 impl StudioThreadTools {

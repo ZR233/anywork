@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{ConfigRuntime, ConfigStore};
-use crate::studio::runtime_lock::{ResolvedRuntimeOptions, RuntimeLock, RuntimeLockOwner};
+use crate::studio::runtime_lock::{RuntimeLock, RuntimeLockOwner};
+use crate::studio::runtime_options::ResolvedRuntimeOptions;
 use crate::studio::startup::{StartupBackup, input_error};
 use crate::{StudioStartupError, StudioStartupErrorKind, StudioStartupStage, StudioStore};
 
@@ -394,7 +395,9 @@ impl StudioRuntime {
                     super::super::observation_lifecycle::ObservationStartError(error).into(),
                 )
             })?;
-        self.start_model_refresh().await;
+        self.start_model_refresh()
+            .await
+            .map_err(|error| observer_start_error("start_model_refresh", error))?;
         self.start_model_catalog_probes()
             .await
             .map_err(|error| internal("start_model_catalogs", error))?;
@@ -466,22 +469,12 @@ impl StudioRuntime {
                     self.observations.close(RuntimeObserver::Persistence, None),
                 )
             },
-            async {
-                let result = self.shutdown_agent_framework().await;
-                #[cfg(test)]
-                if result.is_ok() {
-                    self.service_stops.note_sessions_acked();
-                }
-                result
-            },
+            self.shutdown_agent_framework(),
         );
         let lsp = if sessions.is_ok() && observers.0.is_clean() {
-            #[cfg(test)]
-            self.service_stops
-                .note_stop("lsp", &self.observations.lsp_projection_probe());
-            self.external_runtimes
-                .lsp
-                .shutdown()
+            self.start_lsp_stop()
+                .await
+                .join()
                 .await
                 .map_err(anyhow::Error::from)
         } else {
@@ -490,11 +483,9 @@ impl StudioRuntime {
             ))
         };
         let ssh = if sessions.is_ok() && lsp.is_ok() {
-            #[cfg(test)]
-            self.service_stops
-                .note_stop("ssh", &self.observations.lsp_projection_probe());
-            self.ssh_manager
-                .shutdown()
+            self.start_ssh_stop()
+                .await
+                .join()
                 .await
                 .map_err(anyhow::Error::from)
         } else {
@@ -722,3 +713,6 @@ mod observer_start_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod startup_fault_tests;

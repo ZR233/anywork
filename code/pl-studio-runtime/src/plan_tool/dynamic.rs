@@ -557,3 +557,7 @@ mod migration_tests {
         assert_eq!(decode_plan_state(&current).unwrap(), state);
     }
 }
+
+#[cfg(test)]
+#[path = "confirmation_tests.rs"]
+mod confirmation_tests;

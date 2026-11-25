@@ -1,16 +1,22 @@
 //! Pure Current projection from one Core owner snapshot.
-use super::super::current::{ActiveText, ModelPartLocation};
-use super::*;
+use super::super::current::{ActiveTextPart, ModelPartLocation};
+use super::super::observation_parts::observation_preview;
+use super::ProjectionError;
+use crate::studio::runtime::chat_item::atom_contents;
+use crate::studio::runtime::chat_item::{BodyKey, TOOL_RESULT_FIELD};
 use crate::{
-    ChatActiveStatus, ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
-    ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome, ChatToolIdentity,
-    ContentOwner, ContentRef, ContentTarget, ThreadTextChannel,
+    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
+    ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome, ChatToolIdentity, ContentOwner,
+    ThreadTextChannel,
 };
+use crate::{ExecutionItem, ExecutionShape, ThreadContentLifecycle};
+use pl_core::{model::ContentBlock, thread::ThreadSnapshot};
+use std::collections::BTreeMap;
 
 pub(super) struct CurrentOriginals {
     pub(super) sources: Vec<ChatSourceState>,
     pub(super) atoms: Vec<ChatAtom>,
-    pub(super) active: Vec<ActiveText>,
+    pub(super) active: Vec<ActiveTextPart>,
 }
 
 pub(super) fn project(
@@ -80,7 +86,7 @@ pub(super) fn project(
     {
         let generation = progress.progress.observation().generation;
         for (index, part) in progress.progress.parts().iter().enumerate() {
-            let Some((id, field, shape)) = super::observation_preview(
+            let Some((id, field, shape)) = observation_preview(
                 &attempt.attempt_id,
                 generation,
                 part,
@@ -108,9 +114,16 @@ pub(super) fn project(
             atom.attempt_id = Some(attempt.attempt_id.clone());
             atom.started_at = None;
             atom.finished_at = None;
-            atom.contents = atom_contents(owner_id, &id, &fields);
+            atom.contents = atom_contents(
+                owner_id,
+                &ContentOwner::Item {
+                    item_id: id.clone(),
+                },
+                fields.keys(),
+            )
+            .collect();
             insert_active_source(&mut sources, atom.source.clone());
-            active.push((
+            active.push(ActiveTextPart::new(
                 id,
                 field,
                 block,
@@ -143,9 +156,22 @@ pub(super) fn project(
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
             atom.started_at = None;
             atom.finished_at = None;
-            atom.contents = atom_contents(owner_id, &id, &fields);
+            atom.contents = atom_contents(
+                owner_id,
+                &ContentOwner::Item {
+                    item_id: id.clone(),
+                },
+                fields.keys(),
+            )
+            .collect();
             for (field, block) in fields {
-                active.push((id.clone(), field, block, text_channel, None));
+                active.push(ActiveTextPart::new(
+                    id.clone(),
+                    field,
+                    block,
+                    text_channel,
+                    None,
+                ));
             }
             atoms.push(atom);
         } else {
@@ -224,13 +250,28 @@ pub(super) fn project(
         insert_completed_source(&mut sources, source.clone());
         let id = atom.id.clone();
         let text_channel = atom.text_channel;
-        atom.contents = atom_contents(owner_id, &id, &fields);
+        atom.contents = atom_contents(
+            owner_id,
+            &ContentOwner::Item {
+                item_id: id.clone(),
+            },
+            fields.keys(),
+        )
+        .collect();
         atoms.push(atom);
         for (field, block) in std::mem::take(&mut fields) {
-            active.push((id.clone(), field, block, text_channel, None));
+            active.push(ActiveTextPart::new(
+                id.clone(),
+                field,
+                block,
+                text_channel,
+                None,
+            ));
         }
     }
 
+    // Current keeps every unconsumed message visible. Only accepted parent messages enter the
+    // public History admission path.
     for record in state
         .inbox
         .iter()
@@ -242,8 +283,7 @@ pub(super) fn project(
             message_id: message.id.clone(),
         };
         insert_completed_source(&mut sources, source.clone());
-        let text_message =
-            message.payload.format() == "text/plain" && message.payload.version() == 1;
+        let text_message = super::super::parent_message_text(&message.payload).is_some();
         let block = ContentBlock::from_text(message.payload.content());
         let fields = BTreeMap::from([(BodyKey::Body, block.clone())]);
         let id = super::super::order::message_id(&message.id);
@@ -274,10 +314,23 @@ pub(super) fn project(
             text_channel,
             started_at: None,
             finished_at: None,
-            contents: atom_contents(owner_id, &id, &fields),
+            contents: atom_contents(
+                owner_id,
+                &ContentOwner::Item {
+                    item_id: id.clone(),
+                },
+                fields.keys(),
+            )
+            .collect(),
             payload: None,
         });
-        active.push((id, BodyKey::Body, block, text_channel, None));
+        active.push(ActiveTextPart::new(
+            id,
+            BodyKey::Body,
+            block,
+            text_channel,
+            None,
+        ));
     }
 
     Ok(CurrentOriginals {
@@ -315,30 +368,6 @@ pub(super) fn task_tool_item(
     Ok(items
         .into_iter()
         .find(|item| item.id == super::super::order::tool_id(&task.call_id)))
-}
-
-fn atom_contents(
-    owner_id: &str,
-    item_id: &str,
-    fields: &BTreeMap<BodyKey, Arc<ContentBlock>>,
-) -> Vec<ChatAtomContent> {
-    fields
-        .keys()
-        .filter_map(|key| {
-            Some(ChatAtomContent {
-                role: crate::studio::runtime::chat_item::atom_content_role(key)?,
-                reference: ContentRef {
-                    database_id: owner_id.into(),
-                    target: ContentTarget::Body {
-                        owner: ContentOwner::Item {
-                            item_id: item_id.into(),
-                        },
-                        key: key.as_key(),
-                    },
-                },
-            })
-        })
-        .collect()
 }
 
 fn insert_active_source(

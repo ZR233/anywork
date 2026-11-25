@@ -501,6 +501,7 @@ impl StudioRuntime {
             &self.store,
             &self.ssh_manager,
             lease,
+            None,
         )
         .await
     }

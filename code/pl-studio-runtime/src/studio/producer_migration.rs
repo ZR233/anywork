@@ -1,10 +1,11 @@
 //! Pure producer normalization shared by named history migrations and TOML import.
 use super::thread_projection::AuxiliaryBillingReceipt;
-use crate::compaction::CompactionReceipt;
+use crate::context_preparation::CompactionReceipt;
+use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    thread::ThreadCheckpoint,
+    thread::{ThreadCheckpoint, permissions::PermissionRecord},
 };
 use serde_json::value::{RawValue, to_raw_value};
 
@@ -85,7 +86,8 @@ pub(crate) fn compaction_receipt(version: u32, content: &str) -> Result<Compacti
 
 pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
     project_kind(checkpoint)?;
-    crate::compaction::migrate_checkpoint_sources(checkpoint)?;
+    crate::context_preparation::migrate_checkpoint_sources(checkpoint)?;
+    permission_responses(checkpoint.state.permissions.values_mut())?;
     for record in checkpoint.state.extensions.values_mut() {
         if let Some(current) = normalize(&record.payload)? {
             record.payload = current;
@@ -98,6 +100,35 @@ pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
             {
                 *payload = current;
             }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn permission_responses<'a>(
+    permissions: impl IntoIterator<Item = &'a mut PermissionRecord>,
+) -> Result<()> {
+    for record in permissions {
+        let Some(payload) = record.response.as_mut() else {
+            continue;
+        };
+        if payload.format() != APPROVAL_RESPONSE_FORMAT || payload.version() != 1 {
+            continue;
+        }
+        // Only the retired flat shape decodes as the protocol decision alone. The canonical
+        // nested shape stays byte-for-byte intact. The projection reports malformed payloads.
+        if let Ok(decision) =
+            serde_json::from_str::<crate::ToolApprovalResolutionPayload>(payload.content())
+        {
+            let current = StoredApprovalDecision {
+                decision,
+                operation_id: None,
+            };
+            *payload = OpaquePayload::new(
+                APPROVAL_RESPONSE_FORMAT,
+                1,
+                serde_json::to_string(&current)?,
+            )?;
         }
     }
     Ok(())
@@ -131,7 +162,7 @@ pub(crate) fn relocate_bot_checkpoint(
 ) -> Result<()> {
     mapping.require_convertible(&checkpoint.thread_id)?;
     ensure!(
-        crate::studio::model_route::bot_owner(&checkpoint.state)?.as_deref()
+        crate::studio::bot_owner::bot_owner(&checkpoint.state)?.as_deref()
             == Some(mapping.bot_id.as_str()),
         "saved bot owner conflicts with the layout operation"
     );
@@ -247,3 +278,6 @@ fn migrate_timing(object: &mut RawObject) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
