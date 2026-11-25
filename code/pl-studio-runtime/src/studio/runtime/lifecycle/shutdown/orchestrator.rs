@@ -465,16 +465,13 @@ impl StudioRuntime {
             Some(SERVICE_STAGE_LIMIT),
             |runtime| async move { runtime.stop_recovery_scan().await },
         ));
-        producers.push(
-            run_observer_stage(
-                self.observations.clone(),
-                RuntimeObserver::ModelRefresh,
-                budget,
-                stage_order::MODEL_REFRESH,
-            )
-            .map(|outcome| vec![outcome])
-            .boxed(),
-        );
+        producers.push(self.stage_branch(
+            budget,
+            stage_order::MODEL_REFRESH,
+            "modelRefresh",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.stop_model_refresh().await },
+        ));
         producers.push(self.stage_branch(
             budget,
             stage_order::TITLE,
