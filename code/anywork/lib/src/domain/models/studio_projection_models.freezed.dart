@@ -870,7 +870,7 @@ as List<PendingInteraction>,
 /// @nodoc
 mixin _$StatusBarView {
 
- SessionDirectoryRow get row; List<ModelSelectionAccount> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute; WorkflowRunView? get workflowRun;
+ SessionDirectoryRow get row; List<ModelSelectionAccount> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute;
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -882,20 +882,20 @@ $StatusBarViewCopyWith<StatusBarView> get copyWith => _$StatusBarViewCopyWithImp
 @override
 bool operator ==(Object other) {
   final _this = this as StatusBarView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.row, _this.row) || other.row == _this.row)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute)&&(identical(other.workflowRun, _this.workflowRun) || other.workflowRun == _this.workflowRun));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatusBarView&&(identical(other.row, _this.row) || other.row == _this.row)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&(identical(other.isBusy, _this.isBusy) || other.isBusy == _this.isBusy)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StatusBarView;
-  return Object.hash(runtimeType,_this.row,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.roles),_this.isBusy,_this.modelRoute,_this.workflowRun);
+  return Object.hash(runtimeType,_this.row,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.roles),_this.isBusy,_this.modelRoute);
 }
 
 @override
 String toString() {
   final _this = this as StatusBarView;
-  return 'StatusBarView(row: ${_this.row}, accounts: ${_this.accounts}, roles: ${_this.roles}, isBusy: ${_this.isBusy}, modelRoute: ${_this.modelRoute}, workflowRun: ${_this.workflowRun})';
+  return 'StatusBarView(row: ${_this.row}, accounts: ${_this.accounts}, roles: ${_this.roles}, isBusy: ${_this.isBusy}, modelRoute: ${_this.modelRoute})';
 }
 
 
@@ -906,7 +906,7 @@ abstract mixin class $StatusBarViewCopyWith<$Res>  {
   factory $StatusBarViewCopyWith(StatusBarView value, $Res Function(StatusBarView) _then) = _$StatusBarViewCopyWithImpl;
 @useResult
 $Res call({
- SessionDirectoryRow row, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun
+ SessionDirectoryRow row, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute
 });
 
 
@@ -923,15 +923,14 @@ class _$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? row = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? row = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,}) {
   return _then(StatusBarView(
 row: null == row ? _self.row : row // ignore: cast_nullable_to_non_nullable
 as SessionDirectoryRow,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
 as List<ModelSelectionAccount>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
-as ThreadModelRouteView?,workflowRun: freezed == workflowRun ? _self.workflowRun : workflowRun // ignore: cast_nullable_to_non_nullable
-as WorkflowRunView?,
+as ThreadModelRouteView?,
   ));
 }
 
@@ -1016,10 +1015,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun);case _:
+return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute);case _:
   return orElse();
 
 }
@@ -1037,10 +1036,10 @@ return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRou
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute)  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView():
-return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun);case _:
+return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1057,10 +1056,10 @@ return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRou
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( SessionDirectoryRow row,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute)?  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
-return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun);case _:
+return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute);case _:
   return null;
 
 }
@@ -1072,7 +1071,7 @@ return $default(_that.row,_that.accounts,_that.roles,_that.isBusy,_that.modelRou
 
 
 class _StatusBarView extends StatusBarView {
-  const _StatusBarView({required this.row, required  List<ModelSelectionAccount> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute, this.workflowRun}): _accounts = accounts,_roles = roles,super._();
+  const _StatusBarView({required this.row, required  List<ModelSelectionAccount> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute}): _accounts = accounts,_roles = roles,super._();
 
 
 @override final  SessionDirectoryRow row;
@@ -1092,7 +1091,6 @@ class _StatusBarView extends StatusBarView {
 
 @override final  bool isBusy;
 @override final  ThreadModelRouteView? modelRoute;
-@override final  WorkflowRunView? workflowRun;
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
@@ -1104,18 +1102,18 @@ _$StatusBarViewCopyWith<_StatusBarView> get copyWith => __$StatusBarViewCopyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.row, row) || other.row == row)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute)&&(identical(other.workflowRun, workflowRun) || other.workflowRun == workflowRun));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatusBarView&&(identical(other.row, row) || other.row == row)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.roles, _roles)&&(identical(other.isBusy, isBusy) || other.isBusy == isBusy)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,row,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_roles),isBusy,modelRoute,workflowRun);
+    return Object.hash(runtimeType,row,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_roles),isBusy,modelRoute);
 }
 
 @override
 String toString() {
-    return 'StatusBarView(row: $row, accounts: $accounts, roles: $roles, isBusy: $isBusy, modelRoute: $modelRoute, workflowRun: $workflowRun)';
+    return 'StatusBarView(row: $row, accounts: $accounts, roles: $roles, isBusy: $isBusy, modelRoute: $modelRoute)';
 }
 
 
@@ -1126,7 +1124,7 @@ abstract mixin class _$StatusBarViewCopyWith<$Res> implements $StatusBarViewCopy
   factory _$StatusBarViewCopyWith(_StatusBarView value, $Res Function(_StatusBarView) _then) = __$StatusBarViewCopyWithImpl;
 @override @useResult
 $Res call({
- SessionDirectoryRow row, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun
+ SessionDirectoryRow row, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute
 });
 
 
@@ -1143,15 +1141,14 @@ class __$StatusBarViewCopyWithImpl<$Res>
 
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? row = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,Object? workflowRun = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? row = null,Object? accounts = null,Object? roles = null,Object? isBusy = null,Object? modelRoute = freezed,}) {
   return _then(_StatusBarView(
 row: null == row ? _self.row : row // ignore: cast_nullable_to_non_nullable
 as SessionDirectoryRow,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
 as List<ModelSelectionAccount>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
-as ThreadModelRouteView?,workflowRun: freezed == workflowRun ? _self.workflowRun : workflowRun // ignore: cast_nullable_to_non_nullable
-as WorkflowRunView?,
+as ThreadModelRouteView?,
   ));
 }
 

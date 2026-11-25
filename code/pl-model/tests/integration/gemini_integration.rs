@@ -448,6 +448,275 @@ async fn runtime_replays_single_gemini_tool_with_empty_id_over_mock_http() {
 }
 
 #[tokio::test]
+async fn runtime_recovers_malformed_gemini_response_without_replaying_failed_output() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+    let server = tokio::spawn(serve_gemini_sse(
+        listener,
+        vec![
+            vec![
+                json!({"responseId":"failed","candidates":[{"content":{"role":"model","parts":[
+                    {"text":"discard this answer"},
+                    {"functionCall":{"name":"lookup","args":{"q":"discard"}},"thoughtSignature":"FAILED_CALL"}
+                ]}}]}),
+                json!({"candidates":[{"content":{"role":"model","parts":[
+                    {"text":"","thoughtSignature":"FAILED_TAIL"}
+                ]},"finishReason":"MALFORMED_RESPONSE"}],
+                "usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":4,"thoughtsTokenCount":6,"totalTokenCount":22}}),
+            ],
+            vec![
+                json!({"responseId":"recovered","candidates":[{"content":{"role":"model","parts":[
+                {"text":"Recovered answer","thoughtSignature":"SUCCESS"}
+            ]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":3,"totalTokenCount":15}}),
+            ],
+        ],
+    ));
+    let mut endpoint = gemini_api_endpoint(Some(base));
+    endpoint.bearer_token = Some("gcp-secret".into());
+    let model = bundled_model_definition("gemini").unwrap().models.remove(0);
+    let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.complete(
+            CompletionRequest::builder().build(),
+            ModelInvocationContext::default(),
+        ),
+    )
+    .await
+    .unwrap()
+    .expect("a malformed generation must recover within the existing retry budget");
+    assert_eq!(response.content.as_deref(), Some("Recovered answer"));
+    assert!(
+        response.tool_calls.is_empty(),
+        "failed-generation calls must never execute"
+    );
+    assert_eq!(response.response_id.as_deref(), Some("recovered"));
+    assert_eq!(response.orchestration.transport_attempts, 2);
+    assert_eq!(response.observation.generation, 1);
+    assert_eq!(response.observation.failed.len(), 1);
+    assert!(
+        response.observation.failed[0]
+            .message
+            .contains("MALFORMED_RESPONSE")
+    );
+    assert_eq!(response.accounting.usage.output_tokens, Some(3));
+    assert_eq!(response.accounting.retry_attempts.len(), 1);
+    assert_eq!(
+        response.accounting.retry_attempts[0].usage.output_tokens,
+        Some(10)
+    );
+    assert_eq!(response.accounting.usage.total_tokens, Some(15));
+    assert_eq!(
+        response.accounting.retry_attempts[0].usage.total_tokens,
+        Some(22)
+    );
+    assert!((response.accounting.estimated_costs()[0].amount - 0.0000405).abs() < 1e-12);
+    assert!(
+        (response.accounting.retry_attempts[0].estimated_costs()[0].amount - 0.000093).abs()
+            < 1e-12
+    );
+    let restored: pl_model::model::InferenceAccounting =
+        serde_json::from_value(serde_json::to_value(&response.accounting).unwrap()).unwrap();
+    assert_eq!(restored, response.accounting);
+    let mut followup = CompletionRequest::builder().build();
+    response
+        .replay
+        .as_ref()
+        .expect("successful replay")
+        .semantic_input(&response)
+        .unwrap();
+    followup.append_response_from(&response, None).unwrap();
+    let serialized = serde_json::to_string(&response.replay).unwrap();
+    assert!(!serialized.contains("FAILED_"));
+    assert!(!serialized.contains("discard"));
+    let bodies = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(
+        bodies[0], bodies[1],
+        "recovery resends the frozen input only"
+    );
+}
+
+#[tokio::test]
+async fn malformed_gemini_recovery_respects_retry_budget_and_cancellation() {
+    use pl_model::completion::stream::event::ModelStreamEvent;
+    use pl_model::runtime::CancellationToken;
+
+    for cancel in [false, true] {
+        let attempts = if cancel { 1 } else { 6 };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+        let frame = json!({"candidates":[{"finishReason":"MALFORMED_RESPONSE"}],
+            "usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":4,"thoughtsTokenCount":6,"totalTokenCount":22}});
+        let server = tokio::spawn(serve_gemini_sse(listener, vec![vec![frame]; attempts]));
+        let mut endpoint = gemini_api_endpoint(Some(base));
+        endpoint.bearer_token = Some("gcp-secret".into());
+        let model = bundled_model_definition("gemini").unwrap().models.remove(0);
+        let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
+        let cancellation = CancellationToken::new();
+        let observer_token = cancellation.clone();
+        let context = ModelInvocationContext::default()
+            .with_cancellation(Some(cancellation))
+            .with_stream_observer(move |_, event| {
+                if cancel && matches!(event, ModelStreamEvent::Failed { .. }) {
+                    observer_token.cancel();
+                }
+            });
+        let failure = tokio::time::timeout(
+            Duration::from_secs(30),
+            runtime.complete(CompletionRequest::builder().build(), context),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(failure.is_cancelled(), cancel);
+        assert_eq!(failure.accounting.retry_attempts.len(), attempts - 1);
+        assert_eq!(
+            failure
+                .accounting
+                .retry_attempts
+                .iter()
+                .chain(std::iter::once(failure.accounting.as_ref()))
+                .map(|accounting| accounting.usage.total_tokens)
+                .sum::<Option<u64>>(),
+            Some(22 * attempts as u64)
+        );
+        if !cancel {
+            let source = failure.source.provider_failure_ref().unwrap();
+            assert_eq!(source.code.as_deref(), Some("MALFORMED_RESPONSE"));
+            assert_eq!(source.context.request_id.as_deref(), Some("goog-req-5"));
+            assert!(source.retry.is_retryable());
+            assert_eq!(
+                failure
+                    .partial_progress
+                    .as_ref()
+                    .unwrap()
+                    .observation()
+                    .recovery
+                    .unwrap()
+                    .phase,
+                pl_core::model::ModelRecoveryPhase::Exhausted
+            );
+        }
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .len(),
+            attempts
+        );
+    }
+}
+
+#[tokio::test]
+async fn other_gemini_finish_reasons_keep_their_terminal_failure_and_usage() {
+    for reason in [
+        "SAFETY",
+        "MAX_TOKENS",
+        "MALFORMED_FUNCTION_CALL",
+        "FINISH_REASON_UNSPECIFIED",
+        "RECITATION",
+        "LANGUAGE",
+        "OTHER",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_OTHER",
+        "NO_IMAGE",
+        "IMAGE_RECITATION",
+        "UNEXPECTED_TOOL_CALL",
+        "TOO_MANY_TOOL_CALLS",
+        "MISSING_THOUGHT_SIGNATURE",
+        "ESCALATION",
+        "PUP_LIMITED_DISABLED",
+        "CONTINUATION",
+        "UNKNOWN_REASON",
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+        let server = tokio::spawn(serve_gemini_sse(
+            listener,
+            vec![vec![json!({"candidates":[{"finishReason":reason}],
+                "usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":4,"totalTokenCount":16}})]],
+        ));
+        let mut endpoint = gemini_api_endpoint(Some(base));
+        endpoint.bearer_token = Some("gcp-secret".into());
+        let model = bundled_model_definition("gemini").unwrap().models.remove(0);
+        let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
+        let failure = runtime
+            .complete(
+                CompletionRequest::builder().build(),
+                ModelInvocationContext::default(),
+            )
+            .await
+            .unwrap_err();
+        let source = failure.source.provider_failure_ref().unwrap();
+        assert_eq!(source.code.as_deref(), Some(reason));
+        assert!(!source.retry.is_retryable());
+        assert!(failure.accounting.retry_attempts.is_empty());
+        assert_eq!(failure.accounting.usage.total_tokens, Some(16));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn google_http_classification_keeps_transport_retry_after_header() {
+    for (status, code, body_delay, expected_delay) in [
+        (429, "RESOURCE_EXHAUSTED", None, Some(2000)),
+        (503, "UNAVAILABLE", None, Some(2000)),
+        (503, "UNAVAILABLE", Some("3.250s"), Some(3250)),
+        (400, "INVALID_ARGUMENT", Some("3.250s"), None),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                bytes.push(socket.read_u8().await.unwrap());
+            }
+            let mut body =
+                json!({"error":{"code":status,"status":code,"message":"synthetic error"}});
+            if let Some(delay) = body_delay {
+                body["error"]["details"] = json!([{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":delay}]);
+            }
+            let body = body.to_string();
+            let response = format!(
+                "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nRetry-After: 2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let failure = pl_model_wire::transport::sse_frames(
+            reqwest::Client::new().post(url),
+            pl_model_wire::transport::SseContentTypePolicy::Required,
+            Some(&pl_model_gemini::GEMINI_WIRE_CODEC),
+        )
+        .await
+        .err()
+        .expect("HTTP failure");
+        let failure = failure.provider_failure_ref().unwrap();
+        assert_eq!(failure.retry.is_retryable(), expected_delay.is_some());
+        assert_eq!(failure.retry.retry_after_ms(), expected_delay);
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn runtime_rejects_gemini_error_received_after_stop_with_tool_call() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1beta", listener.local_addr().unwrap());

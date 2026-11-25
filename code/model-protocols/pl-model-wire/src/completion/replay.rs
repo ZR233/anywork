@@ -30,9 +30,13 @@ impl AssistantReplay {
                 .iter()
                 .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")),
             Self::Gemini { parts } => parts.iter().any(|part| {
-                part.get("thoughtSignature")
-                    .and_then(Value::as_str)
-                    .is_some_and(|sig| !sig.is_empty())
+                ["thoughtSignature", "thought_signature"]
+                    .into_iter()
+                    .any(|key| {
+                        part.get(key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|sig| !sig.is_empty())
+                    })
             }),
             Self::Chat { .. } => false,
         }
@@ -187,6 +191,14 @@ impl AssistantReplay {
 
 /// Reads a Gemini function call Part in complete argument mode.
 pub fn gemini_function_call(part: &Value) -> Result<Option<&Map<String, Value>>> {
+    if !part.is_object()
+        || part.get("functionResponse").is_some()
+        || part.get("function_response").is_some()
+    {
+        return Err(invalid(
+            "gemini assistant replay must contain model parts, not function responses",
+        ));
+    }
     let function = match (part.get("functionCall"), part.get("function_call")) {
         (Some(_), Some(_)) => return Err(invalid("ambiguous gemini functionCall field")),
         (Some(function), None) | (None, Some(function)) => function,
@@ -196,6 +208,9 @@ pub fn gemini_function_call(part: &Value) -> Result<Option<&Map<String, Value>>>
         .as_object()
         .ok_or_else(|| invalid("gemini functionCall must be a JSON object"))?;
     let has_full_args = function.get("args").is_some_and(Value::is_object);
+    if function.get("args").is_some_and(|args| !args.is_object()) {
+        return Err(invalid("gemini functionCall args must be a JSON object"));
+    }
     // Neutral control values only describe a complete call when the full args object is present.
     let invalid_partials = ["partialArgs", "partial_args"]
         .into_iter()

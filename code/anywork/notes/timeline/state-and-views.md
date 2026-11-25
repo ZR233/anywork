@@ -4,7 +4,7 @@
 
 ## 运行字段
 
-`code/anywork/lib/src/features/timeline/view_models/thread_runtime_fields.dart` 按 Thread 读取 Client 内联当前值或同名延迟字段，通过独立的 `AsyncValue` 交付待办与 workflow run。工作流观察比较包含图查询所需身份，引用 Client 原 run。延迟引用保留时间线 ViewModel generation 观察，沿原 owner 的发布检查同一 generation 中后到的 Current reader。每次读取在提交前核对 owner、lease、reader 和字段引用。退订同步 retire，读取路径在 `finally` 等待 `close()`。运行字段测试与证据见[壳层交付记录](../shell/review.md#pr596-后续分层验证)。
+`code/anywork/lib/src/features/conversation/timeline/view_models/thread_runtime_fields.dart` 按 Thread 读取 Client 内联当前值或同名延迟字段，通过独立的 `AsyncValue` 交付待办与 workflow run。工作流观察比较包含图查询所需身份，引用 Client 原 run。延迟引用保留时间线 ViewModel generation 观察，沿原 owner 的发布检查同一 generation 中后到的 Current reader。每次读取在提交前核对 owner、lease、reader 和字段引用。退订同步 retire，读取路径在 `finally` 等待 `close()`。运行字段测试与证据见[壳层交付记录](../shell/review.md#pr596-后续分层验证)。
 
 ## 状态模型（18）
 

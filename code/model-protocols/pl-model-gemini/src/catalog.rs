@@ -1,7 +1,6 @@
 use pl_model_wire::discovery::{
     ModelCatalogQueryError, ParsedCatalogPage, Record, presentation_name,
 };
-use pl_model_wire::model::ModelModality;
 use serde::Deserialize;
 
 fn required_id(raw: Option<String>) -> Result<String, ModelCatalogQueryError> {
@@ -35,7 +34,6 @@ struct GeminiApiModel {
 #[serde(rename_all = "camelCase")]
 struct VertexPublisherModel {
     name: Option<String>,
-    version_id: Option<String>,
     display_name: Option<String>,
     description: Option<String>,
     input_token_limit: Option<u64>,
@@ -69,14 +67,9 @@ fn build_record(
                 .iter()
                 .any(|m| matches!(m.as_str(), "generateContent" | "streamGenerateContent"))
             {
-                (
-                    Some(vec![
-                        ModelModality::Text,
-                        ModelModality::Image,
-                        ModelModality::File,
-                    ]),
-                    Some(vec![ModelModality::Text]),
-                )
+                // A generation method is not a modality declaration. Preserve bundled
+                // media limits; unknown models use only the adapter's minimal text policy.
+                (None, None)
             } else {
                 (Some(Vec::new()), Some(Vec::new()))
             }
@@ -119,9 +112,8 @@ pub fn parse_page(bytes: &[u8]) -> Result<ParsedCatalogPage, ModelCatalogQueryEr
         (None, Some(models)) => models
             .into_iter()
             .map(|m| {
-                let raw_id = m.version_id.filter(|v| !v.trim().is_empty()).or(m.name);
                 build_record(
-                    raw_id,
+                    m.name,
                     m.display_name,
                     m.description,
                     m.input_token_limit,
@@ -130,6 +122,8 @@ pub fn parse_page(bytes: &[u8]) -> Result<ParsedCatalogPage, ModelCatalogQueryEr
                 )
             })
             .collect::<Result<Vec<_>, _>>()?,
+        // Proto3 JSON omits empty repeated fields: {} is the valid empty final page.
+        (None, None) => Vec::new(),
         _ => return Err(ModelCatalogQueryError::Protocol),
     };
     Ok(ParsedCatalogPage {
@@ -176,10 +170,7 @@ mod tests {
         );
         assert_eq!(page.records[0].context_window, Some(Some(1_048_576)));
         assert_eq!(page.records[0].max_output_tokens, Some(Some(65_536)));
-        assert_eq!(
-            page.records[0].output_modalities,
-            Some(vec![ModelModality::Text])
-        );
+        assert_eq!(page.records[0].output_modalities, None);
         assert_eq!(page.records[1].id, "text-embedding-004");
         assert_eq!(page.records[1].output_modalities, Some(Vec::new()));
     }
@@ -189,14 +180,16 @@ mod tests {
         let json = br#"{
             "publisherModels": [
                 {
-                    "name": "publishers/google/models/gemma3",
-                    "versionId": "gemma-3-1b-it"
+                    "name": "publishers/google/models/gemini-4-hydrogen",
+                    "versionId": "2"
                 }
             ]
         }"#;
         let page = parse_page(json).unwrap();
         assert!(page.next_page_token.is_none());
         assert_eq!(page.records.len(), 1);
-        assert_eq!(page.records[0].id, "gemma-3-1b-it");
+        assert_eq!(page.records[0].id, "gemini-4-hydrogen");
+        assert!(parse_page(br#"{"publisherModels":[{"versionId":"2"}]}"#).is_err());
+        assert!(parse_page(br#"{}"#).unwrap().records.is_empty());
     }
 }

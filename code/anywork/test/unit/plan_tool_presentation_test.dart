@@ -15,8 +15,7 @@ void main() {
       name: 'plan_transition',
       presentationContract: 'builtin.plan_transition@1',
       statusString: 'succeeded',
-      arguments:
-          '{"targetState":"awaitingConfirmation","force":true,"reason":"按计划推进","content":"# Plan"}',
+      arguments: '{"targetState":"awaitingConfirmation","force":true,"reason":"按计划推进","content":"# Plan"}',
       output: '{"state":"awaitingConfirmation","forced":true}',
     );
     expect(

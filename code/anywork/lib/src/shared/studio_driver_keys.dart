@@ -256,6 +256,14 @@ abstract final class StudioDriverKeys {
   static const threadThroughput = ValueKey<String>('thread-throughput');
   static const statisticsSummary = ValueKey<String>('statistics-summary');
   static const statisticsHistory = ValueKey<String>('statistics-history');
+  static const statisticsRefresh = ValueKey<String>('statistics-refresh');
+  static const statisticsPreviousPage = ValueKey<String>(
+    'statistics-previous-page',
+  );
+  static const statisticsNextPage = ValueKey<String>('statistics-next-page');
+  static const statisticsPageNumber = ValueKey<String>(
+    'statistics-page-number',
+  );
   static const statisticsFilter = ValueKey<String>('statistics-filter');
   static const statisticsEffortFilter = ValueKey<String>(
     'statistics-effort-filter',

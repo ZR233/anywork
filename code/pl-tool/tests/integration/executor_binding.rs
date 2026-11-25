@@ -20,7 +20,9 @@ async fn root_and_tail(expire: bool) -> anyhow::Result<()> {
         let manager = CommandProcessManager::new(backend.clone());
         let request=CommandStartRequest {
             interactive: false,
-            command:"(while test ! -e release-tail; do sleep 0.02; done; printf 'tail-after-root\n') & exit 17".into(),
+            // The owner can delete this directory before the released child next runs.
+            // A failed assertion must also end the fixture instead of leaving an orphan loop.
+            command:"(while test -d \"$PWD\" && test ! -e release-tail; do sleep 0.02; done; printf 'tail-after-root\n') & exit 17".into(),
             cwd:None,allow_workspace_escape:false,timeout:if expire {Duration::from_millis(500)}else {Duration::from_secs(5)},yield_time:Duration::ZERO,max_output_chars:4096,
             session_id:"root-tail".into(),tool_id:"root-tail".into(),call_id:"root-tail".into(),cancellation_token:None,output_observer:None,
         };

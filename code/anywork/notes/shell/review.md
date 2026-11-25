@@ -46,7 +46,7 @@
 | `conversation/workspace/conversation_sidebar_state.dart` 1–173 | 按会话记住面板身份和宽屏模式。待确认 Plan 仅对新身份自动打开，文件关闭回到仍可用的页签。保留局部状态及同步 reconcile。 | LSP 零诊断。未跑同身份重复观察、撤销和文件返回。 |
 | `conversation/workspace/conversation_workspace.dart` 1–3 | Native、ACP、预览和测试的共用布局导出。保留活跃入口。 | LSP 零诊断与消费者文本核对。未运行跨包消费者。 |
 | `conversation/workspace/conversation_workspace_shell.dart` 1–603 | 管理并排、全宽、窄窗浮层、底栏和 `MultiSplitView`。原 `overlays` 根据测试 key 选 `Positioned.fill`，迁移唯一实参消费者到 `readingBanner` / `readingOverlay` 两个有明确位置的插槽。保留堆叠顺序、移树 key 和分隔条交互。 | LSP 零诊断，全仓搜索无旧实参。未跑分栏动画、Overlay 关闭、Plan footer 和保留时间线焦点。 |
-| `timeline/view_models/thread_runtime_fields.dart` | 汇合 Native inline 与 deferred 待办、工作流字段，按 Thread 交付 Riverpod `AsyncValue`。资源与读取契约见[时间线状态适配](../timeline/state-and-views.md#运行字段)。 | 原 `conversation/workspace/deferred_runtime_fields.dart` 与三份旧 Provider 已删除。 |
+| `conversation/timeline/view_models/thread_runtime_fields.dart` | 汇合 Native inline 与 deferred 待办、工作流字段，按 Thread 交付 Riverpod `AsyncValue`。资源与读取契约见[时间线状态适配](../timeline/state-and-views.md#运行字段)。 | 原 `conversation/workspace/deferred_runtime_fields.dart` 与三份旧 Provider 已删除。 |
 
 ## M18 状态
 
@@ -117,4 +117,6 @@ ACP 切线程回归通过真实 Client 的两个 ACP 会话和受控观察帧，
 
 `shell_menu_cleanup_test.dart` 保留菜单 Escape 后焦点恢复与键盘打开动作，并使用实际 Native/ACP 工作区检查待办、图打开与图错误后的重试。`workflow_graph_and_mode_selector_test.dart` 保留模式菜单路由、侧栏互斥、图节点与标记；PlanTransition 的纯映射断言位于 `test/unit/plan_tool_presentation_test.dart`。原 T05 Native/ACP 额度验收入口另见[测试清理记录](../testing-cleanup.md)。
 
-本次局部 Dart 格式与 LSP 核对通过。三文件单元首轮为 4 通过、9 失败，退出码 1。观察值补齐 SDK run 相等比较遗漏的请求身份后，3 项 Native 图键复验逐项通过。同轮运行字段夹具失败 5 项，末项仍在执行时进程因超时被信号 9 终止。切到 Demo 正式状态发布入口并等待有效载荷接纳后，6 项运行字段复验通过，退出码 0。首轮通过项为 Plan 映射、Native 两类重试与 ACP canonical/fallback。6 项 widget 留待根整合后运行。
+本次局部 Dart 格式与 LSP 核对通过。三文件单元首轮为 4 通过、9 失败，退出码 1。观察值补齐 SDK run 相等比较遗漏的请求身份后，3 项 Native 图键复验逐项通过。同轮运行字段夹具失败 5 项，末项仍在执行时进程因超时被信号 9 终止。切到 Demo 正式状态发布入口并等待有效载荷接纳后，6 项运行字段复验通过，退出码 0。首轮通过项为 Plan 映射、Native 两类重试与 ACP canonical/fallback。
+
+实际合并 `main` 并统一生成后，两个新状态单元文件与 shell、workflow、Gemini、状态栏、composer、ACP、统一工作区九文件联合 46 项通过，exit 0；包含上述 6 项 shell/workflow 组件用例及七品牌资源加载。应用与预览联合分析、921 文件零格式差异、725 源文件边界及 99 UI 入口闭包均通过。独立审查已全文核对新增 unit、消费者、同 generation reader 迟到唤醒、scope retire/close/join 与旧结果隔离，无阻塞缺陷。此前失败与超时保留为修复过程，不替代最终联合结果。

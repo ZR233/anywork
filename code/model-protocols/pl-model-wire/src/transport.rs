@@ -199,8 +199,17 @@ fn response_error_with_diagnostics(
             if let Some(kind) = parsed.force_kind {
                 failure.kind = kind;
             }
-            if let Some(retry) = parsed.force_retry.clone() {
-                failure.retry = retry;
+            if let Some(retry) = &parsed.force_retry {
+                failure.retry = match retry {
+                    pl_protocol::RetryDisposition::Retryable { retry_after_ms } => {
+                        pl_protocol::RetryDisposition::Retryable {
+                            retry_after_ms: retry_after_ms.iter().copied().chain(retry_after).max(),
+                        }
+                    }
+                    pl_protocol::RetryDisposition::Permanent => {
+                        pl_protocol::RetryDisposition::Permanent
+                    }
+                };
             }
         }
         failure.context.request_id = request_id;

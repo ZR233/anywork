@@ -752,7 +752,7 @@ final class ConversationWorkspaceProvider
 }
 
 String _$conversationWorkspaceHash() =>
-    r'7cbaafba340b6259d7e33652e890d5a0b7fcfc7e';
+    r'97dd2165f4a4d424985156842adc7c0d16c481b0';
 
 /// 目的地会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///

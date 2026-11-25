@@ -1114,44 +1114,41 @@ void main() {
     );
   }
 
-  test(
-    'ManualModelDraft restricts allowed WireApi and connection modes by account protocol',
-    () {
-      const strings = AccountStrings({'required': 'Required'});
-      const geminiDraft = ManualModelDraft(
-        editorKey: 'g1',
-        id: 'gemini-4-hydrogen',
-        wireApi: AccountWireApi.geminiGenerateContent,
-      );
-      final geminiPresentation = geminiDraft.presentation(
-        strings,
-        null,
-        accountProtocol: 'gemini',
-      );
-      expect(geminiPresentation.allowedWireApis, [
-        AccountWireApi.geminiGenerateContent,
-      ]);
-      expect(geminiPresentation.allowedConnections, [
-        AccountConnection.automatic,
-        AccountConnection.http,
-      ]);
+  test('ManualModelDraft restricts allowed WireApi and connection modes by account protocol', () {
+    const strings = AccountStrings({'required': 'Required'});
+    const geminiDraft = ManualModelDraft(
+      editorKey: 'g1',
+      id: 'gemini-4-hydrogen',
+      wireApi: AccountWireApi.geminiGenerateContent,
+    );
+    final geminiPresentation = geminiDraft.presentation(
+      strings,
+      null,
+      accountProtocol: 'gemini',
+    );
+    expect(geminiPresentation.allowedWireApis, [
+      AccountWireApi.geminiGenerateContent,
+    ]);
+    expect(geminiPresentation.allowedConnections, [
+      AccountConnection.automatic,
+      AccountConnection.http,
+    ]);
 
-      const openAiDraft = ManualModelDraft(
-        editorKey: 'o1',
-        id: 'gpt-6-astra',
-        wireApi: AccountWireApi.responses,
-      );
-      final openAiPresentation = openAiDraft.presentation(
-        strings,
-        null,
-        accountProtocol: 'openai',
-      );
-      expect(openAiPresentation.allowedWireApis, [
-        AccountWireApi.chatCompletions,
-        AccountWireApi.responses,
-      ]);
-    },
-  );
+    const openAiDraft = ManualModelDraft(
+      editorKey: 'o1',
+      id: 'gpt-6-astra',
+      wireApi: AccountWireApi.responses,
+    );
+    final openAiPresentation = openAiDraft.presentation(
+      strings,
+      null,
+      accountProtocol: 'openai',
+    );
+    expect(openAiPresentation.allowedWireApis, [
+      AccountWireApi.chatCompletions,
+      AccountWireApi.responses,
+    ]);
+  });
 
   test('OpenAI subscription save requires the current editor login with direct permission', () async {
     final h = AccountsVmHarness();

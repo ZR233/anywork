@@ -317,16 +317,25 @@ void main() {
     },
   );
 
-  testWidgets('AccountBrandMark loads vertex and gemini SVG brand assets', (
+  testWidgets('AccountBrandMark loads every logo at its bundled asset key', (
     tester,
   ) async {
+    const brands = [
+      'openai',
+      'deepseek',
+      'xai',
+      'zhipu',
+      'mimo',
+      'gemini',
+      'vertex',
+    ];
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
         home: Scaffold(
           body: Row(
             children: [
-              AccountBrandMark(iconKey: 'vertex', fallbackName: 'Vertex'),
-              AccountBrandMark(iconKey: 'gemini', fallbackName: 'Gemini'),
+              for (final brand in brands)
+                AccountBrandMark(iconKey: brand, fallbackName: brand),
             ],
           ),
         ),
@@ -335,10 +344,17 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.byType(SvgPicture), findsNWidgets(2));
+    expect(find.byType(SvgPicture), findsNWidgets(brands.length));
+    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
     final pictures = tester.widgetList<SvgPicture>(find.byType(SvgPicture));
     for (final picture in pictures) {
       final loader = picture.bytesLoader as SvgAssetLoader;
+      final assetKey = loader.packageName == null
+          ? loader.assetName
+          : 'packages/${loader.packageName}/${loader.assetName}';
+      // Widget tests retry a missing self-package asset without its prefix.
+      // Production does not, so decoding alone can hide a broken bundle key.
+      expect(manifest.listAssets(), contains(assetKey));
       final bytes = await loader.loadBytes(null);
       expect(bytes.lengthInBytes, greaterThan(0));
     }
