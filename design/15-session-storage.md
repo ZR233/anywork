@@ -20,7 +20,7 @@ Native 会话有三个用途不同的事实载体：
 
 重开后的交互决议仍从同一 Current 中的请求、调用与结果归并。交互本身足以触发原调用的局部投影，不要求同时出现新的 task 或 delivery，也不要求尚在等待用户的计划已有历史终稿。回答已消费、交互集合已裁剪时，Core 保留的同身份终态 context 与配对工具结果继续证明原调用已完成；不能因集合为空把它重建为排队。已从 Current 和驻留投影裁剪的调用不再参与实时重建；不可变历史保持原样，不通过回查补齐当前命令。
 
-`ThreadSnapshot` 使用 schema 18；Current 公开协议版本为 1，History 公开协议版本为 2（schema 27）；磁盘 Current schema 与 History schema 分别按自身版本校验。客户端收到不支持的 schema 或协议版本时必须明确拒绝，不保留旧客户端的双读、兼容分支或隐藏降级。
+`ThreadSnapshot` 使用 schema 18；Current 公开协议版本为 1，History 公开协议版本为 3（schema 27）；磁盘 Current schema 与 History schema 分别按自身版本校验。客户端收到不支持的 schema 或协议版本时必须明确拒绝，不保留旧客户端的双读、兼容分支或隐藏降级。
 
 #### 可恢复对象与身份
 
