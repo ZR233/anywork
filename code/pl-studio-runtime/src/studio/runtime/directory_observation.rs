@@ -25,9 +25,6 @@ struct ThreadsInner {
     epoch: String,
     query: ThreadDirectoryQuery,
     window: ThreadDirectoryWindow,
-    // Same token as the pull gate, retained so tests can observe that close boundary.
-    #[cfg_attr(not(test), allow(dead_code))]
-    cancellation: CancellationToken,
     next: PullObservation<ProductTopicSignal, Option<DirectorySelection>>,
 }
 
@@ -42,8 +39,6 @@ struct MetadataInner {
     events: ProductEventBus,
     epoch: String,
     thread_id: String,
-    #[cfg_attr(not(test), allow(dead_code))]
-    cancellation: CancellationToken,
     // Outer Option is delivery memory: None means unseen, Some(None) is a delivered absence.
     next: PullObservation<ThreadMetadataSignal, Option<Option<crate::SessionDirectoryRow>>>,
 }
@@ -88,11 +83,10 @@ impl ThreadsObservation {
             return Err(StudioError::invalid_argument("Invalid directory boundary").into());
         }
         // Registration precedes every initial read, including an empty result.
-        let cancellation = CancellationToken::new();
         let next = PullObservation::open(
             events.subscribe_topic_signal(&StudioProductTopic::ThreadDirectory),
             None,
-            cancellation.clone(),
+            CancellationToken::new(),
         );
         Ok(ThreadsObservation {
             inner: Arc::new(ThreadsInner {
@@ -100,7 +94,6 @@ impl ThreadsObservation {
                 epoch,
                 query,
                 window,
-                cancellation,
                 next,
             }),
         })
@@ -112,18 +105,16 @@ impl ThreadMetadataObservation {
         if thread_id.trim().is_empty() {
             return Err(StudioError::invalid_argument("Thread identity is required").into());
         }
-        let cancellation = CancellationToken::new();
         let next = PullObservation::open(
             events.subscribe_thread_metadata(&thread_id),
             None,
-            cancellation.clone(),
+            CancellationToken::new(),
         );
         Ok(ThreadMetadataObservation {
             inner: Arc::new(MetadataInner {
                 events,
                 epoch,
                 thread_id,
-                cancellation,
                 next,
             }),
         })
@@ -269,8 +260,9 @@ mod tests {
         let observation = observe(&events, 2)?;
         let baseline_counts = events.topic_registration_counts();
         {
-            let mut state = observation.inner.next.lock().await;
-            assert!(state.ready(&observation.inner.cancellation).await);
+            let pull = &observation.inner.next;
+            let mut state = pull.lock().await;
+            assert!(state.ready(pull.cancellation()).await);
             // Explicitly interleave a completed owner read, a publication, and its delivery.
             // Consuming the signal after this read would erase the next notification.
             let sampled = events.read_threads_window(
@@ -283,7 +275,7 @@ mod tests {
                 .apply_thread_delta(vec![row("during-read", 1)], vec![])
                 .await?;
             assert!(matches!(
-                state.ready(&observation.inner.cancellation).now_or_never(),
+                state.ready(pull.cancellation()).now_or_never(),
                 Some(true)
             ));
         }
@@ -527,8 +519,9 @@ mod tests {
         // Split the synchronous read/delivery boundary to place an update at the exact interleaving:
         // ready consumes the signal, the owner captures a slice, then a writer commits before delivery.
         {
-            let mut state = observation.inner.next.lock().await;
-            assert!(state.ready(&observation.inner.cancellation).await);
+            let pull = &observation.inner.next;
+            let mut state = pull.lock().await;
+            assert!(state.ready(pull.cancellation()).await);
             let frame = events.read_thread_metadata("a", "epoch")?;
             events.apply_thread_delta(vec![row("a", 1)], vec![]).await?;
             state.last = Some(frame.row);
