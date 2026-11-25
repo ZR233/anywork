@@ -679,12 +679,7 @@ pub(crate) struct ServiceStopSlots {
 
 #[cfg(test)]
 impl ServiceStopSlots {
-    pub(super) fn note_stop(
-        &self,
-        service: &'static str,
-        probe: &super::super::observation_lifecycle::LspProjectionProbe,
-    ) {
-        probe.service_stop_started(service);
+    pub(super) fn note_stop(&self, service: &'static str) {
         self.stop_calls.lock().unwrap().push(service);
     }
 
@@ -1272,7 +1267,6 @@ impl StudioRuntime {
         // same completion and only then removes its scope. No writer/transport is released here.
         self.thread_factory.request_member_mcp_shutdown();
         use super::super::background_task;
-        background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
         self.title_tasks.signal_cancel().await;
         // ACP 认证操作只接收取消信号：真正的 protocol/进程收束与终态由该 owner 自己的
@@ -1347,13 +1341,16 @@ impl StudioRuntime {
             Some(SERVICE_STAGE_LIMIT),
             |runtime| async move { runtime.stop_recovery_scan().await },
         ));
-        producers.push(self.stage_branch(
-            budget,
-            stage_order::MODEL_REFRESH,
-            "modelRefresh",
-            Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move { runtime.stop_model_refresh().await },
-        ));
+        producers.push(
+            run_observer_stage(
+                self.observations.clone(),
+                RuntimeObserver::ModelRefresh,
+                budget,
+                stage_order::MODEL_REFRESH,
+            )
+            .map(|outcome| vec![outcome])
+            .boxed(),
+        );
         producers.push(self.stage_branch(
             budget,
             stage_order::TITLE,
@@ -1428,11 +1425,9 @@ impl StudioRuntime {
                     let lsp = lsp_runtime.external_runtimes.lsp.clone();
                     #[cfg(test)]
                     let stops = lsp_runtime.service_stops.clone();
-                    #[cfg(test)]
-                    let probe = lsp_runtime.observations.lsp_projection_probe();
                     move || ServiceStopJob::spawn(async move {
                         #[cfg(test)]
-                        stops.note_stop("lsp", &probe);
+                        stops.note_stop("lsp");
                         lsp.shutdown().await.map_err(anyhow::Error::from)
                     })
                 }).await;
@@ -1464,7 +1459,7 @@ impl StudioRuntime {
             .boxed(),
         );
 
-        // 三类 observer 并发收束；lspState 只发送本次结果的 ACK，结果仍仅由原阶段收集一次。
+        // LSP observer 并发收束；lspState 只发送本次结果的 ACK，结果仍仅由原阶段收集一次。
         let mut independent: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         let observations = self.observations.clone();
         independent.push(
@@ -1585,12 +1580,10 @@ impl StudioRuntime {
                 let ssh = ssh_runtime.ssh_manager.clone();
                 #[cfg(test)]
                 let stops = ssh_runtime.service_stops.clone();
-                #[cfg(test)]
-                let probe = ssh_runtime.observations.lsp_projection_probe();
                 move || {
                     ServiceStopJob::spawn(async move {
                         #[cfg(test)]
-                        stops.note_stop("ssh", &probe);
+                        stops.note_stop("ssh");
                         ssh.shutdown().await.map_err(anyhow::Error::from)
                     })
                 }
@@ -1931,28 +1924,29 @@ mod observer_shutdown_tests {
 
     use anyhow::{Context, Result};
     use pl_lifecycle::CloseError;
-    use tokio::sync::{oneshot, watch};
+    use tokio::sync::oneshot;
 
     use super::*;
     use crate::studio::runtime::bot_archive_test_host::BotArchiveTestHost;
-    use crate::studio::runtime::observation_lifecycle::{LspObservationEvent, ObserverTask};
+    use crate::studio::runtime::lsp::test_support::{
+        HeldWorkspaceSnapshot, PausedWorkspaceSnapshots,
+    };
+    use crate::studio::runtime::observation_lifecycle::ObserverTask;
 
     struct PausedProjection {
         _temp: tempfile::TempDir,
         runtime: StudioRuntime,
         thread_id: String,
         initial: crate::StudioThreadLspStateSnapshot,
-        incarnation: Arc<()>,
         observer: Arc<pl_lifecycle::Managed<ObserverTask>>,
-        events_before_pause: usize,
-        resume: watch::Sender<bool>,
+        resume: Option<oneshot::Sender<()>>,
     }
 
     impl PausedProjection {
         async fn new() -> Result<Self> {
             let temp = tempfile::tempdir()?;
             let host = BotArchiveTestHost::new(&temp.path().join("home")).await?;
-            let runtime = host.runtime.as_ref().clone();
+            let mut runtime = host.runtime.as_ref().clone();
             let root = temp.path().join("workspace");
             let configuration = root.join(".anywork/lsp/observer-lifecycle.toml");
             tokio::fs::create_dir_all(configuration.parent().unwrap()).await?;
@@ -1982,7 +1976,6 @@ mod observer_shutdown_tests {
             let binding_id = binding
                 .lsp_binding_id
                 .context("real LSP binding identity")?;
-            let incarnation = binding.incarnation;
             let initial = loop {
                 let frame = events
                     .recv()
@@ -2012,36 +2005,52 @@ mod observer_shutdown_tests {
                 }
             };
             drop(events);
+            runtime.observations.request_close();
+            for kind in [
+                RuntimeObserver::Lsp,
+                RuntimeObserver::Profiles,
+                RuntimeObserver::Persistence,
+                RuntimeObserver::ModelRefresh,
+            ] {
+                assert!(runtime.observations.close(kind, None).await.is_clean());
+            }
+            runtime.observations = Arc::new(RuntimeObservationOwner::new());
+            let (entered, captured) = oneshot::channel();
+            let (resume, released) = oneshot::channel();
+            let registry = runtime.external_runtimes.lsp.clone();
+            let services = runtime.lsp_observation_services();
+            // The initial read must finish opening first. Arm the barrier on the actual data watcher.
+            let gate = Arc::new(std::sync::Mutex::new(None));
+            let source = PausedWorkspaceSnapshots {
+                registry,
+                server: "observer-lifecycle",
+                gate: gate.clone(),
+            };
             let observer = runtime
                 .observations
-                .start(RuntimeObserver::Lsp, |_| async {
-                    panic!("the fixture must retain the originally started watcher")
+                .start(RuntimeObserver::Lsp, move |cancel| {
+                    services.create_observer(cancel, source)
                 })
                 .await
                 .unwrap();
-            let (mut entered, resume) = runtime
-                .external_runtimes
-                .lsp_state
-                .pause_thread_snapshot_for_test("observer-lifecycle");
+            *gate.lock().unwrap() = Some(HeldWorkspaceSnapshot { entered, released });
             runtime.thread_factory.notify_lsp_binding_changed();
-            entered.wait_for(|paused| *paused).await?;
-            let published_at_pause = runtime
-                .external_runtimes
-                .lsp_state
-                .read_thread(&thread.id)
-                .await;
+            let captured = tokio::time::timeout(Duration::from_secs(10), captured).await??;
+            assert!(
+                captured
+                    .iter()
+                    .any(|server| server.id == "observer-lifecycle")
+            );
+            let published_at_pause = runtime.external_runtimes.lsp_state.read_thread(&thread.id);
             assert_eq!(published_at_pause.binding_id, initial.binding_id);
             assert!(published_at_pause.revision >= initial.revision);
-            let events_before_pause = runtime.observations.lsp_projection_probe().events().len();
             Ok(Self {
                 _temp: temp,
                 runtime,
                 thread_id: thread.id,
                 initial: published_at_pause,
-                incarnation,
                 observer,
-                events_before_pause,
-                resume,
+                resume: Some(resume),
             })
         }
 
@@ -2055,27 +2064,12 @@ mod observer_shutdown_tests {
                 .await
                 .unwrap();
             assert!(Arc::ptr_eq(&self.observer, &cached));
-            let events = self.runtime.observations.lsp_projection_probe().events();
-            let [
-                LspObservationEvent::ProjectionCompleted {
-                    task_id,
-                    thread_id,
-                    incarnation,
-                    binding_id,
-                    result,
-                },
-                LspObservationEvent::ServiceStopStarted("lsp"),
-                LspObservationEvent::ServiceStopStarted("ssh"),
-            ] = &events[self.events_before_pause..]
-            else {
-                panic!(
-                    "expected exactly one original projection completion before the real LSP/SSH stops: {events:?}"
-                )
-            };
-            assert_eq!(*task_id, Some(self.observer.get().task_id_for_test()));
-            assert_eq!(thread_id, &self.thread_id);
-            assert!(Arc::ptr_eq(incarnation, &self.incarnation));
-            assert_eq!(binding_id, &self.initial.binding_id);
+            let joined = self
+                .runtime
+                .observations
+                .close(RuntimeObserver::Lsp, None)
+                .await;
+            assert!(joined.is_clean());
             assert!(
                 self.runtime
                     .thread_factory
@@ -2088,18 +2082,13 @@ mod observer_shutdown_tests {
                     .binding_snapshot(&self.thread_id)
                     .is_none()
             );
-            // Session 已移除原 scope；guard 必须拒绝迟到提交而不是发布空快照。
-            // 上面的真实调用回执和任务身份才证明本轮刷新已完成，revision 不能充当 join ACK。
-            assert!(
-                result.is_none(),
-                "retired binding must not run the commit callback"
-            );
+            // The captured binding disappeared while the original observer owned its read.
+            // Its late commit must be refused, leaving the original publication unchanged.
             let current = self
                 .runtime
                 .external_runtimes
                 .lsp_state
-                .read_thread(&self.thread_id)
-                .await;
+                .read_thread(&self.thread_id);
             assert_eq!(current.thread_id, self.initial.thread_id);
             assert_eq!(current.revision, self.initial.revision);
             assert_eq!(current.binding_id, self.initial.binding_id);
@@ -2107,15 +2096,6 @@ mod observer_shutdown_tests {
         }
 
         async fn assert_no_service_started(&self) {
-            assert_eq!(
-                self.runtime
-                    .observations
-                    .lsp_projection_probe()
-                    .events()
-                    .len(),
-                self.events_before_pause,
-                "paused original refresh has not completed or allowed service stop"
-            );
             assert!(self.runtime.service_stops.lsp.lock().await.is_none());
             assert!(self.runtime.service_stops.ssh.lock().await.is_none());
             assert!(
@@ -2139,7 +2119,8 @@ mod observer_shutdown_tests {
 
     #[tokio::test]
     async fn paused_refresh_blocks_lsp_and_ssh_until_same_projection_ack() -> Result<()> {
-        let fixture = PausedProjection::new().await?;
+        let mut fixture = PausedProjection::new().await?;
+        let resume = fixture.resume.take().unwrap();
         fixture.runtime.broadcast_cancel().await;
         fixture.runtime.shutdown_agent_framework().await?;
         let mut shutdown = Box::pin(fixture.runtime.shutdown_runtime());
@@ -2149,7 +2130,7 @@ mod observer_shutdown_tests {
         }
         assert!(futures::poll!(&mut shutdown).is_pending());
         fixture.assert_no_service_started().await;
-        fixture.resume.send_replace(true);
+        resume.send(()).unwrap();
         let stopped = shutdown.await?;
         assert!(stopped.state.is_stopped());
         fixture.assert_original_refresh_finished().await;
@@ -2181,7 +2162,8 @@ mod observer_shutdown_tests {
     #[tokio::test]
     async fn projection_timeout_keeps_services_and_original_resource_for_strict_retry() -> Result<()>
     {
-        let fixture = PausedProjection::new().await?;
+        let mut fixture = PausedProjection::new().await?;
+        let resume = fixture.resume.take().unwrap();
         fixture.runtime.broadcast_cancel().await;
         fixture.runtime.shutdown_agent_framework().await?;
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -2206,7 +2188,7 @@ mod observer_shutdown_tests {
             .await;
         assert_eq!(pending.pending.len(), 1);
         assert_eq!(pending.pending[0].resource.label, "lspState");
-        fixture.resume.send_replace(true);
+        resume.send(()).unwrap();
         let retry = fixture.runtime.shutdown_runtime().await?;
         assert!(retry.state.is_stopped());
         fixture.assert_original_refresh_finished().await;
@@ -2219,14 +2201,15 @@ mod observer_shutdown_tests {
 
     #[tokio::test]
     async fn startup_dispose_also_waits_for_projection_and_session_ack() -> Result<()> {
-        let fixture = PausedProjection::new().await?;
+        let mut fixture = PausedProjection::new().await?;
+        let resume = fixture.resume.take().unwrap();
         let mut dispose = Box::pin(fixture.runtime.dispose_startup());
         tokio::select! {
             result = &mut dispose => { let _ = result; anyhow::bail!("startup dispose bypassed projection ACK"); },
             _ = fixture.runtime.service_stops.sessions_acked.notified() => {},
         }
         fixture.assert_no_service_started().await;
-        fixture.resume.send_replace(true);
+        resume.send(()).unwrap();
         dispose.await?;
         fixture.assert_original_refresh_finished().await;
         assert_eq!(

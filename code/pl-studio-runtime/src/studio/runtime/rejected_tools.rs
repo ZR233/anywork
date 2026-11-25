@@ -288,29 +288,12 @@ impl NativeToolCandidates {
 #[derive(Clone)]
 pub(super) struct RejectedToolOwners {
     sessions: crate::session::WeakSessionTable,
-    stop: Arc<Mutex<tokio_util::sync::CancellationToken>>,
 }
 impl RejectedToolOwners {
     pub(super) fn new(sessions: crate::session::WeakSessionTable) -> Self {
-        Self {
-            sessions,
-            stop: Default::default(),
-        }
+        Self { sessions }
     }
-    pub(super) fn start(&self) -> tokio_util::sync::CancellationToken {
-        let token = tokio_util::sync::CancellationToken::new();
-        *self
-            .stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = token.clone();
-        token
-    }
-    pub(super) fn stop(&self) {
-        self.stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancel();
-    }
+
     fn pool(&self, thread: &ThreadHandle) -> anyhow::Result<NativeToolCandidates> {
         let sessions = self.sessions.upgrade().ok_or(ThreadError::Closed)?;
         sessions

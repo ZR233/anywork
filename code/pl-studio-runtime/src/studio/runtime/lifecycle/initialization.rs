@@ -395,7 +395,9 @@ impl StudioRuntime {
                     super::super::observation_lifecycle::ObservationStartError(error).into(),
                 )
             })?;
-        self.start_model_refresh().await;
+        self.start_model_refresh()
+            .await
+            .map_err(|error| observer_start_error("start_model_refresh", error))?;
         self.start_model_catalog_probes()
             .await
             .map_err(|error| internal("start_model_catalogs", error))?;
@@ -478,8 +480,7 @@ impl StudioRuntime {
         );
         let lsp = if sessions.is_ok() && observers.0.is_clean() {
             #[cfg(test)]
-            self.service_stops
-                .note_stop("lsp", &self.observations.lsp_projection_probe());
+            self.service_stops.note_stop("lsp");
             self.external_runtimes
                 .lsp
                 .shutdown()
@@ -492,8 +493,7 @@ impl StudioRuntime {
         };
         let ssh = if sessions.is_ok() && lsp.is_ok() {
             #[cfg(test)]
-            self.service_stops
-                .note_stop("ssh", &self.observations.lsp_projection_probe());
+            self.service_stops.note_stop("ssh");
             self.ssh_manager
                 .shutdown()
                 .await

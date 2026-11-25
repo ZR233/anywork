@@ -8,7 +8,7 @@ use pl_tool::mcp::McpConnector;
 
 use super::super::StudioRuntime;
 use super::super::attachment_drafts::AttachmentDraftRuntime;
-use super::super::lsp_state::LspStateRuntime;
+use super::super::lsp::LspStateRuntime;
 use super::super::residency::ThreadResidency;
 use super::super::{
     AccountUsageRuntime, ModelPerformanceOwner, ShutdownProgressBus, SkillCatalogRuntime,
@@ -163,14 +163,11 @@ impl StudioRuntime {
             observations,
             thread_observations,
             settings_updates,
-            settings_refresh: Default::default(),
             model_catalog_tasks: Default::default(),
             tool_refresh: Default::default(),
             rejected_tools,
             tool_catalog_updates: Default::default(),
             sessions,
-            #[cfg(test)]
-            s2_delete_publication_failure: Default::default(),
             thread_factory,
             instance_lock: RuntimeLockOwner::new(None),
             store,

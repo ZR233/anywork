@@ -217,7 +217,7 @@ impl StudioThreadFactory {
             .is_some()
             .then(|| Arc::new(crate::thread_assembler::media::MediaHost(store.clone())));
         let lsp = self.services.lsp_runtime.execution_scope(
-            &crate::studio::runtime::lsp_state::execution_endpoint(project.ssh_alias.as_deref()),
+            &crate::studio::runtime::lsp::execution_endpoint(project.ssh_alias.as_deref()),
         );
         // File backends, semantic tools and status must retain the same endpoint view.
         let workspace = workspace.with_lsp_runtime(Some(lsp.clone()));

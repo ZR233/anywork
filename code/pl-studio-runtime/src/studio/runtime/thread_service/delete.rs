@@ -395,17 +395,6 @@ impl StudioRuntime {
         operation.phase = DeletePhase::Published;
         operation.members.clear();
         operation.changed()?;
-        #[cfg(test)]
-        {
-            let mut fault = self
-                .s2_delete_publication_failure
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if fault.as_deref() == Some(root_id.as_str()) {
-                fault.take();
-                anyhow::bail!("injected failure before delete Published persistence");
-            }
-        }
         self.store.save_thread_delete(&operation).await?;
         Ok(Some(DeleteThreadCommandReply {
             result: StudioDeleteThreadResult {

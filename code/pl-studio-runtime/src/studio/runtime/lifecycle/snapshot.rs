@@ -26,32 +26,26 @@ impl StudioRuntime {
                     ))
                 })?;
         let (settings, config, catalog) = published?;
-        self.settings_updates.send_replace(settings);
+        self.settings_updates.send_if_modified(|current| {
+            if settings.revision <= current.revision {
+                return false;
+            }
+            *current = settings;
+            true
+        });
         self.agent_facility
             .product_events
             .emit_settings_config_state(crate::StudioSettingsConfigStateSnapshot {
                 state: crate::ObservedResource::ready(config.revision, config.updated_at, config),
             });
-        self.agent_facility
-            .product_events
-            .emit_model_catalog_state(super::super::settings_api::model_catalog_state(catalog));
+        self.observations
+            .model_catalog_publication
+            .publish(&self.agent_facility.product_events, catalog);
         for mcp_catalog in self.config_runtime.refresh_mcp_catalogs_for_models()? {
             self.agent_facility
                 .product_events
                 .emit_mcp_catalog(mcp_catalog);
         }
-        Ok(())
-    }
-
-    pub(in crate::studio::runtime) fn publish_model_catalog_state(&self) -> Result<()> {
-        let (settings, catalog_state) = self.config_runtime.read_with_catalog()?;
-        let catalog =
-            super::super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
-        self.agent_facility
-            .product_events
-            .emit_model_catalog_state(super::super::settings_api::model_catalog_state(catalog));
-        // Online model observations do not change MCP account/credential configuration.
-        // Publishing this read model must not perform an independent configuration write.
         Ok(())
     }
 

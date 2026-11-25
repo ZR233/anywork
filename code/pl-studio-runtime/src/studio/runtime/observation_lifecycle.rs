@@ -19,23 +19,14 @@ pub(super) struct ObservationCleanupError(#[source] Arc<JoinError>);
 pub(super) struct ObserverTask {
     cancellation: CancellationToken,
     completion: Shared<BoxFuture<'static, Result<(), Arc<JoinError>>>>,
-    #[cfg(test)]
-    task_id: tokio::task::Id,
 }
 
 impl ObserverTask {
     pub(super) fn new(cancellation: CancellationToken, task: JoinHandle<()>) -> Self {
         Self {
             cancellation,
-            #[cfg(test)]
-            task_id: task.id(),
             completion: async move { task.await.map_err(Arc::new) }.boxed().shared(),
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn task_id_for_test(&self) -> tokio::task::Id {
-        self.task_id
     }
 }
 
@@ -96,6 +87,7 @@ pub(super) enum RuntimeObserver {
     Profiles,
     Persistence,
     Lsp,
+    ModelRefresh,
 }
 
 impl RuntimeObserver {
@@ -104,6 +96,7 @@ impl RuntimeObserver {
             Self::Profiles => "agentProfiles",
             Self::Persistence => "persistenceObserver",
             Self::Lsp => "lspState",
+            Self::ModelRefresh => "modelRefresh",
         }
     }
 }
@@ -113,11 +106,12 @@ pub(super) struct RuntimeObservationOwner {
     profiles: ScopeOwner<ObservationCleanupError>,
     persistence_projection: ScopeOwner<ObservationCleanupError>,
     lsp_projection: ScopeOwner<ObservationCleanupError>,
+    model_refresh: ScopeOwner<ObservationCleanupError>,
+    pub(super) model_catalog_publication: super::model_refresh::ModelCatalogPublication,
     profiles_start: ObserverStart,
     persistence_start: ObserverStart,
     lsp_start: ObserverStart,
-    #[cfg(test)]
-    lsp_projection_probe: LspProjectionProbe,
+    model_refresh_start: ObserverStart,
 }
 
 impl RuntimeObservationOwner {
@@ -130,12 +124,13 @@ impl RuntimeObservationOwner {
                 .child("persistenceObserver")
                 .expect("new observer root"),
             lsp_projection: scope.child("lspState").expect("new observer root"),
+            model_refresh: scope.child("modelRefresh").expect("new observer root"),
+            model_catalog_publication: Default::default(),
             root,
             profiles_start: ObserverStart::default(),
             persistence_start: ObserverStart::default(),
             lsp_start: ObserverStart::default(),
-            #[cfg(test)]
-            lsp_projection_probe: LspProjectionProbe::default(),
+            model_refresh_start: ObserverStart::default(),
         }
     }
 
@@ -144,6 +139,7 @@ impl RuntimeObservationOwner {
             RuntimeObserver::Profiles => &self.profiles,
             RuntimeObserver::Persistence => &self.persistence_projection,
             RuntimeObserver::Lsp => &self.lsp_projection,
+            RuntimeObserver::ModelRefresh => &self.model_refresh,
         }
     }
 
@@ -156,17 +152,13 @@ impl RuntimeObservationOwner {
             RuntimeObserver::Profiles => &self.profiles_start,
             RuntimeObserver::Persistence => &self.persistence_start,
             RuntimeObserver::Lsp => &self.lsp_start,
+            RuntimeObserver::ModelRefresh => &self.model_refresh_start,
         };
         start.get_or_init(self.child(observer).handle(), observer.label(), create)
     }
 
     pub(super) fn request_close(&self) {
         self.root.request_close();
-    }
-
-    #[cfg(test)]
-    pub(super) fn lsp_projection_probe(&self) -> LspProjectionProbe {
-        self.lsp_projection_probe.clone()
     }
 
     pub(super) async fn close(
@@ -178,57 +170,6 @@ impl RuntimeObservationOwner {
             Some(deadline) => self.child(observer).close(deadline).await,
             None => self.child(observer).wait_closed().await,
         }
-    }
-}
-
-/// 仅测试使用的每 owner 顺序回执；不驱动关闭或保存产品快照。
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(super) struct LspProjectionProbe(Arc<std::sync::Mutex<Vec<LspObservationEvent>>>);
-
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub(super) enum LspObservationEvent {
-    ProjectionCompleted {
-        task_id: Option<tokio::task::Id>,
-        thread_id: String,
-        incarnation: Arc<()>,
-        binding_id: Option<String>,
-        result: Option<crate::StudioThreadLspStateSnapshot>,
-    },
-    ServiceStopStarted(&'static str),
-}
-
-#[cfg(test)]
-impl LspProjectionProbe {
-    pub(super) fn projection_completed(
-        &self,
-        thread_id: &str,
-        incarnation: &Arc<()>,
-        binding_id: Option<String>,
-        result: Option<crate::StudioThreadLspStateSnapshot>,
-    ) {
-        self.0
-            .lock()
-            .unwrap()
-            .push(LspObservationEvent::ProjectionCompleted {
-                task_id: tokio::task::try_id(),
-                thread_id: thread_id.to_owned(),
-                incarnation: incarnation.clone(),
-                binding_id,
-                result,
-            });
-    }
-
-    pub(super) fn service_stop_started(&self, service: &'static str) {
-        self.0
-            .lock()
-            .unwrap()
-            .push(LspObservationEvent::ServiceStopStarted(service));
-    }
-
-    pub(super) fn events(&self) -> Vec<LspObservationEvent> {
-        self.0.lock().unwrap().clone()
     }
 }
 
@@ -296,3 +237,6 @@ impl std::error::Error for ObservationCloseError {
             })
     }
 }
+
+#[cfg(test)]
+mod tests;
