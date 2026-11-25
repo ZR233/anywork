@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use pl_model_wire::completion::request_support::{
     MediaRepresentationPlan, finalize_body, media_inline_data, message_content_text,
@@ -64,23 +64,39 @@ pub fn build_http_request(
 
     let media_plan = MediaRepresentationPlan::for_request(request, model)?;
 
-    let replay_by_start: BTreeMap<usize, (&[Value], usize)> = request
+    let replay_by_start: BTreeMap<_, _> = request
         .replay_spans
         .iter()
-        .map(|span| (span.start, (span.output.as_slice(), span.semantic.len())))
+        .map(|span| (span.start, span))
         .collect();
 
     let mut contents: Vec<Value> = Vec::new();
+    // The validated tool history pairs each result with its call in order, even when
+    // the same upstream ID appears in separate assistant responses.
+    let mut pending_calls = VecDeque::new();
     let mut index = 0_usize;
     while index < request.input.len() {
-        if let Some((parts, semantic_len)) = replay_by_start.get(&index) {
-            if !parts.is_empty() {
-                push_model_parts(&mut contents, parts.to_vec());
+        let item = &request.input[index];
+        let replay = replay_by_start.get(&index);
+        if !pending_calls.is_empty()
+            && (replay.is_some()
+                || !item
+                    .as_message()
+                    .is_some_and(|message| message.role == MessageRole::Tool))
+        {
+            return Err(protocol_error(
+                "functionResponse batch must immediately follow its functionCalls",
+            ));
+        }
+        if let Some(span) = replay {
+            pending_calls.extend(span.gemini_tool_calls()?);
+            if !span.output.is_empty() {
+                push_model_parts(&mut contents, span.output.clone());
             }
-            index = index.saturating_add((*semantic_len).max(1));
+            index = index.saturating_add(span.semantic.len().max(1));
             continue;
         }
-        match &request.input[index] {
+        match item {
             ModelContextItem::ToolMedia { items } => {
                 let content = tool_media_content(items);
                 let parts = encode_parts(&content.parts, &request.prepared_content, &media_plan)?;
@@ -108,6 +124,7 @@ pub fn build_http_request(
                 }
                 MessageRole::Assistant => {
                     let mut parts = Vec::new();
+                    let mut upstream_ids = BTreeSet::new();
                     let text = message_content_text(&message.content);
                     if !text.is_empty() {
                         parts.push(json!({ "text": text }));
@@ -122,9 +139,16 @@ pub fn build_http_request(
                         let mut fc = Map::new();
                         fc.insert("name".into(), Value::String(call.name.clone()));
                         fc.insert("args".into(), args);
-                        if !call.item_id.starts_with("gemini_noid:") {
-                            fc.insert("id".into(), Value::String(call.item_id.clone()));
+                        let id = (!call.item_id.is_empty()).then_some(call.item_id.as_str());
+                        if let Some(id) = id {
+                            if !upstream_ids.insert(id) {
+                                return Err(protocol_error(
+                                    "duplicate functionCall id in the same batch",
+                                ));
+                            }
+                            fc.insert("id".into(), Value::String(id.to_owned()));
                         }
+                        pending_calls.push_back((call.name.as_str(), id));
                         parts.push(json!({ "functionCall": fc }));
                     }
                     if parts.is_empty() {
@@ -136,12 +160,20 @@ pub fn build_http_request(
                     let record = message.tool_result.as_ref().ok_or_else(|| {
                         protocol_error("tool result message missing typed tool_result record")
                     })?;
+                    let (name, id) = pending_calls.pop_front().ok_or_else(|| {
+                        protocol_error("tool result has no corresponding functionCall")
+                    })?;
+                    if record.name != name {
+                        return Err(protocol_error(
+                            "tool result name does not match functionCall",
+                        ));
+                    }
                     let text = message_content_text(&message.content);
                     let mut fr = Map::new();
-                    fr.insert("name".into(), Value::String(record.name.clone()));
+                    fr.insert("name".into(), Value::String(name.to_owned()));
                     fr.insert("response".into(), json!({ "result": text }));
-                    if !record.item_id.starts_with("gemini_noid:") {
-                        fr.insert("id".into(), Value::String(record.item_id.clone()));
+                    if let Some(id) = id {
+                        fr.insert("id".into(), Value::String(id.to_owned()));
                     }
                     push_function_response(&mut contents, json!({ "functionResponse": fr }));
                 }
@@ -153,6 +185,9 @@ pub fn build_http_request(
             }
         }
         index += 1;
+    }
+    if !pending_calls.is_empty() {
+        return Err(protocol_error("functionResponse batch is incomplete"));
     }
 
     let mut body = Map::new();
@@ -243,6 +278,12 @@ pub fn build_http_request(
 
     finalize_body(&mut body, model, &request.reasoning);
 
+    if enables_streamed_function_arguments(&body) {
+        return Err(protocol_error(
+            "streamFunctionCallArguments is unsupported; Gemini requires complete function arguments",
+        ));
+    }
+
     if body.contains_key("model") {
         return Err(protocol_error(
             "Gemini generateContent body must not contain top-level `model`; model is carried in URL path",
@@ -258,6 +299,26 @@ pub fn build_http_request(
         visible_output: VisibleOutputProtocol::TaggedText,
         close_on_terminal: false,
     })
+}
+
+fn enables_streamed_function_arguments(body: &Map<String, Value>) -> bool {
+    ["toolConfig", "tool_config"]
+        .into_iter()
+        .filter_map(|key| body.get(key))
+        .flat_map(|tool_config| {
+            ["functionCallingConfig", "function_calling_config"]
+                .into_iter()
+                .filter_map(move |key| tool_config.get(key))
+        })
+        .flat_map(|calling_config| {
+            [
+                "streamFunctionCallArguments",
+                "stream_function_call_arguments",
+            ]
+            .into_iter()
+            .filter_map(move |key| calling_config.get(key))
+        })
+        .any(|mode| mode.as_bool() != Some(false))
 }
 
 fn parameter_writes_path(
