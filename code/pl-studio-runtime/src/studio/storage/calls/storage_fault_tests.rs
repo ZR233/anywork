@@ -586,6 +586,7 @@ async fn assert_failed_locator_repair_does_not_starve_absolute_accounting(
         thread_id: "another-session".into(),
         revision: 9,
         has_unpriced_usage: false,
+        has_incomplete_usage: false,
         purpose_costs: vec![PurposeUsageProjection {
             purpose: None,
             estimated_costs: vec![RuntimeCostAmount {
@@ -1601,6 +1602,7 @@ async fn summary_alone_notifies_costs_and_rejects_same_revision_conflicts() -> R
         thread_id: "thread".into(),
         revision: 1,
         has_unpriced_usage: false,
+        has_incomplete_usage: false,
         purpose_costs: vec![],
     };
     store.replace_session_usage(projection.clone())?;
@@ -1649,6 +1651,7 @@ async fn unwritable_diagnostics_do_not_starve_absolute_accounting() -> Result<()
             thread_id: "thread".into(),
             revision: 7,
             has_unpriced_usage: false,
+            has_incomplete_usage: false,
             purpose_costs: vec![PurposeUsageProjection {
                 purpose: None,
                 estimated_costs: vec![RuntimeCostAmount {

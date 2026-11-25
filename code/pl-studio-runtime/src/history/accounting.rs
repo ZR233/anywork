@@ -23,6 +23,8 @@ pub struct HistoryUsageFact {
     pub turn_id: Option<String>,
     pub outcome: UsageOutcome,
     pub record: crate::InferenceBillingRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<pl_core::context::OpaquePayload>,
 }
 
 /// Immutable usage/accounting candidates for one admission unit.
@@ -47,7 +49,7 @@ impl UsageFold {
     fn record(&mut self, fact: &HistoryUsageFact, database_id: &str) -> Result<()> {
         let recorded_at = milliseconds_from_seconds(fact.record.recorded_at)?;
         let payload = serde_json::to_vec(&fact.record)?;
-        self.summary.add_usage(
+        self.summary.add_usage_sample(
             &ModelUsage {
                 input_tokens: fact.record.accounting.usage.input_tokens,
                 output_tokens: fact.record.accounting.usage.output_tokens,
@@ -67,6 +69,10 @@ impl UsageFold {
             },
             false,
             None,
+            fact.record
+                .attempt
+                .as_ref()
+                .map(|attempt| attempt.usage_is_terminal),
         );
         self.has_incomplete_usage |= self.summary.has_incomplete_usage();
         self.has_unpriced_usage |= fact.record.accounting.has_unpriced_usage();
@@ -105,18 +111,25 @@ impl UsageFold {
         event.row_scope = Some(HistoryBusinessRowScope::Accounting);
         event.row_key = Some("accounting:session".into());
         event.is_anchor = !self.accounting_anchor;
-        let bodies = pack_bodies(
-            &mut event,
-            vec![PendingBody::new(
-                "accounting",
+        let mut pending_bodies = vec![PendingBody::new(
+            "accounting",
+            HistoryBodyRole::Other {
+                name: "accounting".into(),
+            },
+            Some("application/json".into()),
+            payload,
+        )];
+        if let Some(settlement) = &fact.settlement {
+            pending_bodies.push(PendingBody::new(
+                "modelSettlement",
                 HistoryBodyRole::Other {
-                    name: "accounting".into(),
+                    name: "modelSettlement".into(),
                 },
                 Some("application/json".into()),
-                payload,
-            )],
-            database_id,
-        )?;
+                serde_json::to_vec(settlement)?,
+            ));
+        }
+        let bodies = pack_bodies(&mut event, pending_bodies, database_id)?;
         event.payload_schema = "anywork.accounting/1".into();
         event.payload_json = serde_json::to_string(&BusinessEnvelope { head, bodies })?;
         self.accounting_anchor = true;
@@ -210,7 +223,7 @@ impl HistoryStore {
         _admission: &tokio::sync::MutexGuard<'_, ()>,
         facts: &[HistoryUsageFact],
     ) -> Result<PreparedHistoryUsage> {
-        {
+        let admitted_head = {
             let state = self
                 .inner
                 .state
@@ -219,7 +232,8 @@ impl HistoryStore {
             if !state.accepting {
                 return Err(HistoryError::Closed);
             }
-        }
+            state.head
+        };
         if facts.is_empty() {
             return Ok(PreparedHistoryUsage {
                 events: Vec::new(),
@@ -252,7 +266,22 @@ impl HistoryStore {
         }
 
         let previous = match self.latest_record("accounting:session").await? {
-            None => HistoryAccountingHead::default(),
+            None => {
+                // Imported costs can survive without any usage checkpoint. A new sample
+                // cannot recover their counters, including costs for another purpose or currency.
+                let saved_costs = db::business_anchors(
+                    &self.inner.reader,
+                    HistoryBusinessRowScope::Cost,
+                    admitted_head,
+                    None,
+                    1,
+                )
+                .await?;
+                HistoryAccountingHead {
+                    has_incomplete_usage: !saved_costs.is_empty(),
+                    ..Default::default()
+                }
+            }
             Some(record) => match decode_business_head_from_record(&record.record)? {
                 HistoryBusinessRowHead::Accounting(head) => head,
                 _ => {
@@ -331,6 +360,23 @@ impl HistoryStore {
         })
     }
 
+    /// Reads the original settlement from a committed event, excluding pending admissions.
+    pub(crate) async fn read_saved_model_settlement(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<pl_core::context::OpaquePayload>> {
+        let Some(saved) = db::event(&self.inner.reader, event_id).await? else {
+            return Ok(None);
+        };
+        let reader = self.reader();
+        let body = read_event_body_bytes(&reader, &saved.record, "modelSettlement", None).await;
+        reader.close().await;
+        body?
+            .map(|body| serde_json::from_slice(&body))
+            .transpose()
+            .map_err(HistoryError::from)
+    }
+
     async fn accepted_usage_sequence(&self, fact: &HistoryUsageFact) -> Result<Option<u64>> {
         let payload = serde_json::to_vec(&fact.record)?;
         let pending = {
@@ -353,7 +399,14 @@ impl HistoryStore {
             Some(bytes) => bytes,
             None => return Err(HistoryError::Conflict(fact.event_id.clone())),
         };
-        if existing == payload {
+        let actual_settlement =
+            read_event_body_bytes(&reader, &record, "modelSettlement", None).await?;
+        let expected_settlement = fact
+            .settlement
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()?;
+        if existing == payload && actual_settlement == expected_settlement {
             Ok(Some(record.seq))
         } else {
             Err(HistoryError::Conflict(fact.event_id.clone()))

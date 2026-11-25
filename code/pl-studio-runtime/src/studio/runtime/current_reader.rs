@@ -941,6 +941,213 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_current_migrates_v1_stream_before_paused_projection() -> Result<()> {
+        use pl_core::{
+            context::OpaquePayload,
+            thread::{
+                UsageCost,
+                current::{CurrentModelCall, SavedModelPhase},
+            },
+        };
+        use pl_model::completion::{
+            MODEL_STREAM_CURRENT_FORMAT, MODEL_STREAM_CURRENT_VERSION, ModelCallIdentity,
+            ModelStreamCurrent,
+        };
+        use serde_json::json;
+
+        const ATTEMPT: &str = "saved-attempt";
+        const PARTIAL: &str = r#"{"path":"src/ma"#;
+        let generation = |number: u32, text: &str, tokens: u64| {
+            json!({
+                "attemptId": ATTEMPT, "generation": number, "state": {"kind":"open"},
+                "reportedModelIsTerminal": false,
+                "contentParts": [{
+                    "blockId": "text", "contentIndex": 0, "kind": "outputText", "text": text,
+                    "identity": {"aggregate":{"channel":"text"}}
+                }],
+                "blocks": [], "reasoningSummaryParts": [], "rawReasoningParts": [],
+                "toolInputs": [], "toolCalls": [], "toolCallCallers": {}, "callBindings": [],
+                "responsesContextItems": [], "replay": {"pendingItems": [], "items": []},
+                "presentationItems": [], "members": [], "presentationStates": {},
+                "finalUsage": {"inputTokens":tokens,"totalTokens":tokens}, "usageIsTerminal": true
+            })
+        };
+        let mut oldest = generation(0, "oldest body", 3);
+        oldest["state"] = json!({"kind":"failed","message":"first disconnect"});
+        let mut earlier = generation(1, "earlier body", 5);
+        earlier["state"] = json!({"kind":"failed","message":"second disconnect"});
+        earlier["previousGenerations"] = json!([oldest]);
+        let mut legacy = generation(2, "paused body", 7);
+        legacy["previousGenerations"] = json!([earlier]);
+        let binding = ModelCallIdentity::new(ATTEMPT, "call_0", "fc_0");
+        legacy["toolInputs"] = json!([{
+            "itemId":"fc_0", "providerCallId":"call_0", "callId":&binding.call_id,
+            "name":"read_file", "kind":"function", "input":PARTIAL, "phase":"streaming",
+            "streamAliases":[], "itemAliases":[], "callAliases":[]
+        }]);
+        legacy["callBindings"] = json!([binding]);
+
+        let mut env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let thread = env
+                .runtime
+                .create_thread(&env.project.id, "legacy model stream")
+                .await?;
+            let paths = env.runtime.store.registered_session_paths(&thread.id)?;
+            env.runtime.shutdown_runtime().await?;
+            let epoch = RuntimeEpoch::new();
+            let mut saved = ThreadCurrent::new(thread.id.clone(), epoch);
+            saved.snapshot_revision = 1;
+            saved.state.usage_summary.totals.inference_count = 4;
+            saved
+                .state
+                .usage_summary
+                .pricing
+                .estimated_costs
+                .push(UsageCost {
+                    currency: "USD".into(),
+                    amount: 0.375,
+                });
+            saved.model_call = Some(CurrentModelCall {
+                source_run_id: epoch,
+                source_execution_id: "saved-execution".into(),
+                source_turn_id: "saved-turn".into(),
+                source_attempt_id: ATTEMPT.into(),
+                tools: Arc::from([]),
+                tool_call_mode: pl_core::model::ToolCallMode::Sequential,
+                solo_tool_ids: Arc::from([]),
+                prepared_parameters: None,
+                phase: SavedModelPhase::Streaming {
+                    stream: OpaquePayload::new(MODEL_STREAM_CURRENT_FORMAT, 1, legacy.to_string())?,
+                },
+            });
+            let original = serde_json::to_vec(&saved)?;
+            let broken_history = b"Current recovery must not open History";
+            tokio::fs::create_dir_all(paths.root()).await?;
+            tokio::fs::write(paths.current_file(), &original).await?;
+            tokio::fs::write(paths.history_database(), broken_history).await?;
+            env.restart().await?;
+
+            let demand = ReadDemand {
+                max_items: 64,
+                max_bytes: 64 * 1024,
+            };
+            let reader = env
+                .runtime
+                .open_current_reader(&thread.id, CURRENT_PROTOCOL_VERSION, demand)
+                .await?;
+            let prepared = reader.saved_current().await?;
+            assert_eq!(prepared.state.usage_summary, saved.state.usage_summary);
+            assert!(prepared.state.tasks.is_empty() && prepared.state.deliveries.is_empty());
+            let call = prepared.model_call.as_ref().context("saved model call")?;
+            assert_eq!(
+                (call.source_attempt_id.as_str(), call.source_run_id),
+                (ATTEMPT, epoch)
+            );
+            let SavedModelPhase::Streaming { stream } = &call.phase else {
+                anyhow::bail!("expected paused stream material")
+            };
+            assert_eq!(stream.version(), MODEL_STREAM_CURRENT_VERSION);
+            let stream = ModelStreamCurrent::decode(stream)?;
+            assert_eq!(stream.tool_inputs[0].input, PARTIAL);
+            assert!(stream.tool_calls.is_empty());
+            let [earlier] = stream.previous_generations.as_slice() else {
+                anyhow::bail!("expected earlier generation")
+            };
+            let [oldest] = earlier.previous_generations.as_slice() else {
+                anyhow::bail!("expected oldest generation")
+            };
+            for (actual, number, text, tokens) in [
+                (&stream, 2, "paused body", 7),
+                (earlier, 1, "earlier body", 5),
+                (oldest, 0, "oldest body", 3),
+            ] {
+                assert_eq!(
+                    (actual.attempt_id.as_str(), actual.generation),
+                    (ATTEMPT, number)
+                );
+                assert_eq!(actual.content_parts[0].text, text);
+                assert_eq!(
+                    actual
+                        .final_usage
+                        .as_ref()
+                        .and_then(|usage| usage.total_tokens),
+                    Some(tokens)
+                );
+                assert!(!actual.usage_is_terminal && actual.settlement.is_none());
+            }
+
+            let view = reader.snapshot(demand).await?;
+            assert!(!view.projection.execution_present && view.projection.active.is_none());
+            let tool = view
+                .projection
+                .atoms
+                .iter()
+                .find(|atom| atom.tool.is_some())
+                .context("paused tool preview")?;
+            assert!(matches!(
+                tool.lifecycle,
+                crate::ChatAtomLifecycle::Active {
+                    status: crate::ChatActiveStatus::Waiting,
+                    ..
+                }
+            ));
+            let mut bodies = Vec::new();
+            for atom in &view.projection.atoms {
+                for content in &atom.contents {
+                    let window = reader
+                        .read_body(
+                            content.reference.clone(),
+                            ContentRange {
+                                offset: 0,
+                                max_bytes: 1024,
+                            },
+                        )
+                        .await?;
+                    bodies.push(String::from_utf8(window.bytes)?);
+                }
+            }
+            for expected in ["paused body", "earlier body", PARTIAL] {
+                assert!(
+                    bodies.iter().any(|body| body == expected),
+                    "missing paused body {expected:?}"
+                );
+            }
+            assert_eq!(tokio::fs::read(paths.current_file()).await?, original);
+
+            let mut broken = legacy.clone();
+            broken["previousGenerations"][0]["finalUsage"]["totalTokens"] = json!("corrupt");
+            for (version, body, cause) in [
+                (99, &legacy, "unsupported model stream current version"),
+                (1, &broken, "invalid type"),
+            ] {
+                saved.model_call.as_mut().unwrap().phase = SavedModelPhase::Streaming {
+                    stream: OpaquePayload::new(
+                        MODEL_STREAM_CURRENT_FORMAT,
+                        version,
+                        body.to_string(),
+                    )?,
+                };
+                let rejected = serde_json::to_vec(&saved)?;
+                tokio::fs::write(paths.current_file(), &rejected).await?;
+                let error = reader.saved_current().await.unwrap_err();
+                assert!(format!("{error:#}").contains(cause), "{error:#}");
+                assert!(reader.snapshot(demand).await.is_err());
+                assert_eq!(tokio::fs::read(paths.current_file()).await?, rejected);
+            }
+            assert_eq!(
+                tokio::fs::read(paths.history_database()).await?,
+                broken_history
+            );
+            reader.close().await?;
+            assert!(env.root_provider.recorded().is_empty());
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
     async fn cold_current_and_its_body_survive_broken_history_and_close_joins_metadata_watch()
     -> Result<()> {
         let mut env = Environment::new(vec![], vec![]).await?;

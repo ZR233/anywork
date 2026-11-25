@@ -25,6 +25,8 @@ fn response(parts: Vec<Value>, tool_calls: Vec<ToolCall>) -> CompletionResponse 
         model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
+        usage_is_terminal: false,
+        settlements: Vec::new(),
     }
 }
 
@@ -187,10 +189,10 @@ fn malformed_stream_structures_and_empty_success_never_submit_an_answer() {
         let mut decoder = GEMINI_WIRE_CODEC
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
         let decoded = decoder
-            .decode_frame(&frame.to_string(), Some("audit-request"), &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("audit-request"))
             .unwrap();
-        assert!(decoded.events.iter().any(|event| matches!(event, ModelStreamEvent::Usage(usage) if usage.total_tokens == Some(5))), "{frame}");
-        assert!(decoded.events.iter().any(|event| matches!(event, ModelStreamEvent::Failed { failure } if failure.code.as_deref() == Some("invalid_response"))), "{frame}");
+        assert!(decoded.events.iter().any(|event| matches!(event, ModelStreamEvent::Usage { usage, .. } if usage.total_tokens == Some(5))), "{frame}");
+        assert!(decoded.events.iter().any(|event| matches!(event, ModelStreamEvent::Failed { failure } if failure.kind == pl_protocol::ProviderFailureKind::Protocol)), "{frame}");
         assert!(decoder.finish().is_empty());
     }
     for parts in [
@@ -202,7 +204,7 @@ fn malformed_stream_structures_and_empty_success_never_submit_an_answer() {
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
         let frame = json!({"candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP"}]});
         decoder
-            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("audit-request"))
             .unwrap();
         assert!(
             decoder
@@ -219,13 +221,12 @@ fn malformed_error_after_stop_cannot_be_ignored_as_trailing_metadata() {
         .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
     let output = json!({"candidates":[{"content":{"role":"model","parts":[{"text":"provisional answer"}]},"finishReason":"STOP"}]});
     decoder
-        .decode_frame(&output.to_string(), None, &str::to_owned)
+        .decode_frame(&output.to_string(), &stream_context("audit-request"))
         .unwrap();
     let error = decoder
         .decode_frame(
             r#"{"error":"invalid envelope","usageMetadata":{"totalTokenCount":5}}"#,
-            None,
-            &str::to_owned,
+            &stream_context("audit-request"),
         )
         .unwrap();
     assert!(
@@ -248,13 +249,13 @@ fn blocked_and_failed_frames_keep_usage_and_raw_usage_extensions() {
         let mut decoder = GEMINI_WIRE_CODEC
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
         let decoded = decoder
-            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("audit-request"))
             .unwrap();
         assert!(
             decoded
                 .events
                 .iter()
-                .any(|event| matches!(event, ModelStreamEvent::Usage(_)))
+                .any(|event| matches!(event, ModelStreamEvent::Usage { .. }))
         );
         assert!(matches!(
             decoded.events.last(),
@@ -270,8 +271,7 @@ fn blocked_and_failed_frames_keep_usage_and_raw_usage_extensions() {
         decoder
             .decode_frame(
                 r#"{"usageMetadata":{"promptTokenCount":"invalid"}}"#,
-                None,
-                &str::to_owned
+                &stream_context("audit-request")
             )
             .is_err()
     );
@@ -319,4 +319,26 @@ fn public_replay_rejects_non_object_arguments_and_isolates_signature_aliases() {
             .is_err()
     );
     assert!(matches!(request.input[0], ModelContextItem::Message { .. }));
+}
+
+fn stream_context(request_id: &str) -> pl_model_wire::provider_error::StreamFrameContext<'_> {
+    use pl_model_wire::provider_error::{
+        ErrorObservedAt, ObservedRetry, ProviderErrorContext, ProviderErrorEntry,
+        StreamFrameContext,
+    };
+    StreamFrameContext {
+        policy: pl_model_gemini::adapter::ADAPTER.error_policy,
+        entry: ProviderErrorEntry::Sse,
+        event_name: None,
+        wire_api: pl_model_wire::protocol::WireApi::GeminiGenerateContent,
+        endpoint: None,
+        failure: ProviderErrorContext {
+            stage: pl_protocol::ProviderFailureStage::Stream,
+            request_id: Some(request_id),
+            http_status: None,
+            observed_at: ErrorObservedAt::now(),
+            header_retry: ObservedRetry::Absent,
+            redact: &|text| text.replace("fixture-credential", "[REDACTED_CREDENTIAL]"),
+        },
+    }
 }

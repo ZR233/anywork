@@ -1,186 +1,246 @@
-use pl_model_wire::wire_codec::ParsedHttpError;
-use pl_protocol::{ProviderFailureKind, RetryDisposition};
+use pl_model_wire::provider_error::{
+    ClassifiedProviderError, ErrorDecodeError, ProviderErrorEntry, ProviderErrorInput,
+    ProviderErrorPolicy, ProviderFailureKind as Kind, RetryHint,
+};
 use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Debug)]
+pub(crate) struct GeminiErrorPolicy;
 
 #[derive(Deserialize)]
-struct GoogleErrorEnvelope {
-    error: GoogleRpcError,
-}
-
-#[derive(Deserialize)]
-struct GoogleRpcError {
-    code: Option<serde_json::Value>,
-    message: Option<String>,
+struct GoogleError {
+    code: Option<GoogleCode>,
     status: Option<String>,
-    details: Option<Vec<serde_json::Value>>,
+    message: Option<String>,
+    #[serde(default)]
+    details: Vec<Value>,
 }
 
-pub fn parse_google_http_error(body: &[u8]) -> Option<ParsedHttpError> {
-    let envelope = match body.iter().copied().find(|b| !b.is_ascii_whitespace()) {
-        Some(b'[') => serde_json::from_slice::<Vec<GoogleErrorEnvelope>>(body)
-            .ok()
-            .and_then(|mut list| (!list.is_empty()).then(|| list.remove(0))),
-        Some(b'{') => serde_json::from_slice::<GoogleErrorEnvelope>(body).ok(),
-        _ => None,
-    }?;
-    let rpc = envelope.error;
-    let status_str = rpc
-        .status
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let numeric_code = rpc.code.as_ref().and_then(|v| {
-        v.as_u64()
-            .and_then(|n| u16::try_from(n).ok())
-            .or_else(|| v.as_str()?.parse::<u16>().ok())
-    });
-    let code = status_str.map(ToOwned::to_owned).or_else(|| {
-        rpc.code.as_ref().and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s.clone()),
-            serde_json::Value::Number(n) => Some(n.to_string()),
-            _ => None,
-        })
-    });
-    let message = rpc.message.clone();
-    let (code_override, force_kind, mut force_retry) =
-        classify_google_error(status_str, numeric_code, message.as_deref());
-    if let Some(RetryDisposition::Retryable { retry_after_ms }) = &mut force_retry {
-        *retry_after_ms = rpc
-            .details
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|detail| {
-                detail.get("@type").and_then(serde_json::Value::as_str)
-                    == Some("type.googleapis.com/google.rpc.RetryInfo")
-            })
-            .filter_map(|detail| retry_delay_millis(detail.get("retryDelay")?.as_str()?))
-            .max();
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum GoogleCode {
+    Number(serde_json::Number),
+    Text(String),
+}
+
+impl GoogleCode {
+    fn http_status(&self) -> Option<u16> {
+        let status = match self {
+            Self::Number(code) => u16::try_from(code.as_u64()?).ok()?,
+            Self::Text(code) => code.parse().ok()?,
+        };
+        (400..=599).contains(&status).then_some(status)
     }
-    Some(ParsedHttpError {
-        code: code_override.map(str::to_owned).or(code),
-        message,
-        business_auth_failure: false,
-        force_kind,
-        force_retry,
-    })
 }
 
-// google.protobuf.Duration uses decimal seconds with at most nine fractional digits.
-// Round up to milliseconds so retrying never precedes the server's minimum delay.
-fn retry_delay_millis(value: &str) -> Option<u64> {
-    let seconds = value.strip_suffix('s')?;
-    let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|b| b.is_ascii_digit())
-        || fraction.len() > 9
-        || !fraction.bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
+impl From<GoogleCode> for String {
+    fn from(code: GoogleCode) -> Self {
+        match code {
+            GoogleCode::Number(code) => code.to_string(),
+            GoogleCode::Text(code) => code,
+        }
     }
-    let whole = whole.parse::<u64>().ok()?;
-    let nanos = if fraction.is_empty() {
-        0
-    } else {
-        fraction
-            .parse::<u64>()
-            .ok()?
-            .checked_mul(10_u64.pow(9 - fraction.len() as u32))?
-    };
-    whole
-        .checked_mul(1000)?
-        .checked_add(nanos.div_ceil(1_000_000))
 }
 
-fn classify_google_error(
-    status: Option<&str>,
-    numeric_code: Option<u16>,
-    message: Option<&str>,
-) -> (
-    Option<&'static str>,
-    Option<ProviderFailureKind>,
-    Option<RetryDisposition>,
-) {
-    match status {
-        Some("UNAUTHENTICATED") => {
-            return (
-                None,
-                Some(ProviderFailureKind::Authentication),
-                Some(RetryDisposition::Permanent),
-            );
-        }
-        Some("PERMISSION_DENIED") => {
-            return (
-                None,
-                Some(ProviderFailureKind::Authorization),
-                Some(RetryDisposition::Permanent),
-            );
-        }
-        Some("RESOURCE_EXHAUSTED") => {
-            return (
-                None,
-                Some(ProviderFailureKind::Capacity),
-                Some(RetryDisposition::Retryable {
-                    retry_after_ms: None,
-                }),
-            );
-        }
-        Some("UNAVAILABLE" | "DEADLINE_EXCEEDED" | "ABORTED" | "INTERNAL") => {
-            return (
-                None,
-                Some(ProviderFailureKind::Capacity),
-                Some(RetryDisposition::Retryable {
-                    retry_after_ms: None,
-                }),
-            );
-        }
-        Some("INVALID_ARGUMENT") => {
-            if message.is_some_and(is_context_limit_message) {
-                return (
-                    Some("context_length_exceeded"),
-                    Some(ProviderFailureKind::Configuration),
-                    Some(RetryDisposition::Permanent),
-                );
+#[derive(Deserialize)]
+#[serde(tag = "@type")]
+enum GoogleDetail {
+    #[serde(
+        rename = "type.googleapis.com/google.rpc.RetryInfo",
+        rename_all = "camelCase"
+    )]
+    RetryInfo { retry_delay: String },
+    #[serde(rename = "type.googleapis.com/google.rpc.QuotaFailure")]
+    QuotaFailure { violations: Vec<QuotaViolation> },
+    #[serde(rename = "type.googleapis.com/google.rpc.ErrorInfo")]
+    ErrorInfo { reason: String },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuotaViolation {
+    quota_id: Option<String>,
+    quota_metric: Option<String>,
+}
+
+impl GoogleError {
+    fn classify(
+        self,
+        input: &ProviderErrorInput<'_>,
+    ) -> Result<ClassifiedProviderError, ErrorDecodeError> {
+        let mut retry_hint = RetryHint::Absent;
+        let mut daily_quota = false;
+        let mut structured_kind = None;
+        for detail in &self.details {
+            let detail: GoogleDetail = serde_json::from_value(detail.clone())?;
+            match detail {
+                GoogleDetail::RetryInfo { retry_delay } => {
+                    retry_hint =
+                        retry_hint.combine(RetryHint::from_google_retry_delay(&retry_delay));
+                }
+                GoogleDetail::QuotaFailure { violations } => {
+                    daily_quota |= violations.iter().any(|violation| {
+                        violation.quota_id.as_deref().is_some_and(is_daily_quota_id)
+                            || violation
+                                .quota_metric
+                                .as_deref()
+                                .is_some_and(is_daily_quota_id)
+                    });
+                }
+                GoogleDetail::ErrorInfo { reason } => {
+                    structured_kind = match reason.as_str() {
+                        "API_KEY_INVALID" | "API_KEY_EXPIRED" => Some(Kind::Authentication),
+                        "API_KEY_SERVICE_BLOCKED"
+                        | "API_KEY_HTTP_REFERRER_BLOCKED"
+                        | "SERVICE_DISABLED" => Some(Kind::Authorization),
+                        "BILLING_DISABLED" => Some(Kind::Quota),
+                        _ => structured_kind,
+                    };
+                }
+                GoogleDetail::Other => {}
             }
-            return (
-                None,
-                Some(ProviderFailureKind::Configuration),
-                Some(RetryDisposition::Permanent),
-            );
         }
-        Some("NOT_FOUND" | "FAILED_PRECONDITION" | "OUT_OF_RANGE" | "UNIMPLEMENTED") => {
-            return (
-                None,
-                Some(ProviderFailureKind::Configuration),
-                Some(RetryDisposition::Permanent),
-            );
+        let http_status = self.code.as_ref().and_then(GoogleCode::http_status);
+        let (kind, retryable) = if let Some(kind) = structured_kind {
+            (kind, false)
+        } else {
+            match self.status.as_deref() {
+                Some("UNAUTHENTICATED") => (Kind::Authentication, false),
+                Some("PERMISSION_DENIED") => (Kind::Authorization, false),
+                Some("RESOURCE_EXHAUSTED") if daily_quota => (Kind::Quota, false),
+                Some("RESOURCE_EXHAUSTED") => (Kind::Unknown, true),
+                Some("INTERNAL" | "UNAVAILABLE" | "ABORTED") => (Kind::ServiceBusy, true),
+                Some("DEADLINE_EXCEEDED") => (Kind::Transport, true),
+                Some("INVALID_ARGUMENT")
+                    if self
+                        .message
+                        .as_deref()
+                        .is_some_and(is_context_limit_message) =>
+                {
+                    (Kind::ContextLimit, false)
+                }
+                Some(
+                    "INVALID_ARGUMENT"
+                    | "FAILED_PRECONDITION"
+                    | "NOT_FOUND"
+                    | "OUT_OF_RANGE"
+                    | "UNIMPLEMENTED",
+                ) => (Kind::InvalidRequest, false),
+                Some("CANCELLED") => (Kind::Unknown, false),
+                _ if daily_quota => (Kind::Quota, false),
+                _ => {
+                    let fallback = ClassifiedProviderError::from_http_status(
+                        input.failure_status(http_status),
+                    );
+                    (fallback.kind, fallback.retryable)
+                }
+            }
+        };
+        let mut error = ClassifiedProviderError::new(
+            kind,
+            retryable,
+            self.message
+                .unwrap_or_else(|| "Google reported a generation error".to_owned()),
+        );
+        error.code = self.code.map(String::from);
+        error.error_type = self.status;
+        error.http_status = http_status;
+        error.retry_hint = retry_hint;
+        if !self.details.is_empty() {
+            error.details = Some(Box::new(Value::Array(self.details)));
         }
-        _ => {}
+        Ok(error)
     }
-    match numeric_code {
-        Some(401) => (
-            None,
-            Some(ProviderFailureKind::Authentication),
-            Some(RetryDisposition::Permanent),
-        ),
-        Some(403) => (
-            None,
-            Some(ProviderFailureKind::Authorization),
-            Some(RetryDisposition::Permanent),
-        ),
-        Some(408 | 429 | 500..=599) => (
-            None,
-            Some(ProviderFailureKind::Capacity),
-            Some(RetryDisposition::Retryable {
-                retry_after_ms: None,
-            }),
-        ),
-        Some(400..=499) => (
-            None,
-            Some(ProviderFailureKind::Configuration),
-            Some(RetryDisposition::Permanent),
-        ),
-        _ => (None, None, None),
+}
+
+fn is_daily_quota_id(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    id.contains("perday") || id.contains("per_day") || id.contains("daily")
+}
+
+impl ProviderErrorPolicy for GeminiErrorPolicy {
+    fn decode_error(
+        &self,
+        input: ProviderErrorInput<'_>,
+    ) -> Result<Option<ClassifiedProviderError>, ErrorDecodeError> {
+        let Some(payload) = input.payload else {
+            return Ok(None);
+        };
+        if let Some(error) =
+            google_error_envelope(payload).and_then(|envelope| envelope.get("error"))
+        {
+            let error: GoogleError = serde_json::from_value(error.clone())?;
+            if error.code.is_none() && error.status.is_none() && error.message.is_none() {
+                return Err(ErrorDecodeError::Structure("missing Google error fields"));
+            }
+            return Ok(Some(error.classify(&input)?));
+        }
+        if input.entry == ProviderErrorEntry::HttpResponse {
+            return Ok(None);
+        }
+        if let Some(reason) = payload
+            .get("promptFeedback")
+            .and_then(|feedback| feedback.get("blockReason"))
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty() && *reason != "BLOCK_REASON_UNSPECIFIED")
+        {
+            let mut error = ClassifiedProviderError::new(
+                Kind::ContentBlocked,
+                false,
+                format!("Gemini prompt blocked: {reason}"),
+            );
+            error.code = Some(reason.to_owned());
+            return Ok(Some(error));
+        }
+        let reason = payload
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|candidates| candidates.first())
+            .and_then(|candidate| candidate.get("finishReason"))
+            .and_then(Value::as_str);
+        let Some(reason) =
+            reason.filter(|reason| !matches!(*reason, "" | "STOP" | "FINISH_REASON_UNSPECIFIED"))
+        else {
+            return Ok(None);
+        };
+        let kind = match reason {
+            "MAX_TOKENS" => Kind::OutputLimit,
+            "SAFETY"
+            | "RECITATION"
+            | "BLOCKLIST"
+            | "PROHIBITED_CONTENT"
+            | "SPII"
+            | "IMAGE_SAFETY"
+            | "IMAGE_PROHIBITED_CONTENT"
+            | "IMAGE_RECITATION"
+            | "MODEL_ARMOR" => Kind::ContentBlocked,
+            "MALFORMED_RESPONSE"
+            | "MALFORMED_FUNCTION_CALL"
+            | "UNEXPECTED_TOOL_CALL"
+            | "TOO_MANY_TOOL_CALLS" => Kind::Protocol,
+            _ => Kind::Unknown,
+        };
+        let mut error = ClassifiedProviderError::new(
+            kind,
+            reason == "MALFORMED_RESPONSE",
+            format!("Gemini generation terminated with finishReason={reason}"),
+        );
+        error.code = Some(reason.to_owned());
+        Ok(Some(error))
+    }
+}
+
+pub(super) fn google_error_envelope(payload: &Value) -> Option<&Value> {
+    if payload.get("error").is_some() {
+        Some(payload)
+    } else {
+        payload
+            .as_array()?
+            .iter()
+            .find(|entry| entry.get("error").is_some())
     }
 }
 
@@ -193,6 +253,21 @@ fn is_context_limit_message(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pl_model_wire::provider_error::ErrorObservedAt;
+
+    fn decode(payload: &Value) -> ClassifiedProviderError {
+        GeminiErrorPolicy
+            .decode_error(ProviderErrorInput {
+                entry: ProviderErrorEntry::HttpResponse,
+                event_name: None,
+                wire_api: None,
+                endpoint: None,
+                http_status: None,
+                payload: Some(payload),
+            })
+            .unwrap()
+            .unwrap()
+    }
 
     #[test]
     fn google_retry_info_preserves_fractional_minimum_without_changing_permanent_errors() {
@@ -204,47 +279,49 @@ mod tests {
             ("1e3s", None),
             ("1.0000000001s", None),
         ] {
-            let body = serde_json::json!({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":delay}]}});
-            let parsed = parse_google_http_error(&serde_json::to_vec(&body).unwrap()).unwrap();
-            assert_eq!(
-                parsed.force_retry.unwrap().retry_after_ms(),
-                expected,
-                "{delay}"
-            );
+            let parsed = decode(&serde_json::json!({"error":{
+                "code":429,"status":"RESOURCE_EXHAUSTED","details":[{
+                    "@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":delay
+                }]
+            }}));
+            assert!(parsed.retryable);
+            let actual = match parsed.retry_hint.observed(ErrorObservedAt::now()) {
+                pl_model_wire::provider_error::ObservedRetry::At { delay_ms, .. } => Some(delay_ms),
+                pl_model_wire::provider_error::ObservedRetry::Absent => None,
+                other => panic!("unexpected retry hint: {other:?}"),
+            };
+            assert_eq!(actual, expected, "{delay}");
         }
-        let body = br#"{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"}]}}"#;
-        assert_eq!(
-            parse_google_http_error(body).unwrap().force_retry,
-            Some(RetryDisposition::Permanent)
-        );
+        let parsed = decode(&serde_json::json!({"error":{
+            "status":"INVALID_ARGUMENT","details":[{
+                "@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"
+            }]
+        }}));
+        assert!(!parsed.retryable);
     }
 
     #[test]
     fn parses_google_rpc_object_and_array_envelopes() {
-        let obj =
-            br#"{"error":{"code":404,"message":"Publisher model not found","status":"NOT_FOUND"}}"#;
-        let parsed = parse_google_http_error(obj).unwrap();
-        assert_eq!(parsed.code.as_deref(), Some("NOT_FOUND"));
-        assert_eq!(parsed.force_kind, Some(ProviderFailureKind::Configuration));
-        assert_eq!(parsed.force_retry, Some(RetryDisposition::Permanent));
-
-        let arr =
-            br#"[{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}]"#;
-        let parsed = parse_google_http_error(arr).unwrap();
-        assert_eq!(parsed.code.as_deref(), Some("RESOURCE_EXHAUSTED"));
-        assert_eq!(parsed.force_kind, Some(ProviderFailureKind::Capacity));
-        assert!(matches!(
-            parsed.force_retry,
-            Some(RetryDisposition::Retryable { .. })
-        ));
+        let object = decode(&serde_json::json!({"error":{
+            "code":404,"message":"Publisher model not found","status":"NOT_FOUND"
+        }}));
+        assert_eq!(object.kind, Kind::InvalidRequest);
+        assert!(!object.retryable);
+        let array = decode(&serde_json::json!([{"error":{
+            "code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"
+        }}]));
+        assert_eq!(array.kind, Kind::Unknown);
+        assert!(array.retryable);
     }
 
     #[test]
     fn classifies_context_limit_invalid_argument() {
-        let body = br#"{"error":{"code":400,"message":"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).","status":"INVALID_ARGUMENT"}}"#;
-        let parsed = parse_google_http_error(body).unwrap();
-        assert_eq!(parsed.code.as_deref(), Some("context_length_exceeded"));
-        assert_eq!(parsed.force_kind, Some(ProviderFailureKind::Configuration));
-        assert_eq!(parsed.force_retry, Some(RetryDisposition::Permanent));
+        let parsed = decode(&serde_json::json!({"error":{
+            "code":400,
+            "message":"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+            "status":"INVALID_ARGUMENT"
+        }}));
+        assert_eq!(parsed.kind, Kind::ContextLimit);
+        assert!(!parsed.retryable);
     }
 }

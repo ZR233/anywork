@@ -316,7 +316,6 @@ impl WriterWorker {
         }
         member.history = history;
 
-        let turn_id = accounting.primary_turn_id().map(str::to_owned);
         let mut events_to_emit = Vec::new();
         if !lifecycle.is_empty() {
             events_to_emit.push((
@@ -349,7 +348,7 @@ impl WriterWorker {
             events_to_emit.push((
                 EventSourceV3 {
                     effect_seq: Some(effect_seq),
-                    turn_id: turn_id.clone(),
+                    turn_id: fact.turn_id.clone(),
                     current_owner_id: Some(current_owner_id.clone()),
                     current_revision: Some(current_revision),
                     ..Default::default()

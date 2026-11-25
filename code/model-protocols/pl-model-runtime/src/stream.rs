@@ -1,6 +1,6 @@
 //! Canonical 流式补全：收集编排与子状态机入口。
 //!
-//! [`decode_raw_event_stream`] 把 provider 原始流解码为 canonical 事件流，
+//! [`decode_wire_stream`] 把 provider 原始流解码为 canonical 事件流，
 //! [`collect_completion_event_stream_with_idle_timeout`] 驱动 [`StreamCompletionAccumulator`]
 //! 累积出 `CompletionResponse`。生命周期合法性（`lifecycle`）、工具调用增量
 //! （`tool_stream`）与标签式可见输出（`tagged_output`）按各自职责维护。
@@ -27,9 +27,7 @@ use pl_protocol::PureError;
 use crate::completion::CompletionTraceContext;
 
 pub(crate) use accumulator::StreamCompletionAccumulator;
-pub(crate) use decode::{
-    CompletionEventStream, OpenAiRawEventStream, decode_raw_event_stream, decode_wire_stream,
-};
+pub(crate) use decode::{CompletionEventStream, StreamErrorBinding, decode_wire_stream};
 pub(crate) use tool_stream::ToolStream;
 
 pub(crate) const MAX_COMPLETION_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -127,6 +125,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                     Box::new(accumulator.accounting()),
                 )
                 .with_optional_model_observation(accumulator.model_observation());
+                failure.usage_is_terminal = accumulator.usage_is_terminal();
                 failure.presentation_items = accumulator.take_presentation_items();
                 return Err(failure);
             }
@@ -140,16 +139,21 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             }
             Err(_) => {
                 on_stream_end();
-                let error = PureError::transient_model_transport(
+                let error: PureError = pl_model_wire::provider_error::transport_failure(
+                    pl_protocol::ProviderFailureStage::Stream,
                     "stream error: idle timeout waiting for provider event",
-                );
+                )
+                .into();
                 accumulator.fail_attempt(&error);
                 if let Some(current) = current.as_deref_mut() {
                     current.freeze(&accumulator);
                 }
                 return Err(crate::completion::CompletionFailure {
+                    recovery_error: None,
+                    settlements: Vec::new(),
                     source: Box::new(error),
                     accounting: Box::new(accumulator.accounting()),
+                    usage_is_terminal: accumulator.usage_is_terminal(),
                     timing: None,
                     model_observation: accumulator.model_observation().map(Box::new),
                     presentation_items: accumulator.take_presentation_items(),
@@ -167,8 +171,11 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                     current.freeze(&accumulator);
                 }
                 return Err(crate::completion::CompletionFailure {
+                    recovery_error: None,
+                    settlements: Vec::new(),
                     source: Box::new(error),
                     accounting: Box::new(accumulator.accounting()),
+                    usage_is_terminal: accumulator.usage_is_terminal(),
                     timing: None,
                     model_observation: accumulator.model_observation().map(Box::new),
                     presentation_items: accumulator.take_presentation_items(),
@@ -258,6 +265,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                     Box::new(accumulator.accounting()),
                 )
                 .with_optional_model_observation(accumulator.model_observation());
+                failure.usage_is_terminal = accumulator.usage_is_terminal();
                 // take_completed_member removes only its notification cursor. The immutable
                 // item remains in the original presentation vector until this failure takes it.
                 failure.presentation_items = accumulator.take_presentation_items();
@@ -272,8 +280,11 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 current.freeze(&accumulator);
             }
             return Err(crate::completion::CompletionFailure {
+                recovery_error: None,
+                settlements: Vec::new(),
                 source: Box::new(error),
                 accounting: Box::new(accumulator.accounting()),
+                usage_is_terminal: accumulator.usage_is_terminal(),
                 timing: None,
                 model_observation: accumulator.model_observation().map(Box::new),
                 presentation_items: accumulator.take_presentation_items(),
@@ -284,6 +295,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
     }
 
     let accounting = accumulator.accounting();
+    let usage_is_terminal = accumulator.usage_is_terminal();
     let model_observation = accumulator.model_observation();
     if let Some(current) = current.as_deref_mut() {
         current.freeze(&accumulator);
@@ -293,8 +305,11 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             current.fail_snapshot(source.to_string());
         }
         crate::completion::CompletionFailure {
+            recovery_error: None,
+            settlements: Vec::new(),
             source: Box::new(source),
             accounting: Box::new(accounting),
+            usage_is_terminal,
             timing: None,
             model_observation: model_observation.map(Box::new),
             presentation_items: accumulator.take_presentation_items(),
@@ -396,11 +411,14 @@ mod admission_tests {
                     }],
                 };
                 let stream = futures::stream::iter([
-                    Ok(event::ModelStreamEvent::Usage(UsageReport {
-                        input_tokens: Some(7),
-                        output_tokens: Some(3),
-                        ..Default::default()
-                    })),
+                    Ok(event::ModelStreamEvent::Usage {
+                        usage: UsageReport {
+                            input_tokens: Some(7),
+                            output_tokens: Some(3),
+                            ..Default::default()
+                        },
+                        terminal: false,
+                    }),
                     Ok(event::ModelStreamEvent::PresentationItem {
                         item,
                         state: Some(ModelMemberState::Completed),
@@ -427,6 +445,7 @@ mod admission_tests {
                 .await;
                 failure.send(result.unwrap_err()).unwrap();
                 Err(ModelError {
+                    context_recovery: None,
                     kind: ModelFailureKind::Cancelled,
                     source: None,
                     details: None,

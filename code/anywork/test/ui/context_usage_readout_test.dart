@@ -15,7 +15,7 @@ void main() {
     'diagnostic-rich context keeps costs visible and compaction actionable',
     (tester) async {
       final gaps = List.generate(
-        8,
+        7,
         (index) => _call('gap-$index', cancelled: true),
       );
       final projection = StudioContextProjection(
@@ -52,8 +52,8 @@ void main() {
         hasIncompleteUsage: true,
         usageDiagnostics: ThreadUsageDiagnostics(
           incompleteCalls: 8,
-          missingCalls: 8,
-          partialCalls: 0,
+          missingCalls: 7,
+          partialCalls: 1,
           invalidCalls: 0,
           overflowCalls: 0,
           byPurpose: const [
@@ -64,6 +64,15 @@ void main() {
             ),
           ],
           otherPurposeCalls: 0,
+          byIssue: const [
+            UsageIssueCountSnapshot(
+              issue: UsageGapIssue(
+                field: UsageCounterField.total,
+                reason: UsageGapReason.nonTerminalSample,
+              ),
+              calls: 1,
+            ),
+          ],
           recentGaps: gaps,
           latestCall: _call('latest-success', cancelled: false),
           legacyUnknown: true,
@@ -95,7 +104,10 @@ void main() {
       expect(find.text('model-under-test'), findsOneWidget);
       expect(find.text('409.78k / 475k'), findsOneWidget);
       expect(find.text(l10n.statusAutoCompactLimitLabel), findsNothing);
-      expect(find.text('71.32m · Incomplete'), findsOneWidget);
+      expect(
+        find.text('71.32m · Incomplete · Missing final usage reports'),
+        findsOneWidget,
+      );
       expect(find.text('98% · Incomplete'), findsOneWidget);
       expect(find.text('282'), findsNothing);
       expect(find.textContaining('thread-observed'), findsNothing);

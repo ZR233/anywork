@@ -165,6 +165,7 @@ impl ModelSession for HangingLiveSession {
             republished.notify_one();
             finished.notified().await;
             Err(ModelError {
+                context_recovery: None,
                 details: None,
                 kind: ModelFailureKind::Cancelled,
                 usage: Box::new(ModelUsage {

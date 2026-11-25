@@ -376,17 +376,31 @@ StudioTurnCancellationCause _turnCancellationCauseFromFrb(
 }
 
 StudioTurnFailureView _turnFailureFromFrb(frb.BridgeTurnFailureDto value) {
+  final recovery = value.recovery;
   return StudioTurnFailureView(
     category: value.category,
     providerKind: value.providerKind,
     code: value.code,
     httpStatus: value.httpStatus,
     message: value.message,
-    retryable: value.retryable,
-    retryAfterMs: _exactNullableTimelineInt(
-      value.retryAfterMs,
-      'state counter',
+    retryDisposition: StudioRetryDisposition.values.byName(
+      value.retryDisposition,
     ),
+    retryAfterMs: value.retryAfterMs,
+    errorType: value.errorType,
+    requestId: value.requestId,
+    stage: StudioProviderFailureStage.values.asNameMap()[value.stage],
+    recovery: recovery == null
+        ? null
+        : StudioModelRecoveryInfo(
+            retryCount: recovery.retryCount,
+            maxRetries: recovery.maxRetries,
+            effectiveWaitMillis: recovery.effectiveWaitMillis,
+            reason: StudioProviderRecovery.values.asNameMap()[recovery.reason],
+            stopReason: StudioModelRecoveryStopReason.values
+                .asNameMap()[recovery.stopReason],
+            error: recovery.error,
+          ),
   );
 }
 

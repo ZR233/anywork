@@ -389,8 +389,9 @@ class _ChatItemViewState extends State<ChatItemView> {
       showCopy: _showTextCopy(frame),
       frameBody: frame,
     ),
-    leading: switch (item.atom?.source) {
-      InboxMessageChatSource(:final sourceId)
+    leading: switch ((item.modelRecovery, item.atom?.source)) {
+      (final recovery?, _) => TimelineModelRecoveryStatus(notice: recovery),
+      (_, InboxMessageChatSource(:final sourceId))
           when item.authorId != 'parentAgent' =>
         Text('来源 · $sourceId'),
       _ => null,

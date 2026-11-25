@@ -1,3 +1,4 @@
+import 'package:anywork_client/models.dart';
 import 'package:flutter/foundation.dart';
 
 /// Structured failure metadata decoded from a `turn` or activity outcome.
@@ -8,19 +9,45 @@ final class TimelineFailureDetails {
     this.providerKind,
     this.code,
     this.httpStatus,
+    this.errorType,
+    this.requestId,
+    this.stage,
+    this.recovery,
     this.message,
     this.retryKind,
     this.retryAfterMs,
     this.durationSeconds,
   });
 
+  factory TimelineFailureDetails.fromView(
+    StudioTurnFailureView value, {
+    int? durationSeconds,
+  }) => TimelineFailureDetails(
+    category: value.category,
+    providerKind: value.providerKind,
+    code: value.code,
+    httpStatus: value.httpStatus,
+    errorType: value.errorType,
+    requestId: value.requestId,
+    stage: value.stage,
+    recovery: value.recovery,
+    message: value.message,
+    retryKind: value.retryDisposition.name,
+    retryAfterMs: value.retryAfterMs,
+    durationSeconds: durationSeconds,
+  );
+
   final String? category;
   final String? providerKind;
   final String? code;
   final int? httpStatus;
+  final String? errorType;
+  final String? requestId;
+  final StudioProviderFailureStage? stage;
+  final StudioModelRecoveryInfo? recovery;
   final String? message;
   final String? retryKind;
-  final int? retryAfterMs;
+  final BigInt? retryAfterMs;
   final int? durationSeconds;
 
   bool get hasVisibleProviderKind =>
@@ -30,15 +57,22 @@ final class TimelineFailureDetails {
 
   bool get isRetryable => retryKind == 'retryable';
 
-  int? get retryAfterSeconds => retryAfterMs == null || retryAfterMs! <= 0
-      ? null
-      : (retryAfterMs! / 1000).ceil();
+  BigInt? get retryAfterSeconds {
+    final millis = retryAfterMs;
+    if (millis == null || millis <= BigInt.zero) return null;
+    final secondsUnit = BigInt.from(Duration.millisecondsPerSecond);
+    return (millis - BigInt.one) ~/ secondsUnit + BigInt.one;
+  }
 
   bool get hasTechnicalDetails =>
       (category?.isNotEmpty ?? false) ||
       hasVisibleProviderKind ||
       (code?.isNotEmpty ?? false) ||
       httpStatus != null ||
+      errorType != null ||
+      requestId != null ||
+      stage != null ||
+      recovery != null ||
       (retryKind?.isNotEmpty ?? false) ||
       durationSeconds != null;
 }
@@ -120,6 +154,9 @@ final class TimelineOutcomeSummary {
     final tech = <String>[
       if (failure?.code case final code? when code.isNotEmpty) code,
       if (failure?.httpStatus case final status?) 'HTTP $status',
+      ?failure?.errorType,
+      ?failure?.requestId,
+      if (failure?.stage case final stage?) stage.name,
       if (budget?.limitKind case final limit? when limit.isNotEmpty) limit,
       if (cancellation?.causeKind case final cause?
           when cause.isNotEmpty && cause != 'unspecified')
@@ -189,22 +226,20 @@ TimelineOutcomeSummary parseTimelineOutcome(Object? rawOutcome) {
 
   final nestedFailure = _asMap(data?['failure']);
   if (kind == 'failed' || kind == 'denied' || nestedFailure != null) {
-    final retry = _asMap(nestedFailure?['retry']);
-    final message =
-        _nonEmptyString(nestedFailure?['message']) ??
-        _nonEmptyString(data?['message']) ??
-        _nonEmptyString(data?['error']) ??
-        _nonEmptyString(data?['reason']);
-    final failure = TimelineFailureDetails(
-      category: _nonEmptyString(nestedFailure?['category']),
-      providerKind: _nonEmptyString(nestedFailure?['providerKind']),
-      code: _nonEmptyString(nestedFailure?['code']),
-      httpStatus: _asInt(nestedFailure?['httpStatus']),
-      message: message,
-      retryKind: _nonEmptyString(retry?['kind']),
-      retryAfterMs: _asInt(retry?['retryAfterMs']),
-      durationSeconds: durationSeconds,
-    );
+    final structured = StudioTurnFailureView.fromJson(nestedFailure);
+    final failure = structured == null
+        ? TimelineFailureDetails(
+            message:
+                _nonEmptyString(nestedFailure?['message']) ??
+                _nonEmptyString(data?['message']) ??
+                _nonEmptyString(data?['error']) ??
+                _nonEmptyString(data?['reason']),
+            durationSeconds: durationSeconds,
+          )
+        : TimelineFailureDetails.fromView(
+            structured,
+            durationSeconds: durationSeconds,
+          );
     return TimelineOutcomeSummary(
       kind: kind,
       failure: failure,

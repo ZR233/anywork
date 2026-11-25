@@ -99,6 +99,18 @@ pub(in crate::history) async fn migrate_v26_to_v27(
         ));
     }
 
+    if super::schema26_manifest::repair_needed(db).await? {
+        let revision = db
+            .query_one_raw(statement("PRAGMA user_version", vec![]))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("missing maintenance revision".into()))?;
+        super::schema26_manifest::repair_in_transaction(
+            db,
+            &database_id,
+            revision.try_get::<i64>("", "user_version")? == 0,
+        )
+        .await?;
+    }
     let source_count_row = db
         .query_one_raw(statement(
             "SELECT COUNT(*) AS c FROM history_events",
@@ -206,6 +218,6 @@ pub(in crate::history) async fn migrate_v26_to_v27(
         )));
     }
 
-    super::schema26_manifest::mark_repaired(db).await?;
+    super::schema26_manifest::mark_current(db).await?;
     Ok((database_id, migrated_rows))
 }

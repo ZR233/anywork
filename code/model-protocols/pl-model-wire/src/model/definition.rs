@@ -25,14 +25,13 @@ pub enum ModelDefinitionError {
 impl From<ModelDefinitionError> for pl_protocol::PureError {
     fn from(error: ModelDefinitionError) -> Self {
         // Provider/internal failure must not enter Studio's PersistentData reset path.
-        Self::provider_failure(pl_protocol::ProviderFailure {
-            context: Default::default(),
-            kind: pl_protocol::ProviderFailureKind::Unknown,
-            code: None,
-            http_status: None,
-            message: error.to_string(),
-            retry: pl_protocol::RetryDisposition::Permanent,
-        })
+        pl_protocol::ProviderFailure::new(
+            pl_protocol::ProviderFailureKind::Unknown,
+            error.to_string(),
+            pl_protocol::RetryDisposition::Permanent,
+        )
+        .with_source(error)
+        .into()
     }
 }
 

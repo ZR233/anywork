@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -15,6 +14,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use super::{
     db::{self, Body, Record},
     pending::{Accepted, Pending, Reservation},
+    writer_lease::WriterLease,
     *,
 };
 
@@ -41,7 +41,7 @@ pub(super) struct Inner {
     pub operations: TaskTracker,
     pub(super) admission: tokio::sync::Mutex<()>,
     flush_lock: tokio::sync::Mutex<()>,
-    lease: Mutex<Option<File>>,
+    lease: Mutex<Option<WriterLease>>,
 }
 
 #[derive(Clone)]
@@ -66,30 +66,6 @@ impl std::fmt::Debug for HistoryStoreShare {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HistoryStoreShare").finish_non_exhaustive()
     }
-}
-
-fn writer_lock_path(history_path: &Path) -> PathBuf {
-    let mut lock_path = history_path.as_os_str().to_os_string();
-    lock_path.push(".writer.lock");
-    PathBuf::from(lock_path)
-}
-
-fn acquire_writer_lease(history_path: &Path) -> Result<File> {
-    let lock_path = writer_lock_path(history_path);
-    if let Some(parent) = lock_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    file.try_lock()
-        .map_err(|error| HistoryError::Conflict(format!("history writer lease: {error}")))?;
-    Ok(file)
 }
 
 fn validate_limits(limits: HistoryLimits) -> Result<()> {
@@ -119,6 +95,7 @@ impl HistoryStore {
         }
         let reader = schema::connect(path, true, false).await?;
         let (database_id, head) = schema::identity(&reader, thread_id).await?;
+        upgrade::schema26_manifest::require_current(&reader).await?;
         let (changed, _) = watch::channel(head);
         let store = Self {
             inner: Arc::new(Inner {
@@ -165,7 +142,7 @@ impl HistoryStore {
         {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let lease = acquire_writer_lease(path)?;
+        let lease = WriterLease::acquire(path)?;
         let existed = path.try_exists()?;
         let writer = schema::connect(path, false, !existed).await?;
         if !existed {
@@ -193,6 +170,10 @@ impl HistoryStore {
                 return Err(error);
             }
         };
+        if let Err(error) = upgrade::schema26_manifest::require_current(&writer).await {
+            let _ = writer.close().await;
+            return Err(error);
+        }
         let reader = match schema::connect(path, true, false).await {
             Ok(reader) => reader,
             Err(error) => {
@@ -589,13 +570,15 @@ impl HistoryStore {
         if !self.inner.read_only {
             let _ = self.inner.writer.clone().close().await;
         }
-        let lease = self
+        let mut lease = self
             .inner
             .lease
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        drop(lease);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(lease) = lease.as_mut() {
+            lease.release()?;
+        }
+        lease.take();
         Ok(())
     }
 }

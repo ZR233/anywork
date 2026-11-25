@@ -990,6 +990,7 @@ mod tests {
 
     fn model_cancelled() -> ModelError {
         ModelError {
+            context_recovery: None,
             kind: ModelFailureKind::Cancelled,
             details: None,
             usage: Box::default(),

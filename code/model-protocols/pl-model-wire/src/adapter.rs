@@ -13,6 +13,7 @@ use crate::{
 pub struct Adapter {
     pub id: ProtocolId,
     pub codec: &'static dyn WireCodec,
+    pub error_policy: &'static dyn crate::provider_error::ProviderErrorPolicy,
     pub api_key_header: ApiKeyHeaderScheme,
     pub responses_instruction_role: InstructionWireRole,
     pub discovery: DiscoveryPolicy,

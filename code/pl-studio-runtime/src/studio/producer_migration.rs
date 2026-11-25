@@ -1,5 +1,4 @@
 //! Pure producer normalization shared by named history migrations and TOML import.
-use super::thread_projection::AuxiliaryBillingReceipt;
 use crate::context_preparation::CompactionReceipt;
 use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 use anyhow::{Context, Result, ensure};
@@ -8,6 +7,26 @@ use pl_core::{
     thread::{ThreadCheckpoint, permissions::PermissionRecord},
 };
 use serde_json::value::{RawValue, to_raw_value};
+
+mod model_current;
+
+pub(crate) fn prepare_model_current(
+    current: &mut pl_core::thread::current::ThreadCurrent,
+) -> Result<()> {
+    model_current::prepare(current)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuxiliaryBillingReceipt {
+    billing: crate::InferenceBillingRecord,
+    #[serde(rename = "succeeded")]
+    _succeeded: bool,
+}
+
+impl AuxiliaryBillingReceipt {
+    const VERSION: u32 = 4;
+}
 
 // Open producer envelopes retain unknown fields and exact numeric tokens. Serde owns JSON parsing;
 // only schema-known object paths are edited, never recursive key/string discovery.
@@ -55,6 +74,18 @@ pub(crate) fn replace_payload(saved: &mut RawObject, payload: &OpaquePayload) ->
 pub(crate) fn normalize(payload: &OpaquePayload) -> Result<Option<OpaquePayload>> {
     if payload.format() == "pl.studio.plan" {
         return crate::plan_tool::migrate_plan_payload(payload);
+    }
+    if payload.format() == "pl.studio.auxiliary-billing" && payload.version() == 5 {
+        let settlement: pl_core::model::ModelSubAttemptSettlement =
+            serde_json::from_str(payload.content())?;
+        let original = pl_model::runtime::model_saved_sub_attempt_receipt(&settlement.payload)?;
+        ensure!(
+            original.turn_id == settlement.turn_id
+                && original.attempt_id == settlement.attempt_id
+                && original.generation == settlement.generation,
+            "invalid historical settlement source"
+        );
+        return Ok(None);
     }
     let (content, current) = match payload.format() {
         "pl.studio.auxiliary-billing" => (
@@ -254,6 +285,7 @@ fn migrate_compaction(version: u32, content: &str) -> Result<String> {
             to_raw_value(&Option::<crate::InferenceTiming>::None)?,
         );
     }
+    object.remove("settlementRelayed");
     let encoded = serde_json::to_string(&object)?;
     let receipt: CompactionReceipt = serde_json::from_str(&encoded)?;
     ensure!(

@@ -1543,6 +1543,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statusUsageIncompleteLabel => '不完整';
 
   @override
+  String get statusUsageNonTerminalSampleLabel => '不完整 · 缺少最终用量报告';
+
+  @override
   String get statusCacheLabel => '缓存命中率';
 
   @override
@@ -1568,6 +1571,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sessionAllAgentsCostTooltip => '会话全部智能体费用';
+
+  @override
+  String get sessionCostIncompleteUsage => '用量不完整';
 
   @override
   String get sessionMoreActionsTooltip => '更多操作';
@@ -7648,10 +7654,25 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineProviderKindAuthz => '权限不足';
 
   @override
-  String get timelineProviderKindCapacity => '服务繁忙 / 限流';
+  String get timelineProviderKindQuota => '余额或额度不足';
 
   @override
-  String get timelineProviderKindConfig => '配置错误';
+  String get timelineProviderKindRateLimit => '暂时限流';
+
+  @override
+  String get timelineProviderKindServiceBusy => '服务繁忙';
+
+  @override
+  String get timelineProviderKindContextLimit => '上下文过长';
+
+  @override
+  String get timelineProviderKindInvalidRequest => '请求不合法';
+
+  @override
+  String get timelineProviderKindContentBlocked => '内容被拦截';
+
+  @override
+  String get timelineProviderKindOutputLimit => '达到输出上限';
 
   @override
   String get timelineProviderKindTransport => '网络传输';
@@ -7660,15 +7681,135 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineProviderKindProtocol => '响应协议';
 
   @override
-  String get timelineRetryableHint => '可重试';
+  String get timelineRetryableHint => '此类失败可能可重试';
 
   @override
-  String timelineRetryAfterSeconds(int seconds) {
-    return '建议 $seconds 秒后重试';
+  String timelineRetryAfterSeconds(String seconds) {
+    return '供应商建议等待 $seconds 秒';
   }
 
   @override
   String get timelineRetryPermanent => '不自动重试';
+
+  @override
+  String get timelineRetryWaitUnrepresentable => '供应商要求的等待时间超出支持范围';
+
+  @override
+  String timelineRecoveryRetryCount(int count, int limit) {
+    return '已重试 $count 次，上限 $limit 次';
+  }
+
+  @override
+  String timelineRecoveryRetryCountOnly(int count) {
+    return '已重试 $count 次';
+  }
+
+  @override
+  String timelineRecoveryRetryLimit(int limit) {
+    return '重试上限 $limit 次';
+  }
+
+  @override
+  String timelineRecoveryWaitMillis(String millis) {
+    return '$millis 毫秒';
+  }
+
+  @override
+  String timelineRecoveryWaitSeconds(String seconds) {
+    return '$seconds 秒';
+  }
+
+  @override
+  String timelineRecoveryScheduledWait(String duration) {
+    return '预计等待 $duration';
+  }
+
+  @override
+  String timelineRecoveryAttempt(int count, int limit) {
+    return '第 $count 次重试，上限 $limit 次';
+  }
+
+  @override
+  String get timelineRecoveryRepairing => '正在修复模型请求';
+
+  @override
+  String get timelineRecoveryWaiting => '等待重试模型请求';
+
+  @override
+  String get timelineRecoveryRetrying => '正在重试模型请求';
+
+  @override
+  String get timelineRecoveryRecovered => '模型请求已恢复';
+
+  @override
+  String get timelineRecoveryFailed => '模型请求恢复已停止';
+
+  @override
+  String get timelineRecoveryActionHttpFallback => '切换到 HTTP';
+
+  @override
+  String get timelineRecoveryActionRefreshAttachments => '刷新附件';
+
+  @override
+  String get timelineRecoveryActionFullContext => '重新发送完整上下文';
+
+  @override
+  String get timelineRecoveryStopBudgetExhausted => '已达到重试上限，自动恢复已停止。';
+
+  @override
+  String get timelineRecoveryStopSideEffects => '重试可能重复执行外部操作，自动恢复已停止。';
+
+  @override
+  String get timelineRecoveryStopSaveFailed => '无法保存恢复状态，自动恢复已停止。';
+
+  @override
+  String get timelineRecoveryStopRepairFailed => '修复失败，自动恢复已停止。';
+
+  @override
+  String get timelineRecoveryStopWaitUnrepresentable =>
+      '所需等待时间过长，无法安全安排重试，自动恢复已停止。';
+
+  @override
+  String get timelineRecoveryStopContextCompactionRequired => '需要先压缩输入才能继续执行。';
+
+  @override
+  String get timelineRecoveryStopPermanentFailure => '此失败无法自动恢复。';
+
+  @override
+  String get timelineRecoveryStopCancelled => '自动恢复已取消。';
+
+  @override
+  String get timelineDetailErrorType => '供应商错误类型';
+
+  @override
+  String get timelineDetailRequestId => '供应商请求 ID';
+
+  @override
+  String get timelineDetailFailureStage => '失败阶段';
+
+  @override
+  String get timelineFailureStageUnknown => '未知阶段';
+
+  @override
+  String get timelineFailureStageRequest => '发送请求';
+
+  @override
+  String get timelineFailureStageHandshake => '连接握手';
+
+  @override
+  String get timelineFailureStageStream => '接收响应流';
+
+  @override
+  String get timelineFailureStageAttachment => '处理附件';
+
+  @override
+  String get timelineDetailRecoveryAction => '最近一次恢复操作';
+
+  @override
+  String get timelineDetailLastRecoveryWait => '上次安排的等待时间';
+
+  @override
+  String get timelineDetailRecoveryError => '恢复错误';
 
   @override
   String get timelineBudgetLimitModelStep => '模型步数';
@@ -7732,7 +7873,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineDetailHttpStatus => 'HTTP 状态';
 
   @override
-  String get timelineDetailRetry => '重试策略';
+  String get timelineDetailRetry => '重试提示';
 
   @override
   String get timelineDetailDuration => '耗时';

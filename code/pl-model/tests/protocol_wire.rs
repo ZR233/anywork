@@ -325,7 +325,7 @@ async fn complete(
     )
     .unwrap();
     runtime
-        .complete(request, ModelInvocationContext::new(session))
+        .complete(request, ModelInvocationContext::in_memory(session))
         .await
         .unwrap()
 }
@@ -877,8 +877,9 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
         model("provider-a", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let source_factory =
-        ModelFactory::new(pl_model::runtime::ThreadModel::new(source_runtime, None));
+    let source_factory = ModelFactory::new(
+        pl_model::runtime::ThreadModel::new(source_runtime, None).with_in_memory_settlement(),
+    );
     let thread = ThreadHandle::start_current(
         "cross-provider-thread".into(),
         Some(source_factory.open_session().await.unwrap()),
@@ -984,10 +985,14 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
-    let source = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-        pl_model::runtime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
-        None,
-    ));
+    let source = ModelFactory::new(
+        pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::new_with_account_id("fixture", endpoint.clone(), source_model)
+                .unwrap(),
+            None,
+        )
+        .with_in_memory_settlement(),
+    );
     let thread = ThreadHandle::start_current(
         "new-configuration".into(),
         Some(source.open_session().await.unwrap()),
@@ -1014,10 +1019,13 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
-    let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-        pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
-        None,
-    ));
+    let target = ModelFactory::new(
+        pl_model::runtime::ThreadModel::new(
+            pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
+            None,
+        )
+        .with_in_memory_settlement(),
+    );
     let restored =
         ThreadHandle::restore_current(saved, Some(target.open_session().await.unwrap())).unwrap();
     assert_eq!(server.recorded().len(), 1, "loading stays paused");
@@ -1397,7 +1405,10 @@ async fn responses_functions_keep_optional_role_specific_arguments() {
             )])
             .build();
         runtime
-            .complete(request, ModelInvocationContext::default())
+            .complete(
+                request,
+                ModelInvocationContext::in_memory(Default::default()),
+            )
             .await
             .unwrap();
         let records = fixture.finish().await.unwrap();
@@ -1539,7 +1550,10 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
         .tools(tools)
         .build();
     runtime
-        .complete(request.clone(), ModelInvocationContext::default())
+        .complete(
+            request.clone(),
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap();
     let records = fixture.finish().await.unwrap();
@@ -2222,7 +2236,7 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
                 ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
                     assert_eq!(
                         payload.version(),
-                        6,
+                        7,
                         "the current frame retains source attempt and timing provenance"
                     );
                     let frame: Value = serde_json::from_str(payload.content()).unwrap();
@@ -2450,7 +2464,10 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
         )
         .unwrap();
         let first = runtime
-            .complete(request("question"), ModelInvocationContext::default())
+            .complete(
+                request("question"),
+                ModelInvocationContext::in_memory(Default::default()),
+            )
             .await
             .unwrap();
         let mut prefix = request("question");
@@ -2470,7 +2487,10 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
             }
             assert!(
                 runtime
-                    .complete(changed, ModelInvocationContext::default())
+                    .complete(
+                        changed,
+                        ModelInvocationContext::in_memory(Default::default())
+                    )
                     .await
                     .is_err()
             );
@@ -2484,7 +2504,7 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
                     max_output_tokens: None,
                     empty_summary_error: "empty summary",
                 },
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await
             .unwrap();
@@ -2514,7 +2534,10 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
             let compacted = runtime
                 .compaction()
                 .unwrap()
-                .checkpoint(prefix, ModelInvocationContext::default())
+                .checkpoint(
+                    prefix,
+                    ModelInvocationContext::in_memory(Default::default()),
+                )
                 .await
                 .unwrap();
             assert!(
@@ -2561,7 +2584,10 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
     )
     .unwrap();
     let response = runtime
-        .complete(request("terminal-only"), ModelInvocationContext::default())
+        .complete(
+            request("terminal-only"),
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap();
     assert_eq!(response.tool_calls.len(), 2);
@@ -2583,7 +2609,10 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
         }));
     }
     runtime
-        .complete(prefix, ModelInvocationContext::default())
+        .complete(
+            prefix,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap();
     assert!(
@@ -2638,7 +2667,10 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
         .unwrap();
         assert!(
             runtime
-                .complete(request(kind), ModelInvocationContext::default())
+                .complete(
+                    request(kind),
+                    ModelInvocationContext::in_memory(Default::default())
+                )
                 .await
                 .is_err(),
             "{kind}"
@@ -2680,7 +2712,10 @@ async fn responses_replay_strips_output_only_status_for_strict_input() {
     )
     .unwrap();
     let response = source_runtime
-        .complete(request("cross provider"), ModelInvocationContext::default())
+        .complete(
+            request("cross provider"),
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap();
     assert_eq!(response.tool_calls.len(), 1);
@@ -2734,7 +2769,10 @@ async fn responses_replay_strips_output_only_status_for_strict_input() {
     )
     .unwrap();
     target_runtime
-        .complete(prefix, ModelInvocationContext::default())
+        .complete(
+            prefix,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap();
 
@@ -2801,7 +2839,7 @@ async fn mixed_provider_events_preserve_identity_order_and_content() {
     let result = runtime
         .complete(
             request("paced stress wire"),
-            ModelInvocationContext::new(ModelSession::default()).with_trace_metadata(
+            ModelInvocationContext::in_memory(ModelSession::default()).with_trace_metadata(
                 CompletionTraceContext {
                     session_id: "paced-session".into(),
                     turn_id: "paced-turn".into(),
@@ -3087,7 +3125,7 @@ async fn responses_message_parts_retain_distinct_provider_identity_and_content()
         let result = runtime
             .complete(
                 request("two parts"),
-                ModelInvocationContext::new(session.clone()).with_trace_metadata(
+                ModelInvocationContext::in_memory(session.clone()).with_trace_metadata(
                     CompletionTraceContext {
                         session_id: "parts-session".into(),
                         turn_id: "parts-turn".into(),
@@ -3183,7 +3221,7 @@ async fn responses_content_part_added_rejects_invalid_parts_without_losing_prefi
         let failure = runtime
             .complete(
                 request("invalid part"),
-                ModelInvocationContext::new(session.clone()),
+                ModelInvocationContext::in_memory(session.clone()),
             )
             .await
             .expect_err(label);
@@ -3382,7 +3420,7 @@ async fn websocket_keeps_session_connection_and_continuation_scoped_to_it() {
     let first = runtime
         .complete(
             first_input.clone(),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap();
@@ -3391,7 +3429,10 @@ async fn websocket_keeps_session_connection_and_continuation_scoped_to_it() {
     second_input.append_response(&first).unwrap();
     second_input.input.push(user("second").into());
     let second = runtime
-        .complete(second_input, ModelInvocationContext::new(session.clone()))
+        .complete(
+            second_input,
+            ModelInvocationContext::in_memory(session.clone()),
+        )
         .await
         .unwrap();
     assert_eq!(second.content.as_deref(), Some("two"));
@@ -3516,10 +3557,11 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
     endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
     let runtime =
         pl_model::runtime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
-    let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
-        .open_session()
-        .await
-        .unwrap();
+    let mut session =
+        ModelFactory::new(ThreadModel::new(runtime, None).with_in_memory_settlement())
+            .open_session()
+            .await
+            .unwrap();
     let prepared = session
         .prepare(ModelRequest {
             thread_id: "patch-thread".into(),
@@ -3682,7 +3724,7 @@ async fn apply_patch_falls_back_to_function_without_freeform_tool_type() {
                     ),
                 ])
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -3742,7 +3784,7 @@ async fn apply_patch_falls_back_to_function_on_non_native_endpoint() {
                 .messages(vec![user("patch fallback")])
                 .tools(vec![apply_patch_declaration()])
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -3782,7 +3824,7 @@ async fn apply_patch_falls_back_to_function_without_required_model_capabilities(
                     .messages(vec![user("patch fallback")])
                     .tools(vec![apply_patch_declaration()])
                     .build(),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await
             .unwrap();
@@ -3851,7 +3893,7 @@ async fn xai_responses_preserves_effort_cache_scope_and_function_schema() {
                     summary: None,
                 }))
                 .build(),
-            ModelInvocationContext::default()
+            ModelInvocationContext::in_memory(Default::default())
                 .with_prompt_cache_scope(PromptCacheScope::thread("xai-session")),
         )
         .await
@@ -3945,10 +3987,11 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
             model("identity-model", transport),
         )
         .unwrap();
-        let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
-            .open_session()
-            .await
-            .unwrap();
+        let mut session =
+            ModelFactory::new(ThreadModel::new(runtime, None).with_in_memory_settlement())
+                .open_session()
+                .await
+                .unwrap();
         let declaration = pl_model::completion::tool_definition_to_spec(
             &pl_agent_tool::ToolDefinition::json(
                 "lookup",
@@ -4030,7 +4073,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                     _ => None,
                 })
                 .unwrap();
-            assert_eq!(payload.version(), 6);
+            assert_eq!(payload.version(), 7);
             let frame: Value = serde_json::from_str(payload.content()).unwrap();
             assert_eq!(frame["sourceAttemptId"], *attempt);
             assert_eq!(frame["callBindings"][0]["providerCallId"], "call_0");
@@ -4068,7 +4111,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
                     {
                         *payload = pl_core::context::OpaquePayload::new(
                             payload.format(),
-                            6,
+                            payload.version(),
                             frame.to_string(),
                         )
                         .unwrap();
@@ -4271,7 +4314,7 @@ async fn chat_tool_result_replays_the_provider_item_id_on_the_next_step() {
                 .messages(vec![user("lookup")])
                 .tools(tools.clone())
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4302,7 +4345,7 @@ async fn chat_tool_result_replays_the_provider_item_id_on_the_next_step() {
                 .messages(vec![user("lookup"), previous_call, tool_result])
                 .tools(tools)
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4343,7 +4386,7 @@ async fn deepseek_and_zhipu_use_their_declared_protocol_and_effort_wire() {
                     summary: None,
                 }))
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4374,7 +4417,7 @@ async fn deepseek_and_zhipu_use_their_declared_protocol_and_effort_wire() {
                     summary: Some(ReasoningSummary::Disabled),
                 }))
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4406,7 +4449,8 @@ async fn cancellation_unwinds_a_stalled_sse_without_fabricating_usage() {
     )
     .unwrap();
     let token = CancellationToken::new();
-    let invocation = ModelInvocationContext::default().with_cancellation(Some(token.clone()));
+    let invocation = ModelInvocationContext::in_memory(Default::default())
+        .with_cancellation(Some(token.clone()));
     let task =
         tokio::spawn(async move { runtime.complete(request("cancel prompt"), invocation).await });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -4474,7 +4518,7 @@ async fn failed_stream_retains_every_received_item_beyond_the_live_window() {
     let failure = runtime
         .complete(
             request("incomplete items"),
-            ModelInvocationContext::new(ModelSession::default()),
+            ModelInvocationContext::in_memory(ModelSession::default()),
         )
         .await
         .unwrap_err();
@@ -4516,11 +4560,11 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
     // as an empty SSE stream and exhaust the transport retry budget.
     for (reply, code, status, kind, message) in [
         (
-            Reply::Json(json!({"code":1000,"msg":"身份验证失败。","success":false})),
+            Reply::Json(json!({"error":{"code":1000,"message":"unrecognized business code"}})),
             "1000",
             200,
-            pl_protocol::ProviderFailureKind::Authentication,
-            "身份验证失败。",
+            pl_protocol::ProviderFailureKind::Unknown,
+            "unrecognized business code",
         ),
         (
             Reply::Json(
@@ -4528,7 +4572,7 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
             ),
             "invalid_api_key",
             200,
-            pl_protocol::ProviderFailureKind::Authentication,
+            pl_protocol::ProviderFailureKind::Unknown,
             "credential rejected",
         ),
         (
@@ -4539,7 +4583,7 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
             },
             "invalid_request_error",
             400,
-            pl_protocol::ProviderFailureKind::Configuration,
+            pl_protocol::ProviderFailureKind::InvalidRequest,
             "bad field",
         ),
     ] {
@@ -4560,7 +4604,10 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
         )
         .unwrap();
         let failure = runtime
-            .complete(request("bad request"), ModelInvocationContext::default())
+            .complete(
+                request("bad request"),
+                ModelInvocationContext::in_memory(Default::default()),
+            )
             .await
             .unwrap_err();
         assert!(!failure.is_cancelled());
@@ -4595,7 +4642,10 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
     .unwrap();
     assert!(
         runtime
-            .complete(request("unexpected"), ModelInvocationContext::default())
+            .complete(
+                request("unexpected"),
+                ModelInvocationContext::in_memory(Default::default())
+            )
             .await
             .is_err()
     );
@@ -4667,7 +4717,7 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
                 .messages(vec![user("search it")])
                 .tools(tools)
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4724,7 +4774,7 @@ async fn explicitly_enabled_deepseek_hosted_search_has_its_own_minimal_wire_dial
                     options: HostedWebSearchOptions::Bare,
                 }])
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4771,7 +4821,7 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
                     summary: None,
                 }))
                 .build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         )
         .await
         .unwrap();
@@ -4805,7 +4855,7 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
     let result = runtime
         .complete(
             image_request("describe", bytes.clone()),
-            ModelInvocationContext::default()
+            ModelInvocationContext::in_memory(Default::default())
                 .with_prompt_cache_scope(PromptCacheScope::thread("stable-key")),
         )
         .await
@@ -4879,7 +4929,7 @@ async fn deepseek_file_upload_precedes_responses_and_sends_only_file_reference()
         let result = runtime
             .complete(
                 attachment_request("inspect", bytes, modality, name, mime),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await
             .unwrap();
@@ -4900,14 +4950,20 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
         "purpose":"user_data", "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
         "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":true}
     });
-    let unavailable = || Reply::HttpErrorWithRetryAfter {
-        status: 503,
-        code: "server_error".into(),
+    let temporary_error = |status, code: &str| Reply::HttpErrorWithRetryAfter {
+        status,
+        code: code.into(),
         message: "temporary failure".into(),
         retry_after_ms: 0,
     };
     let mut steps = (0..4)
-        .map(|_| Step::exact(Protocol::Files, upload.clone(), unavailable()))
+        .map(|_| {
+            Step::exact(
+                Protocol::Files,
+                upload.clone(),
+                temporary_error(429, "rate_limit_error"),
+            )
+        })
         .collect::<Vec<_>>();
     steps.push(Step::exact(
         Protocol::Files,
@@ -4919,7 +4975,7 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
             Protocol::ResponsesHttp,
             "inspect",
             step,
-            unavailable(),
+            temporary_error(503, "server_error"),
         ));
     }
     steps.push(Step::prompt(
@@ -4938,11 +4994,18 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
     let failure = runtime
         .complete(
             image_request("inspect", bytes.clone()),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap_err();
-    assert!(failure.is_transient_model_transport());
+    assert!(
+        failure
+            .source
+            .provider_failure_ref()
+            .unwrap()
+            .retry
+            .is_retryable()
+    );
     let recovery = failure
         .partial_progress
         .as_ref()
@@ -4958,7 +5021,7 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
     let next = runtime
         .complete(
             image_request("next", bytes),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap();
@@ -5020,7 +5083,7 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
     runtime
         .complete(
             prefix.clone(),
-            ModelInvocationContext::default()
+            ModelInvocationContext::in_memory(Default::default())
                 .with_prompt_cache_scope(PromptCacheScope::thread("compact-thread")),
         )
         .await
@@ -5030,7 +5093,7 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
         .unwrap()
         .checkpoint(
             prefix,
-            ModelInvocationContext::default()
+            ModelInvocationContext::in_memory(Default::default())
                 .with_prompt_cache_scope(PromptCacheScope::thread("compact-thread")),
         )
         .await
@@ -5125,7 +5188,10 @@ async fn empty_native_checkpoint_is_rejected_before_commit_and_keeps_usage() {
     let failure = runtime
         .compaction()
         .unwrap()
-        .checkpoint(request("empty-native"), ModelInvocationContext::default())
+        .checkpoint(
+            request("empty-native"),
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap_err();
     assert_eq!(failure.accounting.usage.input_tokens, Some(31));
@@ -5153,7 +5219,8 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let source = ThreadModel::new(
         pl_model::runtime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
         None,
-    );
+    )
+    .with_in_memory_settlement();
     let result = source
         .compact(
             ModelRequest {
@@ -5629,10 +5696,13 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
     endpoint.service_capabilities.history_instruction_role = HistoryInstructionRole::Developer;
     let mut info = model("snapshot-model", ModelTransportProfile::responses_http());
     info.extra.capabilities.instruction_snapshot_overrides = true;
-    let factory = ModelFactory::new(ThreadModel::new(
-        pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
-        None,
-    ));
+    let factory = ModelFactory::new(
+        ThreadModel::new(
+            pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
+            None,
+        )
+        .with_in_memory_settlement(),
+    );
     let mut session = factory.open_session().await.unwrap();
     let initial = "initial authority";
     let updated = "new complete authority";
@@ -5721,15 +5791,18 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
     )])
     .await
     .unwrap();
-    let factory = ModelFactory::new(ThreadModel::new(
-        pl_model::runtime::new_with_account_id(
-            "fixture",
-            pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url())),
-            bundled("deepseek-flash"),
+    let factory = ModelFactory::new(
+        ThreadModel::new(
+            pl_model::runtime::new_with_account_id(
+                "fixture",
+                pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url())),
+                bundled("deepseek-flash"),
+            )
+            .unwrap(),
+            None,
         )
-        .unwrap(),
-        None,
-    ));
+        .with_in_memory_settlement(),
+    );
     let mut session = factory.open_session().await.unwrap();
     let updated = "new complete authority";
     let call = session
@@ -5826,7 +5899,10 @@ async fn reserved_top_level_instructions_channel_is_rejected_before_network() {
             builder
         };
         let result = runtime
-            .complete(builder.build(), ModelInvocationContext::default())
+            .complete(
+                builder.build(),
+                ModelInvocationContext::in_memory(Default::default()),
+            )
             .await;
         assert!(
             result.is_err(),
@@ -5871,7 +5947,7 @@ async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name(
                     .system_prompt(SystemPrompt::new("host authority"))
                     .messages(vec![user("role-probe")])
                     .build(),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await;
         result.unwrap();
@@ -5902,7 +5978,7 @@ async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name(
                     .system_prompt(SystemPrompt::new("host authority"))
                     .messages(vec![user("role-probe")])
                     .build(),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await
             .unwrap();
@@ -5936,7 +6012,7 @@ async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name(
                     .system_prompt(SystemPrompt::new("host authority"))
                     .messages(vec![user("role-probe")])
                     .build(),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await
             .unwrap();
@@ -5994,7 +6070,7 @@ async fn chat_reasoning_replay_uses_target_capability_and_rejects_untyped_detail
                 CompletionRequest::builder()
                     .messages(vec![assistant, user("target-probe")])
                     .build(),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await;
         let records = fixture.finish().await.unwrap();
@@ -6049,15 +6125,18 @@ async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions(
     let mut endpoint =
         pl_model::protocol::providers::openai::compatible_endpoint("cache", fixture.base_url());
     endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::ExplicitKey;
-    let factory = ModelFactory::new(ThreadModel::new(
-        pl_model::runtime::new_with_account_id(
-            "fixture",
-            endpoint,
-            model("cache-model", ModelTransportProfile::responses_http()),
+    let factory = ModelFactory::new(
+        ThreadModel::new(
+            pl_model::runtime::new_with_account_id(
+                "fixture",
+                endpoint,
+                model("cache-model", ModelTransportProfile::responses_http()),
+            )
+            .unwrap(),
+            None,
         )
-        .unwrap(),
-        None,
-    ));
+        .with_in_memory_settlement(),
+    );
     let mut session = factory.open_session().await.unwrap();
     let mut prompts = Vec::new();
     for index in 0..2 {
@@ -6199,6 +6278,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         "Core identity is attempt scoped"
     );
     let compacted = source
+        .with_in_memory_settlement()
         .compact(
             ModelRequest {
                 thread_id: "proof-thread".into(),
@@ -6299,10 +6379,7 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
                 .unwrap();
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
-            pl_model::protocol::providers::openai::compatible_endpoint(
-                "fixture",
-                fixture.base_url(),
-            ),
+            pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url())),
             model("capacity-model", transport),
         )
         .unwrap()
@@ -6316,26 +6393,47 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
             .run_turn(replay_turn("oversized input", CancellationToken::new()))
             .await
             .unwrap_err();
-        let pl_core::thread::ThreadError::Model(error) = error else {
-            panic!("expected model error");
+        let pl_core::thread::ThreadError::ModelRepair { primary, repair } = error else {
+            panic!("expected model and repair errors on {protocol:?}, got {error:?}");
         };
-        assert_eq!(error.kind, pl_core::model::ModelFailureKind::ContextLimit);
+        let decoded = pl_model::runtime::model_failure_receipt(&primary);
         assert_eq!(
-            error.details.as_ref().unwrap().version(),
-            5,
-            "timing provenance requires the new failure receipt version"
+            primary.kind,
+            pl_core::model::ModelFailureKind::ContextLimit,
+            "original failure on {protocol:?}: {primary:?}; decoded receipt: {decoded:?}"
         );
-        let receipt = pl_model::runtime::model_failure_receipt(&error)
-            .unwrap()
-            .unwrap();
+        assert!(
+            matches!(
+                repair.as_ref(),
+                pl_core::thread::ThreadError::InvalidContext
+            ),
+            "the fixture has no context repair hook on {protocol:?}: {repair:?}"
+        );
+        assert!(primary.context_recovery.is_some());
+        assert_eq!(
+            primary.details.as_ref().unwrap().version(),
+            7,
+            "per-attempt settlement provenance requires the current failure receipt version"
+        );
+        let receipt = decoded.unwrap().unwrap();
         assert_eq!(receipt.accounting.pricing, PricingOutcome::NoCharge);
         let failure = receipt.provider_failure.unwrap();
+        assert_eq!(failure.kind, pl_protocol::ProviderFailureKind::ContextLimit);
         assert_eq!(failure.code.as_deref(), Some("context_length_exceeded"));
         assert_eq!(failure.http_status, Some(400));
-        assert_eq!(error.usage.input_tokens, None);
+        assert_eq!(primary.usage.input_tokens, None);
         assert!(thread.snapshot().model_execution.is_none());
         thread.close().await.unwrap();
-        assert_eq!(fixture.finish().await.unwrap().len(), 1);
+        let records = fixture.finish().await.unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "failed repair must not resend {protocol:?}"
+        );
+        assert!(
+            records[0].accepted,
+            "the original oversized request was received"
+        );
     }
 }
 
@@ -6388,7 +6486,8 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
     let source = ThreadModel::new(
         pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
         None,
-    );
+    )
+    .with_in_memory_settlement();
     let mut session = ModelFactory::new(source.clone())
         .open_session()
         .await

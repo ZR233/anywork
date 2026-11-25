@@ -373,6 +373,179 @@ class StudioTurnView {
       Object.hash(inputId, turnId, threadId, revision, state, updatedAt);
 }
 
+enum StudioProviderFailureStage {
+  unknown,
+  request,
+  handshake,
+  stream,
+  attachment,
+}
+
+enum StudioProviderRecovery {
+  none,
+  httpFallback,
+  refreshAttachments,
+  fullContext,
+}
+
+enum StudioModelRecoveryStopReason {
+  budgetExhausted,
+  sideEffects,
+  saveFailed,
+  repairFailed,
+  waitUnrepresentable,
+  contextCompactionRequired,
+  permanentFailure,
+  cancelled,
+}
+
+enum StudioRetryDisposition { retryable, permanent, waitUnrepresentable }
+
+enum StudioModelRecoveryPhase {
+  repairing,
+  waiting,
+  retrying,
+  recovered,
+  exhausted,
+  failed,
+  cancelled,
+}
+
+final class StudioModelRecoveryNotice {
+  const StudioModelRecoveryNotice({
+    required this.phase,
+    required this.retryCount,
+    required this.maxRetries,
+    this.failureKind,
+    this.reason,
+    this.effectiveWaitMillis,
+    this.failure,
+  });
+
+  final StudioModelRecoveryPhase phase;
+  final int retryCount;
+  final int maxRetries;
+  final String? failureKind;
+  final StudioProviderRecovery? reason;
+  final BigInt? effectiveWaitMillis;
+  final StudioTurnFailureView? failure;
+
+  static StudioModelRecoveryNotice? fromJson(Object? raw) {
+    if (raw is! Map<String, Object?>) return null;
+    final phase = StudioModelRecoveryPhase.values.asNameMap()[raw['phase']];
+    final count = raw['retryCount'];
+    final limit = raw['maxRetries'];
+    if (phase == null ||
+        count is! int ||
+        count < 0 ||
+        limit is! int ||
+        limit < 0) {
+      return null;
+    }
+    return StudioModelRecoveryNotice(
+      phase: phase,
+      retryCount: count,
+      maxRetries: limit,
+      failureKind: _productString(raw['failureKind']),
+      reason: StudioProviderRecovery.values.asNameMap()[raw['reason']],
+      effectiveWaitMillis: _productMillis(raw['effectiveWaitMillis']),
+      failure: StudioTurnFailureView.fromJson(raw['failure']),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'phase': phase.name,
+    'failureKind': failureKind,
+    'reason': reason?.name,
+    'retryCount': retryCount,
+    'maxRetries': maxRetries,
+    'effectiveWaitMillis': effectiveWaitMillis?.toString(),
+    'failure': ?failure?.toJson(),
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is StudioModelRecoveryNotice &&
+      other.phase == phase &&
+      other.retryCount == retryCount &&
+      other.maxRetries == maxRetries &&
+      other.failureKind == failureKind &&
+      other.reason == reason &&
+      other.effectiveWaitMillis == effectiveWaitMillis &&
+      other.failure == failure;
+
+  @override
+  int get hashCode => Object.hash(
+    phase,
+    retryCount,
+    maxRetries,
+    failureKind,
+    reason,
+    effectiveWaitMillis,
+    failure,
+  );
+}
+
+final class StudioModelRecoveryInfo {
+  const StudioModelRecoveryInfo({
+    this.retryCount,
+    this.maxRetries,
+    this.effectiveWaitMillis,
+    this.reason,
+    this.stopReason,
+    this.error,
+  });
+
+  final int? retryCount;
+  final int? maxRetries;
+  final BigInt? effectiveWaitMillis;
+  final StudioProviderRecovery? reason;
+  final StudioModelRecoveryStopReason? stopReason;
+  final String? error;
+
+  static StudioModelRecoveryInfo? _fromJson(Object? raw) {
+    if (raw is! Map<String, Object?>) return null;
+    return StudioModelRecoveryInfo(
+      retryCount: _productInt(raw['retryCount']),
+      maxRetries: _productInt(raw['maxRetries']),
+      effectiveWaitMillis: _productMillis(raw['effectiveWaitMillis']),
+      reason: StudioProviderRecovery.values.asNameMap()[raw['reason']],
+      stopReason: StudioModelRecoveryStopReason.values
+          .asNameMap()[raw['stopReason']],
+      error: _productString(raw['error']),
+    );
+  }
+
+  Map<String, Object?> _toJson() => {
+    'retryCount': retryCount,
+    'maxRetries': maxRetries,
+    'effectiveWaitMillis': effectiveWaitMillis?.toString(),
+    'reason': reason?.name,
+    'stopReason': stopReason?.name,
+    'error': error,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is StudioModelRecoveryInfo &&
+      other.retryCount == retryCount &&
+      other.maxRetries == maxRetries &&
+      other.effectiveWaitMillis == effectiveWaitMillis &&
+      other.reason == reason &&
+      other.stopReason == stopReason &&
+      other.error == error;
+
+  @override
+  int get hashCode => Object.hash(
+    retryCount,
+    maxRetries,
+    effectiveWaitMillis,
+    reason,
+    stopReason,
+    error,
+  );
+}
+
 final class StudioTurnFailureView {
   const StudioTurnFailureView({
     required this.category,
@@ -380,8 +553,12 @@ final class StudioTurnFailureView {
     required this.code,
     required this.httpStatus,
     required this.message,
-    required this.retryable,
+    required this.retryDisposition,
     required this.retryAfterMs,
+    this.errorType,
+    this.requestId,
+    this.stage,
+    this.recovery,
   });
 
   final String category;
@@ -389,8 +566,55 @@ final class StudioTurnFailureView {
   final String? code;
   final int? httpStatus;
   final String message;
-  final bool retryable;
-  final int? retryAfterMs;
+  final StudioRetryDisposition retryDisposition;
+  final BigInt? retryAfterMs;
+  final String? errorType;
+  final String? requestId;
+  final StudioProviderFailureStage? stage;
+  final StudioModelRecoveryInfo? recovery;
+
+  static StudioTurnFailureView? fromJson(Object? raw) {
+    if (raw is! Map<String, Object?> || raw['retry'] is! Map<String, Object?>) {
+      return null;
+    }
+    final category = raw['category'];
+    final message = raw['message'];
+    final retry = raw['retry'] as Map<String, Object?>;
+    final disposition = StudioRetryDisposition.values
+        .asNameMap()[retry['kind']];
+    if (category is! String || message is! String || disposition == null) {
+      return null;
+    }
+    return StudioTurnFailureView(
+      category: category,
+      providerKind: _productString(raw['providerKind']),
+      code: _productString(raw['code']),
+      httpStatus: _productInt(raw['httpStatus']),
+      message: message,
+      retryDisposition: disposition,
+      retryAfterMs: _productMillis(retry['retryAfterMs']),
+      errorType: _productString(raw['errorType']),
+      requestId: _productString(raw['requestId']),
+      stage: StudioProviderFailureStage.values.asNameMap()[raw['stage']],
+      recovery: StudioModelRecoveryInfo._fromJson(raw['recovery']),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'category': category,
+    'providerKind': ?providerKind,
+    'code': ?code,
+    'httpStatus': ?httpStatus,
+    'errorType': ?errorType,
+    'requestId': ?requestId,
+    'stage': ?stage?.name,
+    'recovery': ?recovery?._toJson(),
+    'message': message,
+    'retry': {
+      'kind': retryDisposition.name,
+      'retryAfterMs': ?retryAfterMs?.toString(),
+    },
+  };
 
   @override
   bool operator ==(Object other) =>
@@ -400,8 +624,12 @@ final class StudioTurnFailureView {
       other.code == code &&
       other.httpStatus == httpStatus &&
       other.message == message &&
-      other.retryable == retryable &&
-      other.retryAfterMs == retryAfterMs;
+      other.retryDisposition == retryDisposition &&
+      other.retryAfterMs == retryAfterMs &&
+      other.errorType == errorType &&
+      other.requestId == requestId &&
+      other.stage == stage &&
+      other.recovery == recovery;
 
   @override
   int get hashCode => Object.hash(
@@ -410,7 +638,23 @@ final class StudioTurnFailureView {
     code,
     httpStatus,
     message,
-    retryable,
+    retryDisposition,
     retryAfterMs,
+    errorType,
+    requestId,
+    stage,
+    recovery,
   );
+}
+
+String? _productString(Object? raw) => raw is String ? raw : null;
+
+int? _productInt(Object? raw) => raw is int ? raw : null;
+
+BigInt? _productMillis(Object? raw) {
+  if (raw is! String) return null;
+  final millis = BigInt.tryParse(raw, radix: 10);
+  return millis != null && !millis.isNegative && millis.bitLength <= 64
+      ? millis
+      : null;
 }

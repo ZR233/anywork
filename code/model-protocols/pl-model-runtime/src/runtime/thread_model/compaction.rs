@@ -210,20 +210,24 @@ impl ThreadModel {
         let session = ModelSession::default();
         let invocation = ModelInvocationContext::new(session.clone())
             .with_cancellation(Some(request.cancellation.clone()))
+            .with_members(request.members.clone())
+            .with_billing_purpose("compaction".into())
             .with_prompt_cache_scope(crate::runtime::PromptCacheScope::thread(&request.thread_id))
             .with_trace_metadata(crate::completion::CompletionTraceContext {
                 session_id: request.thread_id.clone(),
                 turn_id: request.turn_id.clone(),
                 inference_id: request.attempt_id.clone(),
             });
+        let invocation = invocation.bind_thread_settlement(self.independent_settlement);
         let native = (options.strategy == ThreadCompactionStrategy::PreferNative
             && encoded.attachments.is_empty()
             && encoded.prepared_content.is_empty())
         .then(|| self.runtime.compaction())
         .flatten();
+        let mut report = super::super::invocation::InvocationReport::default();
         let result = if let Some(native) = native {
             native
-                .checkpoint(encoded, invocation)
+                .checkpoint_with_report(encoded, invocation, &mut report)
                 .await
                 .map(|checkpoint| {
                     (
@@ -237,7 +241,7 @@ impl ThreadModel {
                 })
         } else {
             self.runtime
-                .summarize(
+                .summarize_with_report(
                     TextSummaryRequest {
                         instructions: &options.instructions,
                         prefix: encoded,
@@ -246,6 +250,7 @@ impl ThreadModel {
                         empty_summary_error: "context compaction returned an empty summary",
                     },
                     invocation,
+                    &mut report,
                 )
                 .await
                 .map(|summary| {
@@ -267,32 +272,33 @@ impl ThreadModel {
         let (item, text, accounting, model_observation, timing, implementation) = match result {
             Ok(result) => {
                 if let Err(source) = cleanup {
-                    return Err(receipt::failure_error(
+                    return Err(receipt::failure_error_with_report(
                         binding,
                         crate::completion::CompletionFailure {
+                            recovery_error: None,
+                            settlements: Vec::new(),
                             source: Box::new(source),
                             accounting: Box::new(result.2),
-                            timing: result.4,
+                            usage_is_terminal: report.usage_is_terminal,
+                            timing: result.4.map(Box::new),
                             model_observation: result.3.map(Box::new),
                             presentation_items: Vec::new(),
                             partial_progress: None,
                             cancelled: false,
                         },
                         None,
+                        report,
                     ));
                 }
                 result
             }
             Err(mut error) => {
                 if let Err(cleanup) = cleanup {
-                    error.source = Box::new(crate::completion::PureError::Io(
-                        std::io::Error::other(CompactionCleanupError {
-                            primary: *error.source,
-                            cleanup,
-                        }),
-                    ));
+                    error = error.with_recovery_error(cleanup);
                 }
-                return Err(receipt::failure_error(binding, error, None));
+                return Err(receipt::failure_error_with_report(
+                    binding, error, None, report,
+                ));
             }
         };
         let content = if let Some(item) = item {
@@ -315,6 +321,7 @@ impl ThreadModel {
                     model_observation.clone(),
                     timing,
                     None,
+                    Vec::new(),
                     failure(ModelFailureKind::InvalidResponse, error),
                 )
             })?;
@@ -327,6 +334,7 @@ impl ThreadModel {
                             model_observation.clone(),
                             timing,
                             None,
+                            Vec::new(),
                             failure(ModelFailureKind::InvalidResponse, error),
                         )
                     },
@@ -408,14 +416,6 @@ impl ThreadModel {
             implementation,
         })
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("compaction failed ({primary}); independent session cleanup also failed ({cleanup})")]
-struct CompactionCleanupError {
-    #[source]
-    primary: crate::completion::PureError,
-    cleanup: crate::completion::PureError,
 }
 
 pub(super) fn decode(

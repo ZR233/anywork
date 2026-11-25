@@ -186,6 +186,7 @@ abstract final class WorkGroupEventFolder {
       tool: tool ?? latestAtom.tool,
       wait: latestAtom.wait,
       textChannel: latestAtom.textChannel,
+      modelRecovery: latestAtom.modelRecovery,
       contentPresent: latestAtom.contentPresent,
       startedAt: earliestStartedAt ?? latestAtom.startedAt,
       finishedAt: latestAtom.finishedAt,

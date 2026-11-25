@@ -133,7 +133,7 @@ fn google_rpc_stream_failures_preserve_protocol_classification() {
         (
             "INVALID_ARGUMENT",
             400,
-            ProviderFailureKind::Configuration,
+            ProviderFailureKind::InvalidRequest,
             false,
         ),
         (
@@ -151,27 +151,27 @@ fn google_rpc_stream_failures_preserve_protocol_classification() {
         (
             "RESOURCE_EXHAUSTED",
             429,
-            ProviderFailureKind::Capacity,
+            ProviderFailureKind::Unknown,
             true,
         ),
-        ("UNAVAILABLE", 503, ProviderFailureKind::Capacity, true),
-        ("INTERNAL", 13, ProviderFailureKind::Capacity, true),
+        ("UNAVAILABLE", 503, ProviderFailureKind::ServiceBusy, true),
+        ("INTERNAL", 13, ProviderFailureKind::ServiceBusy, true),
         (
             "FAILED_PRECONDITION",
             9,
-            ProviderFailureKind::Configuration,
+            ProviderFailureKind::InvalidRequest,
             false,
         ),
         (
             "OUT_OF_RANGE",
             11,
-            ProviderFailureKind::Configuration,
+            ProviderFailureKind::InvalidRequest,
             false,
         ),
         (
             "UNIMPLEMENTED",
             12,
-            ProviderFailureKind::Configuration,
+            ProviderFailureKind::InvalidRequest,
             false,
         ),
     ] {
@@ -179,22 +179,24 @@ fn google_rpc_stream_failures_preserve_protocol_classification() {
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
         let frame = json!({"error":{"code":code,"status":status,"message":"provider detail"}});
         let decoded = decoder
-            .decode_frame(&frame.to_string(), Some("google-request"), &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("google-request"))
             .unwrap();
         let ModelStreamEvent::Failed { failure } = &decoded.events[0] else {
             panic!("typed Google failure")
         };
         assert_eq!(failure.kind, kind, "{status}");
         assert_eq!(failure.retry.is_retryable(), retryable, "{status}");
-        assert_eq!(failure.code.as_deref(), Some(status));
+        assert_eq!(failure.code.as_deref(), Some(code.to_string().as_str()));
+        assert_eq!(failure.error_type.as_deref(), Some(status));
         assert_eq!(failure.context.stage, ProviderFailureStage::Stream);
         assert_eq!(
             failure.context.request_id.as_deref(),
             Some("google-request")
         );
         assert_eq!(
-            failure.http_status, None,
-            "the stream's RPC error is not the outer HTTP status"
+            failure.http_status,
+            (400..=599).contains(&code).then_some(code as u16),
+            "only HTTP-shaped payload codes carry HTTP status"
         );
         assert!(decoded.reached_terminal);
         assert!(decoder.finish().is_empty());
@@ -346,6 +348,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
 
     let resp = CompletionResponse {
         response_id: Some("r1".into()),
+        settlements: Vec::new(),
         content: None,
         replay: Some(AssistantReplay::Gemini {
             parts: vec![
@@ -374,6 +377,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
+        usage_is_terminal: false,
         model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
@@ -557,23 +561,23 @@ fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
     let tail_signature = json!({"text":"","thoughtSignature":"SIG_TAIL"});
     let frames = [
         json!({"candidates":[{"content":{"role":"model","parts":[thought,first,second]}}],
-            "modelVersion":"gemini-4-hydrogen","responseId":"resp-1"}),
-        json!({"candidates":[{"content":{"role":"model","parts":[third]}}]}),
+            "usageMetadata":{"trafficType":"ON_DEMAND"},"modelVersion":"gemini-4-hydrogen","responseId":"resp-1"}),
+        json!({"candidates":[{"content":{"role":"model","parts":[third]},"finishReason":"FINISH_REASON_UNSPECIFIED"}],
+            "usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}),
         json!({"candidates":[{"content":{"role":"model","parts":[tail_signature]},"finishReason":"STOP"}],
             "usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"totalTokenCount":22}}),
     ];
 
-    let mut saw_usage = None;
+    let context = stream_context("goog-req-1");
+    let mut reports = Vec::new();
     let mut ready = Vec::new();
     for frame in frames {
-        let decoded = decoder
-            .decode_frame(&frame.to_string(), Some("goog-req-1"), &|s| s.to_owned())
-            .unwrap();
+        let decoded = decoder.decode_frame(&frame.to_string(), &context).unwrap();
         assert!(!decoded.reached_terminal);
         for ev in decoded.events {
             match ev {
                 ModelStreamEvent::Replay(u) => collector.apply(u).unwrap(),
-                ModelStreamEvent::Usage(u) => saw_usage = Some(u),
+                ModelStreamEvent::Usage { usage, terminal } => reports.push((usage, terminal)),
                 ModelStreamEvent::ToolCallReady {
                     call_id: Some(id),
                     name: Some(name),
@@ -609,10 +613,201 @@ fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
         panic!("expected Gemini replay");
     };
     assert_eq!(parts, [thought, first, second, third, tail_signature]);
-    let usage = saw_usage.unwrap();
+    let [(partial, partial_terminal), (usage, terminal)] = reports.as_slice() else {
+        panic!("expected partial and terminal Gemini usage reports: {reports:?}");
+    };
+    assert!(!partial_terminal);
+    assert_eq!(partial.output_tokens, Some(2));
+    assert!(*terminal);
     assert_eq!(usage.input_tokens, Some(10));
     assert_eq!(usage.output_tokens, Some(12));
     assert_eq!(usage.reasoning_tokens, Some(7));
+}
+
+fn stream_context(request_id: &str) -> pl_model_wire::provider_error::StreamFrameContext<'_> {
+    use pl_model_wire::provider_error::{
+        ErrorObservedAt, ObservedRetry, ProviderErrorContext, ProviderErrorEntry,
+        StreamFrameContext,
+    };
+    StreamFrameContext {
+        policy: pl_model_gemini::adapter::ADAPTER.error_policy,
+        entry: ProviderErrorEntry::Sse,
+        event_name: None,
+        wire_api: pl_model_wire::protocol::WireApi::GeminiGenerateContent,
+        endpoint: None,
+        failure: ProviderErrorContext {
+            stage: pl_protocol::ProviderFailureStage::Stream,
+            request_id: Some(request_id),
+            http_status: None,
+            observed_at: ErrorObservedAt::now(),
+            header_retry: ObservedRetry::Absent,
+            redact: &|text| text.replace("fixture-credential", "[REDACTED_CREDENTIAL]"),
+        },
+    }
+}
+
+#[test]
+fn malformed_stop_fields_are_permanent_protocol_failures() {
+    for frame in [
+        r#"{"candidates":[{"finishReason":42}]}"#,
+        r#"{"promptFeedback":{"blockReason":42}}"#,
+    ] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let error = decoder
+            .decode_frame(frame, &stream_context("req-invalid-stop"))
+            .unwrap_err();
+        let failure = error.provider_failure_ref().unwrap();
+        assert_eq!(failure.kind, pl_protocol::ProviderFailureKind::Protocol);
+        assert!(!failure.retry.is_retryable());
+    }
+}
+
+#[tokio::test]
+async fn http_does_not_resend_a_complete_gemini_frame_with_an_invalid_finish_reason() {
+    use pl_model_gemini::adapter::ADAPTER;
+    use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint =
+        endpoint::gemini_api_endpoint(Some(format!("http://{}", listener.local_addr().unwrap())));
+    let model = bundled_definition()
+        .unwrap()
+        .models
+        .into_iter()
+        .next()
+        .unwrap();
+    let runtime = ModelRuntime::bind(
+        "fixture",
+        endpoint,
+        model,
+        ADAPTER.codec,
+        ADAPTER.error_policy,
+        None,
+    )
+    .unwrap();
+    let served = Arc::new(AtomicUsize::new(0));
+    let counter = served.clone();
+    let router = axum::Router::new().fallback(move || {
+        let counter = counter.clone();
+        async move {
+            counter.fetch_add(1, Ordering::Relaxed);
+            (
+                [
+                    ("content-type", "text/event-stream"),
+                    ("retry-after-ms", "0"),
+                ],
+                "data: {\"candidates\":[{\"finishReason\":42}],\"usageMetadata\":{\"promptTokenCount\":7}}\n\n",
+            )
+        }
+    });
+    let request = CompletionRequest::builder()
+        .messages(vec![Message {
+            role: MessageRole::User,
+            content: MessageContent::text("Classify this frame"),
+            presentation: Default::default(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_result: None,
+            metadata: Default::default(),
+        }])
+        .build();
+    let failure = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            result = axum::serve(listener, router) => panic!("unexpected server exit: {result:?}"),
+            result = runtime.complete(request, ModelInvocationContext::in_memory(Default::default())) => result,
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap_err();
+    let provider = failure.source.provider_failure_ref().unwrap();
+    assert_eq!(provider.kind, pl_protocol::ProviderFailureKind::Protocol);
+    assert!(!provider.retry.is_retryable());
+    assert_eq!(failure.accounting.usage.input_tokens, Some(7));
+    assert_eq!(failure.accounting.usage.output_tokens, None);
+    assert!(!failure.usage_is_terminal);
+    let [settlement] = failure.settlements.as_slice() else {
+        panic!("expected one partial settlement");
+    };
+    let receipt: pl_model_runtime::runtime::ModelSubAttemptReceipt =
+        serde_json::from_str(settlement.content()).unwrap();
+    assert_eq!(receipt.billing.accounting.usage.input_tokens, Some(7));
+    assert!(!receipt.billing.attempt.unwrap().usage_is_terminal);
+    assert_eq!(served.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn sse_error_preserves_google_retry_info() {
+    use pl_protocol::{ProviderFailureKind as Kind, RetryDisposition};
+    use std::time::Duration;
+
+    for (details, kind, retry) in [
+        (
+            json!([]),
+            Kind::Unknown,
+            RetryDisposition::Retryable {
+                retry_after_ms: Some(45_000),
+            },
+        ),
+        (
+            json!([{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel","quotaMetric":"fixture-credential"}]}]),
+            Kind::Quota,
+            RetryDisposition::Permanent,
+        ),
+    ] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let mut details = details.as_array().unwrap().clone();
+        details
+            .push(json!({"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"45s"}));
+        let envelope = json!({
+            "error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Try later","details":details},
+            "usageMetadata":{"promptTokenCount":0}
+        });
+        let frame = if kind == Kind::Quota {
+            json!([envelope])
+        } else {
+            envelope
+        };
+        let context = stream_context("req-google");
+        let decoded = decoder.decode_frame(&frame.to_string(), &context).unwrap();
+
+        assert!(decoded.reached_terminal);
+        let Some(ModelStreamEvent::Failed { failure }) = decoded.events.last() else {
+            panic!("expected a Google failure: {:?}", decoded.events);
+        };
+        assert!(matches!(
+            decoded.events.first(),
+            Some(ModelStreamEvent::Usage { usage, terminal: true })
+                if usage.input_tokens == Some(0) && usage.output_tokens.is_none()
+        ));
+        assert!(decoded.usage_capture.is_some());
+        assert_eq!(failure.context.request_id.as_deref(), Some("req-google"));
+        assert_eq!(failure.code.as_deref(), Some("429"));
+        assert_eq!(failure.error_type.as_deref(), Some("RESOURCE_EXHAUSTED"));
+        assert_eq!(failure.http_status, Some(429));
+        assert_eq!(failure.kind, kind);
+        assert_eq!(failure.retry, retry);
+        assert!(
+            !serde_json::to_string(failure)
+                .unwrap()
+                .contains("fixture-credential")
+        );
+        if retry.is_retryable() {
+            assert_eq!(
+                failure.retry_deadline(),
+                Some(context.failure.observed_at.monotonic + Duration::from_secs(45))
+            );
+        }
+    }
 }
 
 #[test]
@@ -707,11 +902,16 @@ fn refuses_gemini_streamed_function_arguments_in_request_and_response() {
             {"functionCall":function_call},
         ]},"finishReason":"STOP"}]});
         let decoded = decoder
-            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("goog-arguments"))
             .unwrap();
-        assert!(decoded.events.iter().any(|event| matches!(event,
-            ModelStreamEvent::Failed { failure } if failure.message.contains("streamed function arguments")
-        )), "{function_call}");
+        assert!(
+            decoded.events.iter().any(|event| matches!(event,
+                ModelStreamEvent::Failed { failure }
+                    if failure.kind == pl_protocol::ProviderFailureKind::Protocol
+                        && failure.message.contains("streamed function arguments")
+            )),
+            "{function_call}"
+        );
         assert!(
             !decoded
                 .events
@@ -729,7 +929,10 @@ fn refuses_gemini_streamed_function_arguments_in_request_and_response() {
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
         let full_call = json!({"candidates":[{"content":{"role":"model","parts":[part]},"finishReason":"STOP"}]});
         let decoded = decoder
-            .decode_frame(&full_call.to_string(), None, &str::to_owned)
+            .decode_frame(
+                &full_call.to_string(),
+                &stream_context("goog-complete-call"),
+            )
             .unwrap();
         assert!(
             decoded.events.iter().any(|event| matches!(event,
@@ -752,6 +955,7 @@ fn rejects_gemini_argument_fragments_in_public_replay() {
     let endpoint = endpoint::vertex_endpoint(None);
     let mut response = CompletionResponse {
         response_id: None,
+        settlements: Vec::new(),
         content: None,
         replay: None,
         reasoning_content: None,
@@ -766,6 +970,7 @@ fn rejects_gemini_argument_fragments_in_public_replay() {
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
+        usage_is_terminal: false,
         model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
@@ -830,7 +1035,7 @@ fn gemini_tool_calls_do_not_make_an_abnormal_stream_successful() {
         }
         let frame = json!({"candidates":[candidate]});
         let decoded = decoder
-            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("goog-abnormal-stop"))
             .unwrap();
         if let Some(reason) = finish_reason {
             assert!(decoded.events.iter().any(|event| matches!(event,
@@ -858,14 +1063,20 @@ fn rejects_malformed_gemini_function_call_identity_before_ready() {
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
         let frame = json!({"candidates":[{"content":{"role":"model","parts":[
             {"functionCall":call},
-        ]},"finishReason":"STOP"}]});
+        ]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7}});
         let decoded = decoder
-            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .decode_frame(&frame.to_string(), &stream_context("goog-invalid-call"))
             .unwrap();
+        assert!(decoded.reached_terminal);
+        assert!(decoded.events.iter().any(|event| matches!(event,
+            ModelStreamEvent::Usage { usage, terminal: true } if usage.input_tokens == Some(7)
+        )));
         assert!(
-            decoded.events.iter().any(|event| matches!(event,
-                ModelStreamEvent::Failed { failure } if failure.message.contains(expected)
-            )),
+            matches!(decoded.events.last(), Some(ModelStreamEvent::Failed { failure })
+                if failure.kind == pl_protocol::ProviderFailureKind::Protocol
+                    && !failure.retry.is_retryable()
+                    && failure.context.request_id.as_deref() == Some("goog-invalid-call")
+                    && failure.message.contains(expected)),
             "{call}"
         );
         assert!(
@@ -886,6 +1097,7 @@ fn rejects_cross_owner_thought_signature_replay_and_invalid_model_path() {
     let mut req = CompletionRequest::builder().build();
     let resp = CompletionResponse {
         response_id: None,
+        settlements: Vec::new(),
         content: Some("ok".into()),
         replay: Some(AssistantReplay::Gemini {
             parts: vec![json!({"text": "ok", "thoughtSignature": "SECRET_SIG"})],
@@ -897,6 +1109,7 @@ fn rejects_cross_owner_thought_signature_replay_and_invalid_model_path() {
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
+        usage_is_terminal: false,
         model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),
@@ -953,6 +1166,7 @@ fn tool_media_after_function_response_uses_separate_user_turn() {
     });
     let resp = CompletionResponse {
         response_id: Some("resp-media-1".into()),
+        settlements: Vec::new(),
         content: None,
         replay: Some(AssistantReplay::Gemini {
             parts: vec![json!({
@@ -972,6 +1186,7 @@ fn tool_media_after_function_response_uses_separate_user_turn() {
         orchestration: Default::default(),
         timing: None,
         accounting: InferenceAccounting::default(),
+        usage_is_terminal: false,
         model: "gemini-4-hydrogen".into(),
         model_observation: None,
         observation: Default::default(),

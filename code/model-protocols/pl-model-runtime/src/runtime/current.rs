@@ -99,6 +99,11 @@ impl CurrentProducer {
         self.mark_dirty();
     }
 
+    pub(crate) fn settle(&mut self, settlement: OpaquePayload) {
+        self.last.settlement = Some(settlement);
+        self.mark_dirty();
+    }
+
     pub(crate) fn fail_snapshot(&mut self, message: String) {
         self.last.state = ModelStreamCurrentState::Failed { message };
         self.mark_dirty();

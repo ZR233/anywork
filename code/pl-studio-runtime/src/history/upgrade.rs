@@ -1,10 +1,11 @@
-//! One-shot legacy history upgrade to schema 25.
+//! Explicit legacy history upgrades and maintenance through current schema 27.
 //!
-//! This module is intentionally outside normal history reads and writes. It pins one writer,
-//! first publishes a self-contained current file and a logical backup, and only then lets the
-//! SeaORM migration transaction transform the database in one Immediate transaction.
+//! The upgrade entry holds the history writer lease and publishes a logical backup before
+//! transforming the database in an Immediate transaction. Legacy sources can also supply
+//! the initial standalone Current file.
 
 mod input;
+mod provider_failure;
 pub(super) mod schema26_manifest;
 mod v25_schema;
 mod v25_to_v26;
@@ -27,6 +28,7 @@ use super::{
         V24HistorySource,
     },
     schema,
+    writer_lease::WriterLease,
 };
 use crate::studio::storage::history::schema::{
     initialize as prepare_schema24,
@@ -69,6 +71,8 @@ const LEGACY_EVENT_PREFIX: &str = "legacy:v24:";
 const LEGACY_BODY_PREFIX: &str = "legacy:v24:body:";
 const BACKUP_ROOT: &str = "migration-backups/history-24-to-25";
 const BACKUP_ROOT_V25_TO_V26: &str = "migration-backups/history-25-to-26";
+const BACKUP_ROOT_SCHEMA27: &str = "migration-backups/history-27-maintenance-2";
+const SCHEMA27_BACKUP_NAME: &str = "history.v27.sqlite";
 const BACKUP_ROOT_V26_TO_V27: &str = "migration-backups/history-26-to-27";
 const PENDING_REPORT_FILE: &str = "pending-upgrade-report.json";
 
@@ -178,10 +182,6 @@ struct PendingReport<'a> {
     backup_name: &'static str,
 }
 
-struct WriterLease {
-    _file: File,
-}
-
 /// The caller holds its maintenance admission gate while deciding whether
 /// existing writers must retire. Reading an already current store never does.
 pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Result<bool> {
@@ -244,105 +244,101 @@ async fn upgrade_history_with_files(
     let pending_v25 = session_dir
         .join(BACKUP_ROOT_V25_TO_V26)
         .join(PENDING_REPORT_FILE);
-    let pending_v26 = session_dir
+    let pending_schema_upgrade = session_dir
         .join(BACKUP_ROOT_V26_TO_V27)
         .join(PENDING_REPORT_FILE);
+    let pending_maintenance_path = session_dir
+        .join(BACKUP_ROOT_SCHEMA27)
+        .join(PENDING_REPORT_FILE);
+    let pending_maintenance = PendingReport {
+        path: &pending_maintenance_path,
+        backup_name: SCHEMA27_BACKUP_NAME,
+    };
+    let pending_v24 = PendingReport {
+        path: &pending_v24,
+        backup_name: "history.v24.sqlite",
+    };
+    let pending_v25 = PendingReport {
+        path: &pending_v25,
+        backup_name: "history.v25.sqlite",
+    };
     let read = schema::connect(history_path, true, false).await?;
     if classify_source(&read).await? == SourceFormat::Schema27
-        && !pending_v24.try_exists()?
-        && !pending_v25.try_exists()?
-        && !pending_v26.try_exists()?
+        && !pending_v24.path.try_exists()?
+        && !pending_v25.path.try_exists()?
+        && !pending_maintenance.path.try_exists()?
+        && !pending_schema_upgrade.try_exists()?
     {
         let (database_id, _) = schema::identity(&read, thread_id).await?;
-        return finish_schema27(
-            history_path,
-            read,
-            PendingReport {
-                path: &pending_v24,
-                backup_name: "history.v24.sqlite",
-            },
-            thread_id,
-            database_id,
-            false,
-            files,
-        )
-        .await;
+        if !schema26_manifest::repair_needed(&read).await? {
+            read.close().await?;
+            return complete_schema27_entry(pending_v24, thread_id, database_id, files);
+        }
     }
     read.close().await?;
-    let _lease = acquire_writer_lease(history_path).await?;
+    let _lease = WriterLease::acquire(history_path)?;
     let read = schema::connect(history_path, true, false).await?;
     let format = classify_source(&read).await?;
+    if format != SourceFormat::Schema27 && pending_maintenance.path.try_exists()? {
+        return Err(HistoryError::Conflict(
+            "pre-schema 27 history has a pending schema 27 maintenance report".into(),
+        ));
+    }
     match format {
         SourceFormat::Schema27 => {
             let (database_id, _) = schema::identity(&read, thread_id).await?;
-            let pending_count = [
-                pending_v24.try_exists()?,
-                pending_v25.try_exists()?,
-                pending_v26.try_exists()?,
-            ]
-            .into_iter()
-            .filter(|present| *present)
-            .count();
-            if pending_count > 1 {
-                read.close().await?;
-                return Err(HistoryError::Conflict(
-                    "conflicting pending upgrade reports exist".into(),
-                ));
-            }
-            if pending_v26.try_exists()? {
-                return finish_schema27(
-                    history_path,
-                    read,
-                    PendingReport {
-                        path: &pending_v26,
-                        backup_name: "history.v26.sqlite",
-                    },
-                    thread_id,
-                    database_id,
-                    true,
-                    files,
-                )
-                .await;
-            }
-            if pending_v25.try_exists()? {
-                if pending_v24.try_exists()? {
-                    read.close().await?;
+            let repair_needed = schema26_manifest::repair_needed(&read).await?;
+            read.close().await?;
+            let pending_legacy = if pending_schema_upgrade.try_exists()? {
+                if pending_v24.path.try_exists()? || pending_v25.path.try_exists()? {
+                    return Err(HistoryError::Conflict(
+                        "conflicting pending upgrade reports exist".into(),
+                    ));
+                }
+                PendingReport {
+                    path: &pending_schema_upgrade,
+                    backup_name: "history.v26.sqlite",
+                }
+            } else if pending_v25.path.try_exists()? {
+                if pending_v24.path.try_exists()? {
                     return Err(HistoryError::Conflict(
                         "conflicting v24 and v25 pending upgrade reports exist".into(),
                     ));
                 }
-                return finish_schema27(
-                    history_path,
-                    read,
-                    PendingReport {
-                        path: &pending_v25,
-                        backup_name: "history.v25.sqlite",
-                    },
-                    thread_id,
-                    database_id,
-                    true,
-                    files,
+                pending_v25
+            } else {
+                pending_v24
+            };
+            let maintenance = if repair_needed {
+                Some(
+                    upgrade_schema27_revision(
+                        history_path,
+                        session_dir,
+                        thread_id,
+                        &database_id,
+                        pending_maintenance,
+                        files,
+                    )
+                    .await?,
                 )
-                .await;
-            }
-            return finish_schema27(
-                history_path,
-                read,
-                PendingReport {
-                    path: &pending_v24,
-                    backup_name: "history.v24.sqlite",
-                },
-                thread_id,
-                database_id,
-                true,
-                files,
-            )
-            .await;
+            } else if pending_maintenance.path.try_exists()? {
+                Some(complete_pending_report(
+                    pending_maintenance.path,
+                    thread_id,
+                    &database_id,
+                    pending_maintenance.backup_name,
+                    files,
+                )?)
+            } else {
+                None
+            };
+            let legacy = complete_schema27_entry(pending_legacy, thread_id, database_id, files)?;
+            return Ok(maintenance.unwrap_or(legacy));
         }
         SourceFormat::Schema26 => {
             let database_id = schema26_identity(&read, thread_id).await?;
             read.close().await?;
-            if pending_v24.try_exists()? || pending_v25.try_exists()? {
+            if pending_v24.path.try_exists()? || pending_v25.path.try_exists()? {
                 return Err(HistoryError::Conflict(
                     "schema 26 history has an earlier pending upgrade report".into(),
                 ));
@@ -352,7 +348,7 @@ async fn upgrade_history_with_files(
                 thread_id,
                 session_dir,
                 &database_id,
-                &pending_v26,
+                &pending_schema_upgrade,
                 files,
             )
             .await;
@@ -360,9 +356,9 @@ async fn upgrade_history_with_files(
         SourceFormat::Schema25 => {
             let database_id = schema25_identity(&read, thread_id).await?;
             read.close().await?;
-            if pending_v24.try_exists()? || pending_v26.try_exists()? {
+            if pending_v24.path.try_exists()? || pending_schema_upgrade.try_exists()? {
                 return Err(HistoryError::Conflict(
-                    "schema 25 history has a conflicting pending report".into(),
+                    "schema 25 history has a pending schema 24 report".into(),
                 ));
             }
             return upgrade_v25_to_v26(
@@ -370,16 +366,16 @@ async fn upgrade_history_with_files(
                 thread_id,
                 session_dir,
                 &database_id,
-                &pending_v25,
+                pending_v25.path,
                 files,
             )
             .await;
         }
         SourceFormat::Legacy(_) => {}
     }
-    if pending_v25.try_exists()? || pending_v26.try_exists()? {
+    if pending_v25.path.try_exists()? || pending_schema_upgrade.try_exists()? {
         return Err(HistoryError::Conflict(
-            "pre-schema 25 history has a later pending upgrade report".into(),
+            "pre-schema 25 history has a pending schema 25 -> 26 report".into(),
         ));
     }
     crate::studio::storage::history::validate_layout_source(&read, thread_id).await?;
@@ -394,7 +390,7 @@ async fn upgrade_history_with_files(
         prepare_directory(session_dir, &operation_dir)?;
         identity
     } else {
-        if pending_v24.try_exists()? {
+        if pending_v24.path.try_exists()? {
             return Err(HistoryError::Conflict(
                 "pre-schema 24 history has a pending schema 25 report".into(),
             ));
@@ -434,7 +430,7 @@ async fn upgrade_history_with_files(
     crate::studio::storage::history::validate_layout_source(&writer, thread_id).await?;
     let database_id = identity.0.clone();
     let report_thread_id = thread_id.to_owned();
-    let stage_path = pending_v24.clone();
+    let stage_path = pending_v24.path.to_path_buf();
     let stage_report: schema::StageUpgradeReport = Box::new(move |imported| {
         let mut backup_only_categories = imported.backup_only;
         let archived_rows = LEGACY_SOURCE_TABLES
@@ -486,10 +482,10 @@ async fn upgrade_history_with_files(
     writer.close().await?;
     source.close().await?;
     complete_pending_report(
-        &pending_v24,
+        pending_v24.path,
         thread_id,
         &database_id,
-        "history.v24.sqlite",
+        pending_v24.backup_name,
         files,
     )
 }
@@ -531,7 +527,7 @@ async fn upgrade_v25_to_v26(
         ));
     }
     quick_check(&backup_read).await?;
-    let source_table_rows = v25_table_rows(&backup_read).await?;
+    let source_table_rows = history_table_rows(&backup_read).await?;
     backup_read.close().await?;
     let backup_path = operation_dir.join("history.v25.sqlite");
     publish_backup(&temporary, &backup_path, files)?;
@@ -605,15 +601,12 @@ async fn upgrade_v26_to_v27(
         ));
     }
     quick_check(&backup_read).await?;
-    let source_table_rows = v25_table_rows(&backup_read).await?;
+    let source_table_rows = history_table_rows(&backup_read).await?;
     backup_read.close().await?;
     let backup_path = operation_dir.join("history.v26.sqlite");
     publish_backup(&temporary, &backup_path, files)?;
 
     let writer = schema::connect_for_migration(history_path).await?;
-    if schema26_manifest::repair_needed(&writer).await? {
-        schema26_manifest::repair(&writer).await?;
-    }
     let report_thread_id = thread_id.to_owned();
     let report_db_id = database_id.to_owned();
     let stage_path = pending_report.to_path_buf();
@@ -693,7 +686,7 @@ async fn schema25_identity(db: &DatabaseConnection, thread_id: &str) -> Result<S
     Ok(database_id)
 }
 
-async fn v25_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>> {
+async fn history_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>> {
     let mut counts = BTreeMap::new();
     for table in ["history_events", "history_bodies", "history_body_chunks"] {
         let row = db
@@ -706,28 +699,6 @@ async fn v25_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>
         counts.insert(table.into(), db_u64(row.try_get::<i64>("", "c")?, table)?);
     }
     Ok(counts)
-}
-
-async fn acquire_writer_lease(history_path: &Path) -> Result<WriterLease> {
-    // HistoryStore and this one-shot upgrade must contend on the same physical path. The caller
-    // still owns the Thread maintenance/ownership gate and must stop the old writer before this
-    // entry is invoked; this lease only prevents a second process from entering either path.
-    let lock_path = writer_lock_path(history_path);
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    fs4::FileExt::try_lock(&file)
-        .map_err(|error| HistoryError::Conflict(format!("history writer lease: {error}")))?;
-    Ok(WriterLease { _file: file })
-}
-
-fn writer_lock_path(history_path: &Path) -> PathBuf {
-    let mut lock_path = history_path.as_os_str().to_os_string();
-    lock_path.push(".writer.lock");
-    PathBuf::from(lock_path)
 }
 
 async fn classify_source(db: &DatabaseConnection) -> Result<SourceFormat> {
@@ -910,7 +881,9 @@ async fn vacuum_backup_candidate(
     operation_dir: &Path,
     version: i64,
 ) -> Result<PathBuf> {
-    let db = schema::connect(history_path, false, false).await?;
+    // VACUUM INTO reads the committed WAL, while a read-only source handle cannot
+    // checkpoint that WAL during close before the backup is published.
+    let db = schema::connect(history_path, true, false).await?;
     db.execute_raw(statement("PRAGMA synchronous=FULL", Vec::new()))
         .await?;
     // Match sqlite_file_options: keep the native canonical prefix for deep Windows
@@ -1063,6 +1036,8 @@ async fn build_current(
     current.state = state;
     current.saved_at = unix_milliseconds()?;
     current.model_call = None;
+    crate::studio::producer_migration::prepare_model_current(&mut current)
+        .map_err(HistoryError::Storage)?;
     Ok(current)
 }
 
@@ -1267,40 +1242,65 @@ fn stage_pending_report(
     backup_exact_bytes(pending_report, &bytes, files)
 }
 
-async fn finish_schema27(
+async fn upgrade_schema27_revision(
     history_path: &Path,
-    read: DatabaseConnection,
-    pending: PendingReport<'_>,
+    session_dir: &Path,
     thread_id: &str,
-    database_id: String,
-    lease_held: bool,
+    database_id: &str,
+    pending: PendingReport<'_>,
     files: UpgradeFiles,
 ) -> Result<UpgradeReport> {
-    let needed = match schema26_manifest::repair_needed(&read).await {
-        Ok(needed) => {
-            read.close().await?;
-            needed
-        }
-        Err(error) => {
-            let _ = read.close().await;
-            return Err(error);
-        }
-    };
-    if !needed {
-        return complete_schema27_entry(pending, thread_id, database_id, files);
+    discard_rolled_back_pending_report(&pending, thread_id, database_id, files)?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let operation_dir = session_dir.join(BACKUP_ROOT_SCHEMA27).join(&operation_id);
+    prepare_directory(session_dir, &operation_dir)?;
+
+    let temporary = vacuum_backup_candidate(history_path, &operation_dir, 27).await?;
+    let backup = schema::connect(&temporary, true, false).await?;
+    let (backup_id, _) = schema::identity(&backup, thread_id).await?;
+    if backup_id != database_id || !schema26_manifest::repair_needed(&backup).await? {
+        return Err(HistoryError::Integrity(
+            "schema 27 maintenance backup identity or revision differs".into(),
+        ));
     }
-    // upgrade_history may already hold this file lease. try_lock is not reentrant.
-    let _lease = if lease_held {
-        None
-    } else {
-        Some(acquire_writer_lease(history_path).await?)
-    };
+    quick_check(&backup).await?;
+    let source_table_rows = history_table_rows(&backup).await?;
+    backup.close().await?;
+    let backup_path = operation_dir.join(pending.backup_name);
+    publish_backup(&temporary, &backup_path, files)?;
+
     let writer = schema::connect(history_path, false, false).await?;
-    let repaired = schema26_manifest::repair(&writer).await;
+    let repaired = schema26_manifest::repair(&writer, database_id, |rewritten| {
+        stage_pending_report(
+            pending.path,
+            &UpgradeReport {
+                operation_id,
+                thread_id: thread_id.into(),
+                database_id: database_id.into(),
+                status: UpgradeStatus::Upgraded,
+                backup: Some(backup_path),
+                current_original_backup: None,
+                source_table_rows,
+                imported_categories: BTreeMap::from([(
+                    "turn_payloads_rewritten".into(),
+                    rewritten,
+                )]),
+                backup_only_categories: BTreeMap::new(),
+            },
+            files,
+        )
+    })
+    .await;
     let closed = writer.close().await;
     repaired?;
     closed?;
-    complete_schema27_entry(pending, thread_id, database_id, files)
+    complete_pending_report(
+        pending.path,
+        thread_id,
+        database_id,
+        pending.backup_name,
+        files,
+    )
 }
 
 fn complete_schema27_entry(
@@ -1311,7 +1311,7 @@ fn complete_schema27_entry(
 ) -> Result<UpgradeReport> {
     if !pending.path.try_exists()? {
         return Ok(UpgradeReport {
-            operation_id: "already-current".into(),
+            operation_id: "already-schema-26".into(),
             thread_id: thread_id.to_owned(),
             database_id,
             status: UpgradeStatus::AlreadyCurrent,
@@ -1379,7 +1379,7 @@ fn complete_pending_report(
         || !current_backup_matches
     {
         return Err(HistoryError::Conflict(
-            "pending schema 25 upgrade report does not match this history".into(),
+            "pending history upgrade report does not match this history".into(),
         ));
     }
     if !preserved_file_exists(&expected_backup)?
@@ -1389,7 +1389,7 @@ fn complete_pending_report(
         }
     {
         return Err(HistoryError::Integrity(
-            "pending schema 25 upgrade report is missing its preserved inputs".into(),
+            "pending history upgrade report is missing its preserved inputs".into(),
         ));
     }
     let target = operation_dir.join("upgrade-report.json");
@@ -1397,7 +1397,7 @@ fn complete_pending_report(
         let existing = std::fs::read(&target)?;
         if existing != bytes {
             return Err(HistoryError::Conflict(
-                "the schema 25 upgrade report conflicts with its pending copy".into(),
+                "the history upgrade report conflicts with its pending copy".into(),
             ));
         }
     } else {
@@ -1409,11 +1409,12 @@ fn complete_pending_report(
 }
 
 fn discard_rolled_back_pending_report(
-    pending_report: &Path,
+    pending: &PendingReport<'_>,
     thread_id: &str,
     database_id: &str,
     files: UpgradeFiles,
 ) -> Result<()> {
+    let pending_report = pending.path;
     if !pending_report.try_exists()? {
         return Ok(());
     }
@@ -1424,11 +1425,11 @@ fn discard_rolled_back_pending_report(
         || report.status != UpgradeStatus::Upgraded
     {
         return Err(HistoryError::Conflict(
-            "rolled-back schema 24 upgrade report does not match this history".into(),
+            "rolled-back history upgrade report does not match this history".into(),
         ));
     }
     let operation_dir = report_operation_dir(pending_report, &report)?;
-    let expected_backup = operation_dir.join("history.v24.sqlite");
+    let expected_backup = operation_dir.join(pending.backup_name);
     let expected_current_backup = operation_dir.join("current.original.json");
     let current_backup_matches = match &report.current_original_backup {
         None => true,
@@ -1444,7 +1445,7 @@ fn discard_rolled_back_pending_report(
         || operation_dir.join("upgrade-report.json").try_exists()?
     {
         return Err(HistoryError::Conflict(
-            "rolled-back schema 24 upgrade report has conflicting artifacts".into(),
+            "rolled-back history upgrade report has conflicting artifacts".into(),
         ));
     }
     let uncommitted = operation_dir.join("uncommitted-report.json");
@@ -2343,7 +2344,7 @@ async fn import_turns<C: ConnectionTrait>(
                     row.try_get::<i64>("", "turn_order")?,
                     "history_turns.turn_order",
                 )?,
-                payload: serde_json::from_str(&payload)?,
+                payload: provider_failure::decode_turn(payload.as_bytes())?.0,
                 context_disposition: serde_json::from_str(
                     &row.try_get::<String>("", "context_disposition")?,
                 )?,
@@ -5019,6 +5020,96 @@ mod migration_tests {
         Ok(bytes)
     }
 
+    #[tokio::test]
+    async fn schema24_migrates_legacy_provider_failure_turns() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "schema24-legacy-provider-failure";
+        write_v24_fixture(&path, thread_id, false).await?;
+        let legacy = serde_json::json!({
+            "id": "turn-rollback", "threadId": thread_id, "revision": 2, "updatedAt": 20,
+            "state": {"kind": "failed", "data": {
+                "startedAt": 10, "completedAt": 20, "failure": {
+                    "category": "provider", "providerKind": "configuration",
+                    "code": "unsupported", "httpStatus": 400, "message": "legacy diagnostic",
+                    "retry": {"kind": "retryable", "retry_after_ms": u64::MAX}
+                }
+            }}
+        })
+        .to_string();
+        let db = schema::connect(&path, false, false).await?;
+        db.execute_raw(statement(
+            "UPDATE history_turns SET payload=? WHERE turn_id='turn-rollback'",
+            vec![legacy.clone().into()],
+        ))
+        .await?;
+        db.close().await?;
+
+        let report = upgrade_history(&path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        let backup = schema::connect(report.backup.as_deref().unwrap(), true, false).await?;
+        let original: String = backup
+            .query_one_raw(statement(
+                "SELECT payload FROM history_turns WHERE turn_id='turn-rollback'",
+                Vec::new(),
+            ))
+            .await?
+            .unwrap()
+            .try_get("", "payload")?;
+        assert_eq!(original, legacy);
+        backup.close().await?;
+
+        let reader =
+            CurrentHistoryStore::open_reader(&path, thread_id, HistoryLimits::default()).await?;
+        let turns = reader
+            .turns_page(None, None, HistoryDemand::default())
+            .await?;
+        assert_eq!(turns.entries.len(), 1);
+        let HistoryBusinessRowHead::Turn(head) = &turns.entries[0].head else {
+            panic!("expected a Turn row");
+        };
+        assert_eq!(
+            head.context_disposition,
+            ThreadContextDisposition::RolledBack
+        );
+        let turn = crate::studio::runtime::history_turn(&reader, head.clone()).await?;
+        let crate::TurnState::Failed(state) = turn.state else {
+            panic!("expected a failed Turn")
+        };
+        let failure = state.failure();
+        assert_eq!(
+            failure.provider_kind,
+            Some(crate::ProviderFailureKind::Unknown)
+        );
+        assert_eq!(failure.retry.retry_after_ms(), Some(u64::MAX));
+        let detail = reader
+            .read_event(
+                head.detail_event_id.clone().unwrap(),
+                HistoryDemand::default(),
+            )
+            .await?;
+        let bytes = body::read_event_body_bytes(&reader, &detail, "turn_detail", None)
+            .await?
+            .unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let retry = &stored["state"]["data"]["failure"]["retry"];
+        assert_eq!(retry["retryAfterMs"].as_str(), Some("18446744073709551615"));
+        assert!(retry.get("retry_after_ms").is_none());
+        assert_eq!(failure.code.as_deref(), Some("unsupported"));
+        assert_eq!(failure.message, "legacy diagnostic");
+        assert!(failure.recovery.is_none());
+        let costs = reader
+            .costs_page(None, None, HistoryDemand::default())
+            .await?;
+        assert!(matches!(
+            costs.entries.as_slice(),
+            [entry] if matches!(&entry.head, HistoryBusinessRowHead::Cost(cost)
+                if cost.cost_total == 1.25 && cost.cost_delta.is_none())
+        ));
+        reader.close().await;
+        Ok(())
+    }
+
     async fn schema_version(path: &Path) -> Result<i64> {
         let db = schema::connect(path, true, false).await?;
         let version = db
@@ -5266,6 +5357,159 @@ mod migration_tests {
         Ok(())
     }
 
+    async fn install_v24_assistant_checkpoint(
+        db: &DatabaseConnection,
+        assistant_id: &str,
+        result_turn_id: &str,
+    ) -> Result<()> {
+        use pl_core::model::ModelToolCall;
+        use pl_model::completion::ToolCall;
+        use serde_json::json;
+
+        let call = ToolCall::function("fc_fixture", "lookup", json!({"q":1}), "call_legacy");
+        let binding = ModelToolCall {
+            call_id: call.call_id.clone(),
+            tool_id: "lookup".into(),
+            arguments: OpaquePayload::new("application/json", 1, call.payload_text())
+                .map_err(|error| HistoryError::Storage(error.into()))?,
+            presentation_contract: None,
+            rejection: None,
+        };
+        let frame = json!({
+            "receipt": {
+                "binding": {
+                    "accountId": "fixture-account", "modelId": "fixture-model",
+                    "protocol": "open_ai", "wireApi": "responses",
+                    "isolation": "fixture-session", "purpose": "chat"
+                },
+                "response": {
+                    "model": "fixture-model", "toolCalls": [call],
+                    "accounting": {
+                        "usage": {"inputTokens": 4, "outputTokens": 2, "totalTokens": 6},
+                        "pricing": {"kind": "estimated", "cost": {"currency": "USD", "amount": 0.25}}
+                    }
+                }
+            },
+            "bindings": [&binding], "settlementRelayed": true
+        });
+        let records = [
+            ContextRecord {
+                id: assistant_id.into(),
+                turn_id: Some("turn-1".into()),
+                source: ContextSource::Assistant,
+                content: vec![ContextContent::Opaque {
+                    payload: OpaquePayload::new("pl.model.assistant", 5, frame.to_string())
+                        .map_err(|error| HistoryError::Storage(error.into()))?,
+                }],
+                tool_calls: vec![binding],
+            },
+            ContextRecord {
+                id: "result-fixture".into(),
+                turn_id: Some(result_turn_id.into()),
+                source: ContextSource::ToolResult {
+                    call_id: "call_legacy".into(),
+                    tool_id: "lookup".into(),
+                },
+                content: vec![ContextContent::Text {
+                    text: "original result".into(),
+                }],
+                tool_calls: Vec::new(),
+            },
+        ];
+        for (ordinal, record) in (1_i64..).zip(records) {
+            let payload = serde_json::to_string(&record)?;
+            let hash = content_hash(payload.as_bytes());
+            db.execute_raw(statement(
+                "INSERT INTO current_context(ordinal,record_id,payload,payload_hash) VALUES(?,?,?,?)",
+                vec![ordinal.into(), record.id.into(), payload.into(), hash.into()],
+            ))
+            .await?;
+        }
+        let old: String = db
+            .query_one_raw(statement(
+                "SELECT payload FROM session_checkpoint WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .expect("fixture checkpoint")
+            .try_get("", "payload")?;
+        let mut checkpoint: ThreadCheckpoint = serde_json::from_str(&old)?;
+        let summary = &mut checkpoint.state.usage_summary;
+        summary.totals.inference_count = 4;
+        summary
+            .pricing
+            .estimated_costs
+            .push(pl_core::thread::UsageCost {
+                currency: "USD".into(),
+                amount: 1.25,
+            });
+        let payload = serde_json::to_string(&checkpoint)?;
+        let hash = content_hash(payload.as_bytes());
+        db.execute_raw(statement(
+            "UPDATE session_checkpoint SET context_count=3,payload=?,payload_hash=? WHERE id=1",
+            vec![payload.into(), hash.into()],
+        ))
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema24_model_checkpoint_conflict_does_not_publish_current() -> Result<()> {
+        for (assistant_id, result_turn_id, cause) in [
+            (
+                "missing-provenance",
+                "turn-1",
+                "missing its committed source attempt identity",
+            ),
+            (
+                "source:output",
+                "different-turn",
+                "saved tool result conflicts with its assistant call",
+            ),
+        ] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let thread_id = "schema24-invalid-model-checkpoint";
+            write_v24_fixture(&path, thread_id, true).await?;
+            let db = schema::connect(&path, false, false).await?;
+            install_v24_assistant_checkpoint(&db, assistant_id, result_turn_id).await?;
+            db.close().await?;
+            let source = V24HistorySource::open(&path, thread_id).await?;
+            let original = source
+                .checkpoint(thread_id)
+                .await?
+                .expect("fixture checkpoint");
+            source.close().await?;
+            let source_bytes = std::fs::read(&path)?;
+
+            let error = upgrade_history(&path, thread_id, directory.path())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, HistoryError::Storage(error) if format!("{error:#}").contains(cause)),
+                "{assistant_id}: {error:#}"
+            );
+            assert!(!directory.path().join("current.json").exists());
+            assert_eq!(std::fs::read(&path)?, source_bytes);
+            let backups = directory.path().join(BACKUP_ROOT);
+            assert!(!backups.join(PENDING_REPORT_FILE).exists());
+            let operation = std::fs::read_dir(backups)?
+                .next()
+                .expect("backup operation")?
+                .path();
+            let backup =
+                V24HistorySource::open(&operation.join("history.v24.sqlite"), thread_id).await?;
+            let preserved = backup
+                .checkpoint(thread_id)
+                .await?
+                .expect("preserved checkpoint");
+            assert_eq!(preserved.state.context, original.state.context);
+            assert_eq!(preserved.state.usage_summary, original.state.usage_summary);
+            backup.close().await?;
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn real_schema24_upgrade_preserves_canonical_current_and_display_facts() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -5273,6 +5517,7 @@ mod migration_tests {
         let thread_id = "migration-integration";
         let fixture = write_v24_fixture(&history_path, thread_id, true).await?;
         let source = schema::connect(&history_path, false, false).await?;
+        install_v24_assistant_checkpoint(&source, "source:output", "turn-1").await?;
         write_live_single_fixture(&source, &fixture.database_id).await?;
         let source_key = serde_json::to_string(&ChatSourceId::ForegroundTurn {
             turn_id: "legacy-source".into(),
@@ -5292,6 +5537,7 @@ mod migration_tests {
         let source_counts = database_table_rows(&source).await?;
         source.close().await?;
 
+        assert!(!directory.path().join("current.json").exists());
         let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
         assert_eq!(report.status, UpgradeStatus::Upgraded);
         assert_eq!(report.database_id, fixture.database_id);
@@ -5341,6 +5587,68 @@ mod migration_tests {
                 matches!(content, ContextContent::Text { text } if text.as_ref() == "cold context")
             })
         }));
+
+        let [_, assistant, result] = current.state.context.records.as_ref() else {
+            panic!("expected the original input, assistant and tool result");
+        };
+        assert_eq!(assistant.id, "source:output");
+        assert_eq!(assistant.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(assistant.source, ContextSource::Assistant);
+        let [ContextContent::Opaque { payload }] = assistant.content.as_slice() else {
+            panic!("expected one model-owned assistant frame");
+        };
+        assert_eq!(
+            (payload.format(), payload.version()),
+            ("pl.model.assistant", 7)
+        );
+        let frame: serde_json::Value = serde_json::from_str(payload.content())?;
+        assert_eq!(frame["sourceAttemptId"], "source");
+        assert!(frame.get("settlementRelayed").is_none());
+        let call = &assistant.tool_calls[0];
+        assert_eq!(call.call_id, "model-call:6:source:11:call_legacy");
+        assert_eq!(frame["callBindings"][0]["providerCallId"], "call_legacy");
+        assert_eq!(frame["callBindings"][0]["providerItemId"], "fc_fixture");
+        assert_eq!(
+            result.source,
+            ContextSource::ToolResult {
+                call_id: call.call_id.clone(),
+                tool_id: "lookup".into()
+            }
+        );
+        assert_eq!(
+            result.content,
+            [ContextContent::Text {
+                text: "original result".into()
+            }]
+        );
+        let receipt = pl_model::runtime::model_response_receipt(&pl_core::model::ModelStepOutput {
+            attempt_id: "source".into(),
+            base_context_revision: 1,
+            turn_action: Default::default(),
+            content: assistant.content.clone(),
+            tool_calls: assistant.tool_calls.clone(),
+            private_context: None,
+            usage: Default::default(),
+        })
+        .map_err(|error| HistoryError::Storage(error.into()))?
+        .expect("current model receipt");
+        assert_eq!(receipt.binding.account_id, "fixture-account");
+        let frozen_receipt_costs = receipt.response.accounting.estimated_costs();
+        let [receipt_cost] = frozen_receipt_costs.as_slice() else {
+            panic!("expected one frozen receipt cost");
+        };
+        assert_eq!(
+            (receipt_cost.currency.as_str(), receipt_cost.amount),
+            ("USD", 0.25)
+        );
+        assert_eq!(current.state.usage_summary.totals.inference_count, 4);
+        assert_eq!(
+            current.state.usage_summary.pricing.estimated_costs,
+            [pl_core::thread::UsageCost {
+                currency: "USD".into(),
+                amount: 1.25
+            }]
+        );
 
         let store =
             CurrentHistoryStore::open(&history_path, thread_id, HistoryLimits::default()).await?;
@@ -5916,6 +6224,187 @@ mod migration_tests {
     }
 
     #[tokio::test]
+    async fn cost_only_v24_history_stays_incomplete_after_its_first_complete_settlement()
+    -> anyhow::Result<()> {
+        use crate::studio::{
+            StudioStore,
+            storage::thread_writer::{ThreadStorageSink, storage_fault_tests},
+        };
+        use anyhow::Context as _;
+        use pl_core::{
+            model::ModelFactory,
+            thread::{StepInput, ThreadHandle, history_sink::HistorySinkHandle},
+        };
+        use pl_model::{
+            model::{ModelDefinition, ModelPricing, ModelTransportProfile, TokenPriceTier},
+            runtime::ThreadModel,
+        };
+        use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+        use std::time::Duration;
+
+        async fn wait_for_calls(store: &StudioStore) -> anyhow::Result<()> {
+            let calls = store.calls();
+            let target = calls.admitted_ticket();
+            let mut processed = calls.subscribe_processed_ticket();
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                processed.wait_for(|seq| *seq >= target),
+            )
+            .await??;
+            assert!(!calls.statistics_gap());
+            Ok(())
+        }
+
+        const PROMPT: &str = "complete the first request";
+        const NEW_COST: f64 = 0.000_078;
+        let mut response = responses_text("done", "priced-response", "priced-model");
+        response.last_mut().unwrap()["response"]["usage"] = serde_json::json!({
+            "input_tokens": 11, "output_tokens": 7, "total_tokens": 18,
+            "input_tokens_details": {"cached_tokens": 0},
+        });
+        let provider = FixtureServer::start(vec![
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                PROMPT,
+                0,
+                Reply::Sse(response.clone()),
+            ),
+            Step::prompt(Protocol::ResponsesHttp, PROMPT, 1, Reply::Sse(response)),
+        ])
+        .await?;
+        let mut model = ModelDefinition::compatible("priced-model");
+        model
+            .extra
+            .binding
+            .set_transport(ModelTransportProfile::responses_http());
+        model.extra.pricing = ModelPricing::published(
+            "USD",
+            vec![TokenPriceTier::flat(2.0, 8.0, Some(1.0), None)],
+            "https://example.test/prices",
+        );
+        let runtime = pl_model::runtime::new_with_account_id(
+            "priced",
+            pl_model_openai::endpoint::endpoint(Some(provider.base_url())),
+            model,
+        )?;
+        let model = ModelFactory::new(ThreadModel::new(runtime, None));
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let mut flags = Vec::new();
+        for (id, legacy) in [("known-complete", false), ("legacy-cost-only", true)] {
+            let mut thread = crate::Thread::placeholder(id);
+            thread.workspace_id = "project-test".into();
+            thread.agent_path = id.into();
+            thread.root_thread_id = id.into();
+            storage_fault_tests::register_test_thread(&store, &thread).await?;
+
+            if legacy {
+                let paths = store.session_paths(&thread.workspace_id, id)?;
+                std::fs::create_dir_all(paths.root())?;
+                write_v24_fixture(&paths.history_database(), id, false).await?;
+                let current = ThreadCurrent::new(id.into(), RuntimeEpoch::new());
+                let current_bytes = serde_json::to_vec_pretty(&current)?;
+                std::fs::write(paths.current_file(), &current_bytes)?;
+                assert_eq!(schema_version(&paths.history_database()).await?, 24);
+                let report = upgrade_history(&paths.history_database(), id, paths.root()).await?;
+                assert_eq!(report.status, UpgradeStatus::Upgraded);
+                assert!(!requires_history_upgrade(&paths.history_database(), id).await?);
+                assert_eq!(std::fs::read(paths.current_file())?, current_bytes);
+            }
+
+            let history = store.history(id).await?;
+            let reader = history.reader();
+            assert!(reader.accounting(None).await?.is_none());
+            let sink = ThreadStorageSink::new(store.clone(), thread).await?;
+            wait_for_calls(&store).await?;
+            let seeded = store.calls().session_cost_rollups().await?;
+            if legacy {
+                let seed = seeded.iter().find(|row| row.root_thread_id == id).unwrap();
+                assert!(seed.has_incomplete_usage);
+                assert_eq!(seed.estimated_costs[0].currency, "USD");
+                assert_eq!(seed.estimated_costs[0].amount, 1.25);
+            } else {
+                assert!(seeded.iter().all(|row| row.root_thread_id != id));
+            }
+
+            let owner = ThreadHandle::start_current(id.into(), Some(model.open_session().await?))?;
+            owner.attach_history(HistorySinkHandle::new(sink)).await?;
+            let projector =
+                storage_fault_tests::spawn_live_projection_for_thread(store.clone(), id);
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                owner.step(StepInput {
+                    turn_id: format!("{id}-turn"),
+                    attempt_id: uuid::Uuid::new_v4().to_string(),
+                    cancellation: Default::default(),
+                    content: vec![ContextContent::Text {
+                        text: PROMPT.into(),
+                    }],
+                }),
+            )
+            .await?
+            .with_context(|| format!("settlement fixture {id}: {:?}", provider.recorded()))?;
+            owner.close().await?;
+            let channel = store.thread_persistence().history_channel(id);
+            channel
+                .await_handoff_durable(id, owner.snapshot().commit_sequence)
+                .await?;
+            channel.stop_and_join().await?;
+            projector.await?;
+            wait_for_calls(&store).await?;
+
+            let saved = reader
+                .accounting(None)
+                .await?
+                .expect("new settlement accounting");
+            assert_eq!(
+                (
+                    saved.inference_count,
+                    saved.prompt_tokens,
+                    saved.completion_tokens,
+                    saved.total_tokens
+                ),
+                (1, 11, 7, 18)
+            );
+            assert!(!saved.has_unpriced_usage);
+            let rollups = store.calls().session_cost_rollups().await?;
+            let rollup = rollups.iter().find(|row| row.root_thread_id == id).unwrap();
+            let expected_total = NEW_COST + if legacy { 1.25 } else { 0.0 };
+            assert_eq!(rollup.estimated_costs.len(), 1);
+            assert_eq!(rollup.estimated_costs[0].currency, "USD");
+            assert!((rollup.estimated_costs[0].amount - expected_total).abs() < 1e-12);
+            let purposes: Vec<_> = rollup
+                .purpose_costs
+                .iter()
+                .map(|row| row.purpose.as_deref())
+                .collect();
+            if legacy {
+                assert_eq!(purposes, [Some("chat"), Some("turn")]);
+                assert_eq!(rollup.purpose_costs[0].estimated_costs[0].amount, 1.25);
+            } else {
+                assert_eq!(purposes, [Some("turn")]);
+            }
+            assert!(
+                (rollup.purpose_costs.last().unwrap().estimated_costs[0].amount - NEW_COST).abs()
+                    < 1e-12
+            );
+            flags.push((id, saved.has_incomplete_usage, rollup.has_incomplete_usage));
+            reader.close().await;
+            history.close().await?;
+        }
+        assert_eq!(provider.finish().await?.len(), 2);
+        store.close().await?;
+        assert_eq!(
+            flags,
+            [
+                ("known-complete", false, false),
+                ("legacy-cost-only", true, true)
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn backup_preparation_failure_preserves_schema24_and_does_not_publish_current()
     -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -5937,7 +6426,11 @@ mod migration_tests {
         Ok(())
     }
 
-    fn move_with_target_conflict(source: &Path, target: &Path, file_name: &str) -> io::Result<()> {
+    pub(super) fn move_with_target_conflict(
+        source: &Path,
+        target: &Path,
+        file_name: &str,
+    ) -> io::Result<()> {
         let move_owned_path = UpgradeFiles::DISK.move_owned_path;
         if target.file_name().and_then(|name| name.to_str()) != Some(file_name) {
             return move_owned_path(source, target);
@@ -6539,6 +7032,45 @@ mod migration_tests {
             },
         )
         .await?;
+        let failure_event_id = "turn-failed-detail";
+        let failed_head = HistoryRowHead::Turn(crate::history::HistoryTurnHead {
+            turn_id: "turn-failed".into(),
+            input_id: None,
+            run_id: None,
+            state: HistoryTurnState::Failed,
+            phase: None,
+            context_disposition: ThreadContextDisposition::Active,
+            queued_at: None,
+            started_at: None,
+            finished_at: Some(3000),
+            updated_at: 3000,
+            detail_event_id: Some(failure_event_id.into()),
+        });
+        let legacy_failed = serde_json::json!({
+            "id":"turn-failed", "threadId":thread_id, "revision":1, "updatedAt":3,
+            "state":{"kind":"failed","data":{"completedAt":3,"failure":{
+                "category":"provider","providerKind":"unknown","message":"legacy wait",
+                "retry":{"kind":"retryable","retryAfterMs":u64::MAX}
+            }}}
+        });
+        tx.execute_raw(statement(
+            "INSERT INTO history_events(seq,event_id,kind,turn_id,row_scope,row_key,is_anchor,recorded_at,head_json,payload_body_id)
+             VALUES(4,?,'turn_ended','turn-failed','turn','turn:turn-failed',1,3000,?,'v25-turn-body')",
+            vec![failure_event_id.into(), serde_json::to_string(&failed_head)?.into()],
+        )).await?;
+        super::v25_schema::insert_v25_body(
+            &tx,
+            failure_event_id,
+            0,
+            &HistoryBody {
+                body_id: "v25-turn-body".into(),
+                body_key: "turn_detail".into(),
+                role: HistoryBodyRole::CanonicalPayload,
+                media_type: Some("application/json".into()),
+                bytes: serde_json::to_vec(&legacy_failed)?.into(),
+            },
+        )
+        .await?;
         tx.commit().await?;
         db.close().await?;
 
@@ -6609,6 +7141,34 @@ mod migration_tests {
             .await?
             .expect("zero-copy big body readable");
         assert_eq!(read_big, big_bytes);
+
+        let turns = reader
+            .turns_page(None, None, HistoryDemand::default())
+            .await?;
+        let [entry] = turns.entries.as_slice() else {
+            panic!("expected one legacy Turn")
+        };
+        let HistoryBusinessRowHead::Turn(head) = &entry.head else {
+            panic!("expected a Turn row")
+        };
+        let turn = crate::studio::runtime::history_turn(&reader, head.clone()).await?;
+        let crate::TurnState::Failed(state) = turn.state else {
+            panic!("expected a failed Turn")
+        };
+        assert_eq!(state.failure().retry.retry_after_ms(), Some(u64::MAX));
+        let detail = reader
+            .read_event(failure_event_id.into(), HistoryDemand::default())
+            .await?;
+        let bytes = body::read_event_body_bytes(&reader, &detail, "turn_detail", None)
+            .await?
+            .unwrap();
+        let actual: serde_json::Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            actual
+                .pointer("/state/data/failure/retry/retryAfterMs")
+                .and_then(serde_json::Value::as_str),
+            Some("18446744073709551615")
+        );
 
         reader.close().await;
         store.close().await?;
@@ -7331,6 +7891,7 @@ mod migration_tests {
                 },
                 started_at: None,
                 finished_at: Some(40_000),
+                model_recovery: None,
                 text_channel: Some(crate::ThreadTextChannel::Final),
                 single_visibility: Some(HistorySingleVisibility::Content),
                 presentation_contract: None,

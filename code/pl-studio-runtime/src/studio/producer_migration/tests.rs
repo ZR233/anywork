@@ -1,47 +1,4 @@
-use super::normalize;
-use crate::studio::thread_projection::billing_facts;
-use pl_core::thread::ThreadEffectBatch;
-use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
-
-/// 最小 effect batch：只携带扩展变更，用于走真实 `billing_facts` 入口。
-fn batch(extension_id: &str, payload: pl_core::context::OpaquePayload) -> ThreadEffectBatch {
-    ThreadEffectBatch {
-        committed_at: 42,
-        permissions: Default::default(),
-        wake_messages_through: None,
-        inputs: Default::default(),
-        continuations: Default::default(),
-        tasks: Default::default(),
-        thread_id: "thread".into(),
-        sequence: 1,
-        context: None,
-        private_context: None,
-        attempt: None,
-        model_members: Default::default(),
-        model_member_starts: Default::default(),
-        model_member_content_available: Default::default(),
-        model_connection_events: Default::default(),
-        context_compactions: Default::default(),
-        turn: None,
-        discovered_tools: None,
-        deliveries: Default::default(),
-        delivery_repairs: Default::default(),
-        extensions: vec![ExtensionChange::Put {
-            id: extension_id.into(),
-            record: ExtensionRecord {
-                revision: 1,
-                payload,
-            },
-        }]
-        .into(),
-        inbox: Default::default(),
-        consumed_messages: None,
-        interactions: Default::default(),
-        replacements: Default::default(),
-        runtime_facts: None,
-        lifecycle: None,
-    }
-}
+use super::{AuxiliaryBillingReceipt, normalize};
 
 /// HEAD 真实 v1 辅助计费载荷（camelCase，含 provider 展示名与冻结观察）。
 const LEGACY_AUX_BUDGET: &str = r#"{
@@ -77,11 +34,9 @@ fn auxiliary_billing_v1_converts_account_identity_and_keeps_frozen_facts() {
     let payload =
         pl_core::context::OpaquePayload::new("pl.studio.auxiliary-billing", 1, LEGACY_AUX_BUDGET)
             .unwrap();
-    assert!(billing_facts(&batch("studio.auxiliary-billing.title", payload.clone())).is_err());
     let payload = normalize(&payload).unwrap().unwrap();
-    let facts = billing_facts(&batch("studio.auxiliary-billing.title", payload)).unwrap();
-    assert_eq!(facts.len(), 1);
-    let record = &facts[0].record;
+    let receipt: AuxiliaryBillingReceipt = serde_json::from_str(payload.content()).unwrap();
+    let record = &receipt.billing;
     assert_eq!(record.account_id, "deepseek");
     assert_eq!(record.account_display_name.as_deref(), Some("DeepSeek"));
     // 配置模型只来自冻结观察；旧 `model`（发送模型）不得冒充。
@@ -102,7 +57,6 @@ fn auxiliary_billing_v1_converts_account_identity_and_keeps_frozen_facts() {
         .next()
         .unwrap();
     assert_eq!(cost.amount, 1.5);
-    assert!(facts[0].auxiliary);
 }
 
 #[test]
@@ -122,10 +76,9 @@ fn auxiliary_billing_v1_without_observation_keeps_configured_model_unknown() {
         );
     let payload =
         pl_core::context::OpaquePayload::new("pl.studio.auxiliary-billing", 1, legacy).unwrap();
-    assert!(billing_facts(&batch("studio.auxiliary-billing.title", payload.clone())).is_err());
     let payload = normalize(&payload).unwrap().unwrap();
-    let facts = billing_facts(&batch("studio.auxiliary-billing.title", payload)).unwrap();
-    let record = &facts[0].record;
+    let receipt: AuxiliaryBillingReceipt = serde_json::from_str(payload.content()).unwrap();
+    let record = &receipt.billing;
     assert!(
         record.model_id.is_none(),
         "sent model never becomes configured"
@@ -165,24 +118,22 @@ const LEGACY_COMPACTION: &str = r#"{
 fn compaction_receipt_v1_converts_legacy_binding_into_current_account_semantics() {
     let payload =
         pl_core::context::OpaquePayload::new("pl.studio.compaction", 1, LEGACY_COMPACTION).unwrap();
-    assert!(billing_facts(&batch("studio.compaction.latest", payload.clone())).is_err());
     let payload = normalize(&payload).unwrap().unwrap();
-    let facts = billing_facts(&batch("studio.compaction.latest", payload)).unwrap();
-    assert_eq!(facts.len(), 1);
-    let record = &facts[0].record;
-    assert_eq!(record.account_id, "deepseek");
+    let receipt =
+        crate::context_preparation::decode_receipt(payload.version(), payload.content()).unwrap();
+    assert_eq!(receipt.binding.account_id, "deepseek");
     // binding.requestedModel 是冻結的目录配置模型。
-    assert_eq!(record.model_id.as_deref(), Some("deepseek-flash"));
-    assert_eq!(record.effort.as_deref(), Some("high"));
-    assert_eq!(record.requested_service_tier, None);
-    assert_eq!(record.context_window, Some(128_000));
-    assert_eq!(record.accounting.usage.output_tokens, Some(2));
-    assert!(facts[0].auxiliary);
+    assert_eq!(receipt.binding.model_id, "deepseek-flash");
+    assert_eq!(receipt.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(receipt.requested_service_tier, None);
+    assert_eq!(receipt.context_window, Some(128_000));
+    assert_eq!(receipt.accounting.usage.output_tokens, Some(2));
+    assert_eq!(receipt.accounting.estimated_costs()[0].amount, 0.25);
 }
 
 #[test]
 fn unsupported_auxiliary_versions_fail_without_guessing() {
     let payload =
         pl_core::context::OpaquePayload::new("pl.studio.auxiliary-billing", 9, "{}").unwrap();
-    assert!(billing_facts(&batch("studio.auxiliary-billing.title", payload)).is_err());
+    assert!(normalize(&payload).is_err());
 }

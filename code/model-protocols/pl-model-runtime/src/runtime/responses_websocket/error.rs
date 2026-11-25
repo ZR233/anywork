@@ -1,112 +1,101 @@
-use pl_protocol::PureError;
-use serde::Deserialize;
-use serde_json::{Map, Value};
+use pl_model_wire::provider_error::{
+    ClassifiedProviderError, ErrorObservedAt, ErrorPolicyBinding, ObservedRetry,
+    ProviderErrorContext, RetryHint, request_id, transport_failure,
+};
+use pl_model_wire::transport::RequestDiagnostics;
+use pl_protocol::{
+    ProviderFailure, ProviderFailureKind, ProviderFailureStage, ProviderRecovery, PureError,
+    RetryDisposition,
+};
+use serde_json::Value;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
-use super::super::provider_error::{provider_stream_failure, redact_secret_like_values};
-
-const HANDSHAKE_TIMEOUT_MESSAGE: &str = "Responses WebSocket handshake timed out after 15 seconds; check WebSocket network access or switch this account to HTTP explicitly in Studio settings";
-
-#[derive(Debug, Deserialize)]
-struct WebSocketErrorDetail {
-    code: Option<String>,
-    param: Option<String>,
-    message: Option<String>,
-    retry_after_ms: Option<u64>,
-    #[serde(default, deserialize_with = "deserialize_optional_u16")]
-    status: Option<u16>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WebSocketErrorEvent {
-    code: Option<String>,
-    param: Option<String>,
-    message: Option<String>,
-    retry_after_ms: Option<u64>,
-    #[serde(
-        default,
-        alias = "status_code",
-        deserialize_with = "deserialize_optional_u16"
-    )]
-    status: Option<u16>,
-    #[serde(default)]
-    error: Option<WebSocketErrorDetail>,
-    #[serde(default)]
-    headers: Map<String, Value>,
-}
-
-pub(super) fn handshake_error(error: TungsteniteError) -> PureError {
+pub(super) fn handshake_error(
+    error: TungsteniteError,
+    binding: ErrorPolicyBinding<'_>,
+    diagnostics: &RequestDiagnostics,
+) -> PureError {
+    let redact = |text: &str| diagnostics.redact_text(text);
     if let TungsteniteError::Http(response) = &error {
         let status = response.status().as_u16();
-        let detail = format!("Responses WebSocket handshake failed with HTTP {status}");
-        if status == 426 {
-            return PureError::provider_failure(pl_protocol::ProviderFailure {
-                context: pl_protocol::ProviderFailureContext {
-                    stage: pl_protocol::ProviderFailureStage::Handshake,
-                    request_id: response
-                        .headers()
-                        .get("x-request-id")
-                        .and_then(|v| v.to_str().ok())
-                        .map(redact_secret_like_values),
-                    recovery: pl_protocol::ProviderRecovery::HttpFallback,
-                },
-                kind: pl_protocol::ProviderFailureKind::Transport,
-                code: None,
-                http_status: Some(status),
-                message: detail,
-                retry: pl_protocol::RetryDisposition::Permanent,
-            });
-        }
-        return super::super::transport::response_error(
-            status,
-            response.headers(),
-            response.body().as_deref().unwrap_or_default(),
-            pl_protocol::ProviderFailureStage::Handshake,
+        let observed_at = ErrorObservedAt::now();
+        let context = ProviderErrorContext {
+            stage: ProviderFailureStage::Handshake,
+            request_id: request_id(response.headers()),
+            http_status: Some(status),
+            observed_at,
+            header_retry: ObservedRetry::from_headers(response.headers(), observed_at),
+            redact: &redact,
+        };
+        let body = response.body().as_deref().unwrap_or_default();
+        let mut failure = pl_model_wire::transport::response_failure(
+            Some(binding),
+            &body[..body.len().min(16_384)],
+            &context,
         );
+        // A rejected upgrade is a transport capability fact. A recognized business error on
+        // the same response still takes precedence.
+        if status == 426 && failure.kind == ProviderFailureKind::Unknown {
+            let mut upgrade = ClassifiedProviderError::new(
+                ProviderFailureKind::Transport,
+                false,
+                "WebSocket upgrade required",
+            );
+            upgrade.recovery = ProviderRecovery::HttpFallback;
+            failure = upgrade.into_failure(&context);
+        }
+        return failure.with_source(error).into();
     }
-
-    let detail =
-        redact_secret_like_values(&format!("Responses WebSocket handshake failed: {error}"));
-    match error {
-        TungsteniteError::Protocol(_)
-        | TungsteniteError::Capacity(_)
-        | TungsteniteError::Utf8(_)
-        | TungsteniteError::AttackAttempt
-        | TungsteniteError::Url(_)
-        | TungsteniteError::HttpFormat(_) => PureError::LlmError(detail),
-        TungsteniteError::ConnectionClosed
-        | TungsteniteError::AlreadyClosed
-        | TungsteniteError::Io(_)
-        | TungsteniteError::Tls(_)
-        | TungsteniteError::WriteBufferFull(_) => PureError::transient_model_transport(detail),
-        TungsteniteError::Http(_) => unreachable!("HTTP handshake error handled above"),
-    }
+    let failure = if is_connection_error(&error) {
+        transport_failure(
+            ProviderFailureStage::Handshake,
+            "Responses WebSocket handshake failed",
+        )
+    } else {
+        protocol_failure(
+            ProviderFailureStage::Handshake,
+            "invalid Responses WebSocket handshake",
+        )
+    };
+    failure.with_source(error).into()
 }
 
-pub(super) fn handshake_timeout_error() -> PureError {
-    PureError::transient_model_transport(HANDSHAKE_TIMEOUT_MESSAGE)
+pub(super) fn handshake_timeout_error(source: tokio::time::error::Elapsed) -> PureError {
+    transport_failure(
+        ProviderFailureStage::Handshake,
+        "Responses WebSocket handshake timed out",
+    )
+    .with_source(source)
+    .into()
 }
 
 pub(crate) fn connection_error(detail: impl AsRef<str>) -> PureError {
-    PureError::transient_model_transport(redact_secret_like_values(&format!(
-        "Responses WebSocket stream failed: {}",
-        detail.as_ref()
-    )))
+    transport_failure(ProviderFailureStage::Stream, detail.as_ref()).into()
+}
+
+fn is_connection_error(error: &TungsteniteError) -> bool {
+    matches!(
+        error,
+        TungsteniteError::ConnectionClosed
+            | TungsteniteError::AlreadyClosed
+            | TungsteniteError::Io(_)
+            | TungsteniteError::Tls(_)
+            | TungsteniteError::WriteBufferFull(_)
+            | TungsteniteError::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake
+            )
+    )
 }
 
 pub(crate) fn socket_error(error: TungsteniteError) -> PureError {
-    match error {
-        TungsteniteError::ConnectionClosed
-        | TungsteniteError::AlreadyClosed
-        | TungsteniteError::Io(_)
-        | TungsteniteError::Tls(_)
-        | TungsteniteError::WriteBufferFull(_)
-        | TungsteniteError::Protocol(
-            tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-        ) => connection_error(error.to_string()),
-        _ => protocol_error(error.to_string()),
-    }
+    let stage = ProviderFailureStage::Stream;
+    let failure = if is_connection_error(&error) {
+        transport_failure(stage, "Responses WebSocket connection failed")
+    } else {
+        protocol_failure(stage, "invalid Responses WebSocket frame")
+    };
+    failure.with_source(error).into()
 }
 
 pub(super) fn close_error(frame: Option<CloseFrame>) -> PureError {
@@ -114,128 +103,121 @@ pub(super) fn close_error(frame: Option<CloseFrame>) -> PureError {
         return connection_error("server closed the connection without a close frame");
     };
     let code = u16::from(frame.code);
-    let detail = redact_secret_like_values(&format!(
-        "Responses WebSocket server closed the connection ({code}): {}",
-        frame.reason
-    ));
+    let detail = format!("Responses WebSocket server closed the connection ({code})");
     if matches!(code, 1002 | 1003 | 1007 | 1008 | 1009 | 1010) {
         protocol_error(detail)
     } else {
-        PureError::transient_model_transport(detail)
+        connection_error(detail)
     }
 }
 
-pub(in crate::runtime) fn protocol_error(detail: impl AsRef<str>) -> PureError {
-    PureError::provider_failure(pl_protocol::ProviderFailure {
-        context: pl_protocol::ProviderFailureContext {
-            stage: pl_protocol::ProviderFailureStage::Stream,
-            ..Default::default()
-        },
-        kind: pl_protocol::ProviderFailureKind::Protocol,
-        code: None,
-        http_status: None,
-        message: redact_secret_like_values(&format!(
-            "Responses WebSocket protocol error: {}",
-            detail.as_ref()
-        )),
-        retry: pl_protocol::RetryDisposition::Permanent,
-    })
+pub(super) fn protocol_failure(
+    stage: ProviderFailureStage,
+    message: impl Into<String>,
+) -> ProviderFailure {
+    let mut failure = ProviderFailure::new(
+        ProviderFailureKind::Protocol,
+        message,
+        RetryDisposition::Permanent,
+    );
+    failure.context.stage = stage;
+    failure
 }
 
-pub(super) fn server_error(value: &Value) -> PureError {
-    let parsed = match serde_json::from_value::<WebSocketErrorEvent>(value.clone()) {
-        Ok(parsed) => parsed,
-        Err(error) => return protocol_error(format!("invalid server error event: {error}")),
-    };
-    let nested = parsed.error.as_ref();
-    let code = nested
-        .and_then(|error| error.code.as_deref())
-        .or(parsed.code.as_deref());
-    let message = nested
-        .and_then(|error| error.message.as_deref())
-        .or(parsed.message.as_deref())
-        .unwrap_or("Responses WebSocket returned an error");
-    let status = parsed
-        .status
-        .or_else(|| nested.and_then(|error| error.status));
-    let detail = websocket_error_message(status, code, message);
-    let retry_after_ms = nested
-        .and_then(|error| error.retry_after_ms)
-        .or(parsed.retry_after_ms)
-        .or_else(|| retry_after_from_json_headers(&parsed.headers));
-    provider_stream_failure(code, status, retry_after_ms, detail)
+pub(crate) fn protocol_error(detail: impl AsRef<str>) -> PureError {
+    protocol_failure(ProviderFailureStage::Stream, detail.as_ref()).into()
 }
 
-pub(super) fn continuation_id_invalid(value: &Value) -> bool {
-    let Ok(parsed) = serde_json::from_value::<WebSocketErrorEvent>(value.clone()) else {
-        return false;
-    };
-    let nested = parsed.error.as_ref();
-    let code = nested
-        .and_then(|error| error.code.as_deref())
-        .or(parsed.code.as_deref())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let param = nested
-        .and_then(|error| error.param.as_deref())
-        .or(parsed.param.as_deref());
-    matches!(
-        code.as_str(),
-        "previous_response_not_found"
-            | "previous_response_id_not_found"
-            | "invalid_previous_response_id"
-    ) || (param == Some("previous_response_id")
-        && matches!(code.as_str(), "invalid_request_error" | "not_found"))
+pub(super) fn frame_headers(
+    value: &Value,
+    observed_at: ErrorObservedAt,
+) -> (Option<String>, ObservedRetry) {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
+    let mut headers = HeaderMap::new();
+    let mut numeric_retry = RetryHint::Absent;
+    if let Some(frame_headers) = value.get("headers").and_then(Value::as_object) {
+        for (name, value) in frame_headers {
+            let Ok(name) = HeaderName::try_from(name) else {
+                continue;
+            };
+            let retry = matches!(
+                name.as_str(),
+                "retry-after" | "retry-after-ms" | "retry_after_ms"
+            );
+            match value {
+                Value::Number(number) if retry => {
+                    let hint = match RetryHint::from_number_millis(number) {
+                        RetryHint::Delay(delay) if name == RETRY_AFTER => delay
+                            .checked_mul(1_000)
+                            .map_or(RetryHint::Unrepresentable, RetryHint::Delay),
+                        hint => hint,
+                    };
+                    numeric_retry = numeric_retry.combine(hint);
+                }
+                Value::String(text)
+                    if retry
+                        || matches!(
+                            name.as_str(),
+                            "x-request-id" | "x-goog-request-id" | "request-id"
+                        ) =>
+                {
+                    if let Ok(value) = HeaderValue::from_str(text) {
+                        headers.append(name, value);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let retry = RetryHint::from_headers(&headers, observed_at.wall)
+        .combine(numeric_retry)
+        .observed(observed_at);
+    (request_id(&headers).map(str::to_owned), retry)
 }
 
-pub(super) fn continuation_retry_error() -> PureError {
-    PureError::transient_model_transport(
-        "Responses WebSocket previous_response_id is no longer valid; retrying with full history",
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::{Duration, Instant, SystemTime};
 
-fn websocket_error_message(status: Option<u16>, code: Option<&str>, message: &str) -> String {
-    let label = match (status, code) {
-        (Some(status), Some(code)) => format!("Responses WebSocket error {code} (HTTP {status})"),
-        (Some(status), None) => format!("Responses WebSocket error (HTTP {status})"),
-        (None, Some(code)) => format!("Responses WebSocket error {code}"),
-        (None, None) => "Responses WebSocket error".to_string(),
-    };
-    redact_secret_like_values(&format!("{label}: {message}"))
-}
+    #[test]
+    fn mixed_retry_headers_keep_units_and_the_original_receive_time() {
+        let at = ErrorObservedAt {
+            wall: SystemTime::UNIX_EPOCH + Duration::from_secs(784_111_775),
+            monotonic: Instant::now(),
+        };
+        for (headers, millis) in [
+            (json!({"Retry-After": 3, "retry-after-ms": "2500"}), 3000),
+            (
+                json!({"retry-after": "Sun, 06 Nov 1994 08:49:37 GMT", "retry-after-ms": 1000}),
+                2000,
+            ),
+            (json!({"retry-after": "1", "retry-after-ms": -1}), 1000),
+            (json!({"retry-after": 1.25, "retry-after-ms": "0"}), 0),
+        ] {
+            let (_, retry) = frame_headers(&json!({"headers": headers}), at);
+            assert_eq!(
+                retry,
+                ObservedRetry::At {
+                    deadline: at.monotonic + Duration::from_millis(millis),
+                    delay_ms: millis,
+                    wall: at.wall,
+                }
+            );
+        }
+    }
 
-fn retry_after_from_json_headers(headers: &Map<String, Value>) -> Option<u64> {
-    headers
-        .get("retry-after-ms")
-        .or_else(|| headers.get("retry_after_ms"))
-        .and_then(json_u64)
-        .or_else(|| {
-            headers
-                .get("retry-after")
-                .and_then(json_u64)
-                .map(|seconds| seconds.saturating_mul(1_000))
-        })
-}
-
-fn json_u64(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-}
-
-fn json_u16(value: &Value) -> Option<u16> {
-    json_u64(value).and_then(|value| u16::try_from(value).ok())
-}
-
-fn deserialize_optional_u16<'de, D>(deserializer: D) -> std::result::Result<Option<u16>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<Value>::deserialize(deserializer)?;
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => json_u16(&value)
-            .map(Some)
-            .ok_or_else(|| serde::de::Error::custom("status must be an unsigned 16-bit integer")),
+    #[test]
+    fn numeric_retry_seconds_overflow_without_replacing_the_hint() {
+        let at = ErrorObservedAt::now();
+        let (_, retry) = frame_headers(
+            &json!({"headers": {
+                "retry-after": u64::MAX,
+                "retry-after-ms": 1,
+            }}),
+            at,
+        );
+        assert_eq!(retry, ObservedRetry::Unrepresentable { wall: at.wall });
     }
 }

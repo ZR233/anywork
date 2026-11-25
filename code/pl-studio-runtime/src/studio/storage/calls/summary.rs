@@ -12,9 +12,10 @@ use super::*;
 pub(crate) struct SessionUsageProjection {
     pub(crate) root_thread_id: String,
     pub(crate) thread_id: String,
-    /// 单调投影 revision；更小的投影被忽略，相同的投影幂等替换。
+    /// 已持久化的 History 事件位置。较小版本忽略，相同版本校验内容。
     pub(crate) revision: u64,
     pub(crate) has_unpriced_usage: bool,
+    pub(crate) has_incomplete_usage: bool,
     pub(crate) purpose_costs: Vec<PurposeUsageProjection>,
 }
 
@@ -147,11 +148,12 @@ async fn insert_row(
 ) -> Result<()> {
     db.execute_raw(statement(
         "INSERT INTO call_usage_summary(
-            root_thread_id,thread_id,purpose,cost_currency,amount,has_unpriced_usage,revision,content_hash)
-         VALUES(?,?,?,?,?,?,?,?)
+            root_thread_id,thread_id,purpose,cost_currency,amount,has_unpriced_usage,has_incomplete_usage,revision,content_hash)
+         VALUES(?,?,?,?,?,?,?,?,?)
          ON CONFLICT(root_thread_id,thread_id,purpose,cost_currency) DO UPDATE SET
             amount=excluded.amount,
             has_unpriced_usage=excluded.has_unpriced_usage,
+            has_incomplete_usage=excluded.has_incomplete_usage,
             revision=excluded.revision,content_hash=excluded.content_hash",
         vec![
             projection.root_thread_id.clone().into(),
@@ -160,6 +162,7 @@ async fn insert_row(
             currency.to_owned().into(),
             amount.into(),
             (projection.has_unpriced_usage as i32).into(),
+            (projection.has_incomplete_usage as i32).into(),
             revision.into(),
             content_hash.into(),
         ],
@@ -212,7 +215,7 @@ pub(super) async fn read_rollups(
     let rows = db
         .query_all_raw(statement(
             "SELECT root_thread_id,purpose,cost_currency,SUM(amount) AS amount,
-                    MAX(has_unpriced_usage) AS unpriced
+                    MAX(has_unpriced_usage) AS unpriced,MAX(has_incomplete_usage) AS incomplete
              FROM call_usage_summary
              GROUP BY root_thread_id,purpose,cost_currency
              ORDER BY root_thread_id,purpose,cost_currency",
@@ -234,6 +237,7 @@ pub(super) async fn read_rollups(
         }
         let rollup = rollups.last_mut().expect("root group started");
         rollup.has_unpriced_usage |= row.try_get::<i64>("", "unpriced")? != 0;
+        rollup.has_incomplete_usage |= row.try_get::<i64>("", "incomplete")? != 0;
         let currency: String = row.try_get("", "cost_currency")?;
         // Empty-currency groups still establish their root and its unpriced flag.
         // They are provenance placeholders, not zero-valued monetary contributions.
@@ -381,6 +385,7 @@ mod tests {
                 thread_id: thread.into(),
                 revision: 1,
                 has_unpriced_usage: unpriced,
+                has_incomplete_usage: false,
                 purpose_costs,
             })?;
         }

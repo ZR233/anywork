@@ -61,6 +61,7 @@ HeaderView _header({
   required SessionDirectoryRow? row,
   required StudioProject? project,
   List<StudioAgentView> agents = const [],
+  SessionCostView? sessionCost,
 }) => HeaderView(
   selectedRootRow: row,
   selectedProject: project,
@@ -78,7 +79,7 @@ HeaderView _header({
     activeMcpServers: [],
     activeLspServers: [],
   ),
-  sessionCost: null,
+  sessionCost: sessionCost,
   pendingInteractions: const [],
 );
 
@@ -180,6 +181,58 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('native session cost keeps the amount when usage is incomplete', (
+    tester,
+  ) async {
+    final graph = _testGraph(tester);
+    final costChip = find.byKey(StudioDriverKeys.sessionCost);
+    const amount = RuntimeCostView(currency: 'USD', amount: 0.25);
+    for (final (incomplete, unpriced) in [(true, false), (false, true)]) {
+      final cost = SessionCostView(
+        rootThreadId: 'root-thread',
+        purposeCosts: [
+          PurposeCostView(
+            purpose: 'main',
+            estimatedCosts: const [amount],
+            hasUnpricedUsage: unpriced,
+          ),
+        ],
+        estimatedCosts: const [amount],
+        hasUnpricedUsage: unpriced,
+        hasIncompleteUsage: incomplete,
+      );
+      await tester.pumpWidget(
+        _host(
+          _header(
+            row: _root(acp: false),
+            project: _project,
+            agents: [_nativeAgent],
+            sessionCost: cost,
+          ),
+          width: 360,
+          graph: graph,
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.descendant(of: costChip, matching: find.text(r'$0.25')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: costChip, matching: find.text('用量不完整')),
+        incomplete ? findsOneWidget : findsNothing,
+      );
+      final tooltip = tester.widget<Tooltip>(
+        find.ancestor(of: costChip, matching: find.byType(Tooltip)),
+      );
+      expect(
+        tooltip.message,
+        unpriced ? contains('未计价') : isNot(contains('未计价')),
+      );
+      expect(tester.takeException(), isNull);
+    }
+  });
 
   testWidgets('workspace menu is absent without project qualification', (
     tester,

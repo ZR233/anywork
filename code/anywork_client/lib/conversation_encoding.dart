@@ -36,6 +36,8 @@ Map<String, Object?> chatAtomToJson(ChatAtom atom) => {
   'textChannel': atom.textChannel == null
       ? null
       : _threadTextChannelToJson(atom.textChannel!),
+  if (atom.modelRecovery case final recovery?)
+    'modelRecovery': recovery.toJson(),
   if (atom.contentPresent != null) 'contentPresent': atom.contentPresent,
   'startedAt': atom.startedAt,
   'finishedAt': atom.finishedAt,

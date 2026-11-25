@@ -69,7 +69,10 @@ async fn live_schema_tool_output_continues() -> Result<()> {
         .tools(vec![tool_definition_to_spec(&definition, ToolCallPolicy::DirectOnly)])
         .build();
     let first = runtime
-        .complete(request.clone(), ModelInvocationContext::default())
+        .complete(
+            request.clone(),
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await?;
     ensure!(
         first.tool_calls.len() == 1 && first.tool_calls[0].name == "schema_probe",
@@ -89,7 +92,10 @@ async fn live_schema_tool_output_continues() -> Result<()> {
     request.append_response(&first)?;
     request.input.push(ModelContextItem::from(output));
     let second = runtime
-        .complete(request, ModelInvocationContext::default())
+        .complete(
+            request,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await?;
     ensure!(
         second.tool_calls.is_empty(),

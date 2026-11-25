@@ -163,6 +163,8 @@ pub struct ChatAtom {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<crate::ThreadWaitPresentation>,
     pub text_channel: Option<crate::ThreadTextChannel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_recovery: Option<crate::ModelRecoveryNotice>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     /// For a text/input fact, whether accepted text or attachments exist.

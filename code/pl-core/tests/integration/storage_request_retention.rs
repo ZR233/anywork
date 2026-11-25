@@ -256,6 +256,7 @@ impl ModelSession for FailsOnce {
         Ok(PreparedModelCall::new(async move {
             if fail {
                 return Err(ModelError {
+                    context_recovery: None,
                     details: None,
                     kind: pl_core::model::ModelFailureKind::Unavailable,
                     usage: Default::default(),

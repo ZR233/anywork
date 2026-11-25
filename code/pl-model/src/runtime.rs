@@ -11,7 +11,7 @@ pub fn from_route(route: &ResolvedModelRoute) -> Result<ModelRuntime> {
     let adapter = registry.resolve(&route.endpoint.protocol)?;
     adapter.bind(&mut route.endpoint, &mut route.model);
     let upload = registry.file_upload(&route.endpoint.service_capabilities.files)?;
-    ModelRuntime::bind_route(route, adapter.codec, upload)
+    ModelRuntime::bind_route(route, adapter.codec, adapter.error_policy, upload)
 }
 
 /// Binds an explicit account endpoint and model to their protocol services.
@@ -37,7 +37,14 @@ pub fn new_with_registry(
     let adapter = registry.resolve(&endpoint.protocol)?;
     adapter.bind(&mut endpoint, &mut model);
     let upload = registry.file_upload(&endpoint.service_capabilities.files)?;
-    ModelRuntime::bind(account_id, endpoint, model, adapter.codec, upload)
+    ModelRuntime::bind(
+        account_id,
+        endpoint,
+        model,
+        adapter.codec,
+        adapter.error_policy,
+        upload,
+    )
 }
 
 /// Constructs the host-facing completion client using the selected protocol.

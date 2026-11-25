@@ -2,6 +2,7 @@
 use super::super::current::{ActiveTextPart, ModelPartLocation};
 use super::super::observation_parts::observation_preview;
 use super::ProjectionError;
+use crate::ThreadTextItem;
 use crate::studio::runtime::chat_item::atom_contents;
 use crate::studio::runtime::chat_item::{BodyKey, TOOL_RESULT_FIELD};
 use crate::{
@@ -71,6 +72,7 @@ pub(super) fn project(
             tool: None,
             wait: None,
             text_channel: None,
+            model_recovery: None,
             started_at: None,
             finished_at: None,
             contents: Vec::new(),
@@ -129,6 +131,55 @@ pub(super) fn project(
                 block,
                 atom.text_channel,
                 Some(ModelPartLocation { generation, index }),
+            ));
+            atoms.push(atom);
+        }
+        for (id, message, notice) in super::super::responses::recovery_notices(
+            &attempt.attempt_id,
+            progress.progress.observation(),
+        ) {
+            let block = ContentBlock::from_text(&message);
+            let fields = BTreeMap::from([(BodyKey::Body, block.clone())]);
+            let shape = ExecutionShape::Text(
+                ThreadTextItem::new(
+                    ThreadTextChannel::Commentary,
+                    String::new(),
+                    Vec::new(),
+                    ThreadContentLifecycle::streaming(),
+                )
+                .with_model_recovery(Some(notice)),
+            );
+            let item = ExecutionItem::new(
+                id.clone(),
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal: 0,
+                    revision: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+                shape,
+            );
+            let mut atom = crate::studio::runtime::chat_item::atom(&item);
+            atom.attempt_id = Some(attempt.attempt_id.clone());
+            atom.started_at = None;
+            atom.finished_at = None;
+            atom.contents = atom_contents(
+                owner_id,
+                &ContentOwner::Item {
+                    item_id: id.clone(),
+                },
+                fields.keys(),
+            )
+            .collect();
+            insert_active_source(&mut sources, atom.source.clone());
+            active.push(ActiveTextPart::new(
+                id,
+                BodyKey::Body,
+                block,
+                Some(ThreadTextChannel::Commentary),
+                None,
             ));
             atoms.push(atom);
         }
@@ -211,6 +262,7 @@ pub(super) fn project(
                 }),
                 wait: None,
                 text_channel: None,
+                model_recovery: None,
                 started_at: None,
                 finished_at: None,
                 contents: Vec::new(),
@@ -312,6 +364,7 @@ pub(super) fn project(
             tool: None,
             wait: None,
             text_channel,
+            model_recovery: None,
             started_at: None,
             finished_at: None,
             contents: atom_contents(

@@ -45,6 +45,7 @@ fn issue(issue: &pl_core::usage::UsageIssue) -> crate::UsageGapIssue {
             UsageIssueReason::Unreported => Reason::Unreported,
             UsageIssueReason::Inconsistent => Reason::Inconsistent,
             UsageIssueReason::Overflow => Reason::Overflow,
+            UsageIssueReason::NonTerminalSample => Reason::NonTerminalSample,
         },
     }
 }

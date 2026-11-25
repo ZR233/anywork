@@ -302,6 +302,76 @@ ProductTopicDataFrame _threadLspEvent(ThreadLspStateSnapshot snapshot) =>
 
 void main() {
   test(
+    'session cost topic updates saved usage completeness at the same amount',
+    () async {
+      final transport = _TopicTransport();
+      final client = _client(transport, 'session-cost');
+      const rootThreadId = 'root';
+      const topic = SessionCostsTopic(rootThreadId: rootThreadId);
+      final lease = client.channels.acquireSessionCosts(rootThreadId);
+      final costs = client.existingSessionCosts(rootThreadId)!;
+      final source = await transport.opened(0);
+      const amount = RuntimeCostView(currency: 'USD', amount: 0.25);
+
+      await source.emit(
+        const ProductTopicBaselineFrame(
+          topic: topic,
+          revision: 1,
+          state: SessionCostsBaseline(
+            SessionCostsStateView(
+              rootThreadId: rootThreadId,
+              revision: 1,
+              cost: SessionCostView(
+                rootThreadId: rootThreadId,
+                estimatedCosts: [amount],
+                hasUnpricedUsage: false,
+                hasIncompleteUsage: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      final before = costs.state.value!.cost!;
+      expect(before.hasIncompleteUsage, isFalse);
+      expect(before.label, r'$0.25');
+
+      await source.emit(
+        ProductTopicDataFrame(
+          topic: topic,
+          event: ProductTopicEventEnvelope(
+            eventId: 'cost-2',
+            sequence: BigInt.from(2),
+            createdAt: DateTime.utc(2026),
+            payload: const SessionCostsChangedPayload(
+              SessionCostsStateView(
+                rootThreadId: rootThreadId,
+                revision: 2,
+                cost: SessionCostView(
+                  rootThreadId: rootThreadId,
+                  estimatedCosts: [amount],
+                  hasUnpricedUsage: false,
+                  hasIncompleteUsage: true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final after = costs.state.value!;
+      expect(costs.state.revision, 2);
+      expect(after.cost!.hasIncompleteUsage, isTrue);
+      expect(after.cost!.hasUnpricedUsage, isFalse);
+      expect(after.cost!.label, r'$0.25');
+      expect(after.cost, isNot(before));
+      expect(after.statisticsPending, isFalse);
+      expect(after.statisticsGap, isFalse);
+      expect(after.readFailed, isFalse);
+      await lease.release();
+      expect((await client.close(budget: _budget())).complete, isTrue);
+    },
+  );
+
+  test(
     'scoped topic demand installs mirrors before the first native callback',
     () async {
       final transport = _TopicTransport();

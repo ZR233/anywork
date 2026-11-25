@@ -199,6 +199,7 @@ pub struct StudioSessionCostSnapshot {
     pub purpose_costs: Vec<StudioPurposeCostSnapshot>,
     pub estimated_costs: Vec<crate::RuntimeCostAmount>,
     pub has_unpriced_usage: bool,
+    pub has_incomplete_usage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

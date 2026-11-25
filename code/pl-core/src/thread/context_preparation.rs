@@ -12,6 +12,8 @@ pub struct ContextPreparationRequest {
     pub turn_input: Option<input::ThreadInput>,
     /// One capacity-recovery pass for a refused local preparation or an admitted service request.
     pub force_compaction: bool,
+    /// This step has already committed its capacity recovery replacement.
+    pub compaction_applied: bool,
     pub committed_context: ContextSnapshot,
     pub current_facts: Arc<[RuntimeFact]>,
     pub extensions: Arc<BTreeMap<String, ExtensionRecord>>,
@@ -30,24 +32,48 @@ impl ContextPreparationRequest {
     /// # Errors
     /// Returns closed ownership or the original storage admission failure.
     pub async fn enter_compacting(&self) -> Result<(), ThreadError> {
+        self.admit_compacting(None).await.map(|_| ())
+    }
+
+    /// Starts this preparation's independently identified model settlement stream.
+    pub async fn enter_model_compacting(
+        &self,
+        inference_id: String,
+    ) -> Result<crate::model::ModelMemberSender, ThreadError> {
+        self.admit_compacting(Some((inference_id, self.model.cancellation.clone())))
+            .await?
+            .ok_or(ThreadError::InvalidIdentity)
+    }
+
+    async fn admit_compacting(
+        &self,
+        model: Option<(String, CancellationToken)>,
+    ) -> Result<Option<crate::model::ModelMemberSender>, ThreadError> {
+        if self.compaction_applied {
+            return Err(ThreadError::InvalidContext);
+        }
         let permit = self
             .compacting_sender
             .reserve()
             .await
             .map_err(|_| ThreadError::Closed)?;
         let (reply, admitted) = oneshot::channel();
-        permit.send(reply);
+        permit.send(CompactionAdmission { model, reply });
         admitted.await.map_err(|_| ThreadError::Closed)?
     }
 }
 
-type CompactionAdmission = oneshot::Sender<Result<(), ThreadError>>;
+pub(super) struct CompactionAdmission {
+    model: Option<(String, CancellationToken)>,
+    reply: oneshot::Sender<Result<Option<crate::model::ModelMemberSender>, ThreadError>>,
+}
 
 pub(super) struct CompactionCall {
     pub(super) receiver: tokio::sync::mpsc::Receiver<CompactionAdmission>,
     operation_id: Option<String>,
     turn_id: Option<String>,
     attempt_id: Option<String>,
+    model: Option<(String, crate::model::ModelMemberSender)>,
 }
 
 /// Candidate observation; validate the final input with [`Self::matches_input`] and its route.
@@ -152,6 +178,22 @@ pub(super) struct PreparationCompletion {
     expected_context_revision: u64,
     previous_phase: Option<ModelExecutionPhase>,
     result: Result<ContextPreparation, ThreadError>,
+    compaction_applied: bool,
+}
+
+impl PreparationCompletion {
+    pub(super) fn has_compaction_candidate(&self) -> bool {
+        matches!(
+            &self.result,
+            Ok(ContextPreparation::Prepared {
+                replacement: Some(ReplaceContext {
+                    reason: ContextReplacementReason::Compaction,
+                    ..
+                }),
+                ..
+            })
+        )
+    }
 }
 
 impl Owner {
@@ -161,6 +203,7 @@ impl Owner {
         plan: &mut crate::tool::opaque::ToolPlan,
         frozen_input: &[ContextRecord],
         force_compaction: bool,
+        compaction_applied: bool,
         source_attempt_id: Option<&str>,
     ) -> Result<Option<PreparationWork>, ThreadError> {
         let Some(hook) = self.context_preparation.clone() else {
@@ -221,6 +264,7 @@ impl Owner {
                 })
                 .map(|record| record.input.clone()),
             force_compaction,
+            compaction_applied,
             model: ModelRequest {
                 tool_call_mode: plan.call_mode(),
                 solo_tool_ids: plan.solo_tool_ids(),
@@ -264,6 +308,7 @@ impl Owner {
             operation_id: None,
             turn_id,
             attempt_id,
+            model: None,
         });
         Ok(Some(Box::pin(async move {
             let result = crate::error_record::catch_boundary("context preparation", async move {
@@ -275,6 +320,7 @@ impl Owner {
             .await
             .map_err(|source| {
                 ThreadError::Model(Arc::new(ModelError {
+                    context_recovery: None,
                     kind: crate::model::ModelFailureKind::ImplementationPanicked,
                     details: None,
                     usage: Default::default(),
@@ -286,6 +332,7 @@ impl Owner {
                 expected_context_revision,
                 previous_phase,
                 result,
+                compaction_applied,
             }
         })))
     }
@@ -295,11 +342,13 @@ impl Owner {
         input: &StepInput,
         plan: &mut crate::tool::opaque::ToolPlan,
         completion: PreparationCompletion,
+        require_shorter: bool,
     ) -> Result<bool, ThreadError> {
         let PreparationCompletion {
             expected_context_revision,
             previous_phase,
             result,
+            compaction_applied,
         } = completion;
         // Completion may win select in the same poll as a producer fills the slot. Close and drain
         // it before interpreting the result; request clones never own the invocation's lifetime.
@@ -317,6 +366,11 @@ impl Owner {
             .compaction_call
             .take()
             .expect("preparation owns its admission");
+        if let Some((inference_id, _)) = call.model {
+            self.finish_model_members();
+            self.model_members = None;
+            self.retire_model_settlement(&inference_id);
+        }
         let mut replacement_accepted = false;
         let mut preparation_storage_error = None;
         let result = (|| {
@@ -363,6 +417,9 @@ impl Owner {
                     let replaces_context = replacement.is_some();
                     let mut candidate = self.state.clone();
                     let staged = (|| {
+                        if compacted && compaction_applied {
+                            return Err(ThreadError::InvalidContext);
+                        }
                         extensions::stage_extensions(&mut candidate, mutations)?;
                         if let Some(mut replacement) = replacement {
                             if let Some(binding) = instruction_binding {
@@ -376,6 +433,17 @@ impl Owner {
                             super::replacement::stage_replacement(&mut candidate, replacement)?;
                         } else {
                             super::facts::stage_facts(&mut candidate, facts)?;
+                        }
+                        if require_shorter {
+                            let bytes = |context: &ContextSnapshot| {
+                                crate::model::encoded_member_bytes(&context.records)
+                                    .map_err(|_| ThreadError::InvalidContext)
+                            };
+                            if !compacted
+                                || bytes(&candidate.context)? >= bytes(&self.state.context)?
+                            {
+                                return Err(ThreadError::InvalidContext);
+                            }
                         }
                         let changed = candidate.runtime_facts != self.state.runtime_facts
                             || candidate.context != self.state.context
@@ -452,7 +520,8 @@ impl Owner {
         }
     }
 
-    pub(super) fn admit_context_compaction(&mut self, reply: CompactionAdmission) {
+    pub(super) fn admit_context_compaction(&mut self, admission: CompactionAdmission) {
+        let CompactionAdmission { model, reply } = admission;
         let Some(call) = self.compaction_call.as_mut() else {
             let _ = reply.send(Err(ThreadError::Closed));
             return;
@@ -487,7 +556,60 @@ impl Owner {
             return;
         }
         self.enter_model_execution(ModelExecutionPhase::CompactingContext);
-        let _ = reply.send(Ok(()));
+        let result = match model {
+            None => Ok(None),
+            Some((inference_id, cancellation)) => self
+                .admit_compaction_model(inference_id, cancellation)
+                .map(Some),
+        };
+        let _ = reply.send(result);
+    }
+
+    fn admit_compaction_model(
+        &mut self,
+        inference_id: String,
+        cancellation: CancellationToken,
+    ) -> Result<crate::model::ModelMemberSender, ThreadError> {
+        let compaction = self.compaction_call.as_ref().ok_or(ThreadError::Closed)?;
+        if let Some((id, sender)) = &compaction.model {
+            return if id == &inference_id {
+                Ok(sender.clone())
+            } else {
+                Err(ThreadError::InvalidIdentity)
+            };
+        }
+        if inference_id.is_empty()
+            || self.model_members.is_some()
+            || self.operation_budgets.contains_key(&inference_id)
+        {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        let source_turn = compaction.turn_id.clone();
+        let input = StepInput {
+            turn_id: source_turn.clone().unwrap_or_else(|| inference_id.clone()),
+            attempt_id: inference_id.clone(),
+            content: Vec::new(),
+            cancellation,
+        };
+        let budget = self.try_reserve_operation_output(&inference_id)?;
+        let (sender, receiver) =
+            crate::model::ModelMemberSender::channel(&input.turn_id, &input.attempt_id);
+        let mut sender = sender.with_output(budget.clone());
+        if self.cold.is_some() || self.current_task_start_ordinal.is_none() {
+            sender = sender.with_settlement(self.register_model_settlement(
+                source_turn,
+                input.attempt_id.clone(),
+                budget,
+                false,
+            )?);
+        }
+        let call = super::model_members::MemberCall::new(receiver, &input, sender.registry());
+        self.model_members = Some(call);
+        self.compaction_call
+            .as_mut()
+            .expect("admitted compaction owner")
+            .model = Some((inference_id, sender.clone()));
+        Ok(sender)
     }
     fn commit_preparation_accounting(
         &mut self,

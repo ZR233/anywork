@@ -93,6 +93,7 @@ impl ModelSession for HeldSkillCall {
                                 details: None,
                                 usage: Default::default(),
                                 source: Some(Box::new(error)),
+                                context_recovery: None,
                             })?,
                     }]
                 } else {

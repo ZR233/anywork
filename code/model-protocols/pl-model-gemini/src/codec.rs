@@ -2,11 +2,10 @@ use pl_model_wire::completion::{CompletionRequest, ModelContextItem};
 use pl_model_wire::model::ModelDefinition;
 use pl_model_wire::protocol::{ProtocolEndpoint, WireApi};
 use pl_model_wire::wire_codec::{
-    EncodeHttpRequestInput, ParsedHttpError, PreparedHttpRequest, WireCodec, WireStreamDecoder,
+    EncodeHttpRequestInput, PreparedHttpRequest, WireCodec, WireStreamDecoder,
 };
 use pl_protocol::{PureError, Result};
 
-use crate::error::parse_google_http_error;
 use crate::request::build_http_request;
 use crate::sse::GeminiStreamDecoder;
 
@@ -84,9 +83,5 @@ impl WireCodec for GeminiWireCodec {
 
     fn new_stream_decoder(&self, _api: WireApi) -> Box<dyn WireStreamDecoder> {
         Box::new(GeminiStreamDecoder::new())
-    }
-
-    fn parse_http_error(&self, body: &[u8]) -> Option<ParsedHttpError> {
-        parse_google_http_error(body)
     }
 }

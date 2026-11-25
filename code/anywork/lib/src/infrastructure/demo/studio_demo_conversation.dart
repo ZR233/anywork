@@ -225,19 +225,10 @@ _DemoContent _demoTurn(StudioTurnState state, {String? inputId}) {
         'completion': state.completion.name,
       };
     case FailedStudioTurnState():
-      final f = state.failure;
       data = {
         'startedAt': state.startedAt,
         'completedAt': state.completedAt,
-        'failure': {
-          'category': f.category,
-          'providerKind': f.providerKind,
-          'code': f.code,
-          'httpStatus': f.httpStatus,
-          'message': f.message,
-          'retryable': f.retryable,
-          'retryAfterMs': f.retryAfterMs,
-        },
+        'failure': state.failure.toJson(),
       };
     case CancelledStudioTurnState():
       final cause = switch (state.cause) {

@@ -123,6 +123,7 @@ pub(crate) fn atom(item: &ExecutionItem) -> ChatAtom {
             ExecutionShape::Text(text) => Some(text.channel()),
             _ => None,
         },
+        model_recovery: item.text().and_then(|text| text.model_recovery()).cloned(),
         started_at: None,
         finished_at: item.state().terminal_at(),
         contents: Vec::new(),

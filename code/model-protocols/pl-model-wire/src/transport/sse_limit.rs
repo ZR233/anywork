@@ -1,10 +1,11 @@
 //! Enforce the product receive budget before the upstream SSE decoder buffers
 //! an event. Line framing, UTF-8 and field semantics belong to sse-stream.
 use futures::{Stream, TryStreamExt};
-use pl_protocol::{PureError, Result};
+use pl_protocol::Result;
 
 pub(super) fn bounded<B>(
     stream: impl Stream<Item = Result<B>> + Send + 'static,
+    request_id: Option<String>,
 ) -> impl Stream<Item = Result<B>> + Send
 where
     B: AsRef<[u8]> + Send + 'static,
@@ -35,8 +36,9 @@ where
                 }
                 event_bytes = event_bytes.saturating_add(1);
                 if event_bytes > 64 * 1024 * 1024 {
-                    return Err(PureError::Protocol(
-                        "SSE event exceeds the 64 MiB receive limit".into(),
+                    return Err(super::sse_protocol_error(
+                        "SSE event exceeds the 64 MiB receive limit",
+                        request_id.clone(),
                     ));
                 }
             }

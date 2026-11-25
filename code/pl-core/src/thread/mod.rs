@@ -43,7 +43,9 @@ pub use checkpoint::{
     ExtractedCheckpointBody, LegacyCheckpointBodySlot, LegacyCheckpointExternalBody,
     LegacyRequestAttempt, LegacyThreadCheckpoint, ThreadCheckpoint,
 };
-pub use journal::{ContextCompactionEvent, ContextCompactionOutcome, ThreadEffectBatch};
+pub use journal::{
+    ContextCompactionEvent, ContextCompactionOutcome, PreparedAccountingSlot, ThreadEffectBatch,
+};
 use owner::{Owner, PendingCall};
 pub use subscription::ThreadSubscription;
 use tokio_util::sync::CancellationToken;
@@ -58,6 +60,7 @@ use crate::model::{
 mod handle;
 mod mailbox;
 mod model_members;
+mod model_settlement;
 mod model_step;
 mod reconfiguration;
 mod replacement;
@@ -65,4 +68,5 @@ mod tool_execution;
 mod types;
 use handle::Command;
 pub use handle::ThreadHandle;
+pub use model_settlement::ModelSettlementPort;
 pub use types::*;

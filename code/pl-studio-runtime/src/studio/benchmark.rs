@@ -496,6 +496,7 @@ pub(crate) async fn wait_calls(calls: &CallsStore, target: u64) -> Result<()> {
 fn billing(index: usize, old: bool, padding: usize) -> InferenceBillingRecord {
     let output = 64 + ((index as u64 + SEED) % 128);
     InferenceBillingRecord {
+        attempt: None,
         inference_id: format!("bench-{SEED}-{index:08}"),
         purpose: Some(format!("purpose-{}", index % PURPOSES)),
         account_id: format!("account-{}", index % 4),
@@ -529,7 +530,6 @@ fn billing(index: usize, old: bool, padding: usize) -> InferenceBillingRecord {
             },
             price_snapshot: None,
             request_started_at: Some(FIXTURE_TIME),
-            retry_attempts: Vec::new(),
         },
         prompt_generation: None,
         prompt_cache_policy: None,
@@ -676,6 +676,7 @@ async fn seed_costs(calls: &CallsStore, roots: usize) -> Result<()> {
                 thread_id: format!("root-{root:06}-thread-{thread}"),
                 revision: 1,
                 has_unpriced_usage: false,
+                has_incomplete_usage: false,
                 purpose_costs: (0..PURPOSES)
                     .map(|purpose| PurposeUsageProjection {
                         purpose: Some(format!("purpose-{purpose}")),

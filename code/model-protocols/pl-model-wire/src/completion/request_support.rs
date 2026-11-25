@@ -15,7 +15,8 @@ use crate::completion::{
 use crate::model::info::{MediaMixPolicy, MediaRepresentation, MediaWireFormat, ModelDefinition};
 
 fn protocol_error(message: impl Into<String>) -> PureError {
-    PureError::LlmError(format!("request protocol error: {}", message.into()))
+    crate::provider_error::invalid_request(format!("request protocol error: {}", message.into()))
+        .into()
 }
 
 pub fn sent_model_from_wire_body(body: &Map<String, Value>) -> Result<String> {

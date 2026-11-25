@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'runtime_models.dart';
 import 'thread_models.dart' show ThreadTextChannel;
 import 'thread_wait_models.dart';
+import 'turn_models.dart';
 
 part 'chat_atom_models.dart';
 

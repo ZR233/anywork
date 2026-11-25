@@ -260,9 +260,6 @@ async fn generate_title(
             // 标题任务只消费可见 assistant 文本，不请求或持久化 reasoning summary。
             summary: None,
         });
-    let reasoning_effort = reasoning
-        .as_ref()
-        .and_then(|reasoning| reasoning.effort.clone());
     let client = pl_model::runtime::turn_client_from_route(&route)?;
     let input = vec![pl_model::completion::ModelContextItem::from(
         pl_model::completion::Message {
@@ -283,26 +280,21 @@ async fn generate_title(
         .with_max_tokens(Some(TITLE_MAX_OUTPUT_TOKENS))
         .with_reasoning(reasoning);
     let token = cancellation.child_token();
-    let inference_id = crate::studio::ids::new_id("title");
     let turn_id = owner
         .snapshot()
         .turns
         .last()
-        .map(|turn| turn.turn_id.clone())
-        .unwrap_or_else(|| inference_id.clone());
+        .map(|turn| turn.turn_id.clone());
+    let settlement = owner.begin_auxiliary_model_call(turn_id).await?;
     let request = client.complete(
         &input,
         request,
         ModelTurnOptions::default()
+            .with_settlement_port("title", settlement)
             .with_prompt_cache_scope(pl_model::runtime::PromptCacheScope::auxiliary(
                 thread_id, "title",
             ))
-            .with_cancellation(token.clone())
-            .with_trace_metadata(pl_model::completion::CompletionTraceContext {
-                session_id: thread_id.to_owned(),
-                turn_id,
-                inference_id: inference_id.clone(),
-            }),
+            .with_cancellation(token.clone()),
     );
     tokio::pin!(request);
     let result = tokio::select! {
@@ -312,53 +304,6 @@ async fn generate_title(
             Err(_) => { token.cancel(); request.await }
         },
     };
-    let accounting = match &result {
-        Ok(response) => response.accounting().clone(),
-        Err(failure) => (*failure.accounting).clone(),
-    };
-    let model_observation = match &result {
-        Ok(response) => response.model_observation().cloned(),
-        Err(failure) => failure.model_observation().cloned(),
-    };
-    let billing = crate::InferenceBillingRecord {
-        purpose: Some("title".into()),
-        inference_id,
-        account_id: route.account_id.as_str().to_owned(),
-        account_display_name: Some(route.endpoint.name.clone()),
-        // 冻结的目录配置模型；发送/返回模型只留在 observation 诊断里。
-        model_id: Some(route.model.base.slug.clone()),
-        model_observation,
-        effort: reasoning_effort,
-        requested_service_tier: Some("notApplicable".into()),
-        context_window: route.context.context_window,
-        accounting,
-        prompt_generation: None,
-        prompt_cache_policy: None,
-        prefix_changed_reason: None,
-        orchestration: Default::default(),
-        timing: match &result {
-            Ok(response) => response.timing(),
-            Err(failure) => failure.timing,
-        },
-        recorded_at: crate::studio::unix_seconds(),
-    };
-    let key = "studio.auxiliary-billing.title";
-    let previous = owner
-        .snapshot()
-        .extensions
-        .get(key)
-        .map(|record| record.revision);
-    owner
-        .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
-            id: key.into(),
-            expected_revision: previous,
-            payload: crate::studio::thread_projection::AuxiliaryBillingReceipt {
-                billing,
-                succeeded: result.is_ok(),
-            }
-            .into_payload()?,
-        }])
-        .await?;
     let response = result?;
     let text = response
         .output()

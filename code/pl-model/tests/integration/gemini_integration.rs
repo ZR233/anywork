@@ -375,7 +375,7 @@ async fn runtime_replays_single_gemini_tool_with_empty_id_over_mock_http() {
         }))
         .build();
 
-    let ctx = ModelInvocationContext::default();
+    let ctx = ModelInvocationContext::in_memory(Default::default());
     let resp1 = runtime.complete(req.clone(), ctx.clone()).await.unwrap();
     assert_eq!(resp1.tool_calls.len(), 1);
     let call = &resp1.tool_calls[0];
@@ -480,7 +480,7 @@ async fn runtime_recovers_malformed_gemini_response_without_replaying_failed_out
         Duration::from_secs(10),
         runtime.complete(
             CompletionRequest::builder().build(),
-            ModelInvocationContext::default(),
+            ModelInvocationContext::in_memory(Default::default()),
         ),
     )
     .await
@@ -501,20 +501,24 @@ async fn runtime_recovers_malformed_gemini_response_without_replaying_failed_out
             .contains("MALFORMED_RESPONSE")
     );
     assert_eq!(response.accounting.usage.output_tokens, Some(3));
-    assert_eq!(response.accounting.retry_attempts.len(), 1);
+    let settlements: Vec<pl_model::runtime::ModelSubAttemptReceipt> = response
+        .settlements
+        .iter()
+        .map(|payload| serde_json::from_str(payload.content()).unwrap())
+        .collect();
+    assert_eq!(settlements.len(), 2);
     assert_eq!(
-        response.accounting.retry_attempts[0].usage.output_tokens,
+        settlements[0].billing.accounting.usage.output_tokens,
         Some(10)
     );
     assert_eq!(response.accounting.usage.total_tokens, Some(15));
     assert_eq!(
-        response.accounting.retry_attempts[0].usage.total_tokens,
+        settlements[0].billing.accounting.usage.total_tokens,
         Some(22)
     );
     assert!((response.accounting.estimated_costs()[0].amount - 0.0000405).abs() < 1e-12);
     assert!(
-        (response.accounting.retry_attempts[0].estimated_costs()[0].amount - 0.000093).abs()
-            < 1e-12
+        (settlements[0].billing.accounting.estimated_costs()[0].amount - 0.000093).abs() < 1e-12
     );
     let restored: pl_model::model::InferenceAccounting =
         serde_json::from_value(serde_json::to_value(&response.accounting).unwrap()).unwrap();
@@ -559,7 +563,7 @@ async fn malformed_gemini_recovery_respects_retry_budget_and_cancellation() {
         let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
         let cancellation = CancellationToken::new();
         let observer_token = cancellation.clone();
-        let context = ModelInvocationContext::default()
+        let context = ModelInvocationContext::in_memory(Default::default())
             .with_cancellation(Some(cancellation))
             .with_stream_observer(move |_, event| {
                 if cancel && matches!(event, ModelStreamEvent::Failed { .. }) {
@@ -574,14 +578,16 @@ async fn malformed_gemini_recovery_respects_retry_budget_and_cancellation() {
         .unwrap()
         .unwrap_err();
         assert_eq!(failure.is_cancelled(), cancel);
-        assert_eq!(failure.accounting.retry_attempts.len(), attempts - 1);
+        let settlements: Vec<pl_model::runtime::ModelSubAttemptReceipt> = failure
+            .settlements
+            .iter()
+            .map(|payload| serde_json::from_str(payload.content()).unwrap())
+            .collect();
+        assert_eq!(settlements.len(), attempts);
         assert_eq!(
-            failure
-                .accounting
-                .retry_attempts
+            settlements
                 .iter()
-                .chain(std::iter::once(failure.accounting.as_ref()))
-                .map(|accounting| accounting.usage.total_tokens)
+                .map(|receipt| receipt.billing.accounting.usage.total_tokens)
                 .sum::<Option<u64>>(),
             Some(22 * attempts as u64)
         );
@@ -653,14 +659,14 @@ async fn other_gemini_finish_reasons_keep_their_terminal_failure_and_usage() {
         let failure = runtime
             .complete(
                 CompletionRequest::builder().build(),
-                ModelInvocationContext::default(),
+                ModelInvocationContext::in_memory(Default::default()),
             )
             .await
             .unwrap_err();
         let source = failure.source.provider_failure_ref().unwrap();
         assert_eq!(source.code.as_deref(), Some(reason));
         assert!(!source.retry.is_retryable());
-        assert!(failure.accounting.retry_attempts.is_empty());
+        assert_eq!(failure.settlements.len(), 1);
         assert_eq!(failure.accounting.usage.total_tokens, Some(16));
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), server)
@@ -704,7 +710,11 @@ async fn google_http_classification_keeps_transport_retry_after_header() {
         let failure = pl_model_wire::transport::sse_frames(
             reqwest::Client::new().post(url),
             pl_model_wire::transport::SseContentTypePolicy::Required,
-            Some(&pl_model_gemini::GEMINI_WIRE_CODEC),
+            Some(pl_model_wire::provider_error::ErrorPolicyBinding {
+                policy: pl_model_gemini::adapter::ADAPTER.error_policy,
+                wire_api: pl_model_wire::protocol::WireApi::GeminiGenerateContent,
+                endpoint: None,
+            }),
         )
         .await
         .err()
@@ -741,7 +751,10 @@ async fn runtime_rejects_gemini_error_received_after_stop_with_tool_call() {
     let request = CompletionRequest::builder().build();
 
     let error = runtime
-        .complete(request, ModelInvocationContext::default())
+        .complete(
+            request,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap_err();
     assert!(error.to_string().contains("late stream error"), "{error}");
@@ -806,10 +819,11 @@ async fn thread_gemini_replays_parallel_results_in_part_order_across_steps() {
         .find(|model| model.base.slug == "gemini-4-hydrogen")
         .unwrap();
     let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
-    let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
-        .open_session()
-        .await
-        .unwrap();
+    let mut session =
+        ModelFactory::new(ThreadModel::new(runtime, None).with_in_memory_settlement())
+            .open_session()
+            .await
+            .unwrap();
     let lookup = ToolSpec::Function {
         name: "lookup".into(),
         description: "Lookup something".into(),

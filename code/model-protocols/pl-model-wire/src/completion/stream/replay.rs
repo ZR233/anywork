@@ -1,7 +1,9 @@
 //! Bounded collection of the provider's replay view, before display filtering.
 
 use super::super::AssistantReplay;
-use pl_protocol::{PureError, Result};
+use pl_protocol::{ProviderFailureStage, PureError, Result};
+
+use crate::provider_error::protocol_failure;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -73,18 +75,22 @@ impl ReplayCollector {
                     let (old_index, old) = &self.items[position];
                     if old_index.is_some() && index.is_some() && *old_index != index || old != &item
                     {
-                        return Err(PureError::Protocol(
-                            "conflicting completed assistant output item".into(),
-                        ));
+                        return Err(protocol_failure(
+                            ProviderFailureStage::Stream,
+                            "conflicting completed assistant output item",
+                        )
+                        .into());
                     }
                     return Ok(());
                 }
                 if let Some(index) = index
                     && self.positions.contains(&index)
                 {
-                    return Err(PureError::Protocol(
-                        "duplicate assistant output index".into(),
-                    ));
+                    return Err(protocol_failure(
+                        ProviderFailureStage::Stream,
+                        "duplicate assistant output index",
+                    )
+                    .into());
                 }
                 let same_item = |pending: &Value| {
                     pending.get("id").is_some() && pending.get("id") == item.get("id")
@@ -186,9 +192,11 @@ impl ReplayCollector {
                     .and_then(|index| items.get(index as usize))
                     .or_else(|| items.iter().find(|item| item.get("id") == done.get("id")));
                 if candidate != Some(done) {
-                    return Err(PureError::Protocol(
-                        "terminal assistant output differs from completed items".into(),
-                    ));
+                    return Err(protocol_failure(
+                        ProviderFailureStage::Stream,
+                        "terminal assistant output differs from completed items",
+                    )
+                    .into());
                 }
             }
             return Ok(Some(AssistantReplay::Responses {
@@ -200,9 +208,11 @@ impl ReplayCollector {
             items.sort_by_key(|(index, _)| index.unwrap_or(u32::MAX));
             for (expected, (index, _)) in items.iter().enumerate() {
                 if index.is_some_and(|index| index as usize != expected) {
-                    return Err(PureError::Protocol(
-                        "incomplete assistant output indices".into(),
-                    ));
+                    return Err(protocol_failure(
+                        ProviderFailureStage::Stream,
+                        "incomplete assistant output indices",
+                    )
+                    .into());
                 }
             }
             return Ok(Some(AssistantReplay::Responses {

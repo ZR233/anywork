@@ -485,11 +485,24 @@ pub(super) async fn step(inner: &Inner) -> Result<Step> {
             batch::Selection::Ready(selected) => selected,
         }
     };
-    batch::persist(inner, &selected).await?;
+    let history = batch::persist(inner, &selected).await?;
+    acknowledge_batch(inner, &selected)?;
+    if selected
+        .iter()
+        .any(|effect| !effect.prepared.accounting.facts.is_empty())
+    {
+        // Model settlement waiters can now proceed. The same writer lease orders this
+        // best-effort projection with subsequent commits and the final writer join.
+        publish_accounting(inner, &history).await;
+    }
+    Ok(Step::Progressed)
+}
+
+fn acknowledge_batch(inner: &Inner, selected: &[batch::Effect]) -> Result<()> {
     let mut progress = lock_progress(inner);
     let index = inner.channel.order_index.lock_state();
     let mut released_bytes = 0_u64;
-    for candidate in &selected {
+    for candidate in selected {
         ensure!(
             progress
                 .effects
@@ -520,22 +533,25 @@ pub(super) async fn step(inner: &Inner) -> Result<Step> {
     drop(progress);
     inner.channel.release_process_bytes(released_bytes);
     inner.changed.notify_one();
-    Ok(Step::Progressed)
+    Ok(())
 }
 
-/// Seeds the absolute accounting projection at reopen; normal commits return their own result.
+/// Cold seeds and live settlements share the durable History position and projection.
 async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
     let result = async {
         let reader = history.reader();
-        let Some(accounting) = reader.accounting(None).await? else {
+        let (cut, revision) = reader.capture_committed_position().await?;
+        if revision == 0 {
             return Ok(());
-        };
-        let mut costs = Vec::new();
+        }
+        let accounting = reader.accounting(Some(cut.clone())).await?;
+        let mut purposes =
+            std::collections::BTreeMap::<Option<String>, Vec<crate::RuntimeCostAmount>>::new();
         let mut cursor = None;
         loop {
             let page = reader
                 .costs_page(
-                    None,
+                    Some(cut.clone()),
                     cursor,
                     crate::history::HistoryDemand {
                         max_rows: 512,
@@ -545,29 +561,23 @@ async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
                 .await?;
             for entry in page.entries {
                 let crate::history::HistoryBusinessRowHead::Cost(cost) = entry.head else {
-                    continue;
+                    anyhow::bail!("History cost row has the wrong head variant");
                 };
-                costs.push(cost);
+                purposes
+                    .entry(cost.purpose)
+                    .or_default()
+                    .push(crate::RuntimeCostAmount {
+                        currency: cost.currency,
+                        amount: cost.cost_total,
+                    });
             }
             let Some(next) = page.next else {
                 break;
             };
             cursor = Some(next);
         }
-        let revision = accounting
-            .updated_at
-            .max(costs.iter().map(|cost| cost.updated_at).max().unwrap_or(0))
-            as u64;
-        let mut purposes =
-            std::collections::BTreeMap::<Option<String>, Vec<crate::RuntimeCostAmount>>::new();
-        for cost in costs {
-            purposes
-                .entry(cost.purpose)
-                .or_default()
-                .push(crate::RuntimeCostAmount {
-                    currency: cost.currency,
-                    amount: cost.cost_total,
-                });
+        if accounting.is_none() && purposes.is_empty() {
+            return Ok(());
         }
         submit_accounting(
             inner,
@@ -575,7 +585,11 @@ async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
                 root_thread_id: inner.thread.root_thread_id.clone(),
                 thread_id: inner.thread.id.clone(),
                 revision,
-                has_unpriced_usage: accounting.has_unpriced_usage,
+                has_unpriced_usage: accounting
+                    .as_ref()
+                    .is_some_and(|head| head.has_unpriced_usage),
+                // Imported History can retain costs without an accounting checkpoint.
+                has_incomplete_usage: accounting.is_none_or(|head| head.has_incomplete_usage),
                 purpose_costs: purposes
                     .into_iter()
                     .map(|(purpose, estimated_costs)| {
@@ -591,6 +605,7 @@ async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
     }
     .await;
     if let Err(error) = result {
+        inner.store.calls().mark_statistics_gap();
         tracing::warn!(%error, "读取独立累计统计投影失败");
     }
 }
@@ -1205,7 +1220,7 @@ pub(super) fn cold_error(message: &str) -> ColdStoreError {
 
 impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
-        match crate::studio::thread_projection::PreparedAccounting::prepare(effect) {
+        match crate::studio::thread_projection::PreparedAccounting::shared(effect) {
             Ok(accounting) => accounting.fold_into(summary),
             Err(error) => record_error(
                 &self.0,
@@ -1254,6 +1269,47 @@ impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
     }
     fn admit(&self, thread: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         self.admit_export(thread, export)
+    }
+    async fn read_saved_model_settlement(
+        &self,
+        thread: &str,
+        settlement: &pl_core::model::ModelSubAttemptSettlement,
+    ) -> Result<Option<pl_core::model::ModelSubAttemptSettlement>, ColdStoreError> {
+        if thread != self.0.thread.id {
+            return Err(cold_error("model settlement belongs to another Thread"));
+        }
+        let id =
+            pl_model::runtime::model_sub_attempt_id(&settlement.attempt_id, settlement.generation);
+        let history = history_store(&self.0)
+            .await
+            .map_err(|error| cold_error(&error.to_string()))?;
+        let Some(payload) = history
+            .read_saved_model_settlement(&format!("usage:settlement:{id}"))
+            .await
+            .map_err(|error| cold_error(&error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let original = pl_model::runtime::model_saved_sub_attempt_receipt(&payload)
+            .map_err(|error| cold_error(&error.to_string()))?;
+        let original = pl_core::model::ModelSubAttemptSettlement {
+            turn_id: original.turn_id,
+            attempt_id: original.attempt_id,
+            generation: original.generation,
+            payload,
+        };
+        Ok(Some(original))
+    }
+
+    async fn confirm_model_settlement(
+        &self,
+        thread: &str,
+        sequence: u64,
+    ) -> Result<(), ColdStoreError> {
+        if thread != self.0.thread.id {
+            return Err(cold_error("model settlement belongs to another Thread"));
+        }
+        self.0.channel.confirm_model_settlement(sequence).await
     }
     fn read_tool_task(
         &self,

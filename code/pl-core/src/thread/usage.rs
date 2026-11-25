@@ -75,6 +75,7 @@ mod tests {
             usage: usage.clone(),
         };
         let error = Arc::new(ModelError {
+            context_recovery: None,
             details: None,
             kind: ModelFailureKind::Unavailable,
             usage: Box::new(usage),

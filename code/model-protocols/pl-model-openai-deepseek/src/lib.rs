@@ -11,3 +11,4 @@ pub use models::bundled_definition;
 pub mod endpoint;
 
 pub mod adapter;
+mod error;

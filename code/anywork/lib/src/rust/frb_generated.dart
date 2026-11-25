@@ -11221,6 +11221,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeModelRecoveryInfo dco_decode_box_autoadd_bridge_model_recovery_info(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_model_recovery_info(raw);
+  }
+
+  @protected
+  BridgeModelRecoveryNotice dco_decode_box_autoadd_bridge_model_recovery_notice(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_model_recovery_notice(raw);
+  }
+
+  @protected
   BridgeModelSelectionGuide dco_decode_box_autoadd_bridge_model_selection_guide(
     dynamic raw,
   ) {
@@ -12147,6 +12163,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_turn(raw);
+  }
+
+  @protected
+  BridgeTurnFailureDto dco_decode_box_bridge_turn_failure_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_turn_failure_dto(raw);
   }
 
   @protected
@@ -16260,8 +16282,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeCurrentAtom dco_decode_bridge_current_atom(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return BridgeCurrentAtom(
       id: dco_decode_String(arr[0]),
       source: dco_decode_bridge_chat_source_id(arr[1]),
@@ -16277,10 +16299,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       textChannel: dco_decode_opt_box_autoadd_bridge_thread_text_channel(
         arr[11],
       ),
-      startedAt: dco_decode_opt_box_autoadd_i_64(arr[12]),
-      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[13]),
-      contentPresent: dco_decode_opt_box_autoadd_bool(arr[14]),
-      contents: dco_decode_list_bridge_current_atom_content(arr[15]),
+      modelRecovery: dco_decode_opt_box_autoadd_bridge_model_recovery_notice(
+        arr[12],
+      ),
+      startedAt: dco_decode_opt_box_autoadd_i_64(arr[13]),
+      finishedAt: dco_decode_opt_box_autoadd_i_64(arr[14]),
+      contentPresent: dco_decode_opt_box_autoadd_bool(arr[15]),
+      contents: dco_decode_list_bridge_current_atom_content(arr[16]),
     );
   }
 
@@ -18198,6 +18223,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeModelRecoveryInfo dco_decode_bridge_model_recovery_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return BridgeModelRecoveryInfo(
+      retryCount: dco_decode_opt_box_autoadd_u_32(arr[0]),
+      maxRetries: dco_decode_opt_box_autoadd_u_32(arr[1]),
+      effectiveWaitMillis: dco_decode_opt_box_autoadd_u_64(arr[2]),
+      reason: dco_decode_opt_String(arr[3]),
+      stopReason: dco_decode_opt_String(arr[4]),
+      error: dco_decode_opt_String(arr[5]),
+    );
+  }
+
+  @protected
+  BridgeModelRecoveryNotice dco_decode_bridge_model_recovery_notice(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return BridgeModelRecoveryNotice(
+      failureKind: dco_decode_opt_String(arr[0]),
+      reason: dco_decode_opt_String(arr[1]),
+      retryCount: dco_decode_u_32(arr[2]),
+      maxRetries: dco_decode_u_32(arr[3]),
+      effectiveWaitMillis: dco_decode_opt_box_autoadd_u_64(arr[4]),
+      phase: dco_decode_bridge_model_recovery_phase(arr[5]),
+      failure: dco_decode_opt_box_autoadd_bridge_turn_failure_dto(arr[6]),
+    );
+  }
+
+  @protected
+  BridgeModelRecoveryPhase dco_decode_bridge_model_recovery_phase(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeModelRecoveryPhase.values[raw as int];
+  }
+
+  @protected
   BridgeModelSelectionGuide dco_decode_bridge_model_selection_guide(
     dynamic raw,
   ) {
@@ -19275,13 +19341,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return BridgeSessionCostSnapshot(
       rootThreadId: dco_decode_String(arr[0]),
       purposeCosts: dco_decode_list_bridge_purpose_cost_snapshot(arr[1]),
       estimatedCosts: dco_decode_list_bridge_runtime_cost_amount(arr[2]),
       hasUnpricedUsage: dco_decode_bool(arr[3]),
+      hasIncompleteUsage: dco_decode_bool(arr[4]),
     );
   }
 
@@ -21238,16 +21305,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTurnFailureDto dco_decode_bridge_turn_failure_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return BridgeTurnFailureDto(
       category: dco_decode_String(arr[0]),
       providerKind: dco_decode_opt_String(arr[1]),
       code: dco_decode_opt_String(arr[2]),
       httpStatus: dco_decode_opt_box_autoadd_u_16(arr[3]),
       message: dco_decode_String(arr[4]),
-      retryable: dco_decode_bool(arr[5]),
+      retryDisposition: dco_decode_String(arr[5]),
       retryAfterMs: dco_decode_opt_box_autoadd_u_64(arr[6]),
+      errorType: dco_decode_opt_String(arr[7]),
+      requestId: dco_decode_opt_String(arr[8]),
+      stage: dco_decode_opt_String(arr[9]),
+      recovery: dco_decode_opt_box_autoadd_bridge_model_recovery_info(arr[10]),
     );
   }
 
@@ -21304,7 +21375,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return BridgeTurnState_Failed(
           startedAt: dco_decode_opt_box_autoadd_i_64(raw[1]),
           completedAt: dco_decode_i_64(raw[2]),
-          failure: dco_decode_box_autoadd_bridge_turn_failure_dto(raw[3]),
+          failure: dco_decode_box_bridge_turn_failure_dto(raw[3]),
         );
       case 5:
         return BridgeTurnState_BudgetLimited(
@@ -23883,6 +23954,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeModelRecoveryInfo?
+  dco_decode_opt_box_autoadd_bridge_model_recovery_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_model_recovery_info(raw);
+  }
+
+  @protected
+  BridgeModelRecoveryNotice?
+  dco_decode_opt_box_autoadd_bridge_model_recovery_notice(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_model_recovery_notice(raw);
+  }
+
+  @protected
   BridgeModelSelectionGuide?
   dco_decode_opt_box_autoadd_bridge_model_selection_guide(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -24154,6 +24243,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTurn? dco_decode_opt_box_autoadd_bridge_turn(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_bridge_turn(raw);
+  }
+
+  @protected
+  BridgeTurnFailureDto? dco_decode_opt_box_autoadd_bridge_turn_failure_dto(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_turn_failure_dto(raw);
   }
 
   @protected
@@ -26904,6 +27003,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeModelRecoveryInfo sse_decode_box_autoadd_bridge_model_recovery_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_model_recovery_info(deserializer));
+  }
+
+  @protected
+  BridgeModelRecoveryNotice sse_decode_box_autoadd_bridge_model_recovery_notice(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_model_recovery_notice(deserializer));
+  }
+
+  @protected
   BridgeModelSelectionGuide sse_decode_box_autoadd_bridge_model_selection_guide(
     SseDeserializer deserializer,
   ) {
@@ -27978,6 +28093,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_turn(deserializer));
+  }
+
+  @protected
+  BridgeTurnFailureDto sse_decode_box_bridge_turn_failure_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_turn_failure_dto(deserializer));
   }
 
   @protected
@@ -33367,6 +33490,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_textChannel = sse_decode_opt_box_autoadd_bridge_thread_text_channel(
       deserializer,
     );
+    var var_modelRecovery =
+        sse_decode_opt_box_autoadd_bridge_model_recovery_notice(deserializer);
     var var_startedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_finishedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_contentPresent = sse_decode_opt_box_autoadd_bool(deserializer);
@@ -33386,6 +33511,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       tool: var_tool,
       wait: var_wait,
       textChannel: var_textChannel,
+      modelRecovery: var_modelRecovery,
       startedAt: var_startedAt,
       finishedAt: var_finishedAt,
       contentPresent: var_contentPresent,
@@ -35785,6 +35911,61 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeModelRecoveryInfo sse_decode_bridge_model_recovery_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_retryCount = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_maxRetries = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_effectiveWaitMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    var var_stopReason = sse_decode_opt_String(deserializer);
+    var var_error = sse_decode_opt_String(deserializer);
+    return BridgeModelRecoveryInfo(
+      retryCount: var_retryCount,
+      maxRetries: var_maxRetries,
+      effectiveWaitMillis: var_effectiveWaitMillis,
+      reason: var_reason,
+      stopReason: var_stopReason,
+      error: var_error,
+    );
+  }
+
+  @protected
+  BridgeModelRecoveryNotice sse_decode_bridge_model_recovery_notice(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_failureKind = sse_decode_opt_String(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    var var_retryCount = sse_decode_u_32(deserializer);
+    var var_maxRetries = sse_decode_u_32(deserializer);
+    var var_effectiveWaitMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_phase = sse_decode_bridge_model_recovery_phase(deserializer);
+    var var_failure = sse_decode_opt_box_autoadd_bridge_turn_failure_dto(
+      deserializer,
+    );
+    return BridgeModelRecoveryNotice(
+      failureKind: var_failureKind,
+      reason: var_reason,
+      retryCount: var_retryCount,
+      maxRetries: var_maxRetries,
+      effectiveWaitMillis: var_effectiveWaitMillis,
+      phase: var_phase,
+      failure: var_failure,
+    );
+  }
+
+  @protected
+  BridgeModelRecoveryPhase sse_decode_bridge_model_recovery_phase(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeModelRecoveryPhase.values[inner];
+  }
+
+  @protected
   BridgeModelSelectionGuide sse_decode_bridge_model_selection_guide(
     SseDeserializer deserializer,
   ) {
@@ -37117,11 +37298,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       deserializer,
     );
     var var_hasUnpricedUsage = sse_decode_bool(deserializer);
+    var var_hasIncompleteUsage = sse_decode_bool(deserializer);
     return BridgeSessionCostSnapshot(
       rootThreadId: var_rootThreadId,
       purposeCosts: var_purposeCosts,
       estimatedCosts: var_estimatedCosts,
       hasUnpricedUsage: var_hasUnpricedUsage,
+      hasIncompleteUsage: var_hasIncompleteUsage,
     );
   }
 
@@ -39685,16 +39868,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_code = sse_decode_opt_String(deserializer);
     var var_httpStatus = sse_decode_opt_box_autoadd_u_16(deserializer);
     var var_message = sse_decode_String(deserializer);
-    var var_retryable = sse_decode_bool(deserializer);
+    var var_retryDisposition = sse_decode_String(deserializer);
     var var_retryAfterMs = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_errorType = sse_decode_opt_String(deserializer);
+    var var_requestId = sse_decode_opt_String(deserializer);
+    var var_stage = sse_decode_opt_String(deserializer);
+    var var_recovery = sse_decode_opt_box_autoadd_bridge_model_recovery_info(
+      deserializer,
+    );
     return BridgeTurnFailureDto(
       category: var_category,
       providerKind: var_providerKind,
       code: var_code,
       httpStatus: var_httpStatus,
       message: var_message,
-      retryable: var_retryable,
+      retryDisposition: var_retryDisposition,
       retryAfterMs: var_retryAfterMs,
+      errorType: var_errorType,
+      requestId: var_requestId,
+      stage: var_stage,
+      recovery: var_recovery,
     );
   }
 
@@ -39766,9 +39959,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case 4:
         var var_startedAt = sse_decode_opt_box_autoadd_i_64(deserializer);
         var var_completedAt = sse_decode_i_64(deserializer);
-        var var_failure = sse_decode_box_autoadd_bridge_turn_failure_dto(
-          deserializer,
-        );
+        var var_failure = sse_decode_box_bridge_turn_failure_dto(deserializer);
         return BridgeTurnState_Failed(
           startedAt: var_startedAt,
           completedAt: var_completedAt,
@@ -43544,6 +43735,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeModelRecoveryInfo?
+  sse_decode_opt_box_autoadd_bridge_model_recovery_info(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_model_recovery_info(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgeModelRecoveryNotice?
+  sse_decode_opt_box_autoadd_bridge_model_recovery_notice(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_model_recovery_notice(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BridgeModelSelectionGuide?
   sse_decode_opt_box_autoadd_bridge_model_selection_guide(
     SseDeserializer deserializer,
@@ -43988,6 +44209,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_bridge_turn(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgeTurnFailureDto? sse_decode_opt_box_autoadd_bridge_turn_failure_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_turn_failure_dto(deserializer));
     } else {
       return null;
     }
@@ -47085,6 +47319,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_model_recovery_info(
+    BridgeModelRecoveryInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_model_recovery_info(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_recovery_notice(
+    BridgeModelRecoveryNotice self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_model_recovery_notice(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_model_selection_guide(
     BridgeModelSelectionGuide self,
     SseSerializer serializer,
@@ -48228,6 +48480,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_turn(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_bridge_turn_failure_dto(
+    BridgeTurnFailureDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_turn_failure_dto(self, serializer);
   }
 
   @protected
@@ -52496,6 +52757,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.textChannel,
       serializer,
     );
+    sse_encode_opt_box_autoadd_bridge_model_recovery_notice(
+      self.modelRecovery,
+      serializer,
+    );
     sse_encode_opt_box_autoadd_i_64(self.startedAt, serializer);
     sse_encode_opt_box_autoadd_i_64(self.finishedAt, serializer);
     sse_encode_opt_box_autoadd_bool(self.contentPresent, serializer);
@@ -54343,6 +54608,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_model_recovery_info(
+    BridgeModelRecoveryInfo self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_box_autoadd_u_32(self.retryCount, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.maxRetries, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.effectiveWaitMillis, serializer);
+    sse_encode_opt_String(self.reason, serializer);
+    sse_encode_opt_String(self.stopReason, serializer);
+    sse_encode_opt_String(self.error, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_model_recovery_notice(
+    BridgeModelRecoveryNotice self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.failureKind, serializer);
+    sse_encode_opt_String(self.reason, serializer);
+    sse_encode_u_32(self.retryCount, serializer);
+    sse_encode_u_32(self.maxRetries, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.effectiveWaitMillis, serializer);
+    sse_encode_bridge_model_recovery_phase(self.phase, serializer);
+    sse_encode_opt_box_autoadd_bridge_turn_failure_dto(
+      self.failure,
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_bridge_model_recovery_phase(
+    BridgeModelRecoveryPhase self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_model_selection_guide(
     BridgeModelSelectionGuide self,
     SseSerializer serializer,
@@ -55416,6 +55722,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_bridge_purpose_cost_snapshot(self.purposeCosts, serializer);
     sse_encode_list_bridge_runtime_cost_amount(self.estimatedCosts, serializer);
     sse_encode_bool(self.hasUnpricedUsage, serializer);
+    sse_encode_bool(self.hasIncompleteUsage, serializer);
   }
 
   @protected
@@ -57292,8 +57599,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.code, serializer);
     sse_encode_opt_box_autoadd_u_16(self.httpStatus, serializer);
     sse_encode_String(self.message, serializer);
-    sse_encode_bool(self.retryable, serializer);
+    sse_encode_String(self.retryDisposition, serializer);
     sse_encode_opt_box_autoadd_u_64(self.retryAfterMs, serializer);
+    sse_encode_opt_String(self.errorType, serializer);
+    sse_encode_opt_String(self.requestId, serializer);
+    sse_encode_opt_String(self.stage, serializer);
+    sse_encode_opt_box_autoadd_bridge_model_recovery_info(
+      self.recovery,
+      serializer,
+    );
   }
 
   @protected
@@ -57370,7 +57684,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_i_32(4, serializer);
         sse_encode_opt_box_autoadd_i_64(startedAt, serializer);
         sse_encode_i_64(completedAt, serializer);
-        sse_encode_box_autoadd_bridge_turn_failure_dto(failure, serializer);
+        sse_encode_box_bridge_turn_failure_dto(failure, serializer);
       case BridgeTurnState_BudgetLimited(
         startedAt: final startedAt,
         completedAt: final completedAt,
@@ -60619,6 +60933,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_model_recovery_info(
+    BridgeModelRecoveryInfo? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_model_recovery_info(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_model_recovery_notice(
+    BridgeModelRecoveryNotice? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_model_recovery_notice(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_model_selection_guide(
     BridgeModelSelectionGuide? self,
     SseSerializer serializer,
@@ -61027,6 +61367,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_turn(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_turn_failure_dto(
+    BridgeTurnFailureDto? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_turn_failure_dto(self, serializer);
     }
   }
 

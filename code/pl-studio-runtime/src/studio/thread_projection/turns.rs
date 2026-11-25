@@ -135,17 +135,35 @@ fn state(
             model_failure: facts,
         } => {
             let failure = match facts {
-                Some(facts) => model_failure(&pl_core::model::ModelError {
-                    kind: facts.kind,
-                    details: facts.details.clone(),
-                    usage: facts.usage.clone(),
-                    source: None,
-                }),
+                Some(facts) => model_failure_facts(facts),
                 None => failure(snapshot, &record.turn_id, description),
             };
             TurnState::Failed(crate::FailedTurnState::new(started, at, failure))
         }
     })
+}
+
+fn model_failure_facts(facts: &pl_core::model::ModelFailureFacts) -> crate::TurnFailure {
+    let mut failure = model_failure(&pl_core::model::ModelError {
+        context_recovery: None,
+        kind: facts.kind,
+        details: facts.details.clone(),
+        usage: facts.usage.clone(),
+        source: None,
+    });
+    if let Some(repair) = &facts.repair {
+        let recovery = failure.recovery.get_or_insert(crate::ModelRecoveryInfo {
+            retry_count: None,
+            max_retries: None,
+            effective_wait_millis: None,
+            reason: None,
+            stop_reason: None,
+            error: None,
+        });
+        recovery.stop_reason = Some(crate::ModelRecoveryStopReason::RepairFailed);
+        recovery.error = Some(repair.to_string());
+    }
+    failure
 }
 
 /// Canonical phase of a running Turn, derived from the live facts of the snapshot.
@@ -209,28 +227,42 @@ fn failure(snapshot: &ThreadSnapshot, turn_id: &str, description: &str) -> crate
 pub(super) fn model_failure(error: &pl_core::model::ModelError) -> crate::TurnFailure {
     let description = error.to_string();
     match pl_model::runtime::model_failure_receipt(error) {
-        Ok(Some(receipt)) => match receipt.provider_failure {
-            Some(failure) => crate::TurnFailure {
-                category: if failure.kind == crate::ProviderFailureKind::Capacity {
-                    crate::TurnFailureCategory::ProviderCapacity
-                } else {
-                    crate::TurnFailureCategory::Provider
+        Ok(Some(receipt)) => {
+            let mut projected = receipt.provider_failure.as_ref().map_or_else(
+                || {
+                    crate::TurnFailure::permanent(
+                        crate::TurnFailureCategory::Provider,
+                        if receipt.message.is_empty() {
+                            description.clone()
+                        } else {
+                            receipt.message
+                        },
+                    )
                 },
-                provider_kind: Some(failure.kind),
-                code: failure.code,
-                http_status: failure.http_status,
-                message: failure.message,
-                retry: failure.retry,
-            },
-            None => crate::TurnFailure::permanent(
-                crate::TurnFailureCategory::Provider,
-                if receipt.message.is_empty() {
-                    description.to_owned()
-                } else {
-                    receipt.message
-                },
-            ),
-        },
+                provider_failure,
+            );
+            let last_decision = receipt
+                .partial_progress
+                .as_ref()
+                .and_then(|progress| progress.observation().failed.last()?.recovery.as_ref())
+                .and_then(|payload| pl_model::runtime::model_recovery_decision(payload).ok());
+            if receipt.retry_count.is_some()
+                || receipt.recovery_stop.is_some()
+                || receipt.recovery_error.is_some()
+            {
+                projected.recovery = Some(crate::ModelRecoveryInfo {
+                    retry_count: receipt.retry_count,
+                    max_retries: receipt.max_retries,
+                    effective_wait_millis: last_decision
+                        .as_ref()
+                        .map(|decision| decision.effective_wait_millis),
+                    reason: last_decision.as_ref().map(|decision| decision.recovery),
+                    stop_reason: receipt.recovery_stop,
+                    error: receipt.recovery_error,
+                });
+            }
+            projected
+        }
         Ok(None) => {
             crate::TurnFailure::permanent(crate::TurnFailureCategory::Provider, &description)
         }
@@ -238,5 +270,28 @@ pub(super) fn model_failure(error: &pl_core::model::ModelError) -> crate::TurnFa
             crate::TurnFailureCategory::Protocol,
             format!("{description}; saved model failure cannot be decoded: {error}"),
         ),
+    }
+}
+
+pub(super) fn provider_failure(failure: &pl_protocol::ProviderFailure) -> crate::TurnFailure {
+    let category = if matches!(
+        failure.kind,
+        crate::ProviderFailureKind::ContextLimit | crate::ProviderFailureKind::OutputLimit
+    ) {
+        crate::TurnFailureCategory::ProviderCapacity
+    } else {
+        crate::TurnFailureCategory::Provider
+    };
+    crate::TurnFailure {
+        category,
+        provider_kind: Some(failure.kind),
+        code: failure.code.clone(),
+        http_status: failure.http_status,
+        error_type: failure.error_type.clone(),
+        request_id: failure.context.request_id.clone(),
+        stage: Some(failure.context.stage),
+        recovery: None,
+        message: failure.message.clone(),
+        retry: failure.retry.clone(),
     }
 }

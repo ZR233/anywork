@@ -91,11 +91,7 @@ pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Resu
         ));
     }
     finish_summary_maintenance(db).await.map_err(|error| {
-        crate::studio::startup::migration_error(
-            "calls",
-            "summary and service tier maintenance",
-            error,
-        )
+        crate::studio::startup::migration_error("calls", "service tier maintenance", error)
     })?;
     retry_pending_cleanup(db, root_dir).await.map_err(|error| {
         crate::studio::startup::migration_error("calls", "legacy blob cleanup", error)
@@ -163,6 +159,14 @@ async fn admitted_version(db: &DatabaseConnection) -> Result<Option<i64>> {
                     "current performance request tier column is missing; existing data preserved"
                 );
             }
+            if version >= 11 {
+                let columns = table_columns(db, "call_usage_summary").await?;
+                ensure!(
+                    columns.contains("has_incomplete_usage")
+                        && columns.contains("legacy_import_eligible"),
+                    "current summary columns are missing; existing data preserved"
+                );
+            }
         }
         Ok(Some(version))
     } else {
@@ -186,19 +190,17 @@ async fn pending_matches(db: &DatabaseConnection, version: Option<i64>) -> Resul
     }
     .get_pending_migrations_read_only(db)
     .await?;
-    if pending.is_empty() {
-        ensure!(
-            version == Some(CALLS_SCHEMA_VERSION),
-            "calls format conflicts with completed migrations; existing data preserved"
-        );
-    } else {
-        ensure!(
-            version != Some(CALLS_SCHEMA_VERSION)
-                && (version != Some(9)
-                    || (pending.len() == 1 && pending[0].name() == RequestedServiceTier.name())),
-            "calls format conflicts with pending migrations; existing data preserved"
-        );
-    }
+    let names: Vec<_> = pending.iter().map(|step| step.name()).collect();
+    let matches = match version {
+        Some(CALLS_SCHEMA_VERSION) => names.is_empty(),
+        Some(10) => names == [HistorySummaryPosition.name()],
+        Some(9) => names == [RequestedServiceTier.name(), HistorySummaryPosition.name()],
+        _ => !names.is_empty(),
+    };
+    ensure!(
+        matches,
+        "calls format conflicts with migration bookkeeping; existing data preserved"
+    );
     Ok(())
 }
 async fn format_version(db: &impl ConnectionTrait) -> Result<i64, DbErr> {
@@ -232,6 +234,7 @@ impl MigratorTraitSelf for Migrator {
             Box::new(MaterialProvenance),
             Box::new(LegacyCallFences),
             Box::new(RequestedServiceTier),
+            Box::new(HistorySummaryPosition),
         ]
     }
 }
@@ -292,6 +295,7 @@ mod summary_hash_tests {
             thread_id: "thread".into(),
             revision: 0,
             has_unpriced_usage: false,
+            has_incomplete_usage: true,
             purpose_costs: vec![],
         })
         .unwrap();
@@ -487,7 +491,7 @@ impl MigrationTrait for MaterialProvenance {
             .await
             .map_err(conversion)?;
         upgrade_auxiliary_usage(db).await.map_err(conversion)?;
-        backfill_summary_content_hash(db)
+        write_summary_identities(db, SummaryIdentity::Legacy)
             .await
             .map_err(conversion)?;
         db.execute_unprepared(
@@ -526,6 +530,38 @@ impl MigrationName for RequestedServiceTier {
         "m20261026_000008_calls_requested_service_tier"
     }
 }
+
+struct HistorySummaryPosition;
+impl MigrationName for HistorySummaryPosition {
+    fn name(&self) -> &str {
+        "m20261026_000009_calls_history_summary_position"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for HistorySummaryPosition {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        // Old rows have no evidence about usage completeness. Keep their money and
+        // reserve position zero until a committed History summary supersedes them.
+        // Preserve the original position-zero rows' eligibility for v2 History import.
+        db.execute_unprepared(
+            "ALTER TABLE call_usage_summary ADD COLUMN has_incomplete_usage INTEGER NOT NULL
+                DEFAULT 1 CHECK(has_incomplete_usage IN (0,1));
+             ALTER TABLE call_usage_summary ADD COLUMN legacy_import_eligible INTEGER NOT NULL DEFAULT 0;
+             UPDATE call_usage_summary SET legacy_import_eligible=1 WHERE revision=0;",
+        )
+        .await?;
+        write_summary_identities(db, SummaryIdentity::HistoryPosition)
+            .await
+            .map_err(conversion)?;
+        db.execute_unprepared("UPDATE calls_meta SET schema_version=11 WHERE id=1;")
+            .await?;
+        Ok(())
+    }
+}
 #[sea_orm_migration::async_trait::async_trait]
 impl MigrationTrait for RequestedServiceTier {
     fn use_transaction(&self) -> Option<bool> {
@@ -557,7 +593,7 @@ async fn backfill_requested_service_tier(db: &impl ConnectionTrait) -> Result<()
 
 async fn finish_summary_maintenance(db: &DatabaseConnection) -> Result<()> {
     // Calls schema versions are tracked in calls_meta. The SQLite header marks
-    // this maintenance for files whose v8/v10 migrations have already run.
+    // this maintenance for files whose v10 migration had already run.
     let tx = db.begin().await?;
     let revision: i64 = tx
         .query_one_raw(statement("PRAGMA user_version", vec![]))
@@ -567,7 +603,6 @@ async fn finish_summary_maintenance(db: &DatabaseConnection) -> Result<()> {
     match revision {
         0 => {
             backfill_requested_service_tier(&tx).await?;
-            backfill_summary_content_hash(&tx).await?;
             tx.execute_unprepared("PRAGMA user_version=1").await?;
         }
         1 => {}
@@ -587,28 +622,25 @@ struct SummaryHashSource {
     content_hash: Option<String>,
 }
 
-/// Fills projection hashes missing from rows written before the column existed.
-///
-/// Purpose order follows the writer's `BTreeMap`. Currency order follows stored
-/// insertion, not a later history page; an equal-revision mismatch fails closed.
-async fn backfill_summary_content_hash(db: &impl ConnectionTrait) -> Result<()> {
-    if db
-        .query_one_raw(statement(
-            "SELECT 1 FROM call_usage_summary WHERE content_hash IS NULL LIMIT 1",
-            vec![],
-        ))
-        .await?
-        .is_none()
-    {
-        return Ok(());
-    }
+#[derive(Clone, Copy)]
+enum SummaryIdentity {
+    Legacy,
+    HistoryPosition,
+}
+
+/// Reconstruct identities from the stored rows, preserving purpose and currency order.
+async fn write_summary_identities(
+    db: &impl ConnectionTrait,
+    identity: SummaryIdentity,
+) -> Result<()> {
+    let rebase = matches!(identity, SummaryIdentity::HistoryPosition);
     let rows = db
         .query_all_raw(statement(
             "SELECT thread_id,root_thread_id,purpose,cost_currency,amount,has_unpriced_usage,revision,content_hash
              FROM call_usage_summary
-             WHERE thread_id IN (SELECT thread_id FROM call_usage_summary WHERE content_hash IS NULL)
+             WHERE ? OR thread_id IN (SELECT thread_id FROM call_usage_summary WHERE content_hash IS NULL)
              ORDER BY thread_id, rowid",
-            vec![],
+            vec![rebase.into()],
         ))
         .await?;
     let mut groups: Vec<(String, Vec<SummaryHashSource>)> = Vec::new();
@@ -635,23 +667,24 @@ async fn backfill_summary_content_hash(db: &impl ConnectionTrait) -> Result<()> 
             });
     }
     for (thread_id, group) in groups {
-        write_summary_content_hash(db, &thread_id, &group).await?;
+        let mut projection = projection_for_summary_rows(&thread_id, &group)?;
+        let known_hash = consistent_existing_hash(&group)?;
+        if rebase {
+            projection.revision = 0;
+            db.execute_raw(statement(
+                "UPDATE call_usage_summary SET revision=0,content_hash=? WHERE thread_id=?",
+                vec![summary_content_hash(&projection)?.into(), thread_id.into()],
+            ))
+            .await?;
+        } else {
+            let hash = known_hash.unwrap_or(legacy_summary_content_hash(&projection)?);
+            db.execute_raw(statement(
+                "UPDATE call_usage_summary SET content_hash=? WHERE thread_id=? AND content_hash IS NULL",
+                vec![hash.into(), thread_id.into()],
+            ))
+            .await?;
+        }
     }
-    Ok(())
-}
-
-async fn write_summary_content_hash(
-    db: &impl ConnectionTrait,
-    thread_id: &str,
-    rows: &[SummaryHashSource],
-) -> Result<()> {
-    let projection = projection_for_summary_rows(thread_id, rows)?;
-    let hash = consistent_existing_hash(rows)?.unwrap_or(summary_content_hash(&projection)?);
-    db.execute_raw(statement(
-        "UPDATE call_usage_summary SET content_hash=? WHERE thread_id=? AND content_hash IS NULL",
-        vec![hash.into(), thread_id.to_owned().into()],
-    ))
-    .await?;
     Ok(())
 }
 
@@ -676,6 +709,28 @@ fn consistent_existing_hash(rows: &[SummaryHashSource]) -> Result<Option<String>
 fn summary_content_hash(projection: &SessionUsageProjection) -> Result<String> {
     Ok(pl_core::context::content_hash(&serde_json::to_vec(
         projection,
+    )?))
+}
+
+fn legacy_summary_content_hash(projection: &SessionUsageProjection) -> Result<String> {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacySummary<'a> {
+        root_thread_id: &'a str,
+        thread_id: &'a str,
+        revision: u64,
+        has_unpriced_usage: bool,
+        purpose_costs: &'a [PurposeUsageProjection],
+    }
+
+    Ok(pl_core::context::content_hash(&serde_json::to_vec(
+        &LegacySummary {
+            root_thread_id: &projection.root_thread_id,
+            thread_id: &projection.thread_id,
+            revision: projection.revision,
+            has_unpriced_usage: projection.has_unpriced_usage,
+            purpose_costs: &projection.purpose_costs,
+        },
     )?))
 }
 
@@ -736,6 +791,7 @@ fn projection_for_summary_rows(
         revision: u64::try_from(first.revision)
             .context("calls summary content hash cannot be recovered; existing data preserved")?,
         has_unpriced_usage: first.has_unpriced_usage != 0,
+        has_incomplete_usage: true,
         purpose_costs,
     })
 }
@@ -1293,7 +1349,7 @@ pub(super) async fn seed_version_for_test(
     .await?;
     options.sqlx_logging(false);
     let db = Database::connect(options).await?;
-    if (8..=9).contains(&schema_version) {
+    if (8..=10).contains(&schema_version) {
         // Build the published schema through its real migrations, including bookkeeping.
         // This keeps current auxiliary payloads out of the historical v7 conversion.
         Migrator {
@@ -1654,11 +1710,12 @@ mod storage_fault_tests {
                 })?,
             )
             .await?;
-            let projection = PreparedSummary::new(SessionUsageProjection {
+            let projection = SessionUsageProjection {
                 root_thread_id: "root".into(),
                 thread_id: "current".into(),
                 revision: 9,
                 has_unpriced_usage: false,
+                has_incomplete_usage: false,
                 purpose_costs: vec![PurposeUsageProjection {
                     purpose: Some("review".into()),
                     estimated_costs: vec![RuntimeCostAmount {
@@ -1666,15 +1723,12 @@ mod storage_fault_tests {
                         amount: 2.0,
                     }],
                 }],
-            })?;
-            summary::replace(
-                &tx,
-                &projection,
-                &projection.hash,
-                #[cfg(feature = "benchmarks")]
-                Some(&log.observation),
-            )
-            .await?;
+            };
+            tx.execute_raw(statement(
+                "INSERT INTO call_usage_summary(root_thread_id,thread_id,purpose,cost_currency,amount,revision,content_hash)
+                 VALUES('root','current','review','USD',2.0,9,?)",
+                vec![legacy_summary_content_hash(&projection)?.into()],
+            )).await?;
             log.sync_pending().await?;
             tx.commit().await?;
             log.close();
@@ -1682,9 +1736,8 @@ mod storage_fault_tests {
         Ok(db)
     }
 
-    // Compare every stored column, including hashes, locators, raw sample provenance,
-    // legacy payloads and both fence values. The new nullable request-tier column
-    // is checked independently by the v9 migration regression.
+    // Compare stored material, including hashes, locators, raw sample provenance,
+    // legacy payloads and fences. New columns are checked in their migration regressions.
     async fn material_snapshot(
         db: &DatabaseConnection,
     ) -> Result<BTreeMap<String, Vec<Vec<String>>>> {
@@ -1704,7 +1757,14 @@ mod storage_fault_tests {
             let columns: Vec<_> = table_columns(db, table)
                 .await?
                 .into_iter()
-                .filter(|column| column != "requested_service_tier")
+                .filter(|column| {
+                    !matches!(
+                        column.as_str(),
+                        "requested_service_tier"
+                            | "has_incomplete_usage"
+                            | "legacy_import_eligible"
+                    )
+                })
                 .collect();
             let selection = columns
                 .iter()
@@ -1748,7 +1808,7 @@ mod storage_fault_tests {
         Ok(snapshot)
     }
 
-    async fn without_summary_content_hash(
+    async fn without_summary_identity(
         db: &DatabaseConnection,
         mut snapshot: BTreeMap<String, Vec<Vec<String>>>,
     ) -> Result<BTreeMap<String, Vec<Vec<String>>>> {
@@ -1758,12 +1818,19 @@ mod storage_fault_tests {
         let columns: Vec<_> = table_columns(db, "call_usage_summary")
             .await?
             .into_iter()
+            .filter(|column| {
+                !matches!(
+                    column.as_str(),
+                    "has_incomplete_usage" | "legacy_import_eligible"
+                )
+            })
             .collect();
-        let Some(index) = columns.iter().position(|column| column == "content_hash") else {
-            return Ok(snapshot);
-        };
-        for row in rows {
-            row[index].clear();
+        for (index, column) in columns.iter().enumerate() {
+            if matches!(column.as_str(), "content_hash" | "revision") {
+                for row in &mut *rows {
+                    row[index].clear();
+                }
+            }
         }
         Ok(snapshot)
     }
@@ -1790,6 +1857,7 @@ mod storage_fault_tests {
             thread_id: thread_id.into(),
             revision: 0,
             has_unpriced_usage: false,
+            has_incomplete_usage: true,
             purpose_costs: vec![PurposeUsageProjection {
                 purpose: None,
                 estimated_costs: vec![RuntimeCostAmount {
@@ -1823,11 +1891,11 @@ mod storage_fault_tests {
             assert!(table_exists(&db, "legacy_call_fences").await?);
             let migrated = material_snapshot(&db).await?;
             assert_eq!(
-                without_summary_content_hash(&db, migrated.clone()).await?,
-                without_summary_content_hash(&db, before).await?
+                without_summary_identity(&db, migrated.clone()).await?,
+                without_summary_identity(&db, before).await?
             );
             if populated {
-                assert_eq!(stored_summary_hash(&db, "current").await?, current_hash);
+                assert_ne!(stored_summary_hash(&db, "current").await?, current_hash);
                 assert_eq!(
                     stored_summary_hash(&db, "legacy").await?.as_deref(),
                     Some(expected_legacy_summary_hash("legacy")?.as_str())
@@ -1841,7 +1909,7 @@ mod storage_fault_tests {
                 .get_applied_migrations_read_only(&db)
                 .await?
                 .len(),
-                8,
+                9,
             );
             db.close().await?;
             let store = CallsStore::prepare(&path).await?;
@@ -1854,6 +1922,7 @@ mod storage_fault_tests {
                 assert_eq!(costs.len(), 1);
                 assert_eq!(costs[0].estimated_costs[0].amount, 4.5);
                 assert!(store.legacy_session_costs("legacy", 6).await.is_err());
+                assert!(store.legacy_session_costs("current", 0).await?.is_empty());
                 assert_eq!(
                     store
                         .legacy_auxiliary_usage("legacy")
@@ -1871,8 +1940,8 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn schema_nine_adds_only_request_tier_and_replays_rolling_logs_without_rebilling()
-    -> Result<()> {
+    async fn schema_nine_adds_request_tier_and_replays_rolling_logs_without_rebilling() -> Result<()>
+    {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("calls.sqlite");
         seed_version_for_test(&path, 9,
@@ -1930,11 +1999,11 @@ mod storage_fault_tests {
         let logs = log_snapshot(temp.path()).await?;
         assert_eq!(logs.len(), 2, "the fixture spans two daily segments");
         initialize(&db, temp.path()).await?;
-        assert_eq!(format_version(&db).await?, 10);
+        assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
         let migrated = material_snapshot(&db).await?;
         assert_eq!(
-            without_summary_content_hash(&db, migrated).await?,
-            without_summary_content_hash(&db, before).await?
+            without_summary_identity(&db, migrated).await?,
+            without_summary_identity(&db, before).await?
         );
         assert_eq!(
             stored_summary_hash(&db, "thread").await?.as_deref(),
@@ -2036,9 +2105,98 @@ mod storage_fault_tests {
         db.execute_unprepared("DROP TRIGGER reject_request_tier")
             .await?;
         initialize(&db, temp.path()).await?;
-        assert_eq!(format_version(&db).await?, 10);
+        assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
         assert_eq!(material_snapshot(&db).await?, before);
         db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema_ten_preserves_costs_until_committed_history_supersedes_incomplete_legacy_usage()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        seed_version_for_test(
+            &path,
+            10,
+            "INSERT INTO call_usage_summary(root_thread_id,thread_id,purpose,cost_currency,amount,
+                 has_unpriced_usage,revision,content_hash)
+             VALUES('root','child','turn','USD',4.5,1,1780000000000,'old-hash'),
+                   ('root','child','compaction','EUR',2.0,1,1780000000000,'old-hash');
+             CREATE TRIGGER reject_history_position BEFORE UPDATE OF schema_version ON calls_meta
+             WHEN NEW.schema_version=11 BEGIN SELECT RAISE(ABORT,'injected summary migration failure'); END;",
+        ).await?;
+        let db = connect_fixture(&path).await?;
+        let before = material_snapshot(&db).await?;
+        let error = initialize(&db, temp.path()).await.unwrap_err();
+        assert!(format!("{error:#}").contains("injected summary migration failure"));
+        assert_eq!(format_version(&db).await?, 10);
+        assert!(
+            !table_columns(&db, "call_usage_summary")
+                .await?
+                .contains("has_incomplete_usage")
+        );
+        assert_eq!(material_snapshot(&db).await?, before);
+        db.execute_unprepared("DROP TRIGGER reject_history_position")
+            .await?;
+        db.close().await?;
+
+        for _ in 0..2 {
+            let store = CallsStore::prepare(&path).await?;
+            let rollup = &store.session_cost_rollups().await?[0];
+            assert!(rollup.has_incomplete_usage);
+            assert!(rollup.has_unpriced_usage);
+            assert_eq!(
+                rollup
+                    .estimated_costs
+                    .iter()
+                    .map(|cost| (cost.currency.as_str(), cost.amount))
+                    .collect::<Vec<_>>(),
+                [("EUR", 2.0), ("USD", 4.5)],
+            );
+            assert_eq!(rollup.purpose_costs.len(), 2);
+            assert!(store.legacy_session_costs("child", 0).await?.is_empty());
+            store.close().await?;
+        }
+
+        let store = CallsStore::open(&path).await?;
+        let projection = SessionUsageProjection {
+            root_thread_id: "root".into(),
+            thread_id: "child".into(),
+            revision: 2,
+            has_unpriced_usage: false,
+            has_incomplete_usage: false,
+            purpose_costs: vec![PurposeUsageProjection {
+                purpose: Some("turn".into()),
+                estimated_costs: vec![RuntimeCostAmount {
+                    currency: "USD".into(),
+                    amount: 8.0,
+                }],
+            }],
+        };
+        let mut stale = projection.clone();
+        stale.revision = 1;
+        stale.has_incomplete_usage = true;
+        stale.purpose_costs[0].estimated_costs[0].amount = 13.0;
+        let mut processed = store.subscribe_processed_ticket();
+        // Persist the new History revision first so the late update exercises the SQL fence.
+        for summary in [projection.clone(), projection, stale] {
+            store.replace_session_usage(summary)?;
+            let ticket = store.admitted_ticket();
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                processed.wait_for(|done| *done >= ticket),
+            )
+            .await??;
+        }
+        assert!(!store.statistics_gap());
+        let rollup = &store.session_cost_rollups().await?[0];
+        assert!(!rollup.has_incomplete_usage);
+        assert!(!rollup.has_unpriced_usage);
+        assert_eq!(rollup.estimated_costs.len(), 1);
+        assert_eq!(rollup.estimated_costs[0].currency, "USD");
+        assert_eq!(rollup.estimated_costs[0].amount, 8.0);
+        store.close().await?;
         Ok(())
     }
 
@@ -2082,10 +2240,10 @@ mod storage_fault_tests {
         initialize(&db, temp.path()).await?;
         assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
         assert_eq!(
-            without_summary_content_hash(&db, material_snapshot(&db).await?).await?,
-            without_summary_content_hash(&db, before).await?
+            without_summary_identity(&db, material_snapshot(&db).await?).await?,
+            without_summary_identity(&db, before).await?
         );
-        assert_eq!(stored_summary_hash(&db, "current").await?, current_hash);
+        assert_ne!(stored_summary_hash(&db, "current").await?, current_hash);
         assert_eq!(
             stored_summary_hash(&db, "legacy").await?,
             Some(expected_legacy_summary_hash("legacy")?)
@@ -2107,7 +2265,11 @@ mod storage_fault_tests {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("calls.sqlite");
         let db = schema_eight_fixture(&path, true).await?;
-        initialize(&db, temp.path()).await?;
+        Migrator {
+            log_dir: temp.path().join(CALL_LOG_DIR_NAME),
+        }
+        .up(&db, Some(1))
+        .await?;
         let before = material_snapshot(&db).await?;
         let logs = log_snapshot(temp.path()).await?;
         db.execute_raw(statement(
@@ -2118,7 +2280,7 @@ mod storage_fault_tests {
         db.close().await?;
         assert!(CallsStore::prepare(&path).await.is_err());
         let db = connect_fixture(&path).await?;
-        assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
+        assert_eq!(format_version(&db).await?, 9);
         assert!(!table_exists(&db, "call_watermarks").await?);
         assert_eq!(material_snapshot(&db).await?, before);
         assert_eq!(log_snapshot(temp.path()).await?, logs);
@@ -2169,28 +2331,10 @@ mod storage_fault_tests {
         .await?;
         ensure_schema(&db).await?;
         ensure_columns(&db, "call_usage_summary", &[("content_hash", "TEXT")]).await?;
-        let tx = db.begin().await?;
-        summary::replace(
-            &tx,
-            &SessionUsageProjection {
-                root_thread_id: "thread".into(),
-                thread_id: "thread".into(),
-                revision: 7,
-                has_unpriced_usage: false,
-                purpose_costs: vec![PurposeUsageProjection {
-                    purpose: None,
-                    estimated_costs: vec![RuntimeCostAmount {
-                        currency: "USD".into(),
-                        amount: 3.0,
-                    }],
-                }],
-            },
-            "test-summary",
-            #[cfg(feature = "benchmarks")]
-            None,
-        )
-        .await?;
-        tx.commit().await?;
+        db.execute_unprepared(
+            "INSERT INTO call_usage_summary(root_thread_id,thread_id,purpose,cost_currency,amount,revision,content_hash)
+             VALUES('thread','thread','','USD',3.0,7,'test-summary');",
+        ).await?;
         db.close().await?;
         let mut log = CallLog::open(temp.path().join("logs")).await?;
         let record = CallLogRecord {

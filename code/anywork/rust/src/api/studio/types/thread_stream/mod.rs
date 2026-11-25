@@ -150,8 +150,22 @@ pub struct BridgeTurnFailureDto {
     pub code: Option<String>,
     pub http_status: Option<u16>,
     pub message: String,
-    pub retryable: bool,
+    pub retry_disposition: String,
     pub retry_after_ms: Option<u64>,
+    pub error_type: Option<String>,
+    pub request_id: Option<String>,
+    pub stage: Option<String>,
+    pub recovery: Option<BridgeModelRecoveryInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeModelRecoveryInfo {
+    pub retry_count: Option<u32>,
+    pub max_retries: Option<u32>,
+    pub effective_wait_millis: Option<u64>,
+    pub reason: Option<String>,
+    pub stop_reason: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +191,7 @@ pub enum BridgeTurnState {
     Failed {
         started_at: Option<i64>,
         completed_at: i64,
-        failure: BridgeTurnFailureDto,
+        failure: Box<BridgeTurnFailureDto>,
     },
     BudgetLimited {
         started_at: Option<i64>,
@@ -684,6 +698,7 @@ pub enum BridgeUsageGapReason {
     Unreported,
     Inconsistent,
     Overflow,
+    NonTerminalSample,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

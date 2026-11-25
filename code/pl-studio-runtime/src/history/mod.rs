@@ -17,6 +17,7 @@ mod token;
 mod types;
 pub mod upgrade;
 mod validate;
+mod writer_lease;
 
 #[cfg(test)]
 mod reader_regression_tests;

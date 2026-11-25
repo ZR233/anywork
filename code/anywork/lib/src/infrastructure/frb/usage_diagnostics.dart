@@ -42,6 +42,8 @@ UsageGapReason usageGapReasonFromFrb(frb.BridgeUsageGapReason value) =>
       frb.BridgeUsageGapReason.unreported => UsageGapReason.unreported,
       frb.BridgeUsageGapReason.inconsistent => UsageGapReason.inconsistent,
       frb.BridgeUsageGapReason.overflow => UsageGapReason.overflow,
+      frb.BridgeUsageGapReason.nonTerminalSample =>
+        UsageGapReason.nonTerminalSample,
     };
 
 MetricAvailability metricAvailabilityFromFrb(

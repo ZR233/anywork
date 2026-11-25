@@ -51,7 +51,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-model` | 账号配置、有效模型目录、正式路由与协议装配 |
 | `pl-model-types` | 通用消息、流事件、模型元数据和开放协议标识 |
 | `pl-model-runtime` | Core 会话适配、请求执行、连接和续接、重试、取消、附件缓存与计量 |
-| `pl-model-wire` | 协议无关模型绑定、HTTP/SSE 传输与 `WireCodec`/`WireStreamDecoder` 抽象契约 |
+| `pl-model-wire` | 协议无关模型绑定、HTTP/SSE 传输、`WireCodec`/`WireStreamDecoder` 与供应商错误策略契约；公共错误上下文和等待提示归一化，具体业务码归各厂商协议 crate |
 | `pl-model-openai-wire` | OpenAI Chat Completions 与 Responses 线协议编解码与共享请求构建 |
 | `pl-model-gemini` | 原生 Gemini REST（`streamGenerateContent`、Vertex AI API Key 与 Gemini API）独立编解码与模型目录 |
 | `code/model-protocols/` 中的其他厂商 crate | 目录解释、内置模型声明与服务实现，OpenAI 系派生协议组合 `pl-model-openai-wire` |

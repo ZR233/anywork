@@ -28,6 +28,125 @@ fn started(id: &str) -> pl_core::model::ModelStartedMember {
 }
 
 #[tokio::test]
+async fn terminal_repair_failure_keeps_the_original_provider_diagnosis() -> Result<()> {
+    use pl_core::{
+        context::OpaquePayload,
+        model::{ModelFailureFacts, ModelFailureKind, ModelRepairFailure},
+        thread::TurnRecord,
+    };
+    use pl_model::runtime::{ModelCallBinding, ModelFailureReceipt, ModelRecoveryStopReason};
+    use pl_protocol::{
+        ProviderFailure, ProviderFailureKind, ProviderFailureStage, RetryDisposition,
+    };
+
+    let thread = crate::Thread::placeholder("repair-diagnosis");
+    let turn_id = "one-repair".to_owned();
+    let mut projection = LiveProjection::new();
+    let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+    projection.bind_execution(
+        channel.order_index(),
+        RuntimeEpoch::new(),
+        "history:repair-diagnosis".into(),
+    )?;
+    let mut original = ProviderFailure::new(
+        ProviderFailureKind::ContextLimit,
+        "context too large",
+        RetryDisposition::Permanent,
+    )
+    .at_stage(ProviderFailureStage::Stream);
+    original.context.request_id = Some("context-limit-request".into());
+    let receipt = ModelFailureReceipt {
+        settlements: Vec::new(),
+        recovery_stop: None,
+        recovery_error: None,
+        retry_count: Some(0),
+        max_retries: Some(5),
+        timing: None,
+        provider_failure: Some(original),
+        message: "context too large".into(),
+        accounting: Default::default(),
+        model_observation: None,
+        presentation_items: Vec::new(),
+        partial_progress: None,
+        binding: ModelCallBinding {
+            account_id: "fixture".into(),
+            model_id: "fixture".into(),
+            protocol: pl_model_openai::endpoint::endpoint(None).protocol,
+            wire_api: pl_model::protocol::WireApi::Responses,
+            isolation: "fixture".into(),
+            purpose: "turn".into(),
+            context_window: None,
+            max_context_window: None,
+            auto_compact_limit: None,
+        },
+    };
+    // Current has seen only the attempt's failure; its cache cannot include the later repair.
+    projection.feed.remember_projection(
+        [(
+            turn_id.clone(),
+            super::super::turns::provider_failure(receipt.provider_failure.as_ref().unwrap()),
+        )]
+        .into(),
+        Default::default(),
+    );
+    let turn = TurnRecord {
+        turn_id: turn_id.clone(),
+        input_id: None,
+        model_steps: 1,
+        elapsed_ms: Some(10),
+        state: TurnState::Failed {
+            description: "context too large".into(),
+            model_failure: Some(Box::new(ModelFailureFacts {
+                kind: ModelFailureKind::ContextLimit,
+                details: Some(Box::new(OpaquePayload::new(
+                    "pl.model.failure",
+                    7,
+                    serde_json::to_string(&receipt)?,
+                )?)),
+                usage: Box::default(),
+                repair: Some(ModelRepairFailure::Storage {
+                    description: "compaction write refused".into(),
+                }),
+            })),
+        },
+    };
+    let state = ThreadSnapshot {
+        commit_sequence: 1,
+        turns: Arc::from([turn.clone()]),
+        ..Default::default()
+    };
+    let (_, prepared) = projection.prepare(
+        &thread,
+        &ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 1,
+            committed_at: 10,
+            turn: Some(turn),
+            ..Default::default()
+        },
+        &state,
+        true,
+    )?;
+    let projected = super::super::prepared_terminal_turn(&prepared).context("terminal turn")?;
+    let crate::TurnState::Failed(failed) = &projected.state else {
+        panic!("expected failed turn");
+    };
+    let failure = failed.failure();
+    assert_eq!(failure.request_id.as_deref(), Some("context-limit-request"));
+    assert_eq!(
+        failure.category,
+        crate::TurnFailureCategory::ProviderCapacity
+    );
+    let recovery = failure.recovery.as_ref().context("repair diagnosis")?;
+    assert_eq!(
+        recovery.stop_reason,
+        Some(ModelRecoveryStopReason::RepairFailed)
+    );
+    assert_eq!(recovery.error.as_deref(), Some("compaction write refused"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn stateless_projection_emits_atomic_events_without_boundary_cuts() -> Result<()> {
     use pl_core::model::{
         ActiveModelProgress, ModelProgress, ObservedPart, ObservedPartIdentity, ObservedPartKind,

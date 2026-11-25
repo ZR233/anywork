@@ -1,229 +1,326 @@
-use pl_protocol::{ProviderFailure, ProviderFailureKind, PureError, RetryDisposition};
+//! Provider-owned classification and shared failure context for HTTP, SSE and WebSocket.
 
-fn retryable_provider_failure(code: Option<&str>, http_status: Option<u16>) -> bool {
-    match provider_failure_kind(code, http_status, false) {
-        ProviderFailureKind::Authentication | ProviderFailureKind::Authorization => false,
-        // Responses WebSocket capacity is reported as 400. Other request/configuration
-        // failures take precedence over a generic upstream code.
-        ProviderFailureKind::Configuration => {
-            http_status == Some(400)
-                && code.is_some_and(|code| {
-                    code.eq_ignore_ascii_case("websocket_connection_limit_reached")
-                })
+mod retry;
+mod transport;
+
+use pl_protocol::{
+    ProviderFailure, ProviderFailureKind as Kind, ProviderFailureStage, RetryDisposition,
+};
+pub use pl_protocol::{ProviderFailureKind, ProviderRecovery};
+use serde_json::Value;
+
+use crate::protocol::{ProtocolEndpoint, WireApi};
+
+pub use retry::{ErrorObservedAt, ObservedRetry, RetryHint};
+pub use transport::{reqwest_body_error_to_pure, reqwest_error_to_pure};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderErrorEntry {
+    HttpResponse,
+    Sse,
+    WebSocket,
+}
+
+/// The payload is borrowed and may be absent for an HTTP response without JSON.
+pub struct ProviderErrorInput<'a> {
+    pub entry: ProviderErrorEntry,
+    /// SSE event field when the transport supplied one.
+    pub event_name: Option<&'a str>,
+    pub wire_api: Option<WireApi>,
+    pub endpoint: Option<&'a ProtocolEndpoint>,
+    pub http_status: Option<u16>,
+    pub payload: Option<&'a Value>,
+}
+
+impl ProviderErrorInput<'_> {
+    /// A failing HTTP status governs status-based fallback. An established stream
+    /// and a successful HTTP response may carry a different status in the payload.
+    pub fn failure_status(&self, payload_status: Option<u16>) -> Option<u16> {
+        self.http_status
+            .filter(|status| *status >= 300)
+            .or(payload_status)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ErrorPolicyBinding<'a> {
+    pub policy: &'a dyn ProviderErrorPolicy,
+    pub wire_api: WireApi,
+    pub endpoint: Option<&'a ProtocolEndpoint>,
+}
+
+impl<'a> ErrorPolicyBinding<'a> {
+    pub fn input<'p>(
+        self,
+        entry: ProviderErrorEntry,
+        http_status: Option<u16>,
+        payload: Option<&'p Value>,
+    ) -> ProviderErrorInput<'p>
+    where
+        'a: 'p,
+    {
+        ProviderErrorInput {
+            entry,
+            event_name: None,
+            wire_api: Some(self.wire_api),
+            endpoint: self.endpoint,
+            http_status,
+            payload,
         }
-        _ => {
-            http_status.is_some_and(retryable_provider_status)
-                || code.is_some_and(retryable_provider_code)
-        }
     }
 }
 
-pub fn provider_stream_failure(
-    code: Option<&str>,
-    http_status: Option<u16>,
-    retry_after_ms: Option<u64>,
-    message: String,
-) -> PureError {
-    PureError::provider_failure(stream_failure(code, http_status, retry_after_ms, message))
+pub trait ProviderErrorPolicy: Send + Sync + std::fmt::Debug {
+    fn decode_error(
+        &self,
+        input: ProviderErrorInput<'_>,
+    ) -> Result<Option<ClassifiedProviderError>, ErrorDecodeError>;
 }
 
-/// Classifies a wire failure once, before it enters protocol-neutral stream processing.
-pub fn stream_failure(
-    code: Option<&str>,
-    http_status: Option<u16>,
-    retry_after_ms: Option<u64>,
-    message: String,
-) -> ProviderFailure {
-    let retryable = retryable_provider_failure(code, http_status);
-    ProviderFailure {
-        context: pl_protocol::ProviderFailureContext {
-            stage: pl_protocol::ProviderFailureStage::Stream,
-            ..Default::default()
-        },
-        kind: provider_failure_kind(code, http_status, retryable),
-        code: code.map(str::to_owned),
-        http_status,
-        message: redact_secret_like_values(&message),
-        retry: if retryable {
-            RetryDisposition::Retryable { retry_after_ms }
-        } else {
-            RetryDisposition::Permanent
-        },
-    }
+/// An identifiable error envelope whose declared fields could not be decoded.
+#[derive(Debug, thiserror::Error)]
+pub enum ErrorDecodeError {
+    #[error("invalid provider error envelope")]
+    Envelope(#[from] serde_json::Error),
+    #[error("invalid provider error envelope: {0}")]
+    Structure(&'static str),
 }
 
-pub fn reqwest_error_to_pure(error: reqwest::Error) -> PureError {
-    let error = error.without_url();
-    let detail = reqwest_error_detail(&error);
-    if error.is_timeout() || error.is_connect() || response_start_connection_closed(&error) {
-        return PureError::transient_model_failure(
-            detail,
-            None,
-            None,
-            error.status().map(|status| status.as_u16()),
-        );
-    }
-    if error.is_builder() || error.is_redirect() {
-        configuration_failure(detail)
-    } else if error.is_decode() || error.is_body() {
-        // This general boundary also handles Response::json(). Raw byte-stream
-        // failures use reqwest_body_error_to_pure before any model decoding.
-        protocol_failure(detail)
-    } else {
-        PureError::provider_failure(ProviderFailure {
-            context: Default::default(),
-            kind: ProviderFailureKind::Unknown,
+/// A provider classification awaiting receive time, request identity and redaction.
+pub struct ClassifiedProviderError {
+    pub kind: Kind,
+    pub retryable: bool,
+    pub code: Option<String>,
+    pub error_type: Option<String>,
+    /// Status declared inside the payload, if any.
+    pub http_status: Option<u16>,
+    pub message: String,
+    pub recovery: ProviderRecovery,
+    pub retry_hint: RetryHint,
+    pub details: Option<Box<Value>>,
+}
+
+impl ClassifiedProviderError {
+    pub fn new(kind: Kind, retryable: bool, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            retryable,
             code: None,
-            http_status: error.status().map(|status| status.as_u16()),
-            message: detail,
-            retry: RetryDisposition::Permanent,
-        })
+            error_type: None,
+            http_status: None,
+            message: message.into(),
+            recovery: ProviderRecovery::None,
+            retry_hint: RetryHint::Absent,
+            details: None,
+        }
     }
-}
 
-pub fn reqwest_body_error_to_pure(error: reqwest::Error) -> PureError {
-    // At bytes_stream(), Decode refers to HTTP framing/content decoding, not
-    // model JSON. Do not depend on a nested io::Error or library error wording.
-    let error = error.without_url();
-    PureError::transient_model_failure(
-        format!(
-            "response body read failed: {}",
-            reqwest_error_detail(&error)
-        ),
-        None,
-        None,
-        error.status().map(|status| status.as_u16()),
-    )
-}
-
-fn reqwest_error_detail(error: &reqwest::Error) -> String {
-    use std::{error::Error, fmt::Write};
-
-    let mut detail = redact_secret_like_values(&error.to_string());
-    if error.is_timeout() {
-        detail.push_str("; timeout=true");
+    /// Conservative HTTP fallback for endpoints with no recognized business reason.
+    pub fn from_http_status(status: Option<u16>) -> Self {
+        let (kind, retryable) = match status {
+            Some(401) => (Kind::Authentication, false),
+            Some(403) => (Kind::Authorization, false),
+            Some(400 | 404 | 405 | 413 | 415 | 422) => (Kind::InvalidRequest, false),
+            Some(429) => (Kind::Unknown, true),
+            Some(500 | 503) => (Kind::ServiceBusy, true),
+            // No generic retry promise for 408, 409, 425 or other server/proxy errors.
+            _ => (Kind::Unknown, false),
+        };
+        let message = match status {
+            Some(status) => {
+                format!("HTTP {status}: provider returned an unstructured error response")
+            }
+            None => "provider reported a failure".to_owned(),
+        };
+        Self::new(kind, retryable, message)
     }
-    let mut source = error.source();
-    for _ in 0..8 {
-        let Some(cause) = source else { break };
-        // Hyper's Display is a fixed category, never its source/body. Do not
-        // format arbitrary sources: they may contain URLs or provider content.
-        if let Some(error) = cause.downcast_ref::<hyper::Error>() {
-            let _ = write!(detail, "; hyper={error}");
-        } else if let Some(error) = cause.downcast_ref::<std::io::Error>() {
-            let _ = write!(detail, "; io={:?}", error.kind());
-            if let Some(code) = error.raw_os_error() {
-                let _ = write!(detail, "; os_code={code}");
+
+    pub fn into_failure(self, context: &ProviderErrorContext<'_>) -> ProviderFailure {
+        let wait = context
+            .header_retry
+            .combine(self.retry_hint.observed(context.observed_at));
+        let retry = match wait {
+            ObservedRetry::Unrepresentable { .. }
+                if self.retryable || self.recovery != ProviderRecovery::None =>
+            {
+                RetryDisposition::WaitUnrepresentable
+            }
+            ObservedRetry::At { delay_ms, .. } if self.retryable => RetryDisposition::Retryable {
+                retry_after_ms: Some(delay_ms),
+            },
+            ObservedRetry::Absent if self.retryable => RetryDisposition::Retryable {
+                retry_after_ms: None,
+            },
+            _ => RetryDisposition::Permanent,
+        };
+        let redact = context.redact;
+        let mut failure = ProviderFailure::new(self.kind, redact(&self.message), retry);
+        let observed_wall = match wait {
+            ObservedRetry::At { wall, .. } | ObservedRetry::Unrepresentable { wall } => wall,
+            ObservedRetry::Absent => context.observed_at.wall,
+        };
+        failure.observed_at_unix_ms = observed_wall
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok());
+        failure.context.stage = context.stage;
+        failure.context.request_id = context.request_id.map(redact);
+        failure.context.recovery = self.recovery;
+        failure.code = self.code.map(|code| redact(&code));
+        failure.error_type = self.error_type.map(|kind| redact(&kind));
+        failure.http_status = context
+            .http_status
+            .filter(|status| *status >= 300)
+            .or(self.http_status)
+            .or(context.http_status);
+        failure.details = self
+            .details
+            .map(|details| Box::new(redact_json(*details, redact)));
+        if let ObservedRetry::At {
+            deadline, delay_ms, ..
+        } = wait
+        {
+            failure = failure.with_retry_deadline(deadline);
+            if !self.retryable {
+                failure.reported_wait_ms = Some(delay_ms);
             }
         }
-        source = cause.source();
+        failure
     }
-    detail
 }
 
-fn configuration_failure(message: impl Into<String>) -> PureError {
-    PureError::provider_failure(ProviderFailure {
-        context: Default::default(),
-        kind: ProviderFailureKind::Configuration,
-        code: None,
-        http_status: None,
-        message: message.into(),
-        retry: RetryDisposition::Permanent,
-    })
+pub struct ProviderErrorContext<'a> {
+    pub stage: ProviderFailureStage,
+    /// Already validated by the transport.
+    pub request_id: Option<&'a str>,
+    /// Failed HTTP status; leave empty for established streams.
+    pub http_status: Option<u16>,
+    pub observed_at: ErrorObservedAt,
+    pub header_retry: ObservedRetry,
+    pub redact: &'a dyn Fn(&str) -> String,
 }
 
-fn protocol_failure(message: impl Into<String>) -> PureError {
-    PureError::provider_failure(ProviderFailure {
-        context: Default::default(),
-        kind: ProviderFailureKind::Protocol,
-        code: None,
-        http_status: None,
-        message: message.into(),
-        retry: RetryDisposition::Permanent,
-    })
+pub struct StreamFrameContext<'a> {
+    pub policy: &'a dyn ProviderErrorPolicy,
+    pub entry: ProviderErrorEntry,
+    pub event_name: Option<&'a str>,
+    pub wire_api: WireApi,
+    pub endpoint: Option<&'a ProtocolEndpoint>,
+    pub failure: ProviderErrorContext<'a>,
 }
 
-fn response_start_connection_closed(error: &reqwest::Error) -> bool {
-    if error.is_builder() || error.is_redirect() || error.is_status() {
-        return false;
-    }
-    // decode/body 错误需要保留：它们可能根源于连接中断，逐层检查 source。
-    let mut source: Option<&dyn std::error::Error> = Some(error);
-    for _ in 0..8 {
-        let Some(cause) = source else { break };
-        if cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+impl StreamFrameContext<'_> {
+    pub fn decode_failure(&self, payload: &Value) -> Option<ProviderFailure> {
+        decode_provider_failure(
+            self.policy,
+            ProviderErrorInput {
+                entry: self.entry,
+                event_name: self.event_name,
+                wire_api: Some(self.wire_api),
+                endpoint: self.endpoint,
+                http_status: self.failure.http_status,
+                payload: Some(payload),
+            },
+            &self.failure,
+        )
+        .or_else(|| {
             matches!(
-                error.kind(),
-                std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::UnexpectedEof
-                    | std::io::ErrorKind::TimedOut
+                self.event_name,
+                Some("error" | "response.failed" | "response.incomplete")
             )
-        }) || cause
-            .downcast_ref::<hyper::Error>()
-            .is_some_and(|error| error.is_incomplete_message() || error.is_closed())
-        {
-            return true;
-        }
-        source = cause.source();
-    }
-    false
-}
-
-pub(super) fn retryable_provider_status(status: u16) -> bool {
-    matches!(status, 408 | 409 | 425 | 429 | 500..=599)
-}
-
-fn provider_failure_kind(
-    code: Option<&str>,
-    http_status: Option<u16>,
-    retryable: bool,
-) -> ProviderFailureKind {
-    if matches!(http_status, Some(401))
-        || code.is_some_and(|code| matches!(code, "invalid_api_key" | "authentication_error"))
-    {
-        return ProviderFailureKind::Authentication;
-    }
-    if matches!(http_status, Some(403))
-        || code.is_some_and(|code| matches!(code, "permission_denied" | "insufficient_permissions"))
-    {
-        return ProviderFailureKind::Authorization;
-    }
-    if retryable {
-        return if matches!(http_status, Some(429 | 500..=599))
-            || code.is_some_and(retryable_provider_code)
-        {
-            ProviderFailureKind::Capacity
-        } else {
-            ProviderFailureKind::Transport
-        };
-    }
-    if matches!(http_status, Some(400 | 404 | 405 | 422))
-        || code.is_some_and(|code| {
-            matches!(
-                code,
-                "model_not_found" | "invalid_request_error" | "unsupported_model"
-            )
+            .then(|| ClassifiedProviderError::from_http_status(None).into_failure(&self.failure))
         })
-    {
-        return ProviderFailureKind::Configuration;
     }
-    ProviderFailureKind::Unknown
+
+    pub fn protocol_failure(&self, message: impl Into<String>) -> ProviderFailure {
+        let mut failure = ClassifiedProviderError::new(Kind::Protocol, false, message)
+            .into_failure(&self.failure);
+        failure.code = Some("invalid_response".to_owned());
+        failure
+    }
 }
 
-fn retryable_provider_code(code: &str) -> bool {
-    matches!(
-        code.to_ascii_lowercase().as_str(),
-        "websocket_connection_limit_reached"
-            | "rate_limit_exceeded"
-            | "server_error"
-            | "upstream_error"
-            | "temporarily_unavailable"
-            | "service_unavailable"
-            | "request_timeout"
-            | "server_is_overloaded"
+/// Converts a recognized failure (including a malformed error envelope) once.
+pub fn decode_provider_failure(
+    policy: &dyn ProviderErrorPolicy,
+    input: ProviderErrorInput<'_>,
+    context: &ProviderErrorContext<'_>,
+) -> Option<ProviderFailure> {
+    match policy.decode_error(input) {
+        Ok(classified) => classified.map(|error| error.into_failure(context)),
+        Err(error) => Some(
+            ClassifiedProviderError::new(Kind::Protocol, false, error.to_string())
+                .into_failure(context)
+                .with_source(error),
+        ),
+    }
+}
+
+pub fn transport_failure(
+    stage: ProviderFailureStage,
+    message: impl Into<String>,
+) -> ProviderFailure {
+    ProviderFailure::new(
+        Kind::Transport,
+        redact_secret_like_values(&message.into()),
+        RetryDisposition::Retryable {
+            retry_after_ms: None,
+        },
     )
+    .at_stage(stage)
+}
+
+pub fn protocol_failure(
+    stage: ProviderFailureStage,
+    message: impl Into<String>,
+) -> ProviderFailure {
+    ProviderFailure::new(
+        Kind::Protocol,
+        redact_secret_like_values(&message.into()),
+        RetryDisposition::Permanent,
+    )
+    .at_stage(stage)
+}
+
+pub fn invalid_request(message: impl Into<String>) -> ProviderFailure {
+    ProviderFailure::new(
+        Kind::InvalidRequest,
+        redact_secret_like_values(&message.into()),
+        RetryDisposition::Permanent,
+    )
+    .at_stage(ProviderFailureStage::Request)
+}
+
+pub fn request_id(headers: &reqwest::header::HeaderMap) -> Option<&str> {
+    ["x-request-id", "x-goog-request-id", "request-id"]
+        .into_iter()
+        .filter_map(|name| headers.get(name)?.to_str().ok())
+        .find(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:/".contains(&byte))
+        })
+}
+
+fn redact_json(value: Value, redact: &dyn Fn(&str) -> String) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact(&text)),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| redact_json(value, redact))
+                .collect(),
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (redact(&key), redact_json(value, redact)))
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 pub fn redact_secret_like_values(input: &str) -> String {
@@ -241,17 +338,15 @@ fn redact_secret_like_token(token: &str) -> String {
             '.' | ',' | ';' | ':' | ')' | '(' | '"' | '\'' | '[' | ']' | '{' | '}'
         )
     });
-    if !looks_like_secret_token(trimmed) {
-        return token.to_string();
-    }
-    token.replacen(trimmed, "[REDACTED_API_KEY]", 1)
-}
-
-fn looks_like_secret_token(token: &str) -> bool {
-    let lower = token.to_ascii_lowercase();
-    (lower.starts_with("sk-") || lower.starts_with("sk_"))
-        && token.len() >= 12
-        && token
+    let lower = trimmed.to_ascii_lowercase();
+    if (lower.starts_with("sk-") || lower.starts_with("sk_"))
+        && trimmed.len() >= 12
+        && trimmed
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '*' | '.'))
+    {
+        token.replacen(trimmed, "[REDACTED_API_KEY]", 1)
+    } else {
+        token.to_string()
+    }
 }

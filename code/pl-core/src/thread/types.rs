@@ -1510,6 +1510,12 @@ pub enum ThreadError {
     Registry(#[from] crate::tool::opaque::RegistryError),
     #[error("model operation failed: {0}")]
     Model(#[source] Arc<ModelError>),
+    #[error("model operation failed: {primary}; context repair failed: {repair}")]
+    ModelRepair {
+        #[source]
+        primary: Arc<ModelError>,
+        repair: Arc<ThreadError>,
+    },
 }
 
 #[cfg(test)]

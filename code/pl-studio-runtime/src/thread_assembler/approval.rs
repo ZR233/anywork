@@ -142,7 +142,6 @@ impl ExecutionPolicy for StudioExecutionPolicy {
                 .ok_or_else(|| self.denied("automatic reviewer is not configured"))?;
             let decision = reviewer(ToolReviewRequest {
                 thread_id: context.thread_id.clone(),
-                turn_id: context.turn_id.clone(),
                 task: context.tasks.clone().ok_or_else(|| {
                     ToolError::new(pl_core::thread::ThreadError::TaskAccessDenied)
                 })?,

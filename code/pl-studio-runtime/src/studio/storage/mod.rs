@@ -130,9 +130,11 @@ mod schema_admission_tests {
                     if generation == 0 && family != "history" {
                         let db = raw_database(&path).await?;
                         if family == "calls" {
-                            // Restore the published v8 shape, before fence retirement and request tiers.
+                            // Restore the published v8 shape, before fence retirement, request tiers and usage completeness.
                             db.execute_unprepared(
-                                "ALTER TABLE performance_samples DROP COLUMN requested_service_tier;
+                                "ALTER TABLE call_usage_summary DROP COLUMN has_incomplete_usage;
+                                 ALTER TABLE call_usage_summary DROP COLUMN legacy_import_eligible;
+                                 ALTER TABLE performance_samples DROP COLUMN requested_service_tier;
                                  ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
                                  UPDATE calls_meta SET schema_version=8 WHERE id=1;",
                             )

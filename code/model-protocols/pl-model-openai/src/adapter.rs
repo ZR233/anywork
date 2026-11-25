@@ -14,6 +14,7 @@ pub const CATALOG: DiscoveryPolicy = DiscoveryPolicy {
 pub static ADAPTER: Adapter = Adapter {
     id: crate::endpoint::ID,
     codec: &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+    error_policy: &crate::error::OpenAiErrorPolicy,
     api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
     responses_instruction_role: InstructionWireRole::Developer,
     discovery: CATALOG,
@@ -29,6 +30,7 @@ pub static ADAPTER: Adapter = Adapter {
 pub static COMPATIBLE_ADAPTER: Adapter = Adapter {
     id: crate::endpoint::COMPATIBLE_ID,
     codec: &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+    error_policy: &crate::error::CompatibleErrorPolicy,
     api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
     responses_instruction_role: InstructionWireRole::Developer,
     discovery: DiscoveryPolicy::COMPATIBLE,

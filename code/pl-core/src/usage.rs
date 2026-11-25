@@ -39,6 +39,7 @@ pub enum UsageField {
 #[serde(rename_all = "camelCase")]
 pub enum UsageIssueReason {
     Unreported,
+    NonTerminalSample,
     Inconsistent,
     Overflow,
 }
@@ -285,8 +286,32 @@ impl crate::thread::UsageSummary {
         primary: bool,
         throughput: Option<UsageThroughputSample>,
     ) {
+        self.add_usage_sample(usage, source, primary, throughput, None);
+    }
+
+    /// Accounts for known counters while retaining whether the producer reported a terminal sample.
+    /// Legacy records without sample provenance retain the counter-based analysis.
+    pub fn add_usage_sample(
+        &mut self,
+        usage: &ModelUsage,
+        source: UsageSource,
+        primary: bool,
+        throughput: Option<UsageThroughputSample>,
+        terminal: Option<bool>,
+    ) {
         let analysis = analyze_usage(usage);
         let mut issues = analysis.issues;
+        let mut status = analysis.status;
+        if terminal == Some(false) {
+            issues.push(UsageIssue {
+                field: UsageField::Total,
+                reason: UsageIssueReason::NonTerminalSample,
+            });
+            if status == UsageStatus::Reported {
+                status = UsageStatus::Partial;
+            }
+            self.cache.incomplete = true;
+        }
         for (current, value, field) in [
             (
                 &mut self.totals.inference_count,
@@ -351,15 +376,49 @@ impl crate::thread::UsageSummary {
         } else {
             self.cache.incomplete = true;
         }
-        if primary && let Some(tokens) = analysis.context_tokens {
+        let mut observation = UsageObservation {
+            source,
+            status,
+            usage: usage.clone(),
+            issues,
+        };
+        if primary {
+            self.observe_context(analysis.context_tokens, &mut observation, throughput);
+        }
+        self.diagnostics.record(observation);
+    }
+
+    /// Publishes context and throughput when Core commits an already counted attempt.
+    pub fn observe_committed_usage(
+        &mut self,
+        usage: &ModelUsage,
+        source: UsageSource,
+        throughput: Option<UsageThroughputSample>,
+    ) {
+        let analysis = analyze_usage(usage);
+        let mut observation = UsageObservation {
+            source,
+            status: analysis.status,
+            usage: usage.clone(),
+            issues: analysis.issues,
+        };
+        self.observe_context(analysis.context_tokens, &mut observation, throughput);
+    }
+
+    fn observe_context(
+        &mut self,
+        context_tokens: Option<u64>,
+        observation: &mut UsageObservation,
+        throughput: Option<UsageThroughputSample>,
+    ) {
+        if let Some(tokens) = context_tokens {
             self.context.tokens = tokens;
         }
         if let Some(sample) = throughput
-            && primary
-            && source.outcome == UsageOutcome::Succeeded
+            && observation.source.outcome == UsageOutcome::Succeeded
             && sample.output_tokens > 0
             && sample.response_millis > 0
-            && let Some(turn_id) = source.turn_id.as_deref()
+            && let Some(turn_id) = observation.source.turn_id.as_deref()
         {
             let previous = if self.throughput.turn_id == turn_id {
                 self.throughput.clone()
@@ -377,19 +436,10 @@ impl crate::thread::UsageSummary {
                         response_millis: millis,
                     };
                 }
-                _ => push_overflow(&mut issues, UsageField::ThroughputPair),
+                _ => push_overflow(&mut observation.issues, UsageField::ThroughputPair),
             }
         }
-        let observation = UsageObservation {
-            source,
-            status: analysis.status,
-            usage: usage.clone(),
-            issues,
-        };
-        if primary {
-            self.context.latest_call = Some(observation.clone());
-        }
-        self.diagnostics.record(observation);
+        self.context.latest_call = Some(observation.clone());
     }
 }
 

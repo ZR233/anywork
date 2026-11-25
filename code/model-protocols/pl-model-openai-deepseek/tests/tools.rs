@@ -1,16 +1,22 @@
-//! 公开 API 集成测试：DeepSeek 官方 Search & Fetch 工具接口的 wire、解析与失败路径。
+//! DeepSeek Search、Fetch 和 Files 公开 API 的 loopback 测试。
 //!
 //! 全部用例通过真实 loopback HTTP 服务驱动 [`ToolsClient`]，只消费公开类型；不访问任何真实
 //! 供应商，也不断言线上兼容性。
 
-use std::time::Duration;
+use std::{collections::HashMap, error::Error, sync::Arc, time::Duration};
 
 use base64::Engine;
 use pl_model_openai_deepseek::tools::{
     CancellationToken, FetchRequest, FetchResponse, Observed, SearchRequest, ToolsClient,
     ToolsError, ToolsOptions,
 };
-use pl_model_wire::protocol::ProtocolEndpoint;
+use pl_model_openai_deepseek::upload::upload_file;
+use pl_model_wire::{
+    completion::{AttachmentInput, AttachmentModality, AttachmentSource},
+    files::{FileUploadFailure, FileUploadRequest, UploadFailureOutcome, UploadedFile},
+    protocol::ProtocolEndpoint,
+};
+use pl_protocol::{ProviderFailureKind as Kind, ProviderFailureStage};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -36,6 +42,14 @@ enum Reply {
         status: u16,
         declared_length: usize,
     },
+    Upload {
+        status: u16,
+        body: &'static str,
+        headers: &'static [(&'static str, &'static str)],
+        extra_declared_bytes: usize,
+    },
+    Disconnect,
+    UnexpectedRequest,
     /// 接受连接并读取请求，但永不响应。
     Hang,
 }
@@ -77,6 +91,40 @@ impl MockServer {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+    }
+
+    async fn finish_upload(mut self, expect_post: bool) {
+        if expect_post {
+            let request = tokio::time::timeout(Duration::from_secs(3), self.request())
+                .await
+                .expect("upload POST was captured");
+            assert!(request.starts_with("POST /files HTTP/1.1\r\n"));
+            assert_eq!(
+                header(&request, "authorization").as_deref(),
+                Some("Bearer fixture-upload-credential")
+            );
+            assert!(request.contains("name=\"purpose\"\r\n\r\nuser_data\r\n"));
+            assert!(request.contains("name=\"expires_after[seconds]\"\r\n\r\n86400\r\n"));
+        }
+        assert!(
+            self.requests.try_recv().is_err(),
+            "unexpected upload submission"
+        );
+        let task = self.task.take().unwrap();
+        task.abort();
+        let error = task
+            .await
+            .expect_err("fixture waits for an unexpected request");
+        assert!(
+            error.is_cancelled(),
+            "unexpected upload submission: {error}"
+        );
+    }
+}
+
+impl Drop for MockServer {
+    fn drop(&mut self) {
+        self.abort();
     }
 }
 
@@ -132,6 +180,24 @@ async fn mock_server_sequence(replies: Vec<Reply>) -> MockServer {
                     socket.flush().await.unwrap();
                     tokio::time::sleep(Duration::from_secs(300)).await;
                 }
+                Reply::Upload {
+                    status,
+                    body,
+                    headers,
+                    extra_declared_bytes,
+                } => {
+                    write_response_with_headers(
+                        &mut socket,
+                        status,
+                        "application/json",
+                        body.as_bytes(),
+                        body.len() + extra_declared_bytes,
+                        headers,
+                    )
+                    .await;
+                }
+                Reply::Disconnect => {}
+                Reply::UnexpectedRequest => panic!("unexpected HTTP request"),
                 Reply::Hang => {
                     tokio::time::sleep(Duration::from_secs(300)).await;
                 }
@@ -175,11 +241,27 @@ async fn write_response(
     content_type: &str,
     body: &[u8],
 ) {
-    let head = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    write_response_with_headers(socket, status, content_type, body, body.len(), &[]).await;
+}
+
+async fn write_response_with_headers(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    declared_length: usize,
+    headers: &[(&str, &str)],
+) {
+    use std::fmt::Write;
+
+    let mut head = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {declared_length}\r\nConnection: close\r\n",
         reason(status),
-        body.len(),
     );
+    for (name, value) in headers {
+        write!(&mut head, "{name}: {value}\r\n").unwrap();
+    }
+    head.push_str("\r\n");
     socket.write_all(head.as_bytes()).await.unwrap();
     socket.write_all(body).await.unwrap();
     socket.flush().await.unwrap();
@@ -989,4 +1071,308 @@ async fn deepseek_tools_rejects_illegal_fetch_urls_without_dispatching() {
     }
     server.assert_no_request().await;
     server.abort();
+}
+
+const UPLOAD_NOW: i64 = 1_700_000_000;
+
+async fn upload_fixture(reply: Reply) -> MockServer {
+    mock_server_sequence(vec![reply, Reply::UnexpectedRequest]).await
+}
+
+async fn attempt_upload(
+    server: &MockServer,
+    media_type: &str,
+    model_headers: &HashMap<String, String>,
+) -> Result<Option<UploadedFile>, FileUploadFailure> {
+    let endpoint = endpoint(server.base_url(), Some("fixture-upload-credential"));
+    let client = reqwest::Client::builder()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let bytes: Arc<[u8]> = Arc::from(&b"plain text fixture"[..]);
+    let input = AttachmentInput {
+        attachment_id: "fixture-file".into(),
+        modality: AttachmentModality::File,
+        media_type: media_type.into(),
+        filename: Some("upload.txt".into()),
+        source: AttachmentSource::Bytes {
+            bytes: bytes.clone(),
+        },
+    };
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        upload_file(FileUploadRequest {
+            client: &client,
+            endpoint: &endpoint,
+            model_headers,
+            input: &input,
+            bytes: &bytes,
+            now: UPLOAD_NOW,
+        }),
+    )
+    .await
+    .expect("upload completes against loopback")
+}
+
+fn failed_upload(result: Result<Option<UploadedFile>, FileUploadFailure>) -> FileUploadFailure {
+    match result {
+        Err(failure) => failure,
+        Ok(_) => panic!("expected an upload failure"),
+    }
+}
+
+fn has_reqwest_cause(error: &dyn Error) -> bool {
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        if error.is::<reqwest::Error>() {
+            return true;
+        }
+        cause = error.source();
+    }
+    false
+}
+
+#[tokio::test]
+async fn upload_http_failure_retains_the_typed_cause_and_separate_submission_outcome() {
+    for (status, body, extra_declared_bytes, outcome, kind) in [
+        (
+            429,
+            r#"{"error":{"code":"fixture-rate-limit","type":"fixture-upload-credential","message":"echo fixture-upload-credential"}}"#,
+            0,
+            UploadFailureOutcome::Rejected,
+            Kind::RateLimit,
+        ),
+        (503, "", 0, UploadFailureOutcome::Unknown, Kind::ServiceBusy),
+        (
+            429,
+            r#"{"error":{"code":"fixture-rate-limit","type":"fixture-upload-credential","message":"echo fixture-upload-credential"}}"#,
+            40,
+            UploadFailureOutcome::Unknown,
+            Kind::RateLimit,
+        ),
+        (
+            503,
+            r#"{"error": {"#,
+            40,
+            UploadFailureOutcome::Unknown,
+            Kind::ServiceBusy,
+        ),
+    ] {
+        let server = upload_fixture(Reply::Upload {
+            status,
+            body,
+            extra_declared_bytes,
+            headers: &[
+                ("x-request-id", "fixture-upload-request"),
+                ("retry-after-ms", "127"),
+            ],
+        })
+        .await;
+        let failure = failed_upload(attempt_upload(&server, "text/plain", &HashMap::new()).await);
+        assert_eq!(
+            failure.outcome, outcome,
+            "HTTP {status}, extra bytes {extra_declared_bytes}"
+        );
+        let provider = failure.source.provider_failure_ref().unwrap();
+        assert_eq!(provider.kind, kind);
+        assert_eq!(provider.http_status, Some(status));
+        assert_eq!(provider.context.stage, ProviderFailureStage::Attachment);
+        assert_eq!(
+            provider.context.request_id.as_deref(),
+            Some("fixture-upload-request")
+        );
+        assert!(provider.retry.is_retryable());
+        assert_eq!(provider.retry.retry_after_ms(), Some(127));
+        assert!(provider.retry_deadline().is_some());
+        assert_eq!(has_reqwest_cause(&failure), extra_declared_bytes != 0);
+        if status == 429 && extra_declared_bytes == 0 {
+            assert_eq!(provider.code.as_deref(), Some("fixture-rate-limit"));
+            assert_eq!(
+                provider.error_type.as_deref(),
+                Some("[REDACTED_CREDENTIAL]")
+            );
+            assert_eq!(provider.message, "echo [REDACTED_CREDENTIAL]");
+        }
+        assert!(!format!("{failure:?} {failure}").contains("fixture-upload-credential"));
+        assert!(
+            !serde_json::to_string(provider)
+                .unwrap()
+                .contains("fixture-upload-credential")
+        );
+        server.finish_upload(true).await;
+    }
+}
+
+#[tokio::test]
+async fn upload_response_without_a_trustworthy_file_id_leaves_submission_unknown() {
+    for (reply, kind, retryable, typed_cause) in [
+        (Reply::Disconnect, Kind::Transport, true, true),
+        (
+            Reply::Raw {
+                status: 200,
+                content_type: "application/json",
+                body: b"{invalid JSON}".to_vec(),
+            },
+            Kind::Protocol,
+            false,
+            true,
+        ),
+        (
+            Reply::Json {
+                status: 200,
+                body: json!({"id":""}),
+            },
+            Kind::Protocol,
+            false,
+            false,
+        ),
+    ] {
+        let server = upload_fixture(reply).await;
+        let failure = failed_upload(attempt_upload(&server, "text/plain", &HashMap::new()).await);
+        assert_eq!(failure.outcome, UploadFailureOutcome::Unknown);
+        let provider = failure.source.provider_failure_ref().unwrap();
+        assert_eq!(provider.kind, kind);
+        assert_eq!(provider.context.stage, ProviderFailureStage::Attachment);
+        assert_eq!(provider.retry.is_retryable(), retryable);
+        assert_eq!(has_reqwest_cause(&failure), typed_cause);
+        server.finish_upload(true).await;
+    }
+}
+
+#[tokio::test]
+async fn upload_rejects_invalid_media_type_and_headers_before_posting() {
+    let server = mock_server(Reply::UnexpectedRequest).await;
+    let invalid_media =
+        failed_upload(attempt_upload(&server, "not a MIME type", &HashMap::new()).await);
+    assert_eq!(invalid_media.outcome, UploadFailureOutcome::Rejected);
+    assert!(has_reqwest_cause(&invalid_media));
+
+    let headers = HashMap::from([("bad\nheader".into(), "ignored".into())]);
+    let invalid_header = failed_upload(attempt_upload(&server, "text/plain", &headers).await);
+    assert_eq!(invalid_header.outcome, UploadFailureOutcome::Rejected);
+    assert!(matches!(
+        invalid_header.source,
+        pl_protocol::PureError::ConfigError(_)
+    ));
+    server.finish_upload(false).await;
+}
+
+#[tokio::test]
+async fn upload_preserves_file_id_and_lease_and_recognizes_unsupported_endpoints() {
+    for (body, expires_at) in [
+        (
+            json!({"id":"file-ok","expires_at":UPLOAD_NOW + 900}),
+            UPLOAD_NOW + 900,
+        ),
+        (json!({"id":"file-ok"}), UPLOAD_NOW + 86_400),
+    ] {
+        let server = upload_fixture(Reply::Json { status: 201, body }).await;
+        let file = attempt_upload(&server, "text/plain", &HashMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(file.id, "file-ok");
+        assert_eq!(file.expires_at, expires_at);
+        server.finish_upload(true).await;
+    }
+
+    for status in [404, 405, 501] {
+        let server = upload_fixture(Reply::Json {
+            status,
+            body: json!({}),
+        })
+        .await;
+        assert!(
+            attempt_upload(&server, "text/plain", &HashMap::new())
+                .await
+                .unwrap()
+                .is_none(),
+            "HTTP {status}"
+        );
+        server.finish_upload(true).await;
+    }
+}
+
+#[tokio::test]
+async fn upload_truncated_unsupported_status_does_not_allow_fallback() {
+    let mut accepted = Vec::new();
+    for status in [404, 405, 501] {
+        let server = upload_fixture(Reply::Upload {
+            status,
+            body: "{}",
+            headers: &[],
+            extra_declared_bytes: 40,
+        })
+        .await;
+        let result = attempt_upload(&server, "text/plain", &HashMap::new()).await;
+        server.finish_upload(true).await;
+        match result {
+            Ok(_) => accepted.push(status),
+            Err(failure) => {
+                assert_eq!(
+                    failure.outcome,
+                    UploadFailureOutcome::Unknown,
+                    "HTTP {status}"
+                );
+                let provider = failure.source.provider_failure_ref().unwrap();
+                assert_eq!(provider.http_status, Some(status));
+                assert_eq!(provider.context.stage, ProviderFailureStage::Attachment);
+                assert!(
+                    has_reqwest_cause(&failure),
+                    "HTTP {status} lost the body read error"
+                );
+            }
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "truncated HTTP responses allowed fallback: {accepted:?}"
+    );
+}
+
+#[tokio::test]
+async fn upload_truncated_error_retains_the_error_envelope_decode_cause() {
+    use pl_model_wire::provider_error::ErrorDecodeError;
+
+    let server = upload_fixture(Reply::Upload {
+        status: 429,
+        body: r#"{"error":42}"#,
+        headers: &[("retry-after-ms", "127")],
+        extra_declared_bytes: 40,
+    })
+    .await;
+    let failure = failed_upload(attempt_upload(&server, "text/plain", &HashMap::new()).await);
+    server.finish_upload(true).await;
+    assert_eq!(failure.outcome, UploadFailureOutcome::Unknown);
+    let provider = failure.source.provider_failure_ref().unwrap();
+    assert_eq!(provider.kind, Kind::Protocol);
+    assert_eq!(provider.http_status, Some(429));
+    assert!(!provider.retry.is_retryable());
+    assert_eq!(provider.reported_wait_ms, Some(127));
+    assert!(provider.retry_deadline().is_some());
+    assert!(
+        matches!(
+            provider
+                .source()
+                .and_then(|cause| cause.downcast_ref::<ErrorDecodeError>()),
+            Some(ErrorDecodeError::Structure("error must be an object")),
+        ),
+        "the first source must be the envelope decode error, got {:?}",
+        provider.source()
+    );
+    let mut causes = provider.sources();
+    assert_eq!(
+        causes.len(),
+        2,
+        "one decode cause and one independent read cause"
+    );
+    assert!(matches!(
+        causes.next().unwrap().downcast_ref::<ErrorDecodeError>(),
+        Some(ErrorDecodeError::Structure("error must be an object")),
+    ));
+    assert!(
+        has_reqwest_cause(causes.next().unwrap()),
+        "the independent read cause must retain its reqwest error chain"
+    );
 }

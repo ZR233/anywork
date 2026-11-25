@@ -307,6 +307,7 @@ impl ModelSession for WaitingModel {
         Ok(PreparedModelCall::new(async move {
             request.cancellation.cancelled().await;
             Err(ModelError {
+                context_recovery: None,
                 details: None,
                 kind: pl_core::model::ModelFailureKind::Cancelled,
                 usage: Default::default(),

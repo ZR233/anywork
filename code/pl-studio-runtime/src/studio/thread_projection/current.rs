@@ -304,6 +304,7 @@ impl CurrentOwner {
                     tool: atom.tool.clone(),
                     wait: atom.wait.clone(),
                     text_channel: atom.text_channel,
+                    model_recovery: atom.model_recovery.clone(),
                     started_at: atom.started_at,
                     finished_at: atom.finished_at,
                     content_present: atom.content_present,
@@ -835,6 +836,7 @@ fn paused_tool_atom(
         tool: Some(ChatToolIdentity { call_id, name }),
         wait: None,
         text_channel: None,
+        model_recovery: None,
         started_at: None,
         finished_at: None,
         content_present: None,
@@ -911,45 +913,88 @@ impl CurrentState {
                 stream.attempt_id == call.source_attempt_id,
                 "saved stream attempt differs"
             );
-            for part in stream.content_parts {
-                let observed = pl_core::model::ObservedPart::new(part.identity);
-                let Some((id, key, shape)) = super::observation_parts::observation_preview(
-                    &call.source_attempt_id,
-                    stream.generation,
-                    &observed,
-                    &ThreadContentLifecycle::streaming(),
-                ) else {
-                    continue;
-                };
-                let item = crate::ExecutionItem::new(
-                    id.clone(),
-                    crate::ItemStamp {
-                        thread_id: std::borrow::Cow::Owned(saved.thread_id.clone()),
-                        turn_id: std::borrow::Cow::Owned(call.source_turn_id.clone()),
-                        ordinal: 0,
-                        revision: 0,
-                        created_at: 0,
-                        updated_at: 0,
-                    },
-                    shape,
+            use pl_model::completion::stream::current::ModelStreamCurrentState;
+            for generation in stream
+                .previous_generations
+                .iter()
+                .chain(std::iter::once(&stream))
+            {
+                ensure!(
+                    generation.attempt_id == call.source_attempt_id,
+                    "saved recovery generation belongs to another attempt"
                 );
-                let mut atom = crate::studio::runtime::chat_item::atom(&item);
-                atom.attempt_id = Some(call.source_attempt_id.clone());
-                atom.lifecycle = ChatAtomLifecycle::Active {
-                    started: None,
-                    status: ChatActiveStatus::Waiting,
+                let settlement = generation
+                    .settlement
+                    .as_ref()
+                    .map(|payload| {
+                        let receipt = pl_model::runtime::model_saved_sub_attempt_receipt(payload)?;
+                        ensure!(
+                            receipt.turn_id.as_ref() == Some(&call.source_turn_id)
+                                && receipt.attempt_id == call.source_attempt_id
+                                && receipt.generation == generation.generation,
+                            "saved settlement differs from its model call"
+                        );
+                        Ok::<_, anyhow::Error>(receipt)
+                    })
+                    .transpose()?;
+                let stopped_at = settlement
+                    .as_ref()
+                    .map_or(0, |receipt| receipt.billing.recorded_at);
+                let lifecycle = match &generation.state {
+                    ModelStreamCurrentState::Failed { message } => {
+                        ThreadContentLifecycle::failed(stopped_at, message.clone())
+                    }
+                    ModelStreamCurrentState::Completed => {
+                        ThreadContentLifecycle::completed(stopped_at)
+                    }
+                    ModelStreamCurrentState::Open => ThreadContentLifecycle::streaming(),
                 };
-                atom.content_present = Some(!part.text.is_empty());
-                active.push(ActiveTextPart::new(
-                    id,
-                    key,
-                    ContentBlock::from_text(&part.text),
-                    atom.text_channel,
-                    None,
-                ));
-                atoms.push(atom);
+                for part in &generation.content_parts {
+                    let observed = pl_core::model::ObservedPart::new(part.identity.clone());
+                    let Some((id, key, shape)) = super::observation_parts::observation_preview(
+                        &call.source_attempt_id,
+                        generation.generation,
+                        &observed,
+                        &lifecycle,
+                    ) else {
+                        continue;
+                    };
+                    let item = crate::ExecutionItem::new(
+                        id.clone(),
+                        crate::ItemStamp {
+                            thread_id: std::borrow::Cow::Owned(saved.thread_id.clone()),
+                            turn_id: std::borrow::Cow::Owned(call.source_turn_id.clone()),
+                            ordinal: 0,
+                            revision: 0,
+                            created_at: 0,
+                            updated_at: 0,
+                        },
+                        shape,
+                    );
+                    let mut atom = crate::studio::runtime::chat_item::atom(&item);
+                    atom.attempt_id = Some(call.source_attempt_id.clone());
+                    if matches!(generation.state, ModelStreamCurrentState::Open) {
+                        atom.lifecycle = ChatAtomLifecycle::Active {
+                            started: None,
+                            status: ChatActiveStatus::Waiting,
+                        };
+                    }
+                    atom.content_present = Some(!part.text.is_empty());
+                    active.push(ActiveTextPart::new(
+                        id,
+                        key,
+                        ContentBlock::from_text(&part.text),
+                        atom.text_channel,
+                        None,
+                    ));
+                    atoms.push(atom);
+                }
             }
-            for input in stream.tool_inputs {
+            for input in stream
+                .tool_inputs
+                .into_iter()
+                .filter(|_| matches!(stream.state, ModelStreamCurrentState::Open))
+            {
                 let id = super::order::tool_id(&input.call_id);
                 active.push(ActiveTextPart::new(
                     id.clone(),
@@ -1082,6 +1127,86 @@ pub(in crate::studio) fn project_business_refs(
 mod tests {
     use super::*;
     use anyhow::Context;
+
+    #[test]
+    fn recovery_metadata_is_shared_by_current_and_saved_text() -> Result<()> {
+        use crate::history::{HistoryEvent, HistoryEventKind, HistoryTimelineRole};
+        use crate::studio::runtime::chat_item::{atom, build_event_from_draft, completion_draft};
+
+        let mut failure = TurnFailure::permanent(TurnFailureCategory::Provider, "rate limited");
+        failure.provider_kind = Some(ProviderFailureKind::RateLimit);
+        failure.request_id = Some("request".into());
+        failure.retry = RetryDisposition::Retryable {
+            retry_after_ms: Some(u64::MAX),
+        };
+        let notice = ModelRecoveryNotice {
+            failure_kind: Some(ProviderFailureKind::RateLimit),
+            reason: Some(ProviderRecovery::None),
+            retry_count: 2,
+            max_retries: 5,
+            effective_wait_millis: Some(u64::MAX),
+            phase: ModelRecoveryPhase::Waiting,
+            failure: Some(failure),
+        };
+        let item = ExecutionItem::new(
+            "recovery".into(),
+            ItemStamp {
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                ordinal: 1,
+                revision: 1,
+                created_at: 10,
+                updated_at: 11,
+            },
+            ExecutionShape::Text(
+                ThreadTextItem::new(
+                    ThreadTextChannel::Commentary,
+                    "rate limited".into(),
+                    Vec::new(),
+                    ThreadContentLifecycle::completed(11),
+                )
+                .with_model_recovery(Some(notice.clone())),
+            ),
+        );
+        let atom = atom(&item);
+        let mut owner = CurrentOwner::default();
+        owner.bind("database".into())?;
+        owner.provenance(Vec::new(), vec![atom.clone()]);
+        let current = owner.observe(
+            &Thread::placeholder("thread"),
+            &ThreadSnapshot::default(),
+            7,
+            [],
+        )?;
+        let current_atom = &current.projection().atoms[0];
+        assert_eq!(current_atom.model_recovery.as_ref(), Some(&notice));
+        let current_json = serde_json::to_value(current_atom)?;
+        let expected = &current_json["modelRecovery"];
+        assert_eq!(expected["retryCount"], 2);
+        assert_eq!(expected["effectiveWaitMillis"], "18446744073709551615");
+        assert_eq!(
+            expected["failure"]["retry"]["retryAfterMs"],
+            "18446744073709551615"
+        );
+        assert_eq!(expected["failure"]["requestId"], "request");
+        assert_eq!(
+            serde_json::from_value::<CurrentAtom>(current_json.clone())?,
+            *current_atom
+        );
+
+        let draft = completion_draft(&item, 7, "database", None)?;
+        let mut event = HistoryEvent::new(
+            "recovery",
+            HistoryEventKind::TextCompleted,
+            HistoryTimelineRole::Boundary,
+            11_000,
+        );
+        build_event_from_draft(&mut event, &atom, &draft, "database", Vec::new())?;
+        let payload: serde_json::Value = serde_json::from_str(&event.payload_json)?;
+        assert_eq!(&payload["meta"]["modelRecovery"], expected);
+        assert_eq!(&payload["data"]["modelRecovery"], expected);
+        Ok(())
+    }
 
     #[test]
     fn large_current_atoms_page_without_truncation_and_only_metadata_changes_expire_the_collection()

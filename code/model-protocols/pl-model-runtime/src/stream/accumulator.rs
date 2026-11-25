@@ -65,7 +65,7 @@ pub(crate) struct StreamCompletionAccumulator {
     tool_output_bytes: HashMap<String, usize>,
     tool_stream: ToolStream,
     lifecycle: StreamLifecycle,
-    final_usage: Option<UsageReport>,
+    latest_usage: Option<(UsageReport, bool)>,
     response_id: Option<String>,
     model_observation: Option<InferenceModelObservation>,
     reported_model_is_terminal: bool,
@@ -98,6 +98,7 @@ impl StreamCompletionAccumulator {
             }
         }
         ModelStreamCurrent {
+            settlement: None,
             attempt_id: attempt_id.into(),
             generation,
             previous_generations: Vec::new(),
@@ -149,8 +150,8 @@ impl StreamCompletionAccumulator {
                 .iter()
                 .map(|(id, state)| (id.clone(), *state))
                 .collect(),
-            final_usage: self.final_usage.clone(),
-            usage_is_terminal: matches!(self.state, ModelStreamCurrentState::Completed),
+            final_usage: self.latest_usage.as_ref().map(|(usage, _)| usage.clone()),
+            usage_is_terminal: self.usage_is_terminal(),
         }
     }
 
@@ -178,7 +179,7 @@ impl StreamCompletionAccumulator {
             tool_output_bytes: HashMap::new(),
             tool_stream: ToolStream::new(),
             lifecycle: StreamLifecycle::new(),
-            final_usage: None,
+            latest_usage: None,
             response_id: None,
             model_observation,
             reported_model_is_terminal: false,
@@ -493,8 +494,8 @@ impl StreamCompletionAccumulator {
             ModelStreamEvent::Replay(update) => self.replay.apply(update)?,
             ModelStreamEvent::WebSearchStarted { .. } => {}
             ModelStreamEvent::WebSearchCompleted { .. } => {}
-            ModelStreamEvent::Usage(usage) => {
-                self.final_usage = Some(usage);
+            ModelStreamEvent::Usage { usage, terminal } => {
+                self.latest_usage = Some((usage, terminal));
             }
             ModelStreamEvent::Completed { response_id } => {
                 for mut call in self.tool_stream.finish_all(&self.tool_calls)? {
@@ -511,11 +512,10 @@ impl StreamCompletionAccumulator {
                 self.state = ModelStreamCurrentState::Completed;
             }
             ModelStreamEvent::Failed { failure } => {
-                let error = PureError::provider_failure(failure);
                 self.state = ModelStreamCurrentState::Failed {
-                    message: error.to_string(),
+                    message: failure.message.clone(),
                 };
-                return Err(error);
+                return Err(failure.into());
             }
             ModelStreamEvent::ResponseStarted { response_id } => {
                 if self.response_id.is_none() {
@@ -868,9 +868,13 @@ impl StreamCompletionAccumulator {
 
     fn finish_inner(&mut self) -> Result<CompletionResponse> {
         let terminal_error = match &self.state {
-            ModelStreamCurrentState::Open => Some(PureError::transient_model_transport(
-                "provider stream ended before completion",
-            )),
+            ModelStreamCurrentState::Open => Some(
+                pl_model_wire::provider_error::transport_failure(
+                    pl_protocol::ProviderFailureStage::Stream,
+                    "provider stream ended before completion",
+                )
+                .into(),
+            ),
             ModelStreamCurrentState::Completed => None,
             ModelStreamCurrentState::Failed { message } => {
                 Some(PureError::LlmError(message.to_string()))
@@ -937,7 +941,9 @@ impl StreamCompletionAccumulator {
                 self.record_presentation_item(item)?;
             }
         }
+        let (usage, usage_is_terminal) = self.latest_usage.take().unwrap_or_default();
         let mut response = CompletionResponse {
+            settlements: Vec::new(),
             response_id: self.response_id.take(),
             content,
             replay,
@@ -948,9 +954,10 @@ impl StreamCompletionAccumulator {
             orchestration,
             timing: None,
             accounting: crate::model::InferenceAccounting {
-                usage: self.final_usage.take().unwrap_or_default(),
+                usage,
                 ..Default::default()
             },
+            usage_is_terminal,
             model,
             model_observation: self.model_observation.take(),
             observation: Default::default(),
@@ -1014,9 +1021,19 @@ impl StreamCompletionAccumulator {
 
     pub(super) fn accounting(&self) -> crate::model::InferenceAccounting {
         crate::model::InferenceAccounting {
-            usage: self.final_usage.clone().unwrap_or_default(),
+            usage: self
+                .latest_usage
+                .as_ref()
+                .map(|(usage, _)| usage.clone())
+                .unwrap_or_default(),
             ..Default::default()
         }
+    }
+
+    pub(super) fn usage_is_terminal(&self) -> bool {
+        self.latest_usage
+            .as_ref()
+            .is_some_and(|(_, terminal)| *terminal)
     }
 
     pub(crate) fn fail_attempt(&mut self, error: &PureError) {
@@ -1296,16 +1313,39 @@ mod test_support {
 mod current_tests {
     use super::test_support::apply_event;
     use super::*;
-    use crate::runtime::openai::sse::OpenAiStreamDecoder;
-    use pl_model_wire::wire_codec::VisibleOutputProtocol;
+    use pl_model_openai_wire::OPENAI_WIRE_CODEC;
+    use pl_model_wire::protocol::WireApi;
+    use pl_model_wire::provider_error::{
+        ErrorObservedAt, ProviderErrorContext, ProviderErrorEntry, StreamFrameContext,
+    };
+    use pl_model_wire::wire_codec::{WireCodec, WireStreamDecoder};
     use serde_json::json;
 
     fn feed(
         acc: &mut StreamCompletionAccumulator,
-        decoder: &mut OpenAiStreamDecoder,
+        decoder: &mut Box<dyn WireStreamDecoder>,
         wire: serde_json::Value,
     ) {
-        for event in decoder.decode(&serde_json::from_value(wire).unwrap()) {
+        let context = StreamFrameContext {
+            policy: pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
+            entry: ProviderErrorEntry::Sse,
+            event_name: None,
+            wire_api: WireApi::Responses,
+            endpoint: None,
+            failure: ProviderErrorContext {
+                stage: pl_protocol::ProviderFailureStage::Stream,
+                request_id: None,
+                http_status: None,
+                observed_at: ErrorObservedAt::now(),
+                header_retry: Default::default(),
+                redact: &str::to_owned,
+            },
+        };
+        for event in decoder
+            .decode_frame(&wire.to_string(), &context)
+            .unwrap()
+            .events
+        {
             apply_event(acc, event).unwrap();
         }
     }
@@ -1359,7 +1399,7 @@ mod current_tests {
     #[test]
     fn native_block_metadata_does_not_spend_presentation_budget_twice() {
         let mut acc = StreamCompletionAccumulator::new(None);
-        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+        let mut decoder = OPENAI_WIRE_CODEC.new_stream_decoder(WireApi::Responses);
         // Native replay and completed presentation each already have their own 16 MiB ceiling.
         // Charging this raw item again as block metadata used to reject this valid response.
         let text = "s".repeat(MAX_OUTPUT_BYTES / 2 + 4096);
@@ -1465,7 +1505,7 @@ mod current_tests {
     #[test]
     fn producer_current_keeps_open_commentary_reasoning_and_inert_partial_input() {
         let mut acc = StreamCompletionAccumulator::new(None);
-        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+        let mut decoder = OPENAI_WIRE_CODEC.new_stream_decoder(WireApi::Responses);
         let commentary = "untrimmed commentary ".repeat(1024);
         feed(
             &mut acc,
@@ -1541,10 +1581,13 @@ mod current_tests {
 
         apply_event(
             &mut acc,
-            ModelStreamEvent::Usage(UsageReport {
-                output_tokens: Some(17),
-                ..Default::default()
-            }),
+            ModelStreamEvent::Usage {
+                usage: UsageReport {
+                    output_tokens: Some(17),
+                    ..Default::default()
+                },
+                terminal: false,
+            },
         )
         .unwrap();
 
@@ -1618,9 +1661,33 @@ mod current_tests {
     }
 
     #[test]
+    fn latest_usage_replaces_both_the_cumulative_sample_and_its_terminal_marker() {
+        let mut acc = StreamCompletionAccumulator::new(None);
+        for (output_tokens, terminal) in [(2, true), (3, false)] {
+            apply_event(
+                &mut acc,
+                ModelStreamEvent::Usage {
+                    usage: UsageReport {
+                        output_tokens: Some(output_tokens),
+                        ..Default::default()
+                    },
+                    terminal,
+                },
+            )
+            .unwrap();
+            let snapshot = snapshot(&acc);
+            assert_eq!(
+                snapshot.final_usage.unwrap().output_tokens,
+                Some(output_tokens)
+            );
+            assert_eq!(snapshot.usage_is_terminal, terminal);
+        }
+    }
+
+    #[test]
     fn producer_current_preserves_late_tool_aliases_and_completed_native_replay() {
         let mut acc = StreamCompletionAccumulator::new(None);
-        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+        let mut decoder = OPENAI_WIRE_CODEC.new_stream_decoder(WireApi::Responses);
         feed(
             &mut acc,
             &mut decoder,
@@ -1663,6 +1730,7 @@ mod current_tests {
         let saved = snapshot(&acc);
         assert_eq!(saved.state, ModelStreamCurrentState::Completed);
         assert!(saved.usage_is_terminal);
+        assert_eq!(saved.final_usage.unwrap().output_tokens, Some(3));
         assert!(saved.tool_inputs.is_empty());
         assert_eq!(saved.tool_calls[0].call_id, "call_0");
         assert_eq!(saved.call_bindings[0].provider_item_id, "late-item");

@@ -204,6 +204,7 @@ fn descriptor(
             channel: text.channel(),
             attachments: text.attachments().to_vec(),
             outcome: content_outcome(text.lifecycle())?,
+            model_recovery: text.model_recovery().cloned(),
         }),
         ExecutionShape::Thinking(thinking) => ItemDescriptor::Thinking(ThinkingDescriptor {
             outcome: content_outcome(thinking.lifecycle())?,

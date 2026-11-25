@@ -20,12 +20,13 @@ pub use current::{
     ModelCurrentCaptureRequest,
 };
 pub(crate) use member::{
-    AdmittedPart, MemberFact, MemberRegistry, ModelMemberAdmission, StartedKey,
-    encoded_member_bytes, same_started_identity,
+    AdmittedPart, AdmittedSettlement, MemberCharge, MemberFact, MemberRegistry,
+    ModelMemberAdmission, StartedKey, encoded_member_bytes, same_started_identity,
 };
 pub use member::{
     ModelCompletedMember, ModelConnectionEvent, ModelConnectionEventKind, ModelConnectionFact,
     ModelContentAvailableMember, ModelMemberError, ModelMemberSender, ModelStartedMember,
+    ModelSubAttemptSettlement,
 };
 
 /// Factory for independent Thread sessions. Clients may share pools, but never mutable history.
@@ -1228,12 +1229,19 @@ pub struct FailedModelObservation {
     pub generation: u32,
     pub parts: ModelParts,
     pub message: Arc<str>,
+    /// A request preparation failure had no inference output in this generation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preparation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<OpaquePayload>,
 }
 
 /// Provider-neutral recovery phase; only the adapter owns replay policy and retries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelRecoveryPhase {
+    Repairing,
+    Waiting,
     Retrying,
     Recovered,
     Exhausted,
@@ -2044,37 +2052,132 @@ impl ModelProgressSender {
         max_retries: u32,
         message: Arc<str>,
     ) -> Result<(), ModelObservationLimit> {
+        let latest = self.latest();
+        let observation = latest.observation();
+        let retry = observation
+            .recovery
+            .map_or(observation.generation, |status| status.retry)
+            .saturating_add(1);
+        self.stage_recovery(
+            max_retries,
+            retry,
+            message,
+            None,
+            ModelRecoveryPhase::Waiting,
+        )?;
+        self.start_recovery_send();
+        Ok(())
+    }
+
+    /// Records the failed generation and actual recovery phase before any new transport attempt.
+    pub fn stage_recovery(
+        &self,
+        max_retries: u32,
+        retry: u32,
+        message: Arc<str>,
+        recovery: Option<OpaquePayload>,
+        phase: ModelRecoveryPhase,
+    ) -> Result<(), ModelObservationLimit> {
+        self.stage_recovery_inner(max_retries, retry, message, recovery, phase, false)
+    }
+
+    /// Records a failed preparation at the current generation without retiring inference parts.
+    pub fn stage_preparation_recovery(
+        &self,
+        max_retries: u32,
+        retry: u32,
+        message: Arc<str>,
+        recovery: Option<OpaquePayload>,
+        phase: ModelRecoveryPhase,
+    ) -> Result<(), ModelObservationLimit> {
+        self.stage_recovery_inner(max_retries, retry, message, recovery, phase, true)
+    }
+
+    fn stage_recovery_inner(
+        &self,
+        max_retries: u32,
+        retry: u32,
+        message: Arc<str>,
+        recovery: Option<OpaquePayload>,
+        phase: ModelRecoveryPhase,
+        preparation: bool,
+    ) -> Result<(), ModelObservationLimit> {
         let mut result = Ok(());
         self.sender.send_modify(|progress| {
             let observation = &mut progress.observation;
             // A producer chooses its own retry policy, within a fixed resident metadata bound.
-            if max_retries > 32 || observation.generation >= max_retries {
+            if max_retries > 32
+                || retry == 0
+                || retry > max_retries
+                || observation.generation >= max_retries
+                || observation
+                    .recovery
+                    .is_some_and(|status| retry <= status.retry)
+                || (!preparation
+                    && observation.failed.iter().any(|failed| {
+                        !failed.preparation && failed.generation == observation.generation
+                    }))
+                || !matches!(
+                    phase,
+                    ModelRecoveryPhase::Repairing | ModelRecoveryPhase::Waiting
+                )
+            {
                 result = Err(ModelObservationLimit);
                 return;
             }
             observation.failed.push(FailedModelObservation {
                 generation: observation.generation,
-                parts: std::mem::take(&mut progress.parts),
+                parts: if preparation {
+                    ModelParts::default()
+                } else {
+                    std::mem::take(&mut progress.parts)
+                },
                 message,
+                preparation,
+                recovery,
             });
-            observation.generation += 1;
             observation.recovery = Some(ModelRecoveryStatus {
-                phase: ModelRecoveryPhase::Retrying,
-                retry: observation.generation,
+                phase,
+                retry,
                 max_retries,
             });
-            // 新代次从自己的单调时钟起点重新计时；旧代次的用量与时延不得参与新样本。
-            if let Some(usage) = progress.usage.as_mut() {
-                usage.begin_next_generation();
-            }
-            // 新代次重新拥有自己的 live 计时与用量：上一代次被撤销的测量不阻止它发布。
-            progress.usage_closed = false;
             progress.version = progress.version.saturating_add(1);
         });
         result
     }
 
-    /// Updates terminal recovery state without resetting failed observations or the generation.
+    /// Starts inference after recovery, advancing the generation if inference was abandoned.
+    pub fn start_recovery_send(&self) {
+        self.sender.send_if_modified(|progress| {
+            let observation = &mut progress.observation;
+            let Some(status) = observation.recovery.as_mut() else {
+                return false;
+            };
+            if !matches!(
+                status.phase,
+                ModelRecoveryPhase::Waiting | ModelRecoveryPhase::Repairing
+            ) {
+                return false;
+            }
+            status.phase = ModelRecoveryPhase::Retrying;
+            if observation
+                .failed
+                .iter()
+                .any(|failed| !failed.preparation && failed.generation == observation.generation)
+            {
+                observation.generation += 1;
+                // 新代次的响应时延与用量独立测量。
+                if let Some(usage) = progress.usage.as_mut() {
+                    usage.begin_next_generation();
+                }
+                progress.usage_closed = false;
+            }
+            progress.version = progress.version.saturating_add(1);
+            true
+        });
+    }
+
+    /// Updates the current recovery phase without changing the failed observations or generation.
     pub fn finish_recovery(&self, phase: ModelRecoveryPhase) {
         self.sender.send_if_modified(|progress| {
             let Some(status) = &mut progress.observation.recovery else {
@@ -2413,12 +2516,58 @@ pub struct ModelFailureFacts {
     pub kind: ModelFailureKind,
     pub details: Option<Box<OpaquePayload>>,
     pub usage: Box<ModelUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair: Option<ModelRepairFailure>,
+}
+
+/// Failure of the attempted context repair, independent of the original model failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ModelRepairFailure {
+    InvalidContext,
+    Execution { description: String },
+    Storage { description: String },
+    Preparation { description: String },
+}
+
+impl ModelRepairFailure {
+    pub(crate) fn from_error(error: &crate::thread::ThreadError) -> Self {
+        use crate::thread::ThreadError;
+        match error {
+            ThreadError::InvalidContext => Self::InvalidContext,
+            ThreadError::Model(_) => Self::Execution {
+                description: error.to_string(),
+            },
+            ThreadError::Storage(_) | ThreadError::StoragePressure => Self::Storage {
+                description: error.to_string(),
+            },
+            _ => Self::Preparation {
+                description: error.to_string(),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for ModelRepairFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidContext => {
+                formatter.write_str("context compaction did not produce a shorter replacement")
+            }
+            Self::Execution { description }
+            | Self::Storage { description }
+            | Self::Preparation { description } => formatter.write_str(description),
+        }
+    }
 }
 
 /// Invocation failure with usage observed before termination.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelError {
+    /// Runtime-only, single-use permission. History still records the failure facts alone.
+    #[serde(skip)]
+    pub context_recovery: Option<Box<ModelContextRecovery>>,
     /// Producer-owned facts observed on failure, including optional accounting or protocol material.
     #[serde(default)]
     pub details: Option<Box<OpaquePayload>>,
@@ -2430,6 +2579,72 @@ pub struct ModelError {
     #[serde(default)]
     #[serde(with = "crate::error_record::optional")]
     pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
+}
+
+/// Runtime-issued, single-use permission to resume a context-limited logical request.
+#[derive(Debug, Clone)]
+pub struct ModelContextRecovery {
+    thread_id: String,
+    turn_id: String,
+    attempt_id: String,
+    next_retry: u32,
+    input_bytes: usize,
+    binding: u64,
+    earliest_send: Option<std::time::Instant>,
+    consumed: Arc<AtomicBool>,
+}
+
+impl ModelContextRecovery {
+    pub(crate) fn is_consumed(&self) -> bool {
+        self.consumed.load(Ordering::Acquire)
+    }
+    pub fn new(
+        thread_id: String,
+        turn_id: String,
+        attempt_id: String,
+        next_retry: u32,
+        input_bytes: usize,
+        binding: u64,
+        earliest_send: Option<std::time::Instant>,
+    ) -> Self {
+        Self {
+            thread_id,
+            turn_id,
+            attempt_id,
+            next_retry,
+            input_bytes,
+            binding,
+            earliest_send,
+            consumed: Arc::default(),
+        }
+    }
+
+    pub(crate) fn belongs_to(&self, thread: &str, turn: &str, attempt: &str) -> bool {
+        self.thread_id == thread
+            && self.turn_id == turn
+            && self.attempt_id == attempt
+            && !self.consumed.load(Ordering::Acquire)
+    }
+
+    /// Resumes this logical request with shorter model input. Subsequent uses are refused.
+    pub fn consume(
+        &self,
+        thread: &str,
+        turn: &str,
+        input_bytes: usize,
+        binding: u64,
+    ) -> Option<(&str, u32, Option<std::time::Instant>)> {
+        if self.thread_id != thread
+            || self.turn_id != turn
+            || self.binding != binding
+            || self.next_retry == 0
+            || input_bytes >= self.input_bytes
+            || self.consumed.swap(true, Ordering::AcqRel)
+        {
+            return None;
+        }
+        Some((&self.attempt_id, self.next_retry, self.earliest_send))
+    }
 }
 
 impl std::fmt::Display for ModelError {
@@ -2455,11 +2670,13 @@ impl ModelError {
             kind: self.kind,
             details: self.details.clone(),
             usage: self.usage.clone(),
+            repair: None,
         }
     }
 
     fn from_panic(source: crate::error_record::BoundaryPanic) -> Self {
         Self {
+            context_recovery: None,
             kind: ModelFailureKind::ImplementationPanicked,
             details: None,
             usage: Box::default(),
@@ -2495,6 +2712,7 @@ impl SessionHealth {
     fn ensure_available(&self) -> Result<(), ModelError> {
         if self.poisoned.load(Ordering::Acquire) || self.closing.load(Ordering::Acquire) {
             Err(ModelError {
+                context_recovery: None,
                 details: None,
                 kind: ModelFailureKind::Unavailable,
                 usage: Box::default(),

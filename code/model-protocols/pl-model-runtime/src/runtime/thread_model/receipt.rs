@@ -12,10 +12,10 @@ use pl_core::model::{
 use serde::{Deserialize, Serialize};
 
 /// Current version of the persisted model failure receipt.
-pub const FAILURE_RECEIPT_VERSION: u32 = 5;
+pub const FAILURE_RECEIPT_VERSION: u32 = 7;
 
 /// Version of the prepared-request record owned by this crate.
-pub const REQUEST_RECEIPT_VERSION: u32 = 2;
+pub const REQUEST_RECEIPT_VERSION: u32 = 3;
 
 /// Non-secret binding facts selected before execution; diagnostic purpose is not a permission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +109,17 @@ pub struct ModelResponseReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelFailureReceipt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settlements: Vec<pl_core::context::OpaquePayload>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_stop: Option<crate::runtime::ModelRecoveryStopReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
     pub timing: Option<crate::completion::InferenceTiming>,
     #[serde(default)]
     pub provider_failure: Option<pl_protocol::ProviderFailure>,
@@ -168,19 +179,18 @@ pub(super) fn presentation_part_kind(kind: CompletionPresentationPartKind) -> Ob
     }
 }
 
-pub(super) fn failure_error(
+pub(super) fn failure_error_with_report(
     binding: ModelCallBinding,
     failure: crate::completion::CompletionFailure,
     partial_progress: Option<ModelProgress>,
+    report: crate::runtime::invocation::InvocationReport,
 ) -> ModelError {
-    // Only a typed provider code may trigger capacity recovery; arbitrary HTTP 400s and
-    // diagnostic wording remain ordinary failures. Invocation cancellation takes precedence.
     let kind = if failure.is_cancelled() {
         pl_core::model::ModelFailureKind::Cancelled
     } else if failure
         .source
         .provider_failure_ref()
-        .is_some_and(|failure| failure.code.as_deref() == Some("context_length_exceeded"))
+        .is_some_and(|failure| failure.kind == pl_protocol::ProviderFailureKind::ContextLimit)
     {
         pl_core::model::ModelFailureKind::ContextLimit
     } else {
@@ -190,7 +200,22 @@ pub(super) fn failure_error(
     let model_observation = failure.model_observation().cloned();
     let mut failure = failure;
     let receipt = ModelFailureReceipt {
-        timing: failure.timing,
+        settlements: std::mem::take(&mut failure.settlements),
+        recovery_stop: report.stop,
+        recovery_error: failure
+            .recovery_error
+            .as_ref()
+            .map(|error| match report.stop {
+                Some(crate::runtime::ModelRecoveryStopReason::SaveFailed) => {
+                    "model sub-attempt settlement could not be saved".into()
+                }
+                _ => pl_model_wire::provider_error::redact_secret_like_values(&error.to_string()),
+            }),
+        retry_count: report.retry,
+        max_retries: report
+            .retry
+            .map(|_| crate::runtime::transport_policy::MODEL_MAX_RETRIES),
+        timing: failure.timing.as_deref().copied(),
         provider_failure: failure.source.provider_failure_ref().cloned(),
         message: failure.source.to_string(),
         binding,
@@ -205,6 +230,7 @@ pub(super) fn failure_error(
     };
     let details = failure_details(&receipt);
     ModelError {
+        context_recovery: report.recovery.map(Box::new),
         kind,
         details: Some(Box::new(details)),
         usage: Box::new(usage),
@@ -218,9 +244,15 @@ pub(super) fn postprocess_failure_error(
     model_observation: Option<crate::completion::InferenceModelObservation>,
     timing: Option<crate::completion::InferenceTiming>,
     partial_progress: Option<ModelProgress>,
+    settlements: Vec<pl_core::context::OpaquePayload>,
     error: ModelError,
 ) -> ModelError {
     let receipt = ModelFailureReceipt {
+        settlements,
+        recovery_stop: None,
+        recovery_error: None,
+        retry_count: None,
+        max_retries: None,
         timing,
         provider_failure: None,
         message: error.to_string(),
@@ -232,6 +264,7 @@ pub(super) fn postprocess_failure_error(
     };
     let details = failure_details(&receipt);
     ModelError {
+        context_recovery: None,
         kind: error.kind,
         details: Some(Box::new(details)),
         usage: error.usage.clone(),
@@ -339,13 +372,7 @@ pub(super) fn request_metadata(
         reasoning: &request.reasoning,
         temperature: request.temperature,
         max_tokens: request.max_tokens,
-        requested_service_tier: match request.service_tier.as_deref() {
-            Some(id) => format!("tier:{id}"),
-            None if pl_model_wire::service_tiers::has_selectable_tier(runtime.model()) => {
-                "standard".into()
-            }
-            None => "notApplicable".into(),
-        },
+        requested_service_tier: requested_service_tier(runtime, request),
         prompt,
     })
     .map_err(|source| {
@@ -357,4 +384,17 @@ pub(super) fn request_metadata(
         content,
     )
     .map_err(|source| super::failure(pl_core::model::ModelFailureKind::UnsupportedContent, source))
+}
+
+pub(in crate::runtime) fn requested_service_tier(
+    runtime: &ModelRuntime,
+    request: &crate::completion::CompletionRequest,
+) -> String {
+    match request.service_tier.as_deref() {
+        Some(id) => format!("tier:{id}"),
+        None if pl_model_wire::service_tiers::has_selectable_tier(runtime.model()) => {
+            "standard".into()
+        }
+        None => "notApplicable".into(),
+    }
 }

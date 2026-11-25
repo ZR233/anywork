@@ -101,6 +101,11 @@ pub(super) fn failed_turn(error: &ThreadError) -> TurnState {
         description: error.to_string(),
         model_failure: match error {
             ThreadError::Model(error) => Some(Box::new(error.failure_facts())),
+            ThreadError::ModelRepair { primary, repair } => {
+                let mut facts = primary.failure_facts();
+                facts.repair = Some(crate::model::ModelRepairFailure::from_error(repair));
+                Some(Box::new(facts))
+            }
             _ => None,
         },
     }
@@ -127,7 +132,7 @@ pub(super) fn failed_turn(error: &ThreadError) -> TurnState {
 fn recoverable_continuation(error: &ThreadError) -> bool {
     match error {
         ThreadError::ModelUnavailable => true,
-        ThreadError::Model(error) => matches!(
+        ThreadError::Model(error) | ThreadError::ModelRepair { primary: error, .. } => matches!(
             error.kind,
             crate::model::ModelFailureKind::Unavailable
                 | crate::model::ModelFailureKind::ContextLimit

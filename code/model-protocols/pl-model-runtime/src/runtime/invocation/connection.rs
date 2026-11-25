@@ -1,10 +1,11 @@
 //! Connection selection and opening HTTP/SSE or Responses WebSocket streams.
-use super::{OpenAiTransport, OpenedCompletionStream};
+use super::{AttemptDispatch, OpenAiTransport, OpenedCompletionStream};
 use crate::completion::CompletionTraceContext;
 use crate::protocol::{ConnectionMode, WireApi};
 use crate::runtime::invocation_context::InvocationPurpose;
 use crate::runtime::transport_policy::RESPONSES_WEBSOCKET_IDLE_TIMEOUT;
 use crate::runtime::{ModelRuntime, ModelSession, responses_websocket, wire_capture};
+use pl_model_wire::provider_error::{ErrorPolicyBinding, ProviderErrorEntry};
 use pl_model_wire::wire_codec::PreparedHttpRequest;
 use pl_protocol::{PureError, Result};
 
@@ -39,11 +40,14 @@ impl ModelRuntime {
         session: ModelSession,
         trace: Option<CompletionTraceContext>,
         purpose: &InvocationPurpose,
+        cancellation: tokio_util::sync::CancellationToken,
+        dispatch: &AttemptDispatch<'_>,
     ) -> impl std::future::Future<Output = Result<OpenedCompletionStream>> + Send {
         let http_client = self.http_client.clone();
         let api_base = self.resolve_base_url();
         let endpoint = self.endpoint.clone();
         let codec = self.codec;
+        let error_policy = self.error_policy;
         let model_headers = match purpose {
             InvocationPurpose::Completion => self.model.extra.binding.request.headers.clone(),
             InvocationPurpose::RemoteCompaction { headers, .. } => headers.clone(),
@@ -61,13 +65,18 @@ impl ModelRuntime {
                 ));
             }
             let token = endpoint.resolve_bearer_token().await?;
+            let binding = ErrorPolicyBinding {
+                policy: error_policy,
+                wire_api,
+                endpoint: Some(&endpoint),
+            };
             if transport == OpenAiTransport::ResponsesWebSocket {
                 if wire_api != WireApi::Responses {
                     return Err(PureError::ConfigError(
                         "web_socket connection mode requires the Responses API".to_string(),
                     ));
                 }
-                let raw_stream = responses_websocket::stream_responses(
+                let opened = responses_websocket::stream_responses(
                     responses_websocket::StreamResponsesInput {
                         api_base,
                         token,
@@ -77,17 +86,19 @@ impl ModelRuntime {
                         model_session: session,
                         body: prepared.body,
                         expected_sent_model,
-                        trace: trace.clone(),
+                        trace,
+                        endpoint: &endpoint,
+                        error_policy,
+                        decoder: codec.new_stream_decoder(wire_api),
+                        visible_output: prepared.visible_output,
+                        cancellation,
+                        dispatch,
                     },
                 )
                 .await?;
                 return Ok(OpenedCompletionStream {
-                    events: crate::stream::decode_raw_event_stream(
-                        wire_api,
-                        raw_stream.stream,
-                        trace,
-                    ),
-                    sent_model: raw_stream.sent_model,
+                    events: opened.events,
+                    sent_model: opened.sent_model,
                     idle_timeout: Some(RESPONSES_WEBSOCKET_IDLE_TIMEOUT),
                 });
             }
@@ -95,13 +106,21 @@ impl ModelRuntime {
             let headers = endpoint.request_headers(token.as_deref(), &model_headers)?;
             let request = http_client
                 .post(format!("{api_base}{}", prepared.path_and_query))
-                .json(&prepared.body);
+                .json(&prepared.body)
+                .headers(headers)
+                .header("accept", "text/event-stream")
+                .build()
+                .map_err(crate::runtime::transport::reqwest_error_to_pure)?;
+            if cancellation.is_cancelled() {
+                return Err(PureError::LlmError(
+                    "model invocation cancelled before HTTP send".into(),
+                ));
+            }
+            dispatch.submitting();
             let stream = match crate::runtime::transport::sse_frames(
-                request
-                    .headers(headers)
-                    .header("accept", "text/event-stream"),
+                reqwest::RequestBuilder::from_parts(http_client, request),
                 prepared.sse_content_type,
-                Some(codec),
+                Some(binding),
             )
             .await
             {
@@ -127,6 +146,12 @@ impl ModelRuntime {
                     prepared.visible_output,
                     prepared.close_on_terminal,
                     trace,
+                    crate::stream::StreamErrorBinding {
+                        entry: ProviderErrorEntry::Sse,
+                        api: wire_api,
+                        endpoint,
+                        policy: error_policy,
+                    },
                 ),
                 sent_model: prepared.sent_model,
                 idle_timeout: None,

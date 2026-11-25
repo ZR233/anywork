@@ -43,6 +43,16 @@ async fn stalled_authentication_error_body_preserves_status_and_retry_policy() {
     release.send(()).unwrap();
     server.await.unwrap();
 
+    let mut source = std::error::Error::source(&error);
+    assert!(
+        std::iter::from_fn(|| {
+            let cause = source?;
+            source = cause.source();
+            Some(cause)
+        })
+        .any(|cause| cause.is::<tokio::time::error::Elapsed>())
+    );
+
     let PureError::Provider(failure) = error else {
         panic!("expected a classified provider error, got {error}");
     };
@@ -109,8 +119,9 @@ async fn chatgpt_content_type_policy_only_relaxes_an_absent_header() {
                 Err(error) => {
                     assert!(!expected, "unexpected SSE rejection: {error}");
                     match (status, error) {
-                        (200, PureError::Protocol(message)) => {
-                            assert!(message.contains("expected text/event-stream"));
+                        (200, PureError::Provider(failure)) => {
+                            assert_eq!(failure.kind, ProviderFailureKind::Protocol);
+                            assert!(failure.message.contains("expected text/event-stream"));
                         }
                         (401, PureError::Provider(failure)) => {
                             assert_eq!(failure.kind, ProviderFailureKind::Authentication);
@@ -122,4 +133,100 @@ async fn chatgpt_content_type_policy_only_relaxes_an_absent_header() {
             server.await.unwrap();
         }
     }
+}
+
+#[test]
+fn http_retry_headers_keep_the_largest_constraint_at_the_original_observation() {
+    use pl_model_wire::provider_error::{
+        ClassifiedProviderError, ErrorObservedAt, ObservedRetry, ProviderErrorContext, RetryHint,
+    };
+    use pl_model_wire::transport::response_failure;
+    use pl_protocol::ProviderFailureStage;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+    let received = ErrorObservedAt {
+        wall: httpdate::parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap(),
+        monotonic: std::time::Instant::now(),
+    };
+    for (seconds_or_date, millis, expected) in [
+        (
+            "Sun, 06 Nov 1994 08:50:22 GMT",
+            "125",
+            RetryDisposition::Retryable {
+                retry_after_ms: Some(45_000),
+            },
+        ),
+        (
+            "2",
+            "45001",
+            RetryDisposition::Retryable {
+                retry_after_ms: Some(45_001),
+            },
+        ),
+        (
+            "Sun, 06 Nov 1994 08:49:36 GMT",
+            "0",
+            RetryDisposition::Retryable {
+                retry_after_ms: Some(0),
+            },
+        ),
+        (
+            "184467440737095516160",
+            "2",
+            RetryDisposition::WaitUnrepresentable,
+        ),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static(seconds_or_date));
+        headers.insert("retry-after-ms", HeaderValue::from_static(millis));
+        let context = ProviderErrorContext {
+            stage: ProviderFailureStage::Request,
+            request_id: Some("req-later"),
+            http_status: Some(503),
+            observed_at: ErrorObservedAt {
+                wall: received.wall + Duration::from_secs(5),
+                monotonic: received.monotonic + Duration::from_secs(5),
+            },
+            header_retry: ObservedRetry::from_headers(&headers, received),
+            redact: &str::to_owned,
+        };
+        let failure = response_failure(None, b"<html>temporary gateway failure</html>", &context);
+        assert_eq!(failure.retry, expected, "{seconds_or_date} and {millis}");
+        assert_eq!(failure.observed_at_unix_ms, Some(784_111_777_000));
+        let deadline = expected
+            .retry_after_ms()
+            .map(|ms| received.monotonic + Duration::from_millis(ms));
+        assert_eq!(failure.retry_deadline(), deadline);
+        let error = PureError::from(failure.clone());
+        assert_eq!(
+            error.provider_failure_ref().unwrap().retry_deadline(),
+            deadline
+        );
+        let persisted = serde_json::to_string(&failure).unwrap();
+        let decoded: pl_protocol::ProviderFailure = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(decoded, failure);
+        assert_eq!(decoded.retry_deadline(), None);
+    }
+
+    // A 42s body hint received 5s later wins over a 45s header hint.
+    let body_received = ErrorObservedAt {
+        wall: received.wall + Duration::from_secs(5),
+        monotonic: received.monotonic + Duration::from_secs(5),
+    };
+    let mut error = ClassifiedProviderError::from_http_status(Some(503));
+    error.retry_hint = RetryHint::from_millis("42000");
+    let failure = error.into_failure(&ProviderErrorContext {
+        stage: ProviderFailureStage::Request,
+        request_id: Some("req-later"),
+        http_status: Some(503),
+        observed_at: body_received,
+        header_retry: RetryHint::from_millis("45000").observed(received),
+        redact: &str::to_owned,
+    });
+    assert_eq!(failure.observed_at_unix_ms, Some(784_111_782_000));
+    assert_eq!(failure.retry.retry_after_ms(), Some(42_000));
+    assert_eq!(
+        failure.retry_deadline(),
+        Some(received.monotonic + Duration::from_secs(47))
+    );
 }

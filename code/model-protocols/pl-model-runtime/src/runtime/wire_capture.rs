@@ -17,7 +17,6 @@ use serde_json::{Map, Value};
 
 use pl_model_wire::wire_codec::{CapturedUsageObservation, PreparedHttpRequest};
 
-use super::openai::sse::SseStreamEvent;
 use crate::completion::CompletionTraceContext;
 
 const CAPTURE_DIRECTORY_ENV: &str = "ANYWORK_WIRE_CAPTURE_DIR";
@@ -82,37 +81,6 @@ struct TransportStageReceipt<'a> {
     stage: &'a str,
     elapsed_millis: u128,
     captured_at_unix_millis: u128,
-}
-
-/// Captures only recognized numeric usage fields, never provider content or headers.
-pub(crate) async fn capture_usage(
-    event: &SseStreamEvent,
-    trace: Option<&CompletionTraceContext>,
-) -> Result<()> {
-    if std::env::var_os(CAPTURE_DIRECTORY_ENV).is_none() {
-        return Ok(());
-    }
-    let response = event.response.as_ref();
-    let response_usage = response
-        .and_then(|response| response.get("usage"))
-        .and_then(super::openai::usage::ProviderTokenUsage::from_value);
-    let Some(usage) = event.usage.as_ref().or(response_usage.as_ref()) else {
-        return Ok(());
-    };
-    let usage = serde_json::to_value(usage)?;
-    let observation = CapturedUsageObservation {
-        response_id: event
-            .id
-            .clone()
-            .or_else(|| response.and_then(|r| r.get("id")?.as_str().map(str::to_owned))),
-        model: event
-            .model
-            .clone()
-            .or_else(|| response.and_then(|r| r.get("model")?.as_str().map(str::to_owned))),
-        service_tier: response.and_then(|r| r.get("service_tier")?.as_str().map(str::to_owned)),
-        usage,
-    };
-    capture_usage_observation(&observation, trace).await
 }
 
 /// Captures pre-extracted numeric usage fields for any protocol decoder.

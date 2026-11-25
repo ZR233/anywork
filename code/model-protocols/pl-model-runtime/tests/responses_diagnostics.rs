@@ -79,6 +79,7 @@ async fn model_sse(
         endpoint,
         model,
         &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+        pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
         None,
     )
     .unwrap();
@@ -95,7 +96,10 @@ async fn model_sse(
         .build();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        runtime.complete(request, ModelInvocationContext::default()),
+        runtime.complete(
+            request,
+            ModelInvocationContext::in_memory(Default::default()),
+        ),
     )
     .await
     .unwrap();
@@ -130,7 +134,7 @@ async fn siwc_model_sse_terminal_diagnostics_redact_fallbacks_and_preserve_class
             json!({"type":"response.incomplete","response":{
                 "status":400,"incomplete_details":{"reason":SYNTHETIC_BEARER}}}),
             "[REDACTED_CREDENTIAL]",
-            "response incomplete",
+            "provider stopped generation: [REDACTED_CREDENTIAL]",
         ),
         (
             json!({"type":"response.failed","response":{
@@ -142,7 +146,7 @@ async fn siwc_model_sse_terminal_diagnostics_redact_fallbacks_and_preserve_class
             json!({"type":"response.incomplete","response":{
                 "status":400,"incomplete_details":{"reason":"max_output_tokens"}}}),
             "max_output_tokens",
-            "response incomplete",
+            "provider stopped generation: max_output_tokens",
         ),
     ] {
         let failure = model_sse(vec![event]).await.unwrap_err();
@@ -150,14 +154,24 @@ async fn siwc_model_sse_terminal_diagnostics_redact_fallbacks_and_preserve_class
         // entire failure too: provider metadata/partial receipts must not retain the secret.
         assert!(!failure.to_string().contains(SYNTHETIC_BEARER));
         assert!(!format!("{failure:?}").contains(SYNTHETIC_BEARER));
-        assert!(failure.to_string().contains(expected_message));
+        assert!(
+            failure.to_string().contains(expected_message),
+            "expected redacted diagnostic {expected_message:?}, got {failure}"
+        );
         let PureError::Provider(provider) = failure.source.as_ref() else {
             panic!("expected a classified provider failure");
         };
         assert_eq!(provider.code.as_deref(), Some(expected_code));
         assert_eq!(provider.message, expected_message);
         assert_eq!(provider.http_status, Some(400));
-        assert_eq!(provider.kind, Kind::Configuration);
+        assert_eq!(
+            provider.kind,
+            if expected_code == "max_output_tokens" {
+                Kind::OutputLimit
+            } else {
+                Kind::InvalidRequest
+            }
+        );
         assert_eq!(
             provider.context.stage,
             pl_protocol::ProviderFailureStage::Stream

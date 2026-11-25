@@ -548,7 +548,6 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
             pricing: PricingOutcome::NoCharge,
             price_snapshot: None,
             request_started_at: Some(100),
-            retry_attempts: Vec::new(),
         }
     );
     assert!(no_charge.estimated_costs().is_empty());

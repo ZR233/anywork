@@ -443,9 +443,9 @@ impl ConversationStateFeed {
                     }
                 }
                 match event {
-                    TurnEvent::Started => ThreadNotification::TurnStarted { turn },
-                    TurnEvent::Updated => ThreadNotification::TurnUpdated { turn },
-                    TurnEvent::Completed => ThreadNotification::TurnCompleted { turn },
+                    TurnEvent::Started => ThreadNotification::TurnStarted { turn: *turn },
+                    TurnEvent::Updated => ThreadNotification::TurnUpdated { turn: *turn },
+                    TurnEvent::Completed => ThreadNotification::TurnCompleted { turn: *turn },
                 }
             }
             LiveEvent::Interaction(interaction) => {

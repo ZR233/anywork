@@ -66,6 +66,7 @@ impl ModelSession for SettlingModel {
             request.cancellation.cancelled().await;
             tokio::time::sleep(Duration::from_millis(40)).await;
             Err(ModelError {
+                context_recovery: None,
                 kind: pl_core::model::ModelFailureKind::Cancelled,
                 details: None,
                 usage: Box::default(),

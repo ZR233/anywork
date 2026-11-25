@@ -8,14 +8,16 @@
 //! 与最近 inference 身份窗口（256 条，且不持久化）。执行恢复（`load_cache`）只读取产品对象
 //! 缓存，完全不读取调用库。
 //!
-//! 展示投影只由明确的前进点建立：startup 初始化（`initialize_projection`）、计费
-//! durability/flags 变化（`emit_snapshot_after_flush`）与归档/恢复命令。全局性能与逐 root
+//! 展示投影只由明确的前进点建立：startup 初始化、每秒合并的计费材料/状态变化、
+//! 归档/恢复命令及关闭时的最终读取。全局性能与逐 root
 //! 会话费用由同一计费 owner 分别发布（作用域 revision 按 root 独立单调，含清除与淘汰）；
 //! 查询（snapshot/session_costs_snapshot/published_session_costs）只读已发布值：不写库、
 //! 不推进 revision、不扫描补建作用域、不发事件。
 
 mod cache;
 mod recent;
+#[cfg(test)]
+mod refresh_tests;
 
 use cache::PerformanceCache;
 use std::collections::BTreeMap;
@@ -37,6 +39,7 @@ use crate::{PureError, StudioSessionCostSnapshot, StudioSessionCostsState};
 
 /// 作用域费用缓存的条目上限；超限时优先淘汰已清除（`cost == None`）的最旧条目。
 const SCOPED_COST_LIMIT: usize = 256;
+const PROJECTION_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone)]
 pub(crate) struct ModelPerformanceOwner {
@@ -577,8 +580,8 @@ impl ModelPerformanceOwner {
         })
     }
 
-    /// Start one lifetime-bound material observer. It remains subscribed after a Billing settles,
-    /// so a later reliable Summary publishes costs without waiting for another model invocation.
+    /// Mark the single periodic observer dirty. A later reliable Summary is observed even when
+    /// no further model invocation occurs; neither notification performs a separate projection.
     fn emit_snapshot_after_flush(&self) {
         self.start_observer();
         if let Some(observer) = &self.observer {
@@ -608,17 +611,30 @@ impl ModelPerformanceOwner {
         let changed = observer.changed.clone();
         let mut owner = self.clone();
         owner.observer = None;
+        let mut refresh = tokio::time::interval_at(
+            tokio::time::Instant::now() + PROJECTION_REFRESH_INTERVAL,
+            PROJECTION_REFRESH_INTERVAL,
+        );
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         *slot = Some(handle.spawn(async move {
+            let mut dirty = false;
             loop {
                 tokio::select! {
                     () = stopping.cancelled() => break,
-                    change = progress.changed() => { if change.is_err() { break; } },
-                    () = changed.notified() => {},
+                    change = progress.changed() => {
+                        if change.is_err() { break; }
+                        dirty = true;
+                    },
+                    () = changed.notified() => dirty = true,
+                    _ = refresh.tick() => {
+                        if !dirty { continue; }
+                        dirty = false;
+                        // Adopt the latest absolute material at the refresh boundary. A commit
+                        // racing the read stays unseen and marks the next period dirty.
+                        let _observed = progress.borrow_and_update().clone();
+                        owner.publish_projection().await;
+                    },
                 }
-                // borrow_and_update before the read: a racing commit leaves an unseen newer
-                // absolute generation and is handled in the next iteration, never lost as a delta.
-                let _observed = progress.borrow_and_update().clone();
-                owner.publish_projection().await;
             }
         }));
     }
@@ -635,6 +651,14 @@ impl ModelPerformanceOwner {
                 task.await?;
             }
         }
+        // Studio stops calls admission after the Thread writers drain. Join that writer
+        // while its database is still open, then adopt the committed summaries and flags.
+        let calls = self.store.calls();
+        if let Err(error) = calls.join_stopped_writer().await {
+            calls.mark_statistics_gap();
+            tracing::warn!(%error, "failed to finish call statistics before final publication");
+        }
+        self.publish_projection().await;
         Ok(())
     }
 
@@ -726,6 +750,7 @@ fn session_cost_snapshot(rollup: &SessionCostRollup) -> StudioSessionCostSnapsho
             .collect(),
         estimated_costs: rollup.estimated_costs.clone(),
         has_unpriced_usage: rollup.has_unpriced_usage,
+        has_incomplete_usage: rollup.has_incomplete_usage,
     }
 }
 
@@ -1153,6 +1178,7 @@ mod tests {
             purpose_costs: Vec::new(),
             estimated_costs: Vec::new(),
             has_unpriced_usage: true,
+            has_incomplete_usage: false,
         }]);
         let (global, scoped) = owner.commit_projection(costs, (false, false)).await;
         assert!(

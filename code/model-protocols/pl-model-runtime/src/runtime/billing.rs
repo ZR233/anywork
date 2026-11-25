@@ -5,71 +5,186 @@
 //! receipt 解析或读取存储表。
 
 use crate::completion::InferenceBillingRecord;
-use crate::model::InferenceAccounting;
-use pl_core::model::ModelUsage;
 use pl_core::thread::{AttemptOutcome, journal::AttemptUpdate};
 
-use super::ModelCallBinding;
-use pl_core::context::{ContextContent, OpaquePayload};
-use pl_core::model::{
-    ModelError, ModelFailureKind, ModelStepOutput, ModelToolCall, ModelUsageBinding,
-};
-use serde::Deserialize;
+use pl_core::context::OpaquePayload;
+use pl_core::model::{ModelError, ModelFailureKind};
+use serde::{Deserialize, Serialize};
 
-// These projections intentionally skip replay, raw provider output, presentation and progress.
-#[derive(Deserialize)]
+const SETTLEMENT_FORMAT: &str = "pl.model.sub-attempt-settlement";
+const SETTLEMENT_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BillingRequest {
-    binding: ModelCallBinding,
-    reasoning: Option<crate::completion::ReasoningConfig>,
-    requested_service_tier: Option<String>,
-    prompt: Option<super::ThreadPromptSnapshot>,
+pub enum ModelRecoveryStopReason {
+    BudgetExhausted,
+    SideEffects,
+    SaveFailed,
+    RepairFailed,
+    WaitUnrepresentable,
+    ContextCompactionRequired,
+    PermanentFailure,
+    Cancelled,
 }
 
-#[derive(Deserialize)]
+impl ModelRecoveryStopReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BudgetExhausted => "budgetExhausted",
+            Self::SideEffects => "sideEffects",
+            Self::SaveFailed => "saveFailed",
+            Self::RepairFailed => "repairFailed",
+            Self::WaitUnrepresentable => "waitUnrepresentable",
+            Self::ContextCompactionRequired => "contextCompactionRequired",
+            Self::PermanentFailure => "permanentFailure",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BillingFacts {
-    content: Option<String>,
-    accounting: InferenceAccounting,
-    model_observation: Option<crate::completion::InferenceModelObservation>,
-    timing: Option<crate::completion::InferenceTiming>,
-    #[serde(default)]
-    orchestration: crate::completion::InferenceOrchestrationMetrics,
+pub struct ModelRecoveryDecision {
+    pub failure_kind: pl_protocol::ProviderFailureKind,
+    pub recovery: pl_protocol::ProviderRecovery,
+    pub retry: u32,
+    pub max_retries: u32,
+    pub effective_wait_millis: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_failure: Option<pl_protocol::ProviderFailure>,
 }
 
-#[derive(Deserialize)]
+impl ModelRecoveryDecision {
+    pub(super) fn encode(&self) -> Result<OpaquePayload, serde_json::Error> {
+        Ok(OpaquePayload::new(
+            "pl.model.recovery-decision",
+            1,
+            serde_json::to_string(self)?,
+        )
+        .expect("constant recovery decision format and version"))
+    }
+}
+
+pub fn model_recovery_decision(
+    payload: &OpaquePayload,
+) -> Result<ModelRecoveryDecision, ModelError> {
+    decode(payload, "pl.model.recovery-decision", 1)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BillingFailure {
-    binding: ModelCallBinding,
-    accounting: InferenceAccounting,
-    model_observation: Option<crate::completion::InferenceModelObservation>,
-    timing: Option<crate::completion::InferenceTiming>,
-    #[serde(default)]
-    orchestration: crate::completion::InferenceOrchestrationMetrics,
+pub struct ModelSubAttemptReceipt {
+    pub turn_id: Option<String>,
+    pub attempt_id: String,
+    pub logical_request_id: String,
+    pub generation: u32,
+    pub retry: u32,
+    pub provider_failure: Option<pl_protocol::ProviderFailure>,
+    pub message: Option<String>,
+    pub billing: InferenceBillingRecord,
 }
 
-#[derive(Deserialize)]
-struct BillingResponse {
-    binding: ModelCallBinding,
-    response: BillingFacts,
+impl ModelSubAttemptReceipt {
+    pub(super) fn encode(&self) -> Result<OpaquePayload, serde_json::Error> {
+        Ok(OpaquePayload::new(
+            SETTLEMENT_FORMAT,
+            SETTLEMENT_VERSION,
+            serde_json::to_string(self)?,
+        )
+        .expect("constant settlement format and version"))
+    }
 }
 
-#[derive(Deserialize)]
-struct BillingFrame {
-    receipt: BillingResponse,
-    bindings: Vec<ModelToolCall>,
+/// Validates an original owner's settlement envelope and returns its frozen receipt.
+pub fn model_sub_attempt_receipt(
+    settlement: &pl_core::model::ModelSubAttemptSettlement,
+) -> Result<ModelSubAttemptReceipt, ModelError> {
+    let receipt: ModelSubAttemptReceipt =
+        decode_sub_attempt(&settlement.payload, SETTLEMENT_VERSION)?;
+    if receipt.attempt_id != settlement.attempt_id
+        || receipt.turn_id != settlement.turn_id
+        || receipt.generation != settlement.generation
+    {
+        return Err(invalid(std::io::Error::other(
+            "settlement receipt identity mismatch",
+        )));
+    }
+    Ok(receipt)
 }
 
-#[derive(Debug, thiserror::Error)]
-enum BillingAssociationError {
-    #[error("response receipt differs from its visible text")]
-    VisibleText,
-    #[error("response receipt differs from its tool bindings")]
-    ToolBindings,
-    #[error("terminal model binding differs from the request's frozen {field}")]
-    FrozenBinding { field: &'static str },
-    #[error("model binding differs from the admitted usage binding's {field}")]
-    UsageBinding { field: &'static str },
+/// Opens a saved original at the History or Current read boundary. Legacy v1 records retain
+/// their as-recorded source and frozen accounting. They never enter current admission.
+pub fn model_saved_sub_attempt_receipt(
+    payload: &OpaquePayload,
+) -> Result<ModelSubAttemptReceipt, ModelError> {
+    let version = match payload.version() {
+        1 => 1,
+        _ => SETTLEMENT_VERSION,
+    };
+    decode_sub_attempt(payload, version)
+}
+
+fn decode_sub_attempt(
+    payload: &OpaquePayload,
+    version: u32,
+) -> Result<ModelSubAttemptReceipt, ModelError> {
+    let receipt: ModelSubAttemptReceipt = decode(payload, SETTLEMENT_FORMAT, version)?;
+    let matches_billing_identity = receipt.billing.attempt.as_ref().is_some_and(|attempt| {
+        attempt.core_attempt_id == receipt.attempt_id
+            && attempt.generation == receipt.generation
+            && attempt.logical_request_id == receipt.logical_request_id
+    });
+    if receipt.attempt_id.is_empty()
+        || receipt.turn_id.as_ref().is_some_and(String::is_empty)
+        || (version == 1 && receipt.turn_id.is_none())
+        || receipt.logical_request_id.is_empty()
+        || !matches_billing_identity
+        || receipt.billing.inference_id
+            != model_sub_attempt_id(&receipt.attempt_id, receipt.generation)
+    {
+        return Err(invalid(std::io::Error::other(
+            "settlement receipt identity mismatch",
+        )));
+    }
+    Ok(receipt)
+}
+
+/// Stable recorded inference identity for one physical attempt generation.
+pub fn model_sub_attempt_id(attempt: &str, generation: u32) -> String {
+    format!("sub-attempt:{}:{attempt}:{generation}", attempt.len())
+}
+
+/// Reads the already counted settlement of a Core-committed result for context and throughput.
+pub fn model_committed_sub_attempt_billing(
+    attempt: &AttemptUpdate,
+) -> Result<Option<InferenceBillingRecord>, ModelError> {
+    let AttemptOutcome::Committed(output) = &attempt.outcome else {
+        return Ok(None);
+    };
+    let Some(frame) = super::thread_model::model_response_receipt(output)? else {
+        return Ok(None);
+    };
+    let response = frame.response;
+    let Some(last) = response.settlements.last() else {
+        return Ok(None);
+    };
+    let generation = u32::try_from(response.settlements.len() - 1).map_err(invalid)?;
+    let receipt = model_sub_attempt_receipt(&pl_core::model::ModelSubAttemptSettlement {
+        turn_id: Some(attempt.turn_id.clone()),
+        attempt_id: attempt.attempt_id.clone(),
+        generation,
+        payload: last.clone(),
+    })?;
+    if receipt.billing.accounting != response.accounting
+        || receipt.billing.attempt.as_ref().is_none_or(|metadata| {
+            metadata.outcome != crate::completion::InferenceAttemptOutcome::Succeeded
+        })
+    {
+        return Err(invalid(std::io::Error::other(
+            "settlement does not describe the committed response",
+        )));
+    }
+    Ok(Some(receipt.billing))
 }
 
 fn invalid(source: impl std::error::Error + Send + Sync + 'static) -> ModelError {
@@ -89,684 +204,8 @@ fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_str(payload.content()).map_err(invalid)
 }
 
-fn response_facts(output: &ModelStepOutput) -> Result<Option<BillingResponse>, ModelError> {
-    let mut frames = output.content.iter().filter_map(|content| match content {
-        ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
-            Some(payload)
-        }
-        _ => None,
-    });
-    let Some(payload) = frames.next() else {
-        return Ok(None);
-    };
-    if frames.next().is_some() {
-        return Err(invalid(std::io::Error::other(
-            "repeated model billing receipt",
-        )));
-    }
-    // Both factories remain callable until the production transition: their billing fields share
-    // the same shape even though the current frame also carries source identities.
-    if !matches!(
-        payload.version(),
-        super::thread_model::LEGACY_FRAME_VERSION | super::thread_model::FRAME_VERSION
-    ) {
-        return Err(invalid(std::io::Error::other(
-            "unsupported model billing receipt",
-        )));
-    }
-    let frame: BillingFrame = decode(payload, "pl.model.assistant", payload.version())?;
-    let visible = output.content.iter().filter_map(|content| match content {
-        ContextContent::Text { text } => Some(text.as_ref()),
-        ContextContent::Opaque { .. } | ContextContent::Resource { .. } => None,
-    });
-    if !visible.eq(frame.receipt.response.content.as_deref()) {
-        return Err(invalid(BillingAssociationError::VisibleText));
-    }
-    if frame.bindings != output.tool_calls {
-        return Err(invalid(BillingAssociationError::ToolBindings));
-    }
-    Ok(Some(frame.receipt))
-}
-
-fn validate_binding(
-    request: Option<&BillingRequest>,
-    terminal: Option<&ModelCallBinding>,
-    usage: Option<&ModelUsageBinding>,
-) -> Result<(), ModelError> {
-    let Some(terminal) = terminal else {
-        return Ok(());
-    };
-    if let Some(request) = request {
-        let request = &request.binding;
-        for (field, matches) in [
-            ("account", request.account_id == terminal.account_id),
-            ("model", request.model_id == terminal.model_id),
-            ("protocol", request.protocol == terminal.protocol),
-            ("wire API", request.wire_api == terminal.wire_api),
-            ("isolation", request.isolation == terminal.isolation),
-            ("purpose", request.purpose == terminal.purpose),
-            (
-                "context window",
-                request.context_window == terminal.context_window,
-            ),
-            (
-                "maximum context window",
-                request.max_context_window == terminal.max_context_window,
-            ),
-            (
-                "automatic compaction limit",
-                request.auto_compact_limit == terminal.auto_compact_limit,
-            ),
-        ] {
-            if !matches {
-                return Err(invalid(BillingAssociationError::FrozenBinding { field }));
-            }
-        }
-    }
-    if let Some(usage) = usage {
-        for (field, matches) in [
-            (
-                "route",
-                usage
-                    .route_identity
-                    .as_ref()
-                    .is_none_or(|route| *route == terminal.route_identity()),
-            ),
-            ("model", usage.model == terminal.model_id),
-            (
-                "context window",
-                usage.context_window == terminal.context_window,
-            ),
-            (
-                "maximum context window",
-                usage.max_context_window == terminal.max_context_window,
-            ),
-            (
-                "automatic compaction limit",
-                usage.auto_compact_limit == terminal.auto_compact_limit,
-            ),
-        ] {
-            if !matches {
-                return Err(invalid(BillingAssociationError::UsageBinding { field }));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 从一个已终态的模型 attempt 事实读取完整 billing 记录。
-///
-/// 请求 receipt 提供绑定、上下文窗口和 prompt cache 诊断；响应或失败 receipt 提供真实
-/// provider 用量、模型观测、时延和编排数据。运行中返回 `None`；中断保留冻结绑定和未知用量，
-/// 不从当前配置猜测历史信息，也不反序列化完整响应或展示内容。
-///
-/// # Errors
-/// 返回 receipt 格式、版本或内容损坏错误。调用方应把这类错误作为历史数据损坏处理，不能
-/// 用零用量替代。
-pub fn model_attempt_billing(
-    attempt: &AttemptUpdate,
-    recorded_at: i64,
-) -> Result<Option<InferenceBillingRecord>, crate::runtime::ModelError> {
-    let output = match &attempt.outcome {
-        AttemptOutcome::Running => return Ok(None),
-        AttemptOutcome::Interrupted => None,
-        AttemptOutcome::Committed(output) | AttemptOutcome::Rejected { output, .. } => {
-            Some(Ok(output))
-        }
-        AttemptOutcome::Failed(error) => Some(Err(error.as_ref())),
-        AttemptOutcome::Cancelled { result } => {
-            Some(result.as_ref().map_err(std::sync::Arc::as_ref))
-        }
-    };
-    let request = attempt
-        .request_metadata
-        .as_ref()
-        .map(|payload| {
-            decode::<BillingRequest>(
-                payload,
-                "pl.model.prepared-request",
-                super::thread_model::REQUEST_RECEIPT_VERSION,
-            )
-        })
-        .transpose()?;
-    let (binding, accounting, model_observation, timing, orchestration) = match output {
-        Some(Ok(output)) => match response_facts(output)? {
-            Some(receipt) => (
-                Some(receipt.binding),
-                receipt.response.accounting,
-                receipt.response.model_observation,
-                receipt.response.timing,
-                receipt.response.orchestration,
-            ),
-            None => (
-                request.as_ref().map(|request| request.binding.clone()),
-                unknown(&output.usage),
-                None,
-                None,
-                Default::default(),
-            ),
-        },
-        Some(Err(error)) => match error
-            .details
-            .as_ref()
-            .map(|payload| {
-                decode::<BillingFailure>(
-                    payload,
-                    "pl.model.failure",
-                    super::thread_model::FAILURE_RECEIPT_VERSION,
-                )
-            })
-            .transpose()?
-        {
-            Some(receipt) => (
-                Some(receipt.binding),
-                receipt.accounting,
-                receipt.model_observation,
-                receipt.timing,
-                receipt.orchestration,
-            ),
-            None => (
-                request.as_ref().map(|request| request.binding.clone()),
-                unknown(&error.usage),
-                None,
-                None,
-                Default::default(),
-            ),
-        },
-        None => (
-            request.as_ref().map(|request| request.binding.clone()),
-            unknown(&ModelUsage::default()),
-            None,
-            None,
-            Default::default(),
-        ),
-    };
-    validate_binding(
-        request.as_ref(),
-        binding.as_ref(),
-        attempt.usage_binding.as_ref(),
-    )?;
-    // The configured `model_id` is a frozen routing fact. The sent alias and the vendor's
-    // reported name stay diagnostics inside `model_observation`; they never substitute it.
-    let account_id = binding
-        .as_ref()
-        .map_or_else(String::new, |binding| binding.account_id.clone());
-    let model_id = binding
-        .as_ref()
-        .map(|binding| binding.model_id.clone())
-        .filter(|model_id| !model_id.is_empty())
-        .or_else(|| {
-            attempt
-                .usage_binding
-                .as_ref()
-                .map(|binding| binding.model.clone())
-        });
-    Ok(Some(InferenceBillingRecord {
-        inference_id: attempt.attempt_id.clone(),
-        purpose: binding.as_ref().map(|binding| binding.purpose.clone()),
-        account_id,
-        account_display_name: None,
-        model_id,
-        model_observation,
-        effort: request
-            .as_ref()
-            .and_then(|request| request.reasoning.as_ref())
-            .and_then(|reasoning| reasoning.effort.clone()),
-        requested_service_tier: request
-            .as_ref()
-            .and_then(|request| request.requested_service_tier.clone()),
-        context_window: binding
-            .as_ref()
-            .and_then(|binding| binding.context_window)
-            .or_else(|| {
-                attempt
-                    .usage_binding
-                    .as_ref()
-                    .and_then(|binding| binding.context_window)
-            }),
-        accounting,
-        prompt_generation: request
-            .as_ref()
-            .and_then(|request| request.prompt.as_ref())
-            .map(|prompt| prompt.generation),
-        prompt_cache_policy: request
-            .as_ref()
-            .and_then(|request| request.prompt.as_ref())
-            .map(|prompt| prompt.prompt_cache_policy.clone()),
-        prefix_changed_reason: request
-            .as_ref()
-            .and_then(|request| request.prompt.as_ref())
-            .map(|prompt| prompt.prefix_changed_reason),
-        orchestration,
-        timing,
-        recorded_at,
-    }))
-}
-
-fn unknown(usage: &ModelUsage) -> InferenceAccounting {
-    InferenceAccounting {
-        usage: crate::model::usage::usage_report(usage),
-        ..Default::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::model_attempt_billing;
-    use pl_core::context::{ContextContent, OpaquePayload};
-    use pl_core::model::{ModelError, ModelFailureKind, ModelStepOutput, ModelUsage};
-    use pl_core::thread::{AttemptOutcome, journal::AttemptUpdate};
-    use serde_json::json;
-
-    fn attempt(outcome: AttemptOutcome) -> AttemptUpdate {
-        AttemptUpdate {
-            request_metadata: Some(
-                OpaquePayload::new(
-                    "pl.model.prepared-request",
-                    2,
-                    json!({
-                        "binding": binding(), "reasoning": null, "prompt": null
-                    })
-                    .to_string(),
-                )
-                .unwrap(),
-            ),
-            usage_binding: None,
-            tool_projection: None,
-            turn_id: "turn".into(),
-            attempt_id: "attempt".into(),
-            retry_of: None,
-            input_revision: 1,
-            tools: Default::default(),
-            outcome,
-            input_estimate: None,
-        }
-    }
-
-    fn binding() -> serde_json::Value {
-        json!({
-            "accountId":"account", "modelId":"frozen-model", "protocol":crate::protocol::ProtocolId::from_static("open_ai"),
-            "wireApi":crate::protocol::WireApi::Responses, "isolation":"frozen-route", "purpose":"turn",
-            "contextWindow": 16000
-        })
-    }
-
-    fn bound_output(binding: serde_json::Value) -> ModelStepOutput {
-        let tools = vec![pl_core::model::ModelToolCall {
-            presentation_contract: None,
-            call_id: "call".into(),
-            tool_id: "query".into(),
-            arguments: OpaquePayload::new("json", 1, "{\"q\":1}").unwrap(),
-            rejection: None,
-        }];
-        ModelStepOutput {
-            turn_action: Default::default(),
-            attempt_id: "attempt".into(),
-            base_context_revision: 1,
-            content: vec![
-                ContextContent::Text {
-                    text: "answer".into(),
-                },
-                ContextContent::Opaque {
-                    payload: OpaquePayload::new(
-                        "pl.model.assistant",
-                        super::super::thread_model::FRAME_VERSION,
-                        json!({
-                            "receipt": {
-                                "binding": binding,
-                                "response": {
-                                    "content": "answer",
-                                    "accounting": crate::model::InferenceAccounting::default(),
-                                    "modelObservation": {
-                                        "configuredModel":"frozen-model",
-                                        "sentModel":"wire-alias",
-                                        "reportedModel":"vendor-snapshot"
-                                    }
-                                }
-                            },
-                            "bindings": tools
-                        })
-                        .to_string(),
-                    )
-                    .unwrap(),
-                },
-            ],
-            tool_calls: tools,
-            private_context: None,
-            usage: Default::default(),
-        }
-    }
-
-    fn bound_failure(binding: serde_json::Value) -> std::sync::Arc<ModelError> {
-        std::sync::Arc::new(ModelError {
-            kind: ModelFailureKind::Unavailable,
-            usage: Box::default(),
-            source: None,
-            details: Some(Box::new(
-                OpaquePayload::new(
-                    "pl.model.failure",
-                    super::super::thread_model::FAILURE_RECEIPT_VERSION,
-                    json!({
-                        "binding": binding,
-                        "accounting": crate::model::InferenceAccounting::default()
-                    })
-                    .to_string(),
-                )
-                .unwrap(),
-            )),
-        })
-    }
-
-    fn assert_association_error(attempt: &AttemptUpdate) {
-        let error = model_attempt_billing(attempt, 42)
-            .expect_err("conflicting facts must not produce a bill");
-        assert_eq!(error.kind, ModelFailureKind::UnsupportedContent);
-    }
-
-    #[test]
-    fn billing_takes_speed_from_the_frozen_request_not_the_response() {
-        for returned_tier in [None, Some("default"), Some("ultrafast")] {
-            let mut output = bound_output(binding());
-            let ContextContent::Opaque { payload } = &mut output.content[1] else {
-                panic!("missing response receipt");
-            };
-            if let Some(tier) = returned_tier {
-                let mut body: serde_json::Value = serde_json::from_str(payload.content()).unwrap();
-                body["receipt"]["response"]["service_tier"] = json!(tier);
-                *payload =
-                    OpaquePayload::new(payload.format(), payload.version(), body.to_string())
-                        .unwrap();
-            }
-            let mut attempt = attempt(AttemptOutcome::Committed(output));
-            assert_eq!(
-                model_attempt_billing(&attempt, 42)
-                    .unwrap()
-                    .unwrap()
-                    .requested_service_tier,
-                None
-            );
-
-            let payload = attempt.request_metadata.as_mut().unwrap();
-            let mut metadata: serde_json::Value = serde_json::from_str(payload.content()).unwrap();
-            metadata["requestedServiceTier"] = json!("tier:priority");
-            *payload =
-                OpaquePayload::new(payload.format(), payload.version(), metadata.to_string())
-                    .unwrap();
-            let billing = model_attempt_billing(&attempt, 42).unwrap().unwrap();
-            assert_eq!(
-                billing.requested_service_tier.as_deref(),
-                Some("tier:priority")
-            );
-        }
-    }
-
-    #[test]
-    fn response_billing_accepts_both_active_frame_versions_and_rejects_unknown() {
-        for version in [
-            super::super::thread_model::LEGACY_FRAME_VERSION,
-            super::super::thread_model::FRAME_VERSION,
-            super::super::thread_model::FRAME_VERSION + 1,
-        ] {
-            let mut output = bound_output(binding());
-            let ContextContent::Opaque { payload } = &mut output.content[1] else {
-                panic!("assistant frame");
-            };
-            *payload = OpaquePayload::new(payload.format(), version, payload.content()).unwrap();
-            let result = model_attempt_billing(&attempt(AttemptOutcome::Committed(output)), 42);
-            if version <= super::super::thread_model::FRAME_VERSION {
-                assert_eq!(
-                    result.unwrap().unwrap().model_id.as_deref(),
-                    Some("frozen-model")
-                );
-            } else {
-                assert!(result.is_err());
-            }
-        }
-    }
-
-    #[test]
-    fn response_billing_rejects_tool_binding_mismatch() {
-        let output = bound_output(binding());
-        let valid = model_attempt_billing(&attempt(AttemptOutcome::Committed(output.clone())), 42)
-            .unwrap()
-            .unwrap();
-        assert_eq!(valid.model_id.as_deref(), Some("frozen-model"));
-        let observation = valid.model_observation.unwrap();
-        assert_ne!(observation.sent_model, observation.reported_model.unwrap());
-        let mut mismatched = output;
-        mismatched.tool_calls[0].arguments = OpaquePayload::new("json", 1, "{\"q\":2}").unwrap();
-        assert_association_error(&attempt(AttemptOutcome::Committed(mismatched)));
-    }
-
-    #[test]
-    fn response_billing_rejects_visible_text_mismatch() {
-        let mut output = bound_output(binding());
-        output.content[0] = ContextContent::Text {
-            text: "different answer".into(),
-        };
-        assert_association_error(&attempt(AttemptOutcome::Committed(output)));
-    }
-
-    #[test]
-    fn terminal_billing_rejects_conflicting_frozen_bindings() {
-        for (field, conflicting) in [
-            ("accountId", json!("other-account")),
-            ("modelId", json!("other-model")),
-            (
-                "protocol",
-                json!(crate::protocol::ProtocolId::from_static("deep_seek")),
-            ),
-            ("wireApi", json!(crate::protocol::WireApi::ChatCompletions)),
-            ("isolation", json!("other-route")),
-            ("purpose", json!("title")),
-            ("contextWindow", json!(32000)),
-            ("maxContextWindow", json!(64000)),
-            ("autoCompactLimit", json!(12000)),
-        ] {
-            let mut conflicting_binding = binding();
-            conflicting_binding[field] = conflicting;
-            let output = bound_output(conflicting_binding.clone());
-            let error = bound_failure(conflicting_binding);
-            for outcome in [
-                AttemptOutcome::Committed(output.clone()),
-                AttemptOutcome::Rejected {
-                    output: output.clone(),
-                    reason: pl_core::thread::ModelOutputViolation::ToolPermissionRevoked,
-                },
-                AttemptOutcome::Failed(error.clone()),
-                AttemptOutcome::Cancelled { result: Ok(output) },
-                AttemptOutcome::Cancelled { result: Err(error) },
-            ] {
-                assert_association_error(&attempt(outcome));
-            }
-        }
-    }
-
-    #[test]
-    fn billing_rejects_conflicting_admitted_usage_binding() {
-        let binding: super::ModelCallBinding = serde_json::from_value(binding()).unwrap();
-        let usage = pl_core::model::ModelUsageBinding {
-            route_identity: Some(binding.route_identity()),
-            model: binding.model_id.clone(),
-            context_window: binding.context_window,
-            max_context_window: binding.max_context_window,
-            auto_compact_limit: binding.auto_compact_limit,
-        };
-        let mut valid = attempt(AttemptOutcome::Interrupted);
-        valid.usage_binding = Some(usage.clone());
-        let record = model_attempt_billing(&valid, 42).unwrap().unwrap();
-        assert_eq!(record.accounting.usage, Default::default());
-        for field in ["route", "model", "context", "max", "limit"] {
-            let mut invalid = valid.clone();
-            let usage = invalid.usage_binding.as_mut().unwrap();
-            match field {
-                "route" => usage.route_identity = Some("other-route".into()),
-                "model" => usage.model = "other-model".into(),
-                "context" => usage.context_window = Some(32000),
-                "max" => usage.max_context_window = Some(64000),
-                "limit" => usage.auto_compact_limit = Some(12000),
-                _ => unreachable!(),
-            }
-            assert_association_error(&invalid);
-        }
-    }
-
-    #[test]
-    fn terminal_fallback_usage_preserves_missing_zero_and_reported_totals() {
-        for usage in [
-            ModelUsage {
-                total_tokens: Some(19),
-                ..Default::default()
-            },
-            ModelUsage {
-                input_tokens: Some(2),
-                output_tokens: Some(3),
-                cache_read_tokens: Some(1),
-                cache_write_tokens: Some(1),
-                reasoning_tokens: Some(2),
-                total_tokens: Some(99),
-            },
-            ModelUsage {
-                input_tokens: Some(0),
-                output_tokens: Some(0),
-                total_tokens: Some(0),
-                cache_read_tokens: Some(0),
-                ..Default::default()
-            },
-            ModelUsage {
-                input_tokens: Some(2),
-                output_tokens: Some(3),
-                ..Default::default()
-            },
-        ] {
-            let output = ModelStepOutput {
-                turn_action: Default::default(),
-                attempt_id: "attempt".into(),
-                base_context_revision: 1,
-                content: vec![],
-                tool_calls: vec![],
-                private_context: None,
-                usage: usage.clone(),
-            };
-            let error = std::sync::Arc::new(ModelError {
-                kind: ModelFailureKind::Unavailable,
-                details: None,
-                usage: Box::new(usage.clone()),
-                source: None,
-            });
-            for outcome in [
-                AttemptOutcome::Committed(output.clone()),
-                AttemptOutcome::Rejected {
-                    output: output.clone(),
-                    reason: pl_core::thread::ModelOutputViolation::ToolPermissionRevoked,
-                },
-                AttemptOutcome::Failed(error.clone()),
-                AttemptOutcome::Cancelled { result: Err(error) },
-                AttemptOutcome::Cancelled { result: Ok(output) },
-            ] {
-                let record = model_attempt_billing(&attempt(outcome), 42)
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(
-                    crate::model::usage::model_usage(&record.accounting.usage),
-                    usage
-                );
-                assert_eq!(record.model_id.as_deref(), Some("frozen-model"));
-                assert_eq!(record.account_id, "account");
-            }
-        }
-        let interrupted = model_attempt_billing(&attempt(AttemptOutcome::Interrupted), 42)
-            .unwrap()
-            .unwrap();
-        assert_eq!(interrupted.model_id.as_deref(), Some("frozen-model"));
-        assert_eq!(interrupted.context_window, Some(16000));
-        assert_eq!(interrupted.accounting.usage, Default::default());
-    }
-
-    #[test]
-    fn lightweight_receipts_keep_terminal_accounting_and_timing() {
-        let accounting = crate::model::InferenceAccounting {
-            usage: crate::model::UsageReport {
-                total_tokens: Some(47),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let timing = crate::completion::InferenceTiming {
-            first_output_source: pl_protocol::FirstOutputSource::CompletedToolInput,
-            ttft_millis: Some(12),
-            decode_millis: Some(0),
-            response_millis: 12,
-        };
-        let facts = json!({
-            "accounting": accounting, "timing": timing, "modelObservation": null,
-            "orchestration": {"transportAttempts": 2},
-            "presentationItems": [], "replay": null, "content": null,
-            "model": "frozen-model"
-        });
-        let output = ModelStepOutput {
-            turn_action: Default::default(),
-            attempt_id: "attempt".into(),
-            base_context_revision: 1,
-            tool_calls: vec![],
-            private_context: None,
-            usage: Default::default(),
-            content: vec![ContextContent::Opaque {
-                payload: OpaquePayload::new(
-                    "pl.model.assistant",
-                    super::super::thread_model::FRAME_VERSION,
-                    json!({"receipt": {"binding": binding(), "response": facts}, "bindings":[]})
-                        .to_string(),
-                )
-                .unwrap(),
-            }],
-        };
-        let mut failure = facts.clone();
-        failure["binding"] = binding();
-        let error = std::sync::Arc::new(ModelError {
-            kind: ModelFailureKind::Unavailable,
-            usage: Box::default(),
-            source: None,
-            details: Some(Box::new(
-                OpaquePayload::new(
-                    "pl.model.failure",
-                    super::super::thread_model::FAILURE_RECEIPT_VERSION,
-                    failure.to_string(),
-                )
-                .unwrap(),
-            )),
-        });
-        for outcome in [
-            AttemptOutcome::Committed(output),
-            AttemptOutcome::Failed(error.clone()),
-            AttemptOutcome::Cancelled { result: Err(error) },
-        ] {
-            let record = model_attempt_billing(&attempt(outcome), 42)
-                .unwrap()
-                .unwrap();
-            assert_eq!(record.accounting, accounting);
-            assert_eq!(record.timing, Some(timing));
-            assert_eq!(record.orchestration.transport_attempts, 2);
-            let exported = serde_json::to_value(&record).unwrap();
-            for field in [
-                "actualParallelCalls",
-                "parallelCandidates",
-                "toolBatchElapsedMillis",
-                "toolExecutionMillis",
-                "toolCriticalPathMillis",
-                "toolSchemaEstimatedTokens",
-                "toolResultEstimatedTokens",
-                "toolCacheHits",
-                "duplicateSuppressed",
-            ] {
-                assert!(
-                    exported["orchestration"].get(field).is_none(),
-                    "an immutable model receipt cannot measure later tool execution: {field}"
-                );
-            }
-        }
-    }
-
     #[test]
     fn historical_orchestration_values_round_trip_without_changing_admission_bytes() {
         let encoded = concat!(
@@ -785,25 +224,5 @@ mod tests {
         unknown.merge(&historical);
         assert_eq!(unknown.actual_parallel_calls, None);
         assert_eq!(unknown.parallel_saved_millis(), None);
-    }
-
-    #[test]
-    fn running_attempts_do_not_look_like_completed_billing() {
-        let attempt = AttemptUpdate {
-            request_metadata: None,
-            usage_binding: None,
-            tool_projection: None,
-            turn_id: "turn".into(),
-            attempt_id: "attempt".into(),
-            retry_of: None,
-            input_revision: 1,
-            tools: Default::default(),
-            outcome: AttemptOutcome::Running,
-            input_estimate: None,
-        };
-        assert_eq!(
-            model_attempt_billing(&attempt, 42).expect("running is valid"),
-            None
-        );
     }
 }

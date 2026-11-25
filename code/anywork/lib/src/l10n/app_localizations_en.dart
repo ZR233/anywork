@@ -1633,6 +1633,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statusUsageIncompleteLabel => 'Incomplete';
 
   @override
+  String get statusUsageNonTerminalSampleLabel =>
+      'Incomplete · Missing final usage reports';
+
+  @override
   String get statusCacheLabel => 'Cache hit rate';
 
   @override
@@ -1659,6 +1663,9 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get sessionAllAgentsCostTooltip =>
       'Cost for all agents in this session';
+
+  @override
+  String get sessionCostIncompleteUsage => 'Incomplete usage';
 
   @override
   String get sessionMoreActionsTooltip => 'More actions';
@@ -8123,10 +8130,25 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineProviderKindAuthz => 'Authorization';
 
   @override
-  String get timelineProviderKindCapacity => 'Capacity';
+  String get timelineProviderKindQuota => 'Balance or quota exhausted';
 
   @override
-  String get timelineProviderKindConfig => 'Configuration';
+  String get timelineProviderKindRateLimit => 'Temporary rate limit';
+
+  @override
+  String get timelineProviderKindServiceBusy => 'Service busy';
+
+  @override
+  String get timelineProviderKindContextLimit => 'Context limit exceeded';
+
+  @override
+  String get timelineProviderKindInvalidRequest => 'Invalid request';
+
+  @override
+  String get timelineProviderKindContentBlocked => 'Content blocked';
+
+  @override
+  String get timelineProviderKindOutputLimit => 'Output limit reached';
 
   @override
   String get timelineProviderKindTransport => 'Network transport';
@@ -8135,15 +8157,143 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineProviderKindProtocol => 'Response protocol';
 
   @override
-  String get timelineRetryableHint => 'Retryable';
+  String get timelineRetryableHint => 'May be eligible for retry';
 
   @override
-  String timelineRetryAfterSeconds(int seconds) {
-    return 'Retry after ${seconds}s';
+  String timelineRetryAfterSeconds(String seconds) {
+    return 'Provider suggests waiting ${seconds}s';
   }
 
   @override
   String get timelineRetryPermanent => 'Not auto-retried';
+
+  @override
+  String get timelineRetryWaitUnrepresentable =>
+      'Provider wait is beyond the supported range';
+
+  @override
+  String timelineRecoveryRetryCount(int count, int limit) {
+    return 'Retries used: $count of $limit';
+  }
+
+  @override
+  String timelineRecoveryRetryCountOnly(int count) {
+    return 'Retries used: $count';
+  }
+
+  @override
+  String timelineRecoveryRetryLimit(int limit) {
+    return 'Retry limit: $limit';
+  }
+
+  @override
+  String timelineRecoveryWaitMillis(String millis) {
+    return '$millis ms';
+  }
+
+  @override
+  String timelineRecoveryWaitSeconds(String seconds) {
+    return '$seconds s';
+  }
+
+  @override
+  String timelineRecoveryScheduledWait(String duration) {
+    return 'Scheduled wait: $duration';
+  }
+
+  @override
+  String timelineRecoveryAttempt(int count, int limit) {
+    return 'Retry $count of $limit';
+  }
+
+  @override
+  String get timelineRecoveryRepairing => 'Repairing the model request';
+
+  @override
+  String get timelineRecoveryWaiting => 'Waiting to retry the model request';
+
+  @override
+  String get timelineRecoveryRetrying => 'Retrying the model request';
+
+  @override
+  String get timelineRecoveryRecovered => 'Model request recovered';
+
+  @override
+  String get timelineRecoveryFailed => 'Model request recovery stopped';
+
+  @override
+  String get timelineRecoveryActionHttpFallback => 'Switch to HTTP';
+
+  @override
+  String get timelineRecoveryActionRefreshAttachments => 'Refresh attachments';
+
+  @override
+  String get timelineRecoveryActionFullContext => 'Resend the full context';
+
+  @override
+  String get timelineRecoveryStopBudgetExhausted =>
+      'Automatic recovery stopped after reaching the retry limit.';
+
+  @override
+  String get timelineRecoveryStopSideEffects =>
+      'Automatic recovery stopped because retrying could repeat an external action.';
+
+  @override
+  String get timelineRecoveryStopSaveFailed =>
+      'Automatic recovery stopped because the recovery state could not be saved.';
+
+  @override
+  String get timelineRecoveryStopRepairFailed =>
+      'Automatic recovery stopped because the repair failed.';
+
+  @override
+  String get timelineRecoveryStopWaitUnrepresentable =>
+      'Automatic recovery stopped because the required wait is too long to schedule safely.';
+
+  @override
+  String get timelineRecoveryStopContextCompactionRequired =>
+      'The input needs to be compacted before execution can continue.';
+
+  @override
+  String get timelineRecoveryStopPermanentFailure =>
+      'This failure cannot be recovered automatically.';
+
+  @override
+  String get timelineRecoveryStopCancelled =>
+      'Automatic recovery was cancelled.';
+
+  @override
+  String get timelineDetailErrorType => 'Provider error type';
+
+  @override
+  String get timelineDetailRequestId => 'Provider request ID';
+
+  @override
+  String get timelineDetailFailureStage => 'Failure stage';
+
+  @override
+  String get timelineFailureStageUnknown => 'Unknown stage';
+
+  @override
+  String get timelineFailureStageRequest => 'Request';
+
+  @override
+  String get timelineFailureStageHandshake => 'Connection handshake';
+
+  @override
+  String get timelineFailureStageStream => 'Response stream';
+
+  @override
+  String get timelineFailureStageAttachment => 'Attachment handling';
+
+  @override
+  String get timelineDetailRecoveryAction => 'Last recovery action';
+
+  @override
+  String get timelineDetailLastRecoveryWait => 'Last scheduled wait';
+
+  @override
+  String get timelineDetailRecoveryError => 'Recovery error';
 
   @override
   String get timelineBudgetLimitModelStep => 'Model steps';
@@ -8207,7 +8357,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineDetailHttpStatus => 'HTTP status';
 
   @override
-  String get timelineDetailRetry => 'Retry policy';
+  String get timelineDetailRetry => 'Retry hint';
 
   @override
   String get timelineDetailDuration => 'Duration';

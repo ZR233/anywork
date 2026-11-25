@@ -1509,6 +1509,7 @@ mod tests {
             thread_id: "joint-report".into(),
             revision: 1,
             has_unpriced_usage: false,
+            has_incomplete_usage: false,
             purpose_costs: vec![],
         })?;
         assert!(calls.admitted_ticket() > snapshot.calls_admitted_ticket);

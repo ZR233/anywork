@@ -7,6 +7,7 @@ import 'thread_models.dart' show ThreadTextChannel;
 import 'timeline_models.dart';
 import 'thread_wait_models.dart';
 import 'runtime_models.dart';
+import 'turn_models.dart';
 import '../studio/thread_frames.dart';
 
 const currentProtocolVersion = 1;
@@ -65,6 +66,7 @@ final class CurrentAtom {
     this.tool,
     this.wait,
     this.textChannel,
+    this.modelRecovery,
     this.startedAt,
     this.finishedAt,
     this.contentPresent,
@@ -82,6 +84,7 @@ final class CurrentAtom {
   final ChatToolIdentity? tool;
   final ThreadWaitPresentationView? wait;
   final ThreadTextChannel? textChannel;
+  final StudioModelRecoveryNotice? modelRecovery;
   final int? startedAt;
   final int? finishedAt;
   final bool? contentPresent;
@@ -146,6 +149,7 @@ CurrentAtom decodeCurrentAtomPayload(CurrentPayloadData payload) {
       _ => throw const FormatException('Invalid tool identity'),
     },
     wait: waitValue == null ? null : _wait(_object(waitValue, 'wait')),
+    modelRecovery: StudioModelRecoveryNotice.fromJson(value['modelRecovery']),
     textChannel: switch (value['textChannel']) {
       null => null,
       'final' => ThreadTextChannel.finalAnswer,

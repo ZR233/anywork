@@ -206,13 +206,14 @@ impl CompletionRequest {
             let next = span
                 .start
                 .checked_add(span.semantic.len())
-                .ok_or_else(|| PureError::Protocol("replay span overflow".into()))?;
+                .ok_or_else(|| crate::provider_error::invalid_request("replay span overflow"))?;
             if span.start < end
                 || self.input.get(span.start..next) != Some(span.semantic.as_slice())
             {
-                return Err(PureError::Protocol(
-                    "assistant replay differs from semantic input".into(),
-                ));
+                return Err(crate::provider_error::invalid_request(
+                    "assistant replay differs from semantic input",
+                )
+                .into());
             }
             end = next;
         }

@@ -107,6 +107,19 @@ pub(super) enum MailboxCommand {
         permissions::PermissionResolution,
         oneshot::Sender<Result<permissions::PermissionRecord, ThreadError>>,
     ),
+    OpenAuxiliaryModel {
+        caller: Option<String>,
+        turn_id: Option<String>,
+        reply: oneshot::Sender<Result<ModelSettlementPort, crate::model::ModelMemberError>>,
+    },
+    SettleModel {
+        settlement: crate::model::ModelSubAttemptSettlement,
+        reply: super::model_settlement::SettlementReply,
+    },
+    VerifyModelSettlement {
+        settlement: crate::model::ModelSubAttemptSettlement,
+        reply: super::model_settlement::SettlementReply,
+    },
     RecordTaskObservation {
         caller: String,
         payload: OpaquePayload,
@@ -184,18 +197,23 @@ pub(super) enum MailboxCommand {
     },
     /// Host-owned delivery markers must commit before their message is admitted. An active tool
     /// can be waiting for that message, so routing this through the idle-only command queue deadlocks.
-    Extensions(
-        Vec<extensions::ExtensionMutation>,
-        oneshot::Sender<
-            Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError>,
-        >,
-    ),
+    Extensions(ExtensionRequest),
     WakeAcceptedMessage {
         id: String,
         sequence: u64,
         options: input::InputDriverOptions,
         reply: oneshot::Sender<Result<bool, ThreadError>>,
     },
+}
+
+#[derive(Debug)]
+pub(super) enum ExtensionRequest {
+    Mutate(
+        Vec<extensions::ExtensionMutation>,
+        oneshot::Sender<
+            Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError>,
+        >,
+    ),
 }
 
 impl Owner {
@@ -461,15 +479,13 @@ impl Owner {
             } => {
                 // Cancellation does not erase already incurred observations. The exact task must
                 // still be running; this operation never grants permission to execute a tool.
-                let result = if !self
+                let running = self
                     .state
                     .tasks
                     .get(&caller)
-                    .is_some_and(|task| task.status == task::TaskStatus::Running)
-                {
-                    Err(ThreadError::TaskAccessExpired)
-                } else {
-                    let id = format!("tool-observation:{}", payload.format());
+                    .is_some_and(|task| task.status == task::TaskStatus::Running);
+                let id = format!("tool-observation:{}", payload.format());
+                let result = if running {
                     let expected_revision =
                         self.state.extensions.get(&id).map(|record| record.revision);
                     self.mutate_extensions(vec![extensions::ExtensionMutation::Put {
@@ -478,8 +494,23 @@ impl Owner {
                         payload,
                     }])
                     .map(|_| ())
+                } else {
+                    Err(ThreadError::TaskAccessExpired)
                 };
                 let _ = reply.send(result);
+            }
+            MailboxCommand::OpenAuxiliaryModel {
+                caller,
+                turn_id,
+                reply,
+            } => {
+                let _ = reply.send(self.open_auxiliary_model_settlement(caller, turn_id));
+            }
+            MailboxCommand::SettleModel { settlement, reply } => {
+                self.admit_model_settlement(settlement, reply);
+            }
+            MailboxCommand::VerifyModelSettlement { settlement, reply } => {
+                self.verify_saved_model_settlement(settlement, reply);
             }
             MailboxCommand::ValidateExecution {
                 caller,
@@ -610,7 +641,7 @@ impl Owner {
                 };
                 let _ = reply.send(result);
             }
-            MailboxCommand::Extensions(mutations, reply) => {
+            MailboxCommand::Extensions(ExtensionRequest::Mutate(mutations, reply)) => {
                 let result = if self.interrupt.is_closing() {
                     Err(ThreadError::Closed)
                 } else {

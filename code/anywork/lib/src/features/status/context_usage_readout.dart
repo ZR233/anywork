@@ -81,6 +81,9 @@ class _ContextDetail extends StatelessWidget {
     final cache = projection.cacheUsage;
     // 没有任何有效样本时，累计计数保持未知而不是伪装成真实的零。
     final hasSamples = projection.hasUsage;
+    final hasNonTerminalSample = projection.usageDiagnostics.byIssue.any(
+      (entry) => entry.issue.reason == UsageGapReason.nonTerminalSample,
+    );
     final cacheRateLabel = cache.hitRate == null
         ? tokenCountUnknown
         : '${(cache.hitRate! * 100).round()}%';
@@ -195,6 +198,9 @@ class _ContextDetail extends StatelessWidget {
                 context,
                 formatTokenCount(hasSamples ? projection.totalTokens : null),
                 projection.hasIncompleteUsage,
+                marker: hasNonTerminalSample
+                    ? context.l10n.statusUsageNonTerminalSampleLabel
+                    : null,
               ),
             ),
             if (hasSamples)

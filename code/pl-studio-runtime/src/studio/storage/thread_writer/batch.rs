@@ -476,11 +476,12 @@ async fn admit_effect(
                     }
                 };
                 facts.push(HistoryUsageFact {
-                    event_id: format!("usage:{}:{}", run, fact.record.inference_id),
+                    event_id: format!("usage:settlement:{}", fact.record.inference_id),
                     runtime_epoch: prepared.run_id,
-                    turn_id: prepared.accounting.primary_turn_id().map(str::to_owned),
+                    turn_id: fact.turn_id.clone(),
                     outcome,
                     record: fact.record.clone(),
+                    settlement: Some(fact.settlement.clone()),
                 });
             }
             let usage = history.prepare_usage(&admission, &facts).await?;
@@ -506,7 +507,7 @@ async fn admit_effect(
     mark_effect_accepted(inner, index)
 }
 
-pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
+pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<HistoryStore> {
     ensure!(!effects.is_empty(), "cannot persist an empty history batch");
     let started = Instant::now();
     let mut summary = {
@@ -622,5 +623,5 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
         success = true,
         "append-only history batch"
     );
-    Ok(())
+    Ok(history)
 }

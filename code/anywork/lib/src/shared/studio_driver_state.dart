@@ -1384,13 +1384,10 @@ abstract final class StudioDriverState {
     'reason': turn.state.reason,
     if (turn.state case FailedStudioTurnState(:final failure))
       'failure': {
-        'category': failure.category,
-        'retryable': failure.retryable,
-        'message': failure.message,
-        'providerKind': failure.providerKind,
-        'code': failure.code,
-        'httpStatus': failure.httpStatus,
-        'retryAfterMs': failure.retryAfterMs,
+        ...failure.toJson(),
+        'retryable':
+            failure.retryDisposition == StudioRetryDisposition.retryable,
+        'retryAfterMs': failure.retryAfterMs?.toString(),
       },
     'updatedAt': turn.updatedAt.toUtc().toIso8601String(),
   };

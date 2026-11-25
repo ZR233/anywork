@@ -150,7 +150,7 @@ impl MigrationTrait for FreshSchema27Migration {
             vec![self.database_id.clone().into(), self.thread_id.clone().into()],
         ))
         .await?;
-        super::upgrade::schema26_manifest::mark_repaired(db).await?;
+        super::upgrade::schema26_manifest::mark_current(db).await?;
         Ok(())
     }
 }

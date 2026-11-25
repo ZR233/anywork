@@ -131,11 +131,15 @@ Current 正文的打开失败或读取过期通过正文流交付，不作为原
 
 保存失败、停止、审批、存储错误和冷恢复限制必须保持可见，不能被普通活动摘要合并隐藏。发送回显由原 Composer 持有；Current 中同一 `input_id` 的规范输入被时间线消费者应用后，临时回显结算为正式呈现，不产生历史事件或按正文去重。
 
+模型的自动恢复仍属于当前逻辑请求。时间线显示运行时交付的失败原因、恢复动作、重试次数和等待信息；最终停止另显示预算耗尽、保存失败、外部副作用不确定、恢复动作失败、等待无法表示或用户取消等原因。错误本身允许重试不代表系统还会继续发送，界面不能以该分类替代实际决定。连接故障、暂时限流、服务繁忙与需要用户处理的余额、权限、请求问题分别呈现，不从错误文案猜测。
+
+每个已经结束的模型子尝试按原 attempt 与 generation 身份保存结算。失败代次的内容和已报告用量随原 Current／历史事实保留，重试成功只提交成功结果到正式上下文；最终成功不能覆盖前序消耗。计费累计、当前上下文输入量和成功响应速度是三种不同事实。恢复等待和失败请求不计入成功响应速度，未报告用量保持未知，重复接纳同一结算不重复计费。
+
 每个内置工具由 `timeline/tools/items/<domain>/` 下的独立 Dart 文件实现 `TimelineToolItemAdapter`（通用兜底 `generic@1` 同样独立实现），完整声明 `TimelineToolMatcher` 匹配规则、`TimelineToolIcon` 静态/动态图标策略（支持组件与 `TimelineToolItemController` 通过 `TimelineToolItemScope` 动态更新图标）、单行折叠摘要与展开视图。集中注册入口 `timeline/tools/tool_item_registry.dart` 建立唯一索引并校验精确契约不重复；`wait` 与 `sleep` 统一纳入同一 `TimelineToolItemView` 与适配器管线，不再单独分叉；未知工具契约回退内置 `generic@1`，展示工具名、状态、参数与输出而不报错。
 
 ## 26.10 当前快照格式与旧数据边界
 
-Current JSON schema 为 1，Current 协议为 1，ThreadSnapshot schema 为 18；History schema 与协议分别为 27 和 3。正常 reader 只接受当前版本。schema 24／25／26 类型仅存在于显式迁移边界，正常代码与测试不依赖它们作为现役 wire。
+Current JSON schema 为 1，Current 协议为 1，ThreadSnapshot schema 为 18；History schema 与协议分别为 27 和 3，维护修订为 2。正常 reader 只接受当前版本。schema 24／25／26 类型以及旧供应商失败分类、旧等待字段名仅存在于显式迁移边界，正常代码与测试不依赖它们作为现役 wire。失败载荷升级保留原件和未知信息，规则见 [17.22](./17-studio-storage.md#1722-schema-25-到-26-原子事件迁移边界)。
 
 schema 24 → 25 与 schema 25 → 26 的备份、单事务升级和回滚规则由 [17.21](./17-studio-storage.md#1721-独立当前状态与追加历史的升级边界) 与 [17.22](./17-studio-storage.md#1722-schema-25-到-26-原子事件迁移边界) 定义。其中 schema 25 → 26 升级原地零拷贝保留既有 `history_bodies` 与 `history_body_chunks`，并将旧 `KnownActive` 无 payload 行转换为合法的原子工具事件，消除既有受损会话的读取失败。
 

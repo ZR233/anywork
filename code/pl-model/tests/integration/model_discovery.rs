@@ -1442,7 +1442,10 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             }))
             .build();
         let response = runtime
-            .complete(request.clone(), ModelInvocationContext::default())
+            .complete(
+                request.clone(),
+                ModelInvocationContext::in_memory(Default::default()),
+            )
             .await
             .unwrap();
         assert_eq!(response.content.as_deref(), Some("answer"));
@@ -1456,7 +1459,10 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert!(response.accounting.usage.output_tokens.is_some());
         let no_charge = runtime
             .with_pricing_mode(pl_model::model::PricingMode::NoCharge)
-            .complete(request, ModelInvocationContext::default())
+            .complete(
+                request,
+                ModelInvocationContext::in_memory(Default::default()),
+            )
             .await
             .unwrap();
         assert_eq!(no_charge.accounting.pricing, PricingOutcome::NoCharge);
@@ -2356,7 +2362,10 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
         }])
         .build();
     runtime
-        .complete(request, ModelInvocationContext::default())
+        .complete(
+            request,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap();
     let records = fixture.finish().await.unwrap();

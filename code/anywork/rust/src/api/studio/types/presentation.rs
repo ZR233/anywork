@@ -5,7 +5,8 @@ use super::{
     BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState, BridgeChatTerminalOutcome,
     BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeThreadActivityKind,
     BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope, BridgeThreadSnapshot,
-    BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation, BridgeTurnPhase,
+    BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation,
+    BridgeTurnFailureDto, BridgeTurnPhase,
 };
 
 pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 3;
@@ -371,10 +372,33 @@ pub struct BridgeCurrentAtom {
     pub tool: Option<BridgeChatToolIdentity>,
     pub wait: Option<BridgeThreadWaitPresentation>,
     pub text_channel: Option<BridgeThreadTextChannel>,
+    pub model_recovery: Option<BridgeModelRecoveryNotice>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub content_present: Option<bool>,
     pub contents: Vec<BridgeCurrentAtomContent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeModelRecoveryPhase {
+    Repairing,
+    Waiting,
+    Retrying,
+    Recovered,
+    Exhausted,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeModelRecoveryNotice {
+    pub failure_kind: Option<String>,
+    pub reason: Option<String>,
+    pub retry_count: u32,
+    pub max_retries: u32,
+    pub effective_wait_millis: Option<u64>,
+    pub phase: BridgeModelRecoveryPhase,
+    pub failure: Option<BridgeTurnFailureDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

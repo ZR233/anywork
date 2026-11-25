@@ -6,11 +6,12 @@ use pl_model_wire::completion::stream::event::{
     ModelBlockKind, ModelStreamEvent, ToolInputDeltaPayload,
 };
 use pl_model_wire::completion::stream::replay::ReplayUpdate;
+use pl_model_wire::provider_error::{ClassifiedProviderError, StreamFrameContext};
 use pl_model_wire::wire_codec::{CapturedUsageObservation, DecodedSseFrame, WireStreamDecoder};
-use pl_protocol::{ProviderFailureKind, PureError, Result, RetryDisposition};
+use pl_protocol::{ProviderFailure, Result};
 use serde_json::Value;
 
-use crate::error::parse_google_http_error;
+use crate::error::google_error_envelope;
 use crate::usage::GeminiUsageMetadata;
 
 pub struct GeminiStreamDecoder {
@@ -22,6 +23,7 @@ pub struct GeminiStreamDecoder {
     finished_ok: bool,
     failed: bool,
     saw_output: bool,
+    incomplete_failure: Option<ProviderFailure>,
     upstream_call_ids: BTreeSet<String>,
 }
 
@@ -42,6 +44,7 @@ impl GeminiStreamDecoder {
             finished_ok: false,
             failed: false,
             saw_output: false,
+            incomplete_failure: None,
             upstream_call_ids: BTreeSet::new(),
         }
     }
@@ -63,15 +66,19 @@ impl GeminiStreamDecoder {
     fn fail_invalid_response(
         &mut self,
         mut events: Vec<ModelStreamEvent>,
-        usage_capture: Option<CapturedUsageObservation>,
-        request_id: Option<String>,
-        message: &str,
+        value: &Value,
+        terminal_usage: bool,
+        failure: ProviderFailure,
     ) -> DecodedSseFrame {
         self.failed = true;
         self.close_open_text_block(&mut events);
-        events.push(ModelStreamEvent::Failed {
-            failure: gemini_failure("invalid_response", message.into(), request_id),
-        });
+        let usage_capture = append_usage(
+            value,
+            self.response_id.as_deref(),
+            terminal_usage,
+            &mut events,
+        );
+        events.push(ModelStreamEvent::Failed { failure });
         DecodedSseFrame {
             events,
             usage_capture,
@@ -84,8 +91,7 @@ impl WireStreamDecoder for GeminiStreamDecoder {
     fn decode_frame(
         &mut self,
         data: &str,
-        request_id: Option<&str>,
-        redact: &dyn Fn(&str) -> String,
+        context: &StreamFrameContext<'_>,
     ) -> Result<DecodedSseFrame> {
         if self.failed {
             return Ok(DecodedSseFrame {
@@ -95,8 +101,80 @@ impl WireStreamDecoder for GeminiStreamDecoder {
             });
         }
 
-        let value: Value = serde_json::from_str(data)
-            .map_err(|_| PureError::Protocol("invalid Gemini SSE JSON".into()))?;
+        let value: Value = serde_json::from_str(data).map_err(|error| {
+            context
+                .protocol_failure("invalid Gemini SSE JSON")
+                .with_source(error)
+        })?;
+        let failure = context.decode_failure(&value);
+        let error_envelope = google_error_envelope(&value);
+        if error_envelope.is_some() || (failure.is_some() && !value.is_object()) {
+            self.failed = true;
+            let mut events = Vec::new();
+            self.close_open_text_block(&mut events);
+            let usage_capture = error_envelope.and_then(|envelope| {
+                append_usage(envelope, self.response_id.as_deref(), true, &mut events)
+            });
+            let failure = failure.unwrap_or_else(|| {
+                ClassifiedProviderError::from_http_status(None).into_failure(&context.failure)
+            });
+            events.push(ModelStreamEvent::Failed { failure });
+            return Ok(DecodedSseFrame {
+                events,
+                usage_capture,
+                reached_terminal: true,
+            });
+        }
+        if !value.is_object()
+            || ![
+                "candidates",
+                "promptFeedback",
+                "usageMetadata",
+                "responseId",
+                "modelVersion",
+            ]
+            .iter()
+            .any(|field| value.get(field).is_some())
+        {
+            return Err(context
+                .protocol_failure("invalid Gemini stream event")
+                .into());
+        }
+        if failure.is_none() {
+            let invalid_finish_reason = value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .is_some_and(|candidates| {
+                    candidates.iter().any(|candidate| {
+                        candidate
+                            .get("finishReason")
+                            .is_some_and(|reason| !reason.is_string())
+                    })
+                });
+            let invalid_block_reason = value
+                .get("promptFeedback")
+                .and_then(|feedback| feedback.get("blockReason"))
+                .is_some_and(|reason| !reason.is_string());
+            if invalid_finish_reason || invalid_block_reason {
+                let failure = context.protocol_failure("invalid Gemini termination reason");
+                let mut events = Vec::new();
+                let Some(usage_capture) =
+                    append_usage(&value, self.response_id.as_deref(), false, &mut events)
+                else {
+                    return Err(failure.into());
+                };
+                self.failed = true;
+                self.close_open_text_block(&mut events);
+                events.push(ModelStreamEvent::Failed { failure });
+                return Ok(DecodedSseFrame {
+                    events,
+                    usage_capture: Some(usage_capture),
+                    reached_terminal: true,
+                });
+            }
+        }
+
+        let mut events = Vec::new();
         let response_id = value
             .get("responseId")
             .and_then(Value::as_str)
@@ -107,62 +185,28 @@ impl WireStreamDecoder for GeminiStreamDecoder {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
-        let mut events = Vec::new();
-        let mut usage_capture = None;
         if let Some(raw_usage) = value.get("usageMetadata").filter(|meta| !meta.is_null()) {
-            let meta = serde_json::from_value::<GeminiUsageMetadata>(raw_usage.clone())
-                .map_err(|_| PureError::Protocol("invalid Gemini usageMetadata".into()))?;
-            if let Some(report) = meta.to_usage_report() {
-                events.push(ModelStreamEvent::Usage(report));
-                usage_capture = Some(CapturedUsageObservation {
-                    response_id: response_id.clone().or_else(|| self.response_id.clone()),
-                    model: model_version.clone(),
-                    service_tier: raw_usage
-                        .get("serviceTier")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    usage: raw_usage.clone(),
+            serde_json::from_value::<GeminiUsageMetadata>(raw_usage.clone()).map_err(|error| {
+                context
+                    .protocol_failure("invalid Gemini usageMetadata")
+                    .with_source(error)
+            })?;
+        }
+        let terminal_usage = failure.is_some()
+            || self.finished_ok
+            || value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .is_some_and(|candidates| {
+                    candidates.iter().any(|candidate| {
+                        candidate
+                            .get("finishReason")
+                            .and_then(Value::as_str)
+                            .is_some_and(|reason| {
+                                !matches!(reason, "" | "FINISH_REASON_UNSPECIFIED")
+                            })
+                    })
                 });
-            }
-        }
-
-        if value.get("error").is_some() {
-            let Some(parsed) = parse_google_http_error(data.as_bytes()) else {
-                return Ok(self.fail_invalid_response(
-                    events,
-                    usage_capture,
-                    request_id.map(redact),
-                    "invalid Gemini error envelope",
-                ));
-            };
-            self.failed = true;
-            self.close_open_text_block(&mut events);
-            let mut failure = pl_model_wire::provider_error::stream_failure(
-                parsed.code.as_deref(),
-                None,
-                None,
-                parsed
-                    .message
-                    .as_deref()
-                    .map(redact)
-                    .unwrap_or_else(|| "Gemini stream returned error".into()),
-            );
-            failure.code = parsed.code.as_deref().map(redact);
-            failure.context.request_id = request_id.map(redact);
-            if let Some(kind) = parsed.force_kind {
-                failure.kind = kind;
-            }
-            if let Some(retry) = parsed.force_retry {
-                failure.retry = retry;
-            }
-            events.push(ModelStreamEvent::Failed { failure });
-            return Ok(DecodedSseFrame {
-                events,
-                usage_capture,
-                reached_terminal: true,
-            });
-        }
-
         if !value.is_object()
             || value.get("responseId").is_some_and(|id| !id.is_string())
             || self
@@ -173,9 +217,10 @@ impl WireStreamDecoder for GeminiStreamDecoder {
         {
             return Ok(self.fail_invalid_response(
                 events,
-                usage_capture,
-                request_id.map(redact),
-                "Gemini response must be an object with a stable responseId",
+                &value,
+                terminal_usage,
+                context
+                    .protocol_failure("Gemini response must be an object with a stable responseId"),
             ));
         }
         if self.response_id.is_none() && response_id.is_some() {
@@ -196,45 +241,30 @@ impl WireStreamDecoder for GeminiStreamDecoder {
             Err(message) => {
                 return Ok(self.fail_invalid_response(
                     events,
-                    usage_capture,
-                    request_id.map(redact),
-                    message,
+                    &value,
+                    terminal_usage,
+                    context.protocol_failure(message),
                 ));
             }
         };
         let finish_reason = candidate
             .and_then(|c| c.get("finishReason"))
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
+            .and_then(Value::as_str);
+        if finish_reason == Some("FINISH_REASON_UNSPECIFIED") {
+            // The protobuf default is not a terminal reason. Preserve it for diagnostics
+            // if EOF arrives without STOP, without cutting off later signed parts.
+            let mut failure =
+                context.protocol_failure("Gemini stream ended without a terminal finishReason");
+            failure.code = Some("FINISH_REASON_UNSPECIFIED".to_owned());
+            self.incomplete_failure = Some(failure);
+        }
+        let finish_reason =
+            finish_reason.filter(|reason| !matches!(*reason, "" | "FINISH_REASON_UNSPECIFIED"));
 
         if let Some(model) = &model_version {
             events.push(ModelStreamEvent::ResponseModelObserved {
                 model: model.clone(),
                 terminal: finish_reason.is_some(),
-            });
-        }
-
-        if candidate.is_none()
-            && let Some(block_reason) = value
-                .get("promptFeedback")
-                .and_then(|f| f.get("blockReason"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty() && *s != "BLOCK_REASON_UNSPECIFIED")
-        {
-            self.failed = true;
-            self.close_open_text_block(&mut events);
-            events.push(ModelStreamEvent::Failed {
-                failure: gemini_failure(
-                    block_reason,
-                    format!("Gemini prompt blocked: {block_reason}"),
-                    request_id.map(redact),
-                ),
-            });
-            return Ok(DecodedSseFrame {
-                events,
-                usage_capture,
-                reached_terminal: true,
             });
         }
 
@@ -247,9 +277,9 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                 if let Err(message) = validate_part(part) {
                     return Ok(self.fail_invalid_response(
                         events,
-                        usage_capture,
-                        request_id.map(redact),
-                        message,
+                        &value,
+                        terminal_usage,
+                        context.protocol_failure(message),
                     ));
                 }
                 if !is_ignorable_empty_part(part) {
@@ -300,9 +330,11 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                     Err(error) => {
                         return Ok(self.fail_invalid_response(
                             events,
-                            usage_capture,
-                            request_id.map(redact),
-                            &error.to_string(),
+                            &value,
+                            terminal_usage,
+                            context
+                                .protocol_failure(error.to_string())
+                                .with_source(error),
                         ));
                     }
                 };
@@ -314,9 +346,9 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                     else {
                         return Ok(self.fail_invalid_response(
                             events,
-                            usage_capture,
-                            request_id.map(redact),
-                            "Gemini functionCall part missing name",
+                            &value,
+                            terminal_usage,
+                            context.protocol_failure("Gemini functionCall part missing name"),
                         ));
                     };
                     let upstream_id = match gemini_function_call_id(fc_obj) {
@@ -324,9 +356,11 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                         Err(error) => {
                             return Ok(self.fail_invalid_response(
                                 events,
-                                usage_capture,
-                                request_id.map(redact),
-                                &error.to_string(),
+                                &value,
+                                terminal_usage,
+                                context
+                                    .protocol_failure(error.to_string())
+                                    .with_source(error),
                             ));
                         }
                     };
@@ -335,9 +369,11 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                     {
                         return Ok(self.fail_invalid_response(
                             events,
-                            usage_capture,
-                            request_id.map(redact),
-                            "duplicate Gemini functionCall id in the same batch",
+                            &value,
+                            terminal_usage,
+                            context.protocol_failure(
+                                "duplicate Gemini functionCall id in the same batch",
+                            ),
                         ));
                     }
                     self.close_open_text_block(&mut events);
@@ -377,25 +413,20 @@ impl WireStreamDecoder for GeminiStreamDecoder {
             }
         }
 
-        let mut reached_terminal = false;
-        if let Some(reason) = finish_reason {
-            match reason.as_str() {
-                "STOP" => {
-                    self.finished_ok = true;
-                }
-                other => {
-                    self.failed = true;
-                    reached_terminal = true;
-                    self.close_open_text_block(&mut events);
-                    events.push(ModelStreamEvent::Failed {
-                        failure: gemini_failure(
-                            other,
-                            format!("Gemini generation terminated with finishReason={other}"),
-                            request_id.map(redact),
-                        ),
-                    });
-                }
-            }
+        let usage_capture = append_usage(
+            &value,
+            self.response_id.as_deref(),
+            terminal_usage,
+            &mut events,
+        );
+
+        let reached_terminal = failure.is_some();
+        if let Some(failure) = failure {
+            self.failed = true;
+            self.close_open_text_block(&mut events);
+            events.push(ModelStreamEvent::Failed { failure });
+        } else if finish_reason == Some("STOP") {
+            self.finished_ok = true;
         }
 
         Ok(DecodedSseFrame {
@@ -406,8 +437,16 @@ impl WireStreamDecoder for GeminiStreamDecoder {
     }
 
     fn finish(&mut self) -> Vec<ModelStreamEvent> {
-        if self.failed || !self.finished_ok {
+        if self.failed {
             return Vec::new();
+        }
+        if !self.finished_ok {
+            return self
+                .incomplete_failure
+                .take()
+                .map(|failure| ModelStreamEvent::Failed { failure })
+                .into_iter()
+                .collect();
         }
         self.finished_ok = false;
         let mut events = Vec::new();
@@ -415,10 +454,10 @@ impl WireStreamDecoder for GeminiStreamDecoder {
         if !self.saw_output {
             self.failed = true;
             events.push(ModelStreamEvent::Failed {
-                failure: gemini_failure(
-                    "invalid_response",
-                    "Gemini STOP response contained no answer or function call".into(),
-                    None,
+                failure: ProviderFailure::new(
+                    pl_protocol::ProviderFailureKind::Protocol,
+                    "Gemini STOP response contained no answer or function call",
+                    pl_protocol::RetryDisposition::Permanent,
                 ),
             });
             return events;
@@ -428,6 +467,37 @@ impl WireStreamDecoder for GeminiStreamDecoder {
         });
         events
     }
+}
+
+fn append_usage(
+    value: &Value,
+    response_id: Option<&str>,
+    terminal: bool,
+    events: &mut Vec<ModelStreamEvent>,
+) -> Option<CapturedUsageObservation> {
+    let meta: GeminiUsageMetadata =
+        serde_json::from_value(value.get("usageMetadata")?.clone()).ok()?;
+    let usage = meta.to_usage_report()?;
+    events.push(ModelStreamEvent::Usage { usage, terminal });
+    Some(CapturedUsageObservation {
+        response_id: value
+            .get("responseId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .or(response_id)
+            .map(str::to_owned),
+        model: value
+            .get("modelVersion")
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned),
+        service_tier: value
+            .get("usageMetadata")?
+            .get("serviceTier")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        usage: value.get("usageMetadata")?.clone(),
+    })
 }
 
 fn single_candidate(value: &Value) -> std::result::Result<Option<&Value>, &'static str> {
@@ -505,27 +575,6 @@ fn validate_part(part: &Value) -> std::result::Result<(), &'static str> {
         return Err("Gemini part cannot combine text and functionCall");
     }
     Ok(())
-}
-
-fn gemini_failure(
-    code: &str,
-    message: String,
-    request_id: Option<String>,
-) -> pl_protocol::ProviderFailure {
-    let mut failure =
-        pl_model_wire::provider_error::stream_failure(Some(code), None, None, message);
-    failure.context.request_id = request_id;
-    match code {
-        "MALFORMED_RESPONSE" => {
-            failure.kind = ProviderFailureKind::Protocol;
-            failure.retry = RetryDisposition::Retryable {
-                retry_after_ms: None,
-            };
-        }
-        "invalid_response" => failure.kind = ProviderFailureKind::Protocol,
-        _ => {}
-    }
-    failure
 }
 
 fn is_ignorable_empty_part(part: &Value) -> bool {

@@ -26,8 +26,27 @@ fn latest_snapshot_retains_failed_boundary_and_shared_content_for_a_slow_observe
     sender.charge_output(11).unwrap();
     let held = sender.latest();
     sender
-        .begin_recovery(5, Arc::from("connection interrupted"))
+        .stage_recovery(
+            5,
+            1,
+            Arc::from("connection interrupted"),
+            None,
+            ModelRecoveryPhase::Repairing,
+        )
         .unwrap();
+    let repairing = sender.latest();
+    assert_eq!(repairing.observation().generation, 0);
+    assert_eq!(repairing.observation().failed.len(), 1);
+    assert_eq!(
+        repairing.observation().recovery.unwrap().phase,
+        ModelRecoveryPhase::Repairing
+    );
+    sender.finish_recovery(ModelRecoveryPhase::Waiting);
+    assert_eq!(sender.latest().observation().generation, 0);
+    assert_eq!(sender.latest().observation().failed.len(), 1);
+    sender.start_recovery_send();
+    sender.start_recovery_send();
+    assert_eq!(sender.latest().observation().generation, 1);
     sender.edit_parts(|parts| parts.push(part("successful body")));
     sender.charge_output(26).unwrap();
     sender.finish_recovery(ModelRecoveryPhase::Recovered);
@@ -57,6 +76,58 @@ fn latest_snapshot_retains_failed_boundary_and_shared_content_for_a_slow_observe
         stored.observation().failed[0].parts[0].text(),
         "failed body"
     );
+}
+
+#[test]
+fn preparation_retries_share_the_budget_without_creating_inference_generations() {
+    let sender = ModelProgressSender::detached(1024);
+    for retry in 1..=2 {
+        sender
+            .stage_preparation_recovery(
+                5,
+                retry,
+                Arc::from("upload rejected"),
+                None,
+                ModelRecoveryPhase::Waiting,
+            )
+            .unwrap();
+    }
+    sender.start_recovery_send();
+    assert_eq!(sender.latest().observation().generation, 0);
+    sender.edit_parts(|parts| parts.push(part("first inference")));
+    sender
+        .stage_recovery(
+            5,
+            3,
+            Arc::from("file reference expired"),
+            None,
+            ModelRecoveryPhase::Repairing,
+        )
+        .unwrap();
+    sender
+        .stage_preparation_recovery(
+            5,
+            4,
+            Arc::from("replacement upload rejected"),
+            None,
+            ModelRecoveryPhase::Waiting,
+        )
+        .unwrap();
+    assert_eq!(sender.latest().observation().generation, 0);
+    sender.start_recovery_send();
+    let latest = sender.latest();
+    let observation = latest.observation();
+    assert_eq!(observation.generation, 1);
+    assert_eq!(observation.recovery.unwrap().retry, 4);
+    assert_eq!(observation.failed.len(), 4);
+    let original = &observation.failed[2];
+    assert!(!original.preparation);
+    assert_eq!(original.parts[0].text(), "first inference");
+    for index in [0, 1, 3] {
+        let preparation = &observation.failed[index];
+        assert!(preparation.preparation);
+        assert!(preparation.parts.is_empty());
+    }
 }
 
 #[test]

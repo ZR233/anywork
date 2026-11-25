@@ -218,6 +218,7 @@ bool sameDisplayRecord(DisplayRecord first, DisplayRecord second) {
       _sameTool(a.tool, b.tool) &&
       a.wait == b.wait &&
       a.textChannel == b.textChannel &&
+      a.modelRecovery == b.modelRecovery &&
       a.contentPresent == b.contentPresent &&
       a.startedAt == b.startedAt &&
       a.finishedAt == b.finishedAt &&

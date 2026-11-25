@@ -571,6 +571,7 @@
   "statusOutputTokensLabel": "输出",
   "statusCostEstimateLabel": "估算费用",
   "statusUsageIncompleteLabel": "不完整",
+  "statusUsageNonTerminalSampleLabel": "不完整 · 缺少最终用量报告",
   "statusCacheLabel": "缓存命中率",
   "statusCacheHitTokensLabel": "缓存命中",
   "statusCacheMissTokensLabel": "缓存未命中",
@@ -580,6 +581,7 @@
   "statusCacheSavingsLabel": "缓存节省",
   "statusUnpricedUsageLabel": "未计价",
   "sessionAllAgentsCostTooltip": "会话全部智能体费用",
+  "sessionCostIncompleteUsage": "用量不完整",
   "sessionMoreActionsTooltip": "更多操作",
   "sessionOpenWorkspace": "打开工作区",
   "sessionOpenWith": "打开方式",
@@ -3216,20 +3218,87 @@
   "timelineFailureCategoryInternal": "内部错误",
   "timelineProviderKindAuth": "身份认证",
   "timelineProviderKindAuthz": "权限不足",
-  "timelineProviderKindCapacity": "服务繁忙 / 限流",
-  "timelineProviderKindConfig": "配置错误",
+  "timelineProviderKindQuota": "余额或额度不足",
+  "timelineProviderKindRateLimit": "暂时限流",
+  "timelineProviderKindServiceBusy": "服务繁忙",
+  "timelineProviderKindContextLimit": "上下文过长",
+  "timelineProviderKindInvalidRequest": "请求不合法",
+  "timelineProviderKindContentBlocked": "内容被拦截",
+  "timelineProviderKindOutputLimit": "达到输出上限",
   "timelineProviderKindTransport": "网络传输",
   "timelineProviderKindProtocol": "响应协议",
-  "timelineRetryableHint": "可重试",
-  "timelineRetryAfterSeconds": "建议 {seconds} 秒后重试",
+  "timelineRetryableHint": "此类失败可能可重试",
+  "timelineRetryAfterSeconds": "供应商建议等待 {seconds} 秒",
   "@timelineRetryAfterSeconds": {
     "placeholders": {
       "seconds": {
-        "type": "int"
+        "type": "String"
       }
     }
   },
   "timelineRetryPermanent": "不自动重试",
+  "timelineRetryWaitUnrepresentable": "供应商要求的等待时间超出支持范围",
+  "timelineRecoveryRetryCount": "已重试 {count} 次，上限 {limit} 次",
+  "@timelineRecoveryRetryCount": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
+  "timelineRecoveryRetryCountOnly": "已重试 {count} 次",
+  "@timelineRecoveryRetryCountOnly": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "timelineRecoveryRetryLimit": "重试上限 {limit} 次",
+  "@timelineRecoveryRetryLimit": {
+    "placeholders": {"limit": {"type": "int"}}
+  },
+  "timelineRecoveryWaitMillis": "{millis} 毫秒",
+  "@timelineRecoveryWaitMillis": {
+    "placeholders": {"millis": {"type": "String"}}
+  },
+  "timelineRecoveryWaitSeconds": "{seconds} 秒",
+  "@timelineRecoveryWaitSeconds": {
+    "placeholders": {"seconds": {"type": "String"}}
+  },
+  "timelineRecoveryScheduledWait": "预计等待 {duration}",
+  "@timelineRecoveryScheduledWait": {
+    "placeholders": {"duration": {"type": "String"}}
+  },
+  "timelineRecoveryAttempt": "第 {count} 次重试，上限 {limit} 次",
+  "@timelineRecoveryAttempt": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
+  "timelineRecoveryRepairing": "正在修复模型请求",
+  "timelineRecoveryWaiting": "等待重试模型请求",
+  "timelineRecoveryRetrying": "正在重试模型请求",
+  "timelineRecoveryRecovered": "模型请求已恢复",
+  "timelineRecoveryFailed": "模型请求恢复已停止",
+  "timelineRecoveryActionHttpFallback": "切换到 HTTP",
+  "timelineRecoveryActionRefreshAttachments": "刷新附件",
+  "timelineRecoveryActionFullContext": "重新发送完整上下文",
+  "timelineRecoveryStopBudgetExhausted": "已达到重试上限，自动恢复已停止。",
+  "timelineRecoveryStopSideEffects": "重试可能重复执行外部操作，自动恢复已停止。",
+  "timelineRecoveryStopSaveFailed": "无法保存恢复状态，自动恢复已停止。",
+  "timelineRecoveryStopRepairFailed": "修复失败，自动恢复已停止。",
+  "timelineRecoveryStopWaitUnrepresentable": "所需等待时间过长，无法安全安排重试，自动恢复已停止。",
+  "timelineRecoveryStopContextCompactionRequired": "需要先压缩输入才能继续执行。",
+  "timelineRecoveryStopPermanentFailure": "此失败无法自动恢复。",
+  "timelineRecoveryStopCancelled": "自动恢复已取消。",
+  "timelineDetailErrorType": "供应商错误类型",
+  "timelineDetailRequestId": "供应商请求 ID",
+  "timelineDetailFailureStage": "失败阶段",
+  "timelineFailureStageUnknown": "未知阶段",
+  "timelineFailureStageRequest": "发送请求",
+  "timelineFailureStageHandshake": "连接握手",
+  "timelineFailureStageStream": "接收响应流",
+  "timelineFailureStageAttachment": "处理附件",
+  "timelineDetailRecoveryAction": "最近一次恢复操作",
+  "timelineDetailLastRecoveryWait": "上次安排的等待时间",
+  "timelineDetailRecoveryError": "恢复错误",
   "timelineBudgetLimitModelStep": "模型步数",
   "timelineBudgetLimitToolCall": "工具调用次数",
   "timelineBudgetLimitWait": "等待步数",
@@ -3282,7 +3351,7 @@
   "timelineDetailProviderKind": "细分类型",
   "timelineDetailCode": "错误码",
   "timelineDetailHttpStatus": "HTTP 状态",
-  "timelineDetailRetry": "重试策略",
+  "timelineDetailRetry": "重试提示",
   "timelineDetailDuration": "耗时",
   "timelineDetailBudgetKind": "触发上限",
   "timelineDetailRollover": "上下文整理",

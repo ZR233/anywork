@@ -556,6 +556,20 @@ CurrentAtom _currentAtomFromFrb(frb_presentation.BridgeCurrentAtom value) =>
       textChannel: value.textChannel == null
           ? null
           : ThreadTextChannel.values.byName(value.textChannel!.name),
+      modelRecovery: switch (value.modelRecovery) {
+        final recovery? => StudioModelRecoveryNotice(
+          phase: StudioModelRecoveryPhase.values.byName(recovery.phase.name),
+          retryCount: recovery.retryCount,
+          maxRetries: recovery.maxRetries,
+          failureKind: recovery.failureKind,
+          reason: StudioProviderRecovery.values.asNameMap()[recovery.reason],
+          effectiveWaitMillis: recovery.effectiveWaitMillis,
+          failure: recovery.failure == null
+              ? null
+              : _turnFailureFromFrb(recovery.failure!),
+        ),
+        null => null,
+      },
       startedAt: _timelineTimestampFromFrb(value.startedAt),
       finishedAt: _timelineTimestampFromFrb(value.finishedAt),
       contentPresent: value.contentPresent,

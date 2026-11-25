@@ -144,12 +144,16 @@ class SessionCostView {
     required this.rootThreadId,
     required this.estimatedCosts,
     required this.hasUnpricedUsage,
+    required this.hasIncompleteUsage,
   });
 
   final String rootThreadId;
   final List<PurposeCostView> purposeCosts;
   final List<RuntimeCostView> estimatedCosts;
   final bool hasUnpricedUsage;
+
+  /// Whether any thread in the session has incomplete saved usage.
+  final bool hasIncompleteUsage;
 
   @override
   bool operator ==(Object other) =>
@@ -158,7 +162,8 @@ class SessionCostView {
           rootThreadId == other.rootThreadId &&
           listEquals(purposeCosts, other.purposeCosts) &&
           listEquals(estimatedCosts, other.estimatedCosts) &&
-          hasUnpricedUsage == other.hasUnpricedUsage;
+          hasUnpricedUsage == other.hasUnpricedUsage &&
+          hasIncompleteUsage == other.hasIncompleteUsage;
 
   @override
   int get hashCode => Object.hash(
@@ -166,6 +171,7 @@ class SessionCostView {
     Object.hashAll(purposeCosts),
     Object.hashAll(estimatedCosts),
     hasUnpricedUsage,
+    hasIncompleteUsage,
   );
 
   String get label {

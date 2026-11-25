@@ -240,7 +240,7 @@ pub(super) fn bridge_turn_state(value: &TurnState) -> BridgeTurnState {
         TurnState::Failed(state) => BridgeTurnState::Failed {
             started_at: state.started_at(),
             completed_at: state.completed_at(),
-            failure: bridge_turn_failure(state.failure().clone()),
+            failure: Box::new(bridge_turn_failure(state.failure().clone())),
         },
         TurnState::BudgetLimited(state) => BridgeTurnState::BudgetLimited {
             started_at: state.started_at(),
@@ -294,17 +294,75 @@ pub(super) fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetL
 }
 
 pub(super) fn bridge_turn_failure(value: pl_studio_runtime::TurnFailure) -> BridgeTurnFailureDto {
+    use pl_studio_runtime::{ModelRecoveryStopReason, ProviderFailureStage, RetryDisposition};
+
     BridgeTurnFailureDto {
-        category: format!("{:?}", value.category).to_ascii_lowercase(),
-        provider_kind: value
-            .provider_kind
-            .map(|kind| format!("{kind:?}").to_ascii_lowercase()),
+        category: match value.category {
+            pl_studio_runtime::TurnFailureCategory::Provider => "provider",
+            pl_studio_runtime::TurnFailureCategory::ProviderCapacity => "providerCapacity",
+            pl_studio_runtime::TurnFailureCategory::Tool => "tool",
+            pl_studio_runtime::TurnFailureCategory::Validation => "validation",
+            pl_studio_runtime::TurnFailureCategory::Protocol => "protocol",
+            pl_studio_runtime::TurnFailureCategory::Internal => "internal",
+        }
+        .to_owned(),
+        provider_kind: value.provider_kind.map(|kind| kind.as_str().to_owned()),
         code: value.code,
         http_status: value.http_status,
         message: value.message,
-        retryable: value.retry.is_retryable(),
+        retry_disposition: match &value.retry {
+            RetryDisposition::Retryable { .. } => "retryable",
+            RetryDisposition::Permanent => "permanent",
+            RetryDisposition::WaitUnrepresentable => "waitUnrepresentable",
+        }
+        .to_owned(),
         retry_after_ms: value.retry.retry_after_ms(),
+        error_type: value.error_type,
+        request_id: value.request_id,
+        stage: value.stage.map(|stage| {
+            match stage {
+                ProviderFailureStage::Unknown => "unknown",
+                ProviderFailureStage::Request => "request",
+                ProviderFailureStage::Handshake => "handshake",
+                ProviderFailureStage::Stream => "stream",
+                ProviderFailureStage::Attachment => "attachment",
+            }
+            .to_owned()
+        }),
+        recovery: value.recovery.map(|recovery| BridgeModelRecoveryInfo {
+            retry_count: recovery.retry_count,
+            max_retries: recovery.max_retries,
+            effective_wait_millis: recovery.effective_wait_millis,
+            reason: recovery.reason.map(provider_recovery_label),
+            stop_reason: recovery.stop_reason.map(|reason| {
+                match reason {
+                    ModelRecoveryStopReason::BudgetExhausted => "budgetExhausted",
+                    ModelRecoveryStopReason::SideEffects => "sideEffects",
+                    ModelRecoveryStopReason::SaveFailed => "saveFailed",
+                    ModelRecoveryStopReason::RepairFailed => "repairFailed",
+                    ModelRecoveryStopReason::WaitUnrepresentable => "waitUnrepresentable",
+                    ModelRecoveryStopReason::ContextCompactionRequired => {
+                        "contextCompactionRequired"
+                    }
+                    ModelRecoveryStopReason::PermanentFailure => "permanentFailure",
+                    ModelRecoveryStopReason::Cancelled => "cancelled",
+                }
+                .to_owned()
+            }),
+            error: recovery.error,
+        }),
     }
+}
+
+pub(super) fn provider_recovery_label(value: pl_studio_runtime::ProviderRecovery) -> String {
+    use pl_studio_runtime::ProviderRecovery;
+    match value {
+        ProviderRecovery::None => "none",
+        ProviderRecovery::HttpFallback => "httpFallback",
+        ProviderRecovery::RefreshAttachments => "refreshAttachments",
+        ProviderRecovery::FullContext => "fullContext",
+    }
+    .to_owned()
 }
 
 pub(super) fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
@@ -735,6 +793,150 @@ fn mcp_server(value: McpServerDescriptor) -> BridgeThreadMcpServerDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_terminal_usage_survives_product_snapshot_and_bridge() {
+        use pl_studio_runtime::{
+            ThreadUsageDiagnostics, UsageCounterField, UsageGapIssue, UsageGapReason,
+            UsageIssueCountSnapshot,
+        };
+
+        let snapshot = ThreadRuntimeUsage {
+            diagnostics: ThreadUsageDiagnostics {
+                incomplete_calls: 1,
+                partial_calls: 1,
+                by_issue: vec![UsageIssueCountSnapshot {
+                    issue: UsageGapIssue {
+                        field: UsageCounterField::Total,
+                        reason: UsageGapReason::NonTerminalSample,
+                    },
+                    calls: 1,
+                }],
+                ..Default::default()
+            },
+            has_incomplete_usage: true,
+            model_id: "fixture-model".into(),
+            context_window: None,
+            max_context_window: None,
+            auto_compact_limit: None,
+            latest_context_tokens: 12,
+            prompt_tokens: 12,
+            completion_tokens: 3,
+            cached_prompt_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            inference_count: 1,
+            total_tokens: 15,
+            cache_usage: Default::default(),
+            estimated_costs: vec![RuntimeCostAmount {
+                currency: "USD".into(),
+                amount: 0.125,
+            }],
+            estimated_cache_savings: Vec::new(),
+            has_unpriced_usage: false,
+            prompt_generation: None,
+            prompt_cache_policy: None,
+            prefix_changed_reason: None,
+            updated_at: 1000,
+        };
+
+        let product_json = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            product_json["diagnostics"]["byIssue"][0]["issue"]["reason"],
+            "nonTerminalSample"
+        );
+        let bridge = runtime_usage(serde_json::from_value(product_json).unwrap());
+        assert!(bridge.has_incomplete_usage);
+        assert_eq!(bridge.diagnostics.partial_calls, 1);
+        let [reason] = bridge.diagnostics.by_issue.as_slice() else {
+            panic!("expected only the recorded non-terminal sample issue")
+        };
+        assert_eq!(reason.issue.field, BridgeUsageCounterField::Total);
+        assert_eq!(reason.issue.reason, BridgeUsageGapReason::NonTerminalSample);
+        assert_eq!(reason.calls, 1);
+        assert_eq!(bridge.total_tokens, 15);
+        let [cost] = bridge.estimated_costs.as_slice() else {
+            panic!("expected the frozen cost to survive the bridge")
+        };
+        assert_eq!(cost.currency, "USD");
+        assert_eq!(cost.amount, 0.125);
+    }
+
+    #[test]
+    fn failure_labels_match_the_serialized_product_contract() {
+        let mut failure = pl_studio_runtime::TurnFailure::permanent(
+            pl_studio_runtime::TurnFailureCategory::ProviderCapacity,
+            "temporary rate limit",
+        );
+        failure.provider_kind = Some(pl_studio_runtime::ProviderFailureKind::RateLimit);
+        let serialized = serde_json::to_value(&failure).unwrap();
+        let bridge = bridge_turn_failure(failure);
+        assert_eq!(serialized["category"], bridge.category);
+        assert_eq!(serialized["providerKind"], bridge.provider_kind.unwrap());
+    }
+
+    #[test]
+    fn failure_payload_matches_the_fixture_consumed_by_dart() {
+        use pl_studio_runtime::{
+            ModelRecoveryInfo, ModelRecoveryStopReason, ProviderFailureStage, ProviderRecovery,
+        };
+
+        let mut failure = pl_studio_runtime::TurnFailure::permanent(
+            pl_studio_runtime::TurnFailureCategory::Provider,
+            "Temporarily rate limited",
+        );
+        failure.provider_kind = Some(pl_studio_runtime::ProviderFailureKind::RateLimit);
+        failure.code = Some("rate_limit_exceeded".into());
+        failure.http_status = Some(429);
+        failure.error_type = Some("rate_limit_error".into());
+        failure.request_id = Some("req-rate-limit-fixture".into());
+        failure.stage = Some(ProviderFailureStage::Request);
+        failure.recovery = Some(ModelRecoveryInfo {
+            retry_count: Some(2),
+            max_retries: Some(2),
+            effective_wait_millis: Some(47_000),
+            reason: Some(ProviderRecovery::None),
+            stop_reason: Some(ModelRecoveryStopReason::BudgetExhausted),
+            error: None,
+        });
+        failure.retry = pl_studio_runtime::RetryDisposition::Retryable {
+            retry_after_ms: Some(45_000),
+        };
+        let bridge = bridge_turn_failure(failure.clone());
+        let payload = serde_json::json!({
+            "kind": "failed",
+            "data": {"startedAt": 1000, "completedAt": 1005, "failure": failure}
+        });
+        let expected: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test/fixtures/provider_failure_retry.json"
+        )))
+        .unwrap();
+        assert_eq!(payload, expected);
+        assert_eq!(
+            bridge,
+            BridgeTurnFailureDto {
+                category: "provider".into(),
+                provider_kind: Some("rateLimit".into()),
+                code: Some("rate_limit_exceeded".into()),
+                http_status: Some(429),
+                message: "Temporarily rate limited".into(),
+                retry_disposition: "retryable".into(),
+                retry_after_ms: Some(45_000),
+                error_type: Some("rate_limit_error".into()),
+                request_id: Some("req-rate-limit-fixture".into()),
+                stage: Some("request".into()),
+                recovery: Some(BridgeModelRecoveryInfo {
+                    retry_count: Some(2),
+                    max_retries: Some(2),
+                    effective_wait_millis: Some(47_000),
+                    reason: Some("none".into()),
+                    stop_reason: Some("budgetExhausted".into()),
+                    error: None,
+                }),
+            }
+        );
+    }
 
     fn directory_row(
         backend: pl_studio_runtime::AgentBackend,

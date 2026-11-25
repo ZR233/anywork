@@ -56,7 +56,7 @@ pub(crate) use summary::{PurposeUsageProjection, SessionUsageProjection};
 use event::CallLogRecord;
 use log::{CallLog, LOG_CLEANUP_INTERVAL};
 
-pub(crate) const CALLS_SCHEMA_VERSION: i64 = 10;
+pub(crate) const CALLS_SCHEMA_VERSION: i64 = 11;
 /// `calls` 目录下日志段所在子目录名。
 const CALL_LOG_DIR_NAME: &str = "logs";
 /// 一天对应的秒数；日志轮转/保留期以 UTC 自然日为准。
@@ -127,6 +127,7 @@ pub(crate) struct SessionCostRollup {
     pub(crate) estimated_costs: Vec<RuntimeCostAmount>,
     pub(crate) purpose_costs: Vec<PurposeCostRollup>,
     pub(crate) has_unpriced_usage: bool,
+    pub(crate) has_incomplete_usage: bool,
 }
 
 /// 单个 purpose 的费用聚合投影。
@@ -405,14 +406,23 @@ impl CallsStore {
         &self.writer.observation
     }
 
-    pub(crate) async fn close(&self) -> Result<()> {
-        self.stop_best_effort();
+    /// Joins the writer after shutdown has sealed admission, keeping the database readable.
+    pub(crate) async fn join_stopped_writer(&self) -> Result<()> {
+        if !self.writer.stopping.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut task = self.task.lock().await;
         let completion = match task.as_mut() {
             Some(handle) => handle.await.context("failed to join calls writer"),
             None => Ok(()),
         };
         task.take();
+        completion
+    }
+
+    pub(crate) async fn close(&self) -> Result<()> {
+        self.stop_best_effort();
+        let completion = self.join_stopped_writer().await;
         self.writer.log.lock().await.close();
         let database = self.writer.db.close_by_ref().await;
         completion?;
@@ -823,7 +833,7 @@ impl CallsStore {
                 "legacy call watermark is ahead of checkpoint"
             );
         }
-        let rows = self.writer.db.query_all_raw(statement("SELECT purpose,cost_currency,amount FROM call_usage_summary WHERE thread_id=? AND revision=0 AND cost_currency<>''", vec![thread_id.into()])).await?;
+        let rows = self.writer.db.query_all_raw(statement("SELECT purpose,cost_currency,amount FROM call_usage_summary WHERE thread_id=? AND legacy_import_eligible=1 AND cost_currency<>''", vec![thread_id.into()])).await?;
         let mut purposes =
             std::collections::BTreeMap::<Option<String>, Vec<RuntimeCostAmount>>::new();
         for row in rows {

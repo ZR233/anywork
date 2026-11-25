@@ -577,14 +577,13 @@ fn pure_error(error: &PureError) -> StudioError {
             false,
         ),
         PureError::Io(_) | PureError::MemoryError(_) => StudioError::storage(),
-        PureError::HttpError(_)
-        | PureError::TransientModelTransport { .. }
-        | PureError::ProviderCapacity { .. }
-        | PureError::Provider(_) => StudioError::new(
-            StudioErrorCode::Unavailable,
-            "A required Studio service is unavailable",
-            true,
-        ),
+        PureError::HttpError(_) | PureError::ProviderCapacity { .. } | PureError::Provider(_) => {
+            StudioError::new(
+                StudioErrorCode::Unavailable,
+                "A required Studio service is unavailable",
+                true,
+            )
+        }
         PureError::LlmError(_)
         | PureError::ContextOverflow(_)
         | PureError::ToolNotFound(_)

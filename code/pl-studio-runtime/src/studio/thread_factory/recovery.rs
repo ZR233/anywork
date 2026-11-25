@@ -26,7 +26,7 @@ pub(crate) fn load_current_for_recovery<'a>(
     Box::pin(async move {
         let state = store.state_for(&thread.workspace_id, &thread.id)?;
         if let Some(current) = state.load_current().await? {
-            return Ok(Some(migrate_loaded_plan(current)?));
+            return Ok(Some(prepare_loaded_current(current)?));
         }
         // An old Thread may not have current.json until the parent-owned maintenance gate upgrades
         // its schema-24 history. Ordinary current reads never take this branch.
@@ -39,16 +39,17 @@ pub(crate) fn load_current_for_recovery<'a>(
             return state
                 .load_current()
                 .await?
-                .map(migrate_loaded_plan)
+                .map(prepare_loaded_current)
                 .transpose();
         }
         Ok(None)
     })
 }
 
-fn migrate_loaded_plan(
+fn prepare_loaded_current(
     mut current: pl_core::thread::current::ThreadCurrent,
 ) -> Result<pl_core::thread::current::ThreadCurrent> {
+    crate::studio::producer_migration::prepare_model_current(&mut current)?;
     let mut snapshot = current.state.to_paused_snapshot();
     crate::plan_tool::migrate_saved_plan(&mut snapshot)?;
     current.state.extensions = snapshot.extensions;

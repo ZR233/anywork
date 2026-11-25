@@ -47,6 +47,83 @@ ThreadNotificationFrame _runtimeUpdate(
 );
 
 void main() {
+  test('a completed update exposes the typed model recovery outcome', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    final current = await fixture.open(demand: _demand);
+    final session = fixture.session();
+    await current.deliver(
+      ResetCurrentFrame(currentViewForWorkspace(_workspace())),
+    );
+
+    const failure = StudioTurnFailureView(
+      category: 'provider',
+      providerKind: 'transport',
+      code: null,
+      httpStatus: null,
+      message: 'Connection lost',
+      retryDisposition: StudioRetryDisposition.retryable,
+      retryAfterMs: null,
+      requestId: 'request-1',
+      stage: StudioProviderFailureStage.stream,
+      recovery: StudioModelRecoveryInfo(
+        retryCount: 0,
+        maxRetries: 2,
+        stopReason: StudioModelRecoveryStopReason.sideEffects,
+      ),
+    );
+    await current.deliver(
+      NotificationCurrentFrame(
+        revision: const CurrentRevision(ownerId: 'owner', revision: 2),
+        notification: ThreadNotificationFrame(
+          threadId: 'thread',
+          revision: 2,
+          baseRevision: 1,
+          epoch: 7,
+          update: ThreadTurnUpdate(
+            StudioTurnView(
+              turnId: 'turn',
+              threadId: 'thread',
+              revision: 2,
+              state: const FailedStudioTurnState(
+                startedAt: 0,
+                completedAt: 1,
+                failure: failure,
+              ),
+              updatedAt: DateTime.utc(2026),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final observed = session.state.lastTurn?.failure;
+    expect(observed?.retryDisposition, StudioRetryDisposition.retryable);
+    expect(observed?.requestId, 'request-1');
+    expect(observed?.stage, StudioProviderFailureStage.stream);
+    expect(
+      observed?.recovery,
+      equals(
+        const StudioModelRecoveryInfo(
+          retryCount: 0,
+          maxRetries: 2,
+          stopReason: StudioModelRecoveryStopReason.sideEffects,
+        ),
+      ),
+    );
+    expect(
+      observed?.recovery,
+      isNot(
+        equals(
+          const StudioModelRecoveryInfo(
+            maxRetries: 2,
+            stopReason: StudioModelRecoveryStopReason.sideEffects,
+          ),
+        ),
+      ),
+    );
+  });
+
   test(
     'model route follows Current and an old epoch cannot resurrect it',
     () async {

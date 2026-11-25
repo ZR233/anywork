@@ -20,6 +20,7 @@ pub struct ModelRuntime {
     pub(super) http_client: reqwest::Client,
     pub(super) model: ModelDefinition,
     pub(super) codec: &'static dyn WireCodec,
+    pub(super) error_policy: &'static dyn pl_model_wire::provider_error::ProviderErrorPolicy,
     pub(super) clock: Arc<dyn super::InferenceClock>,
     pub(super) pricing_mode: PricingMode,
     pub(super) upload: Option<&'static FileUploadService>,
@@ -35,6 +36,7 @@ impl ModelRuntime {
     pub fn bind_route(
         route: crate::config::ResolvedModelRoute,
         codec: &'static dyn WireCodec,
+        error_policy: &'static dyn pl_model_wire::provider_error::ProviderErrorPolicy,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
         pl_model_wire::service_tiers::validate(&route.model, route.service_tier.as_deref())?;
@@ -43,6 +45,7 @@ impl ModelRuntime {
             route.endpoint,
             route.model,
             codec,
+            error_policy,
             upload,
         )?
         .with_pricing_mode(route.pricing_mode);
@@ -61,6 +64,7 @@ impl ModelRuntime {
         endpoint: ProtocolEndpoint,
         model: ModelDefinition,
         codec: &'static dyn WireCodec,
+        error_policy: &'static dyn pl_model_wire::provider_error::ProviderErrorPolicy,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
         if match upload {
@@ -88,6 +92,7 @@ impl ModelRuntime {
         }
         let http_client = reqwest::Client::builder()
             .retry(reqwest::retry::never())
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(super::transport_policy::HTTP_CONNECT_TIMEOUT)
             .read_timeout(super::transport_policy::HTTP_READ_IDLE_TIMEOUT)
             .build()
@@ -105,6 +110,7 @@ impl ModelRuntime {
             upload,
             model,
             codec,
+            error_policy,
             clock: Arc::new(super::clock::SystemInferenceClock),
             pricing_mode: crate::model::PricingMode::Catalog,
         })
@@ -187,8 +193,15 @@ impl ModelRuntime {
     pub fn compaction(&self) -> Option<RemoteCompaction<'_>> {
         let runtime = self;
         (runtime.endpoint().service_capabilities.remote_compaction
-            && runtime.model().extra.binding.transport.protocol == WireApi::Responses)
-            .then_some(RemoteCompaction { runtime })
+            && runtime.model().extra.binding.transport.protocol == WireApi::Responses
+            && runtime
+                .model()
+                .extra
+                .binding
+                .transport
+                .supported_connection_modes
+                .contains(&crate::protocol::ConnectionMode::Http))
+        .then_some(RemoteCompaction { runtime })
     }
 }
 
@@ -218,6 +231,20 @@ impl RemoteCompaction<'_> {
         request: CompletionRequest,
         context: ModelInvocationContext,
     ) -> std::result::Result<NativeCompactionCheckpoint, CompletionFailure> {
+        self.checkpoint_with_report(
+            request,
+            context,
+            &mut super::invocation::InvocationReport::default(),
+        )
+        .await
+    }
+
+    pub(super) async fn checkpoint_with_report(
+        &self,
+        request: CompletionRequest,
+        context: ModelInvocationContext,
+        report: &mut super::invocation::InvocationReport,
+    ) -> std::result::Result<NativeCompactionCheckpoint, CompletionFailure> {
         if !request.attachments.is_empty()
             || !request.prepared_content.is_empty()
             || request.temperature.is_some()
@@ -230,21 +257,25 @@ impl RemoteCompaction<'_> {
             )
             .into());
         }
-        let response = self
-            .complete(
-                ModelCompactionRequest {
-                    mode: crate::completion::OpenAiCompactionMode::RemoteV2,
-                    prefix: request,
-                },
-                context,
-            )
-            .await?;
+        let response = super::compaction::compact_context(
+            self.runtime,
+            ModelCompactionRequest {
+                mode: crate::completion::OpenAiCompactionMode::RemoteV2,
+                prefix: request,
+            },
+            context,
+            report,
+        )
+        .await?;
         let item =
             crate::completion::remote_compaction_checkpoint(response.input).map_err(|source| {
                 CompletionFailure {
+                    recovery_error: None,
+                    settlements: Vec::new(),
                     source: Box::new(source),
                     accounting: Box::new(response.accounting.clone()),
-                    timing: response.timing,
+                    usage_is_terminal: report.usage_is_terminal,
+                    timing: response.timing.map(Box::new),
                     model_observation: response.model_observation.clone().map(Box::new),
                     presentation_items: Vec::new(),
                     partial_progress: None,
@@ -267,6 +298,12 @@ impl RemoteCompaction<'_> {
         request: ModelCompactionRequest,
         context: ModelInvocationContext,
     ) -> std::result::Result<ModelCompactionResponse, CompletionFailure> {
-        super::compaction::compact_context(self.runtime, request, context).await
+        super::compaction::compact_context(
+            self.runtime,
+            request,
+            context,
+            &mut super::invocation::InvocationReport::default(),
+        )
+        .await
     }
 }

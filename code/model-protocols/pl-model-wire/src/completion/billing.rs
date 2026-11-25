@@ -139,11 +139,37 @@ pub struct InferenceModelObservation {
     pub reported_model: Option<String>,
 }
 
+/// The terminal result of a real model transport attempt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InferenceAttemptOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+/// Provenance of one network attempt within the original logical request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceAttemptMetadata {
+    pub logical_request_id: String,
+    pub core_attempt_id: String,
+    pub generation: u32,
+    pub stage: pl_protocol::ProviderFailureStage,
+    pub outcome: InferenceAttemptOutcome,
+    /// Whether the latest received usage sample was explicitly terminal.
+    /// Missing token dimensions still remain unknown in the accounting report.
+    pub usage_is_terminal: bool,
+}
+
 /// SQLite 中以 `inference_id` 幂等保存的单次计费记录。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceBillingRecord {
     pub inference_id: String,
+    /// Old aggregate receipts have no evidence from which to reconstruct sub-attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<InferenceAttemptMetadata>,
     /// Producer-defined usage purpose; absent when historical provenance is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,

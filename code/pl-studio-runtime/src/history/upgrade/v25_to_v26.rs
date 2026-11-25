@@ -266,6 +266,8 @@ pub(in crate::history) async fn migrate_v25_to_v26(
     ))
     .await?;
 
+    super::schema26_manifest::repair_in_transaction(db, &database_id, false).await?;
+
     let fk_errors = db
         .query_all_raw(statement("PRAGMA foreign_key_check", vec![]))
         .await?;
@@ -276,7 +278,6 @@ pub(in crate::history) async fn migrate_v25_to_v26(
         )));
     }
 
-    super::schema26_manifest::mark_repaired(db).await?;
     Ok((database_id, migrated_rows))
 }
 
@@ -788,6 +789,7 @@ fn entity_meta_from_v25(head: &HistoryEntityHeadV25) -> HistoryEventMeta {
         started_at: head.started_at,
         finished_at: head.finished_at,
         text_channel: head.text_channel,
+        model_recovery: None,
         single_visibility: head.single_visibility,
         presentation_contract: head.presentation_contract.clone(),
         source_order: None,
@@ -1240,7 +1242,7 @@ async fn read_v25_body_bytes(db: &impl ConnectionTrait, body: &V25BodyMeta) -> R
     Ok(bytes)
 }
 
-async fn insert_migrated_inline_blob(
+pub(super) async fn insert_migrated_inline_blob(
     db: &impl ConnectionTrait,
     owner_event_id: &str,
     ordinal: u64,

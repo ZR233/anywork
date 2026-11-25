@@ -25,7 +25,7 @@ pub(in crate::studio) enum TurnEvent {
 /// Turn lifecycle and interactions — and no subscriber ever projects content.
 #[derive(Debug, Clone)]
 pub(in crate::studio) enum LiveEvent {
-    Turn { turn: Turn, event: TurnEvent },
+    Turn { turn: Box<Turn>, event: TurnEvent },
     Interaction(Box<InteractionRequest>),
 }
 
@@ -51,6 +51,7 @@ impl RetainedBytes for LiveEvent {
     fn retained_bytes(&self) -> u64 {
         match self {
             Self::Turn { turn, .. } => (std::mem::size_of::<Self>() as u64)
+                .saturating_add(std::mem::size_of::<Turn>() as u64)
                 .saturating_add(turn.id.len() as u64)
                 .saturating_add(turn.thread_id.len() as u64)
                 .saturating_add(optional_bytes(turn.input_id.as_deref()))
@@ -213,7 +214,10 @@ impl FeedProjector {
                 let turn = turns
                     .remove(&record.turn_id)
                     .expect("effect Turn frame was validated before projection");
-                events.push(LiveEvent::Turn { turn, event });
+                events.push(LiveEvent::Turn {
+                    turn: Box::new(turn),
+                    event,
+                });
             }
         }
         // A Turn record is only committed when a Turn starts or finishes, but a task start, a tool
@@ -239,7 +243,10 @@ impl FeedProjector {
                 let turn = turns
                     .remove(&record.turn_id)
                     .expect("phase Turn frame was validated before projection");
-                events.push(LiveEvent::Turn { turn, event });
+                events.push(LiveEvent::Turn {
+                    turn: Box::new(turn),
+                    event,
+                });
             }
         }
         if let Some(events) = events.as_mut() {

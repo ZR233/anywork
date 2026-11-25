@@ -1,13 +1,14 @@
 use pl_model_wire::completion::stream::event::ModelStreamEvent;
 use pl_model_wire::completion::{CompletionRequest, ModelContextItem, ToolSpec};
-use pl_model_wire::model::{ModelDefinition, reasoning_fields};
+use pl_model_wire::model::{ModelDefinition, UsageReport, reasoning_fields};
 use pl_model_wire::protocol::{ProtocolEndpoint, WireApi};
-use pl_model_wire::transport::{SseContentTypePolicy, default_parse_http_error};
+use pl_model_wire::provider_error::{ClassifiedProviderError, StreamFrameContext};
+use pl_model_wire::transport::SseContentTypePolicy;
 use pl_model_wire::wire_codec::{
-    CapturedUsageObservation, DecodedSseFrame, EncodeHttpRequestInput, ParsedHttpError,
-    PreparedHttpRequest, VisibleOutputProtocol, WireCodec, WireStreamDecoder,
+    CapturedUsageObservation, DecodedSseFrame, EncodeHttpRequestInput, PreparedHttpRequest,
+    VisibleOutputProtocol, WireCodec, WireStreamDecoder,
 };
-use pl_protocol::{PureError, Result};
+use pl_protocol::{ProviderFailure, PureError, Result};
 use serde_json::Value;
 
 use crate::openai::sse::{OpenAiStreamDecoder, SseStreamEvent};
@@ -158,114 +159,296 @@ impl WireCodec for OpenAiWireCodec {
     fn new_stream_decoder(&self, api: WireApi) -> Box<dyn WireStreamDecoder> {
         Box::new(OpenAiWireStreamDecoder {
             decoder: OpenAiStreamDecoder::new(VisibleOutputProtocol::of(api)),
+            terminal_failure: false,
+            chat_failure: None,
         })
-    }
-
-    fn parse_http_error(&self, body: &[u8]) -> Option<ParsedHttpError> {
-        default_parse_http_error(body)
     }
 }
 
 struct OpenAiWireStreamDecoder {
     decoder: OpenAiStreamDecoder,
+    terminal_failure: bool,
+    chat_failure: Option<ProviderFailure>,
 }
 
 impl WireStreamDecoder for OpenAiWireStreamDecoder {
     fn decode_frame(
         &mut self,
         data: &str,
-        request_id: Option<&str>,
-        redact: &dyn Fn(&str) -> String,
+        context: &StreamFrameContext<'_>,
     ) -> Result<DecodedSseFrame> {
-        let mut event = serde_json::from_str::<SseStreamEvent>(data)
-            .map_err(|_| PureError::Protocol("invalid SSE JSON".into()))?;
-        event.request_id = request_id.map(str::to_owned);
-        redact_sse_event(&mut event, redact);
-        let usage_capture = usage_observation(&event);
-        let reached_terminal = matches!(
-            event.kind.as_str(),
-            "response.completed" | "response.failed" | "response.incomplete"
-        );
-        let events = self.decoder.decode(&event);
-        Ok(DecodedSseFrame {
-            events,
-            usage_capture,
-            reached_terminal,
+        self.decode_openai_frame(data, context).map_err(|error| {
+            self.terminal_failure = true;
+            match self.chat_failure.take() {
+                Some(primary) => primary.with_source(error).into(),
+                None => error,
+            }
         })
     }
 
     fn finish(&mut self) -> Vec<ModelStreamEvent> {
-        self.decoder.finish()
+        if self.terminal_failure {
+            return Vec::new();
+        }
+        let mut events = self.decoder.finish();
+        if let Some(failure) = self.chat_failure.take() {
+            self.terminal_failure = true;
+            events.retain(|event| !matches!(event, ModelStreamEvent::Completed { .. }));
+            events.push(ModelStreamEvent::Failed { failure });
+        }
+        events
     }
 }
 
-fn usage_observation(event: &SseStreamEvent) -> Option<CapturedUsageObservation> {
-    let response = event.response.as_ref();
-    let response_usage = response
-        .and_then(|response| response.get("usage"))
-        .and_then(ProviderTokenUsage::from_value);
-    let usage = event.usage.as_ref().or(response_usage.as_ref())?;
-    let usage = serde_json::to_value(usage).ok()?;
-    Some(CapturedUsageObservation {
-        response_id: event
-            .id
-            .clone()
-            .or_else(|| response.and_then(|r| r.get("id")?.as_str().map(str::to_owned))),
-        model: event
-            .model
-            .clone()
-            .or_else(|| response.and_then(|r| r.get("model")?.as_str().map(str::to_owned))),
-        service_tier: response.and_then(|r| r.get("service_tier")?.as_str().map(str::to_owned)),
-        usage,
-    })
-}
+impl OpenAiWireStreamDecoder {
+    fn terminate_failure(&mut self, failure: ProviderFailure) -> ProviderFailure {
+        self.terminal_failure = true;
+        match self.chat_failure.take() {
+            Some(primary) => primary.with_source(failure),
+            None => failure,
+        }
+    }
 
-fn redact_value(value: &mut Value, redact: &dyn Fn(&str) -> String) {
-    match value {
-        Value::String(text) => *text = redact(text),
-        Value::Array(values) => values.iter_mut().for_each(|v| redact_value(v, redact)),
-        Value::Object(values) => values.values_mut().for_each(|v| redact_value(v, redact)),
-        _ => {}
-    }
-}
-
-fn redact_sse_event(event: &mut SseStreamEvent, redact: &dyn Fn(&str) -> String) {
-    if let Some(request_id) = &mut event.request_id {
-        *request_id = redact(request_id);
-    }
-    if let Some(error) = &mut event.error {
-        redact_value(error, redact);
-    }
-    if let Some(error) = event
-        .response
-        .as_mut()
-        .and_then(|response| response.get_mut("error"))
-    {
-        redact_value(error, redact);
-    }
-    if let Some(response) = event.response.as_mut() {
-        match event.kind.as_str() {
-            "response.failed" => {
-                for field in ["message", "code"] {
-                    if let Some(Value::String(text)) = response.get_mut(field) {
-                        *text = redact(text);
+    fn decode_openai_frame(
+        &mut self,
+        data: &str,
+        context: &StreamFrameContext<'_>,
+    ) -> Result<DecodedSseFrame> {
+        if self.terminal_failure {
+            return Ok(DecodedSseFrame {
+                events: Vec::new(),
+                usage_capture: None,
+                reached_terminal: true,
+            });
+        }
+        let value: Value = serde_json::from_str(data).map_err(|error| {
+            context
+                .protocol_failure("invalid SSE JSON")
+                .with_source(error)
+        })?;
+        if !value.is_object() {
+            return Err(context
+                .protocol_failure("OpenAI stream event must be an object")
+                .into());
+        }
+        let mut failure = context.decode_failure(&value).or_else(|| {
+            matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("error" | "response.failed" | "response.incomplete")
+            )
+            .then(|| ClassifiedProviderError::from_http_status(None).into_failure(&context.failure))
+        });
+        if let Some(problem) = responses_terminal_conflict(&value, context) {
+            let diagnostic = context.protocol_failure(problem);
+            failure = Some(match failure {
+                Some(failure) if failure.kind == pl_protocol::ProviderFailureKind::Protocol => {
+                    failure
+                }
+                Some(mut failure) => {
+                    if failure.kind == pl_protocol::ProviderFailureKind::Unknown {
+                        failure.kind = pl_protocol::ProviderFailureKind::Protocol;
                     }
+                    failure.reported_wait_ms =
+                        failure.reported_wait_ms.or(failure.retry.retry_after_ms());
+                    failure.retry = pl_protocol::RetryDisposition::Permanent;
+                    failure.context.recovery = pl_protocol::ProviderRecovery::None;
+                    failure.with_source(diagnostic)
                 }
-            }
-            "response.incomplete" => {
-                if let Some(Value::String(reason)) = response
-                    .get_mut("incomplete_details")
-                    .and_then(|details| details.get_mut("reason"))
-                {
-                    *reason = redact(reason);
-                }
-            }
-            _ => {}
+                None => diagnostic,
+            });
         }
+        if let Some(failure) = failure {
+            let chat_choice = context.wire_api == WireApi::ChatCompletions
+                && value.get("choices").is_some_and(Value::is_array)
+                && value.get("error").is_none()
+                && !matches!(context.event_name, Some("error"))
+                && value.get("type").and_then(Value::as_str) != Some("error");
+            if chat_choice {
+                // Chat reports final usage in a separate empty-choices chunk.
+                self.chat_failure.get_or_insert(failure);
+            } else {
+                let failure = self.terminate_failure(failure);
+                return Ok(failed_frame(&value, failure, context.wire_api));
+            }
+        }
+        let sample = usage_observation(&value, context.wire_api).map_err(|error| {
+            context
+                .protocol_failure("invalid OpenAI stream usage")
+                .with_source(error)
+        })?;
+        let mut event: SseStreamEvent = serde_json::from_value(value).map_err(|error| {
+            context
+                .protocol_failure("invalid OpenAI stream event")
+                .with_source(error)
+        })?;
+        if event.kind.is_empty()
+            && let Some(name) = context.event_name.filter(|name| *name != "message")
+        {
+            event.kind = name.to_owned();
+        }
+        if event.kind.is_empty() && event.choices.is_none() {
+            return Err(context
+                .protocol_failure("OpenAI stream event has no type or choices")
+                .into());
+        }
+        if event.kind == "response.completed"
+            && event
+                .response
+                .as_ref()
+                .is_none_or(|response| !response.is_object())
+        {
+            return Err(context
+                .protocol_failure("completed Responses event has no response object")
+                .into());
+        }
+        let mut events = self.decoder.decode(&event);
+        let reached_terminal = event.kind == "response.completed";
+        let usage_capture = sample.map(|(usage, capture)| {
+            let terminal = match context.wire_api {
+                WireApi::ChatCompletions => {
+                    event.chat_has_finish_reason()
+                        || (self.decoder.chat_finished()
+                            && event.choices.as_ref().is_some_and(Vec::is_empty))
+                }
+                _ => reached_terminal,
+            };
+            let before_terminal = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        ModelStreamEvent::Completed { .. } | ModelStreamEvent::Failed { .. }
+                    )
+                })
+                .unwrap_or(events.len());
+            events.insert(before_terminal, ModelStreamEvent::Usage { usage, terminal });
+            capture
+        });
+        for event in &mut events {
+            if let ModelStreamEvent::Failed { failure } = event {
+                failure.context.request_id = context.failure.request_id.map(context.failure.redact);
+                self.terminal_failure = true;
+            }
+        }
+        if self.chat_failure.is_some()
+            && event.choices.as_ref().is_some_and(Vec::is_empty)
+            && usage_capture.is_some()
+        {
+            events.extend(self.finish());
+        }
+        Ok(DecodedSseFrame {
+            events,
+            usage_capture,
+            reached_terminal: self.terminal_failure || reached_terminal,
+        })
     }
-    if event.kind == "error" {
-        for value in [&mut event.message, &mut event.code].into_iter().flatten() {
-            *value = redact(value);
-        }
+}
+
+fn responses_terminal_conflict(
+    value: &Value,
+    context: &StreamFrameContext<'_>,
+) -> Option<&'static str> {
+    if context.wire_api != WireApi::Responses {
+        return None;
+    }
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .or(context.event_name)?;
+    let status = match kind {
+        "response.completed" => "completed",
+        "response.failed" => "failed",
+        "response.incomplete" => "incomplete",
+        _ => return None,
+    };
+    let response = value.get("response")?;
+    if response
+        .get("status")
+        .is_some_and(|value| value.as_str() != Some(status))
+    {
+        return Some("Responses terminal event contradicts its response status");
+    }
+    if status == "completed"
+        && ["error", "incomplete_details"]
+            .iter()
+            .any(|field| response.get(field).is_some_and(|value| !value.is_null()))
+    {
+        return Some("completed Responses event contains failure metadata");
+    }
+    None
+}
+
+fn usage_observation(
+    value: &Value,
+    api: WireApi,
+) -> serde_json::Result<Option<(UsageReport, CapturedUsageObservation)>> {
+    let response = value.get("response");
+    let inner = response.and_then(|response| response.get("usage"));
+    let outer = value.get("usage").filter(|usage| !usage.is_null());
+    let normalize = |usage: ProviderTokenUsage| {
+        let report = match api {
+            WireApi::ChatCompletions => usage.to_chat_usage(),
+            _ => usage.to_responses_usage(),
+        }?;
+        Some((report, usage))
+    };
+    let decode = |value: Option<&Value>| {
+        value
+            .and_then(ProviderTokenUsage::from_value)
+            .and_then(normalize)
+    };
+    let sample = match api {
+        WireApi::ChatCompletions => outer
+            .cloned()
+            .map(serde_json::from_value::<ProviderTokenUsage>)
+            .transpose()?
+            .and_then(normalize)
+            .or_else(|| decode(inner)),
+        _ => decode(inner).or_else(|| decode(outer)),
+    };
+    let Some((report, usage)) = sample else {
+        return Ok(None);
+    };
+    let capture = CapturedUsageObservation {
+        response_id: value
+            .get("id")
+            .and_then(Value::as_str)
+            .or_else(|| response.and_then(|r| r.get("id")?.as_str()))
+            .map(str::to_owned),
+        model: value
+            .get("model")
+            .and_then(Value::as_str)
+            .or_else(|| response.and_then(|r| r.get("model")?.as_str()))
+            .map(str::to_owned),
+        service_tier: response.and_then(|r| r.get("service_tier")?.as_str().map(str::to_owned)),
+        usage: serde_json::to_value(usage)?,
+    };
+    Ok(Some((report, capture)))
+}
+
+fn failed_frame(value: &Value, failure: ProviderFailure, api: WireApi) -> DecodedSseFrame {
+    let response = value.get("response").unwrap_or(value);
+    let mut events = Vec::new();
+    if let Some(model) = response.get("model").and_then(Value::as_str) {
+        events.push(ModelStreamEvent::ResponseModelObserved {
+            model: model.to_owned(),
+            terminal: true,
+        });
+    }
+    let usage_capture = usage_observation(value, api)
+        .ok()
+        .flatten()
+        .map(|(usage, capture)| {
+            events.push(ModelStreamEvent::Usage {
+                usage,
+                terminal: true,
+            });
+            capture
+        });
+    events.push(ModelStreamEvent::Failed { failure });
+    DecodedSseFrame {
+        events,
+        usage_capture,
+        reached_terminal: true,
     }
 }

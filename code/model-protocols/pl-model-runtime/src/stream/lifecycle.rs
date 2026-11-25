@@ -278,7 +278,7 @@ impl StreamLifecycle {
                 vec![ModelStreamEvent::PresentationItem { item, state }]
             }
             ModelStreamEvent::Replay(update) => vec![ModelStreamEvent::Replay(update)],
-            ModelStreamEvent::Usage(usage) => vec![ModelStreamEvent::Usage(usage)],
+            usage @ ModelStreamEvent::Usage { .. } => vec![usage],
             ModelStreamEvent::Failed { failure } => {
                 let mut events = self.close_open_blocks();
                 events.push(ModelStreamEvent::Failed { failure });

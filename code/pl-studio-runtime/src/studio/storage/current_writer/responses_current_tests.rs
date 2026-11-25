@@ -245,7 +245,7 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
         model.extra.binding.set_transport(ModelTransportProfile::responses_http());
         let factory = ModelFactory::new(ThreadModel::new(pl_model::runtime::new_with_account_id(
             "fixture", pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()), model,
-        )?, None));
+        )?, None).with_in_memory_settlement());
         let handle = ThreadHandle::start_current(THREAD.into(), Some(factory.open_session().await?))?;
         owners.push(handle.clone());
         handle.register_tools(vec![Registration::prepare("read_file".into(), thread_tool_declaration(&ToolSpec::Function {

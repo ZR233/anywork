@@ -28,6 +28,248 @@ fn turn(id: &str, text: &str) -> TurnInput {
 }
 
 #[tokio::test]
+async fn shorter_repair_above_automatic_threshold_sends_only_one_compaction() -> Result<()> {
+    run_context_repair(false).await
+}
+
+#[tokio::test]
+async fn completed_compaction_with_changed_skill_input_is_not_sent_again() -> Result<()> {
+    run_context_repair(true).await
+}
+
+async fn run_context_repair(change_skill: bool) -> Result<()> {
+    use axum::{
+        Json, Router,
+        http::{StatusCode, header::CONTENT_TYPE},
+        response::IntoResponse,
+        routing::post,
+    };
+    use std::sync::{Arc, Mutex};
+    use tokio::{
+        sync::Notify,
+        time::{Duration, timeout},
+    };
+    use tokio_util::sync::CancellationToken;
+
+    let release_failure = Arc::new(Notify::new());
+    let received_first = Arc::new(Notify::new());
+    let release_compaction = Arc::new(Notify::new());
+    let received_compaction = Arc::new(Notify::new());
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}/v1", listener.local_addr()?);
+    let app =
+        Router::new().route(
+            "/v1/responses",
+            post({
+                let release_failure = release_failure.clone();
+                let received_first = received_first.clone();
+                let release_compaction = release_compaction.clone();
+                let received_compaction = received_compaction.clone();
+                let requests = requests.clone();
+                move |Json(body): Json<serde_json::Value>| async move {
+                    let index = {
+                        let mut requests = requests.lock().unwrap();
+                        requests.push(body.to_string());
+                        requests.len()
+                    };
+                    if index == 1 {
+                        received_first.notify_one();
+                        release_failure.notified().await;
+                        return (StatusCode::BAD_REQUEST, Json(json!({"error":{
+                    "code":"context_length_exceeded","message":"fixture context overflow"
+                }}))).into_response();
+                    }
+                    if index == 2 {
+                        received_compaction.notify_one();
+                        release_compaction.notified().await;
+                    }
+                    let output = match index {
+                        2 => "shorter compacted ledger still contains several tokens",
+                        3 => "recovered original generation",
+                        _ => return StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+                    };
+                    let mut events =
+                        responses_text(output, &format!("response-{index}"), "repair-model");
+                    if index == 2 {
+                        events.last_mut().unwrap()["response"]["usage"] = json!({
+                            "input_tokens": 11, "output_tokens": 7, "total_tokens": 18
+                        });
+                    }
+                    let mut sse = events
+                        .into_iter()
+                        .map(|event| format!("data: {event}\n\n"))
+                        .collect::<String>();
+                    sse.push_str("data: [DONE]\n\n");
+                    ([(CONTENT_TYPE, "text/event-stream")], sse).into_response()
+                }
+            }),
+        );
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown.clone().cancelled_owned())
+            .into_future(),
+    );
+    let mut config = crate::StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    let account = AccountId::new("repair-fixture")?;
+    let mut model = ModelDefinition::compatible("repair-model");
+    model
+        .extra
+        .binding
+        .set_transport(ModelTransportProfile::responses_http());
+    model.base.context_window = Some(128_000);
+    model.base.auto_compact_token_limit = Some(1);
+    config.models.accounts.insert(
+        account.clone(),
+        AccountConfig::from_explicit_models(
+            pl_model_openai::endpoint::endpoint(Some(endpoint)),
+            vec![model],
+        ),
+    );
+    let route = config.models.resolve_route(
+        crate::config::root_agent_route_id(),
+        &ModelRouteConfig {
+            account_id: account,
+            model_id: "repair-model".into(),
+            effort: None,
+        },
+    )?;
+    assert_eq!(route.context.auto_compact_limit, Some(1));
+    let model = ThreadModel::new(pl_model::runtime::from_route(&route)?, None);
+    let thread = ThreadHandle::start(
+        "single-repair".into(),
+        ModelFactory::new(model.clone()).open_session().await?,
+    )?;
+    let modes = crate::mode::ThreadModeManager::default();
+    let mode = crate::studio::thread::register_builtins(&modes)?
+        .mode(&crate::mode::ThreadModeId::auto())
+        .context("Auto mode")?;
+    thread
+        .mutate_extensions(vec![ExtensionMutation::Put {
+            id: crate::mode::MODE_EXTENSION.into(),
+            expected_revision: None,
+            payload: crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(
+                &mode, None,
+            ))?,
+        }])
+        .await?;
+    let skill =
+        |description| pl_core::context::OpaquePayload::new(SKILL_VIEW_FORMAT, 1, description);
+    if change_skill {
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: "skill:fixture".into(),
+                expected_revision: None,
+                payload: skill("frozen Skill")?,
+            }])
+            .await?;
+    }
+    thread
+        .replace_context(ReplaceContext {
+            expected_revision: 0,
+            reason: ContextReplacementReason::Rebuild,
+            records: vec![pl_core::context::ContextRecord {
+                id: "large-ledger".into(),
+                turn_id: None,
+                source: pl_core::context::ContextSource::User,
+                content: vec![ContextContent::Text {
+                    text: "ORIGINAL_LEDGER ".repeat(100).into(),
+                }],
+                tool_calls: vec![],
+            }],
+        })
+        .await?;
+    let run = tokio::spawn({
+        let thread = thread.clone();
+        async move {
+            thread
+                .run_turn(turn("repaired-turn", "KEEP_ORIGINAL_USER_INPUT"))
+                .await
+        }
+    });
+    timeout(Duration::from_secs(5), received_first.notified()).await?;
+    // Install automatic preparation after the original request is in flight so the test reaches
+    // the service failure with input already above the configured automatic threshold.
+    thread
+        .set_context_preparation(Some(preparer(
+            &route,
+            model,
+            OpenAiCompactionMode::Local,
+            modes,
+            &config.models,
+        )))
+        .await?;
+    release_failure.notify_one();
+    timeout(Duration::from_secs(5), received_compaction.notified()).await?;
+    if change_skill {
+        let revision = thread.snapshot().extensions["skill:fixture"].revision;
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: "skill:fixture".into(),
+                expected_revision: Some(revision),
+                payload: skill("updated Skill")?,
+            }])
+            .await?;
+    }
+    release_compaction.notify_one();
+    let result = timeout(Duration::from_secs(5), run).await??;
+    assert!(thread.snapshot().extensions.contains_key(LATEST_RECEIPT));
+    let sent = requests.lock().unwrap().clone();
+    assert_eq!(
+        sent.len(),
+        if change_skill { 2 } else { 3 },
+        "unexpected request after the compaction result"
+    );
+    assert!(sent[0].contains("ORIGINAL_LEDGER") && sent[0].contains("KEEP_ORIGINAL_USER_INPUT"));
+    assert!(sent[1].contains(&policy(OpenAiCompactionMode::Local).requirement));
+    if change_skill {
+        use pl_core::thread::ThreadError;
+        let ThreadError::ModelRepair { primary, repair } = result.unwrap_err() else {
+            anyhow::bail!("expected paired model and repair failures");
+        };
+        assert_eq!(primary.kind, ModelFailureKind::ContextLimit);
+        assert!(matches!(&*repair, ThreadError::ExtensionConflict { .. }));
+        assert_eq!(
+            thread.snapshot().extensions["skill:fixture"]
+                .payload
+                .content(),
+            "updated Skill"
+        );
+        let effects = thread.effects().await?;
+        let settlements = effects
+            .iter()
+            .flat_map(|effect| effect.model_sub_attempt_settlements.iter())
+            .map(pl_model::runtime::model_sub_attempt_receipt)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let compaction = settlements
+            .iter()
+            .filter(|receipt| receipt.billing.purpose.as_deref() == Some("compaction"))
+            .collect::<Vec<_>>();
+        assert_eq!(compaction.len(), 1);
+        assert_eq!(
+            compaction[0].billing.accounting.usage.total_tokens,
+            Some(18)
+        );
+        let saved = &thread.snapshot().extensions[LATEST_RECEIPT];
+        let receipt = decode_receipt(saved.payload.version(), saved.payload.content())?;
+        assert!(receipt.error.is_some());
+    } else {
+        result?;
+        assert!(
+            sent[2].contains("shorter compacted ledger")
+                && sent[2].contains("KEEP_ORIGINAL_USER_INPUT")
+        );
+        assert!(!sent[2].contains("ORIGINAL_LEDGER"));
+    }
+    thread.close().await?;
+    shutdown.cancel();
+    timeout(Duration::from_secs(5), server).await???;
+    Ok(())
+}
+
+#[tokio::test]
 async fn switches_to_a_larger_model_and_reuses_handoff_after_target_failure() -> Result<()> {
     let ledger = "prior ledger marker";
     let mut reported = responses_text("source answer", "source-turn", "source");

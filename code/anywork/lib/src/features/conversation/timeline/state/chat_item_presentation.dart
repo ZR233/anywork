@@ -77,6 +77,11 @@ final class ChatItemPresentation {
       displayRecord?.contentSource is FrozenObservation &&
       !(displayRecord!.contentSource as FrozenObservation).available;
   late final ToolCardReading toolCard = readToolCard(this);
+  late final StudioModelRecoveryNotice? modelRecovery =
+      atom?.modelRecovery ??
+      (compatibility == ChatItemCompatibility.current && type == 'text'
+          ? StudioModelRecoveryNotice.fromJson(data['modelRecovery'])
+          : null);
 
   bool get showsTextCopy => switch (authorId) {
     'user' || 'parentAgent' => true,
@@ -144,6 +149,7 @@ final class ChatItemPresentation {
   /// content is never assumed empty.
   bool get isKnownEmptyText =>
       !finalEmptyAfterContent &&
+      modelRecovery == null &&
       atom?.contentPresent == false &&
       type == 'text' &&
       compatibility == ChatItemCompatibility.current &&
