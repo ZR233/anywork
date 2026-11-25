@@ -4,8 +4,8 @@ import 'package:anywork/src/features/settings/accounts/view_models/account_proje
 import 'package:anywork/src/features/settings/accounts/view_models/native_account_draft.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/account_brand.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
