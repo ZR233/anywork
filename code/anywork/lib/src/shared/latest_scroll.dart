@@ -29,7 +29,7 @@ class _LatestScrollScopeState extends State<LatestScrollScope> {
       final paused = _viewports.where((viewport) => viewport._canResume);
       _status.value = (
         paused: paused.isNotEmpty,
-        hasNewOutput: paused.any((viewport) => viewport._hasNewOutput),
+        hasNewOutput: paused.any((viewport) => viewport.widget.hasNewOutput),
       );
     });
     WidgetsBinding.instance.ensureVisualUpdate();
@@ -66,9 +66,7 @@ class _LatestScrollHost extends InheritedWidget {
 }
 
 class ReturnToLatestButton extends StatelessWidget {
-  const ReturnToLatestButton({super.key, this.labelBuilder});
-
-  final String Function(BuildContext, bool hasNewOutput)? labelBuilder;
+  const ReturnToLatestButton({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -92,10 +90,9 @@ class ReturnToLatestButton extends StatelessWidget {
                     onPressed: scope._resume,
                     icon: const Icon(Icons.arrow_downward_rounded, size: 16),
                     label: Text(
-                      labelBuilder?.call(context, status.hasNewOutput) ??
-                          (status.hasNewOutput
-                              ? l10n.timelineJumpToLatestWithNewOutput
-                              : l10n.timelineJumpToLatest),
+                      status.hasNewOutput
+                          ? l10n.timelineJumpToLatestWithNewOutput
+                          : l10n.timelineJumpToLatest,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -117,7 +114,6 @@ class LatestScrollViewport extends StatefulWidget {
     this.isActive,
     this.historyPaused = false,
     this.hasNewOutput = false,
-    this.outputRevision,
     this.onPause,
     this.onResume,
     this.onUserScroll,
@@ -132,7 +128,6 @@ class LatestScrollViewport extends StatefulWidget {
   final bool Function()? isActive;
   final bool historyPaused;
   final bool hasNewOutput;
-  final Object? outputRevision;
   final VoidCallback? onPause;
   final Future<bool> Function()? onResume;
   final ValueChanged<ScrollUpdateNotification>? onUserScroll;
@@ -150,7 +145,6 @@ class LatestScrollViewportState extends State<LatestScrollViewport> {
   _LatestScrollScopeState? _scope;
   bool _tickersEnabled = true;
   bool _paused = false;
-  bool _hasUnseenOutput = false;
   bool _selected = false;
   bool _actionIntent = false;
   bool _restoring = false;
@@ -165,7 +159,6 @@ class LatestScrollViewportState extends State<LatestScrollViewport> {
       (widget.isActive?.call() ?? true);
   bool get _isPaused => _paused || widget.historyPaused;
   bool get _canResume => _active && _isPaused;
-  bool get _hasNewOutput => widget.hasNewOutput || _hasUnseenOutput;
 
   @override
   void didChangeDependencies() {
@@ -193,15 +186,11 @@ class LatestScrollViewportState extends State<LatestScrollViewport> {
       _intent++;
       _restoring = false;
       _paused = false;
-      _hasUnseenOutput = false;
       _selected = false;
       _actionIntent = false;
       _dimensions = null;
     } else if (!_active && _restoring) {
       _pause();
-    }
-    if (_isPaused && widget.outputRevision != oldWidget.outputRevision) {
-      _hasUnseenOutput = true;
     }
     _scope?._scheduleStatus();
     if (controllerChanged || widget.enabled && !oldWidget.enabled) {
@@ -311,7 +300,6 @@ class LatestScrollViewportState extends State<LatestScrollViewport> {
       if (_selected) widget.onClearSelection?.call();
       _selected = false;
       _paused = false;
-      _hasUnseenOutput = false;
       _scheduleFollow(explicit: true);
     } finally {
       if (intent == _intent) _restoring = false;

@@ -74,7 +74,7 @@ final class AcpTimelineHeaderViewModelProvider
 }
 
 String _$acpTimelineHeaderViewModelHash() =>
-    r'ad9b56046803b104c2c9af9706217c52e45deb86';
+    r'8281cdef95793e94bd22bd7d72fa15a306dde2b4';
 
 final class AcpTimelineHeaderViewModelFamily extends $Family
     with $FunctionalFamilyOverride<AcpTimelineHeaderViewState, String> {
@@ -177,87 +177,4 @@ final class AcpTimelineRowsViewModelFamily extends $Family
 
   @override
   String toString() => r'acpTimelineRowsViewModelProvider';
-}
-
-@ProviderFor(acpTimelineItemViewModel)
-final acpTimelineItemViewModelProvider = AcpTimelineItemViewModelFamily._();
-
-final class AcpTimelineItemViewModelProvider
-    extends
-        $FunctionalProvider<AcpTimelineRow?, AcpTimelineRow?, AcpTimelineRow?>
-    with $Provider<AcpTimelineRow?> {
-  AcpTimelineItemViewModelProvider._({
-    required AcpTimelineItemViewModelFamily super.from,
-    required (String, int) super.argument,
-  }) : super(
-         retry: null,
-         name: r'acpTimelineItemViewModelProvider',
-         isAutoDispose: true,
-         dependencies: null,
-         $allTransitiveDependencies: null,
-       );
-
-  @override
-  String debugGetCreateSourceHash() => _$acpTimelineItemViewModelHash();
-
-  @override
-  String toString() {
-    return r'acpTimelineItemViewModelProvider'
-        ''
-        '$argument';
-  }
-
-  @$internal
-  @override
-  $ProviderElement<AcpTimelineRow?> $createElement($ProviderPointer pointer) =>
-      $ProviderElement(pointer);
-
-  @override
-  AcpTimelineRow? create(Ref ref) {
-    final argument = this.argument as (String, int);
-    return acpTimelineItemViewModel(ref, argument.$1, argument.$2);
-  }
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(AcpTimelineRow? value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<AcpTimelineRow?>(value),
-    );
-  }
-
-  @override
-  bool operator ==(Object other) {
-    return other is AcpTimelineItemViewModelProvider &&
-        other.argument == argument;
-  }
-
-  @override
-  int get hashCode {
-    return argument.hashCode;
-  }
-}
-
-String _$acpTimelineItemViewModelHash() =>
-    r'f1a38ace6e9772eb213f84934b75c53110d10133';
-
-final class AcpTimelineItemViewModelFamily extends $Family
-    with $FunctionalFamilyOverride<AcpTimelineRow?, (String, int)> {
-  AcpTimelineItemViewModelFamily._()
-    : super(
-        retry: null,
-        name: r'acpTimelineItemViewModelProvider',
-        dependencies: null,
-        $allTransitiveDependencies: null,
-        isAutoDispose: true,
-      );
-
-  AcpTimelineItemViewModelProvider call(String threadId, int index) =>
-      AcpTimelineItemViewModelProvider._(
-        argument: (threadId, index),
-        from: this,
-      );
-
-  @override
-  String toString() => r'acpTimelineItemViewModelProvider';
 }

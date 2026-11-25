@@ -588,7 +588,7 @@ as String?,
 /// @nodoc
 mixin _$AcpTimelineHeaderViewState {
 
- bool get loading; bool get ready; bool get disconnected; bool get observationEnded; int get itemCount; bool get hasConversationalContent; bool get hasPlan; bool get running; int get pendingPermissionCount; List<AcpCapabilityKind> get capabilities; List<AcpSlashCommandPresentation> get availableCommands; String? get errorMessage; AcpGapKind? get gapKind; AcpHistoryOriginKind? get historyKind;
+ bool get loading; bool get ready; bool get disconnected; bool get observationEnded; bool get hasConversationalContent; List<AcpCapabilityKind> get capabilities; List<AcpSlashCommandPresentation> get availableCommands; String? get errorMessage; AcpGapKind? get gapKind; AcpHistoryOriginKind? get historyKind;
 /// Create a copy of AcpTimelineHeaderViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -600,20 +600,20 @@ $AcpTimelineHeaderViewStateCopyWith<AcpTimelineHeaderViewState> get copyWith => 
 @override
 bool operator ==(Object other) {
   final _this = this as AcpTimelineHeaderViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpTimelineHeaderViewState&&(identical(other.loading, _this.loading) || other.loading == _this.loading)&&(identical(other.ready, _this.ready) || other.ready == _this.ready)&&(identical(other.disconnected, _this.disconnected) || other.disconnected == _this.disconnected)&&(identical(other.observationEnded, _this.observationEnded) || other.observationEnded == _this.observationEnded)&&(identical(other.itemCount, _this.itemCount) || other.itemCount == _this.itemCount)&&(identical(other.hasConversationalContent, _this.hasConversationalContent) || other.hasConversationalContent == _this.hasConversationalContent)&&(identical(other.hasPlan, _this.hasPlan) || other.hasPlan == _this.hasPlan)&&(identical(other.running, _this.running) || other.running == _this.running)&&(identical(other.pendingPermissionCount, _this.pendingPermissionCount) || other.pendingPermissionCount == _this.pendingPermissionCount)&&const DeepCollectionEquality().equals(other.capabilities, _this.capabilities)&&const DeepCollectionEquality().equals(other.availableCommands, _this.availableCommands)&&(identical(other.errorMessage, _this.errorMessage) || other.errorMessage == _this.errorMessage)&&(identical(other.gapKind, _this.gapKind) || other.gapKind == _this.gapKind)&&(identical(other.historyKind, _this.historyKind) || other.historyKind == _this.historyKind));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpTimelineHeaderViewState&&(identical(other.loading, _this.loading) || other.loading == _this.loading)&&(identical(other.ready, _this.ready) || other.ready == _this.ready)&&(identical(other.disconnected, _this.disconnected) || other.disconnected == _this.disconnected)&&(identical(other.observationEnded, _this.observationEnded) || other.observationEnded == _this.observationEnded)&&(identical(other.hasConversationalContent, _this.hasConversationalContent) || other.hasConversationalContent == _this.hasConversationalContent)&&const DeepCollectionEquality().equals(other.capabilities, _this.capabilities)&&const DeepCollectionEquality().equals(other.availableCommands, _this.availableCommands)&&(identical(other.errorMessage, _this.errorMessage) || other.errorMessage == _this.errorMessage)&&(identical(other.gapKind, _this.gapKind) || other.gapKind == _this.gapKind)&&(identical(other.historyKind, _this.historyKind) || other.historyKind == _this.historyKind));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpTimelineHeaderViewState;
-  return Object.hash(runtimeType,_this.loading,_this.ready,_this.disconnected,_this.observationEnded,_this.itemCount,_this.hasConversationalContent,_this.hasPlan,_this.running,_this.pendingPermissionCount,const DeepCollectionEquality().hash(_this.capabilities),const DeepCollectionEquality().hash(_this.availableCommands),_this.errorMessage,_this.gapKind,_this.historyKind);
+  return Object.hash(runtimeType,_this.loading,_this.ready,_this.disconnected,_this.observationEnded,_this.hasConversationalContent,const DeepCollectionEquality().hash(_this.capabilities),const DeepCollectionEquality().hash(_this.availableCommands),_this.errorMessage,_this.gapKind,_this.historyKind);
 }
 
 @override
 String toString() {
   final _this = this as AcpTimelineHeaderViewState;
-  return 'AcpTimelineHeaderViewState(loading: ${_this.loading}, ready: ${_this.ready}, disconnected: ${_this.disconnected}, observationEnded: ${_this.observationEnded}, itemCount: ${_this.itemCount}, hasConversationalContent: ${_this.hasConversationalContent}, hasPlan: ${_this.hasPlan}, running: ${_this.running}, pendingPermissionCount: ${_this.pendingPermissionCount}, capabilities: ${_this.capabilities}, availableCommands: ${_this.availableCommands}, errorMessage: ${_this.errorMessage}, gapKind: ${_this.gapKind}, historyKind: ${_this.historyKind})';
+  return 'AcpTimelineHeaderViewState(loading: ${_this.loading}, ready: ${_this.ready}, disconnected: ${_this.disconnected}, observationEnded: ${_this.observationEnded}, hasConversationalContent: ${_this.hasConversationalContent}, capabilities: ${_this.capabilities}, availableCommands: ${_this.availableCommands}, errorMessage: ${_this.errorMessage}, gapKind: ${_this.gapKind}, historyKind: ${_this.historyKind})';
 }
 
 
@@ -624,7 +624,7 @@ abstract mixin class $AcpTimelineHeaderViewStateCopyWith<$Res>  {
   factory $AcpTimelineHeaderViewStateCopyWith(AcpTimelineHeaderViewState value, $Res Function(AcpTimelineHeaderViewState) _then) = _$AcpTimelineHeaderViewStateCopyWithImpl;
 @useResult
 $Res call({
- bool loading, bool ready, bool disconnected, bool observationEnded, int itemCount, bool hasConversationalContent, bool hasPlan, bool running, int pendingPermissionCount, List<AcpCapabilityKind> capabilities, List<AcpSlashCommandPresentation> availableCommands, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
+ bool loading, bool ready, bool disconnected, bool observationEnded, bool hasConversationalContent, List<AcpCapabilityKind> capabilities, List<AcpSlashCommandPresentation> availableCommands, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
 });
 
 
@@ -641,18 +641,14 @@ class _$AcpTimelineHeaderViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpTimelineHeaderViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? itemCount = null,Object? hasConversationalContent = null,Object? hasPlan = null,Object? running = null,Object? pendingPermissionCount = null,Object? capabilities = null,Object? availableCommands = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? hasConversationalContent = null,Object? capabilities = null,Object? availableCommands = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
   return _then(AcpTimelineHeaderViewState(
 loading: null == loading ? _self.loading : loading // ignore: cast_nullable_to_non_nullable
 as bool,ready: null == ready ? _self.ready : ready // ignore: cast_nullable_to_non_nullable
 as bool,disconnected: null == disconnected ? _self.disconnected : disconnected // ignore: cast_nullable_to_non_nullable
 as bool,observationEnded: null == observationEnded ? _self.observationEnded : observationEnded // ignore: cast_nullable_to_non_nullable
-as bool,itemCount: null == itemCount ? _self.itemCount : itemCount // ignore: cast_nullable_to_non_nullable
-as int,hasConversationalContent: null == hasConversationalContent ? _self.hasConversationalContent : hasConversationalContent // ignore: cast_nullable_to_non_nullable
-as bool,hasPlan: null == hasPlan ? _self.hasPlan : hasPlan // ignore: cast_nullable_to_non_nullable
-as bool,running: null == running ? _self.running : running // ignore: cast_nullable_to_non_nullable
-as bool,pendingPermissionCount: null == pendingPermissionCount ? _self.pendingPermissionCount : pendingPermissionCount // ignore: cast_nullable_to_non_nullable
-as int,capabilities: null == capabilities ? _self.capabilities : capabilities // ignore: cast_nullable_to_non_nullable
+as bool,hasConversationalContent: null == hasConversationalContent ? _self.hasConversationalContent : hasConversationalContent // ignore: cast_nullable_to_non_nullable
+as bool,capabilities: null == capabilities ? _self.capabilities : capabilities // ignore: cast_nullable_to_non_nullable
 as List<AcpCapabilityKind>,availableCommands: null == availableCommands ? _self.availableCommands : availableCommands // ignore: cast_nullable_to_non_nullable
 as List<AcpSlashCommandPresentation>,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
 as String?,gapKind: freezed == gapKind ? _self.gapKind : gapKind // ignore: cast_nullable_to_non_nullable
@@ -742,10 +738,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  bool running,  int pendingPermissionCount,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  bool hasConversationalContent,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpTimelineHeaderViewState() when $default != null:
-return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.running,_that.pendingPermissionCount,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
+return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.hasConversationalContent,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
   return orElse();
 
 }
@@ -763,10 +759,10 @@ return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEn
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  bool running,  int pendingPermissionCount,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  bool hasConversationalContent,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)  $default,) {final _that = this;
 switch (_that) {
 case _AcpTimelineHeaderViewState():
-return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.running,_that.pendingPermissionCount,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
+return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.hasConversationalContent,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -783,10 +779,10 @@ return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEn
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  bool running,  int pendingPermissionCount,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  bool hasConversationalContent,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpTimelineHeaderViewState() when $default != null:
-return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.running,_that.pendingPermissionCount,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
+return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.hasConversationalContent,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
   return null;
 
 }
@@ -798,18 +794,14 @@ return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEn
 
 
 class _AcpTimelineHeaderViewState implements AcpTimelineHeaderViewState {
-  const _AcpTimelineHeaderViewState({this.loading = true, this.ready = false, this.disconnected = false, this.observationEnded = false, this.itemCount = 0, this.hasConversationalContent = false, this.hasPlan = false, this.running = false, this.pendingPermissionCount = 0,  List<AcpCapabilityKind> capabilities = const <AcpCapabilityKind>[],  List<AcpSlashCommandPresentation> availableCommands = const <AcpSlashCommandPresentation>[], this.errorMessage, this.gapKind, this.historyKind}): _capabilities = capabilities,_availableCommands = availableCommands;
+  const _AcpTimelineHeaderViewState({this.loading = true, this.ready = false, this.disconnected = false, this.observationEnded = false, this.hasConversationalContent = false,  List<AcpCapabilityKind> capabilities = const <AcpCapabilityKind>[],  List<AcpSlashCommandPresentation> availableCommands = const <AcpSlashCommandPresentation>[], this.errorMessage, this.gapKind, this.historyKind}): _capabilities = capabilities,_availableCommands = availableCommands;
 
 
 @override@JsonKey() final  bool loading;
 @override@JsonKey() final  bool ready;
 @override@JsonKey() final  bool disconnected;
 @override@JsonKey() final  bool observationEnded;
-@override@JsonKey() final  int itemCount;
 @override@JsonKey() final  bool hasConversationalContent;
-@override@JsonKey() final  bool hasPlan;
-@override@JsonKey() final  bool running;
-@override@JsonKey() final  int pendingPermissionCount;
  final  List<AcpCapabilityKind> _capabilities;
 @override@JsonKey() List<AcpCapabilityKind> get capabilities {
   if (_capabilities is EqualUnmodifiableListView) return _capabilities;
@@ -838,18 +830,18 @@ _$AcpTimelineHeaderViewStateCopyWith<_AcpTimelineHeaderViewState> get copyWith =
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpTimelineHeaderViewState&&(identical(other.loading, loading) || other.loading == loading)&&(identical(other.ready, ready) || other.ready == ready)&&(identical(other.disconnected, disconnected) || other.disconnected == disconnected)&&(identical(other.observationEnded, observationEnded) || other.observationEnded == observationEnded)&&(identical(other.itemCount, itemCount) || other.itemCount == itemCount)&&(identical(other.hasConversationalContent, hasConversationalContent) || other.hasConversationalContent == hasConversationalContent)&&(identical(other.hasPlan, hasPlan) || other.hasPlan == hasPlan)&&(identical(other.running, running) || other.running == running)&&(identical(other.pendingPermissionCount, pendingPermissionCount) || other.pendingPermissionCount == pendingPermissionCount)&&const DeepCollectionEquality().equals(other.capabilities, _capabilities)&&const DeepCollectionEquality().equals(other.availableCommands, _availableCommands)&&(identical(other.errorMessage, errorMessage) || other.errorMessage == errorMessage)&&(identical(other.gapKind, gapKind) || other.gapKind == gapKind)&&(identical(other.historyKind, historyKind) || other.historyKind == historyKind));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpTimelineHeaderViewState&&(identical(other.loading, loading) || other.loading == loading)&&(identical(other.ready, ready) || other.ready == ready)&&(identical(other.disconnected, disconnected) || other.disconnected == disconnected)&&(identical(other.observationEnded, observationEnded) || other.observationEnded == observationEnded)&&(identical(other.hasConversationalContent, hasConversationalContent) || other.hasConversationalContent == hasConversationalContent)&&const DeepCollectionEquality().equals(other.capabilities, _capabilities)&&const DeepCollectionEquality().equals(other.availableCommands, _availableCommands)&&(identical(other.errorMessage, errorMessage) || other.errorMessage == errorMessage)&&(identical(other.gapKind, gapKind) || other.gapKind == gapKind)&&(identical(other.historyKind, historyKind) || other.historyKind == historyKind));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,loading,ready,disconnected,observationEnded,itemCount,hasConversationalContent,hasPlan,running,pendingPermissionCount,const DeepCollectionEquality().hash(_capabilities),const DeepCollectionEquality().hash(_availableCommands),errorMessage,gapKind,historyKind);
+    return Object.hash(runtimeType,loading,ready,disconnected,observationEnded,hasConversationalContent,const DeepCollectionEquality().hash(_capabilities),const DeepCollectionEquality().hash(_availableCommands),errorMessage,gapKind,historyKind);
 }
 
 @override
 String toString() {
-    return 'AcpTimelineHeaderViewState(loading: $loading, ready: $ready, disconnected: $disconnected, observationEnded: $observationEnded, itemCount: $itemCount, hasConversationalContent: $hasConversationalContent, hasPlan: $hasPlan, running: $running, pendingPermissionCount: $pendingPermissionCount, capabilities: $capabilities, availableCommands: $availableCommands, errorMessage: $errorMessage, gapKind: $gapKind, historyKind: $historyKind)';
+    return 'AcpTimelineHeaderViewState(loading: $loading, ready: $ready, disconnected: $disconnected, observationEnded: $observationEnded, hasConversationalContent: $hasConversationalContent, capabilities: $capabilities, availableCommands: $availableCommands, errorMessage: $errorMessage, gapKind: $gapKind, historyKind: $historyKind)';
 }
 
 
@@ -860,7 +852,7 @@ abstract mixin class _$AcpTimelineHeaderViewStateCopyWith<$Res> implements $AcpT
   factory _$AcpTimelineHeaderViewStateCopyWith(_AcpTimelineHeaderViewState value, $Res Function(_AcpTimelineHeaderViewState) _then) = __$AcpTimelineHeaderViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- bool loading, bool ready, bool disconnected, bool observationEnded, int itemCount, bool hasConversationalContent, bool hasPlan, bool running, int pendingPermissionCount, List<AcpCapabilityKind> capabilities, List<AcpSlashCommandPresentation> availableCommands, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
+ bool loading, bool ready, bool disconnected, bool observationEnded, bool hasConversationalContent, List<AcpCapabilityKind> capabilities, List<AcpSlashCommandPresentation> availableCommands, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
 });
 
 
@@ -877,18 +869,14 @@ class __$AcpTimelineHeaderViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpTimelineHeaderViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? itemCount = null,Object? hasConversationalContent = null,Object? hasPlan = null,Object? running = null,Object? pendingPermissionCount = null,Object? capabilities = null,Object? availableCommands = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? hasConversationalContent = null,Object? capabilities = null,Object? availableCommands = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
   return _then(_AcpTimelineHeaderViewState(
 loading: null == loading ? _self.loading : loading // ignore: cast_nullable_to_non_nullable
 as bool,ready: null == ready ? _self.ready : ready // ignore: cast_nullable_to_non_nullable
 as bool,disconnected: null == disconnected ? _self.disconnected : disconnected // ignore: cast_nullable_to_non_nullable
 as bool,observationEnded: null == observationEnded ? _self.observationEnded : observationEnded // ignore: cast_nullable_to_non_nullable
-as bool,itemCount: null == itemCount ? _self.itemCount : itemCount // ignore: cast_nullable_to_non_nullable
-as int,hasConversationalContent: null == hasConversationalContent ? _self.hasConversationalContent : hasConversationalContent // ignore: cast_nullable_to_non_nullable
-as bool,hasPlan: null == hasPlan ? _self.hasPlan : hasPlan // ignore: cast_nullable_to_non_nullable
-as bool,running: null == running ? _self.running : running // ignore: cast_nullable_to_non_nullable
-as bool,pendingPermissionCount: null == pendingPermissionCount ? _self.pendingPermissionCount : pendingPermissionCount // ignore: cast_nullable_to_non_nullable
-as int,capabilities: null == capabilities ? _self._capabilities : capabilities // ignore: cast_nullable_to_non_nullable
+as bool,hasConversationalContent: null == hasConversationalContent ? _self.hasConversationalContent : hasConversationalContent // ignore: cast_nullable_to_non_nullable
+as bool,capabilities: null == capabilities ? _self._capabilities : capabilities // ignore: cast_nullable_to_non_nullable
 as List<AcpCapabilityKind>,availableCommands: null == availableCommands ? _self._availableCommands : availableCommands // ignore: cast_nullable_to_non_nullable
 as List<AcpSlashCommandPresentation>,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
 as String?,gapKind: freezed == gapKind ? _self.gapKind : gapKind // ignore: cast_nullable_to_non_nullable

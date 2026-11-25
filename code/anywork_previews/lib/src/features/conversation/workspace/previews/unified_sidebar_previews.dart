@@ -688,16 +688,14 @@ Widget unifiedSidebar08AcpUnifiedSidebar() => _host(
             child: AcpWorkspaceView(
               readingArea: AcpConversationContentView(
                 threadId: 'acp-preview',
-                header: AcpTimelineHeaderViewState(
+                header: const AcpTimelineHeaderViewState(
                   ready: true,
                   loading: false,
-                  hasPlan: true,
                   hasConversationalContent: true,
-                  itemCount: items.length,
                 ),
-                itemBuilder: (_, index) => AcpTimelineEntryView(
-                  key: ValueKey(items[index].id),
-                  item: items[index].item,
+                rows: items,
+                itemBuilder: (_, row) => AcpTimelineEntryView(
+                  item: (row as AcpTimelineMessageRow).item,
                   onOpenMarkdownResource: (_, _) {},
                 ),
               ),
