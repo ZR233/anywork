@@ -167,7 +167,6 @@ impl StudioActivationFactory for ReactivationFactory {
 async fn save_cold_thread(store: &StudioStore, protocol: &crate::Thread) -> Result<()> {
     register_test_thread(store, protocol).await?;
     let sink = ThreadStorageSink::new(store.clone(), protocol.clone()).await?;
-    let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
     let channel = store.thread_persistence().history_channel(&protocol.id);
     let thread = ThreadHandle::start_current(protocol.id.clone(), None)?;
     thread.attach_history(HistorySinkHandle::new(sink)).await?;
@@ -207,8 +206,32 @@ async fn save_cold_thread(store: &StudioStore, protocol: &crate::Thread) -> Resu
     current_store
         .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
         .await?;
-    let through = channel.handoff_ticket();
-    channel.await_handoff_durable(&protocol.id, through).await?;
+    // Starting projection after Core closes keeps the final admitted facts ahead of handoff,
+    // so this fixture deterministically exercises the same lag that can occur under CI load.
+    let through = thread.snapshot().commit_sequence;
+    assert!(through > 0);
+    assert_eq!(channel.handoff_ticket(), 0);
+    let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
+    let mut status = channel.subscribe();
+    {
+        let durable = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            status.wait_for(|current| {
+                current.committed_sequence >= through || current.error.is_some()
+            }),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "cold Thread {} History did not reach {through}",
+                protocol.id
+            )
+        })?
+        .context("cold Thread History progress channel closed")?;
+        if let Some(error) = &durable.error {
+            anyhow::bail!("cold Thread {} History failed: {error}", protocol.id);
+        }
+    }
     channel.stop_and_join().await?;
     projection.await?;
     Ok(())
