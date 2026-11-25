@@ -93,9 +93,9 @@ impl ResourceFiles for GatedFiles {
         if self.0.destination == destination {
             let _ = self.0.cancellation.set(cancel.clone());
         }
-        let created = LocalResourceFiles.create(destination, cancel)?;
+        std::fs::create_dir_all(destination.parent().expect("media destination parent"))?;
         let _in_progress = self.0.enter(FileStage::Setup, destination);
-        Ok(created)
+        LocalResourceFiles.create(destination, cancel)
     }
 
     fn persist(

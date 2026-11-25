@@ -7,14 +7,26 @@ pub(super) struct RegistrationStateMachine {
     pub(super) operation_id: String,
     pub(super) name: String,
     pub(super) workspace_id: String,
-    pub(super) device_code: String,
-    pub(super) verification_url: String,
-    pub(super) expires_at: i64,
+    device_code: String,
+    verification_url: String,
+    expires_at: i64,
     pub(super) deadline: Instant,
     pub(super) interval_seconds: u32,
     pub(super) status: BotRegistrationStatus,
-    pub(super) completed_bot_id: Option<String>,
+    completed_bot_id: Option<String>,
     pub(super) commit_claimed: bool,
+}
+
+pub(super) enum RegistrationFinish {
+    Denied {
+        message: String,
+    },
+    Expired,
+    Failed {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
 }
 
 impl RegistrationStateMachine {
@@ -28,7 +40,7 @@ impl RegistrationStateMachine {
         }
     }
 
-    pub(super) fn clear_authorization_material(&mut self) {
+    fn clear_authorization_material(&mut self) {
         self.device_code.clear();
         self.verification_url.clear();
         if let BotRegistrationStatus::Waiting {
@@ -156,6 +168,36 @@ impl RegistrationStateMachine {
         self.status = BotRegistrationStatus::Committing {
             attempt_id: self.attempt_id.clone(),
             bot_id,
+        };
+    }
+
+    pub(super) fn complete(&mut self, bot_id: String) {
+        self.clear_authorization_material();
+        self.completed_bot_id = Some(bot_id);
+        self.status = BotRegistrationStatus::Completed {
+            attempt_id: self.attempt_id.clone(),
+        };
+    }
+
+    pub(super) fn finish(&mut self, finish: RegistrationFinish) {
+        self.clear_authorization_material();
+        let attempt_id = self.attempt_id.clone();
+        self.status = match finish {
+            RegistrationFinish::Denied { message } => BotRegistrationStatus::Denied {
+                attempt_id,
+                message,
+            },
+            RegistrationFinish::Expired => BotRegistrationStatus::Expired { attempt_id },
+            RegistrationFinish::Failed {
+                code,
+                message,
+                retryable,
+            } => BotRegistrationStatus::Failed {
+                attempt_id,
+                code,
+                message,
+                retryable,
+            },
         };
     }
 }

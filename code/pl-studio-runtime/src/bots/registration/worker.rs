@@ -1,5 +1,6 @@
 //! Runs the platform protocol and hands completed credentials to the serial owner.
 use super::invalidate_waiting;
+use super::machine::RegistrationFinish;
 use crate::bots::credentials::{CredentialCommit, CredentialDecision};
 use crate::bots::operation::{DiagnosticSlot, RegistrationSave};
 use crate::bots::owner::BotRuntime;
@@ -63,18 +64,6 @@ enum CompleteClaim {
     },
 }
 
-enum WorkerFinish {
-    Denied {
-        message: String,
-    },
-    Expired,
-    Failed {
-        code: String,
-        message: String,
-        retryable: bool,
-    },
-}
-
 enum PollWait {
     Continue,
     Stop,
@@ -103,7 +92,7 @@ impl RegistrationWorker {
             Err(error) => {
                 self.finish_worker(
                     &attempt_id,
-                    WorkerFinish::Failed {
+                    RegistrationFinish::Failed {
                         code: error.kind().label().to_string(),
                         message: error.diagnostic().message,
                         retryable: error.retryable(),
@@ -176,7 +165,8 @@ impl RegistrationWorker {
             };
             let now = Instant::now();
             if now >= deadline {
-                self.finish_worker(&attempt_id, WorkerFinish::Expired).await;
+                self.finish_worker(&attempt_id, RegistrationFinish::Expired)
+                    .await;
                 return;
             }
             let remaining = deadline.saturating_duration_since(now);
@@ -207,7 +197,8 @@ impl RegistrationWorker {
         cancel: &CancellationToken,
     ) -> PollWait {
         if Instant::now() >= deadline {
-            self.finish_worker(attempt_id, WorkerFinish::Expired).await;
+            self.finish_worker(attempt_id, RegistrationFinish::Expired)
+                .await;
             return PollWait::Stop;
         }
         let deadline = TokioInstant::from_std(deadline);
@@ -220,7 +211,8 @@ impl RegistrationWorker {
         };
         match outcome {
             Err(_) => {
-                self.finish_worker(attempt_id, WorkerFinish::Expired).await;
+                self.finish_worker(attempt_id, RegistrationFinish::Expired)
+                    .await;
                 PollWait::Stop
             }
             Ok(Ok(PollRegistrationOutcome::Pending)) => {
@@ -242,18 +234,19 @@ impl RegistrationWorker {
                 PollWait::Stop
             }
             Ok(Ok(PollRegistrationOutcome::Denied { message })) => {
-                self.finish_worker(attempt_id, WorkerFinish::Denied { message })
+                self.finish_worker(attempt_id, RegistrationFinish::Denied { message })
                     .await;
                 PollWait::Stop
             }
             Ok(Ok(PollRegistrationOutcome::Expired)) => {
-                self.finish_worker(attempt_id, WorkerFinish::Expired).await;
+                self.finish_worker(attempt_id, RegistrationFinish::Expired)
+                    .await;
                 PollWait::Stop
             }
             Ok(Ok(PollRegistrationOutcome::Failed { code, message })) => {
                 self.finish_worker(
                     attempt_id,
-                    WorkerFinish::Failed {
+                    RegistrationFinish::Failed {
                         code,
                         message,
                         retryable: true,
@@ -265,7 +258,7 @@ impl RegistrationWorker {
             Ok(Err(error)) => {
                 self.finish_worker(
                     attempt_id,
-                    WorkerFinish::Failed {
+                    RegistrationFinish::Failed {
                         code: error.kind().label().to_string(),
                         message: error.diagnostic().message,
                         retryable: error.retryable(),
@@ -373,11 +366,7 @@ impl RegistrationWorker {
                         && active.machine.attempt_id == attempt_id
                         && active.machine.commit_claimed
                     {
-                        active.machine.clear_authorization_material();
-                        active.machine.completed_bot_id = Some(bot_id.to_string());
-                        active.machine.status = BotRegistrationStatus::Completed {
-                            attempt_id: attempt_id.to_string(),
-                        };
+                        active.machine.complete(bot_id.to_string());
                         self.runtime.request_publish();
                     }
                 }
@@ -429,20 +418,18 @@ impl RegistrationWorker {
             if let Some(active) = slot.as_mut()
                 && active.machine.attempt_id == attempt_id
             {
-                active.machine.clear_authorization_material();
-                active.machine.status = BotRegistrationStatus::Failed {
-                    attempt_id: attempt_id.to_string(),
+                active.machine.finish(RegistrationFinish::Failed {
                     code: diagnostic.code,
                     message: diagnostic.message,
                     retryable: diagnostic.retryable,
-                };
+                });
                 self.runtime.request_publish();
             }
         }
         self.runtime.publish().await;
     }
 
-    async fn finish_worker(&self, attempt_id: &str, finish: WorkerFinish) {
+    async fn finish_worker(&self, attempt_id: &str, finish: RegistrationFinish) {
         let changed = {
             let mut slot = self.runtime.inner.registration.current.lock().await;
             match slot.as_mut() {
@@ -455,26 +442,7 @@ impl RegistrationWorker {
                                 | BotRegistrationStatus::Completed { .. }
                         ) =>
                 {
-                    active.machine.clear_authorization_material();
-                    active.machine.status = match finish {
-                        WorkerFinish::Denied { message } => BotRegistrationStatus::Denied {
-                            attempt_id: attempt_id.to_string(),
-                            message,
-                        },
-                        WorkerFinish::Expired => BotRegistrationStatus::Expired {
-                            attempt_id: attempt_id.to_string(),
-                        },
-                        WorkerFinish::Failed {
-                            code,
-                            message,
-                            retryable,
-                        } => BotRegistrationStatus::Failed {
-                            attempt_id: attempt_id.to_string(),
-                            code,
-                            message,
-                            retryable,
-                        },
-                    };
+                    active.machine.finish(finish);
                     self.runtime.request_publish();
                     true
                 }

@@ -10,18 +10,16 @@
 use super::content::{FinalError, FinalText, collect_complete_turn_text};
 use super::lease::{ClaimGuard, ClaimLeaseGuard};
 use super::projection::ReplyProjection;
-use super::session::{ReplySession, ReplyTarget, Step};
+use super::session::{ReplyInputAction, ReplySession, ReplyTarget, ReplyTurnAction, Step};
 use super::watch::ReplyWatch;
 
-use crate::bots::BotInputRead;
+use crate::TurnState;
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
 use crate::bots::protocol::error::FeishuError;
 use crate::bots::storage::FrozenInbound;
 use crate::bots::storage::card::{CardLifecycle, CardOperationStatus};
 use crate::studio::StudioRuntime;
-use crate::{TurnCompletion, TurnState};
-use pl_core::thread::input::{InputDelivery, InputState};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -290,30 +288,23 @@ impl BotRuntime {
                 )));
             }
         };
-        let input = match input {
-            BotInputRead::Ready { delivery, state } => (delivery, state),
-            BotInputRead::Absent => {
-                if run.watching_original() {
-                    let action_cancel = cancel.child_token();
-                    return observed_step(
-                        Box::pin(watch.during(
-                            self.submit_original(runtime, run, &action_cancel),
-                            Some(&action_cancel),
-                        ))
-                        .await,
-                        cancel,
-                    );
-                }
-                // continuation 输入尚未持久化：事实未定，保持待定等待。
-                return Step::Wait;
+        match run.reconcile_input(input) {
+            ReplyInputAction::SubmitOriginal => {
+                let action_cancel = cancel.child_token();
+                observed_step(
+                    Box::pin(watch.during(
+                        self.submit_original(runtime, run, &action_cancel),
+                        Some(&action_cancel),
+                    ))
+                    .await,
+                    cancel,
+                )
             }
-        };
-        match input {
-            (InputDelivery::CurrentTurn { .. }, _) => {
+            ReplyInputAction::ConcurrentTurn => {
                 Step::Done(attention("bot input was routed onto a concurrent turn"))
             }
-            (InputDelivery::NextTurn, InputState::Pending) => Step::Wait,
-            (InputDelivery::NextTurn, InputState::Discarded) => {
+            ReplyInputAction::Wait => Step::Wait,
+            ReplyInputAction::FinishUnconsumed => {
                 let action_cancel = cancel.child_token();
                 observed_step(
                     Box::pin(watch.during(
@@ -329,7 +320,7 @@ impl BotRuntime {
                     cancel,
                 )
             }
-            (InputDelivery::NextTurn, InputState::Consumed { turn_id, .. }) => {
+            ReplyInputAction::ObserveTurn(turn_id) => {
                 let selected = tokio::select! {
                     _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
                     selected = watch.select_target(runtime, &run.watch_input, Some(&turn_id)) => selected,
@@ -474,12 +465,12 @@ impl BotRuntime {
         {
             return Step::Done(outcome);
         }
-        let step = match content.terminal {
-            None if matches!(
-                content.observed,
-                Some(TurnState::Queued(_) | TurnState::Running(_))
-            ) || content.observed.is_none() && content.active =>
-            {
+        let step = match ReplyTurnAction::for_snapshot(
+            content.terminal.as_ref(),
+            content.observed.as_ref(),
+            content.active,
+        ) {
+            ReplyTurnAction::Preview => {
                 match self
                     .hint_pending_interactions(runtime, run, turn_id, cancel)
                     .await
@@ -502,68 +493,32 @@ impl BotRuntime {
                 }
                 Step::Wait
             }
-            None => Step::Wait,
-            Some(TurnState::Completed(state)) => match state.completion() {
-                TurnCompletion::Normal => {
-                    self.finish_with_final_text(
-                        run,
-                        turn_id,
-                        verified.expect("verified terminal"),
-                        cancel,
-                    )
+            ReplyTurnAction::Wait => Step::Wait,
+            ReplyTurnAction::FinishText => {
+                self.finish_with_final_text(
+                    run,
+                    turn_id,
+                    verified.expect("verified terminal"),
+                    cancel,
+                )
+                .await
+            }
+            ReplyTurnAction::AwaitInteraction => {
+                self.advance_interactions(
+                    runtime,
+                    run,
+                    turn_id,
+                    content.projection.expect("verified projection"),
+                    cancel,
+                )
+                .await
+            }
+            ReplyTurnAction::Close(lifecycle) => {
+                self.finish_known_card(run, ReplyTarget::Consumed(turn_id), lifecycle, cancel)
                     .await
-                }
-                TurnCompletion::InteractionRequested => {
-                    self.advance_interactions(
-                        runtime,
-                        run,
-                        turn_id,
-                        content.projection.expect("verified projection"),
-                        cancel,
-                    )
-                    .await
-                }
-            },
-            Some(TurnState::Cancelled(_)) => {
-                self.finish_known_card(
-                    run,
-                    ReplyTarget::Consumed(turn_id),
-                    CardLifecycle::Cancelled,
-                    cancel,
-                )
-                .await
             }
-            Some(TurnState::Failed(_)) => {
-                self.finish_known_card(
-                    run,
-                    ReplyTarget::Consumed(turn_id),
-                    CardLifecycle::Failed,
-                    cancel,
-                )
-                .await
-            }
-            Some(TurnState::BudgetLimited(_)) => {
-                self.finish_known_card(
-                    run,
-                    ReplyTarget::Consumed(turn_id),
-                    CardLifecycle::BudgetLimited,
-                    cancel,
-                )
-                .await
-            }
-            Some(TurnState::Queued(_) | TurnState::Running(_)) => Step::Wait,
         };
-        match step {
-            Step::Done(InboundWorkOutcome::Completed) if run.file_delivery_diagnostic.is_some() => {
-                Step::Done(InboundWorkOutcome::NeedsAttention {
-                    diagnostic: run
-                        .file_delivery_diagnostic
-                        .clone()
-                        .expect("checked diagnostic"),
-                })
-            }
-            other => other,
-        }
+        run.settle(step)
     }
 
     /// Turn 正常完成：完整 Final + Terminal 覆盖校验后，确认最后全文更新与关闭。

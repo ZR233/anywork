@@ -1,12 +1,14 @@
 //! Inbound reply progress and its canonical input and Turn identity.
 use crate::bots::{
-    InboundWorkOutcome,
+    BotInputRead, InboundWorkOutcome,
     owner::BotRuntime,
     storage::{
         FrozenInbound,
-        card::{CardBinding, CardStream},
+        card::{CardBinding, CardLifecycle, CardStream},
     },
 };
+use crate::{TurnCompletion, TurnState};
+use pl_core::thread::input::{InputDelivery, InputState};
 use std::collections::BTreeSet;
 
 /// 一次入站工作的恢复执行进度；`watch_input` 是当前 canonical 输入身份。
@@ -30,8 +32,40 @@ pub(super) struct ReplySession {
 }
 
 impl ReplySession {
-    pub(super) fn watching_original(&self) -> bool {
-        self.watch_input == self.original_input
+    pub(super) fn reconcile_input(&self, input: BotInputRead) -> ReplyInputAction {
+        match input {
+            BotInputRead::Absent if self.watch_input == self.original_input => {
+                ReplyInputAction::SubmitOriginal
+            }
+            BotInputRead::Absent
+            | BotInputRead::Ready {
+                delivery: InputDelivery::NextTurn,
+                state: InputState::Pending,
+            } => ReplyInputAction::Wait,
+            BotInputRead::Ready {
+                delivery: InputDelivery::CurrentTurn { .. },
+                ..
+            } => ReplyInputAction::ConcurrentTurn,
+            BotInputRead::Ready {
+                delivery: InputDelivery::NextTurn,
+                state: InputState::Discarded,
+            } => ReplyInputAction::FinishUnconsumed,
+            BotInputRead::Ready {
+                delivery: InputDelivery::NextTurn,
+                state: InputState::Consumed { turn_id, .. },
+            } => ReplyInputAction::ObserveTurn(turn_id),
+        }
+    }
+
+    pub(super) fn settle(&self, step: Step) -> Step {
+        match (step, &self.file_delivery_diagnostic) {
+            (Step::Done(InboundWorkOutcome::Completed), Some(diagnostic)) => {
+                Step::Done(InboundWorkOutcome::NeedsAttention {
+                    diagnostic: diagnostic.clone(),
+                })
+            }
+            (step, _) => step,
+        }
     }
 
     pub(super) fn card_binding(&self) -> CardBinding {
@@ -41,6 +75,46 @@ impl ReplySession {
             message_id: self.message_id.clone(),
             thread_id: self.thread_id.clone(),
             original_input: self.original_input.clone(),
+        }
+    }
+}
+
+pub(super) enum ReplyInputAction {
+    SubmitOriginal,
+    Wait,
+    ConcurrentTurn,
+    FinishUnconsumed,
+    ObserveTurn(String),
+}
+
+pub(super) enum ReplyTurnAction {
+    Wait,
+    Preview,
+    FinishText,
+    AwaitInteraction,
+    Close(CardLifecycle),
+}
+
+impl ReplyTurnAction {
+    pub(super) fn for_snapshot(
+        terminal: Option<&TurnState>,
+        observed: Option<&TurnState>,
+        active: bool,
+    ) -> Self {
+        match terminal {
+            None if matches!(observed, Some(TurnState::Queued(_) | TurnState::Running(_)))
+                || observed.is_none() && active =>
+            {
+                Self::Preview
+            }
+            Some(TurnState::Completed(state)) => match state.completion() {
+                TurnCompletion::Normal => Self::FinishText,
+                TurnCompletion::InteractionRequested => Self::AwaitInteraction,
+            },
+            Some(TurnState::Cancelled(_)) => Self::Close(CardLifecycle::Cancelled),
+            Some(TurnState::Failed(_)) => Self::Close(CardLifecycle::Failed),
+            Some(TurnState::BudgetLimited(_)) => Self::Close(CardLifecycle::BudgetLimited),
+            None | Some(TurnState::Queued(_) | TurnState::Running(_)) => Self::Wait,
         }
     }
 }
