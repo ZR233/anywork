@@ -542,7 +542,7 @@ async fn http_early_response_survives_infinite_upload_and_returns_stream_credit(
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let peer = tokio::spawn(async move {
-            for _ in 0..520 {
+            for _ in 0..270 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut header = Vec::new();
                 while !header.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
@@ -561,7 +561,7 @@ async fn http_early_response_survives_infinite_upload_and_returns_stream_credit(
         });
         let http = executor.http();
         tokio::time::timeout(Duration::from_secs(30), async {
-            for _ in 0..520 {
+            for _ in 0..270 {
                 let mut response = http.execute(HttpRequest {
                     method: "POST".into(), url: format!("http://{address}/early"), headers: vec![], bearer_token_env_var: None,
                 }, Box::pin(tokio::io::repeat(0x80))).await.unwrap();

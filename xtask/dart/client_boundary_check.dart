@@ -3,29 +3,40 @@
 // and adapter suites, rather than inferred from identifier spelling.
 import 'dart:io';
 
+import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
 void main(List<String> arguments) {
-  final uiClosure = arguments.isNotEmpty && arguments.first == '--ui-closure';
-  final rest = uiClosure ? arguments.skip(1).toList() : arguments;
-  if (rest.length != 1) {
+  final flag = arguments.isNotEmpty && arguments.first.startsWith('--')
+      ? arguments.first
+      : null;
+  final rest = flag != null ? arguments.skip(1).toList() : arguments;
+  if (rest.length != 1 ||
+      (flag != null && flag != '--ui-closure' && flag != '--all')) {
     stderr.writeln(
-      'usage: client_boundary_check.dart [--ui-closure] <workspace-root>',
+      'usage: client_boundary_check.dart [--ui-closure | --all] <workspace-root>',
     );
     exitCode = 64;
     return;
   }
   final root = Directory(Directory(rest.single).resolveSymbolicLinksSync());
-  if (uiClosure) {
-    _runUiImportClosure(root);
+  final parsedCache = <String, ParseStringResult>{};
+  if (flag == '--ui-closure') {
+    _runUiImportClosure(root, parsedCache: parsedCache);
     return;
   }
-  _runClientBoundary(root);
+  _runClientBoundary(root, parsedCache: parsedCache);
+  if (flag == '--all' && exitCode == 0) {
+    _runUiImportClosure(root, parsedCache: parsedCache);
+  }
 }
 
-void _runClientBoundary(Directory root) {
+void _runClientBoundary(
+  Directory root, {
+  Map<String, ParseStringResult>? parsedCache,
+}) {
   final client = Directory('${root.path}/code/anywork_client/lib');
   final app = Directory('${root.path}/code/anywork/lib');
   final previews = Directory('${root.path}/code/anywork_previews/lib');
@@ -49,10 +60,17 @@ void _runClientBoundary(Directory root) {
       final source = file.readAsStringSync();
       final relative = _normalized(file.absolute.path)
           .substring(_normalized(root.path).length + 1);
+      final parsed = parseString(
+        content: source,
+        path: relative,
+        throwIfDiagnostics: false,
+      );
+      parsedCache?[relative] = parsed;
       diagnostics.addAll(
-        checkClientSource(
+        _checkParsedClientSource(
           path: relative,
           source: source,
+          parsed: parsed,
         ).map((diagnostic) => diagnostic.toString()),
       );
       checked++;
@@ -72,7 +90,10 @@ void _runClientBoundary(Directory root) {
   stdout.writeln('Client boundary check passed ($checked source files)');
 }
 
-void _runUiImportClosure(Directory root) {
+void _runUiImportClosure(
+  Directory root, {
+  Map<String, ParseStringResult>? parsedCache,
+}) {
   final ui = Directory('${root.path}/code/anywork/test/ui');
   if (!ui.existsSync()) {
     stderr.writeln('required UI test directory is missing: ${ui.path}');
@@ -106,7 +127,11 @@ void _runUiImportClosure(Directory root) {
     return source;
   }
 
-  final diagnostics = checkUiImportClosure(entries: entries, read: read);
+  final diagnostics = checkUiImportClosure(
+    entries: entries,
+    read: read,
+    parsedCache: parsedCache,
+  );
   if (diagnostics.isNotEmpty) {
     stderr.writeln(diagnostics.join('\n'));
     stderr.writeln(
@@ -133,6 +158,14 @@ List<ClientBoundaryDiagnostic> checkClientSource({
     path: path,
     throwIfDiagnostics: false,
   );
+  return _checkParsedClientSource(path: path, source: source, parsed: parsed);
+}
+
+List<ClientBoundaryDiagnostic> _checkParsedClientSource({
+  required String path,
+  required String source,
+  required ParseStringResult parsed,
+}) {
   final diagnostics = <ClientBoundaryDiagnostic>[];
   void report(int offset, String rule, String message) {
     final location = parsed.lineInfo.getLocation(offset);
@@ -205,19 +238,95 @@ String _sourcePath(String from, String uri) {
   return Uri(path: from).resolve(uri).toString();
 }
 
+final class _ParsedUiFile {
+  const _ParsedUiFile({
+    required this.errors,
+    required this.uris,
+  });
+
+  final List<({int line, int column, String message})> errors;
+  final List<({int line, int column, String uri})> uris;
+}
+
 /// Reachable import/export/part graph from `test/ui` entries. Fixture tests
 /// inject the same walk used by `verify-gui --ui-closure`.
 List<ClientBoundaryDiagnostic> checkUiImportClosure({
   required Iterable<String> entries,
   required String? Function(String path) read,
+  Map<String, ParseStringResult>? parsedCache,
 }) {
   final diagnostics = <ClientBoundaryDiagnostic>[];
-  for (final entry in entries) {
-    final visited = <String>{};
-    void walk(String path, List<String> chain) {
-      if (!visited.add(path)) return;
+  final parsedUiCache = <String, _ParsedUiFile?>{};
+  final verifiedClean = <String>{};
+
+  _ParsedUiFile? loadUiFile(String path) {
+    if (parsedUiCache.containsKey(path)) return parsedUiCache[path];
+    var parsed = parsedCache?[path];
+    if (parsed == null) {
       final source = read(path);
       if (source == null) {
+        parsedUiCache[path] = null;
+        return null;
+      }
+      parsed = parseString(
+        content: source,
+        path: path,
+        throwIfDiagnostics: false,
+      );
+    }
+    final lineInfo = parsed.lineInfo;
+    final errors = <({int line, int column, String message})>[
+      for (final error in parsed.errors)
+        () {
+          final location = lineInfo.getLocation(error.offset);
+          return (
+            line: location.lineNumber,
+            column: location.columnNumber,
+            message: error.message,
+          );
+        }(),
+    ];
+    final uris = <({int line, int column, String uri})>[];
+    parsed.unit.accept(
+      _UiImportVisitor(
+        onUri: (offset, uri) {
+          final location = lineInfo.getLocation(offset);
+          uris.add((
+            line: location.lineNumber,
+            column: location.columnNumber,
+            uri: uri,
+          ));
+        },
+        onPartOf: (offset, uri) {
+          if (uri == null) return;
+          final location = lineInfo.getLocation(offset);
+          uris.add((
+            line: location.lineNumber,
+            column: location.columnNumber,
+            uri: uri,
+          ));
+        },
+      ),
+    );
+    final result = _ParsedUiFile(
+      errors: List.unmodifiable(errors),
+      uris: List.unmodifiable(uris),
+    );
+    parsedUiCache[path] = result;
+    return result;
+  }
+
+  for (final entry in entries) {
+    final visited = <String>{};
+    final onStack = <String>{};
+
+    ({bool hasError, bool hitOnStack}) walk(String path, List<String> chain) {
+      if (onStack.contains(path)) return (hasError: false, hitOnStack: true);
+      if (verifiedClean.contains(path) || !visited.add(path)) {
+        return (hasError: false, hitOnStack: false);
+      }
+      final parsed = loadUiFile(path);
+      if (parsed == null) {
         if (_isUiFollowedPath(path)) {
           diagnostics.add(
             ClientBoundaryDiagnostic(
@@ -230,21 +339,21 @@ List<ClientBoundaryDiagnostic> checkUiImportClosure({
                   '(from ${[...chain, path].join(' -> ')})',
             ),
           );
+          return (hasError: true, hitOnStack: false);
         }
-        return;
+        return (hasError: false, hitOnStack: false);
       }
-      final parsed = parseString(
-        content: source,
-        path: path,
-        throwIfDiagnostics: false,
-      );
-      void report(int offset, String message) {
-        final location = parsed.lineInfo.getLocation(offset);
+
+      onStack.add(path);
+      var hasError = false;
+      var hitOnStack = false;
+      void report(int line, int column, String message) {
+        hasError = true;
         diagnostics.add(
           ClientBoundaryDiagnostic(
             path: path,
-            line: location.lineNumber,
-            column: location.columnNumber,
+            line: line,
+            column: column,
             rule: 'UI-FRB',
             message: message,
           ),
@@ -252,54 +361,46 @@ List<ClientBoundaryDiagnostic> checkUiImportClosure({
       }
 
       for (final error in parsed.errors) {
-        report(error.offset, error.message);
+        report(error.line, error.column, error.message);
       }
-      parsed.unit.accept(
-        _UiImportVisitor(
-          onUri: (offset, uri) {
-            _follow(offset, uri, path, chain, report, walk);
-          },
-          onPartOf: (offset, uri) {
-            if (uri == null) return;
-            _follow(offset, uri, path, chain, report, walk);
-          },
-        ),
-      );
+      final trail = [...chain, path].join(' -> ');
+      final nextChain = [...chain, path];
+      for (final directive in parsed.uris) {
+        final uri = directive.uri;
+        if (_isForbiddenUiUri(uri)) {
+          report(
+            directive.line,
+            directive.column,
+            'UI test closure must not reach FRB/Rust: $uri (from $trail)',
+          );
+          continue;
+        }
+        if (!_isFollowedUiUri(uri)) continue;
+        final resolved = _normalized(_sourcePath(path, uri));
+        if (_isForbiddenUiPath(resolved) || _isForbiddenUiUri(uri)) {
+          report(
+            directive.line,
+            directive.column,
+            'UI test closure must not reach FRB/Rust: $uri (from $trail)',
+          );
+          continue;
+        }
+        if (_isUiFollowedPath(resolved)) {
+          final sub = walk(resolved, nextChain);
+          hasError = hasError || sub.hasError;
+          hitOnStack = hitOnStack || sub.hitOnStack;
+        }
+      }
+      onStack.remove(path);
+      if (!hasError && !hitOnStack) {
+        verifiedClean.add(path);
+      }
+      return (hasError: hasError, hitOnStack: hitOnStack);
     }
 
     walk(_normalized(entry), const []);
   }
   return List.unmodifiable(diagnostics);
-}
-
-void _follow(
-  int offset,
-  String uri,
-  String path,
-  List<String> chain,
-  void Function(int offset, String message) report,
-  void Function(String path, List<String> chain) walk,
-) {
-  final trail = [...chain, path].join(' -> ');
-  if (_isForbiddenUiUri(uri)) {
-    report(
-      offset,
-      'UI test closure must not reach FRB/Rust: $uri (from $trail)',
-    );
-    return;
-  }
-  if (!_isFollowedUiUri(uri)) return;
-  final resolved = _normalized(_sourcePath(path, uri));
-  if (_isForbiddenUiPath(resolved) || _isForbiddenUiUri(uri)) {
-    report(
-      offset,
-      'UI test closure must not reach FRB/Rust: $uri (from $trail)',
-    );
-    return;
-  }
-  if (_isUiFollowedPath(resolved)) {
-    walk(resolved, [...chain, path]);
-  }
 }
 
 bool _isForbiddenUiUri(String uri) =>

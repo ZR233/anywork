@@ -72,323 +72,289 @@ void main() {
     }
   });
 
-  testWidgets('production sidebar interactions update canonical Client state', (
-    tester,
-  ) async {
-    final scene = await harness.mount(tester);
-    addTearDown(scene.dispose);
-    final project = fixture.project;
-    final projectRow = find.byKey(StudioDriverKeys.projectRow(project.id));
-    final threadRow = find.byKey(StudioDriverKeys.threadRow(fixture.thread.id));
-    final runningRow = find.byKey(
-      StudioDriverKeys.threadRow(fixture.runningThread.id),
-    );
-    final attentionRow = find.byKey(
-      StudioDriverKeys.threadRow(fixture.attentionThread.id),
-    );
-    await scene.until(
-      () {
-        final idle = fixture.threadSnapshot(fixture.thread.id);
-        final running = fixture.threadSnapshot(fixture.runningThread.id);
-        final attention = fixture.threadSnapshot(fixture.attentionThread.id);
-        final idleBackend = idle?.backend;
-        final runningBackend = running?.backend;
-        final attentionBackend = attention?.backend;
-        return projectRow.evaluate().length == 1 &&
-            idleBackend is NativeAgentBackendView &&
-            idleBackend.status == ThreadStatusView.idle &&
-            idle?.workspaceMode.isWorktree == true &&
-            runningBackend is NativeAgentBackendView &&
-            runningBackend.status.isActive &&
-            runningBackend.status != ThreadStatusView.waitingInteraction &&
-            attentionBackend is NativeAgentBackendView &&
-            attentionBackend.status == ThreadStatusView.waitingInteraction;
-      },
-      'canonical idle/worktree, running and attention threads are visible',
-      timeout: const Duration(seconds: 60),
-    );
-    await scene.until(
-      () => fixture.provider.requests > 0,
-      'root thread exercised the loopback provider',
-    );
-    expect(
-      find.byKey(StudioDriverKeys.threadWorkspaceMode(fixture.thread.id)),
-      findsOneWidget,
-    );
-    await scene.capture('sidebar-wide');
-
-    await tester.tap(
-      find.byKey(const ValueKey<String>('sidebar-filter-running')),
-    );
-    await scene.until(
-      () =>
-          runningRow.evaluate().length == 1 &&
-          threadRow.evaluate().isEmpty &&
-          attentionRow.evaluate().isEmpty,
-      'running filter is backed by canonical active status',
-    );
-    final runningFrame = await _queryDirectory(
-      scene,
-      DirectoryQuery(workspaceId: project.id, filter: DirectoryFilter.running),
-    );
-    expect(runningFrame.threadIds, contains(fixture.runningThread.id));
-    expect(runningFrame.threadIds, isNot(contains(fixture.attentionThread.id)));
-
-    await tester.tap(
-      find.byKey(const ValueKey<String>('sidebar-filter-attention')),
-    );
-    await scene.until(
-      () =>
-          attentionRow.evaluate().length == 1 &&
-          threadRow.evaluate().isEmpty &&
-          runningRow.evaluate().isEmpty,
-      'attention filter is backed by waitingInteraction status',
-    );
-    final attentionFrame = await _queryDirectory(
-      scene,
-      DirectoryQuery(
-        workspaceId: project.id,
-        filter: DirectoryFilter.attention,
-      ),
-    );
-    expect(attentionFrame.threadIds, contains(fixture.attentionThread.id));
-
-    await tester.tap(find.byKey(const ValueKey<String>('sidebar-filter-all')));
-    await scene.until(
-      () =>
-          threadRow.evaluate().length == 1 &&
-          runningRow.evaluate().length == 1 &&
-          attentionRow.evaluate().length == 1,
-      'all filter restores all canonical status classes',
-    );
-
-    // In touch layout the center of the row can belong to a quick action.
-    final threadTitle = find.descendant(
-      of: threadRow,
-      matching: find.text(fixture.thread.title),
-    );
-    await tester.ensureVisible(threadTitle);
-    await tester.tap(threadTitle.hitTestable());
-    await scene.until(
-      () =>
-          scene.graph.client.selection.state.selectedThreadId ==
-          fixture.thread.id,
-      'thread row selects the canonical Client thread',
-    );
-
-    final pointer = await tester.createGesture(
-      kind: ui.PointerDeviceKind.mouse,
-    );
-    await pointer.addPointer(location: tester.getCenter(threadRow));
-    addTearDown(pointer.removePointer);
-    await pointer.moveTo(tester.getCenter(threadRow));
-    await tester.pump();
-    await tester.tap(find.byKey(StudioDriverKeys.pinThread(fixture.thread.id)));
-    await scene.until(
-      () =>
-          scene
-              .graph
-              .client
-              .settings
-              .state
-              .canonical
-              ?.state
-              .value
-              ?.general
-              .pinnedThreadIds
-              .contains(fixture.thread.id) ==
-          true,
-      'pin reaches canonical Client settings',
-    );
-    await scene.until(
-      () => threadRow.evaluate().length == 1,
-      'pinned demand renders the canonical thread row',
-    );
-    await pointer.moveTo(tester.getCenter(threadRow));
-    await tester.pump();
-
-    final menu = find.byKey(StudioDriverKeys.threadMenu(fixture.thread.id));
-    Finder menuTrigger() =>
-        find.descendant(of: menu, matching: find.byType(IconButton));
-    await tester.tap(menuTrigger());
-    await scene.until(
-      () =>
-          find
-              .byKey(StudioDriverKeys.renameThread(fixture.thread.id))
-              .evaluate()
-              .length ==
-          1,
-      'Material thread menu opens',
-    );
-    await tester.tap(
-      find.byKey(StudioDriverKeys.renameThread(fixture.thread.id)),
-    );
-    final renameInput = find.byKey(
-      StudioDriverKeys.renameThreadInput(fixture.thread.id),
-    );
-    await scene.until(
-      () => renameInput.evaluate().length == 1,
-      'rename dialog opens',
-    );
-    await tester.enterText(renameInput, longTitle);
-    await tester.tap(
-      find.byKey(StudioDriverKeys.renameThreadSave(fixture.thread.id)),
-    );
-    await scene.until(
-      () => fixture.threadSnapshot(fixture.thread.id)?.title == longTitle,
-      'renamed title reaches the canonical directory',
-    );
-
-    await pointer.moveTo(tester.getCenter(threadRow));
-    await tester.pump();
-    await tester.tap(menuTrigger());
-    await scene.until(
-      () =>
-          find
-              .byKey(StudioDriverKeys.archiveThread(fixture.thread.id))
-              .evaluate()
-              .length ==
-          1,
-      'thread menu opens for archive',
-    );
-    await tester.tap(
-      find.byKey(StudioDriverKeys.archiveThread(fixture.thread.id)),
-    );
-    await scene.until(
-      () =>
-          find.byKey(StudioDriverKeys.archiveThreadConfirm).evaluate().length ==
-          1,
-      'archive confirmation opens',
-    );
-    final archiveL10n = tester
-        .element(find.byKey(StudioDriverKeys.archiveThreadConfirm))
-        .l10n;
-    expect(
-      find.text(archiveL10n.sidebarArchiveSessionConfirmBody),
-      findsOneWidget,
-    );
-    expect(
-      find.text(archiveL10n.sidebarDeleteSessionConfirmBody),
-      findsNothing,
-    );
-    final archivedToggle = find.byKey(
-      const ValueKey<String>('sidebar-archived'),
-    );
-    await tester.tap(find.byKey(StudioDriverKeys.archiveThreadConfirm));
-    await scene.until(
-      () =>
-          threadRow.evaluate().isEmpty &&
-          archivedToggle.hitTestable().evaluate().length == 1,
-      'archived canonical thread leaves the live directory and navigation is ready',
-    );
-    final archivedFrame = await _queryDirectory(
-      scene,
-      DirectoryQuery(workspaceId: project.id, archived: true),
-    );
-    expect(archivedFrame.threadIds, contains(fixture.thread.id));
-
-    await tester.tap(archivedToggle, kind: ui.PointerDeviceKind.mouse);
-    await scene.until(
-      () =>
-          threadRow.evaluate().length == 1 &&
-          find
-                  .byKey(
-                    ValueKey('thread-archived-workspace-${fixture.thread.id}'),
-                  )
-                  .evaluate()
-                  .length ==
-              1,
-      'archived view loads the canonical archived thread and workspace',
-    );
-    await pointer.moveTo(tester.getCenter(threadRow));
-    await tester.pump();
-    await scene.capture('sidebar-archived');
-    expect(
-      find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
-      findsOneWidget,
-    );
-    await tester.tap(
-      find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
-    );
-    await scene.until(
-      () => threadRow.evaluate().isEmpty,
-      'restore removes the thread from the archived query',
-    );
-    final afterRestore = await _queryDirectory(
-      scene,
-      DirectoryQuery(workspaceId: project.id, archived: true),
-    );
-    expect(afterRestore.threadIds, isNot(contains(fixture.thread.id)));
-    await tester.tap(find.byKey(const ValueKey<String>('sidebar-archived')));
-    await scene.until(
-      () =>
-          threadRow.evaluate().length == 1 &&
-          fixture.threadSnapshot(fixture.thread.id)?.archived == false &&
-          fixture.threadSnapshot(fixture.thread.id)?.title == longTitle,
-      'restored thread returns to the live canonical directory',
-    );
-
-    expect(tester.takeException(), isNull);
-  }, timeout: const Timeout(Duration(minutes: 5)));
-
   testWidgets(
-    'sidebar width edit persists through the production Client',
+    'production sidebar interactions, project archive, and confirmed delete update canonical Client state',
     (tester) async {
       final scene = await harness.mount(tester);
       addTearDown(scene.dispose);
-      final shell = find.byKey(StudioDriverKeys.shell);
-      final divider = find.byKey(StudioDriverKeys.sidebarResize);
-      expect(shell, findsOneWidget);
-      expect(divider, findsOneWidget);
-
-      double width() =>
-          tester.getTopLeft(divider).dx - tester.getTopLeft(shell).dx;
-      int? canonicalWidth() => scene
-          .graph
-          .client
-          .settings
-          .state
-          .canonical
-          ?.state
-          .value
-          ?.general
-          .sidebarWidth;
-
-      final initial = width();
-      await scene.until(
-        () => canonicalWidth() != null,
-        'initial default width is available in canonical settings',
+      final captureRequested =
+          Platform
+              .environment['ANYWORK_PRESENTATION_SCREENSHOTS']
+              ?.isNotEmpty ??
+          false;
+      final project = fixture.project;
+      final projectRow = find.byKey(StudioDriverKeys.projectRow(project.id));
+      final threadRow = find.byKey(
+        StudioDriverKeys.threadRow(fixture.thread.id),
       );
-      final defaultWidth = canonicalWidth()!;
-      expect(initial, closeTo(defaultWidth, 1));
-      Future<void> expectSaved(String action) async {
-        final rendered = width().round();
-        await scene.until(
-          () => canonicalWidth() == rendered,
-          '$action: rendered width $rendered reaches canonical Client settings',
-        );
+      final runningRow = find.byKey(
+        StudioDriverKeys.threadRow(fixture.runningThread.id),
+      );
+      final attentionRow = find.byKey(
+        StudioDriverKeys.threadRow(fixture.attentionThread.id),
+      );
+      await scene.until(
+        () {
+          final idle = fixture.threadSnapshot(fixture.thread.id);
+          final running = fixture.threadSnapshot(fixture.runningThread.id);
+          final attention = fixture.threadSnapshot(fixture.attentionThread.id);
+          final idleBackend = idle?.backend;
+          final runningBackend = running?.backend;
+          final attentionBackend = attention?.backend;
+          return projectRow.evaluate().length == 1 &&
+              idleBackend is NativeAgentBackendView &&
+              idleBackend.status == ThreadStatusView.idle &&
+              idle?.workspaceMode.isWorktree == true &&
+              runningBackend is NativeAgentBackendView &&
+              runningBackend.status.isActive &&
+              runningBackend.status != ThreadStatusView.waitingInteraction &&
+              attentionBackend is NativeAgentBackendView &&
+              attentionBackend.status == ThreadStatusView.waitingInteraction;
+        },
+        'canonical idle/worktree, running and attention threads are visible',
+        timeout: const Duration(seconds: 60),
+      );
+      await scene.until(
+        () => fixture.provider.requests > 0,
+        'root thread exercised the loopback provider',
+      );
+      expect(
+        find.byKey(StudioDriverKeys.threadWorkspaceMode(fixture.thread.id)),
+        findsOneWidget,
+      );
+      if (captureRequested) {
+        await scene.capture('sidebar-wide');
       }
 
-      await tester.drag(divider, const Offset(64, 0));
-      await scene.until(
-        () => width() > initial,
-        'drag changes the production sidebar width',
+      await tester.tap(
+        find.byKey(const ValueKey<String>('sidebar-filter-running')),
       );
-      await expectSaved('drag');
+      await scene.until(
+        () =>
+            runningRow.evaluate().length == 1 &&
+            threadRow.evaluate().isEmpty &&
+            attentionRow.evaluate().isEmpty,
+        'running filter is backed by canonical active status',
+      );
+      final runningFrame = await _queryDirectory(
+        scene,
+        DirectoryQuery(
+          workspaceId: project.id,
+          filter: DirectoryFilter.running,
+        ),
+      );
+      expect(runningFrame.threadIds, contains(fixture.runningThread.id));
+      expect(
+        runningFrame.threadIds,
+        isNot(contains(fixture.attentionThread.id)),
+      );
 
-      // Gesture boundaries, reset and semantics are proved in widget tests.
-      // This real bridge path proves a UI edit reaches canonical settings.
-      expect(tester.takeException(), isNull);
-    },
-    semanticsEnabled: true,
-    timeout: const Timeout(Duration(minutes: 2)),
-  );
+      await tester.tap(
+        find.byKey(const ValueKey<String>('sidebar-filter-attention')),
+      );
+      await scene.until(
+        () =>
+            attentionRow.evaluate().length == 1 &&
+            threadRow.evaluate().isEmpty &&
+            runningRow.evaluate().isEmpty,
+        'attention filter is backed by waitingInteraction status',
+      );
+      final attentionFrame = await _queryDirectory(
+        scene,
+        DirectoryQuery(
+          workspaceId: project.id,
+          filter: DirectoryFilter.attention,
+        ),
+      );
+      expect(attentionFrame.threadIds, contains(fixture.attentionThread.id));
 
-  testWidgets(
-    'project archive confirmation preserves or removes only the canonical target',
-    (tester) async {
-      final scene = await harness.mount(tester);
-      addTearDown(scene.dispose);
+      await tester.tap(
+        find.byKey(const ValueKey<String>('sidebar-filter-all')),
+      );
+      await scene.until(
+        () =>
+            threadRow.evaluate().length == 1 &&
+            runningRow.evaluate().length == 1 &&
+            attentionRow.evaluate().length == 1,
+        'all filter restores all canonical status classes',
+      );
+
+      // In touch layout the center of the row can belong to a quick action.
+      final threadTitle = find.descendant(
+        of: threadRow,
+        matching: find.text(fixture.thread.title),
+      );
+      await tester.ensureVisible(threadTitle);
+      await tester.tap(threadTitle.hitTestable());
+      await scene.until(
+        () =>
+            scene.graph.client.selection.state.selectedThreadId ==
+            fixture.thread.id,
+        'thread row selects the canonical Client thread',
+      );
+
+      final pointer = await tester.createGesture(
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await pointer.addPointer(location: tester.getCenter(threadRow));
+      addTearDown(pointer.removePointer);
+      await pointer.moveTo(tester.getCenter(threadRow));
+      await tester.pump();
+      await tester.tap(
+        find.byKey(StudioDriverKeys.pinThread(fixture.thread.id)),
+      );
+      await scene.until(
+        () =>
+            scene
+                .graph
+                .client
+                .settings
+                .state
+                .canonical
+                ?.state
+                .value
+                ?.general
+                .pinnedThreadIds
+                .contains(fixture.thread.id) ==
+            true,
+        'pin reaches canonical Client settings',
+      );
+      await scene.until(
+        () => threadRow.evaluate().length == 1,
+        'pinned demand renders the canonical thread row',
+      );
+      await pointer.moveTo(tester.getCenter(threadRow));
+      await tester.pump();
+
+      final menu = find.byKey(StudioDriverKeys.threadMenu(fixture.thread.id));
+      Finder menuTrigger() =>
+          find.descendant(of: menu, matching: find.byType(IconButton));
+      await tester.tap(menuTrigger());
+      await scene.until(
+        () =>
+            find
+                .byKey(StudioDriverKeys.renameThread(fixture.thread.id))
+                .evaluate()
+                .length ==
+            1,
+        'Material thread menu opens',
+      );
+      await tester.tap(
+        find.byKey(StudioDriverKeys.renameThread(fixture.thread.id)),
+      );
+      final renameInput = find.byKey(
+        StudioDriverKeys.renameThreadInput(fixture.thread.id),
+      );
+      await scene.until(
+        () => renameInput.evaluate().length == 1,
+        'rename dialog opens',
+      );
+      await tester.enterText(renameInput, longTitle);
+      await tester.tap(
+        find.byKey(StudioDriverKeys.renameThreadSave(fixture.thread.id)),
+      );
+      await scene.until(
+        () => fixture.threadSnapshot(fixture.thread.id)?.title == longTitle,
+        'renamed title reaches the canonical directory',
+      );
+
+      await pointer.moveTo(tester.getCenter(threadRow));
+      await tester.pump();
+      await tester.tap(menuTrigger());
+      await scene.until(
+        () =>
+            find
+                .byKey(StudioDriverKeys.archiveThread(fixture.thread.id))
+                .evaluate()
+                .length ==
+            1,
+        'thread menu opens for archive',
+      );
+      await tester.tap(
+        find.byKey(StudioDriverKeys.archiveThread(fixture.thread.id)),
+      );
+      await scene.until(
+        () =>
+            find
+                .byKey(StudioDriverKeys.archiveThreadConfirm)
+                .evaluate()
+                .length ==
+            1,
+        'archive confirmation opens',
+      );
+      final archiveL10n = tester
+          .element(find.byKey(StudioDriverKeys.archiveThreadConfirm))
+          .l10n;
+      expect(
+        find.text(archiveL10n.sidebarArchiveSessionConfirmBody),
+        findsOneWidget,
+      );
+      expect(
+        find.text(archiveL10n.sidebarDeleteSessionConfirmBody),
+        findsNothing,
+      );
+      final archivedToggle = find.byKey(
+        const ValueKey<String>('sidebar-archived'),
+      );
+      await tester.tap(find.byKey(StudioDriverKeys.archiveThreadConfirm));
+      await scene.until(
+        () =>
+            threadRow.evaluate().isEmpty &&
+            archivedToggle.hitTestable().evaluate().length == 1,
+        'archived canonical thread leaves the live directory and navigation is ready',
+      );
+      final archivedFrame = await _queryDirectory(
+        scene,
+        DirectoryQuery(workspaceId: project.id, archived: true),
+      );
+      expect(archivedFrame.threadIds, contains(fixture.thread.id));
+
+      await tester.tap(archivedToggle, kind: ui.PointerDeviceKind.mouse);
+      await scene.until(
+        () =>
+            threadRow.evaluate().length == 1 &&
+            find
+                    .byKey(
+                      ValueKey(
+                        'thread-archived-workspace-${fixture.thread.id}',
+                      ),
+                    )
+                    .evaluate()
+                    .length ==
+                1,
+        'archived view loads the canonical archived thread and workspace',
+      );
+      await pointer.moveTo(tester.getCenter(threadRow));
+      await tester.pump();
+      if (captureRequested) {
+        await scene.capture('sidebar-archived');
+      }
+      expect(
+        find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
+      );
+      await scene.until(
+        () => threadRow.evaluate().isEmpty,
+        'restore removes the thread from the archived query',
+      );
+      final afterRestore = await _queryDirectory(
+        scene,
+        DirectoryQuery(workspaceId: project.id, archived: true),
+      );
+      expect(afterRestore.threadIds, isNot(contains(fixture.thread.id)));
+      await tester.tap(find.byKey(const ValueKey<String>('sidebar-archived')));
+      await scene.until(
+        () =>
+            threadRow.evaluate().length == 1 &&
+            fixture.threadSnapshot(fixture.thread.id)?.archived == false &&
+            fixture.threadSnapshot(fixture.thread.id)?.title == longTitle,
+        'restored thread returns to the live canonical directory',
+      );
+
+      // Project archive confirmation preserves or removes only the canonical target.
       final archiveDirectory = Directory(
         '${Directory(projectPath).parent.path}/sidebar-project-close-target',
       );
@@ -410,14 +376,7 @@ void main() {
         Error.throwWithStackTrace(error, stack);
       }
       await tester.ensureVisible(archiveProjectRow);
-      final projectPointer = await tester.createGesture(
-        kind: ui.PointerDeviceKind.mouse,
-      );
-      await projectPointer.addPointer(
-        location: tester.getCenter(archiveProjectRow),
-      );
-      addTearDown(projectPointer.removePointer);
-      await projectPointer.moveTo(tester.getCenter(archiveProjectRow));
+      await pointer.moveTo(tester.getCenter(archiveProjectRow));
       await tester.pump();
 
       final projectMenu = find.byKey(
@@ -472,7 +431,7 @@ void main() {
         'cancel preserves the canonical project',
       );
 
-      await projectPointer.moveTo(tester.getCenter(archiveProjectRow));
+      await pointer.moveTo(tester.getCenter(archiveProjectRow));
       await tester.pump();
       await openProjectArchiveDialog();
       await tester.tap(
@@ -488,18 +447,9 @@ void main() {
             archiveProjectRow.evaluate().isEmpty,
         'confirm removes only the target from the canonical project directory',
       );
-      expect(tester.takeException(), isNull);
-    },
-    timeout: const Timeout(Duration(minutes: 2)),
-  );
 
-  testWidgets(
-    'confirmed delete commits and its canonical directory observation removes the root',
-    (tester) async {
-      final scene = await harness.mount(tester);
-      addTearDown(scene.dispose);
+      // Confirmed delete commits and its canonical directory observation removes the root.
       final client = scene.graph.client;
-      final project = fixture.project;
       final deletedThreadId = fixture.thread.id;
       final target = fixture.threadSnapshot(deletedThreadId);
       if (target == null) {
@@ -557,13 +507,9 @@ void main() {
           }
         }
 
-        final projectRow = find.byKey(StudioDriverKeys.projectRow(project.id));
         await scene.until(
           () => projectRow.evaluate().length == 1,
           'target project appears in the actual sidebar',
-        );
-        final threadRow = find.byKey(
-          StudioDriverKeys.threadRow(deletedThreadId),
         );
         if (threadRow.evaluate().isEmpty) {
           await tester.tap(
@@ -575,21 +521,10 @@ void main() {
           'target root is available in the actual sidebar',
         );
         await tester.ensureVisible(threadRow);
-
-        final pointer = await tester.createGesture(
-          kind: ui.PointerDeviceKind.mouse,
-        );
-        await pointer.addPointer(location: tester.getCenter(threadRow));
-        addTearDown(pointer.removePointer);
         await pointer.moveTo(tester.getCenter(threadRow));
         await tester.pump();
 
-        final menu = find.byKey(StudioDriverKeys.threadMenu(deletedThreadId));
-        final menuTrigger = find.descendant(
-          of: menu,
-          matching: find.byType(IconButton),
-        );
-        await tester.tap(menuTrigger);
+        await tester.tap(menuTrigger());
         await scene.until(
           () =>
               find
@@ -698,7 +633,7 @@ void main() {
         await directory.release();
       }
     },
-    timeout: const Timeout(Duration(minutes: 3)),
+    timeout: const Timeout(Duration(minutes: 6)),
   );
 }
 

@@ -52,13 +52,9 @@ AcpTimelineHeaderViewState acpTimelineHeaderViewModel(
     ready: state?.ready ?? false,
     disconnected: state?.disconnected ?? false,
     observationEnded: state?.observationEnded ?? false,
-    itemCount: ref.watch(acpTimelineRowsViewModelProvider(threadId)).length,
     hasConversationalContent: state == null
         ? false
         : hasConversationalAcpContent(state.content),
-    hasPlan: state?.plan != null && state!.plan!.entries.isNotEmpty,
-    running: state?.activeRun != null,
-    pendingPermissionCount: state?.pendingPermissions.length ?? 0,
     capabilities: mapAcpCapabilities(state?.capabilities),
     availableCommands: extractLatestAcpAvailableCommands(
       state?.content ?? const [],
@@ -77,12 +73,6 @@ List<AcpTimelineRow> acpTimelineRowsViewModel(Ref ref, String threadId) {
     content: state?.content ?? const [],
     running: state?.activeRun != null,
   );
-}
-
-@riverpod
-AcpTimelineRow? acpTimelineItemViewModel(Ref ref, String threadId, int index) {
-  final rows = ref.watch(acpTimelineRowsViewModelProvider(threadId));
-  return index >= 0 && index < rows.length ? rows[index] : null;
 }
 
 List<AcpTimelineRow> mapAcpTimelineRows({

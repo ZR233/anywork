@@ -49,31 +49,13 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
         let mut runner = OwnedProcess::start(&mut command, false)?;
-        let deadline = Instant::now() + Duration::from_secs(900);
-        loop {
-            if let Some(status) = runner.child.try_wait()? {
-                runner.stopped = true;
-                runner_exit = Some(status);
-                ensure!(
-                    status.success(),
-                    "Waiting integration test failed: {status}"
-                );
-                break;
-            }
-            ensure!(
-                !fixture.exited()?,
-                "fixture exited during Waiting integration test"
-            );
-            ensure!(
-                interrupt.try_recv().is_err(),
-                "Waiting integration test cancelled"
-            );
-            ensure!(
-                Instant::now() < deadline,
-                "Waiting integration test timed out"
-            );
-            thread::sleep(Duration::from_millis(200));
-        }
+        runner_exit = Some(wait_desktop_runner(
+            &mut runner,
+            Some(&mut fixture),
+            interrupt,
+            Duration::from_secs(900),
+            "Waiting integration test",
+        )?);
         Ok(())
     })();
 

@@ -44,31 +44,13 @@ pub(super) fn run(context: &QuestionHistoryScenario<'_>, mut fixture: OwnedProce
             .stderr(Stdio::from(log));
         configure_presentation_capture(&mut command, context.output, context.capture_presentation);
         let mut runner = OwnedProcess::start(&mut command, false)?;
-        let deadline = Instant::now() + Duration::from_secs(900);
-        loop {
-            if let Some(status) = runner.child.try_wait()? {
-                runner.stopped = true;
-                runner_exit = Some(status);
-                ensure!(
-                    status.success(),
-                    "question-history integration test failed: {status}"
-                );
-                break;
-            }
-            ensure!(
-                !fixture.exited()?,
-                "fixture exited during question-history integration test"
-            );
-            ensure!(
-                context.interrupt.try_recv().is_err(),
-                "question-history integration test cancelled"
-            );
-            ensure!(
-                Instant::now() < deadline,
-                "question-history integration test timed out"
-            );
-            thread::sleep(Duration::from_millis(200));
-        }
+        runner_exit = Some(wait_desktop_runner(
+            &mut runner,
+            Some(&mut fixture),
+            context.interrupt,
+            Duration::from_secs(900),
+            "question-history integration test",
+        )?);
         let report: serde_json::Value = serde_json::from_slice(
             &fs::read(context.output.join("question-history.json"))
                 .context("question-history integration test wrote no report")?,

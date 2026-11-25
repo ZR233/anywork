@@ -588,4 +588,30 @@ void ignore() {
       isEmpty,
     );
   });
+
+  test('UI import closure catches cyclic FRB edge across sibling entries', () {
+    const entryA = 'code/anywork/test/ui/a_test.dart';
+    const entryB = 'code/anywork/test/ui/b_test.dart';
+    const shared = 'code/anywork/lib/src/shared/shared.dart';
+    const forbidden = 'code/anywork/lib/src/infrastructure/frb/studio_api.dart';
+    final sources = <String, String>{
+      entryA:
+          "import 'package:anywork/src/shared/shared.dart';\n"
+          "import 'package:anywork/src/infrastructure/frb/studio_api.dart';",
+      entryB: "import 'package:anywork/src/shared/shared.dart';",
+      shared: "import '../../../test/ui/a_test.dart';",
+      forbidden: '',
+    };
+    var reads = 0;
+    final diagnostics = checkUiImportClosure(
+      entries: [entryA, entryB],
+      read: (path) {
+        reads++;
+        return sources[path];
+      },
+    );
+    expect(diagnostics.map((d) => d.rule), everyElement('UI-FRB'));
+    expect(diagnostics.length, 2);
+    expect(reads, 3);
+  });
 }

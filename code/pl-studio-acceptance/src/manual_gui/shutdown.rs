@@ -194,7 +194,7 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
                 Instant::now() < deadline,
                 "shutdown launcher did not finish"
             );
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(15));
         }
         gui.mark_reaped();
         let report: Value = serde_json::from_slice(&fs::read(&report_path)?)?;
@@ -265,7 +265,7 @@ fn wait_until(
             Instant::now() < deadline,
             "shutdown observation timed out after {timeout:?}"
         );
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(15));
     }
 }
 

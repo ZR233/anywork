@@ -123,7 +123,7 @@ final class TimelineObservation {
         fail('Timed out waiting for $description');
       }
       if (ready()) return;
-      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 50));
       expect(tester.takeException(), isNull);
     }
   }
@@ -149,7 +149,7 @@ final class TimelineObservation {
         expect(elements, hasLength(1));
         await Scrollable.ensureVisible(elements.single);
       }
-      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 50));
       expect(tester.takeException(), isNull);
     }
     await tester.tap(target);
@@ -286,7 +286,7 @@ final class TimelineObservation {
         // finder; callers verify their actual content/control is visible.
         if (fragment.evaluate().isNotEmpty) return;
       }
-      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 50));
     }
     fail('Timed out revealing Main row $unitId');
   }

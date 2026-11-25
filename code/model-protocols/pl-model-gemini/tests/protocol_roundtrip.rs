@@ -6,9 +6,98 @@ use pl_model_wire::completion::{
     ToolMediaContext, ToolResultReceipt, ToolResultRecord, ToolSpec,
     stream::{event::ModelStreamEvent, replay::ReplayCollector},
 };
-use pl_model_wire::model::{InferenceAccounting, ModelProtocolOptions};
+use pl_model_wire::model::{InferenceAccounting, ModelDefinition, ModelProtocolOptions};
 use pl_model_wire::wire_codec::{EncodeHttpRequestInput, VisibleOutputProtocol, WireCodec};
-use serde_json::json;
+use serde_json::{Value, json};
+
+fn message(role: MessageRole, text: &str) -> Message {
+    Message {
+        role,
+        content: MessageContent::text(text),
+        presentation: Default::default(),
+        reasoning_content: None,
+        tool_calls: None,
+        tool_result: None,
+        metadata: Default::default(),
+    }
+}
+
+fn lookup_result(item_id: &str, call_id: &str) -> Message {
+    Message {
+        tool_result: Some(ToolResultRecord {
+            item_id: item_id.into(),
+            call_id: call_id.into(),
+            name: "lookup".into(),
+            kind: ToolCallKind::Function,
+        }),
+        ..message(MessageRole::Tool, "result")
+    }
+}
+
+#[test]
+fn rejects_interrupted_gemini_tool_batches_and_duplicate_ids_in_the_same_batch() {
+    let model = bundled_definition().unwrap().models.remove(0);
+    let endpoint = endpoint::vertex_endpoint(None);
+    let assistant = |ids: &[(&str, &str)]| Message {
+        tool_calls: Some(
+            ids.iter()
+                .map(|(item, call)| {
+                    ToolCall::function(*item, "lookup", json!({}), *call).history_record()
+                })
+                .collect(),
+        ),
+        ..message(MessageRole::Assistant, "")
+    };
+    let encode = |messages| {
+        GEMINI_WIRE_CODEC.encode_http_request(EncodeHttpRequestInput {
+            endpoint: &endpoint,
+            model: &model,
+            request: &CompletionRequest::builder().messages(messages).build(),
+            prompt_cache_key: None,
+            compaction_body: None,
+            is_compaction: false,
+        })
+    };
+    let first = [("a", "a"), ("b", "b")];
+    let invalid = [
+        (
+            "interrupted result batch",
+            vec![
+                assistant(&first),
+                lookup_result("a", "a"),
+                message(MessageRole::User, "interrupt the batch"),
+                lookup_result("b", "b"),
+            ],
+        ),
+        (
+            "duplicate ID",
+            vec![
+                assistant(&[("same", "x-1"), ("same", "x-2")]),
+                lookup_result("same", "x-1"),
+                lookup_result("same", "x-2"),
+            ],
+        ),
+    ];
+    let accepted: Vec<_> = invalid
+        .into_iter()
+        .filter_map(|(case, messages)| encode(messages).ok().map(|request| (case, request.body)))
+        .collect();
+    assert!(accepted.is_empty(), "incorrectly accepted {accepted:?}");
+
+    let request = encode(vec![
+        assistant(&first),
+        lookup_result("a", "a"),
+        lookup_result("b", "b"),
+        assistant(&[("a", "a")]),
+        lookup_result("a", "a"),
+    ])
+    .unwrap();
+    let contents = request.body["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 4);
+    assert_eq!(contents[1]["parts"][0]["functionResponse"]["id"], "a");
+    assert_eq!(contents[1]["parts"][1]["functionResponse"]["id"], "b");
+    assert_eq!(contents[3]["parts"][0]["functionResponse"]["id"], "a");
+}
 
 #[test]
 fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() {
@@ -202,33 +291,145 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
     assert_eq!(fr_parts.len(), 2);
     assert_eq!(fr_parts[0]["functionResponse"]["id"], "call_1");
     assert!(fr_parts[1]["functionResponse"].get("id").is_none());
+
+    let Some(ModelContextItem::ToolResult { message, .. }) = req.input.last_mut() else {
+        panic!("expected a tool result");
+    };
+    message.tool_result.as_mut().unwrap().name = "another_tool".into();
+    let error = GEMINI_WIRE_CODEC
+        .encode_http_request(EncodeHttpRequestInput {
+            endpoint: &ep,
+            model: &model,
+            request: &req,
+            prompt_cache_key: None,
+            compaction_body: None,
+            is_compaction: false,
+        })
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tool result name does not match"),
+        "{error}"
+    );
+
+    for (field, value, expected) in [
+        (
+            "name",
+            json!("another_tool"),
+            "differs from submitted binding",
+        ),
+        (
+            "id",
+            json!("different-id"),
+            "id differs from submitted binding",
+        ),
+        ("id", json!(73), "id must be a string"),
+        (
+            "args",
+            json!({"path":"other.txt"}),
+            "args differ from submitted binding",
+        ),
+    ] {
+        let mut altered = resp.clone();
+        let Some(AssistantReplay::Gemini { parts }) = altered.replay.as_mut() else {
+            panic!("expected Gemini replay");
+        };
+        parts[1]["functionCall"][field] = value;
+        let error = CompletionRequest::builder()
+            .build()
+            .append_response(&altered)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{field}: {error}");
+    }
+
+    let mut duplicate = resp.clone();
+    let Some(AssistantReplay::Gemini { parts }) = duplicate.replay.as_mut() else {
+        panic!("expected Gemini replay");
+    };
+    parts[2]["functionCall"]["id"] = json!("call_1");
+    duplicate.tool_calls[1].id = "call_1".into();
+    duplicate.tool_calls[1].call_id = "call_1".into();
+    let error = CompletionRequest::builder()
+        .build()
+        .append_response(&duplicate)
+        .unwrap_err();
+    assert!(error.to_string().contains("duplicate"), "{error}");
+
+    let mut omitted_args = resp;
+    let Some(AssistantReplay::Gemini { parts }) = omitted_args.replay.as_mut() else {
+        panic!("expected Gemini replay");
+    };
+    parts[1]["functionCall"]
+        .as_object_mut()
+        .unwrap()
+        .remove("args");
+    let mut request = CompletionRequest::builder().build();
+    let error = request.append_response(&omitted_args).unwrap_err();
+    assert!(error.to_string().contains("args differ"), "{error}");
+    omitted_args.tool_calls[0] = ToolCall::function("call_1", "read_file", json!({}), "call_1");
+    request.append_response(&omitted_args).unwrap();
 }
 
 #[test]
 fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
+    use pl_model_wire::completion::stream::event::ToolInputDeltaPayload;
+
     let mut decoder = GEMINI_WIRE_CODEC
         .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
     let mut collector = ReplayCollector::default();
 
+    let thought = json!({"text":"Let me think.","thought":true});
+    let first = json!({
+        "functionCall":{"name":"lookup","args":{"q":"one"},"id":"id-1"},
+        "thoughtSignature":"SIG_FIRST",
+        "future":{"preserve":true},
+    });
+    let second = json!({"functionCall":{"name":"lookup","args":{"q":"two"},"id":"id-2"}});
+    let third = json!({"functionCall":{"name":"lookup","args":{"q":"three"},"id":"id-3"}});
+    let tail_signature = json!({"text":"","thoughtSignature":"SIG_TAIL"});
     let frames = [
-        r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Let me think.","thought":true}]}}],"usageMetadata":{"trafficType":"ON_DEMAND"},"modelVersion":"gemini-4-hydrogen","responseId":"resp-1"}"#,
-        r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello!"}]}}]}"#,
-        r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"","thoughtSignature":"SIG_TAIL"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"totalTokenCount":22}}"#,
+        json!({"candidates":[{"content":{"role":"model","parts":[thought,first,second]}}],
+            "modelVersion":"gemini-4-hydrogen","responseId":"resp-1"}),
+        json!({"candidates":[{"content":{"role":"model","parts":[third]}}]}),
+        json!({"candidates":[{"content":{"role":"model","parts":[tail_signature]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"totalTokenCount":22}}),
     ];
 
     let mut saw_usage = None;
+    let mut ready = Vec::new();
     for frame in frames {
         let decoded = decoder
-            .decode_frame(frame, Some("goog-req-1"), &|s| s.to_owned())
+            .decode_frame(&frame.to_string(), Some("goog-req-1"), &|s| s.to_owned())
             .unwrap();
+        assert!(!decoded.reached_terminal);
         for ev in decoded.events {
             match ev {
                 ModelStreamEvent::Replay(u) => collector.apply(u).unwrap(),
                 ModelStreamEvent::Usage(u) => saw_usage = Some(u),
+                ModelStreamEvent::ToolCallReady {
+                    call_id: Some(id),
+                    name: Some(name),
+                    payload: Some(ToolInputDeltaPayload::FunctionArguments(args)),
+                    ..
+                } => ready.push((
+                    id,
+                    name,
+                    serde_json::from_str::<serde_json::Value>(&args).unwrap(),
+                )),
+                ModelStreamEvent::Completed { .. } => panic!("Gemini completed before stream EOF"),
                 _ => {}
             }
         }
     }
+    assert_eq!(
+        ready,
+        [
+            ("id-1".to_owned(), "lookup".to_owned(), json!({"q":"one"})),
+            ("id-2".to_owned(), "lookup".to_owned(), json!({"q":"two"})),
+            ("id-3".to_owned(), "lookup".to_owned(), json!({"q":"three"})),
+        ]
+    );
     let tail = decoder.finish();
     assert!(
         tail.iter()
@@ -240,12 +441,274 @@ fn sse_decoder_preserves_trailing_thought_signature_and_tool_calls() {
     let AssistantReplay::Gemini { parts } = replay else {
         panic!("expected Gemini replay");
     };
-    assert_eq!(parts.len(), 3);
-    assert_eq!(parts[2]["thoughtSignature"], "SIG_TAIL");
+    assert_eq!(parts, [thought, first, second, third, tail_signature]);
     let usage = saw_usage.unwrap();
     assert_eq!(usage.input_tokens, Some(10));
     assert_eq!(usage.output_tokens, Some(12));
     assert_eq!(usage.reasoning_tokens, Some(7));
+}
+
+#[test]
+fn refuses_gemini_streamed_function_arguments_in_request_and_response() {
+    let mut model = bundled_definition().unwrap().models.remove(0);
+    let endpoint = endpoint::vertex_endpoint(None);
+    let request = CompletionRequest::builder().build();
+    let encode = |model: &ModelDefinition| {
+        GEMINI_WIRE_CODEC.encode_http_request(EncodeHttpRequestInput {
+            endpoint: &endpoint,
+            model,
+            request: &request,
+            prompt_cache_key: None,
+            compaction_body: None,
+            is_compaction: false,
+        })
+    };
+    for (tool, calling, stream) in [
+        (
+            "toolConfig",
+            "functionCallingConfig",
+            "streamFunctionCallArguments",
+        ),
+        (
+            "toolConfig",
+            "functionCallingConfig",
+            "stream_function_call_arguments",
+        ),
+        (
+            "toolConfig",
+            "function_calling_config",
+            "streamFunctionCallArguments",
+        ),
+        (
+            "tool_config",
+            "functionCallingConfig",
+            "streamFunctionCallArguments",
+        ),
+        (
+            "tool_config",
+            "function_calling_config",
+            "stream_function_call_arguments",
+        ),
+    ] {
+        model.extra.binding.request.body = json!({(tool):{(calling):{(stream):true}}})
+            .as_object()
+            .unwrap()
+            .clone();
+        let error = encode(&model).unwrap_err();
+        assert!(
+            error.to_string().contains("streamFunctionCallArguments"),
+            "{error}"
+        );
+    }
+    for body in [
+        json!({"toolConfig":{"functionCallingConfig":{"streamFunctionCallArguments":false,"stream_function_call_arguments":true}}}),
+        json!({"toolConfig":{"functionCallingConfig":{"streamFunctionCallArguments":false},"function_calling_config":{"streamFunctionCallArguments":true}}}),
+        json!({"toolConfig":{"functionCallingConfig":{"streamFunctionCallArguments":false}},"tool_config":{"functionCallingConfig":{"streamFunctionCallArguments":true}}}),
+    ] {
+        model.extra.binding.request.body = body.as_object().unwrap().clone();
+        let error = encode(&model).unwrap_err();
+        assert!(
+            error.to_string().contains("streamFunctionCallArguments"),
+            "{error}"
+        );
+    }
+    model.extra.binding.request.body = json!({
+        "tool_config":{"function_calling_config":{"stream_function_call_arguments":false}},
+        "labels":{"stream_function_call_arguments":"true"},
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let prepared = encode(&model).unwrap();
+    assert_eq!(
+        prepared.body["labels"]["stream_function_call_arguments"],
+        "true"
+    );
+
+    for function_call in [
+        json!({"name":"lookup","partialArgs":[{"jsonPath":"$.q","stringValue":"look"}],"willContinue":true}),
+        json!({"name":"lookup","willContinue":true}),
+        json!({"partialArgs":[{"jsonPath":"$.q","stringValue":"up"}],"willContinue":false}),
+        json!({"name":"lookup","args":{},"willContinue":"true"}),
+        json!({"name":"lookup","willContinue":false,"partialArgs":[]}),
+        json!({"name":"lookup","args":{},"partial_args":[{"json_path":"$.q","string_value":"look"}]}),
+        json!({"name":"lookup","args":{},"willContinue":false,"will_continue":true}),
+    ] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let frame = json!({"candidates":[{"content":{"role":"model","parts":[
+            {"functionCall":function_call},
+        ]},"finishReason":"STOP"}]});
+        let decoded = decoder
+            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .unwrap();
+        assert!(decoded.events.iter().any(|event| matches!(event,
+            ModelStreamEvent::Failed { message, .. } if message.contains("streamed function arguments")
+        )), "{function_call}");
+        assert!(
+            !decoded
+                .events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::ToolCallReady { .. }))
+        );
+        assert!(decoder.finish().is_empty());
+    }
+
+    for part in [
+        json!({"functionCall":{"name":"lookup","args":{"q":"complete"},"willContinue":false,"partialArgs":[]}}),
+        json!({"function_call":{"name":"lookup","args":{"q":"complete"},"will_continue":false,"partial_args":[]}}),
+    ] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let full_call = json!({"candidates":[{"content":{"role":"model","parts":[part]},"finishReason":"STOP"}]});
+        let decoded = decoder
+            .decode_frame(&full_call.to_string(), None, &str::to_owned)
+            .unwrap();
+        assert!(
+            decoded.events.iter().any(|event| matches!(event,
+                ModelStreamEvent::ToolCallReady { name: Some(name), .. } if name == "lookup"
+            )),
+            "{part}"
+        );
+        assert!(
+            decoder
+                .finish()
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::Completed { .. }))
+        );
+    }
+}
+
+#[test]
+fn rejects_gemini_argument_fragments_in_public_replay() {
+    let model = bundled_definition().unwrap().models.remove(0);
+    let endpoint = endpoint::vertex_endpoint(None);
+    let mut response = CompletionResponse {
+        response_id: None,
+        content: None,
+        replay: None,
+        reasoning_content: None,
+        tool_calls: vec![ToolCall::function(
+            "internal",
+            "lookup",
+            json!({}),
+            "internal",
+        )],
+        responses_context_items: Vec::new(),
+        presentation_items: Vec::new(),
+        orchestration: Default::default(),
+        timing: None,
+        accounting: InferenceAccounting::default(),
+        model: "gemini-4-hydrogen".into(),
+        model_observation: None,
+        observation: Default::default(),
+    };
+    let encode = |request: &CompletionRequest| {
+        GEMINI_WIRE_CODEC.encode_http_request(EncodeHttpRequestInput {
+            endpoint: &endpoint,
+            model: &model,
+            request,
+            prompt_cache_key: None,
+            compaction_body: None,
+            is_compaction: false,
+        })
+    };
+    let full =
+        json!({"functionCall":{"name":"lookup","args":{},"partialArgs":[],"willContinue":false}});
+    response.replay = Some(AssistantReplay::Gemini {
+        parts: vec![full.clone()],
+    });
+    let mut valid = CompletionRequest::builder().build();
+    valid.append_response(&response).unwrap();
+    valid
+        .input
+        .push(lookup_result("internal", "internal").into());
+    assert_eq!(
+        encode(&valid).unwrap().body["contents"][0]["parts"][0],
+        full
+    );
+
+    let fragments: [Value; 3] = [
+        json!({"functionCall":{"name":"lookup","partialArgs":[{"jsonPath":"$.q","stringValue":"look"}],"willContinue":true}}),
+        json!({"functionCall":{"name":"lookup","partial_args":[{"json_path":"$.q","string_value":"look"}],"will_continue":true}}),
+        json!({"function_call":{"name":"lookup","partial_args":[{"json_path":"$.q","string_value":"look"}],"will_continue":true}}),
+    ];
+    for fragment in fragments {
+        response.replay = Some(AssistantReplay::Gemini {
+            parts: vec![fragment.clone()],
+        });
+        let mut history = CompletionRequest::builder().build();
+        let appended = history.append_response(&response);
+        let mut altered = valid.clone();
+        altered.replay_spans[0].output[0] = fragment;
+        let encoded = encode(&altered);
+        assert!(
+            matches!(&appended, Err(error) if error.to_string().contains("streamed function arguments"))
+                && matches!(&encoded, Err(error) if error.to_string().contains("streamed function arguments")),
+            "append returned {appended:?}, encoding returned {encoded:?}"
+        );
+    }
+}
+
+#[test]
+fn gemini_tool_calls_do_not_make_an_abnormal_stream_successful() {
+    for finish_reason in [None, Some("MAX_TOKENS"), Some("SAFETY")] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let mut candidate = json!({"content":{"role":"model","parts":[
+            {"functionCall":{"name":"lookup","args":{"q":"ready"}}},
+        ]}});
+        if let Some(reason) = finish_reason {
+            candidate["finishReason"] = json!(reason);
+        }
+        let frame = json!({"candidates":[candidate]});
+        let decoded = decoder
+            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .unwrap();
+        if let Some(reason) = finish_reason {
+            assert!(decoded.events.iter().any(|event| matches!(event,
+                ModelStreamEvent::Failed { code: Some(code), .. } if code == reason
+            )));
+        }
+        assert!(
+            !decoded
+                .events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::Completed { .. }))
+        );
+        assert!(decoder.finish().is_empty());
+    }
+}
+
+#[test]
+fn rejects_malformed_gemini_function_call_identity_before_ready() {
+    for (call, expected) in [
+        (json!({"name":"lookup","id":null}), "id must be a string"),
+        (json!({"name":"lookup","id":42}), "id must be a string"),
+        (json!({"args":{}}), "missing name"),
+    ] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let frame = json!({"candidates":[{"content":{"role":"model","parts":[
+            {"functionCall":call},
+        ]},"finishReason":"STOP"}]});
+        let decoded = decoder
+            .decode_frame(&frame.to_string(), None, &str::to_owned)
+            .unwrap();
+        assert!(
+            decoded.events.iter().any(|event| matches!(event,
+                ModelStreamEvent::Failed { message, .. } if message.contains(expected)
+            )),
+            "{call}"
+        );
+        assert!(
+            !decoded
+                .events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::ToolCallReady { .. }))
+        );
+        assert!(decoder.finish().is_empty());
+    }
 }
 
 #[test]

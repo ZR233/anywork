@@ -89,8 +89,6 @@ run flutter pub get --enforce-lockfile --directory ../anywork_previews
 run dart format --output=none --set-exit-if-changed lib test tool integration_test ../anywork_previews/lib
 run flutter analyze --no-pub . ../anywork_previews
 run dart --packages=.dart_tool/package_config.json \
-  ../../xtask/dart/client_boundary_check.dart "$root"
-run dart --packages=.dart_tool/package_config.json \
-  ../../xtask/dart/client_boundary_check.dart --ui-closure "$root"
+  ../../xtask/dart/client_boundary_check.dart --all "$root"
 run flutter test --no-pub test/unit test/ui
 fi

@@ -10,6 +10,7 @@ pl-model-wire = { workspace = true }
 pl-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 pl-model-runtime = { workspace = true, features = ["live-examples"] }
