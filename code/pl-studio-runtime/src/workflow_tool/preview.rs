@@ -1,23 +1,30 @@
 //! Stateless authoring preview through the same machine as workflow_transition.
-use crate::PureError;
-use crate::mode::{WorkflowPreviewRequest, WorkflowPreviewSnapshot};
-use crate::workflow_tool::WorkflowSessionState;
-use crate::workflow_tool::machine::{
-    CompletionInput, TransitionInput, WorkflowMachine, WorkflowOperation,
+use super::machine::{CompletionInput, TransitionInput, WorkflowMachine, WorkflowOperation};
+use super::{
+    WorkflowBinding, WorkflowPreviewSnapshot, WorkflowRunLifecycle, WorkflowSessionState, new_run,
 };
+use crate::PureError;
 
 /// Replays at most 128 direct edges in isolated memory. Natural-language truth is declared by the operator.
-pub fn preview_workflow(
-    request: WorkflowPreviewRequest,
+pub(crate) fn preview_workflow(
+    binding: Option<WorkflowBinding>,
+    previous_path: Vec<String>,
+    target_state_id: Option<String>,
+    reason: String,
 ) -> Result<WorkflowPreviewSnapshot, PureError> {
-    if request.path.len() > 128 {
+    const MAX_PATH_STATES: usize = 128;
+    const PREVIEW_TIME: i64 = 0;
+    if previous_path
+        .len()
+        .max(1)
+        .saturating_add(usize::from(target_state_id.is_some()))
+        > MAX_PATH_STATES
+    {
         return Err(PureError::ConfigError(
             "preview path exceeds 128 states; reset the preview".into(),
         ));
     }
-    let mode = super::RegisteredThreadMode::from_definition(request.document.definition, 1)
-        .map_err(|error| PureError::ConfigError(error.to_string()))?;
-    let Some(graph) = mode.workflow() else {
+    let Some(binding) = binding else {
         return Ok(WorkflowPreviewSnapshot {
             accepted: true,
             message: "该模式没有工作流".into(),
@@ -27,15 +34,14 @@ pub fn preview_workflow(
             terminal: false,
         });
     };
-    let initial_id = graph.definition().initial_state_id.clone();
-    let mut state = WorkflowSessionState {
+    let initial_id = binding.graph.definition().initial_state_id.clone();
+    let state = WorkflowSessionState {
         revision: 1,
-        current_run: Some(super::new_run(&mode, graph, None, "isolated-preview", 0)),
+        current_run: Some(new_run(&binding, None, "isolated-preview", PREVIEW_TIME)),
         ..Default::default()
     };
     let mut path = vec![initial_id.clone()];
-    if request
-        .path
+    if previous_path
         .first()
         .is_some_and(|first| first != &initial_id)
     {
@@ -43,19 +49,12 @@ pub fn preview_workflow(
             "preview path must start at the initial state".into(),
         ));
     }
-    let mut targets = request.path.iter().skip(1).cloned().collect::<Vec<_>>();
-    if let Some(target) = request.target_state_id {
-        targets.push(target);
-    }
-    if targets.len() > 127 {
-        return Err(PureError::ConfigError(
-            "preview path exceeds 128 states; reset the preview".into(),
-        ));
-    }
-    let mut machine = WorkflowMachine::new(mode.clone(), state.clone());
+    let targets = previous_path.into_iter().skip(1).chain(target_state_id);
+    let mut machine = WorkflowMachine::new(binding, state);
     let mut accepted = true;
     let mut message = "请选择下一阶段；自然语言条件由操作者判断".to_string();
-    for (index, target) in targets.into_iter().enumerate() {
+    for (index, target) in targets.enumerate() {
+        let state = machine.state();
         let run = state.current_run.as_ref().expect("preview has a run");
         let result = machine.apply_transition(
             TransitionInput {
@@ -65,7 +64,7 @@ pub fn preview_workflow(
                 target_state_id: target.clone(),
                 force: false,
                 completion: CompletionInput {
-                    reason: request.reason.clone(),
+                    reason: reason.clone(),
                     summary: "工作流隔离预演".into(),
                     evidence: vec![],
                 },
@@ -75,6 +74,7 @@ pub fn preview_workflow(
                 call_id: index.to_string(),
             },
             format!("preview:{index}:{target}"),
+            PREVIEW_TIME,
         )?;
         if !result.accepted {
             accepted = false;
@@ -83,14 +83,18 @@ pub fn preview_workflow(
                 .unwrap_or_else(|| result.code.to_string());
             break;
         }
-        state = machine.state();
         path.push(target);
     }
-    let run = state.current_run.as_ref().expect("preview has a run");
-    let terminal = run.lifecycle == crate::workflow_tool::WorkflowRunLifecycle::Terminal;
+    let run = machine
+        .state()
+        .current_run
+        .as_ref()
+        .expect("preview has a run");
+    let terminal = run.lifecycle == WorkflowRunLifecycle::Terminal;
     if accepted && terminal {
         message = "已到达终态；可重置预演".into();
     }
+    let graph = machine.graph();
     Ok(WorkflowPreviewSnapshot {
         accepted,
         message,

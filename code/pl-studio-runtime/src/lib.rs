@@ -141,6 +141,7 @@ pub mod plan_tool;
 pub mod workflow_tool;
 
 pub mod mode;
+mod thread_mode_id;
 
 mod tool_review;
 

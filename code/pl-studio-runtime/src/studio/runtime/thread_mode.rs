@@ -82,7 +82,7 @@ impl StudioRuntime {
         let instruction_model = model_binding::validate_context(&state, &route)?;
         let previous = state
             .extensions
-            .get("studio.instructions")
+            .get(crate::instruction::INSTRUCTIONS_EXTENSION)
             .context("Thread has no saved instruction sources")?;
         // 模式切换只更新 Mode 自己拥有的来源；Agent 定义身份与角色正文保持不变。
         let mut instructions = crate::instruction::decode_snapshot(&previous.payload)?;
@@ -142,7 +142,7 @@ impl StudioRuntime {
             };
             let version_binding = pl_core::thread::extensions::InstructionRevisionBinding {
                 record_id: snapshot.id.clone(),
-                extension_id: "studio.instructions".into(),
+                extension_id: crate::instruction::INSTRUCTIONS_EXTENSION.into(),
             };
             let append = same_route && binding_matches && binding.append_snapshots;
             let mut records = if append {
@@ -183,9 +183,12 @@ impl StudioRuntime {
             .map(|record| crate::workflow_tool::decode_workflow_state(&record.payload))
             .transpose()?;
         let now = crate::studio::unix_seconds();
-        let workflow =
-            crate::mode::state::archive_workflow_for_mode_change(previous_workflow, &mode_id, now)?;
-        let mode_record = state.extensions.get("studio.mode");
+        let workflow = crate::workflow_tool::archive_workflow_for_mode_change(
+            previous_workflow,
+            &mode_id,
+            now,
+        )?;
+        let mode_record = state.extensions.get(crate::mode::MODE_EXTENSION);
         let route_record = state
             .extensions
             .get(crate::studio::model_route::MODEL_ROUTE_EXTENSION)
@@ -195,7 +198,7 @@ impl StudioRuntime {
         let route_payload = crate::studio::model_route::encode(&route_selector)?;
         let mut mutations = vec![
             ExtensionMutation::Put {
-                id: "studio.mode".into(),
+                id: crate::mode::MODE_EXTENSION.into(),
                 expected_revision: mode_record.map(|record| record.revision),
                 payload: mode_payload.clone(),
             },
@@ -207,7 +210,7 @@ impl StudioRuntime {
         ];
         if !instruction_unchanged {
             mutations.push(ExtensionMutation::Put {
-                id: "studio.instructions".into(),
+                id: crate::instruction::INSTRUCTIONS_EXTENSION.into(),
                 expected_revision: Some(previous.revision),
                 payload: crate::instruction::encode_snapshot(&instructions)?,
             });
@@ -230,7 +233,10 @@ impl StudioRuntime {
                 expected_revision: workflow_record.map(|record| record.revision),
                 payload: crate::workflow_tool::encode_workflow_state(workflow)?,
             });
-            if let Some(section) = crate::mode::workflow_model_context_section(workflow, &mode) {
+            if let Some(section) = crate::workflow_tool::workflow_model_context_section(
+                workflow,
+                mode.workflow_binding(),
+            )? {
                 facts.push(RuntimeFact {
                     source_id: "studio.workflow".into(),
                     content: vec![pl_core::context::ContextContent::Text {
@@ -263,7 +269,7 @@ impl StudioRuntime {
         };
         let mut candidate = state.clone();
         candidate.extensions.insert(
-            "studio.mode".into(),
+            crate::mode::MODE_EXTENSION.into(),
             pl_core::thread::extensions::ExtensionRecord {
                 revision: mode_record.map_or(1, |record| record.revision),
                 payload: mode_payload,
@@ -298,7 +304,7 @@ impl StudioRuntime {
         update.base.extension_inputs.include_keys(
             &state.extensions,
             &[
-                "studio.instructions",
+                crate::instruction::INSTRUCTIONS_EXTENSION,
                 "studio.instructions.binding",
                 crate::workflow_tool::WORKFLOW_EXTENSION,
             ],

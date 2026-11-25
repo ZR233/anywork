@@ -168,31 +168,18 @@ fn project_with_mode(
             pl_tool::todo::saved_snapshot(&record.payload, call_id)
         })
         .transpose()?;
-    let mut workflow = state
+    let workflow = state
         .extensions
         .get(crate::workflow_tool::WORKFLOW_EXTENSION)
         .map(|record| {
-            crate::workflow_tool::decode_workflow_state(&record.payload)
-                .map(|state| crate::workflow_tool::WorkflowRuntimeSnapshot::from(&state))
+            crate::workflow_tool::decode_workflow_state(&record.payload).map(|state| match mode {
+                Some(mode) => mode.project_workflow_state(&state, false),
+                None => {
+                    crate::workflow_tool::WorkflowRuntimeSnapshot::from_state(&state, "", "", false)
+                }
+            })
         })
         .transpose()?;
-    if let Some(run) = workflow
-        .as_mut()
-        .and_then(|workflow| workflow.current_run.as_mut())
-        && let Some(mode) = mode
-    {
-        // Recovery/preparation owns compilation. Token projections only read saved metadata.
-        run.mode_display_name
-            .clone_from(&mode.definition.display_name);
-        if let Some(current) = mode.definition.workflow.as_ref().and_then(|graph| {
-            graph
-                .states
-                .iter()
-                .find(|state| state.id == run.current_state_id)
-        }) {
-            run.current_state_title.clone_from(&current.title);
-        }
-    }
     let plan = state
         .extensions
         .get(crate::plan_tool::PLAN_EXTENSION)

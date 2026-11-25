@@ -1,19 +1,31 @@
-//! Studio mode selection and initial workflow creation.
-use super::{CompiledWorkflowDefinition, RegisteredThreadMode};
+//! Workflow run creation and reconciliation with a frozen graph.
+use std::sync::Arc;
+
+use super::state::{archive_run, lifecycle_for_state, validate_session_state_size};
+use super::{CompiledWorkflowDefinition, WorkflowRun, WorkflowRunLifecycle, WorkflowSessionState};
 use crate::PureError;
-use crate::mode::state::{archive_run, lifecycle_for_state, validate_session_state_size};
-use crate::workflow_tool::{WorkflowRun, WorkflowRunLifecycle, WorkflowSessionState};
+use crate::thread_mode_id::ThreadModeId;
+
+/// The validated graph and identities needed to run it independently of the mode registry.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowBinding {
+    pub(crate) mode_id: ThreadModeId,
+    pub(crate) graph_revision: u64,
+    pub(crate) graph: Arc<CompiledWorkflowDefinition>,
+}
+
 /// 在 root Turn 第一次 provider 请求前，把持久状态与冻结 Mode 快照对齐。
-pub fn reconcile_workflow_for_turn(
+pub(crate) fn reconcile_workflow_for_turn(
     existing: Option<WorkflowSessionState>,
-    mode: &RegisteredThreadMode,
+    mode_id: &ThreadModeId,
+    binding: Option<WorkflowBinding>,
     identity_seed: &str,
     now: i64,
 ) -> Result<Option<WorkflowSessionState>, PureError> {
     let mut state = existing.unwrap_or_default();
-    let Some(graph) = mode.workflow() else {
+    let Some(binding) = binding else {
         if let Some(run) = state.current_run.take() {
-            let outcome = if run.mode_id == mode.descriptor().id {
+            let outcome = if &run.mode_id == mode_id {
                 "modeUpdated"
             } else {
                 "modeChanged"
@@ -37,8 +49,8 @@ pub fn reconcile_workflow_for_turn(
 
     let replacement = match state.current_run.as_ref() {
         None => Some((None, "started")),
-        Some(run) if run.mode_id != mode.descriptor().id => Some((None, "modeChanged")),
-        Some(run) if run.graph_hash != graph.graph_hash() => {
+        Some(run) if run.mode_id != binding.mode_id => Some((None, "modeChanged")),
+        Some(run) if run.graph_hash != binding.graph.graph_hash() => {
             Some((Some(run.lineage_id.clone()), "modeUpdated"))
         }
         Some(run) if run.lifecycle == WorkflowRunLifecycle::Terminal => {
@@ -52,27 +64,26 @@ pub fn reconcile_workflow_for_turn(
         }
         let revision = state.revision.saturating_add(1);
         let seed = format!("{identity_seed}:{reason}:{revision}");
-        state.current_run = Some(new_run(mode, graph, replacement_lineage, &seed, now));
+        state.current_run = Some(new_run(&binding, replacement_lineage, &seed, now));
         state.revision = revision;
     }
     validate_session_state_size(&state)?;
     Ok(Some(state))
 }
 /// Creates an initial run from an already validated, frozen mode graph.
-pub fn new_run(
-    mode: &RegisteredThreadMode,
-    graph: &CompiledWorkflowDefinition,
+pub(crate) fn new_run(
+    binding: &WorkflowBinding,
     lineage_id: Option<String>,
     identity_seed: &str,
     now: i64,
 ) -> WorkflowRun {
-    let initial = graph.initial_state();
+    let initial = binding.graph.initial_state();
     WorkflowRun {
         lineage_id: lineage_id.unwrap_or_else(|| generated_id("lineage", identity_seed)),
         run_id: generated_id("run", identity_seed),
-        mode_id: mode.descriptor().id.clone(),
-        graph_revision: mode.graph_revision(),
-        graph_hash: graph.graph_hash().to_string(),
+        mode_id: binding.mode_id.clone(),
+        graph_revision: binding.graph_revision,
+        graph_hash: binding.graph.graph_hash().to_string(),
         lifecycle: lifecycle_for_state(initial.kind),
         current_state_id: initial.id.clone(),
         started_at: now,
@@ -83,9 +94,17 @@ pub fn new_run(
     }
 }
 
-pub(crate) fn generated_id(prefix: &str, seed: &str) -> String {
-    let hash = pl_core::context::content_hash(seed.as_bytes());
-    format!("{prefix}-{}", &hash[7..31])
+fn generated_id(prefix: &str, seed: &str) -> String {
+    let hash = crate::canonical_content_hash(seed.as_bytes());
+    format!("{prefix}-{}", workflow_id_suffix(&hash))
+}
+
+fn workflow_id_suffix(content_hash: &str) -> &str {
+    // Persisted run and lineage IDs use the first 24 hexadecimal digits of SHA-256.
+    const HEX_DIGITS: usize = 24;
+    &content_hash
+        .strip_prefix("sha256:")
+        .expect("canonical content hash is prefixed SHA-256")[..HEX_DIGITS]
 }
 
 fn is_empty_state(state: &WorkflowSessionState) -> bool {

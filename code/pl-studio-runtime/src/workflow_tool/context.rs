@@ -4,20 +4,26 @@ use crate::workflow_tool::{WorkflowRunLifecycle, WorkflowSessionState};
 use crate::{ContextSectionId, ModelContextSectionSnapshot};
 use serde::Serialize;
 
-use super::RegisteredThreadMode;
-use super::WORKFLOW_CONTEXT_SECTION_ID;
+use super::WorkflowBinding;
 use pl_core::context::content_hash as canonical_content_hash;
 
-pub fn workflow_model_context_section(
+/// Stable identity of the workflow projection delivered to models.
+const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";
+
+pub(crate) fn workflow_model_context_section(
     state: &WorkflowSessionState,
-    mode: &RegisteredThreadMode,
-) -> Option<ModelContextSectionSnapshot> {
-    let run = state.current_run.as_ref()?;
-    let graph = mode.workflow()?;
-    if run.mode_id != mode.descriptor().id || run.graph_hash != graph.graph_hash() {
-        return None;
+    binding: Option<WorkflowBinding>,
+) -> serde_json::Result<Option<ModelContextSectionSnapshot>> {
+    let (Some(run), Some(binding)) = (state.current_run.as_ref(), binding) else {
+        return Ok(None);
+    };
+    let graph = &binding.graph;
+    if run.mode_id != binding.mode_id || run.graph_hash != graph.graph_hash() {
+        return Ok(None);
     }
-    let current = graph.state(&run.current_state_id)?;
+    let Some(current) = graph.state(&run.current_state_id) else {
+        return Ok(None);
+    };
     let outgoing = graph
         .outgoing(&run.current_state_id)
         .into_iter()
@@ -48,14 +54,14 @@ pub fn workflow_model_context_section(
             }
         },
     };
-    let content = serde_json::to_string_pretty(&projection).ok()?;
-    Some(ModelContextSectionSnapshot {
+    let content = serde_json::to_string_pretty(&projection)?;
+    Ok(Some(ModelContextSectionSnapshot {
         id: ContextSectionId::new(WORKFLOW_CONTEXT_SECTION_ID)
             .expect("built-in workflow context id must be valid"),
         title: "Thread Mode Workflow".to_string(),
         content_hash: canonical_content_hash(content.as_bytes()),
         content,
-    })
+    }))
 }
 
 #[derive(Serialize)]

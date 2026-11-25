@@ -38,7 +38,7 @@ pub(crate) fn migrate_saved_representation(
     state: &mut ThreadSnapshot,
     identity: &VerifiedAgentIdentity,
 ) -> Result<()> {
-    let Some(record) = state.extensions.get_mut("studio.instructions") else {
+    let Some(record) = state.extensions.get_mut(super::INSTRUCTIONS_EXTENSION) else {
         bail!("saved Thread has no instruction snapshot; original checkpoint preserved");
     };
     if record.payload.format() != SNAPSHOT_FORMAT {

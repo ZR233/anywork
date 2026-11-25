@@ -9,7 +9,7 @@ pub const MAX_ARCHIVED_WORKFLOW_RUNS: usize = 16;
 pub const MAX_WORKFLOW_OPERATION_RECEIPTS: usize = 32;
 
 use crate::PureError;
-use crate::mode::ThreadModeId;
+use crate::thread_mode_id::ThreadModeId;
 use crate::workflow_tool::{
     WorkflowOperationReceipt, WorkflowRun, WorkflowRunArchive, WorkflowRunLifecycle,
     WorkflowSessionState, WorkflowStateKind,
@@ -71,15 +71,16 @@ pub fn archive_run(
         summary: summary.to_string(),
         archived_at: now,
     });
-    while state.archived_runs.len() > MAX_ARCHIVED_WORKFLOW_RUNS {
-        let archived = state.archived_runs.remove(0);
-        let encoded = serde_json::to_vec(&archived)?;
-        state.archived_run_digest = crate::canonical_content_hash(
-            [state.archived_run_digest.as_bytes(), encoded.as_slice()]
-                .concat()
-                .as_slice(),
-        );
-        state.archived_run_count = state.archived_run_count.saturating_add(1);
+    let excess = state
+        .archived_runs
+        .len()
+        .saturating_sub(MAX_ARCHIVED_WORKFLOW_RUNS);
+    for archived in state.archived_runs.drain(..excess) {
+        append_archive_digest(
+            &mut state.archived_run_digest,
+            &mut state.archived_run_count,
+            &archived,
+        )?;
     }
     Ok(())
 }
@@ -91,17 +92,23 @@ pub fn archive_run(
 pub fn trim_history(run: &mut WorkflowRun) -> Result<(), PureError> {
     let drain = run.history_tail.len().saturating_sub(MAX_WORKFLOW_HISTORY);
     for record in run.history_tail.drain(..drain) {
-        let encoded = serde_json::to_vec(&record)?;
-        run.archived_transition_digest = crate::canonical_content_hash(
-            [
-                run.archived_transition_digest.as_bytes(),
-                encoded.as_slice(),
-            ]
-            .concat()
-            .as_slice(),
-        );
-        run.archived_transition_count = run.archived_transition_count.saturating_add(1);
+        append_archive_digest(
+            &mut run.archived_transition_digest,
+            &mut run.archived_transition_count,
+            &record,
+        )?;
     }
+    Ok(())
+}
+
+fn append_archive_digest(
+    digest: &mut String,
+    count: &mut u64,
+    record: &impl serde::Serialize,
+) -> serde_json::Result<()> {
+    let encoded = serde_json::to_vec(record)?;
+    *digest = crate::canonical_content_hash(&[digest.as_bytes(), &encoded].concat());
+    *count = count.saturating_add(1);
     Ok(())
 }
 

@@ -20,3 +20,5 @@ pub use types::{
     InstructionSource, InstructionSourceKind, ModeInstructionProfile,
 };
 pub(crate) use types::{SNAPSHOT_FORMAT, SNAPSHOT_VERSION};
+
+pub(crate) const INSTRUCTIONS_EXTENSION: &str = "studio.instructions";

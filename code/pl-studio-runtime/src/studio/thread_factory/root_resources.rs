@@ -447,7 +447,9 @@ impl StudioThreadFactory {
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", elapsed_ms = tools_started.elapsed().as_millis() as u64, "completed");
         prepared.tools = prepared
             .tools
-            .with_tools(crate::workflow_tool::workflow_registrations()?);
+            .with_tools(crate::workflow_tool::workflow_registrations(
+                crate::mode::workflow_binding_from_snapshot,
+            )?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
         if is_new {

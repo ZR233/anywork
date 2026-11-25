@@ -9,6 +9,7 @@ use crate::workflow_tool::{
 use serde::Serialize;
 
 use crate::hash::canonical_json_hash;
+use crate::thread_mode_id::valid_ascii_id;
 
 pub const MAX_WORKFLOW_STATES: usize = 32;
 pub const MAX_WORKFLOW_TRANSITIONS: usize = 96;
@@ -61,8 +62,10 @@ impl CompiledWorkflowDefinition {
     }
 
     pub fn transition(&self, source: &str, target: &str) -> Option<&WorkflowTransition> {
-        self.outgoing(source)
-            .into_iter()
+        self.outgoing_by_state
+            .get(source)?
+            .iter()
+            .map(|index| &self.definition.transitions[*index])
             .find(|transition| transition.target_state_id == target)
     }
 }
@@ -116,13 +119,21 @@ pub fn compile_workflow_definition(
     let states = definition
         .states
         .iter()
-        .map(|state| (state.id.as_str(), state))
+        .enumerate()
+        .map(|(index, state)| (state.id.clone(), index))
         .collect::<BTreeMap<_, _>>();
+    let mut outgoing_by_state = BTreeMap::<String, Vec<usize>>::new();
+    for (index, transition) in definition.transitions.iter().enumerate() {
+        outgoing_by_state
+            .entry(transition.source_state_id.clone())
+            .or_default()
+            .push(index);
+    }
     validate_endpoints(&definition, &states, &mut issues);
     validate_initial_state(&definition, &states, &mut issues);
-    validate_final_states(&definition, &mut issues);
+    validate_final_states(&definition, &outgoing_by_state, &mut issues);
     if issues.is_empty() {
-        validate_reachability(&definition, &mut issues);
+        validate_reachability(&definition, &outgoing_by_state, &mut issues);
     }
 
     let canonical = serde_json::to_value(&definition).map_err(|error| WorkflowCompilerError {
@@ -151,23 +162,10 @@ pub fn compile_workflow_definition(
         return Err(WorkflowCompilerError { issues });
     }
 
-    let states_by_id = definition
-        .states
-        .iter()
-        .enumerate()
-        .map(|(index, state)| (state.id.clone(), index))
-        .collect();
-    let mut outgoing_by_state = BTreeMap::<String, Vec<usize>>::new();
-    for (index, transition) in definition.transitions.iter().enumerate() {
-        outgoing_by_state
-            .entry(transition.source_state_id.clone())
-            .or_default()
-            .push(index);
-    }
     Ok(CompiledWorkflowDefinition {
         graph_hash: canonical_json_hash(&canonical),
         definition,
-        states_by_id,
+        states_by_id: states,
         outgoing_by_state,
     })
 }
@@ -203,8 +201,20 @@ fn normalize_definition(mut definition: WorkflowDefinition) -> WorkflowDefinitio
 }
 
 fn validate_schema(definition: &WorkflowDefinition, issues: &mut Vec<WorkflowValidationIssue>) {
-    validate_required_text("title", &definition.title, MAX_TITLE_CHARS, true, issues);
-    validate_required_text("goal", &definition.goal, MAX_GOAL_BYTES, false, issues);
+    validate_required_text(
+        "title",
+        &definition.title,
+        MAX_TITLE_CHARS,
+        LengthUnit::Chars,
+        issues,
+    );
+    validate_required_text(
+        "goal",
+        &definition.goal,
+        MAX_GOAL_BYTES,
+        LengthUnit::Bytes,
+        issues,
+    );
     if definition.states.is_empty() || definition.states.len() > MAX_WORKFLOW_STATES {
         issues.push(issue(
             "stateCount",
@@ -225,7 +235,7 @@ fn validate_schema(definition: &WorkflowDefinition, issues: &mut Vec<WorkflowVal
             &format!("{path}.title"),
             &state.title,
             MAX_TITLE_CHARS,
-            true,
+            LengthUnit::Chars,
             issues,
         );
         if state.kind == WorkflowStateKind::Atomic {
@@ -233,7 +243,7 @@ fn validate_schema(definition: &WorkflowDefinition, issues: &mut Vec<WorkflowVal
                 &format!("{path}.instructions"),
                 &state.instructions,
                 MAX_STATE_INSTRUCTIONS_BYTES,
-                false,
+                LengthUnit::Bytes,
                 issues,
             );
             if state.completion_criteria.is_empty() {
@@ -262,7 +272,7 @@ fn validate_schema(definition: &WorkflowDefinition, issues: &mut Vec<WorkflowVal
                 &format!("{path}.completionCriteria[{criterion_index}]"),
                 criterion,
                 MAX_COMPLETION_CRITERION_BYTES,
-                false,
+                LengthUnit::Bytes,
                 issues,
             );
         }
@@ -272,26 +282,30 @@ fn validate_schema(definition: &WorkflowDefinition, issues: &mut Vec<WorkflowVal
             &format!("transitions[{index}].guard"),
             &transition.guard,
             MAX_GUARD_BYTES,
-            false,
+            LengthUnit::Bytes,
             issues,
         );
     }
+}
+
+enum LengthUnit {
+    Bytes,
+    Chars,
 }
 
 fn validate_required_text(
     path: &str,
     value: &str,
     limit: usize,
-    character_limit: bool,
+    unit: LengthUnit,
     issues: &mut Vec<WorkflowValidationIssue>,
 ) {
     if value.is_empty() {
         issues.push(issue("required", path, "value must not be empty"));
     } else {
-        let actual = if character_limit {
-            value.chars().count()
-        } else {
-            value.len()
+        let actual = match unit {
+            LengthUnit::Bytes => value.len(),
+            LengthUnit::Chars => value.chars().count(),
         };
         if actual > limit {
             issues.push(issue(
@@ -345,12 +359,7 @@ fn validate_ids(definition: &WorkflowDefinition, issues: &mut Vec<WorkflowValida
 }
 
 fn validate_id(path: impl Into<String>, id: &str, issues: &mut Vec<WorkflowValidationIssue>) {
-    if id.is_empty()
-        || id.len() > MAX_STATE_ID_BYTES
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
-    {
+    if !valid_ascii_id(id, MAX_STATE_ID_BYTES) {
         issues.push(issue(
             "invalidId",
             path,
@@ -363,7 +372,7 @@ fn validate_id(path: impl Into<String>, id: &str, issues: &mut Vec<WorkflowValid
 
 fn validate_endpoints(
     definition: &WorkflowDefinition,
-    states: &BTreeMap<&str, &WorkflowState>,
+    states: &BTreeMap<String, usize>,
     issues: &mut Vec<WorkflowValidationIssue>,
 ) {
     for (index, transition) in definition.transitions.iter().enumerate() {
@@ -384,7 +393,7 @@ fn validate_endpoints(
 
 fn validate_initial_state(
     definition: &WorkflowDefinition,
-    states: &BTreeMap<&str, &WorkflowState>,
+    states: &BTreeMap<String, usize>,
     issues: &mut Vec<WorkflowValidationIssue>,
 ) {
     if !states.contains_key(definition.initial_state_id.as_str()) {
@@ -398,6 +407,7 @@ fn validate_initial_state(
 
 fn validate_final_states(
     definition: &WorkflowDefinition,
+    outgoing: &BTreeMap<String, Vec<usize>>,
     issues: &mut Vec<WorkflowValidationIssue>,
 ) {
     if !definition
@@ -411,19 +421,15 @@ fn validate_final_states(
             "workflow must contain at least one final state",
         ));
     }
-    let mut outgoing = BTreeMap::<&str, usize>::new();
-    for transition in &definition.transitions {
-        *outgoing.entry(&transition.source_state_id).or_default() += 1;
-    }
     for state in &definition.states {
-        let count = outgoing.get(state.id.as_str()).copied().unwrap_or_default();
-        if state.kind == WorkflowStateKind::Final && count > 0 {
+        let has_outgoing = outgoing.contains_key(state.id.as_str());
+        if state.kind == WorkflowStateKind::Final && has_outgoing {
             issues.push(issue(
                 "finalHasOutgoingTransition",
                 format!("states.{}", state.id),
                 "a final state must not have outgoing transitions",
             ));
-        } else if state.kind == WorkflowStateKind::Atomic && count == 0 {
+        } else if state.kind == WorkflowStateKind::Atomic && !has_outgoing {
             issues.push(issue(
                 "atomicHasNoOutgoingTransition",
                 format!("states.{}", state.id),
@@ -435,21 +441,23 @@ fn validate_final_states(
 
 fn validate_reachability(
     definition: &WorkflowDefinition,
+    outgoing: &BTreeMap<String, Vec<usize>>,
     issues: &mut Vec<WorkflowValidationIssue>,
 ) {
-    let mut outgoing = BTreeMap::<&str, Vec<&str>>::new();
     let mut incoming = BTreeMap::<&str, Vec<&str>>::new();
     for transition in &definition.transitions {
-        outgoing
-            .entry(&transition.source_state_id)
-            .or_default()
-            .push(&transition.target_state_id);
         incoming
             .entry(&transition.target_state_id)
             .or_default()
             .push(&transition.source_state_id);
     }
-    let reachable = walk(&definition.initial_state_id, &outgoing);
+    let reachable = walk([definition.initial_state_id.as_str()], |id| {
+        outgoing
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|index| definition.transitions[*index].target_state_id.as_str())
+    });
     for id in definition
         .states
         .iter()
@@ -463,18 +471,13 @@ fn validate_reachability(
         ));
     }
 
-    let mut reaches_final = HashSet::new();
-    let mut queue = definition
+    let final_states = definition
         .states
         .iter()
-        .filter_map(|state| (state.kind == WorkflowStateKind::Final).then_some(state.id.as_str()))
-        .collect::<VecDeque<_>>();
-    while let Some(id) = queue.pop_front() {
-        if !reaches_final.insert(id) {
-            continue;
-        }
-        queue.extend(incoming.get(id).into_iter().flatten().copied());
-    }
+        .filter_map(|state| (state.kind == WorkflowStateKind::Final).then_some(state.id.as_str()));
+    let reaches_final = walk(final_states, |id| {
+        incoming.get(id).into_iter().flatten().copied()
+    });
     for state in &definition.states {
         if state.kind == WorkflowStateKind::Atomic && !reaches_final.contains(state.id.as_str()) {
             issues.push(issue(
@@ -486,14 +489,17 @@ fn validate_reachability(
     }
 }
 
-fn walk<'a>(start: &'a str, edges: &BTreeMap<&'a str, Vec<&'a str>>) -> HashSet<&'a str> {
+fn walk<'a, I: Iterator<Item = &'a str>>(
+    starts: impl IntoIterator<Item = &'a str>,
+    neighbors: impl Fn(&str) -> I,
+) -> HashSet<&'a str> {
     let mut visited = HashSet::new();
-    let mut queue = VecDeque::from([start]);
+    let mut queue: VecDeque<_> = starts.into_iter().collect();
     while let Some(id) = queue.pop_front() {
         if !visited.insert(id) {
             continue;
         }
-        queue.extend(edges.get(id).into_iter().flatten().copied());
+        queue.extend(neighbors(id));
     }
     visited
 }

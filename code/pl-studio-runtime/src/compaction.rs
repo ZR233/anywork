@@ -86,8 +86,8 @@ impl ContextPreparationHook for StudioCompaction {
             &frozen,
             &[
                 crate::studio::model_route::AGENT_PROFILE_EXTENSION,
-                "studio.mode",
-                "studio.instructions",
+                crate::mode::MODE_EXTENSION,
+                crate::instruction::INSTRUCTIONS_EXTENSION,
                 "studio.instructions.binding",
                 crate::workflow_tool::WORKFLOW_EXTENSION,
                 crate::plan_tool::PLAN_EXTENSION,
@@ -658,7 +658,11 @@ fn restore_current_instructions(
     mut mutations: Vec<ExtensionMutation>,
 ) -> Result<InstructionRepair, pl_core::model::ModelError> {
     use pl_core::context::{ContextContent, ContextRecord, ContextSource};
-    let Some(mut record) = request.extensions.get("studio.instructions").cloned() else {
+    let Some(mut record) = request
+        .extensions
+        .get(crate::instruction::INSTRUCTIONS_EXTENSION)
+        .cloned()
+    else {
         return Ok(InstructionRepair {
             mutations,
             ..Default::default()
@@ -702,12 +706,14 @@ fn restore_current_instructions(
         let expected_revision = record.revision;
         record.payload = crate::instruction::encode_snapshot(&snapshot).map_err(receipt_error)?;
         mutations.push(ExtensionMutation::Put {
-            id: "studio.instructions".into(),
+            id: crate::instruction::INSTRUCTIONS_EXTENSION.into(),
             expected_revision: Some(expected_revision),
             payload: record.payload.clone(),
         });
-        std::sync::Arc::make_mut(&mut request.extensions)
-            .insert("studio.instructions".into(), record.clone());
+        std::sync::Arc::make_mut(&mut request.extensions).insert(
+            crate::instruction::INSTRUCTIONS_EXTENSION.into(),
+            record.clone(),
+        );
     }
     let complete = snapshot.trusted_text();
     let hash = snapshot.trusted_content_hash();
@@ -742,7 +748,7 @@ fn restore_current_instructions(
     );
     let instruction_binding = Some(InstructionRevisionBinding {
         record_id: record_id.clone(),
-        extension_id: "studio.instructions".into(),
+        extension_id: crate::instruction::INSTRUCTIONS_EXTENSION.into(),
     });
     let canonical = ContextRecord {
         id: record_id,
@@ -816,11 +822,14 @@ fn freeze_mode_for_turn(
             new_turn: false,
         });
     }
-    let record = request.extensions.get("studio.mode").ok_or_else(|| {
-        receipt_error(std::io::Error::other(
-            "root Thread has no saved Mode snapshot",
-        ))
-    })?;
+    let record = request
+        .extensions
+        .get(crate::mode::MODE_EXTENSION)
+        .ok_or_else(|| {
+            receipt_error(std::io::Error::other(
+                "root Thread has no saved Mode snapshot",
+            ))
+        })?;
     let previous = crate::mode::decode_mode_snapshot(&record.payload).map_err(receipt_error)?;
     let root_prompt = request
         .turn_input
@@ -855,7 +864,7 @@ fn freeze_mode_for_turn(
     }
     let expected_revision = record.revision;
     std::sync::Arc::make_mut(&mut request.extensions).insert(
-        "studio.mode".into(),
+        crate::mode::MODE_EXTENSION.into(),
         pl_core::thread::extensions::ExtensionRecord {
             revision: expected_revision,
             payload: payload.clone(),
@@ -864,7 +873,7 @@ fn freeze_mode_for_turn(
     Ok(ModePreparation {
         mode: Some(mode),
         mutations: vec![ExtensionMutation::Put {
-            id: "studio.mode".into(),
+            id: crate::mode::MODE_EXTENSION.into(),
             expected_revision: Some(expected_revision),
             payload,
         }],
@@ -889,7 +898,7 @@ fn prepare_workflow(
     }
     let mode_record = request
         .extensions
-        .get("studio.mode")
+        .get(crate::mode::MODE_EXTENSION)
         .ok_or_else(|| receipt_error(std::io::Error::other("root Thread has no saved Mode")))?;
     let saved = crate::mode::decode_mode_snapshot(&mode_record.payload).map_err(receipt_error)?;
     let mode_id = saved.definition.id.clone();
@@ -927,9 +936,10 @@ fn prepare_workflow(
         return Ok(None);
     }
     let expected_revision = record.map(|record| record.revision);
-    let Some(state) = crate::mode::reconcile_workflow_for_turn(
+    let Some(state) = crate::workflow_tool::reconcile_workflow_for_turn(
         state,
-        &mode,
+        &mode.descriptor().id,
+        mode.workflow_binding(),
         &request.model.thread_id,
         crate::studio::unix_seconds(),
     )
@@ -1015,20 +1025,27 @@ fn current_facts(
         let state =
             crate::workflow_tool::decode_workflow_state(&record.payload).map_err(receipt_error)?;
         if state.current_run.is_some() {
-            let saved = request.extensions.get("studio.mode").ok_or_else(|| {
-                receipt_error(std::io::Error::other(
-                    "current workflow Mode snapshot is unavailable",
-                ))
-            })?;
+            let saved = request
+                .extensions
+                .get(crate::mode::MODE_EXTENSION)
+                .ok_or_else(|| {
+                    receipt_error(std::io::Error::other(
+                        "current workflow Mode snapshot is unavailable",
+                    ))
+                })?;
             let mode = crate::mode::decode_mode_snapshot(&saved.payload)
                 .and_then(|mode| mode.registered())
                 .map_err(receipt_error)?;
-            let section =
-                crate::mode::workflow_model_context_section(&state, &mode).ok_or_else(|| {
-                    receipt_error(std::io::Error::other(
-                        "current workflow state does not match its registered graph",
-                    ))
-                })?;
+            let section = crate::workflow_tool::workflow_model_context_section(
+                &state,
+                mode.workflow_binding(),
+            )
+            .map_err(receipt_error)?
+            .ok_or_else(|| {
+                receipt_error(std::io::Error::other(
+                    "current workflow state does not match its registered graph",
+                ))
+            })?;
             put("studio.workflow", section.content);
         }
     }
@@ -1038,7 +1055,10 @@ fn current_facts(
             format!("Assigned workspace:\n{}", record.payload.content()),
         );
     }
-    if let Some(record) = request.extensions.get("studio.instructions") {
+    if let Some(record) = request
+        .extensions
+        .get(crate::instruction::INSTRUCTIONS_EXTENSION)
+    {
         let snapshot =
             crate::instruction::decode_snapshot(&record.payload).map_err(receipt_error)?;
         for record in snapshot.context_records(&request.model.thread_id) {
@@ -1320,14 +1340,14 @@ mod tests {
         thread
             .mutate_extensions(vec![
                 ExtensionMutation::Put {
-                    id: "studio.mode".into(),
+                    id: crate::mode::MODE_EXTENSION.into(),
                     expected_revision: None,
                     payload: crate::mode::encode_mode_snapshot(
                         &crate::mode::SavedThreadMode::capture(&mode, None),
                     )?,
                 },
                 ExtensionMutation::Put {
-                    id: "studio.instructions".into(),
+                    id: crate::instruction::INSTRUCTIONS_EXTENSION.into(),
                     expected_revision: None,
                     payload: crate::instruction::encode_snapshot(&snapshot)?,
                 },

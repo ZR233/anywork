@@ -67,7 +67,7 @@ impl StudioRuntime {
         request: crate::CreateThreadRequest,
         preparation_observer: Option<super::ThreadPreparationObserver>,
     ) -> Result<StudioStartNewThreadResponse> {
-        let mode = crate::mode::ThreadModeId::from_label(request.mode.trim()).map_err(|_| {
+        let mode = crate::mode::ThreadModeId::new(request.mode.trim()).map_err(|_| {
             anyhow::Error::new(crate::StudioError::invalid_argument(
                 "mode must be an available mode.* id",
             ))

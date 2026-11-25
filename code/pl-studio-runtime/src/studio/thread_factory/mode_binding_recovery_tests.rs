@@ -250,8 +250,8 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
     tokio::fs::create_dir_all(home.join("modes")).await?;
     tokio::fs::write(
         home.join("modes/mode.custom_check.json"),
-        serde_json::to_vec(&crate::mode::ThreadModeDocument {
-            definition: crate::mode::ThreadModeDefinition {
+        serde_json::to_vec(&crate::mode::ThreadModeDocument::from_parts(
+            crate::mode::ThreadModeDefinition {
                 id: second_mode_id.clone(),
                 display_name: "Custom Check".into(),
                 description: "Mode change test".into(),
@@ -259,8 +259,8 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
                 prompt: "Custom prompt".into(),
                 workflow: None,
             },
-            editor: Default::default(),
-        })?,
+            Default::default(),
+        ))?,
     )
     .await?;
     let runtime = crate::StudioRuntime::initialize(options()).await?;
