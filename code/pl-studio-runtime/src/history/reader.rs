@@ -157,6 +157,15 @@ impl HistoryReader {
         self.capture_position().await.map(|(_, head)| head)
     }
 
+    /// An append-only cut at the SQLite commit head, excluding pending admissions.
+    pub(crate) async fn capture_committed_position(&self) -> Result<(HistoryCut, u64)> {
+        self.run(|reader| async move {
+            let through = db::event_head(&reader.inner.store.reader).await?;
+            Ok((reader.inner.codec.cut(through)?, through))
+        })
+        .await
+    }
+
     pub async fn timeline_page(
         &self,
         cut: Option<HistoryCut>,

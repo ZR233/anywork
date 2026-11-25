@@ -334,6 +334,7 @@ fn freeze(
         .expect("payload kind was validated");
     let mut atom = metadata.unwrap_or_else(|| atom(item));
     if let ExecutionShape::Text(text) = item.state() {
+        atom.model_recovery = text.model_recovery().cloned();
         atom.content_present = Some(
             bodies.iter().any(|(key, block)| {
                 atom_content_role(key) == Some(crate::ChatContentRole::Body) && !block.is_empty()
@@ -482,12 +483,15 @@ pub(crate) fn content_fields(
 /// 重复投影不会无意义地抬高内容版本；但生命周期自带的 `completed_at`/`failed_at` 属于真实转移，保留。
 pub(crate) fn static_state(state: &ExecutionShape) -> ExecutionShape {
     match state {
-        ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
-            text.channel(),
-            String::new(),
-            text.attachments().to_vec(),
-            text.lifecycle().clone(),
-        )),
+        ExecutionShape::Text(text) => ExecutionShape::Text(
+            ThreadTextItem::new(
+                text.channel(),
+                String::new(),
+                text.attachments().to_vec(),
+                text.lifecycle().clone(),
+            )
+            .with_model_recovery(text.model_recovery().cloned()),
+        ),
         ExecutionShape::Thinking(thinking) => ExecutionShape::Thinking(ThreadThinkingItem::new(
             Vec::new(),
             Vec::new(),

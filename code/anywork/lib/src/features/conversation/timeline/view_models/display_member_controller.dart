@@ -423,6 +423,7 @@ Object _recordValue(DisplayRecord record) {
     (atom.tool?.callId, atom.tool?.name),
     atom.wait,
     atom.textChannel,
+    atom.modelRecovery,
     atom.contentPresent,
     atom.startedAt,
     atom.finishedAt,

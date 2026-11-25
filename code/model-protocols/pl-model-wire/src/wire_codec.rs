@@ -8,7 +8,7 @@ use crate::completion::stream::event::ModelStreamEvent;
 use crate::model::ModelDefinition;
 use crate::protocol::{ProtocolEndpoint, WireApi};
 use crate::transport::SseContentTypePolicy;
-use pl_protocol::{ProviderFailureKind, Result, RetryDisposition};
+use pl_protocol::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibleOutputProtocol {
@@ -62,16 +62,6 @@ pub struct CapturedUsageObservation {
     pub usage: Value,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ParsedHttpError {
-    pub code: Option<String>,
-    pub message: Option<String>,
-    /// Some compatible providers report auth failure inside an HTTP 200 JSON body.
-    pub business_auth_failure: bool,
-    pub force_kind: Option<ProviderFailureKind>,
-    pub force_retry: Option<RetryDisposition>,
-}
-
 /// Protocol-family HTTP/SSE wire codec contract.
 pub trait WireCodec: Send + Sync + std::fmt::Debug {
     fn supports_wire_api(&self, api: WireApi) -> bool;
@@ -94,8 +84,6 @@ pub trait WireCodec: Send + Sync + std::fmt::Debug {
     -> Result<PreparedHttpRequest>;
 
     fn new_stream_decoder(&self, api: WireApi) -> Box<dyn WireStreamDecoder>;
-
-    fn parse_http_error(&self, body: &[u8]) -> Option<ParsedHttpError>;
 }
 
 /// Stateful per-attempt SSE frame decoder producing canonical stream events.
@@ -103,8 +91,7 @@ pub trait WireStreamDecoder: Send {
     fn decode_frame(
         &mut self,
         data: &str,
-        request_id: Option<&str>,
-        redact: &dyn Fn(&str) -> String,
+        context: &crate::provider_error::StreamFrameContext<'_>,
     ) -> Result<DecodedSseFrame>;
 
     fn finish(&mut self) -> Vec<ModelStreamEvent>;

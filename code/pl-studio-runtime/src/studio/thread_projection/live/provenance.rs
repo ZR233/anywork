@@ -471,6 +471,7 @@ impl ProvenanceLedger {
                     tool: None,
                     wait: None,
                     text_channel: None,
+                    model_recovery: None,
                     started_at: Some(effect.committed_at),
                     finished_at: None,
                     contents: Vec::new(),

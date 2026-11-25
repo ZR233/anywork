@@ -356,6 +356,7 @@ impl ModelSession for MemberModel {
 
 fn model_error(source: impl std::error::Error + Send + Sync + 'static) -> ModelError {
     ModelError {
+        context_recovery: None,
         kind: ModelFailureKind::InvalidResponse,
         source: Some(Box::new(source)),
         details: None,

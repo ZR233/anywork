@@ -12,6 +12,9 @@ use pl_protocol::PureError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletionResponse {
+    /// Versioned runtime receipts for every settled transport attempt of this invocation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settlements: Vec<pl_core::context::OpaquePayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<String>,
     pub content: Option<String>,
@@ -33,6 +36,9 @@ pub struct CompletionResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<InferenceTiming>,
     pub accounting: InferenceAccounting,
+    /// Whether the most recent usage report was explicitly terminal on the wire.
+    #[serde(default)]
+    pub usage_is_terminal: bool,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_observation: Option<InferenceModelObservation>,
@@ -59,7 +65,12 @@ pub struct CompletionTraceContext {
 pub struct CompletionFailure {
     #[source]
     pub source: Box<PureError>,
+    /// A later repair/save error does not replace the original provider failure.
+    pub recovery_error: Option<Box<PureError>>,
+    pub settlements: Vec<pl_core::context::OpaquePayload>,
     pub accounting: Box<InferenceAccounting>,
+    /// Preserves the latest report's terminal fact even when the request failed.
+    pub usage_is_terminal: bool,
     pub timing: Option<InferenceTiming>,
     pub model_observation: Option<Box<InferenceModelObservation>>,
     /// All provider output items received before this invocation failed.
@@ -78,7 +89,10 @@ impl CompletionFailure {
     pub fn new(source: PureError, accounting: Box<InferenceAccounting>) -> Self {
         Self {
             source: Box::new(source),
+            recovery_error: None,
+            settlements: Vec::new(),
             accounting,
+            usage_is_terminal: false,
             timing: None,
             model_observation: None,
             presentation_items: Vec::new(),
@@ -99,9 +113,9 @@ impl CompletionFailure {
         self.model_observation.as_deref()
     }
 
-    /// A local recovery failure replaces the cause, not facts received from the provider.
-    pub fn with_source(mut self, source: PureError) -> Self {
-        self.source = Box::new(source);
+    /// Retains both the original failure and the local reason recovery could not continue.
+    pub fn with_recovery_error(mut self, source: PureError) -> Self {
+        self.recovery_error = Some(Box::new(source));
         self
     }
 
@@ -125,7 +139,10 @@ impl CompletionFailure {
     pub fn cancelled(source: PureError, accounting: Box<InferenceAccounting>) -> Self {
         Self {
             source: Box::new(source),
+            recovery_error: None,
+            settlements: Vec::new(),
             accounting,
+            usage_is_terminal: false,
             timing: None,
             model_observation: None,
             presentation_items: Vec::new(),
@@ -139,7 +156,10 @@ impl From<PureError> for CompletionFailure {
     fn from(source: PureError) -> Self {
         Self {
             source: Box::new(source),
+            recovery_error: None,
+            settlements: Vec::new(),
             accounting: Box::default(),
+            usage_is_terminal: false,
             timing: None,
             model_observation: None,
             presentation_items: Vec::new(),
@@ -153,11 +173,5 @@ impl std::ops::Deref for CompletionFailure {
     type Target = PureError;
     fn deref(&self) -> &PureError {
         self.source.as_ref()
-    }
-}
-
-impl From<CompletionFailure> for PureError {
-    fn from(failure: CompletionFailure) -> Self {
-        *failure.source
     }
 }

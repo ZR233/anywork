@@ -21,6 +21,7 @@ impl ContextPreparationHook for FailOnce {
         if self.0.swap(false, Ordering::Relaxed) {
             ContextPreparation::Failed {
                 error: ModelError {
+                    context_recovery: None,
                     kind: ModelFailureKind::Unavailable,
                     details: Some(Box::new(
                         OpaquePayload::new("fixture.failure", 1, "retryable provider timeout")

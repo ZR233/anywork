@@ -66,6 +66,7 @@ struct GatedModel {
 
 fn model_failure(kind: ModelFailureKind) -> ModelError {
     ModelError {
+        context_recovery: None,
         details: None,
         kind,
         usage: Default::default(),

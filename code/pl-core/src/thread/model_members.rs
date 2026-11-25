@@ -11,6 +11,7 @@ pub(super) struct MemberEffects {
     pub(super) completed: Arc<[crate::model::ModelCompletedMember]>,
     pub(super) started: Arc<[crate::model::ModelStartedMember]>,
     pub(super) content_available: Vec<crate::model::ModelContentAvailableMember>,
+    pub(super) settlements: Arc<[crate::model::ModelSubAttemptSettlement]>,
 }
 
 pub(super) struct MemberCall {
@@ -160,21 +161,19 @@ impl Owner {
         // Fund the *whole* encoded effect before publishing, separately from the opaque allocation
         // that the registry still owns. Its claim can transfer this effect funding, not those
         // resident opaque bytes or the accumulator/progress and dedup metadata on the reservation.
-        let (completed, started, content_available) = match &member {
-            MemberFact::Completed(member) => (vec![member.clone()], vec![], vec![]),
-            MemberFact::Started(member) => (vec![], vec![member.clone()], vec![]),
-            MemberFact::ContentAvailable(member) => (vec![], vec![], vec![member.clone()]),
+        let mut members = MemberEffects::default();
+        match &member {
+            MemberFact::Completed(member) => members.completed = Arc::from([member.clone()]),
+            MemberFact::Started(member) => members.started = Arc::from([member.clone()]),
+            MemberFact::ContentAvailable(member) => members.content_available.push(member.clone()),
         };
+        let sequence = self.state.commit_sequence.saturating_add(1);
         let effect = ThreadEffectBatch::between(
             &self.id,
             &self.published,
             &self.state,
-            self.state.commit_sequence.saturating_add(1),
-            MemberEffects {
-                completed: completed.into(),
-                started: started.into(),
-                content_available,
-            },
+            sequence,
+            members,
             Arc::from([]),
         )
         .expect("a member always produces an effect");
@@ -245,7 +244,6 @@ impl Owner {
             let _ = reply.send(Err(ModelMemberError::Rejected(error)));
             return;
         }
-        // publish retains the obligation even if synchronous storage admission is refused.
         let _ = reply.send(Ok(()));
     }
 

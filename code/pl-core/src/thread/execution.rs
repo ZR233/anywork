@@ -157,6 +157,12 @@ pub(super) enum MaintenanceCompletion {
         result: Result<(), ThreadError>,
         reply: oneshot::Sender<Result<(), ThreadError>>,
     },
+    ModelSettlement {
+        sequence: u64,
+        result: Result<(), crate::model::ModelMemberError>,
+        reply: oneshot::Sender<Result<(), crate::model::ModelMemberError>>,
+    },
+    RetireModelSettlement(String),
     OutputRetry {
         results: Vec<(
             String,
@@ -202,6 +208,19 @@ impl Owner {
                 self.output_retry_active = None;
                 let _ = reply.send(super::mailbox::OutputRetryReply::Finished(result));
                 finished.cancel();
+            }
+            MaintenanceCompletion::ModelSettlement {
+                sequence,
+                result,
+                reply,
+            } => {
+                if result.is_ok() {
+                    self.confirm_flush(sequence);
+                }
+                let _ = reply.send(result);
+            }
+            MaintenanceCompletion::RetireModelSettlement(attempt) => {
+                self.retire_model_settlement(&attempt);
             }
         }
     }
@@ -586,6 +605,7 @@ impl Owner {
             return;
         }
         self.state.lifecycle = ThreadLifecycle::Closing;
+        self.cancel_auxiliary_model_calls();
         self.reject_pending_bundle(ThreadError::Closed);
         self.retry_retired_runtime_models();
         if purpose == owner::ClosePurpose::Preserve && !self.interrupt.is_deleting() {
@@ -652,11 +672,21 @@ impl Owner {
                 }));
             }
             CloseStage::Flush => {
+                let deleting = self.closing.as_ref().unwrap().purpose
+                    == owner::ClosePurpose::Delete
+                    || self.interrupt.is_deleting();
+                // The original calls can still deliver incurred receipts while unwinding.
+                // Wait for their retirement and save confirmations before the final fence.
+                if !deleting && !self.maintenance.is_empty() {
+                    return Ok(false);
+                }
+                if !deleting && self.cold.as_ref().is_some_and(|store| store.0.is_history()) {
+                    self.refresh_storage_pressure();
+                    self.check_model_settlements_saved()?;
+                }
                 self.resources = None;
                 self.state.lifecycle = ThreadLifecycle::Closed;
-                if self.closing.as_ref().unwrap().purpose == owner::ClosePurpose::Delete
-                    || self.interrupt.is_deleting()
-                {
+                if deleting {
                     // All original producers have returned and resource cleanup has completed.
                     for (_, metadata) in std::mem::take(&mut self.task_metadata) {
                         metadata.release();
@@ -857,7 +887,9 @@ impl Owner {
                 }
                 self.output_capacity_admitted();
                 self.active = Some(run);
-                self.build_model_request(*step)?;
+                let repair = step.recovery_error.clone();
+                self.build_model_request(*step)
+                    .map_err(|error| super::model_step::with_model_repair(repair, error))?;
                 Ok(false)
             }
             RunPhase::ToolBatch(mut batch) => {
@@ -936,19 +968,24 @@ impl Owner {
         mut step: StepWork,
         forced: bool,
     ) -> Result<(), ThreadError> {
-        self.apply_pending_runtime_facts()?;
+        self.apply_pending_runtime_facts()
+            .map_err(|error| step.repair_failure(error))?;
         self.enter_model_execution(ModelExecutionPhase::PreparingContext);
-        match self.start_context_preparation(
-            &step.input,
-            &mut step.plan,
-            &step.frozen_input,
-            forced,
-            if forced {
-                step.retry_of.as_deref()
-            } else {
-                None
-            },
-        )? {
+        match self
+            .start_context_preparation(
+                &step.input,
+                &mut step.plan,
+                &step.frozen_input,
+                forced,
+                step.compaction_applied,
+                if forced {
+                    step.retry_of.as_deref()
+                } else {
+                    None
+                },
+            )
+            .map_err(|error| step.repair_failure(error))?
+        {
             Some(work) => {
                 self.primary = Some(PrimaryWork::new(false, async move {
                     PrimaryCompletion::Preparation {
@@ -959,9 +996,7 @@ impl Owner {
                 }));
                 Ok(())
             }
-            None if forced => Err(step
-                .recovery_error
-                .map_or(ThreadError::InvalidContext, ThreadError::Model)),
+            None if forced => Err(step.repair_failure(ThreadError::InvalidContext)),
             None => self.stage_model_request(step),
         }
     }
@@ -976,9 +1011,15 @@ impl Owner {
                 completion,
                 forced,
             } => {
-                let result =
-                    self.finish_context_preparation(&step.input, &mut step.plan, completion);
-                if step.preparation_refresh == 0
+                let has_compaction_candidate = completion.has_compaction_candidate();
+                let result = self.finish_context_preparation(
+                    &step.input,
+                    &mut step.plan,
+                    completion,
+                    forced && step.recovery_error.is_some(),
+                );
+                if !has_compaction_candidate
+                    && step.preparation_refresh == 0
                     && matches!(
                         result,
                         Err(ThreadError::ContextConflict { .. }
@@ -988,15 +1029,13 @@ impl Owner {
                     step.preparation_refresh += 1;
                     self.start_preparing_step(step, forced)?;
                 } else {
-                    let compacted = result?;
+                    let compacted = result.map_err(|error| step.repair_failure(error))?;
                     if forced && !compacted {
-                        return Err(step
-                            .recovery_error
-                            .map_or(ThreadError::InvalidContext, ThreadError::Model));
+                        return Err(step.repair_failure(ThreadError::InvalidContext));
                     }
                     if forced && step.retry_of.is_some() {
                         step.retry_of = None;
-                        step.recovery_error = None;
+                        step.compaction_applied = true;
                         self.start_preparing_step(step, false)?;
                         return Ok(());
                     }
@@ -1025,18 +1064,27 @@ impl Owner {
                     return Err(ThreadError::Cancelled);
                 }
                 match result {
-                    Ok(prepared) => self.admit_prepared_model(step, prepared)?,
+                    Ok(prepared) => {
+                        let primary = step.recovery_error.clone();
+                        self.admit_prepared_model(step, prepared)
+                            .map_err(|repair| {
+                                super::model_step::with_model_repair(primary, repair)
+                            })?;
+                    }
                     Err(error)
                         if error.kind == crate::model::ModelFailureKind::ContextLimit
                             && self.active.as_ref().is_some_and(|r| !r.recovery_used) =>
                     {
+                        // This preparation never reached dispatch. Release its unused call and
+                        // output reservation before rebuilding the same pending step.
+                        self.finish_step(&step.input.attempt_id);
                         self.active.as_mut().unwrap().recovery_used = true;
                         step.recovery_error = Some(Arc::new(error));
                         self.start_preparing_step(step, true)?;
                     }
                     Err(error) => {
                         self.finish_step(&step.input.attempt_id);
-                        return Err(ThreadError::Model(Arc::new(error)));
+                        return Err(step.repair_failure(ThreadError::Model(Arc::new(error))));
                     }
                 }
             }
@@ -1115,6 +1163,9 @@ impl Owner {
             Err(ThreadError::Model(error))
                 if error.kind == crate::model::ModelFailureKind::ContextLimit
                     && !run.recovery_used
+                    && error.context_recovery.as_ref().is_some_and(|recovery| {
+                        recovery.belongs_to(&self.id, &step.input.turn_id, &step.input.attempt_id)
+                    })
                     && !run.input.max_model_steps.reached(run.steps) =>
             {
                 run.recovery_used = true;
@@ -1125,12 +1176,27 @@ impl Owner {
                     cancellation: run.input.cancellation.clone(),
                 };
                 self.active = Some(run);
-                let mut recovery = self.freeze_step(input, self.tools.freeze(), None)?;
-                recovery.retry_of = Some(step.input.attempt_id);
+                let mut recovery = self
+                    .freeze_step(input, self.tools.freeze(), Some(step.input.attempt_id))
+                    .map_err(|repair| {
+                        super::model_step::with_model_repair(Some(error.clone()), repair)
+                    })?;
                 recovery.recovery_error = Some(error);
                 return self.start_preparing_step(recovery, true);
             }
-            Err(error) => run.phase = RunPhase::Settling(Err(error)),
+            Err(error) => {
+                let error = if step
+                    .recovery_error
+                    .as_ref()
+                    .and_then(|error| error.context_recovery.as_ref())
+                    .is_some_and(|grant| !grant.is_consumed())
+                {
+                    step.repair_failure(error)
+                } else {
+                    error
+                };
+                run.phase = RunPhase::Settling(Err(error));
+            }
         }
         self.active = Some(run);
         Ok(())

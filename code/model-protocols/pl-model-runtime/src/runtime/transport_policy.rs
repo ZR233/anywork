@@ -13,18 +13,14 @@ pub(crate) const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const HTTP_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) const FINITE_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub(crate) fn model_request_retry_delay(
-    retry_number: u32,
-    requested_delay_ms: Option<u64>,
-    jitter_key: &str,
-) -> Duration {
+pub(crate) fn model_request_retry_delay(retry_number: u32, jitter_key: &str) -> Duration {
     let exponential_ms = 200_u64.saturating_mul(1_u64 << retry_number.saturating_sub(1).min(4));
-    let delay_ms = requested_delay_ms.unwrap_or_else(|| {
+    let delay_ms = {
         let mut hasher = DefaultHasher::new();
         jitter_key.hash(&mut hasher);
         retry_number.hash(&mut hasher);
         let jitter_percent = 90 + hasher.finish() % 21;
         exponential_ms.saturating_mul(jitter_percent) / 100
-    });
-    Duration::from_millis(delay_ms.min(30_000))
+    };
+    Duration::from_millis(delay_ms)
 }

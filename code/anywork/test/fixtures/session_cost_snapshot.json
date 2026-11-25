@@ -1,0 +1,13 @@
+{
+  "rootThreadId": "root",
+  "purposeCosts": [
+    {
+      "purpose": "main",
+      "estimatedCosts": [{"currency": "USD", "amount": 0.25}],
+      "hasUnpricedUsage": false
+    }
+  ],
+  "estimatedCosts": [{"currency": "USD", "amount": 0.25}],
+  "hasUnpricedUsage": false,
+  "hasIncompleteUsage": true
+}

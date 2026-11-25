@@ -1,5 +1,6 @@
 //! OpenAI Chat Completions and Responses wire codecs.
 pub mod codec;
+pub mod error;
 pub mod openai;
 
 pub use codec::{OPENAI_WIRE_CODEC, OpenAiWireCodec};

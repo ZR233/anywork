@@ -28,6 +28,8 @@ mod model_live_progress;
 mod prompt_account_identity;
 #[path = "integration/protocol_extension.rs"]
 mod protocol_extension;
+#[path = "integration/provider_error_matrix.rs"]
+mod provider_error_matrix;
 #[path = "integration/service_tiers.rs"]
 mod service_tiers;
 #[path = "integration/sse_framing.rs"]

@@ -63,7 +63,6 @@ pub enum ToolApprovalDecision {
 #[derive(Debug, Clone)]
 pub struct ToolReviewRequest {
     pub thread_id: String,
-    pub turn_id: String,
     /// Reliable receipt capability of the exact running tool invocation.
     pub task: pl_core::thread::TaskAccess,
     pub tool: ToolApprovalRequest,

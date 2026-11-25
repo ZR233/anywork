@@ -375,7 +375,7 @@ async fn runtime_replays_single_gemini_tool_with_empty_id_over_mock_http() {
         }))
         .build();
 
-    let ctx = ModelInvocationContext::default();
+    let ctx = ModelInvocationContext::in_memory(Default::default());
     let resp1 = runtime.complete(req.clone(), ctx.clone()).await.unwrap();
     assert_eq!(resp1.tool_calls.len(), 1);
     let call = &resp1.tool_calls[0];
@@ -472,7 +472,10 @@ async fn runtime_rejects_gemini_error_received_after_stop_with_tool_call() {
     let request = CompletionRequest::builder().build();
 
     let error = runtime
-        .complete(request, ModelInvocationContext::default())
+        .complete(
+            request,
+            ModelInvocationContext::in_memory(Default::default()),
+        )
         .await
         .unwrap_err();
     assert!(error.to_string().contains("late stream error"), "{error}");
@@ -537,10 +540,11 @@ async fn thread_gemini_replays_parallel_results_in_part_order_across_steps() {
         .find(|model| model.base.slug == "gemini-4-hydrogen")
         .unwrap();
     let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
-    let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
-        .open_session()
-        .await
-        .unwrap();
+    let mut session =
+        ModelFactory::new(ThreadModel::new(runtime, None).with_in_memory_settlement())
+            .open_session()
+            .await
+            .unwrap();
     let lookup = ToolSpec::Function {
         name: "lookup".into(),
         description: "Lookup something".into(),

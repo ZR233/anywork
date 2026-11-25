@@ -210,6 +210,7 @@ impl ThreadHandle {
             compaction_call: None,
             pending_context_compactions: Vec::new(),
             model_progress: None,
+            model_settlements: Default::default(),
             effect_window: effect_window.clone(),
             permission_leases: Default::default(),
             active_inputs: Vec::new(),
@@ -260,6 +261,7 @@ impl ThreadHandle {
             pending_output_claim: None,
             model_members: None,
             pending_model_members: Vec::new(),
+            pending_model_sub_attempt_settlements: Vec::new(),
             pending_model_member_starts: Vec::new(),
             pending_model_member_content_available: Vec::new(),
             resources: None,
@@ -468,11 +470,49 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(Command::Control(
-                super::mailbox::MailboxCommand::Extensions(mutations, reply),
+                super::mailbox::MailboxCommand::Extensions(
+                    super::mailbox::ExtensionRequest::Mutate(mutations, reply),
+                ),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Registers a durable auxiliary model call before sending its first request.
+    pub async fn begin_auxiliary_model_call(
+        &self,
+        turn_id: Option<String>,
+    ) -> Result<ModelSettlementPort, crate::model::ModelMemberError> {
+        use crate::model::ModelMemberError;
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::OpenAuxiliaryModel {
+                    caller: None,
+                    turn_id,
+                    reply,
+                },
+            ))
+            .await
+            .map_err(|_| ModelMemberError::Closed)?;
+        response.await.map_err(|_| ModelMemberError::Closed)?
+    }
+
+    /// Checks the exact saved original without granting a new call or publishing an effect.
+    pub async fn confirm_saved_model_settlement(
+        &self,
+        settlement: crate::model::ModelSubAttemptSettlement,
+    ) -> Result<(), crate::model::ModelMemberError> {
+        use crate::model::ModelMemberError;
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::VerifyModelSettlement { settlement, reply },
+            ))
+            .await
+            .map_err(|_| ModelMemberError::Closed)?;
+        super::model_settlement::await_settlement(response).await
     }
 
     /// Accepts a message idempotently; context is delivered only with a later model admission.
@@ -1045,7 +1085,8 @@ impl ThreadHandle {
     }
 
     /// Installs the independent History export sink and its existing reliable-output budget.
-    /// Current capture and physical close never await this sink's archive receipt.
+    /// Current capture is independent of History. Normal close waits for already-incurred model
+    /// settlements. The host drains the remaining History exports separately.
     pub async fn attach_history(
         &self,
         store: super::super::history_sink::HistorySinkHandle,

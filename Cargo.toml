@@ -104,6 +104,7 @@ dunce = "1"
 dirs = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
+httpdate = "1.0.3"
 downlowd = "0.1.6"
 rawzip = "0.5.2"
 hyper = { version = "1.12.0", default-features = false }

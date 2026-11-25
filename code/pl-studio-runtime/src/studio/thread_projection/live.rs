@@ -246,7 +246,7 @@ impl LiveProjection {
                 history_database_id: self.database_id.as_deref(),
             },
         )?;
-        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
+        let accounting = super::PreparedAccounting::shared(effect)?;
         let turns = self
             .feed
             .prepare_turn_frames(thread, effect, state, emit_feed)?;

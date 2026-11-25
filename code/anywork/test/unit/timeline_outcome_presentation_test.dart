@@ -1,7 +1,36 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:anywork/src/features/conversation/timeline/state/timeline_outcome_presentation.dart';
+import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('reads the failure payload verified against Rust serialization', () {
+    final payload = jsonDecode(
+      File('test/fixtures/provider_failure_retry.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    final summary = parseTimelineOutcome(payload);
+    expect(summary.failure!.providerKind, 'rateLimit');
+    expect(summary.failure!.httpStatus, 429);
+    expect(summary.failure!.isRetryable, isTrue);
+    expect(summary.failure!.retryAfterSeconds, BigInt.from(45));
+    expect(summary.failure!.errorType, 'rate_limit_error');
+    expect(summary.failure!.requestId, 'req-rate-limit-fixture');
+    expect(summary.failure!.stage, StudioProviderFailureStage.request);
+    expect(
+      summary.failure!.recovery,
+      StudioModelRecoveryInfo(
+        retryCount: 2,
+        maxRetries: 2,
+        effectiveWaitMillis: BigInt.from(47000),
+        reason: StudioProviderRecovery.none,
+        stopReason: StudioModelRecoveryStopReason.budgetExhausted,
+      ),
+    );
+    expect(summary.durationSeconds, 5);
+  });
+
   test(
     'parses provider turn failure with retryable and permanent metadata',
     () {
@@ -33,6 +62,7 @@ void main() {
       );
       expect(summary.failure!.retryKind, 'permanent');
       expect(summary.failure!.isRetryable, isFalse);
+      expect(summary.failure!.recovery, isNull);
       expect(
         summary.plainDiagnostic,
         '该模型当前访问量过大，请您稍后再试[2026112409252610a0f9ae03204283]\noverloaded',
@@ -52,7 +82,7 @@ void main() {
           'code': 'service_unavailable',
           'httpStatus': 503,
           'message': 'Upstream gateway temporarily unavailable',
-          'retry': {'kind': 'retryable', 'retryAfterMs': 4200},
+          'retry': {'kind': 'retryable', 'retryAfterMs': '4200'},
         },
       },
     });
@@ -62,7 +92,7 @@ void main() {
     expect(summary.failure!.providerKind, 'transport');
     expect(summary.failure!.httpStatus, 503);
     expect(summary.failure!.isRetryable, isTrue);
-    expect(summary.failure!.retryAfterSeconds, 5);
+    expect(summary.failure!.retryAfterSeconds, BigInt.from(5));
     expect(
       summary.plainDiagnostic,
       'Upstream gateway temporarily unavailable\nservice_unavailable · HTTP 503',

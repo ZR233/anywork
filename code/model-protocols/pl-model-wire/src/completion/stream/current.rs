@@ -16,7 +16,7 @@ use crate::ModelMemberState;
 use crate::completion::{CompletionPresentationItem, CompletionPresentationPartKind, ToolCall};
 
 pub const MODEL_STREAM_CURRENT_FORMAT: &str = "pl.model.stream-current";
-pub const MODEL_STREAM_CURRENT_VERSION: u32 = 1;
+pub const MODEL_STREAM_CURRENT_VERSION: u32 = 2;
 
 /// A complete accepted view of one producer, never a UI preview or a stream event log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +27,10 @@ pub struct ModelStreamCurrent {
     /// Sealed failed transport generations, never concatenated into this generation's response.
     #[serde(default)]
     pub previous_generations: Vec<ModelStreamCurrent>,
+    /// The runtime's versioned settlement for this generation, retained during retry/save waits.
+    /// Absence in older observations means no separately recorded settlement is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<OpaquePayload>,
     pub state: ModelStreamCurrentState,
     pub response_id: Option<String>,
     pub model_observation: Option<InferenceModelObservation>,
@@ -59,7 +63,7 @@ impl ModelStreamCurrent {
         .expect("static stream-current format"))
     }
 
-    /// Decodes an observation for paused display, not for execution or provider continuation.
+    /// Decodes a current-version observation for paused display.
     pub fn decode(payload: &OpaquePayload) -> pl_protocol::Result<Self> {
         if payload.format() != MODEL_STREAM_CURRENT_FORMAT
             || payload.version() != MODEL_STREAM_CURRENT_VERSION

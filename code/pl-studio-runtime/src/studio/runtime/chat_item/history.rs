@@ -61,6 +61,7 @@ fn event_meta(
             .map(milliseconds_from_seconds)
             .transpose()?,
         text_channel: atom.text_channel,
+        model_recovery: atom.model_recovery.clone(),
         single_visibility,
         presentation_contract,
         source_order: atom.source_order,

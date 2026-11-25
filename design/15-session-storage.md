@@ -30,6 +30,8 @@ Native 会话有三个用途不同的事实载体：
 
 逻辑状态保留生命周期、当前执行、continuation、完整 context、private context、输入与 inbox、任务与局部顺序、工具交付、交互与权限、业务扩展、工具声明、累计用量和当前模型调用的真实阶段。历史身份、历史提交顺序、展示分组、输出增量链和持久化等待不属于 current。
 
+模型透明重试的子尝试通过原 Current 生产者保留稳定身份、已知用量及失败结果，并经原可靠交付/写入路径确认保存；确认仅覆盖该次事实，不能由后续无关写入顺带确认。失败保留原 writer 责任和模型失败，不开启下一次发送。此处保存确认遵循现有写入完成保证，不额外承诺断电持久性；具体预算、计量与重放语义见 [06 §6.5](./06-model.md#65-协议与传输层transport)，可靠模型交付见 [16](./16-core-contracts.md)。旧格式缺少子尝试明细时在明确版本迁移边界保留原总量与未知完整性，不编造拆分或按当前价格重算。正常 reader 只消费当前结构。
+
 #### 捕获、保存与关闭
 
 Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否需要保存；每 Thread 最多一个捕获、编码和写入整体在途。保存期间出现的新变化继续保留 dirty，不维护完整快照队列，也不为每个 token 写盘。捕获等待有固定上限，取消、owner 换代或迟到结果按原代次丢弃；等待捕获不持业务状态锁，也不重新发送模型请求。
@@ -90,6 +92,7 @@ Native 通过 `ThreadHandle::attach_history(HistorySinkHandle)` 安装独立 His
 Core 交付 `HistoryExport { effect, original ThreadSnapshot observation cut, output_claim }`，不创建 checkpoint；
 原可靠预算、类型化压力和执行安全点继续约束接纳，输出预留随同一原件转移。Native 单观察者投影后交给原 History writer。
 Core Current 的累计用量同步复用该原件的 `PreparedAccounting` 提取，不等待历史提交，JSON 保留已知累计证据。
+该摘要只包含本 Thread 自身产生的消耗，不包含子孙 Thread。重复结算在 owner 首次受理边界消除，Current 与 History 的摘要消费同一份已准备材料及各自处理水位；本地已知累计不冒充可靠保存确认，保存失败不撤掉已知消耗。会话总览使用已保存的各 Thread 摘要定时求和，刷新与可见性契约见 [17](./17-studio-storage.md)。
 Current 捕获、保存和物理关闭不等待 History fence；历史失败保留原件并报告自己的故障，不能确认或清除 Current 保存责任。
 
 ## 15.3 CurrentReader

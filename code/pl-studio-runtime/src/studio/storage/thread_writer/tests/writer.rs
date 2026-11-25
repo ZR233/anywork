@@ -397,6 +397,7 @@ async fn stopped_statistics_consumer_does_not_block_writer_shutdown() -> Result<
             thread_id: "statistics-gap".into(),
             revision: 1,
             has_unpriced_usage: false,
+            has_incomplete_usage: false,
             purpose_costs: Vec::new(),
         },
     );
@@ -538,6 +539,967 @@ async fn sql_failure_rolls_back_and_retries_the_same_frozen_events_and_bodies() 
     fixture.handoff(&fourth).await?;
     fixture.finish(4).await?;
     db.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn settlement_acknowledges_the_original_sqlite_effect_and_body() -> Result<()> {
+    use futures::FutureExt;
+    use pl_core::context::OpaquePayload;
+    use pl_core::model::ModelSubAttemptSettlement;
+
+    let id = "model-settlement-write";
+    let mut fixture = Fixture::new(id).await?;
+    fixture
+        .handoff(&visible_input_ticket(id, 1, "input")?)
+        .await?;
+    let channel = &fixture.sink.0.channel;
+    channel.await_handoff_durable(id, 1).await?;
+    let path = fixture
+        .store
+        .session_paths("project-test", id)?
+        .history_database();
+    let db = Database::connect(
+        crate::studio::paths::sqlite_file_options(
+            &path,
+            crate::studio::paths::SqliteFileMode::ReadWrite,
+            |options| options,
+        )
+        .await?,
+    )
+    .await
+    .context("open the initialized History database for fault injection")?;
+    db.execute_unprepared("CREATE TRIGGER reject_settlement BEFORE INSERT ON history_events \
+        WHEN NEW.event_id LIKE 'usage:%' BEGIN SELECT RAISE(ABORT, 'controlled settlement failure'); END").await?;
+
+    let receipt = serde_json::json!({
+        "turnId": "turn", "attemptId": "a", "logicalRequestId": "a", "generation": 0,
+        "retry": 0, "message": "upstream unavailable",
+        "billing": {
+            "inferenceId": "sub-attempt:1:a:0", "accountId": "account", "modelId": "model",
+            "purpose": "turn", "recordedAt": 1,
+            "attempt": { "logicalRequestId": "a", "coreAttemptId": "a", "generation": 0,
+                "stage": "stream", "outcome": "failed", "usageIsTerminal": false },
+            "accounting": { "usage": { "inputTokens": 17, "outputTokens": 7, "cacheReadTokens": 0,
+                "totalTokens": 24 }, "pricing": { "kind": "disabled" } }
+        }
+    });
+    let payload = OpaquePayload::new("pl.model.sub-attempt-settlement", 2, receipt.to_string())?;
+    let mut export = ticket(id, 2);
+    Arc::make_mut(&mut Arc::make_mut(&mut export).effect).model_sub_attempt_settlements =
+        Arc::from([ModelSubAttemptSettlement {
+            turn_id: Some("turn".into()),
+            attempt_id: "a".into(),
+            generation: 0,
+            payload: payload.clone(),
+        }]);
+    let sink = fixture.sink.clone();
+    fixture.sink.admit(id, export.clone())?;
+    let wait = sink.confirm_model_settlement(id, 2);
+    tokio::pin!(wait);
+    assert!(
+        wait.as_mut().now_or_never().is_none(),
+        "RAM admission cannot confirm SQLite persistence"
+    );
+    let accounting = crate::studio::thread_projection::PreparedAccounting::shared(&export.effect)?;
+    let prepared = fixture.handoff(&export).await?;
+    assert!(Arc::ptr_eq(&accounting, &prepared.accounting));
+    let failure = tokio::time::timeout(Duration::from_secs(5), &mut wait)
+        .await?
+        .expect_err("SQLite rejected the settlement");
+    assert!(
+        failure
+            .to_string()
+            .contains("controlled settlement failure"),
+        "unexpected SQLite fault: {failure}"
+    );
+    let generation = sink.0.channel.subscribe().borrow().fault_generation;
+    assert_eq!(sink.pressure(id).durable_sequence, 1);
+    db.execute_unprepared("DROP TRIGGER reject_settlement")
+        .await?;
+    let mut status = sink.0.channel.subscribe();
+    fixture
+        .store
+        .thread_persistence()
+        .retry_history(id, generation)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while status.borrow_and_update().error.is_some() {
+            status.changed().await?;
+        }
+        Ok::<_, tokio::sync::watch::error::RecvError>(())
+    })
+    .await??;
+    let history = fixture.store.history(id).await?.reader();
+    tokio::time::timeout(Duration::from_secs(5), sink.confirm_model_settlement(id, 2)).await??;
+    let event_id = "usage:settlement:sub-attempt:1:a:0".to_owned();
+    let event = history
+        .read_event(
+            event_id,
+            HistoryDemand {
+                max_rows: 1,
+                max_bytes: 64 * 1024,
+            },
+        )
+        .await?;
+    assert_eq!(event.turn_id.as_deref(), Some("turn"));
+    let body = crate::history::read_event_body_bytes(&history, &event, "modelSettlement", None)
+        .await?
+        .expect("original receipt body");
+    assert_eq!(serde_json::from_slice::<OpaquePayload>(&body)?, payload);
+    let mut second = receipt;
+    second["attemptId"] = serde_json::json!("title");
+    second["logicalRequestId"] = serde_json::json!("title");
+    second["billing"]["inferenceId"] = serde_json::json!("sub-attempt:5:title:0");
+    second["billing"]["purpose"] = serde_json::json!("title");
+    second["billing"]["attempt"]["logicalRequestId"] = serde_json::json!("title");
+    second["billing"]["attempt"]["coreAttemptId"] = serde_json::json!("title");
+    second["billing"]["attempt"]["outcome"] = serde_json::json!("succeeded");
+    second["billing"]["attempt"]["usageIsTerminal"] = serde_json::json!(true);
+    second["billing"]["accounting"]["pricing"] = serde_json::json!({
+        "kind": "estimated", "cost": {"currency": "CNY", "amount": 0.25}
+    });
+    let auxiliary_payload =
+        OpaquePayload::new("pl.model.sub-attempt-settlement", 2, second.to_string())?;
+    let mut export = ticket(id, 3);
+    Arc::make_mut(&mut Arc::make_mut(&mut export).effect).model_sub_attempt_settlements =
+        Arc::from([ModelSubAttemptSettlement {
+            turn_id: Some("turn".into()),
+            attempt_id: "title".into(),
+            generation: 0,
+            payload: auxiliary_payload.clone(),
+        }]);
+    let prepared = fixture.handoff(&export).await?;
+    assert!(prepared.accounting.facts[0].auxiliary);
+    tokio::time::timeout(Duration::from_secs(5), sink.confirm_model_settlement(id, 3)).await??;
+    let aux_event = history
+        .read_event(
+            "usage:settlement:sub-attempt:5:title:0".into(),
+            HistoryDemand {
+                max_rows: 1,
+                max_bytes: 64 * 1024,
+            },
+        )
+        .await?;
+    let aux_body =
+        crate::history::read_event_body_bytes(&history, &aux_event, "modelSettlement", None)
+            .await?
+            .expect("original auxiliary receipt body");
+    assert_eq!(
+        serde_json::from_slice::<OpaquePayload>(&aux_body)?,
+        auxiliary_payload
+    );
+    let accounting = history.accounting(None).await?.unwrap();
+    assert_eq!(accounting.inference_count, 2);
+    assert_eq!(accounting.total_tokens, 48);
+    assert!(accounting.has_incomplete_usage);
+    assert!(accounting.cache_usage.has_incomplete_usage);
+    let costs = history
+        .costs_page(
+            None,
+            None,
+            HistoryDemand {
+                max_rows: 2,
+                max_bytes: 65536,
+            },
+        )
+        .await?;
+    assert_eq!(costs.entries.len(), 1);
+    let crate::history::HistoryBusinessRowHead::Cost(cost) = &costs.entries[0].head else {
+        panic!("expected title cost");
+    };
+    assert_eq!(cost.purpose.as_deref(), Some("title"));
+    assert_eq!(cost.cost_total, 0.25);
+    fixture.finish(3).await?;
+    db.close().await?;
+    Ok(())
+}
+
+fn auxiliary_title_payload(
+    attempt: &str,
+    turn: Option<&str>,
+    message: &str,
+) -> Result<pl_core::context::OpaquePayload> {
+    let receipt = serde_json::json!({
+        "turnId": turn, "attemptId": attempt, "logicalRequestId": attempt, "generation": 0,
+        "retry": 0, "message": message,
+        "billing": {
+            "inferenceId": format!("sub-attempt:{}:{attempt}:0", attempt.len()), "accountId": "account",
+            "purpose": "title", "recordedAt": 1,
+            "attempt": { "logicalRequestId": attempt, "coreAttemptId": attempt, "generation": 0,
+                "stage": "stream", "outcome": "failed", "usageIsTerminal": false },
+            "accounting": { "usage": { "inputTokens": 17, "outputTokens": 7, "cacheReadTokens": 0,
+                "totalTokens": 24 }, "pricing": { "kind": "estimated", "cost": { "currency": "USD", "amount": 0.25 } } }
+        }
+    });
+    Ok(pl_core::context::OpaquePayload::new(
+        "pl.model.sub-attempt-settlement",
+        2,
+        receipt.to_string(),
+    )?)
+}
+
+#[tokio::test]
+async fn repeated_auxiliary_settlement_is_confirmed_once_and_conflicting_body_is_rejected()
+-> Result<()> {
+    use pl_core::{
+        context::OpaquePayload,
+        model::{ModelMemberError, ModelSubAttemptSettlement},
+        thread::{ThreadHandle, extensions::ExtensionMutation, history_sink::HistorySinkHandle},
+    };
+    let id = "duplicate-auxiliary-settlement";
+    let fixture = Fixture::new(id).await?;
+    let sink = fixture.sink.clone();
+    let owner = ThreadHandle::start_current(id.into(), None)?;
+    owner
+        .attach_history(HistorySinkHandle::new(sink.clone()))
+        .await?;
+    let port = owner.begin_auxiliary_model_call(None).await?;
+    let payload = auxiliary_title_payload(port.attempt_id(), port.turn_id(), "supplier failure")?;
+    let conflicting =
+        auxiliary_title_payload(port.attempt_id(), port.turn_id(), "different failure")?;
+    let original = ModelSubAttemptSettlement {
+        attempt_id: port.attempt_id().into(),
+        turn_id: port.turn_id().map(str::to_owned),
+        generation: 0,
+        payload: payload.clone(),
+    };
+    let start = owner.snapshot().commit_sequence;
+    let deliveries = tokio::spawn({
+        let port = port.clone();
+        async move { tokio::join!(port.settle(0, payload.clone()), port.settle(0, payload)) }
+    });
+    let mut states = owner.subscribe();
+    let sequence = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(snapshot) = states.next().await {
+            if snapshot.usage_summary.totals.inference_count == 1 {
+                return Some(snapshot.commit_sequence);
+            }
+        }
+        None
+    })
+    .await?
+    .context("the owner must fold on admission")?;
+    assert_eq!(sequence, start + 1);
+    assert_eq!(owner.snapshot().usage_summary.totals.total_tokens, 24);
+    assert!(sink.pressure(id).durable_sequence < sequence);
+    assert!(!deliveries.is_finished());
+    assert!(matches!(
+        port.settle(0, conflicting.clone()).await,
+        Err(ModelMemberError::SettlementConflict)
+    ));
+    let projector =
+        super::storage_fault_tests::spawn_live_projection_for_thread(fixture.store.clone(), id);
+    let (first, second) = tokio::time::timeout(Duration::from_secs(10), deliveries).await??;
+    first?;
+    second?;
+    assert_eq!(owner.snapshot().commit_sequence, sequence);
+    assert_eq!(sink.pressure(id).durable_sequence, sequence);
+    let history = fixture.store.history(id).await?.reader();
+    assert_eq!(history.accounting(None).await?.unwrap().inference_count, 1);
+    let demand = HistoryDemand {
+        max_rows: 1,
+        max_bytes: 64 * 1024,
+    };
+    let event = history
+        .read_event(
+            format!(
+                "usage:settlement:{}",
+                pl_model::runtime::model_sub_attempt_id(port.attempt_id(), 0)
+            ),
+            demand,
+        )
+        .await?;
+    assert_eq!(
+        event.turn_id, None,
+        "a title started outside a Turn has no History Turn link"
+    );
+    let source = &owner.snapshot().usage_summary.diagnostics.recent_gaps[0].source;
+    assert_eq!(source.turn_id, None);
+    let costs = history.costs_page(None, None, demand).await?;
+    let crate::history::HistoryBusinessRowHead::Cost(cost) = &costs.entries[0].head else {
+        panic!("expected title cost");
+    };
+    assert_eq!(cost.cost_total, 0.25);
+    let detail = history
+        .read_event(
+            format!("usage_cost:{}:{}", event.event_id, cost.row_key()?),
+            demand,
+        )
+        .await?;
+    assert_eq!(detail.turn_id, None);
+    drop(port);
+    owner
+        .confirm_saved_model_settlement(original.clone())
+        .await?;
+    let mut changed = original.clone();
+    changed.payload = conflicting;
+    assert!(matches!(
+        owner.confirm_saved_model_settlement(changed.clone()).await,
+        Err(ModelMemberError::SettlementConflict)
+    ));
+    let mut missing = original.clone();
+    missing.generation = 1;
+    assert!(matches!(
+        owner.confirm_saved_model_settlement(missing.clone()).await,
+        Err(ModelMemberError::SettlementExpired)
+    ));
+    assert_eq!(owner.snapshot().commit_sequence, sequence);
+    owner
+        .mutate_extensions(vec![ExtensionMutation::Put {
+            id: "unrelated".into(),
+            expected_revision: None,
+            payload: OpaquePayload::text("later effect"),
+        }])
+        .await?;
+    let next = owner.snapshot().commit_sequence;
+    assert_eq!(next, sequence + 1);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        sink.confirm_model_settlement(id, next),
+    )
+    .await??;
+    assert_eq!(history.accounting(None).await?.unwrap().inference_count, 1);
+    history.close().await;
+    owner.close().await?;
+    let saved_current = owner
+        .capture_current(tokio_util::sync::CancellationToken::new())
+        .await?;
+    fixture.finish(owner.snapshot().commit_sequence).await?;
+    projector.await?;
+
+    let new_sink = ThreadStorageSink::new(fixture.store.clone(), test_thread(id)).await?;
+    let reopened = ThreadHandle::restore_current(saved_current, None)?;
+    reopened
+        .attach_history(HistorySinkHandle::new(new_sink.clone()))
+        .await?;
+    assert_eq!(reopened.snapshot().usage_summary.totals.total_tokens, 24);
+    let before = reopened.snapshot().commit_sequence;
+    reopened.confirm_saved_model_settlement(original).await?;
+    assert!(matches!(
+        reopened.confirm_saved_model_settlement(changed).await,
+        Err(ModelMemberError::SettlementConflict)
+    ));
+    assert!(matches!(
+        reopened.confirm_saved_model_settlement(missing).await,
+        Err(ModelMemberError::SettlementExpired)
+    ));
+    assert_eq!(reopened.snapshot().commit_sequence, before);
+    let new_call = reopened.begin_auxiliary_model_call(None).await?;
+    let payload = auxiliary_title_payload(
+        new_call.attempt_id(),
+        new_call.turn_id(),
+        "new call after cold reopen",
+    )?;
+    let reprojector =
+        super::storage_fault_tests::spawn_live_projection_for_thread(fixture.store.clone(), id);
+    tokio::time::timeout(Duration::from_secs(5), new_call.settle(0, payload)).await??;
+    assert_eq!(reopened.snapshot().usage_summary.totals.total_tokens, 48);
+    assert_eq!(
+        fixture
+            .store
+            .history(id)
+            .await?
+            .reader()
+            .accounting(None)
+            .await?
+            .unwrap()
+            .inference_count,
+        2
+    );
+    drop(new_call);
+    reopened.close().await?;
+    new_sink
+        .0
+        .channel
+        .await_handoff_durable(id, reopened.snapshot().commit_sequence)
+        .await?;
+    new_sink.0.channel.stop_and_join().await?;
+    reprojector.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cold_current_upgrades_assistant_pairing_before_the_next_loopback_request() -> Result<()> {
+    use pl_core::{
+        context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload},
+        model::{ModelFactory, ModelRequest, ModelToolDeclaration, ToolCallMode},
+        thread::{
+            UsageCost,
+            current::{RuntimeEpoch, ThreadCurrent},
+        },
+    };
+    use pl_model::{
+        completion::ToolSpec,
+        model::{ModelDefinition, ModelTransportProfile},
+        runtime::ThreadModel,
+    };
+    use pl_provider_fixture::{
+        FixtureServer, Protocol, RealtimeToolCall, Reply, Step, responses_text,
+        responses_tool_calls,
+    };
+    use serde_json::{Value, json};
+
+    let provider = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "First request",
+            0,
+            Reply::Sse(responses_tool_calls(
+                "original-response",
+                "model",
+                &[RealtimeToolCall {
+                    item_id: "fc_fixture",
+                    call_id: "call_legacy",
+                    name: "lookup",
+                    arguments: r#"{"q":1}"#.into(),
+                }],
+            )),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "Continue v5",
+            1,
+            Reply::Sse(responses_text("done v5", "next-5", "model")),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "Continue v6",
+            2,
+            Reply::Sse(responses_text("done v6", "next-6", "model")),
+        ),
+    ])
+    .await?;
+    let mut model = ModelDefinition::compatible("model");
+    model
+        .extra
+        .binding
+        .set_transport(ModelTransportProfile::responses_http());
+    let runtime = pl_model::runtime::new_with_account_id(
+        "migration-fixture",
+        pl_model_openai::endpoint::endpoint(Some(provider.base_url())),
+        model,
+    )?;
+    let model = ModelFactory::new(ThreadModel::new(runtime, None).with_in_memory_settlement());
+    let tools = Arc::from([ModelToolDeclaration {
+        tool_id: "lookup".into(),
+        declaration: pl_model::runtime::thread_tool_declaration(&ToolSpec::Function {
+            name: "lookup".into(),
+            description: "Look up a fixture".into(),
+            input_schema: json!({"type":"object","properties":{"q":{"type":"integer"}},"required":["q"]}),
+            allowed_callers: Vec::new(),
+            output_schema: None,
+        })?,
+        presentation_contract: None,
+    }]);
+    let user = |id: &str, turn: &str, text: &str| ContextRecord {
+        id: id.into(),
+        turn_id: Some(turn.into()),
+        source: ContextSource::User,
+        content: vec![ContextContent::Text { text: text.into() }],
+        tool_calls: Vec::new(),
+    };
+    let request = |attempt: &str, turn: &str, context: ContextSnapshot| ModelRequest {
+        thread_id: "migration-fixture".into(),
+        turn_id: turn.into(),
+        attempt_id: attempt.into(),
+        context,
+        tools: Arc::clone(&tools),
+        tool_call_mode: ToolCallMode::Sequential,
+        solo_tool_ids: Default::default(),
+        committed_private_context: None,
+        resources: None,
+        cancellation: Default::default(),
+        members: None,
+        progress: None,
+    };
+    let mut session = model.open_session().await?;
+    let source = session
+        .prepare(request(
+            "source",
+            "original-turn",
+            ContextSnapshot {
+                revision: 1,
+                records: Arc::from([user("original-input", "original-turn", "First request")]),
+            },
+        ))
+        .await?
+        .execute()
+        .await?;
+    assert_eq!(source.tool_calls.len(), 1);
+    let canonical = source.tool_calls[0].call_id.clone();
+    assert_ne!(canonical, "call_legacy");
+    session.close().await?;
+
+    let directory = tempfile::tempdir()?;
+    let store = StudioStore::open(directory.path().join("data/studio.sqlite")).await?;
+    for version in [5, 6] {
+        let thread = test_thread(&format!("assistant-source-v{version}"));
+        super::storage_fault_tests::register_test_thread(&store, &thread).await?;
+        let paths = store.session_paths("project-test", &thread.id)?;
+        tokio::fs::create_dir_all(paths.root()).await?;
+        let mut calls = source.tool_calls.clone();
+        let mut content = source.content.clone();
+        for item in &mut content {
+            if let ContextContent::Opaque { payload } = item {
+                let mut frame: Value = serde_json::from_str(payload.content())?;
+                frame["settlementRelayed"] = json!(true);
+                if version == 5 {
+                    frame.as_object_mut().unwrap().remove("sourceAttemptId");
+                    frame.as_object_mut().unwrap().remove("callBindings");
+                    frame["bindings"][0]["callId"] = json!("call_legacy");
+                    calls[0].call_id = "call_legacy".into();
+                }
+                *payload = OpaquePayload::new(payload.format(), version, frame.to_string())?;
+            }
+        }
+        let mut saved = ThreadCurrent::new(thread.id.clone(), RuntimeEpoch::new());
+        saved.state.context = ContextSnapshot {
+            revision: 3,
+            records: Arc::from([
+                user("original-input", "original-turn", "First request"),
+                ContextRecord {
+                    id: "source:output".into(),
+                    turn_id: Some("original-turn".into()),
+                    source: ContextSource::Assistant,
+                    content,
+                    tool_calls: calls.clone(),
+                },
+                ContextRecord {
+                    id: "original-result".into(),
+                    turn_id: Some("original-turn".into()),
+                    source: ContextSource::ToolResult {
+                        call_id: calls[0].call_id.clone(),
+                        tool_id: "lookup".into(),
+                    },
+                    content: vec![ContextContent::Text {
+                        text: "original tool result".into(),
+                    }],
+                    tool_calls: Vec::new(),
+                },
+            ]),
+        };
+        saved.state.usage_summary.totals.inference_count = 4;
+        saved
+            .state
+            .usage_summary
+            .pricing
+            .estimated_costs
+            .push(UsageCost {
+                currency: "USD".into(),
+                amount: 0.25,
+            });
+        let bytes = serde_json::to_vec(&saved)?;
+        tokio::fs::write(paths.current_file(), &bytes).await?;
+        let loaded =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&store, &thread)
+                .await?
+                .context("saved current")?;
+        assert!(!paths.history_database().try_exists()?);
+        assert_eq!(tokio::fs::read(paths.current_file()).await?, bytes);
+        assert_eq!(loaded.state.usage_summary.totals.inference_count, 4);
+        assert_eq!(
+            loaded.state.usage_summary.pricing.estimated_costs[0].amount,
+            0.25
+        );
+        let mut records = loaded.state.context.records.to_vec();
+        assert_eq!(records[1].tool_calls[0].call_id, canonical);
+        assert!(
+            matches!(&records[2].source, ContextSource::ToolResult { call_id, .. } if call_id == &canonical)
+        );
+        records.push(user(
+            "next-input",
+            "next-turn",
+            &format!("Continue v{version}"),
+        ));
+        let mut session = model.open_session().await?;
+        session
+            .prepare(request(
+                "next",
+                "next-turn",
+                ContextSnapshot {
+                    revision: 4,
+                    records: records.into(),
+                },
+            ))
+            .await?
+            .execute()
+            .await?;
+        session.close().await?;
+
+        let before = provider.recorded().len();
+        Arc::make_mut(&mut saved.state.context.records)[1].id = "missing-provenance".into();
+        let unknown = serde_json::to_vec(&saved)?;
+        tokio::fs::write(paths.current_file(), &unknown).await?;
+        assert!(
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&store, &thread)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(paths.current_file()).await?, unknown);
+        let records = Arc::make_mut(&mut saved.state.context.records);
+        records[1].id = "source:output".into();
+        records[1].tool_calls[0].arguments =
+            OpaquePayload::new("application/json", 1, r#"{"q":2}"#)?;
+        let conflict = serde_json::to_vec(&saved)?;
+        tokio::fs::write(paths.current_file(), &conflict).await?;
+        assert!(
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&store, &thread)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(paths.current_file()).await?, conflict);
+        assert_eq!(provider.recorded().len(), before);
+    }
+    let sent = provider.finish().await?;
+    assert_eq!(sent.len(), 3);
+    for request in &sent[1..] {
+        let input = request.body["input"]
+            .as_array()
+            .context("Responses input")?;
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call" && item["call_id"] == "call_legacy")
+        );
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call_output"
+                    && item["call_id"] == "call_legacy"
+                    && item["output"] == "original tool result")
+        );
+    }
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn manual_compaction_settles_over_http_and_sqlite_without_a_turn() -> Result<()> {
+    use pl_core::{
+        context::{ContextContent, ContextRecord, ContextSource},
+        model::ModelFactory,
+        thread::{
+            ContextReplacementReason, ReplaceContext, ThreadHandle,
+            context_preparation::{
+                ContextPreparation, ContextPreparationHook, ContextPreparationRequest,
+                ContextPreparer,
+            },
+            history_sink::HistorySinkHandle,
+        },
+    };
+    use pl_model::{
+        model::{ModelDefinition, ModelPricing, ModelTransportProfile, TokenPriceTier},
+        runtime::{ThreadCompactionOptions, ThreadCompactionStrategy, ThreadModel},
+    };
+    use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+
+    const INSTRUCTIONS: &str = "Compress the conversation";
+    const REQUIREMENT: &str = "Summarize the committed history";
+    const ATTEMPT: &str = "manual-compaction-request";
+
+    #[derive(Debug)]
+    struct ManualCompactor(ThreadModel);
+    impl ContextPreparationHook for ManualCompactor {
+        async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+            let members = request
+                .enter_model_compacting(ATTEMPT.into())
+                .await
+                .unwrap();
+            let mut model = request.model;
+            model.attempt_id = ATTEMPT.into();
+            model.members = Some(members);
+            let result = self
+                .0
+                .compact(
+                    model,
+                    ThreadCompactionOptions {
+                        strategy: ThreadCompactionStrategy::TextSummary,
+                        instructions: INSTRUCTIONS.into(),
+                        requirement: REQUIREMENT.into(),
+                        summary_prefix: "Summary".into(),
+                        max_output_tokens: Some(64),
+                    },
+                )
+                .await;
+            match result {
+                Ok(result) => ContextPreparation::Prepared {
+                    excluded_tool_ids: Vec::new(),
+                    inputs: Default::default(),
+                    instruction_binding: None,
+                    rejected_mutations: Vec::new(),
+                    replacement: Some(result.replacement),
+                    facts: request.current_facts.to_vec(),
+                    mutations: Vec::new(),
+                },
+                Err(error) => ContextPreparation::Failed {
+                    error,
+                    mutations: Vec::new(),
+                },
+            }
+        }
+    }
+
+    let mut events = responses_text("Compressed history", "manual-result", "manual-model");
+    events.last_mut().unwrap()["response"]["usage"] = serde_json::json!({
+        "input_tokens": 11, "output_tokens": 7, "total_tokens": 18,
+        "input_tokens_details": {"cached_tokens": 0},
+    });
+    let provider = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        format!("{INSTRUCTIONS}\n\n{REQUIREMENT}"),
+        0,
+        Reply::Sse(events),
+    )])
+    .await?;
+    let mut model = ModelDefinition::compatible("manual-model");
+    model
+        .extra
+        .binding
+        .set_transport(ModelTransportProfile::responses_http());
+    model.extra.pricing = ModelPricing::published(
+        "USD",
+        vec![TokenPriceTier::flat(2.0, 8.0, Some(1.0), None)],
+        "https://example.test/prices",
+    );
+    let runtime = pl_model::runtime::new_with_account_id(
+        "manual",
+        pl_model_openai::endpoint::endpoint(Some(provider.base_url())),
+        model,
+    )?;
+    let model = ThreadModel::new(runtime, None);
+    let id = "manual-compaction-without-turn";
+    let fixture = Fixture::new(id).await?;
+    let session = ModelFactory::new(model.clone()).open_session().await?;
+    let owner = ThreadHandle::start_current(id.into(), Some(session))?;
+    owner
+        .attach_history(HistorySinkHandle::new(fixture.sink.clone()))
+        .await?;
+    owner
+        .set_context_preparation(Some(ContextPreparer::new(ManualCompactor(model))))
+        .await?;
+    let base = owner
+        .replace_context(ReplaceContext {
+            expected_revision: 0,
+            reason: ContextReplacementReason::Rebuild,
+            records: vec![ContextRecord {
+                id: "history".into(),
+                turn_id: None,
+                source: ContextSource::Runtime {
+                    source_id: "seed".into(),
+                },
+                content: vec![ContextContent::Text {
+                    text: "Committed history for manual compaction".into(),
+                }],
+                tool_calls: Vec::new(),
+            }],
+        })
+        .await?;
+    let projector =
+        super::storage_fault_tests::spawn_live_projection_for_thread(fixture.store.clone(), id);
+    let compacted = tokio::time::timeout(
+        Duration::from_secs(10),
+        owner.compact_context(base.revision, Default::default()),
+    )
+    .await?
+    .with_context(|| format!("manual compaction fixture: {:?}", provider.recorded()))?;
+    assert!(compacted.revision > base.revision);
+    assert!(owner.snapshot().turns.is_empty());
+    assert_eq!(owner.snapshot().usage_summary.totals.inference_count, 1);
+    assert_eq!(owner.snapshot().usage_summary.totals.total_tokens, 18);
+    let history = fixture.store.history(id).await?.reader();
+    let demand = HistoryDemand {
+        max_rows: 1,
+        max_bytes: 64 * 1024,
+    };
+    let event_id = format!(
+        "usage:settlement:{}",
+        pl_model::runtime::model_sub_attempt_id(ATTEMPT, 0)
+    );
+    let event = history.read_event(event_id.clone(), demand).await?;
+    assert_eq!(event.turn_id, None);
+    let costs = history.costs_page(None, None, demand).await?;
+    let crate::history::HistoryBusinessRowHead::Cost(cost) = &costs.entries[0].head else {
+        panic!("expected compaction cost");
+    };
+    assert_eq!(cost.purpose.as_deref(), Some("compaction"));
+    let event = history
+        .read_event(format!("usage_cost:{event_id}:{}", cost.row_key()?), demand)
+        .await?;
+    assert_eq!(event.turn_id, None);
+    history.close().await;
+    assert_eq!(provider.finish().await?.len(), 1);
+    owner.close().await?;
+    fixture.finish(owner.snapshot().commit_sequence).await?;
+    projector.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn preserving_close_waits_for_the_registered_auxiliary_call_and_its_sqlite_save() -> Result<()>
+{
+    use pl_core::{
+        model::ModelMemberError,
+        thread::{ThreadHandle, ThreadLifecycle, history_sink::HistorySinkHandle},
+    };
+    use sea_orm::{SqliteTransactionMode, TransactionOptions, TransactionTrait};
+    use tokio::time::timeout;
+    let deadline = Duration::from_secs(10);
+    let id = "auxiliary-preserve-close";
+    let mut fixture = Fixture::new(id).await?;
+    let sink = fixture.sink.clone();
+    let path = fixture
+        .store
+        .session_paths("project-test", id)?
+        .history_database();
+    let db = Database::connect(
+        crate::studio::paths::sqlite_file_options(
+            &path,
+            crate::studio::paths::SqliteFileMode::ReadWrite,
+            |options| options,
+        )
+        .await?,
+    )
+    .await?;
+    let write_lock = db
+        .begin_with_options(TransactionOptions {
+            sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
+            ..Default::default()
+        })
+        .await?;
+    let owner = ThreadHandle::start_current(id.into(), None)?;
+    owner
+        .attach_history(HistorySinkHandle::new(sink.clone()))
+        .await?;
+    let port = owner.begin_auxiliary_model_call(None).await?;
+    let expected = auxiliary_title_payload(
+        port.attempt_id(),
+        port.turn_id(),
+        "supplier failure during shutdown",
+    )?;
+    let event_id = format!(
+        "usage:settlement:sub-attempt:{}:{}:0",
+        port.attempt_id().len(),
+        port.attempt_id()
+    );
+    let mut states = owner.subscribe();
+    let mut close = std::pin::pin!(owner.close());
+    assert!(futures::poll!(&mut close).is_pending());
+    timeout(deadline, async {
+        while let Some(snapshot) = states.next().await {
+            if snapshot.lifecycle == ThreadLifecycle::Closing {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("owner closed while holding an active model call")
+    })
+    .await??;
+    assert!(matches!(
+        owner.begin_auxiliary_model_call(None).await,
+        Err(ModelMemberError::Closed)
+    ));
+    let delivery = tokio::spawn({
+        let expected = expected.clone();
+        async move { port.settle(0, expected).await }
+    });
+    let sequence = timeout(deadline, async {
+        while let Some(snapshot) = states.next().await {
+            if snapshot.usage_summary.totals.inference_count == 1 {
+                return Some(snapshot.commit_sequence);
+            }
+        }
+        None
+    })
+    .await?
+    .context("closing owner must retain the incurred receipt")?;
+    while let Some(export) = sink.0.channel.next_unprojected() {
+        fixture.handoff(&export).await?;
+    }
+    assert_eq!(owner.snapshot().lifecycle, ThreadLifecycle::Closing);
+    assert_eq!(owner.snapshot().usage_summary.totals.total_tokens, 24);
+    assert!(!delivery.is_finished());
+    assert!(sink.pressure(id).durable_sequence < sequence);
+    assert!(futures::poll!(&mut close).is_pending());
+    write_lock.rollback().await?;
+    let (delivery, closed) = timeout(deadline, async { tokio::join!(delivery, close) }).await?;
+    delivery??;
+    closed?;
+    assert!(owner.snapshot().commit_sequence > sequence);
+    while let Some(export) = sink.0.channel.next_unprojected() {
+        fixture.handoff(&export).await?;
+    }
+    let history = fixture.store.history(id).await?;
+    assert_eq!(
+        history.read_saved_model_settlement(&event_id).await?,
+        Some(expected)
+    );
+    assert_eq!(
+        history
+            .reader()
+            .accounting(None)
+            .await?
+            .unwrap()
+            .inference_count,
+        1
+    );
+    fixture.finish(owner.snapshot().commit_sequence).await?;
+    db.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleting_thread_cancels_a_model_settlement_wait_without_committing_it() -> Result<()> {
+    use pl_core::{
+        model::ModelMemberError,
+        thread::{ThreadHandle, ThreadLifecycle, history_sink::HistorySinkHandle},
+    };
+    let deadline = Duration::from_secs(10);
+    let id = "auxiliary-delete-with-pending-settlement";
+    let fixture = Fixture::new(id).await?;
+    let sink = &fixture.sink;
+    let owner = ThreadHandle::start_current(id.into(), None)?;
+    owner
+        .attach_history(HistorySinkHandle::new(sink.clone()))
+        .await?;
+    let port = owner.begin_auxiliary_model_call(None).await?;
+    let payload = auxiliary_title_payload(
+        port.attempt_id(),
+        port.turn_id(),
+        "incurred before deletion",
+    )?;
+    let event_id = format!(
+        "usage:settlement:{}",
+        pl_model::runtime::model_sub_attempt_id(port.attempt_id(), 0)
+    );
+    let mut states = owner.subscribe();
+    let delivery = tokio::spawn(async move { port.settle(0, payload).await });
+    let sequence = tokio::time::timeout(deadline, async {
+        while let Some(state) = states.next().await {
+            if state.usage_summary.totals.inference_count == 1 {
+                return Some(state.commit_sequence);
+            }
+        }
+        None
+    })
+    .await?
+    .context("the original owner must accept the settlement before deletion")?;
+    assert!(sink.pressure(id).durable_sequence < sequence);
+    assert!(!delivery.is_finished());
+
+    tokio::time::timeout(deadline, owner.close_for_deletion()).await??;
+    assert!(matches!(delivery.await?, Err(ModelMemberError::Closed)));
+    assert_eq!(owner.snapshot().lifecycle, ThreadLifecycle::Closed);
+    assert_eq!(owner.snapshot().commit_sequence, sequence);
+    sink.0.channel.stop_and_join_for_deletion().await?;
+    assert_eq!(
+        fixture
+            .store
+            .history(id)
+            .await?
+            .read_saved_model_settlement(&event_id)
+            .await?,
+        None
+    );
     Ok(())
 }
 

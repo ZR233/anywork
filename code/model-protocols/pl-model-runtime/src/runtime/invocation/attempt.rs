@@ -1,4 +1,5 @@
 //! One transport attempt, progress observation and canonical event collection.
+use super::AttemptDispatch;
 use super::timing::InferenceTimer;
 use crate::completion::{
     CompletionFailure, CompletionRequest, CompletionResponse, CompletionTraceContext,
@@ -13,6 +14,22 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub(super) struct StreamAttempt {
+    pub(super) result: std::result::Result<CompletionResponse, CompletionFailure>,
+    pub(super) replay_safe: bool,
+    pub(super) started: bool,
+}
+
+impl StreamAttempt {
+    fn unsent(error: CompletionFailure) -> Self {
+        Self {
+            result: Err(error),
+            replay_safe: false,
+            started: false,
+        }
+    }
+}
+
 impl ModelRuntime {
     pub(super) async fn run_stream_attempt(
         &self,
@@ -22,12 +39,16 @@ impl ModelRuntime {
         inference_timer: &InferenceTimer,
         mut current: Option<&mut crate::runtime::current::CurrentProducer>,
         generation: u32,
-    ) -> (
-        std::result::Result<CompletionResponse, CompletionFailure>,
-        bool,
-    ) {
-        if let Some(current) = current.as_deref_mut() {
-            current.begin_generation(generation);
+    ) -> StreamAttempt {
+        if context
+            .cancellation
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            return StreamAttempt::unsent(CompletionFailure::cancelled(
+                PureError::LlmError("model invocation cancelled before sending".into()),
+                Box::default(),
+            ));
         }
         let has_hosted_tools = request.tools.iter().any(|tool| match tool {
             crate::completion::ToolSpec::Function { .. }
@@ -41,13 +62,19 @@ impl ModelRuntime {
             .and_then(|key| self.prepare_request_body(request, key.as_deref(), &context.purpose))
         {
             Ok(prepared) => prepared,
-            Err(error) => return (Err(error.into()), true),
+            Err(error) => return StreamAttempt::unsent(error.into()),
         };
+        let dispatch = AttemptDispatch::new(context.progress.as_ref());
         let opening = self.stream_events(
             body,
             context.session.clone(),
             trace.clone(),
             &context.purpose,
+            context
+                .cancellation
+                .clone()
+                .expect("complete installs cancellation"),
+            &dispatch,
         );
         tokio::pin!(opening);
         let mut accumulator =
@@ -55,39 +82,50 @@ impl ModelRuntime {
         let open = async {
             match context.cancellation.as_ref() {
                 Some(token) => tokio::select! {
-                    result = &mut opening => (result, false),
+                    biased;
                     _ = token.cancelled() => {
                         inference_timer.mark_terminal();
                         (Err(PureError::LlmError("model invocation cancelled".into())), true)
                     },
+                    result = &mut opening => (result, false),
                 },
                 None => (opening.await, false),
             }
         };
         let (opened, opening_cancelled) = if let Some(current) = current.as_deref_mut() {
-            current.wait(open, Some(&accumulator)).await
+            current.wait(open, None).await
         } else {
             open.await
         };
+        let started = dispatch.started();
+        if started && let Some(current) = current.as_deref_mut() {
+            current.begin_generation(generation);
+        }
         match opened {
             Ok(opened) => {
                 model_observation.sent_model = opened.sent_model;
                 accumulator.set_model_observation(model_observation.clone());
-                let replay_unsafe = Arc::new(AtomicBool::new(false));
+                let replay_unsafe = Arc::new(AtomicBool::new(has_hosted_tools));
                 let tracked_stream: CompletionEventStream = opened
                     .events
                     .map({
                         let replay_unsafe = Arc::clone(&replay_unsafe);
                         let inference_timer = inference_timer.clone();
-                        let mut progress = crate::runtime::thread_model::progress::ProgressProjection::new(context.progress.clone());
+                        let mut progress =
+                            crate::runtime::thread_model::progress::ProgressProjection::new(
+                                context.progress.clone(),
+                            );
                         move |event| {
                             if let Ok(event) = &event
-                                && (has_hosted_tools
-                                    || (is_compaction && matches!(event,
-                                        crate::stream::event::ModelStreamEvent::NativeContext { .. }))
-                                    || matches!(event,
-                                    crate::stream::event::ModelStreamEvent::Usage(_)
-                                    | crate::stream::event::ModelStreamEvent::Completed { .. }))
+                                && ((is_compaction
+                                    && matches!(
+                                        event,
+                                        crate::stream::event::ModelStreamEvent::NativeContext { .. }
+                                    ))
+                                    || matches!(
+                                        event,
+                                        crate::stream::event::ModelStreamEvent::Completed { .. }
+                                    ))
                             {
                                 replay_unsafe.store(true, Ordering::Release);
                             }
@@ -115,7 +153,9 @@ impl ModelRuntime {
                         cancellation: context.cancellation.clone(),
                         model_observation: Some(model_observation),
                         on_stream_end: &on_stream_end,
-                        members: context.members.clone(),
+                        members: (context.billing_purpose != "compaction")
+                            .then(|| context.members.clone())
+                            .flatten(),
                         generation: context
                             .progress
                             .as_ref()
@@ -126,26 +166,33 @@ impl ModelRuntime {
                     current.as_deref_mut(),
                 )
                 .await;
-                let retry_allowed = !replay_unsafe.load(Ordering::Acquire);
-                (result, retry_allowed)
+                StreamAttempt {
+                    result,
+                    replay_safe: !replay_unsafe.load(Ordering::Acquire),
+                    started,
+                }
             }
             Err(error) => {
                 inference_timer.mark_terminal();
                 accumulator.fail_attempt(&error);
-                if let Some(current) = current {
+                if started && let Some(current) = current {
                     current.freeze(&accumulator);
                 }
-                if opening_cancelled {
-                    return (
-                        Err(CompletionFailure::cancelled(error, Box::default())
-                            .with_model_observation(model_observation)),
-                        false,
-                    );
+                let cancelled = opening_cancelled
+                    || context
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(|token| token.is_cancelled());
+                let failure = if cancelled {
+                    CompletionFailure::cancelled(error, Box::default())
+                } else {
+                    error.into()
+                };
+                StreamAttempt {
+                    result: Err(failure.with_model_observation(model_observation)),
+                    replay_safe: !cancelled && (!has_hosted_tools || !dispatch.submitted()),
+                    started,
                 }
-                (
-                    Err(CompletionFailure::from(error).with_model_observation(model_observation)),
-                    true,
-                )
             }
         }
     }

@@ -17,7 +17,7 @@ import 'thread_activity.dart';
 import 'thread_stream/item.dart';
 part 'thread_stream.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// FRB mirror of the canonical prompt cache effective-usage summary.
 class BridgeCacheUsageSummary {
@@ -258,6 +258,45 @@ enum BridgeMetricAvailability {
   invalidUsage,
   invalidTiming,
   legacyUnknown,
+}
+
+class BridgeModelRecoveryInfo {
+  final int? retryCount;
+  final int? maxRetries;
+  final BigInt? effectiveWaitMillis;
+  final String? reason;
+  final String? stopReason;
+  final String? error;
+
+  const BridgeModelRecoveryInfo({
+    this.retryCount,
+    this.maxRetries,
+    this.effectiveWaitMillis,
+    this.reason,
+    this.stopReason,
+    this.error,
+  });
+
+  @override
+  int get hashCode =>
+      retryCount.hashCode ^
+      maxRetries.hashCode ^
+      effectiveWaitMillis.hashCode ^
+      reason.hashCode ^
+      stopReason.hashCode ^
+      error.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelRecoveryInfo &&
+          runtimeType == other.runtimeType &&
+          retryCount == other.retryCount &&
+          maxRetries == other.maxRetries &&
+          effectiveWaitMillis == other.effectiveWaitMillis &&
+          reason == other.reason &&
+          stopReason == other.stopReason &&
+          error == other.error;
 }
 
 class BridgePlanDocument {
@@ -1283,8 +1322,12 @@ class BridgeTurnFailureDto {
   final String? code;
   final int? httpStatus;
   final String message;
-  final bool retryable;
+  final String retryDisposition;
   final BigInt? retryAfterMs;
+  final String? errorType;
+  final String? requestId;
+  final String? stage;
+  final BridgeModelRecoveryInfo? recovery;
 
   const BridgeTurnFailureDto({
     required this.category,
@@ -1292,8 +1335,12 @@ class BridgeTurnFailureDto {
     this.code,
     this.httpStatus,
     required this.message,
-    required this.retryable,
+    required this.retryDisposition,
     this.retryAfterMs,
+    this.errorType,
+    this.requestId,
+    this.stage,
+    this.recovery,
   });
 
   @override
@@ -1303,8 +1350,12 @@ class BridgeTurnFailureDto {
       code.hashCode ^
       httpStatus.hashCode ^
       message.hashCode ^
-      retryable.hashCode ^
-      retryAfterMs.hashCode;
+      retryDisposition.hashCode ^
+      retryAfterMs.hashCode ^
+      errorType.hashCode ^
+      requestId.hashCode ^
+      stage.hashCode ^
+      recovery.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1316,8 +1367,12 @@ class BridgeTurnFailureDto {
           code == other.code &&
           httpStatus == other.httpStatus &&
           message == other.message &&
-          retryable == other.retryable &&
-          retryAfterMs == other.retryAfterMs;
+          retryDisposition == other.retryDisposition &&
+          retryAfterMs == other.retryAfterMs &&
+          errorType == other.errorType &&
+          requestId == other.requestId &&
+          stage == other.stage &&
+          recovery == other.recovery;
 }
 
 enum BridgeTurnPhase {
@@ -1460,7 +1515,12 @@ class BridgeUsageGapIssue {
           reason == other.reason;
 }
 
-enum BridgeUsageGapReason { unreported, inconsistent, overflow }
+enum BridgeUsageGapReason {
+  unreported,
+  inconsistent,
+  overflow,
+  nonTerminalSample,
+}
 
 class BridgeUsageIssueCountSnapshot {
   final BridgeUsageGapIssue issue;

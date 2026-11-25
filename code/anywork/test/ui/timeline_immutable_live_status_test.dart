@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -766,7 +767,12 @@ void main() {
         },
       );
       addTearDown(textStream.close);
-      const streamBody = 'Streaming partial answer';
+      final recoveryFixture = jsonDecode(
+        File('test/fixtures/provider_recovery_notices.json').readAsStringSync(),
+      ) as Map<String, Object?>;
+      final waitingFacts = recoveryFixture['waiting'] as Map<String, Object?>;
+      final waitingNotice = StudioModelRecoveryNotice.fromJson(waitingFacts)!;
+      final streamBody = waitingNotice.failure!.message;
       final streamBytes = utf8.encode(streamBody);
       timelineWrapper.inner.onReadBody = (_, range) async => ContentWindow(
         offset: range.offset,
@@ -777,26 +783,42 @@ void main() {
       );
       timelineWrapper.inner.onWatchBody = (_, _) => textStream.stream;
 
-      final streamingAtom = CurrentAtom(
-        id: 'text:turn-1',
-        source: const ForegroundTurnChatSource(turnId: turn1),
-        sourceOrder: 2,
-        kind: ChatAtomKind.text,
-        delivery: ChatDeliveryKind.foreground,
-        lifecycle: const ActiveChatAtom(
-          started: null,
-          status: ChatActiveStatus.running,
-        ),
-        turnId: turn1,
-        startedAt: 3,
-        contentPresent: true,
-        contents: [
-          CurrentAtomContent(
-            role: ChatContentRole.body,
-            reference: _currentRef(runId, 'text:turn-1'),
-          ),
-        ],
-      );
+      CurrentProjection recoveryProjection(StudioModelRecoveryNotice notice) =>
+          CurrentProjection(
+            logicalStatus: ThreadStatusView.running,
+            executionPresent: true,
+            activeTurn: const CurrentTurnHead(
+              id: turn1,
+              phase: CurrentTurnPhase.responding,
+            ),
+            sources: const [],
+            atoms: [
+              CurrentAtom(
+                id: 'text:turn-1',
+                source: const ForegroundTurnChatSource(turnId: turn1),
+                sourceOrder: 2,
+                kind: ChatAtomKind.text,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                turnId: turn1,
+                startedAt: 3,
+                contentPresent: true,
+                textChannel: ThreadTextChannel.commentary,
+                modelRecovery: notice,
+                contents: [
+                  CurrentAtomContent(
+                    role: ChatContentRole.body,
+                    reference: _currentRef(runId, 'text:turn-1'),
+                  ),
+                ],
+              ),
+            ],
+            previews: const [],
+            collections: const [],
+          );
       final respondingWorkspace = runningWorkspace.copyWith(
         revision: 3,
         runtime: runningWorkspace.runtime.copyWith(
@@ -815,17 +837,12 @@ void main() {
           summary: 'Streaming',
         ),
       );
-      final respondingProjection = CurrentProjection(
-        logicalStatus: ThreadStatusView.running,
-        executionPresent: true,
-        activeTurn: const CurrentTurnHead(
-          id: turn1,
-          phase: CurrentTurnPhase.responding,
-        ),
-        sources: const [],
-        atoms: [streamingAtom],
-        previews: const [],
-        collections: const [],
+      final respondingProjection = recoveryProjection(
+        StudioModelRecoveryNotice.fromJson({
+          ...waitingFacts,
+          'phase': 'repairing',
+          'effectiveWaitMillis': null,
+        })!,
       );
       transport.setCurrentSnapshot(
         _threadId,
@@ -879,6 +896,22 @@ void main() {
         ),
         findsOneWidget,
       );
+      for (final text in ['正在修复模型请求', '第 1 次重试，上限 2 次']) {
+        expect(
+          find.descendant(
+            of: find.byType(LiveStatusBar),
+            matching: find.text(text),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byType(TimelineConnector),
+            matching: find.text(text),
+          ),
+          findsNothing,
+        );
+      }
       expect(
         find.descendant(
           of: find.byType(LiveStatusBar),
@@ -900,8 +933,40 @@ void main() {
       expect(identical(lease.controller.messages.first, input1Message), isTrue);
       final streamingSettledWorkMessage = lease.controller.messages[1];
 
+      final waitingWorkspace = respondingWorkspace.copyWith(revision: 4);
+      final waitingProjection = recoveryProjection(waitingNotice);
+      final waitingRevision = CurrentRevision(ownerId: runId, revision: 4);
+      transport.setCurrentSnapshot(
+        _threadId,
+        CurrentView(
+          revision: waitingRevision,
+          state: ThreadSnapshotFrame(
+            workspace: waitingWorkspace,
+            schemaVersion: threadSchemaVersion,
+          ),
+          projection: waitingProjection,
+        ),
+      );
+      await transport.publishWorkspace(waitingWorkspace);
+      timelineWrapper.inner.emitCurrentFrame(
+        ProjectionCurrentFrame(
+          revision: waitingRevision,
+          projection: waitingProjection,
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => find.text('预计等待 45 秒').evaluate().isNotEmpty,
+        'same recovery row displays the new phase and scheduled wait',
+      );
+      expect(find.text('正在修复模型请求'), findsNothing);
+      expect(find.text('等待重试模型请求'), findsOneWidget);
+      expect(find.text('第 1 次重试，上限 2 次'), findsOneWidget);
+      expect(find.text(streamBody), findsOneWidget);
+      expect(lease.controller.messages[1], same(streamingSettledWorkMessage));
+
       // Final divider + idle state settles reply into Timeline and hides LiveStatusBar.
-      final idleWorkspace = chatWorkspace(_threadId).copyWith(revision: 4);
+      final idleWorkspace = chatWorkspace(_threadId).copyWith(revision: 5);
       final idleProjection = CurrentProjection(
         logicalStatus: ThreadStatusView.idle,
         executionPresent: true,
@@ -913,7 +978,7 @@ void main() {
       transport.setCurrentSnapshot(
         _threadId,
         CurrentView(
-          revision: CurrentRevision(ownerId: runId, revision: 4),
+          revision: CurrentRevision(ownerId: runId, revision: 5),
           state: ThreadSnapshotFrame(
             workspace: idleWorkspace,
             schemaVersion: threadSchemaVersion,
@@ -926,7 +991,7 @@ void main() {
       await transport.publishWorkspace(idleWorkspace);
       timelineWrapper.inner.emitCurrentFrame(
         ProjectionCurrentFrame(
-          revision: CurrentRevision(ownerId: runId, revision: 4),
+          revision: CurrentRevision(ownerId: runId, revision: 5),
           projection: idleProjection,
         ),
       );

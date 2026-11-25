@@ -549,6 +549,7 @@ fn current_atom(value: protocol::CurrentAtom) -> BridgeCurrentAtom {
         }),
         wait: value.wait.map(thread_stream::wait_presentation),
         text_channel: value.text_channel.map(chat::text_channel),
+        model_recovery: value.model_recovery.map(model_recovery_notice),
         started_at: value.started_at,
         finished_at: value.finished_at,
         content_present: value.content_present,
@@ -569,6 +570,28 @@ fn current_atom(value: protocol::CurrentAtom) -> BridgeCurrentAtom {
                 reference: current_content_ref(content.reference),
             })
             .collect(),
+    }
+}
+
+fn model_recovery_notice(value: protocol::ModelRecoveryNotice) -> BridgeModelRecoveryNotice {
+    use protocol::ModelRecoveryPhase;
+
+    BridgeModelRecoveryNotice {
+        failure_kind: value.failure_kind.map(|kind| kind.as_str().to_owned()),
+        reason: value.reason.map(thread_stream::provider_recovery_label),
+        retry_count: value.retry_count,
+        max_retries: value.max_retries,
+        effective_wait_millis: value.effective_wait_millis,
+        failure: value.failure.map(thread_stream::bridge_turn_failure),
+        phase: match value.phase {
+            ModelRecoveryPhase::Repairing => BridgeModelRecoveryPhase::Repairing,
+            ModelRecoveryPhase::Waiting => BridgeModelRecoveryPhase::Waiting,
+            ModelRecoveryPhase::Retrying => BridgeModelRecoveryPhase::Retrying,
+            ModelRecoveryPhase::Recovered => BridgeModelRecoveryPhase::Recovered,
+            ModelRecoveryPhase::Exhausted => BridgeModelRecoveryPhase::Exhausted,
+            ModelRecoveryPhase::Failed => BridgeModelRecoveryPhase::Failed,
+            ModelRecoveryPhase::Cancelled => BridgeModelRecoveryPhase::Cancelled,
+        },
     }
 }
 
@@ -664,4 +687,157 @@ pub(crate) fn current_frame(value: protocol::CurrentFrame) -> ConvertResult<Brid
             projection: Box::new(current_projection(*projection)),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::{
+        ChatActiveStatus, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
+        ChatTerminalOutcome, CurrentAtom, HistoryEntityState, HistoryEventMeta,
+        ModelRecoveryNotice, ModelRecoveryPhase, ProviderFailureKind, ProviderFailureStage,
+        ProviderRecovery, RetryDisposition, ThreadTextChannel, TurnFailure, TurnFailureCategory,
+    };
+
+    #[test]
+    fn recovery_notices_match_current_and_history_fixture_consumed_by_dart() {
+        use ModelRecoveryPhase::{Cancelled, Recovered, Waiting};
+        use ProviderFailureKind::{RateLimit, ServiceBusy, Transport};
+        use ProviderFailureStage::{Handshake, Request, Stream};
+
+        let expected: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test/fixtures/provider_recovery_notices.json"
+        )))
+        .unwrap();
+        let cases = [
+            (
+                "waiting",
+                Waiting,
+                BridgeModelRecoveryPhase::Waiting,
+                RateLimit,
+                ProviderRecovery::None,
+                45_000,
+                429,
+                "rate_limit_exceeded",
+                "rate_limit_error",
+                Request,
+                "The provider limited the request.",
+            ),
+            (
+                "recovered",
+                Recovered,
+                BridgeModelRecoveryPhase::Recovered,
+                Transport,
+                ProviderRecovery::HttpFallback,
+                9_007_199_254_740_993,
+                503,
+                "upstream_connection_closed",
+                "connection_error",
+                Handshake,
+                "The provider closed the connection during the handshake.",
+            ),
+            (
+                "cancelled",
+                Cancelled,
+                BridgeModelRecoveryPhase::Cancelled,
+                ServiceBusy,
+                ProviderRecovery::None,
+                u64::MAX,
+                503,
+                "service_unavailable",
+                "overloaded_error",
+                Stream,
+                "The provider became unavailable while streaming the answer.",
+            ),
+        ];
+        for (
+            label,
+            phase,
+            bridge_phase,
+            kind,
+            reason,
+            wait,
+            status,
+            code,
+            error_type,
+            stage,
+            message,
+        ) in cases
+        {
+            let mut failure = TurnFailure::permanent(TurnFailureCategory::Provider, message);
+            failure.provider_kind = Some(kind);
+            failure.code = Some(code.into());
+            failure.http_status = Some(status);
+            failure.error_type = Some(error_type.into());
+            failure.request_id = Some(format!("req-recovery-{label}"));
+            failure.stage = Some(stage);
+            failure.retry = RetryDisposition::Retryable {
+                retry_after_ms: Some(wait),
+            };
+            let notice = ModelRecoveryNotice {
+                failure_kind: Some(kind),
+                reason: Some(reason),
+                retry_count: 1,
+                max_retries: 2,
+                effective_wait_millis: Some(wait),
+                phase,
+                failure: Some(failure.clone()),
+            };
+            let id = format!("recovery:{label}");
+            let atom = CurrentAtom {
+                id: id.clone(),
+                source: ChatSourceId::ForegroundTurn {
+                    turn_id: "turn".into(),
+                },
+                source_state: None,
+                source_order: None,
+                kind: ChatAtomKind::Text,
+                delivery: ChatDeliveryKind::Foreground,
+                lifecycle: ChatAtomLifecycle::Active {
+                    started: None,
+                    status: ChatActiveStatus::Waiting,
+                },
+                turn_id: Some("turn".into()),
+                attempt_id: None,
+                tool: None,
+                wait: None,
+                text_channel: Some(ThreadTextChannel::Commentary),
+                model_recovery: Some(notice.clone()),
+                started_at: None,
+                finished_at: None,
+                content_present: Some(true),
+                contents: Vec::new(),
+            };
+            let history_meta = HistoryEventMeta {
+                entity_id: id,
+                entity_kind: ChatAtomKind::Text,
+                delivery: ChatDeliveryKind::Foreground,
+                state: HistoryEntityState::KnownTerminal {
+                    outcome: ChatTerminalOutcome::Completed,
+                },
+                started_at: None,
+                finished_at: None,
+                text_channel: Some(ThreadTextChannel::Commentary),
+                model_recovery: Some(notice),
+                single_visibility: None,
+                presentation_contract: None,
+                source_order: None,
+                content_present: Some(true),
+                wait: None,
+                tool: None,
+            };
+            let current_json = serde_json::to_value(&atom).unwrap();
+            let history_json = serde_json::to_value(&history_meta).unwrap();
+            assert_eq!(current_json["modelRecovery"], expected[label]);
+            assert_eq!(history_json["modelRecovery"], expected[label]);
+            let bridge = current_atom(atom).model_recovery.unwrap();
+            assert_eq!(bridge.phase, bridge_phase);
+            assert_eq!(bridge.effective_wait_millis, Some(wait));
+            assert_eq!(
+                bridge.failure,
+                Some(thread_stream::bridge_turn_failure(failure))
+            );
+        }
+    }
 }

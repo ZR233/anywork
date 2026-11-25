@@ -280,11 +280,12 @@ impl CommonCommand {
                     endpoint.clone(),
                     model,
                     adapter.codec,
+                    adapter.error_policy,
                     upload,
                 )?;
                 let cancellation = CancellationToken::new();
-                let mut context =
-                    ModelInvocationContext::default().with_cancellation(Some(cancellation.clone()));
+                let mut context = ModelInvocationContext::in_memory(Default::default())
+                    .with_cancellation(Some(cancellation.clone()));
                 if let Some(scope) = cache_scope {
                     if !endpoint
                         .effective_prompt_cache_policy(runtime.model())

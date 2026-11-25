@@ -46,6 +46,7 @@ impl From<pl_studio_runtime::UsageGapReason> for BridgeUsageGapReason {
             pl_studio_runtime::UsageGapReason::Unreported => Self::Unreported,
             pl_studio_runtime::UsageGapReason::Inconsistent => Self::Inconsistent,
             pl_studio_runtime::UsageGapReason::Overflow => Self::Overflow,
+            pl_studio_runtime::UsageGapReason::NonTerminalSample => Self::NonTerminalSample,
         }
     }
 }

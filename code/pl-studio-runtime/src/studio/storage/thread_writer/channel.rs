@@ -641,6 +641,30 @@ impl HistoryChannel {
         drop(progress);
         self.changed.notify_one();
     }
+
+    pub(super) async fn confirm_model_settlement(
+        &self,
+        sequence: u64,
+    ) -> Result<(), ColdStoreError> {
+        self.request_flush(sequence);
+        let mut history = self.subscribe();
+        loop {
+            {
+                let status = history.borrow_and_update();
+                if status.committed_sequence >= sequence {
+                    return Ok(());
+                }
+                if let Some(error) = &status.error {
+                    return Err(cold_error(error));
+                }
+            }
+            tokio::select! {
+                biased;
+                changed = history.changed() => changed.map_err(|_| cold_error("history writer closed before model settlement was saved"))?,
+                () = self.stopping.cancelled() => return Err(cold_error("history writer stopped before model settlement was saved")),
+            }
+        }
+    }
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.is_cancelled()
     }

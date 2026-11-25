@@ -1,4 +1,11 @@
-use std::collections::HashMap;
+use futures::stream::BoxStream;
+use pl_model_wire::provider_error::{
+    ErrorPolicyBinding, ProviderErrorEntry, ProviderErrorPolicy, transport_failure,
+};
+use pl_model_wire::transport::{RawSseFrame, RequestDiagnostics};
+use pl_model_wire::wire_codec::{VisibleOutputProtocol, WireStreamDecoder};
+use pl_protocol::{ProviderFailureStage, ProviderRecovery, RetryDisposition};
+use std::{collections::HashMap, sync::Arc};
 
 use futures::StreamExt;
 use pl_protocol::{PureError, Result};
@@ -11,23 +18,24 @@ use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 
 use crate::completion::{AssistantReplay, CompletionTraceContext};
-use crate::protocol::RESPONSES_WEBSOCKET_DIALECT;
+use crate::protocol::{RESPONSES_WEBSOCKET_DIALECT, WireApi};
 use crate::runtime::ModelSession;
+use crate::runtime::invocation::AttemptDispatch;
 use crate::runtime::openai::sent_model_from_wire_body;
 use crate::runtime::openai::sse::SseStreamEvent;
 use crate::runtime::session::{ResponsesWebSocketConnection, ResponsesWebSocketSession};
 use crate::runtime::transport_policy::{
     RESPONSES_WEBSOCKET_CONNECT_TIMEOUT, RESPONSES_WEBSOCKET_SEND_TIMEOUT,
 };
-use crate::stream::OpenAiRawEventStream;
+use crate::stream::event::ModelStreamEvent;
 use crate::stream::replay::ReplayCollector;
+use crate::stream::{CompletionEventStream, StreamErrorBinding, decode_wire_stream};
 
 mod dialer;
 pub(crate) mod error;
 
 use error::{
-    close_error, connection_error, continuation_id_invalid, continuation_retry_error,
-    handshake_error, handshake_timeout_error, protocol_error, server_error,
+    close_error, connection_error, handshake_error, handshake_timeout_error, protocol_error,
 };
 #[derive(Debug)]
 enum ResponsesStreamState {
@@ -47,10 +55,16 @@ pub(super) struct StreamResponsesInput<'a> {
     pub body: Map<String, Value>,
     pub expected_sent_model: String,
     pub trace: Option<CompletionTraceContext>,
+    pub endpoint: &'a crate::protocol::ProtocolEndpoint,
+    pub error_policy: &'static dyn ProviderErrorPolicy,
+    pub decoder: Box<dyn WireStreamDecoder>,
+    pub visible_output: VisibleOutputProtocol,
+    pub cancellation: tokio_util::sync::CancellationToken,
+    pub dispatch: &'a AttemptDispatch<'a>,
 }
 
 pub(super) struct OpenedResponsesStream {
-    pub stream: OpenAiRawEventStream,
+    pub events: CompletionEventStream,
     pub sent_model: String,
 }
 
@@ -67,7 +81,16 @@ pub(super) async fn stream_responses(
         mut body,
         expected_sent_model,
         trace,
+        endpoint,
+        error_policy,
+        decoder,
+        visible_output,
+        cancellation,
+        dispatch,
     } = input;
+    let (url, request) =
+        handshake_request(&api_base, token.as_deref(), provider_headers, model_headers)?;
+    let diagnostics = Arc::new(RequestDiagnostics::from_headers(request.headers()));
     normalize_websocket_request_body(&mut body);
 
     // Own invalidation before the first await that can publish/send a request.
@@ -78,6 +101,7 @@ pub(super) async fn stream_responses(
         full_request: body.clone(),
         model_session: model_session.clone(),
         replay: ReplayCollector::default(),
+        diagnostics: diagnostics.clone(),
     };
     if state.guard.connection_key != Some(connection_key)
         || state
@@ -88,8 +112,25 @@ pub(super) async fn stream_responses(
     {
         state.guard.invalidate();
         state.guard.reap_retired().await?;
-        state.guard.connection =
-            Some(connect(&api_base, token.as_deref(), provider_headers, model_headers).await?);
+        if cancellation.is_cancelled() {
+            return Err(PureError::LlmError(
+                "model invocation cancelled before WebSocket connect".into(),
+            ));
+        }
+        dispatch.connecting();
+        state.guard.connection = Some(
+            connect(
+                request,
+                &url,
+                ErrorPolicyBinding {
+                    policy: error_policy,
+                    wire_api: crate::protocol::WireApi::Responses,
+                    endpoint: Some(endpoint),
+                },
+                &diagnostics,
+            )
+            .await?,
+        );
         state.guard.connection_key = Some(connection_key);
     }
 
@@ -144,13 +185,14 @@ pub(super) async fn stream_responses(
         first_differing_index,
         "Responses WebSocket request prepared"
     );
-    if let Err(error) = send_request(&mut state.guard, &request_text).await {
+    if let Err(error) = send_request(&mut state.guard, &request_text, cancellation, dispatch).await
+    {
         state.guard.invalidate();
         return Err(error);
     }
 
-    Ok(OpenedResponsesStream {
-        stream: futures::stream::unfold(state, |mut state| async move {
+    let stream: BoxStream<'static, Result<RawSseFrame>> =
+        futures::stream::unfold(state, |mut state| async move {
             match &state.state {
                 ResponsesStreamState::Open => {}
                 ResponsesStreamState::Completed(_) => {
@@ -169,9 +211,41 @@ pub(super) async fn stream_responses(
             let event = state.next_event().await;
             Some((event, state))
         })
-        .boxed(),
-        sent_model,
+        .boxed();
+    let events = decode_wire_stream(
+        decoder,
+        stream,
+        visible_output,
+        false,
+        trace,
+        StreamErrorBinding {
+            entry: ProviderErrorEntry::WebSocket,
+            api: WireApi::Responses,
+            endpoint: endpoint.clone(),
+            policy: error_policy,
+        },
+    )
+    .map(move |mut event| {
+        // Only this owner knows whether the physical request used a continuation.
+        let failure = match &mut event {
+            Ok(ModelStreamEvent::Failed { failure }) => Some(failure),
+            Err(PureError::Provider(failure)) => Some(failure.as_mut()),
+            _ => None,
+        };
+        if let Some(failure) = failure
+            && failure.context.recovery == ProviderRecovery::FullContext
+        {
+            if used_continuation {
+                model_session.record_continuation_invalid();
+            } else {
+                failure.context.recovery = ProviderRecovery::None;
+                failure.retry = RetryDisposition::Permanent;
+            }
+        }
+        event
     })
+    .boxed();
+    Ok(OpenedResponsesStream { events, sent_model })
 }
 
 fn normalize_websocket_request_body(body: &mut Map<String, Value>) {
@@ -293,12 +367,15 @@ fn request_properties(body: &Map<String, Value>) -> Map<String, Value> {
     properties
 }
 
-async fn connect(
+fn handshake_request(
     api_base: &str,
     token: Option<&str>,
     provider_headers: Option<&HashMap<String, String>>,
     model_headers: &HashMap<String, String>,
-) -> Result<ResponsesWebSocketConnection> {
+) -> Result<(
+    reqwest::Url,
+    tokio_tungstenite::tungstenite::handshake::client::Request,
+)> {
     let url = responses_websocket_url(api_base)?;
     let mut request = url
         .as_str()
@@ -309,8 +386,9 @@ async fn connect(
         HeaderValue::from_static(RESPONSES_WEBSOCKET_DIALECT),
     );
     if let Some(token) = token {
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+        let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|error| PureError::HttpError(error.to_string()))?;
+        value.set_sensitive(true);
         request.headers_mut().insert(AUTHORIZATION, value);
     }
     if let Some(headers) = provider_headers {
@@ -318,13 +396,22 @@ async fn connect(
     }
     insert_headers(request.headers_mut(), model_headers)?;
 
+    Ok((url, request))
+}
+
+async fn connect(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    url: &reqwest::Url,
+    error_policy: ErrorPolicyBinding<'_>,
+    diagnostics: &RequestDiagnostics,
+) -> Result<ResponsesWebSocketConnection> {
     let (connection, _) = timeout(
         RESPONSES_WEBSOCKET_CONNECT_TIMEOUT,
-        dialer::connect(request, &url),
+        dialer::connect(request, url),
     )
     .await
-    .map_err(|_| handshake_timeout_error())?
-    .map_err(handshake_error)?;
+    .map_err(handshake_timeout_error)?
+    .map_err(|error| handshake_error(error, error_policy, diagnostics))?;
     Ok(ResponsesWebSocketConnection::new(connection))
 }
 
@@ -357,8 +444,9 @@ fn insert_headers(
     for (name, value) in headers {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|error| PureError::HttpError(error.to_string()))?;
-        let value = HeaderValue::from_str(value)
+        let mut value = HeaderValue::from_str(value)
             .map_err(|error| PureError::HttpError(error.to_string()))?;
+        value.set_sensitive(true);
         target.insert(name, value);
     }
     Ok(())
@@ -367,18 +455,30 @@ fn insert_headers(
 async fn send_request(
     session: &mut OwnedMutexGuard<ResponsesWebSocketSession>,
     request_text: &str,
+    cancellation: tokio_util::sync::CancellationToken,
+    dispatch: &AttemptDispatch<'_>,
 ) -> Result<()> {
     let connection = session
         .connection
         .as_mut()
         .ok_or_else(|| connection_error("connection is unavailable"))?;
+    if cancellation.is_cancelled() {
+        return Err(PureError::LlmError(
+            "model invocation cancelled before WebSocket send".into(),
+        ));
+    }
+    dispatch.submitting();
     timeout(
         RESPONSES_WEBSOCKET_SEND_TIMEOUT,
-        connection.send(Message::Text(request_text.to_string().into())),
+        connection.send(Message::Text(request_text.to_string().into()), cancellation),
     )
     .await
-    .map_err(|_| {
-        PureError::transient_model_transport("Responses WebSocket send timed out after 15 seconds")
+    .map_err(|source| {
+        transport_failure(
+            ProviderFailureStage::Request,
+            "Responses WebSocket send timed out after 15 seconds",
+        )
+        .with_source(source)
     })?
 }
 
@@ -389,10 +489,11 @@ struct WebSocketEventState {
     full_request: Map<String, Value>,
     model_session: ModelSession,
     replay: ReplayCollector,
+    diagnostics: Arc<RequestDiagnostics>,
 }
 
 impl WebSocketEventState {
-    async fn next_event(&mut self) -> Result<SseStreamEvent> {
+    async fn next_event(&mut self) -> Result<RawSseFrame> {
         loop {
             let next = {
                 let connection = self
@@ -402,7 +503,7 @@ impl WebSocketEventState {
                     .ok_or_else(|| connection_error("connection is unavailable"))?;
                 connection.next().await
             };
-            let message = match next {
+            let (message, observed_at) = match next {
                 Some(Ok(message)) => message,
                 Some(Err(error)) => return Err(self.invalidate_with_connection_error(error)),
                 None => {
@@ -415,44 +516,28 @@ impl WebSocketEventState {
                 Message::Text(text) => {
                     let value: Value = match serde_json::from_str(text.as_str()) {
                         Ok(value) => value,
-                        Err(error) => {
-                            let error = protocol_error(format!("invalid JSON event: {error}"));
+                        Err(source) => {
+                            let error = error::protocol_failure(
+                                ProviderFailureStage::Stream,
+                                "invalid JSON WebSocket event",
+                            )
+                            .with_source(source)
+                            .into();
                             return Err(self.fail(error));
                         }
                     };
-                    if value.get("type").and_then(Value::as_str) == Some("error") {
-                        if self.used_continuation && continuation_id_invalid(&value) {
-                            self.model_session.record_continuation_invalid();
-                            return Err(self.fail(continuation_retry_error()));
-                        }
-                        let error = server_error(&value);
+                    let (request_id, header_retry) = error::frame_headers(&value, observed_at);
+                    if let Err(error) = self.observe_frame(value) {
                         return Err(self.fail(error));
                     }
-                    let event: SseStreamEvent = match serde_json::from_value(value) {
-                        Ok(event) => event,
-                        Err(error) => {
-                            let error = protocol_error(error.to_string());
-                            return Err(self.fail(error));
-                        }
-                    };
-                    if let Some(update) = crate::runtime::openai::sse::replay_update(&event)
-                        && let Err(error) = self.replay.apply(update)
-                    {
-                        return Err(self.fail(error));
-                    }
-                    match event.kind.as_str() {
-                        "response.completed" => {
-                            self.state = ResponsesStreamState::Completed(Box::new(event.clone()));
-                        }
-                        "response.failed" | "response.incomplete" => {
-                            self.guard.invalidate();
-                            self.state = ResponsesStreamState::Failed {
-                                detail: "provider returned terminal response".into(),
-                            };
-                        }
-                        _ => {}
-                    }
-                    return Ok(event);
+                    return Ok(RawSseFrame {
+                        data: text.to_string(),
+                        event_name: None,
+                        request_id,
+                        diagnostics: self.diagnostics.clone(),
+                        observed_at,
+                        header_retry,
+                    });
                 }
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
                 Message::Binary(_) => {
@@ -465,6 +550,34 @@ impl WebSocketEventState {
                 }
             }
         }
+    }
+
+    fn observe_frame(&mut self, value: Value) -> Result<()> {
+        if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("error" | "response.failed" | "response.incomplete")
+        ) {
+            self.guard.invalidate();
+            self.state = ResponsesStreamState::Failed {
+                detail: "provider returned terminal response".into(),
+            };
+            // The bound codec still receives the full frame, including any usage report.
+            return Ok(());
+        }
+        let event: SseStreamEvent = serde_json::from_value(value).map_err(|source| {
+            error::protocol_failure(
+                ProviderFailureStage::Stream,
+                "invalid Responses WebSocket event structure",
+            )
+            .with_source(source)
+        })?;
+        if let Some(update) = crate::runtime::openai::sse::replay_update(&event) {
+            self.replay.apply(update)?;
+        }
+        if event.kind == "response.completed" {
+            self.state = ResponsesStreamState::Completed(Box::new(event));
+        }
+        Ok(())
     }
 
     fn invalidate_with_connection_error(&mut self, error: PureError) -> PureError {

@@ -35,7 +35,7 @@ impl ProviderTokenUsage {
     }
 
     pub fn to_responses_usage(&self) -> Option<UsageReport> {
-        Some(UsageReport {
+        let usage = UsageReport {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             total_tokens: self.total_tokens,
@@ -51,7 +51,8 @@ impl ProviderTokenUsage {
                 .output_tokens_details
                 .as_ref()
                 .and_then(|details| details.reasoning_tokens),
-        })
+        };
+        (usage != UsageReport::default()).then_some(usage)
     }
 
     pub fn to_chat_usage(&self) -> Option<UsageReport> {
@@ -64,7 +65,7 @@ impl ProviderTokenUsage {
             self.prompt_cache_hit_tokens?
                 .checked_add(self.prompt_cache_miss_tokens?)
         });
-        Some(UsageReport {
+        let usage = UsageReport {
             input_tokens,
             output_tokens: self.completion_tokens,
             total_tokens: self.total_tokens,
@@ -77,7 +78,8 @@ impl ProviderTokenUsage {
                 .completion_tokens_details
                 .as_ref()
                 .and_then(|details| details.reasoning_tokens),
-        })
+        };
+        (usage != UsageReport::default()).then_some(usage)
     }
 }
 

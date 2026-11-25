@@ -1,0 +1,29 @@
+{
+  "kind": "failed",
+  "data": {
+    "startedAt": 1000,
+    "completedAt": 1005,
+    "failure": {
+      "category": "provider",
+      "providerKind": "rateLimit",
+      "code": "rate_limit_exceeded",
+      "httpStatus": 429,
+      "errorType": "rate_limit_error",
+      "requestId": "req-rate-limit-fixture",
+      "stage": "request",
+      "recovery": {
+        "retryCount": 2,
+        "maxRetries": 2,
+        "effectiveWaitMillis": "47000",
+        "reason": "none",
+        "stopReason": "budgetExhausted",
+        "error": null
+      },
+      "message": "Temporarily rate limited",
+      "retry": {
+        "kind": "retryable",
+        "retryAfterMs": "45000"
+      }
+    }
+  }
+}

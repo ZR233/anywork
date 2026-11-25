@@ -14,12 +14,14 @@ const MAX_QUEUED_BYTES: u32 = 64 * 1024 * 1024;
 enum WebSocketCommand {
     Send {
         message: Message,
+        cancellation: tokio_util::sync::CancellationToken,
         result: oneshot::Sender<std::result::Result<(), PureError>>,
     },
 }
 
 struct QueuedMessage {
     message: Message,
+    observed_at: pl_model_wire::provider_error::ErrorObservedAt,
     _bytes: OwnedSemaphorePermit,
 }
 
@@ -51,7 +53,11 @@ impl ResponsesWebSocketConnection {
                             break connection_error("connection owner closed");
                         };
                         match command {
-                            WebSocketCommand::Send { message, result } => {
+                            WebSocketCommand::Send { message, cancellation, result } => {
+                                if cancellation.is_cancelled() || result.is_closed() {
+                                    let _ = result.send(Err(connection_error("WebSocket request cancelled before send")));
+                                    continue;
+                                }
                                 let send_result = socket
                                     .send(message)
                                     .await
@@ -75,6 +81,7 @@ impl ResponsesWebSocketConnection {
                             }
                             Some(Ok(Message::Pong(_))) => {}
                             Some(Ok(message)) => {
+                                let observed_at = pl_model_wire::provider_error::ErrorObservedAt::now();
                                 let is_close = matches!(message, Message::Close(_));
                                 let bytes = u32::try_from(message.len().saturating_add(64))
                                     .ok().filter(|bytes| *bytes <= MAX_QUEUED_BYTES);
@@ -89,7 +96,7 @@ impl ResponsesWebSocketConnection {
                                     Ok(permit) => permit,
                                     Err(_) => break connection_error("connection owner closed"),
                                 };
-                                if message_tx.send(QueuedMessage { message, _bytes: permit }).await.is_err() {
+                                if message_tx.send(QueuedMessage { message, observed_at, _bytes: permit }).await.is_err() {
                                     break connection_error("connection owner closed");
                                 }
                                 if is_close {
@@ -144,11 +151,16 @@ impl ResponsesWebSocketConnection {
         }
     }
 
-    pub(crate) async fn send(&self, message: Message) -> std::result::Result<(), PureError> {
+    pub(crate) async fn send(
+        &self,
+        message: Message,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> std::result::Result<(), PureError> {
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(WebSocketCommand::Send {
                 message,
+                cancellation,
                 result: result_tx,
             })
             .await
@@ -158,9 +170,13 @@ impl ResponsesWebSocketConnection {
             .unwrap_or_else(|_| Err(connection_error("Responses WebSocket connection is closed")))
     }
 
-    pub(crate) async fn next(&mut self) -> Option<std::result::Result<Message, PureError>> {
+    pub(crate) async fn next(
+        &mut self,
+    ) -> Option<
+        std::result::Result<(Message, pl_model_wire::provider_error::ErrorObservedAt), PureError>,
+    > {
         if let Some(message) = self.message_rx.recv().await {
-            return Some(Ok(message.message));
+            return Some(Ok((message.message, message.observed_at)));
         }
         let terminal = self.terminal_rx.as_mut()?;
         let error = terminal
@@ -256,7 +272,7 @@ mod tests {
             let mut error = None;
             for _ in 0..96 {
                 match connection.next().await {
-                    Some(Ok(Message::Text(text))) => frames.push(text.to_string()),
+                    Some(Ok((Message::Text(text), _))) => frames.push(text.to_string()),
                     other => {
                         error = Some(format!("{other:?}"));
                         break;

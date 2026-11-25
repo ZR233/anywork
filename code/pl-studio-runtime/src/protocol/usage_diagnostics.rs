@@ -34,6 +34,7 @@ pub enum UsageGapReason {
     Unreported,
     Inconsistent,
     Overflow,
+    NonTerminalSample,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

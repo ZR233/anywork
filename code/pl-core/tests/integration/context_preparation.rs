@@ -80,6 +80,7 @@ struct CapacityModel {
     dispatched: Arc<std::sync::atomic::AtomicUsize>,
     always_exceeds: bool,
     during_execution: bool,
+    grants_recovery: bool,
     fail_after_local_recovery: bool,
 }
 impl pl_core::model::ModelSession for CapacityModel {
@@ -88,6 +89,27 @@ impl pl_core::model::ModelSession for CapacityModel {
         request: pl_core::model::ModelRequest,
     ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
         self.observed.lock().unwrap().push(request.context.clone());
+        let input_bytes = serde_json::to_vec(&request.context.records).unwrap().len();
+        if let Some(grant) = request
+            .members
+            .as_ref()
+            .and_then(|members| members.context_recovery())
+        {
+            assert!(
+                grant
+                    .consume(&request.thread_id, &request.turn_id, input_bytes, 2)
+                    .is_none()
+            );
+            let (_, retry, _) = grant
+                .consume(&request.thread_id, &request.turn_id, input_bytes, 1)
+                .unwrap();
+            assert_eq!(retry, 1);
+            assert!(
+                grant
+                    .consume(&request.thread_id, &request.turn_id, input_bytes, 1)
+                    .is_none()
+            );
+        }
         let exceeds = self.always_exceeds
             || request
                 .context
@@ -96,6 +118,7 @@ impl pl_core::model::ModelSession for CapacityModel {
                 .any(|record| record.id == "large-history");
         if exceeds && !self.during_execution {
             return Err(pl_core::model::ModelError {
+                context_recovery: None,
                 kind: pl_core::model::ModelFailureKind::ContextLimit,
                 details: None,
                 usage: Default::default(),
@@ -104,10 +127,22 @@ impl pl_core::model::ModelSession for CapacityModel {
         }
         let dispatched = self.dispatched.clone();
         let fail_after_local_recovery = self.fail_after_local_recovery;
+        let grants_recovery = self.grants_recovery;
         Ok(pl_core::model::PreparedModelCall::new(async move {
             dispatched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if exceeds || fail_after_local_recovery {
                 return Err(pl_core::model::ModelError {
+                    context_recovery: grants_recovery.then(|| {
+                        Box::new(pl_core::model::ModelContextRecovery::new(
+                            request.thread_id.clone(),
+                            request.turn_id.clone(),
+                            request.attempt_id.clone(),
+                            1,
+                            input_bytes,
+                            1,
+                            None,
+                        ))
+                    }),
                     kind: pl_core::model::ModelFailureKind::ContextLimit,
                     details: None,
                     usage: Default::default(),
@@ -164,12 +199,13 @@ impl ContextPreparationHook for CapacityRecovery {
 
 #[tokio::test]
 async fn context_overflow_recovers_once_and_consumes_input_once() {
-    for (during_execution, always_exceeds, step_limit) in [
-        (false, false, 3),
-        (false, true, 3),
-        (true, false, 3),
-        (true, true, 3),
-        (true, false, 1),
+    for (during_execution, always_exceeds, step_limit, grants_recovery) in [
+        (false, false, 3, false),
+        (false, true, 3, false),
+        (true, false, 3, true),
+        (true, true, 3, true),
+        (true, false, 1, true),
+        (true, false, 3, false),
     ] {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -181,6 +217,7 @@ async fn context_overflow_recovers_once_and_consumes_input_once() {
                 dispatched: dispatched.clone(),
                 always_exceeds,
                 during_execution,
+                grants_recovery,
                 fail_after_local_recovery: false,
             }),
         )
@@ -211,16 +248,16 @@ async fn context_overflow_recovers_once_and_consumes_input_once() {
         input.max_model_steps =
             pl_core::thread::ModelStepLimit::Limited(step_limit.try_into().unwrap());
         let result = thread.run_turn(input).await;
-        let budget_exhausted = during_execution && step_limit == 1;
+        let cannot_recover = during_execution && (step_limit == 1 || !grants_recovery);
         assert_eq!(
             result.is_err(),
-            always_exceeds || budget_exhausted,
+            always_exceeds || cannot_recover,
             "during_execution={during_execution}"
         );
         assert!(thread.snapshot().model_execution.is_none());
         assert_eq!(
             *preparations.lock().unwrap(),
-            if budget_exhausted {
+            if cannot_recover {
                 vec![false]
             } else if during_execution {
                 vec![false, true, false]
@@ -230,7 +267,7 @@ async fn context_overflow_recovers_once_and_consumes_input_once() {
         );
         {
             let requests = observed.lock().unwrap();
-            assert_eq!(requests.len(), if budget_exhausted { 1 } else { 2 });
+            assert_eq!(requests.len(), if cannot_recover { 1 } else { 2 });
             for request in requests.iter() {
                 assert_eq!(
                     request
@@ -244,7 +281,7 @@ async fn context_overflow_recovers_once_and_consumes_input_once() {
         }
         assert_eq!(
             dispatched.load(std::sync::atomic::Ordering::Relaxed),
-            if budget_exhausted {
+            if cannot_recover {
                 1
             } else if during_execution {
                 2
@@ -267,6 +304,7 @@ impl pl_core::model::ModelSession for MeasuredThenFailed {
         Ok(pl_core::model::PreparedModelCall::new(async move {
             if fail {
                 return Err(pl_core::model::ModelError {
+                    context_recovery: None,
                     kind: pl_core::model::ModelFailureKind::Unavailable,
                     details: None,
                     usage: Default::default(),
@@ -924,7 +962,7 @@ impl ContextPreparationHook for RecoveryAsRebuild {
 
 #[tokio::test]
 async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recovery() {
-    for rebuild in [false, true] {
+    for (rebuild, shorter) in [(false, true), (false, false), (true, true)] {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let forced = Arc::new(Mutex::new(Vec::new()));
         let thread = ThreadHandle::start(
@@ -934,6 +972,7 @@ async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recove
                 dispatched: Default::default(),
                 always_exceeds: false,
                 during_execution: false,
+                grants_recovery: true,
                 fail_after_local_recovery: true,
             }),
         )
@@ -948,7 +987,11 @@ async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recove
                     source: ContextSource::Runtime {
                         source_id: "history".into(),
                     },
-                    content: vec![text("large")],
+                    content: vec![text(if shorter {
+                        "oversized history that is substantially longer than the replacement summary"
+                    } else {
+                        "large"
+                    })],
                     tool_calls: vec![],
                 }],
             })
@@ -961,13 +1004,136 @@ async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recove
         };
         thread.set_context_preparation(Some(hook)).await.unwrap();
         let result = thread.run_turn(turn("mixed")).await;
-        assert!(
-            matches!(result, Err(pl_core::thread::ThreadError::Model(ref error)) if error.kind == pl_core::model::ModelFailureKind::ContextLimit)
-        );
+        if !rebuild && shorter {
+            assert!(
+                matches!(result, Err(pl_core::thread::ThreadError::Model(ref error)) if error.kind == pl_core::model::ModelFailureKind::ContextLimit)
+            );
+        } else {
+            assert!(
+                matches!(result, Err(pl_core::thread::ThreadError::ModelRepair { primary, repair })
+                if primary.kind == pl_core::model::ModelFailureKind::ContextLimit && matches!(&*repair, pl_core::thread::ThreadError::InvalidContext))
+            );
+        }
         assert_eq!(*forced.lock().unwrap(), [false, true]);
-        assert_eq!(observed.lock().unwrap().len(), if rebuild { 1 } else { 2 });
+        assert_eq!(
+            observed.lock().unwrap().len(),
+            if !rebuild && shorter { 2 } else { 1 }
+        );
         thread.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn forced_compaction_failure_keeps_original_turn_failure_and_never_resends() {
+    let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let thread = capacity_recovery_thread(dispatched.clone()).await;
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(FailForcedCompaction)))
+        .await
+        .unwrap();
+    let error = thread.run_turn(turn("repair failure")).await.unwrap_err();
+    let pl_core::thread::ThreadError::ModelRepair { primary, repair } = error else {
+        panic!("expected paired model and repair failures, got {error}");
+    };
+    assert_eq!(primary.kind, pl_core::model::ModelFailureKind::ContextLimit);
+    assert!(
+        matches!(&*repair, pl_core::thread::ThreadError::Model(error) if error.kind == pl_core::model::ModelFailureKind::Unavailable)
+    );
+    assert!(repair.to_string().contains("controlled compaction failure"));
+    assert_eq!(dispatched.load(std::sync::atomic::Ordering::Relaxed), 1);
+    thread.close().await.unwrap();
+}
+
+#[derive(Debug)]
+struct FailForcedCompaction;
+
+impl ContextPreparationHook for FailForcedCompaction {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        if !request.force_compaction {
+            return ContextPreparation::Unchanged;
+        }
+        ContextPreparation::Failed {
+            error: pl_core::model::ModelError {
+                context_recovery: None,
+                kind: pl_core::model::ModelFailureKind::Unavailable,
+                details: None,
+                usage: Default::default(),
+                source: Some(Box::new(std::io::Error::other(
+                    "controlled compaction failure",
+                ))),
+            },
+            mutations: vec![],
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StillAboveAutomaticThreshold(Arc<Mutex<Vec<bool>>>);
+
+impl ContextPreparationHook for StillAboveAutomaticThreshold {
+    async fn before_step(&self, request: ContextPreparationRequest) -> ContextPreparation {
+        if request.force_compaction {
+            return CapacityRecovery(self.0.clone()).before_step(request).await;
+        }
+        let is_shorter_but_still_above_threshold = request
+            .committed_context
+            .records
+            .iter()
+            .any(|record| record.id == "reduced");
+        if is_shorter_but_still_above_threshold && request.enter_compacting().await.is_ok() {
+            self.0.lock().unwrap().push(false);
+        }
+        ContextPreparation::Unchanged
+    }
+}
+
+#[tokio::test]
+async fn post_recovery_preparation_cannot_readmit_compaction() {
+    let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let thread = capacity_recovery_thread(dispatched.clone()).await;
+    let admitted = Arc::new(Mutex::new(Vec::new()));
+    thread
+        .set_context_preparation(Some(ContextPreparer::new(StillAboveAutomaticThreshold(
+            admitted.clone(),
+        ))))
+        .await
+        .unwrap();
+    thread.run_turn(turn("one compaction")).await.unwrap();
+    assert_eq!(*admitted.lock().unwrap(), [true]);
+    assert_eq!(dispatched.load(std::sync::atomic::Ordering::Relaxed), 2);
+    thread.close().await.unwrap();
+}
+
+async fn capacity_recovery_thread(dispatched: Arc<std::sync::atomic::AtomicUsize>) -> ThreadHandle {
+    let thread = ThreadHandle::start(
+        "context-repair".into(),
+        DynModelSession::new(CapacityModel {
+            observed: Default::default(),
+            dispatched,
+            always_exceeds: false,
+            during_execution: true,
+            grants_recovery: true,
+            fail_after_local_recovery: false,
+        }),
+    )
+    .unwrap();
+    thread
+        .replace_context(pl_core::thread::ReplaceContext {
+            expected_revision: 0,
+            reason: pl_core::thread::ContextReplacementReason::Rebuild,
+            records: vec![pl_core::context::ContextRecord {
+                id: "large-history".into(),
+                turn_id: None,
+                source: ContextSource::Runtime {
+                    source_id: "history".into(),
+                },
+                content: vec![text(&"large committed history ".repeat(30))],
+                tool_calls: vec![],
+            }],
+        })
+        .await
+        .unwrap();
+    thread
 }
 
 #[tokio::test]

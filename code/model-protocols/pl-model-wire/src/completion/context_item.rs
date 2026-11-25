@@ -69,11 +69,16 @@ impl ResponsesContextItem {
 
     pub fn from_payload(payload: &pl_core::context::OpaquePayload) -> pl_protocol::Result<Self> {
         if payload.format() != Self::NATIVE_FORMAT || payload.version() != 1 {
-            return Err(pl_protocol::PureError::Protocol(
-                "unrecognized Responses context payload".into(),
-            ));
+            return Err(crate::provider_error::invalid_request(
+                "unrecognized Responses context payload",
+            )
+            .into());
         }
-        serde_json::from_str(payload.content()).map_err(Into::into)
+        serde_json::from_str(payload.content()).map_err(|error| {
+            crate::provider_error::invalid_request("malformed Responses context payload")
+                .with_source(error)
+                .into()
+        })
     }
 
     pub fn from_wire(value: serde_json::Value) -> Option<Self> {

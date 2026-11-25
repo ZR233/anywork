@@ -1352,6 +1352,7 @@ impl pl_core::model::ModelSession for BudgetModel {
 
 fn model_failure(message: String) -> pl_core::model::ModelError {
     pl_core::model::ModelError {
+        context_recovery: None,
         details: None,
         kind: pl_core::model::ModelFailureKind::Unavailable,
         usage: Default::default(),

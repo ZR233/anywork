@@ -155,10 +155,26 @@ impl LiveProjection {
                     .iter()
                     .any(|prefix| item.id.starts_with(prefix)))
         });
+        // A terminal Turn owns its structured failure. Fall back to the attempt cache for
+        // older records without those facts, including Turns retired from Current.
         for item in &mut items {
             if let crate::ExecutionShape::Turn(turn) = item.state()
                 && let crate::TurnState::Failed(failed) = turn.state()
                 && let Some(failure) = turn_failures.get(&item.turn_id)
+                && !effect
+                    .turn
+                    .iter()
+                    .chain(state.turns.iter())
+                    .find(|record| record.turn_id == item.turn_id)
+                    .is_some_and(|record| {
+                        matches!(
+                            record.state,
+                            pl_core::thread::TurnState::Failed {
+                                model_failure: Some(_),
+                                ..
+                            }
+                        )
+                    })
             {
                 let state = crate::TurnState::Failed(crate::FailedTurnState::new(
                     failed.started_at(),

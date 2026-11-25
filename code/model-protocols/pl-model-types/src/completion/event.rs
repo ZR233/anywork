@@ -126,16 +126,17 @@ pub enum ModelStreamEvent<Replay = OpaquePayload> {
         action: WebSearchAction,
         results: Option<Vec<serde_json::Value>>,
     },
-    Usage(UsageReport),
+    /// The latest cumulative report and whether its wire frame declares a terminal sample.
+    /// A terminal sample may accompany failure; missing token dimensions stay unknown.
+    Usage {
+        usage: UsageReport,
+        terminal: bool,
+    },
     Completed {
         response_id: Option<String>,
     },
     Failed {
-        request_id: Option<String>,
-        code: Option<String>,
-        http_status: Option<u16>,
-        retry_after_ms: Option<u64>,
-        message: String,
+        failure: pl_protocol::ProviderFailure,
     },
 }
 
@@ -223,7 +224,7 @@ impl<Replay> ModelStreamEvent<Replay> {
             | Self::Replay(_)
             | Self::WebSearchStarted { .. }
             | Self::WebSearchCompleted { .. }
-            | Self::Usage(_)
+            | Self::Usage { .. }
             | Self::Completed { .. }
             | Self::Failed { .. } => None,
         }

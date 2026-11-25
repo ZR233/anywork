@@ -278,22 +278,10 @@ impl StreamLifecycle {
                 vec![ModelStreamEvent::PresentationItem { item, state }]
             }
             ModelStreamEvent::Replay(update) => vec![ModelStreamEvent::Replay(update)],
-            ModelStreamEvent::Usage(usage) => vec![ModelStreamEvent::Usage(usage)],
-            ModelStreamEvent::Failed {
-                request_id,
-                code,
-                http_status,
-                retry_after_ms,
-                message,
-            } => {
+            usage @ ModelStreamEvent::Usage { .. } => vec![usage],
+            ModelStreamEvent::Failed { failure } => {
                 let mut events = self.close_open_blocks();
-                events.push(ModelStreamEvent::Failed {
-                    request_id,
-                    code,
-                    http_status,
-                    retry_after_ms,
-                    message,
-                });
+                events.push(ModelStreamEvent::Failed { failure });
                 events
             }
         })

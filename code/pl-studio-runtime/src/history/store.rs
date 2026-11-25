@@ -119,6 +119,7 @@ impl HistoryStore {
         }
         let reader = schema::connect(path, true, false).await?;
         let (database_id, head) = schema::identity(&reader, thread_id).await?;
+        upgrade::schema26_manifest::require_current(&reader).await?;
         let (changed, _) = watch::channel(head);
         let store = Self {
             inner: Arc::new(Inner {
@@ -193,6 +194,10 @@ impl HistoryStore {
                 return Err(error);
             }
         };
+        if let Err(error) = upgrade::schema26_manifest::require_current(&writer).await {
+            let _ = writer.close().await;
+            return Err(error);
+        }
         let reader = match schema::connect(path, true, false).await {
             Ok(reader) => reader,
             Err(error) => {

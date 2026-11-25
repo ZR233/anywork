@@ -106,6 +106,7 @@ impl Model for ProbeModel {
         }
         if self.fails {
             return Err(ModelError {
+                context_recovery: None,
                 kind: ModelFailureKind::Unavailable,
                 details: None,
                 usage: Default::default(),

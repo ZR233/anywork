@@ -46,12 +46,17 @@ pub fn remote_compaction_checkpoint(
         .into_iter()
         .filter(crate::completion::ModelContextItem::is_compaction);
     let first = checkpoints.next().ok_or_else(|| {
-        pl_protocol::PureError::LlmError("remote compaction returned no checkpoint".into())
+        crate::provider_error::protocol_failure(
+            pl_protocol::ProviderFailureStage::Stream,
+            "remote compaction returned no checkpoint",
+        )
     })?;
     if checkpoints.next().is_some() {
-        return Err(pl_protocol::PureError::LlmError(
-            "remote compaction returned multiple checkpoints".into(),
-        ));
+        return Err(crate::provider_error::protocol_failure(
+            pl_protocol::ProviderFailureStage::Stream,
+            "remote compaction returned multiple checkpoints",
+        )
+        .into());
     }
     Ok(first)
 }

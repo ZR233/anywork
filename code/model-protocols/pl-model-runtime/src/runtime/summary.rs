@@ -22,14 +22,6 @@ pub struct TextSummary {
     pub model_observation: Option<crate::completion::InferenceModelObservation>,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("summary failed ({primary}); its private session also failed to close ({cleanup})")]
-struct SummaryCleanupFailure {
-    #[source]
-    primary: PureError,
-    cleanup: PureError,
-}
-
 impl ModelRuntime {
     /// Summarizes the exact supplied prefix without advancing the caller's model session.
     /// Hosted capabilities are removed and local tool selection is disabled.
@@ -41,6 +33,20 @@ impl ModelRuntime {
         request: TextSummaryRequest<'_>,
         invocation: ModelInvocationContext,
     ) -> Result<TextSummary, CompletionFailure> {
+        self.summarize_with_report(
+            request,
+            invocation,
+            &mut super::invocation::InvocationReport::default(),
+        )
+        .await
+    }
+
+    pub(super) async fn summarize_with_report(
+        &self,
+        request: TextSummaryRequest<'_>,
+        invocation: ModelInvocationContext,
+        report: &mut super::invocation::InvocationReport,
+    ) -> Result<TextSummary, CompletionFailure> {
         let session = ModelSession::default();
         let completion = summary_request(
             request.instructions,
@@ -49,15 +55,18 @@ impl ModelRuntime {
             request.max_output_tokens,
         );
         let response = self
-            .complete(completion, invocation.with_session(session.clone()))
+            .complete_with_report(completion, invocation.with_session(session.clone()), report)
             .await;
         let cleanup = session.close().await;
         let response = match (response, cleanup) {
             (Ok(response), Ok(())) => response,
             (Ok(response), Err(source)) => {
                 return Err(CompletionFailure {
+                    recovery_error: None,
+                    settlements: response.settlements,
                     source: Box::new(source),
                     accounting: Box::new(response.accounting),
+                    usage_is_terminal: response.usage_is_terminal,
                     timing: response.timing,
                     model_observation: response.model_observation.map(Box::new),
                     presentation_items: response.presentation_items,
@@ -66,30 +75,16 @@ impl ModelRuntime {
                 });
             }
             (Err(failure), Ok(())) => return Err(failure),
-            (Err(failure), Err(cleanup)) => {
-                // Folding a separate cleanup failure in does not erase the primary call's fact.
-                let cancelled = failure.is_cancelled();
-                return Err(CompletionFailure {
-                    source: Box::new(PureError::Io(std::io::Error::other(
-                        SummaryCleanupFailure {
-                            primary: *failure.source,
-                            cleanup,
-                        },
-                    ))),
-                    accounting: failure.accounting,
-                    timing: failure.timing,
-                    model_observation: failure.model_observation,
-                    presentation_items: failure.presentation_items,
-                    partial_progress: failure.partial_progress,
-                    cancelled,
-                });
-            }
+            (Err(failure), Err(cleanup)) => return Err(failure.with_recovery_error(cleanup)),
         };
         let model_observation = response.model_observation.clone();
         let Some(text) = response.content.filter(|text| !text.trim().is_empty()) else {
             return Err(CompletionFailure {
+                recovery_error: None,
+                settlements: response.settlements,
                 source: Box::new(PureError::LlmError(request.empty_summary_error.to_owned())),
                 accounting: Box::new(response.accounting),
+                usage_is_terminal: response.usage_is_terminal,
                 timing: response.timing,
                 model_observation: model_observation.clone().map(Box::new),
                 presentation_items: response.presentation_items,

@@ -145,6 +145,7 @@ class _SessionCostChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final labelStyle = context.text.labelMedium;
     return Tooltip(
       message: [
         context.l10n.sessionAllAgentsCostTooltip,
@@ -154,7 +155,15 @@ class _SessionCostChip extends StatelessWidget {
       child: Padding(
         key: StudioDriverKeys.sessionCost,
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Text(cost?.label ?? '-', style: context.text.labelMedium),
+        child: Wrap(
+          spacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(cost?.label ?? '-', style: labelStyle),
+            if (cost?.hasIncompleteUsage == true)
+              Text(context.l10n.sessionCostIncompleteUsage, style: labelStyle),
+          ],
+        ),
       ),
     );
   }

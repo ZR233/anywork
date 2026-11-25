@@ -10,6 +10,8 @@ pub struct ThreadTextItem {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     attachments: Vec<ThreadAttachment>,
     lifecycle: ThreadContentLifecycle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_recovery: Option<crate::ModelRecoveryNotice>,
 }
 
 impl ThreadTextItem {
@@ -24,6 +26,7 @@ impl ThreadTextItem {
             text,
             attachments,
             lifecycle,
+            model_recovery: None,
         }
     }
 
@@ -41,6 +44,15 @@ impl ThreadTextItem {
 
     pub fn lifecycle(&self) -> &ThreadContentLifecycle {
         &self.lifecycle
+    }
+
+    pub fn with_model_recovery(mut self, notice: Option<crate::ModelRecoveryNotice>) -> Self {
+        self.model_recovery = notice;
+        self
+    }
+
+    pub fn model_recovery(&self) -> Option<&crate::ModelRecoveryNotice> {
+        self.model_recovery.as_ref()
     }
 }
 

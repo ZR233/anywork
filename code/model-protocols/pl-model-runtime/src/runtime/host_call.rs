@@ -1,5 +1,6 @@
 use tokio_util::sync::CancellationToken;
 
+use super::invocation_context::BoundSettlement;
 use crate::completion::ToolSpec;
 use crate::completion::{CompletionRequest, CompletionResponse, ReasoningConfig};
 use crate::completion::{
@@ -96,9 +97,30 @@ pub struct ModelTurnOptions {
     session: Option<crate::runtime::ModelSession>,
     prompt_cache_scope: Option<super::PromptCacheScope>,
     trace: Option<crate::completion::CompletionTraceContext>,
+    settlement: Option<BoundSettlement>,
+    billing_purpose: Option<String>,
 }
 
 impl ModelTurnOptions {
+    /// Selects invocation-owned settlement for an independent call with no persistence owner.
+    pub fn in_memory() -> Self {
+        Self {
+            settlement: Some(BoundSettlement::Memory),
+            ..Self::default()
+        }
+    }
+
+    /// Binds the original Thread call and its diagnostic purpose.
+    pub fn with_settlement_port(
+        mut self,
+        purpose: impl Into<String>,
+        port: pl_core::thread::ModelSettlementPort,
+    ) -> Self {
+        self.trace = Some(super::invocation_context::settlement_trace(&port));
+        self.settlement = Some(BoundSettlement::Thread(port));
+        self.billing_purpose = Some(purpose.into());
+        self
+    }
     /// Associates auxiliary requests and observed usage with their owning host invocation.
     pub fn with_trace_metadata(mut self, trace: crate::completion::CompletionTraceContext) -> Self {
         self.trace = Some(trace);
@@ -175,6 +197,10 @@ impl ModelTurnClient {
         let session = options.session.unwrap_or_default();
         let mut invocation = ModelInvocationContext::new(session.clone())
             .with_cancellation(options.cancellation_token);
+        invocation.settlement = options.settlement;
+        if let Some(purpose) = options.billing_purpose {
+            invocation = invocation.with_billing_purpose(purpose);
+        }
         if let Some(scope) = options.prompt_cache_scope {
             invocation = invocation.with_prompt_cache_scope(scope);
         }
@@ -188,40 +214,18 @@ impl ModelTurnClient {
         match (result, session.close().await) {
             (result, Ok(())) => result,
             (Ok(response), Err(source)) => Err(crate::completion::CompletionFailure {
+                recovery_error: None,
+                settlements: response.settlements,
                 source: Box::new(source),
                 accounting: Box::new(response.accounting),
+                usage_is_terminal: response.usage_is_terminal,
                 timing: response.timing,
                 model_observation: response.model_observation.map(Box::new),
                 presentation_items: response.presentation_items,
                 partial_progress: Some(Box::new(response.observation.into())),
                 cancelled: false,
             }),
-            (Err(failure), Err(cleanup)) => {
-                // Folding a separate cleanup failure in does not erase the primary call's fact.
-                let cancelled = failure.is_cancelled();
-                Err(crate::completion::CompletionFailure {
-                    source: Box::new(pl_protocol::PureError::Io(std::io::Error::other(
-                        HostCallCleanupFailure {
-                            primary: *failure.source,
-                            cleanup,
-                        },
-                    ))),
-                    accounting: failure.accounting,
-                    timing: failure.timing,
-                    model_observation: failure.model_observation,
-                    presentation_items: failure.presentation_items,
-                    partial_progress: failure.partial_progress,
-                    cancelled,
-                })
-            }
+            (Err(failure), Err(cleanup)) => Err(failure.with_recovery_error(cleanup)),
         }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("host model call failed ({primary}); owned session cleanup also failed ({cleanup})")]
-struct HostCallCleanupFailure {
-    #[source]
-    primary: pl_protocol::PureError,
-    cleanup: pl_protocol::PureError,
 }

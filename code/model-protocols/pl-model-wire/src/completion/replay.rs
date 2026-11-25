@@ -312,7 +312,7 @@ pub fn recorded_input(response: &CompletionResponse) -> Result<Vec<ModelContextI
 }
 
 fn invalid(message: &str) -> PureError {
-    PureError::Protocol(message.into())
+    crate::provider_error::invalid_request(message).into()
 }
 
 #[derive(Debug, Clone)]

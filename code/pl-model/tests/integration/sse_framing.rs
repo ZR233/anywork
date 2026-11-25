@@ -77,7 +77,10 @@ async fn decoded_provider_failures_keep_the_redacted_http_request_id() {
                     }])
                     .build();
                 let failure = runtime
-                    .complete(request, ModelInvocationContext::default())
+                    .complete(
+                        request,
+                        ModelInvocationContext::in_memory(Default::default()),
+                    )
                     .await
                     .unwrap_err();
                 let provider = failure.source.provider_failure_ref().unwrap();
@@ -113,13 +116,13 @@ async fn decoded_provider_failures_keep_the_redacted_http_request_id() {
 
 #[tokio::test]
 async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
-    // Raw body failures, model syntax errors, billing, and HTTP status have
-    // different replay semantics even when the connection ends the same way.
+    // Usage is settled independently from replay eligibility. Raw body failures
+    // can retry ordinary generation; complete invalid model JSON cannot.
     for (damaged_chunk, status, billed, should_retry) in [
         (Some("10\r\ndata:"), 200, false, true),
         (Some("invalid\r\n"), 200, false, true),
         (None, 200, false, false),
-        (Some("invalid\r\n"), 200, true, false),
+        (Some("invalid\r\n"), 200, true, true),
         (Some("invalid\r\n"), 401, false, false),
         (Some("invalid\r\n"), 503, false, true),
     ] {
@@ -135,7 +138,10 @@ async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
                 socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nRetry-After-Ms: 1\r\nx-request-id: fixture-body\r\n\r\n").as_bytes()).await.unwrap();
                 let body = if requests.len() == 1 {
                     if billed {
-                        "data: {\"id\":\"first\",\"choices\":[],\"usage\":{\"prompt_tokens\":17,\"completion_tokens\":7,\"total_tokens\":24}}\n\n"
+                        concat!(
+                            "data: {\"id\":\"first\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4,\"total_tokens\":15}}\n\n",
+                            "data: {\"id\":\"first\",\"choices\":[],\"usage\":{\"prompt_tokens\":17,\"completion_tokens\":7,\"total_tokens\":24}}\n\n",
+                        )
                     } else if interrupted {
                         "data: {\"id\":\"first\",\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"
                     } else {
@@ -145,6 +151,7 @@ async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
                     concat!(
                         "data: {\"id\":\"second\",\"choices\":[{\"delta\":{\"content\":\"recovered\"},\"finish_reason\":null}]}\n\n",
                         "data: {\"id\":\"second\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                        "data: {\"id\":\"second\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n",
                         "data: [DONE]\n\n",
                     )
                 };
@@ -193,19 +200,51 @@ async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
                         metadata: Default::default(),
                     }])
                     .build(),
-                ModelInvocationContext::new(ModelSession::default()),
+                ModelInvocationContext::in_memory(ModelSession::default()),
             )
             .await;
             if should_retry {
                 let response = result.unwrap();
                 assert_eq!(response.content.as_deref(), Some("recovered"));
                 assert_eq!(response.orchestration.transport_attempts, 2);
-            } else {
-                let failure = result.unwrap_err();
+                assert_eq!(response.accounting.usage.total_tokens, Some(8));
+                assert_eq!(response.accounting.usage.input_tokens, Some(5));
+                let receipts: Vec<pl_model::runtime::ModelSubAttemptReceipt> = response
+                    .settlements
+                    .iter()
+                    .map(|payload| serde_json::from_str(payload.content()).unwrap())
+                    .collect();
+                assert_eq!(receipts.len(), 2);
+                assert_ne!(
+                    receipts[0].billing.inference_id,
+                    receipts[1].billing.inference_id
+                );
+                assert_eq!(
+                    receipts[0].logical_request_id,
+                    receipts[1].logical_request_id
+                );
+                assert_eq!(
+                    receipts[0].billing.attempt.as_ref().unwrap().outcome,
+                    pl_model::completion::InferenceAttemptOutcome::Failed
+                );
+                assert_eq!(
+                    receipts[1].billing.attempt.as_ref().unwrap().outcome,
+                    pl_model::completion::InferenceAttemptOutcome::Succeeded
+                );
+                assert_eq!(receipts[1].billing.accounting.usage.total_tokens, Some(8));
                 if billed {
-                    assert!(failure.source.is_transient_model_transport());
-                    assert_eq!(failure.accounting.usage.total_tokens, Some(24));
-                    let provider = failure.source.provider_failure_ref().unwrap();
+                    // Repeated usage frames replace the cumulative sample; 15 + 24 is not billed.
+                    assert_eq!(receipts[0].billing.accounting.usage.total_tokens, Some(24));
+                    assert!(
+                        !receipts[0]
+                            .billing
+                            .attempt
+                            .as_ref()
+                            .unwrap()
+                            .usage_is_terminal
+                    );
+                    let provider = receipts[0].provider_failure.as_ref().unwrap();
+                    assert!(provider.retry.is_retryable());
                     assert_eq!(provider.http_status, Some(200));
                     assert_eq!(provider.context.request_id.as_deref(), Some("fixture-body"));
                     // Hyper may report malformed chunk framing as InvalidInput
@@ -223,13 +262,23 @@ async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
                     );
                     assert!(provider.message.contains("received_bytes="));
                     assert!(!provider.message.contains("prompt_tokens"));
-                } else if status == 401 {
+                } else {
+                    assert_eq!(receipts[0].billing.accounting.usage.total_tokens, None);
+                }
+            } else {
+                let failure = result.unwrap_err();
+                if status == 401 {
                     let provider = failure.source.provider_failure_ref().unwrap();
                     assert_eq!(provider.http_status, Some(401));
                     assert!(!provider.retry.is_retryable());
                 } else {
                     assert!(
-                        matches!(*failure.source, pl_model::PureError::Protocol(_)),
+                        failure
+                            .source
+                            .provider_failure_ref()
+                            .is_some_and(|provider| provider.kind
+                                == pl_protocol::ProviderFailureKind::Protocol
+                                && !provider.retry.is_retryable()),
                         "{failure:?}"
                     );
                 }
@@ -312,7 +361,10 @@ async fn native_compaction_retries_frozen_history_only_before_receiving_checkpoi
             let result = runtime
                 .compaction()
                 .unwrap()
-                .checkpoint(request, ModelInvocationContext::default())
+                .checkpoint(
+                    request,
+                    ModelInvocationContext::in_memory(Default::default()),
+                )
                 .await;
             if checkpoint_received {
                 let failure = result.unwrap_err();
@@ -410,7 +462,7 @@ async fn fragmented_sse_preserves_unicode_multiline_data_and_all_line_endings() 
                         metadata: Default::default(),
                     }])
                     .build(),
-                ModelInvocationContext::new(ModelSession::default()),
+                ModelInvocationContext::in_memory(ModelSession::default()),
             )
             .await
             .unwrap()

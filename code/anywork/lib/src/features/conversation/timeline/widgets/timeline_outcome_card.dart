@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/models.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -7,6 +8,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../state/timeline_outcome_presentation.dart';
 import 'timeline_activity_clock.dart';
+import 'timeline_activity_row.dart';
 
 enum TimelineErrorTone { error, warning }
 
@@ -124,6 +126,7 @@ class _TimelineErrorCardState extends State<TimelineErrorCard> {
     final dividerColor = accent.withValues(alpha: 0.14);
 
     final failure = widget.summary.failure;
+    final recovery = failure?.recovery;
     final budget = widget.summary.budget;
     final isBudget = widget.tone == TimelineErrorTone.warning;
     final title = isBudget
@@ -275,6 +278,18 @@ class _TimelineErrorCardState extends State<TimelineErrorCard> {
                 message: primaryMessage,
                 isBudget: isBudget,
               ),
+              if (recovery != null) ...[
+                if (recovery.stopReason case final reason?)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(localizedRecoveryStop(context, reason)),
+                  ),
+                if (localizedRecoveryCount(context, recovery) case final count?)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(count),
+                  ),
+              ],
               if (isBudget && budget != null) ...[
                 _buildBudgetMetrics(context, budget),
                 if (budget.rolloverKind == 'succeeded')
@@ -511,13 +526,13 @@ class _TimelineErrorCardState extends State<TimelineErrorCard> {
           ),
         );
       }
-      if (failure.isRetryable) {
+      if (failure.isRetryable && failure.recovery?.stopReason == null) {
         final retrySeconds = failure.retryAfterSeconds;
         badges.add(
           _TagChip(
             icon: Icons.refresh_rounded,
             label: retrySeconds != null
-                ? l10n.timelineRetryAfterSeconds(retrySeconds)
+                ? l10n.timelineRetryAfterSeconds(retrySeconds.toString())
                 : l10n.timelineRetryableHint,
             foreground: statusColors.warning,
             background: statusColors.warningContainer.withValues(alpha: 0.72),
@@ -573,94 +588,238 @@ class _TimelineErrorCardState extends State<TimelineErrorCard> {
       ),
     );
   }
+}
 
-  List<({String label, String value, bool monospace})> _buildDetailRows(
-    BuildContext context, {
-    required TimelineFailureDetails? failure,
-    required TimelineBudgetLimitDetails? budget,
-    required int? durationSeconds,
-  }) {
-    final l10n = context.l10n;
-    final rows = <({String label, String value, bool monospace})>[];
+List<({String label, String value, bool monospace})> _buildDetailRows(
+  BuildContext context, {
+  TimelineFailureDetails? failure,
+  TimelineBudgetLimitDetails? budget,
+  int? durationSeconds,
+}) {
+  final l10n = context.l10n;
+  final rows = <({String label, String value, bool monospace})>[];
 
-    if (failure != null) {
-      if (failure.category case final category?) {
-        rows.add((
-          label: l10n.timelineDetailCategory,
-          value: '${localizedFailureCategory(context, category)} ($category)',
-          monospace: false,
-        ));
-      }
-      if (failure.hasVisibleProviderKind) {
-        final kind = failure.providerKind!;
-        rows.add((
-          label: l10n.timelineDetailProviderKind,
-          value: '${localizedProviderFailureKind(context, kind)} ($kind)',
-          monospace: false,
-        ));
-      }
-      if (failure.code case final code?) {
-        rows.add((
-          label: l10n.timelineDetailCode,
-          value: code,
-          monospace: true,
-        ));
-      }
-      if (failure.httpStatus case final status?) {
-        rows.add((
-          label: l10n.timelineDetailHttpStatus,
-          value: '$status',
-          monospace: true,
-        ));
-      }
-      if (failure.retryKind case final retryKind?) {
-        final retryText = retryKind == 'retryable'
-            ? (failure.retryAfterSeconds != null
-                  ? l10n.timelineRetryAfterSeconds(failure.retryAfterSeconds!)
-                  : l10n.timelineRetryableHint)
-            : (retryKind == 'permanent'
-                  ? l10n.timelineRetryPermanent
-                  : retryKind);
-        rows.add((
-          label: l10n.timelineDetailRetry,
-          value: retryText,
-          monospace: false,
-        ));
-      }
-    }
-
-    if (budget != null) {
-      if (budget.limitKind case final limitKind?) {
-        rows.add((
-          label: l10n.timelineDetailBudgetKind,
-          value: '${localizedBudgetLimitKind(context, limitKind)} ($limitKind)',
-          monospace: false,
-        ));
-      }
-      if (budget.rolloverKind case final rolloverKind?) {
-        final rolloverText = switch (rolloverKind) {
-          'succeeded' => l10n.timelineBudgetRolloverSucceeded,
-          'failed' when budget.rolloverError != null =>
-            l10n.timelineBudgetRolloverFailed(budget.rolloverError!),
-          _ => rolloverKind,
-        };
-        rows.add((
-          label: l10n.timelineDetailRollover,
-          value: rolloverText,
-          monospace: false,
-        ));
-      }
-    }
-
-    if (durationSeconds != null) {
+  if (failure != null) {
+    if (failure.category case final category?) {
       rows.add((
-        label: l10n.timelineDetailDuration,
-        value: activityDurationLabel(context, durationSeconds),
+        label: l10n.timelineDetailCategory,
+        value: '${localizedFailureCategory(context, category)} ($category)',
         monospace: false,
       ));
     }
+    if (failure.hasVisibleProviderKind) {
+      final kind = failure.providerKind!;
+      rows.add((
+        label: l10n.timelineDetailProviderKind,
+        value: '${localizedProviderFailureKind(context, kind)} ($kind)',
+        monospace: false,
+      ));
+    }
+    if (failure.code case final code?) {
+      rows.add((label: l10n.timelineDetailCode, value: code, monospace: true));
+    }
+    if (failure.httpStatus case final status?) {
+      rows.add((
+        label: l10n.timelineDetailHttpStatus,
+        value: '$status',
+        monospace: true,
+      ));
+    }
+    if (failure.errorType case final errorType?) {
+      rows.add((
+        label: l10n.timelineDetailErrorType,
+        value: errorType,
+        monospace: true,
+      ));
+    }
+    if (failure.requestId case final requestId?) {
+      rows.add((
+        label: l10n.timelineDetailRequestId,
+        value: requestId,
+        monospace: true,
+      ));
+    }
+    if (failure.stage case final stage?) {
+      rows.add((
+        label: l10n.timelineDetailFailureStage,
+        value: switch (stage) {
+          StudioProviderFailureStage.unknown =>
+            l10n.timelineFailureStageUnknown,
+          StudioProviderFailureStage.request =>
+            l10n.timelineFailureStageRequest,
+          StudioProviderFailureStage.handshake =>
+            l10n.timelineFailureStageHandshake,
+          StudioProviderFailureStage.stream => l10n.timelineFailureStageStream,
+          StudioProviderFailureStage.attachment =>
+            l10n.timelineFailureStageAttachment,
+        },
+        monospace: false,
+      ));
+    }
+    if (failure.retryKind case final retryKind?) {
+      final retryText = switch ((retryKind, failure.retryAfterSeconds)) {
+        ('retryable', final seconds?) => l10n.timelineRetryAfterSeconds(
+          seconds.toString(),
+        ),
+        ('retryable', null) => l10n.timelineRetryableHint,
+        ('permanent', _) => l10n.timelineRetryPermanent,
+        ('waitUnrepresentable', _) => l10n.timelineRetryWaitUnrepresentable,
+        _ => retryKind,
+      };
+      rows.add((
+        label: l10n.timelineDetailRetry,
+        value: retryText,
+        monospace: false,
+      ));
+    }
+    if (failure.recovery case final recovery?) {
+      if (localizedRecoveryAction(context, recovery.reason)
+          case final action?) {
+        rows.add((
+          label: l10n.timelineDetailRecoveryAction,
+          value: action,
+          monospace: false,
+        ));
+      }
+      if (recovery.effectiveWaitMillis case final millis?) {
+        rows.add((
+          label: l10n.timelineDetailLastRecoveryWait,
+          value: l10n.timelineRecoveryWaitMillis(millis.toString()),
+          monospace: false,
+        ));
+      }
+      if (recovery.error case final error?) {
+        rows.add((
+          label: l10n.timelineDetailRecoveryError,
+          value: error,
+          monospace: false,
+        ));
+      }
+    }
+  }
 
-    return rows;
+  if (budget != null) {
+    if (budget.limitKind case final limitKind?) {
+      rows.add((
+        label: l10n.timelineDetailBudgetKind,
+        value: '${localizedBudgetLimitKind(context, limitKind)} ($limitKind)',
+        monospace: false,
+      ));
+    }
+    if (budget.rolloverKind case final rolloverKind?) {
+      final rolloverText = switch (rolloverKind) {
+        'succeeded' => l10n.timelineBudgetRolloverSucceeded,
+        'failed' when budget.rolloverError != null =>
+          l10n.timelineBudgetRolloverFailed(budget.rolloverError!),
+        _ => rolloverKind,
+      };
+      rows.add((
+        label: l10n.timelineDetailRollover,
+        value: rolloverText,
+        monospace: false,
+      ));
+    }
+  }
+
+  if (durationSeconds != null) {
+    rows.add((
+      label: l10n.timelineDetailDuration,
+      value: activityDurationLabel(context, durationSeconds),
+      monospace: false,
+    ));
+  }
+
+  return rows;
+}
+
+class TimelineModelRecoveryStatus extends StatelessWidget {
+  const TimelineModelRecoveryStatus({super.key, required this.notice});
+
+  final StudioModelRecoveryNotice notice;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final label = switch (notice.phase) {
+      StudioModelRecoveryPhase.repairing => l10n.timelineRecoveryRepairing,
+      StudioModelRecoveryPhase.waiting => l10n.timelineRecoveryWaiting,
+      StudioModelRecoveryPhase.retrying => l10n.timelineRecoveryRetrying,
+      StudioModelRecoveryPhase.recovered => l10n.timelineRecoveryRecovered,
+      StudioModelRecoveryPhase.exhausted =>
+        l10n.timelineRecoveryStopBudgetExhausted,
+      StudioModelRecoveryPhase.failed => l10n.timelineRecoveryFailed,
+      StudioModelRecoveryPhase.cancelled => l10n.timelineRecoveryStopCancelled,
+    };
+    final action = localizedRecoveryAction(context, notice.reason);
+    final secondsUnit = BigInt.from(Duration.millisecondsPerSecond);
+    final wait = switch ((notice.phase, notice.effectiveWaitMillis)) {
+      (StudioModelRecoveryPhase.waiting, final millis?)
+          when millis.remainder(secondsUnit) == BigInt.zero =>
+        l10n.timelineRecoveryWaitSeconds((millis ~/ secondsUnit).toString()),
+      (StudioModelRecoveryPhase.waiting, final millis?) =>
+        l10n.timelineRecoveryWaitMillis(millis.toString()),
+      _ => null,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TimelineActivityRow(
+          label: label,
+          icon: Icons.refresh_rounded,
+          tooltip: label,
+          expandable: false,
+        ),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(
+            start: TimelineActivityRow.contentIndent,
+            bottom: 4,
+          ),
+          child: DefaultTextStyle.merge(
+            style: context.text.bodySmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+            ),
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 4,
+              children: [
+                if (notice.failureKind case final kind? when kind != 'unknown')
+                  Text(localizedProviderFailureKind(context, kind)),
+                if (action != null) Text(action),
+                Text(
+                  l10n.timelineRecoveryAttempt(
+                    notice.retryCount,
+                    notice.maxRetries,
+                  ),
+                ),
+                if (wait != null)
+                  Text(l10n.timelineRecoveryScheduledWait(wait)),
+              ],
+            ),
+          ),
+        ),
+        if (notice.failure case final failure?)
+          TimelineActivityDisclosure(
+            titleBuilder: (_, expanded) => TimelineActivityRow(
+              label: l10n.timelineOutcomeTechnicalDetails,
+              icon: Icons.tune_rounded,
+              expanded: expanded,
+            ),
+            children: [
+              if (failure.message.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(failure.message),
+                ),
+              _DetailKeyValueList(
+                rows: _buildDetailRows(
+                  context,
+                  failure: TimelineFailureDetails.fromView(failure),
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
   }
 }
 
@@ -930,11 +1089,73 @@ String localizedProviderFailureKind(BuildContext context, String kind) {
   return switch (kind) {
     'authentication' => l10n.timelineProviderKindAuth,
     'authorization' => l10n.timelineProviderKindAuthz,
-    'capacity' => l10n.timelineProviderKindCapacity,
-    'configuration' => l10n.timelineProviderKindConfig,
+    'quota' => l10n.timelineProviderKindQuota,
+    'rateLimit' => l10n.timelineProviderKindRateLimit,
+    'serviceBusy' => l10n.timelineProviderKindServiceBusy,
+    'contextLimit' => l10n.timelineProviderKindContextLimit,
+    'invalidRequest' => l10n.timelineProviderKindInvalidRequest,
+    'contentBlocked' => l10n.timelineProviderKindContentBlocked,
+    'outputLimit' => l10n.timelineProviderKindOutputLimit,
     'transport' => l10n.timelineProviderKindTransport,
     'protocol' => l10n.timelineProviderKindProtocol,
     _ => kind,
+  };
+}
+
+String? localizedRecoveryCount(
+  BuildContext context,
+  StudioModelRecoveryInfo recovery,
+) {
+  final l10n = context.l10n;
+  return switch ((recovery.retryCount, recovery.maxRetries)) {
+    (final count?, final limit?) => l10n.timelineRecoveryRetryCount(
+      count,
+      limit,
+    ),
+    (final count?, null) => l10n.timelineRecoveryRetryCountOnly(count),
+    (null, final limit?) => l10n.timelineRecoveryRetryLimit(limit),
+    (null, null) => null,
+  };
+}
+
+String? localizedRecoveryAction(
+  BuildContext context,
+  StudioProviderRecovery? reason,
+) {
+  final l10n = context.l10n;
+  return switch (reason) {
+    null || StudioProviderRecovery.none => null,
+    StudioProviderRecovery.httpFallback =>
+      l10n.timelineRecoveryActionHttpFallback,
+    StudioProviderRecovery.refreshAttachments =>
+      l10n.timelineRecoveryActionRefreshAttachments,
+    StudioProviderRecovery.fullContext =>
+      l10n.timelineRecoveryActionFullContext,
+  };
+}
+
+String localizedRecoveryStop(
+  BuildContext context,
+  StudioModelRecoveryStopReason reason,
+) {
+  final l10n = context.l10n;
+  return switch (reason) {
+    StudioModelRecoveryStopReason.budgetExhausted =>
+      l10n.timelineRecoveryStopBudgetExhausted,
+    StudioModelRecoveryStopReason.sideEffects =>
+      l10n.timelineRecoveryStopSideEffects,
+    StudioModelRecoveryStopReason.saveFailed =>
+      l10n.timelineRecoveryStopSaveFailed,
+    StudioModelRecoveryStopReason.repairFailed =>
+      l10n.timelineRecoveryStopRepairFailed,
+    StudioModelRecoveryStopReason.waitUnrepresentable =>
+      l10n.timelineRecoveryStopWaitUnrepresentable,
+    StudioModelRecoveryStopReason.contextCompactionRequired =>
+      l10n.timelineRecoveryStopContextCompactionRequired,
+    StudioModelRecoveryStopReason.permanentFailure =>
+      l10n.timelineRecoveryStopPermanentFailure,
+    StudioModelRecoveryStopReason.cancelled =>
+      l10n.timelineRecoveryStopCancelled,
   };
 }
 

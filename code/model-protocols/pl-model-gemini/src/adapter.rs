@@ -20,6 +20,7 @@ pub const CATALOG: DiscoveryPolicy = DiscoveryPolicy {
 pub static ADAPTER: Adapter = Adapter {
     id: crate::endpoint::ID,
     codec: &crate::codec::GEMINI_WIRE_CODEC,
+    error_policy: &crate::error::GeminiErrorPolicy,
     api_key_header: ApiKeyHeaderScheme::XGoogApiKey,
     responses_instruction_role: InstructionWireRole::System,
     discovery: CATALOG,

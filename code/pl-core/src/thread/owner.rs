@@ -81,7 +81,10 @@ pub(super) struct Owner {
     pub(super) pending_context_compactions: Vec<ContextCompactionEvent>,
     pub(super) model_progress: Option<(String, watch::Receiver<crate::model::ModelProgress>)>,
     pub(super) model_members: Option<super::model_members::MemberCall>,
+    pub(super) model_settlements:
+        std::collections::BTreeMap<String, super::model_settlement::SettlementCall>,
     pub(super) pending_model_members: Vec<crate::model::ModelCompletedMember>,
+    pub(super) pending_model_sub_attempt_settlements: Vec<crate::model::ModelSubAttemptSettlement>,
     pub(super) pending_model_member_starts: Vec<crate::model::ModelStartedMember>,
     pub(super) pending_model_member_content_available:
         Vec<crate::model::ModelContentAvailableMember>,
@@ -768,6 +771,20 @@ impl Owner {
     }
 
     pub(super) fn publish(&mut self) -> Result<(), ThreadError> {
+        self.publish_primary()?;
+        if self.interrupt.is_deleting() {
+            return Ok(());
+        }
+        // The repair supplements a result that must already be committed. Keep it in its
+        // own effect so the snapshot of the original result never includes the supplement.
+        if self.flush_pending_output_repairs() {
+            self.publish_once()?;
+        }
+        Ok(())
+    }
+
+    /// Publishes the effect carrying this mutation and returns its exact sequence.
+    pub(super) fn publish_primary(&mut self) -> Result<Option<u64>, ThreadError> {
         // Reserve both resource cuts before consuming effect buffers, claims or sequence numbers.
         let revision = self.state.interaction_collection_revision_for(
             &self.published,
@@ -780,7 +797,7 @@ impl Owner {
             self.state.interaction_collection_revision = revision;
             self.published = self.state.clone();
             self.publish_snapshot();
-            return Ok(());
+            return Ok(None);
         }
         if self.retry_plan.as_ref().is_some_and(|(id, plan)| {
             !self.state.attempts.last().is_some_and(|attempt| {
@@ -797,16 +814,9 @@ impl Owner {
         }) {
             self.retry_plan = None;
         }
+        let previous = self.state.commit_sequence;
         self.publish_once()?;
-        // A pending output repair can only supplement a result that is already committed: the journal
-        // validates a delivered context record against its delivery, so the supplement always lands in
-        // its own commit right after the result. Applying it here — right after the commit that may
-        // have carried that result — keeps the reference off the snapshot that produced the delivery
-        // while still becoming durable before any consumer can observe the pause released.
-        if self.flush_pending_output_repairs() {
-            self.publish_once()?;
-        }
-        Ok(())
+        Ok((self.state.commit_sequence > previous).then_some(self.state.commit_sequence))
     }
 
     /// Commits the resident facts as exactly one effect batch.
@@ -851,6 +861,7 @@ impl Owner {
                 completed: std::mem::take(&mut self.pending_model_members).into(),
                 started: std::mem::take(&mut self.pending_model_member_starts).into(),
                 content_available: std::mem::take(&mut self.pending_model_member_content_available),
+                settlements: std::mem::take(&mut self.pending_model_sub_attempt_settlements).into(),
             },
             std::mem::take(&mut self.pending_context_compactions).into(),
         ) else {
@@ -1270,6 +1281,7 @@ mod close_tests {
                 started.cancel();
                 request.cancellation.cancelled().await;
                 Err(ModelError {
+                    context_recovery: None,
                     kind: crate::model::ModelFailureKind::Cancelled,
                     details: None,
                     usage: Box::default(),

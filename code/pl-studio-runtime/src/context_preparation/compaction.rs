@@ -169,6 +169,9 @@ impl StudioCompaction {
             mutations: instruction_repair.mutations.clone(),
         };
         inputs.include_keys(&frozen, &[LATEST_RECEIPT]);
+        if request.compaction_applied {
+            return Ok(unchanged(inputs));
+        }
         let previous_summary = active_text_summary(&source_context.records, &request.extensions);
         // Check the committed source before the target attempts to encode old tool calls,
         // attachments or provider checkpoints, independent of the two context windows.
@@ -238,8 +241,8 @@ impl StudioCompaction {
         // preparation keeps its activation set, and historical Skill Items stay durable.
         inputs.include_format(&frozen, SKILL_VIEW_FORMAT);
         let skill_clears = skill_activation_clears(&request.extensions);
-        request
-            .enter_compacting()
+        let members = request
+            .enter_model_compacting(call.inference_id.clone())
             .await
             .map_err(compaction_admission_error)?;
         let mut model_request = request.model.clone();
@@ -249,6 +252,7 @@ impl StudioCompaction {
             request.committed_context.clone()
         };
         model_request.attempt_id = call.inference_id.clone();
+        model_request.members = Some(members);
         let mut options = self.options.clone();
         if handoff.is_some() {
             options.strategy = ThreadCompactionStrategy::PortableTextSummary;
@@ -394,6 +398,7 @@ impl StudioCompaction {
         resolve()
             .map(Some)
             .map_err(|source| pl_core::model::ModelError {
+                context_recovery: None,
                 kind: pl_core::model::ModelFailureKind::Unavailable,
                 details: None,
                 usage: Default::default(),
@@ -511,6 +516,7 @@ fn compaction_admission_error(source: pl_core::thread::ThreadError) -> ModelErro
         _ => ModelFailureKind::Unavailable,
     };
     ModelError {
+        context_recovery: None,
         kind,
         details: None,
         usage: Default::default(),
@@ -587,8 +593,8 @@ pub(crate) struct CompactionReceipt {
 }
 
 impl CompactionReceipt {
-    /// v4 retains the executor's timing and explicit first-content provenance.
-    pub(crate) const VERSION: u32 = 4;
+    /// v5 is a context outcome. Its costs are owned by the original settlement effects.
+    pub(crate) const VERSION: u32 = 5;
 
     pub(crate) fn into_payload(
         self,
@@ -613,6 +619,7 @@ pub(super) fn receipt_error(
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> pl_core::model::ModelError {
     pl_core::model::ModelError {
+        context_recovery: None,
         kind: pl_core::model::ModelFailureKind::InvalidResponse,
         details: None,
         usage: Default::default(),

@@ -109,6 +109,8 @@ pub struct ThreadEffectBatch {
     /// First public content evidence; absent older effects do not imply known empty parts.
     #[serde(default)]
     pub model_member_content_available: Vec<crate::model::ModelContentAvailableMember>,
+    #[serde(default)]
+    pub model_sub_attempt_settlements: Arc<[crate::model::ModelSubAttemptSettlement]>,
     /// Reliable start/end facts; a replaceable execution-phase snapshot is not their source.
     #[serde(default)]
     pub context_compactions: Arc<[ContextCompactionEvent]>,
@@ -132,6 +134,46 @@ pub struct ThreadEffectBatch {
     pub replacements: Arc<[ContextReplacement]>,
     pub runtime_facts: Option<Arc<[RuntimeFact]>>,
     pub lifecycle: Option<ThreadLifecycle>,
+    /// Process-local host accounting attached to this immutable effect.
+    #[serde(skip)]
+    pub prepared_accounting: PreparedAccountingSlot,
+}
+
+#[derive(Default)]
+pub struct PreparedAccountingSlot(std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>);
+
+impl Clone for PreparedAccountingSlot {
+    fn clone(&self) -> Self {
+        // A copied batch can be changed before publication. Sharing the original Arc<batch>
+        // retains its preparation, while copying the batch starts with an empty slot.
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for PreparedAccountingSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedAccountingSlot")
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedAccountingSlot {
+    pub fn get_or_prepare<T: Send + Sync + 'static, E>(
+        &self,
+        prepare: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Arc<T>, E> {
+        let prepared = match self.0.get() {
+            Some(prepared) => prepared,
+            None => {
+                let accounting = Arc::new(prepare()?);
+                self.0.get_or_init(|| accounting)
+            }
+        };
+        Ok(prepared
+            .clone()
+            .downcast()
+            .expect("one host owns accounting for this effect"))
+    }
 }
 
 /// Invalid encoded journal data. Unknown outer formats are rejected without altering raw bytes.
@@ -186,6 +228,7 @@ impl ThreadEffectBatch {
             completed: model_members,
             started: model_member_starts,
             content_available: model_member_content_available,
+            settlements: model_sub_attempt_settlements,
         } = members;
         let context = if previous.context == current.context {
             None
@@ -325,6 +368,7 @@ impl ThreadEffectBatch {
             && model_members.is_empty()
             && model_member_starts.is_empty()
             && model_member_content_available.is_empty()
+            && model_sub_attempt_settlements.is_empty()
             && context_compactions.is_empty()
             && continuations.is_empty()
             && turn.is_none()
@@ -358,6 +402,7 @@ impl ThreadEffectBatch {
             model_members,
             model_member_starts,
             model_member_content_available,
+            model_sub_attempt_settlements,
             context_compactions,
             continuations,
             turn,
@@ -372,6 +417,7 @@ impl ThreadEffectBatch {
             replacements,
             runtime_facts,
             lifecycle,
+            prepared_accounting: Default::default(),
         })
     }
 }

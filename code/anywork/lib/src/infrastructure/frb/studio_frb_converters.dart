@@ -991,6 +991,7 @@ SessionCostsStateView _sessionCostsStateFromFrb(
                 _runtimeCostFromFrb(cost),
             ],
             hasUnpricedUsage: value.cost!.hasUnpricedUsage,
+            hasIncompleteUsage: value.cost!.hasIncompleteUsage,
           ),
   );
 }

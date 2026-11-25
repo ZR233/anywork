@@ -16,7 +16,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeCurrentActivityHead {
   final String id;
@@ -79,6 +79,7 @@ class BridgeCurrentAtom {
   final BridgeChatToolIdentity? tool;
   final BridgeThreadWaitPresentation? wait;
   final BridgeThreadTextChannel? textChannel;
+  final BridgeModelRecoveryNotice? modelRecovery;
   final PlatformInt64? startedAt;
   final PlatformInt64? finishedAt;
   final bool? contentPresent;
@@ -97,6 +98,7 @@ class BridgeCurrentAtom {
     this.tool,
     this.wait,
     this.textChannel,
+    this.modelRecovery,
     this.startedAt,
     this.finishedAt,
     this.contentPresent,
@@ -117,6 +119,7 @@ class BridgeCurrentAtom {
       tool.hashCode ^
       wait.hashCode ^
       textChannel.hashCode ^
+      modelRecovery.hashCode ^
       startedAt.hashCode ^
       finishedAt.hashCode ^
       contentPresent.hashCode ^
@@ -139,6 +142,7 @@ class BridgeCurrentAtom {
           tool == other.tool &&
           wait == other.wait &&
           textChannel == other.textChannel &&
+          modelRecovery == other.modelRecovery &&
           startedAt == other.startedAt &&
           finishedAt == other.finishedAt &&
           contentPresent == other.contentPresent &&
@@ -1296,6 +1300,59 @@ class BridgeHistoryWorkRangePage {
           beforeSeq == other.beforeSeq &&
           events == other.events &&
           next == other.next;
+}
+
+class BridgeModelRecoveryNotice {
+  final String? failureKind;
+  final String? reason;
+  final int retryCount;
+  final int maxRetries;
+  final BigInt? effectiveWaitMillis;
+  final BridgeModelRecoveryPhase phase;
+  final BridgeTurnFailureDto? failure;
+
+  const BridgeModelRecoveryNotice({
+    this.failureKind,
+    this.reason,
+    required this.retryCount,
+    required this.maxRetries,
+    this.effectiveWaitMillis,
+    required this.phase,
+    this.failure,
+  });
+
+  @override
+  int get hashCode =>
+      failureKind.hashCode ^
+      reason.hashCode ^
+      retryCount.hashCode ^
+      maxRetries.hashCode ^
+      effectiveWaitMillis.hashCode ^
+      phase.hashCode ^
+      failure.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelRecoveryNotice &&
+          runtimeType == other.runtimeType &&
+          failureKind == other.failureKind &&
+          reason == other.reason &&
+          retryCount == other.retryCount &&
+          maxRetries == other.maxRetries &&
+          effectiveWaitMillis == other.effectiveWaitMillis &&
+          phase == other.phase &&
+          failure == other.failure;
+}
+
+enum BridgeModelRecoveryPhase {
+  repairing,
+  waiting,
+  retrying,
+  recovered,
+  exhausted,
+  failed,
+  cancelled,
 }
 
 class BridgeOpenCurrentReader {

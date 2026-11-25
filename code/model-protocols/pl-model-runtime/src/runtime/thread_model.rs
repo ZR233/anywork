@@ -27,11 +27,10 @@ pub use member::{ModelMemberReceipt, ModelMemberState, model_member_receipt};
 pub mod migration;
 pub(crate) mod progress;
 mod receipt;
-pub(super) use codec::{FRAME_VERSION, LEGACY_FRAME_VERSION};
 pub use media::{
     ToolAttachment, attachment_content, decode_attachment, validate_attachment_content,
 };
-pub(super) use receipt::{FAILURE_RECEIPT_VERSION, REQUEST_RECEIPT_VERSION};
+pub(super) use receipt::requested_service_tier;
 pub use receipt::{
     ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt, ModelResponseReceipt,
     model_failure_receipt, model_request_receipt, model_response_receipt,
@@ -44,6 +43,7 @@ pub struct ThreadModel {
     reasoning: Option<ReasoningConfig>,
     purpose: String,
     hosted_tools: Arc<[super::HostedTool]>,
+    independent_settlement: bool,
 }
 
 struct EncodedRequest {
@@ -59,7 +59,15 @@ impl ThreadModel {
             reasoning,
             purpose: "turn".into(),
             hosted_tools: Vec::new().into(),
+            independent_settlement: false,
         }
+    }
+    /// Selects receipt delivery in memory for an independent session or compaction call.
+    ///
+    /// A Thread request binds its own registered port and must confirm its save.
+    pub fn with_in_memory_settlement(mut self) -> Self {
+        self.independent_settlement = true;
+        self
     }
     /// Stable route provenance, independent of instruction, tool and execution revisions.
     pub fn route_identity(&self) -> String {
@@ -160,6 +168,7 @@ impl Model for ThreadModel {
             reasoning: self.reasoning.clone(),
             purpose: self.purpose.clone(),
             hosted_tools: self.hosted_tools.clone(),
+            independent_settlement: self.independent_settlement,
             physical: ModelSession::default(),
             observed: Arc::new(Mutex::new(None)),
             prompt: super::ThreadPromptMetadata::default(),
@@ -174,6 +183,7 @@ struct ThreadModelSession {
     reasoning: Option<ReasoningConfig>,
     purpose: String,
     hosted_tools: Arc<[super::HostedTool]>,
+    independent_settlement: bool,
     physical: ModelSession,
     observed: Arc<Mutex<Option<OpaquePayload>>>,
     prompt: super::ThreadPromptMetadata,
@@ -187,6 +197,7 @@ impl CoreModelSession for ThreadModelSession {
             reasoning: self.reasoning.clone(),
             purpose: self.purpose.clone(),
             hosted_tools: self.hosted_tools.clone(),
+            independent_settlement: self.independent_settlement,
         };
         let EncodedRequest {
             completion: encoded,
@@ -305,7 +316,10 @@ impl CoreModelSession for ThreadModelSession {
             .with_cancellation(Some(request.cancellation.clone()))
             .with_progress(request.progress.clone())
             .with_members(request.members.clone())
+            .with_billing_purpose(binding.purpose.clone())
+            .with_billing_prompt(prompt)
             .with_prompt_cache_scope(super::PromptCacheScope::thread(&request.thread_id));
+        let invocation = invocation.bind_thread_settlement(self.independent_settlement);
         let (capture, current) = super::current::CurrentInvocation::channel(&request.attempt_id);
         let invocation = invocation.with_current(current.clone());
         let work = async move {
@@ -313,14 +327,16 @@ impl CoreModelSession for ThreadModelSession {
                 .lock()
                 .map_err(|_| failure(ModelFailureKind::Unavailable, AdapterError::Poisoned))? =
                 Some(marker.clone());
+            let mut invocation_report = super::invocation::InvocationReport::default();
             let response = runtime
-                .complete(encoded, invocation)
+                .complete_with_report(encoded, invocation, &mut invocation_report)
                 .await
                 .map_err(|error| {
-                    receipt::failure_error(
+                    receipt::failure_error_with_report(
                         binding.clone(),
                         error,
                         terminal_progress.as_ref().map(|sender| sender.latest()),
+                        std::mem::take(&mut invocation_report),
                     )
                 })?;
             let output = codec::response(
@@ -392,6 +408,7 @@ pub(super) fn failure(
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> ModelError {
     ModelError {
+        context_recovery: None,
         details: None,
         kind,
         usage: Box::default(),
@@ -436,8 +453,13 @@ mod contract_tests {
         ));
         let selected = route.clone().with_service_tier(Some("priority")).unwrap();
         let frozen = ThreadModel::new(
-            ModelRuntime::bind_route(selected, &pl_model_openai_wire::OPENAI_WIRE_CODEC, None)
-                .unwrap(),
+            ModelRuntime::bind_route(
+                selected,
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
+                None,
+            )
+            .unwrap(),
             None,
         );
         // A later UI/catalog selection changes another binding, not the already-bound Thread.
@@ -446,6 +468,7 @@ mod contract_tests {
             ModelRuntime::bind_route(
                 route.clone(),
                 &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
                 None,
             )
             .unwrap(),
@@ -455,6 +478,7 @@ mod contract_tests {
             ModelRuntime::bind_route(
                 route.with_service_tier(None).unwrap(),
                 &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
                 None,
             )
             .unwrap(),
@@ -494,8 +518,13 @@ mod contract_tests {
             Err(pl_protocol::PureError::ConfigError(_))
         ));
         let unsupported = ThreadModel::new(
-            ModelRuntime::bind_route(unsupported, &pl_model_openai_wire::OPENAI_WIRE_CODEC, None)
-                .unwrap(),
+            ModelRuntime::bind_route(
+                unsupported,
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
+                None,
+            )
+            .unwrap(),
             None,
         );
         for (model, sent, recorded) in [
@@ -527,6 +556,7 @@ mod contract_tests {
             pl_model_openai::endpoint::compatible_endpoint("fixture", "http://127.0.0.1:1/v1"),
             crate::model::ModelDefinition::compatible("contract-model"),
             &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
             None,
         )
         .expect("isolated model runtime");

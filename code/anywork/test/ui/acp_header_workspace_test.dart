@@ -3,10 +3,17 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/features/shell/agent_switcher_menu.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/terminal_launcher.dart';
 import 'package:anywork/src/platform/vscode_launcher.dart';
 import 'package:anywork/src/platform/zed_launcher.dart';
+import 'package:anywork/src/rust/api/studio/types/product_topic.dart'
+    as topic_dto;
+import 'package:anywork/src/rust/api/studio/types/response.dart'
+    as response_dto;
+import 'package:anywork/src/rust/api/studio/types/thread_stream.dart'
+    as thread_dto;
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -61,6 +68,7 @@ HeaderView _header({
   required SessionDirectoryRow? row,
   required StudioProject? project,
   List<StudioAgentView> agents = const [],
+  SessionCostView? sessionCost,
 }) => HeaderView(
   selectedRootRow: row,
   selectedProject: project,
@@ -78,7 +86,7 @@ HeaderView _header({
     activeMcpServers: [],
     activeLspServers: [],
   ),
-  sessionCost: null,
+  sessionCost: sessionCost,
   pendingInteractions: const [],
 );
 
@@ -180,6 +188,83 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('native session cost keeps the amount when usage is incomplete', (
+    tester,
+  ) async {
+    final graph = _testGraph(tester);
+    final costChip = find.byKey(StudioDriverKeys.sessionCost);
+    const amount = thread_dto.BridgeRuntimeCostAmount(
+      currency: 'USD',
+      amount: 0.25,
+    );
+    for (final (incomplete, unpriced) in [(true, false), (false, true)]) {
+      const rootThreadId = 'root-thread';
+      const topic = topic_dto.BridgeProductTopic.sessionCosts(
+        rootThreadId: rootThreadId,
+      );
+      final frame = productTopicFrameFromEnvelope(
+        const SessionCostsTopic(rootThreadId: rootThreadId),
+        topic_dto.BridgeProductTopicStreamEnvelope.baseline(
+          topic: topic,
+          revision: BigInt.one,
+          state: topic_dto.BridgeProductBaseline.sessionCosts(
+            response_dto.BridgeSessionCostsState(
+              rootThreadId: rootThreadId,
+              revision: BigInt.one,
+              updatedAt: 0,
+              statisticsPending: false,
+              statisticsGap: false,
+              readFailed: false,
+              cost: response_dto.BridgeSessionCostSnapshot(
+                rootThreadId: rootThreadId,
+                purposeCosts: [
+                  response_dto.BridgePurposeCostSnapshot(
+                    purpose: 'main',
+                    estimatedCosts: const [amount],
+                    hasUnpricedUsage: unpriced,
+                  ),
+                ],
+                estimatedCosts: const [amount],
+                hasUnpricedUsage: unpriced,
+                hasIncompleteUsage: incomplete,
+              ),
+            ),
+          ),
+        ),
+      ) as ProductTopicBaselineFrame;
+      final costs = (frame.state as SessionCostsBaseline).state;
+      await tester.pumpWidget(
+        _host(
+          _header(
+            row: _root(acp: false),
+            project: _project,
+            agents: [_nativeAgent],
+            sessionCost: costs.cost,
+          ),
+          width: 360,
+          graph: graph,
+        ),
+      );
+      await tester.pump();
+      expect(
+        find.descendant(of: costChip, matching: find.text(r'$0.25')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: costChip, matching: find.text('用量不完整')),
+        incomplete ? findsOneWidget : findsNothing,
+      );
+      final tooltip = tester.widget<Tooltip>(
+        find.ancestor(of: costChip, matching: find.byType(Tooltip)),
+      );
+      expect(
+        tooltip.message,
+        unpriced ? contains('未计价') : isNot(contains('未计价')),
+      );
+      expect(tester.takeException(), isNull);
+    }
+  });
 
   testWidgets('workspace menu is absent without project qualification', (
     tester,

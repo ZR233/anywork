@@ -54,6 +54,7 @@ pub struct BridgeSessionCostSnapshot {
     pub purpose_costs: Vec<BridgePurposeCostSnapshot>,
     pub estimated_costs: Vec<BridgeRuntimeCostAmount>,
     pub has_unpriced_usage: bool,
+    pub has_incomplete_usage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

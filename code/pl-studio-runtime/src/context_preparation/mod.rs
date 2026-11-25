@@ -5,7 +5,9 @@ mod instructions;
 mod migration;
 mod mode_workflow;
 
-pub(crate) use compaction::{CompactionReceipt, LATEST_RECEIPT, decode_receipt, preparer};
+#[cfg(test)]
+pub(crate) use compaction::decode_receipt;
+pub(crate) use compaction::{CompactionReceipt, LATEST_RECEIPT, preparer};
 pub(crate) use instructions::{decode_instruction_binding, instruction_binding};
 pub(crate) use migration::migrate_checkpoint_sources;
 

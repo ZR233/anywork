@@ -1,7 +1,9 @@
 //! Input validation, attachment preparation and wire-body assembly.
 use crate::completion::{CompletionFailure, CompletionRequest, InferenceModelObservation};
-use crate::runtime::invocation_context::InvocationPurpose;
 use crate::runtime::{ModelInvocationContext, ModelRuntime};
+use crate::runtime::{
+    attachments::AttachmentPreparationError, invocation_context::InvocationPurpose,
+};
 use pl_model_wire::wire_codec::{EncodeHttpRequestInput, PreparedHttpRequest};
 use pl_protocol::{PureError, Result};
 
@@ -10,7 +12,7 @@ impl ModelRuntime {
         &self,
         request: &mut CompletionRequest,
         context: &ModelInvocationContext,
-    ) -> std::result::Result<(), CompletionFailure> {
+    ) -> std::result::Result<(), (CompletionFailure, bool)> {
         let mut candidate = request.clone();
         let prepare = async {
             crate::runtime::attachments::AttachmentBackend {
@@ -20,22 +22,29 @@ impl ModelRuntime {
                 client: &self.http_client,
                 session: &context.session,
                 fingerprint: self.connection_fingerprint(),
-                now: self.clock.unix_seconds()?,
+                now: self
+                    .clock
+                    .unix_seconds()
+                    .map_err(|source| AttachmentPreparationError {
+                        source,
+                        replay_safe: true,
+                    })?,
                 cancellation: context.cancellation.clone().unwrap_or_default(),
             }
             .prepare(&mut candidate)
             .await
         };
-        if let Some(token) = &context.cancellation {
+        let result = if let Some(token) = &context.cancellation {
             tokio::select! {
                 biased;
-                _ = token.cancelled() => return Err(CompletionFailure::cancelled(
-                    PureError::LlmError("attachment preparation cancelled".into()), Box::default())),
-                result = prepare => result?,
+                _ = token.cancelled() => return Err((CompletionFailure::cancelled(
+                    PureError::LlmError("attachment preparation cancelled".into()), Box::default()), false)),
+                result = prepare => result,
             }
         } else {
-            prepare.await?;
-        }
+            prepare.await
+        };
+        result.map_err(|error| (error.source.into(), error.replay_safe))?;
         *request = candidate;
         Ok(())
     }

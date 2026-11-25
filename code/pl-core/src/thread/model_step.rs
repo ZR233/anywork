@@ -14,6 +14,26 @@ pub(super) struct StepWork {
     pub(super) preparation_refresh: u8,
     pub(super) admitted_attempt: Option<RequestAttempt>,
     pub(super) recovery_error: Option<Arc<ModelError>>,
+    pub(super) compaction_applied: bool,
+}
+
+impl StepWork {
+    pub(super) fn repair_failure(&self, repair: ThreadError) -> ThreadError {
+        with_model_repair(self.recovery_error.clone(), repair)
+    }
+}
+
+pub(super) fn with_model_repair(
+    primary: Option<Arc<ModelError>>,
+    repair: ThreadError,
+) -> ThreadError {
+    match primary {
+        Some(primary) if !matches!(repair, ThreadError::Cancelled) => ThreadError::ModelRepair {
+            primary,
+            repair: Arc::new(repair),
+        },
+        _ => repair,
+    }
 }
 
 impl Owner {
@@ -215,6 +235,7 @@ impl Owner {
             preparation_refresh: 0,
             admitted_attempt: None,
             recovery_error: None,
+            compaction_applied: false,
         })
     }
 
@@ -264,7 +285,24 @@ impl Owner {
         self.model_progress = Some((input.attempt_id.clone(), observations));
         let (members, member_receiver) =
             crate::model::ModelMemberSender::channel(&input.turn_id, &input.attempt_id);
-        let members = members.with_output(output_budget.clone());
+        let members = members
+            .with_output(output_budget.clone())
+            .with_context_recovery(
+                step.recovery_error
+                    .as_ref()
+                    .and_then(|error| error.context_recovery.as_deref())
+                    .cloned(),
+            );
+        let members = if self.cold.is_some() || self.current_task_start_ordinal.is_none() {
+            members.with_settlement(self.register_model_settlement(
+                Some(input.turn_id.clone()),
+                input.attempt_id.clone(),
+                output_budget.clone(),
+                false,
+            )?)
+        } else {
+            members
+        };
         let member_registry = members.registry();
         let tools = plan.declarations();
         let request = ModelRequest {
@@ -597,6 +635,7 @@ impl Owner {
         self.model_members = None;
         match member_error {
             Some(error) => Err(ThreadError::Model(Arc::new(crate::model::ModelError {
+                context_recovery: None,
                 kind: crate::model::ModelFailureKind::InvalidResponse,
                 source: Some(Box::new(error)),
                 details: None,
@@ -607,7 +646,7 @@ impl Owner {
     }
 
     pub(super) fn finish_step(&mut self, attempt_id: &str) {
-        self.settle_operation_output(attempt_id);
+        self.retire_model_settlement(attempt_id);
         self.model_progress = None;
         self.model_members = None;
         self.state.model_execution = None;

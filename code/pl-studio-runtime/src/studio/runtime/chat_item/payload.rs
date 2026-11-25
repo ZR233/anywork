@@ -35,6 +35,8 @@ pub(super) struct TextDescriptor {
     pub channel: ThreadTextChannel,
     pub attachments: Vec<ThreadAttachment>,
     pub outcome: ContentOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_recovery: Option<crate::ModelRecoveryNotice>,
 }
 
 #[derive(Serialize)]

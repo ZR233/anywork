@@ -267,7 +267,7 @@ impl ProgressProjection {
             | ModelStreamEvent::Replay(_)
             | ModelStreamEvent::WebSearchStarted { .. }
             | ModelStreamEvent::WebSearchCompleted { .. } => {}
-            ModelStreamEvent::Usage(usage) => {
+            ModelStreamEvent::Usage { usage, .. } => {
                 // A provider may report only one side of accounting while a stream is still
                 // running. Preserve those confirmed fields, but reject a report whose internal
                 // relationships are invalid; `None` remains unknown instead of becoming zero.

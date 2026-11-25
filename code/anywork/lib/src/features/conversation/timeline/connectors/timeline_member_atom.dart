@@ -27,6 +27,7 @@ import '../tools/tool_item_view.dart';
 import '../widgets/timeline_activity_clock.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_markdown.dart';
+import '../widgets/timeline_outcome_card.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import 'timeline_media_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
@@ -525,6 +526,17 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           expanded: expanded,
         ),
         children: [_windows()],
+      );
+    }
+    if (atom.modelRecovery case final recovery?) {
+      return _response(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TimelineModelRecoveryStatus(notice: recovery),
+            _windows(liveResponse: _isLiveStreamingText),
+          ],
+        ),
       );
     }
     if (_isLiveStreamingText) return _windows(liveResponse: true);

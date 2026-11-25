@@ -1253,6 +1253,11 @@ pub enum Reply {
         status: u16,
     },
     Json(Value),
+    /// A supplier-specific JSON envelope with an explicit HTTP status.
+    JsonStatus {
+        status: u16,
+        body: Value,
+    },
     HttpError {
         status: u16,
         code: String,
@@ -4365,6 +4370,11 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
         )
             .into_response(),
         Ok(Reply::Json(body)) => Json(body).into_response(),
+        Ok(Reply::JsonStatus { status, body }) => (
+            StatusCode::from_u16(status).expect("valid fixture HTTP status"),
+            Json(body),
+        )
+            .into_response(),
         Err(MatchError::InvalidFunctionOutput) => (
             StatusCode::BAD_REQUEST,
             Json(json!({"error":{"code":"invalid_value","message":INVALID_FUNCTION_OUTPUT}})),
@@ -4708,6 +4718,7 @@ fn match_step(
                         | Reply::GatedSse { .. }
                         | Reply::SegmentedSse { .. }
                         | Reply::Json(_)
+                        | Reply::JsonStatus { .. }
                         | Reply::HttpError { .. }
                         | Reply::HttpErrorWithRetryAfter { .. }
                 ) | (

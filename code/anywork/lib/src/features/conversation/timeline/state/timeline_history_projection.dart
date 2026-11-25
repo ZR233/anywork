@@ -1,7 +1,8 @@
 import 'dart:convert';
 
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/models.dart' show ThreadTextChannel;
+import 'package:anywork_client/models.dart'
+    show StudioModelRecoveryNotice, ThreadTextChannel;
 
 import 'chat_item_presentation.dart';
 import 'timeline_display_models.dart';
@@ -211,6 +212,12 @@ abstract final class TimelineHistoryProjection {
       attemptId: event.attemptId,
       tool: tool,
       textChannel: textChannel,
+      modelRecovery: switch ((kind, meta?['modelRecovery'])) {
+        (ChatAtomKind.text, null) => predecoded.modelRecovery,
+        (ChatAtomKind.text, final recovery) =>
+          StudioModelRecoveryNotice.fromJson(recovery),
+        _ => null,
+      },
       contentPresent: contentPresent,
       startedAt: _atomSeconds(startedMillis),
       finishedAt: _atomSeconds(finishedMillis),

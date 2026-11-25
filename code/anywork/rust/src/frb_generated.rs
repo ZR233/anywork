@@ -15506,6 +15506,9 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeCurrentAtom {
             <Option<crate::api::studio::types::chat::BridgeThreadTextChannel>>::sse_decode(
                 deserializer,
             );
+        let mut var_modelRecovery = <Option<
+            crate::api::studio::types::presentation::BridgeModelRecoveryNotice,
+        >>::sse_decode(deserializer);
         let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_finishedAt = <Option<i64>>::sse_decode(deserializer);
         let mut var_contentPresent = <Option<bool>>::sse_decode(deserializer);
@@ -15525,6 +15528,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeCurrentAtom {
             tool: var_tool,
             wait: var_wait,
             text_channel: var_textChannel,
+            model_recovery: var_modelRecovery,
             started_at: var_startedAt,
             finished_at: var_finishedAt,
             content_present: var_contentPresent,
@@ -18298,6 +18302,70 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelReasoningDesc
     }
 }
 
+impl SseDecode for crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_retryCount = <Option<u32>>::sse_decode(deserializer);
+        let mut var_maxRetries = <Option<u32>>::sse_decode(deserializer);
+        let mut var_effectiveWaitMillis = <Option<u64>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        let mut var_stopReason = <Option<String>>::sse_decode(deserializer);
+        let mut var_error = <Option<String>>::sse_decode(deserializer);
+        return crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo {
+            retry_count: var_retryCount,
+            max_retries: var_maxRetries,
+            effective_wait_millis: var_effectiveWaitMillis,
+            reason: var_reason,
+            stop_reason: var_stopReason,
+            error: var_error,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::presentation::BridgeModelRecoveryNotice {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_failureKind = <Option<String>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        let mut var_retryCount = <u32>::sse_decode(deserializer);
+        let mut var_maxRetries = <u32>::sse_decode(deserializer);
+        let mut var_effectiveWaitMillis = <Option<u64>>::sse_decode(deserializer);
+        let mut var_phase =
+            <crate::api::studio::types::presentation::BridgeModelRecoveryPhase>::sse_decode(
+                deserializer,
+            );
+        let mut var_failure = <Option<
+            crate::api::studio::types::thread_stream::BridgeTurnFailureDto,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::presentation::BridgeModelRecoveryNotice {
+            failure_kind: var_failureKind,
+            reason: var_reason,
+            retry_count: var_retryCount,
+            max_retries: var_maxRetries,
+            effective_wait_millis: var_effectiveWaitMillis,
+            phase: var_phase,
+            failure: var_failure,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::presentation::BridgeModelRecoveryPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Repairing,
+            1 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Waiting,
+            2 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Retrying,
+            3 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Recovered,
+            4 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Exhausted,
+            5 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Failed,
+            6 => crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Cancelled,
+            _ => unreachable!("Invalid variant for BridgeModelRecoveryPhase: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::delegation::BridgeModelSelectionGuide {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -19825,11 +19893,13 @@ impl SseDecode for crate::api::studio::types::response::BridgeSessionCostSnapsho
             crate::api::studio::types::thread_stream::BridgeRuntimeCostAmount,
         >>::sse_decode(deserializer);
         let mut var_hasUnpricedUsage = <bool>::sse_decode(deserializer);
+        let mut var_hasIncompleteUsage = <bool>::sse_decode(deserializer);
         return crate::api::studio::types::response::BridgeSessionCostSnapshot {
             root_thread_id: var_rootThreadId,
             purpose_costs: var_purposeCosts,
             estimated_costs: var_estimatedCosts,
             has_unpriced_usage: var_hasUnpricedUsage,
+            has_incomplete_usage: var_hasIncompleteUsage,
         };
     }
 }
@@ -22705,16 +22775,26 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeTurnFailureDt
         let mut var_code = <Option<String>>::sse_decode(deserializer);
         let mut var_httpStatus = <Option<u16>>::sse_decode(deserializer);
         let mut var_message = <String>::sse_decode(deserializer);
-        let mut var_retryable = <bool>::sse_decode(deserializer);
+        let mut var_retryDisposition = <String>::sse_decode(deserializer);
         let mut var_retryAfterMs = <Option<u64>>::sse_decode(deserializer);
+        let mut var_errorType = <Option<String>>::sse_decode(deserializer);
+        let mut var_requestId = <Option<String>>::sse_decode(deserializer);
+        let mut var_stage = <Option<String>>::sse_decode(deserializer);
+        let mut var_recovery = <Option<
+            crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo,
+        >>::sse_decode(deserializer);
         return crate::api::studio::types::thread_stream::BridgeTurnFailureDto {
             category: var_category,
             provider_kind: var_providerKind,
             code: var_code,
             http_status: var_httpStatus,
             message: var_message,
-            retryable: var_retryable,
+            retry_disposition: var_retryDisposition,
             retry_after_ms: var_retryAfterMs,
+            error_type: var_errorType,
+            request_id: var_requestId,
+            stage: var_stage,
+            recovery: var_recovery,
         };
     }
 }
@@ -23155,6 +23235,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeUsageGapReaso
             0 => crate::api::studio::types::thread_stream::BridgeUsageGapReason::Unreported,
             1 => crate::api::studio::types::thread_stream::BridgeUsageGapReason::Inconsistent,
             2 => crate::api::studio::types::thread_stream::BridgeUsageGapReason::Overflow,
+            3 => crate::api::studio::types::thread_stream::BridgeUsageGapReason::NonTerminalSample,
             _ => unreachable!("Invalid variant for BridgeUsageGapReason: {}", inner),
         };
     }
@@ -26825,6 +26906,36 @@ impl SseDecode for Option<crate::api::studio::types::settings::BridgeModelReason
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::presentation::BridgeModelRecoveryNotice> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::presentation::BridgeModelRecoveryNotice>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::delegation::BridgeModelSelectionGuide> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -27230,6 +27341,21 @@ impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeTurn> 
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::studio::types::thread_stream::BridgeTurn>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeTurnFailureDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::thread_stream::BridgeTurnFailureDto>::sse_decode(
+                    deserializer,
+                ),
             );
         } else {
             return None;
@@ -36291,6 +36417,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::
             self.tool.into_into_dart().into_dart(),
             self.wait.into_into_dart().into_dart(),
             self.text_channel.into_into_dart().into_dart(),
+            self.model_recovery.into_into_dart().into_dart(),
             self.started_at.into_into_dart().into_dart(),
             self.finished_at.into_into_dart().into_dart(),
             self.content_present.into_into_dart().into_dart(),
@@ -39912,6 +40039,95 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.retry_count.into_into_dart().into_dart(),
+            self.max_retries.into_into_dart().into_dart(),
+            self.effective_wait_millis.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+            self.stop_reason.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo,
+    > for crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo
+{
+    fn into_into_dart(self) -> crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeModelRecoveryNotice
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.failure_kind.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+            self.retry_count.into_into_dart().into_dart(),
+            self.max_retries.into_into_dart().into_dart(),
+            self.effective_wait_millis.into_into_dart().into_dart(),
+            self.phase.into_into_dart().into_dart(),
+            self.failure.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeModelRecoveryNotice
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::presentation::BridgeModelRecoveryNotice,
+    > for crate::api::studio::types::presentation::BridgeModelRecoveryNotice
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeModelRecoveryNotice {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeModelRecoveryPhase
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Repairing => 0.into_dart(),
+            Self::Waiting => 1.into_dart(),
+            Self::Retrying => 2.into_dart(),
+            Self::Recovered => 3.into_dart(),
+            Self::Exhausted => 4.into_dart(),
+            Self::Failed => 5.into_dart(),
+            Self::Cancelled => 6.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeModelRecoveryPhase
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::presentation::BridgeModelRecoveryPhase,
+    > for crate::api::studio::types::presentation::BridgeModelRecoveryPhase
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeModelRecoveryPhase {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::delegation::BridgeModelSelectionGuide
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -41698,6 +41914,7 @@ impl flutter_rust_bridge::IntoDart
             self.purpose_costs.into_into_dart().into_dart(),
             self.estimated_costs.into_into_dart().into_dart(),
             self.has_unpriced_usage.into_into_dart().into_dart(),
+            self.has_incomplete_usage.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -45095,8 +45312,12 @@ impl flutter_rust_bridge::IntoDart
             self.code.into_into_dart().into_dart(),
             self.http_status.into_into_dart().into_dart(),
             self.message.into_into_dart().into_dart(),
-            self.retryable.into_into_dart().into_dart(),
+            self.retry_disposition.into_into_dart().into_dart(),
             self.retry_after_ms.into_into_dart().into_dart(),
+            self.error_type.into_into_dart().into_dart(),
+            self.request_id.into_into_dart().into_dart(),
+            self.stage.into_into_dart().into_dart(),
+            self.recovery.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -45592,6 +45813,7 @@ impl flutter_rust_bridge::IntoDart
             Self::Unreported => 0.into_dart(),
             Self::Inconsistent => 1.into_dart(),
             Self::Overflow => 2.into_dart(),
+            Self::NonTerminalSample => 3.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -52581,6 +52803,10 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeCurrentAtom {
             self.text_channel,
             serializer,
         );
+        <Option<crate::api::studio::types::presentation::BridgeModelRecoveryNotice>>::sse_encode(
+            self.model_recovery,
+            serializer,
+        );
         <Option<i64>>::sse_encode(self.started_at, serializer);
         <Option<i64>>::sse_encode(self.finished_at, serializer);
         <Option<bool>>::sse_encode(self.content_present, serializer);
@@ -54801,6 +55027,57 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelReasoningDesc
     }
 }
 
+impl SseEncode for crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<u32>>::sse_encode(self.retry_count, serializer);
+        <Option<u32>>::sse_encode(self.max_retries, serializer);
+        <Option<u64>>::sse_encode(self.effective_wait_millis, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
+        <Option<String>>::sse_encode(self.stop_reason, serializer);
+        <Option<String>>::sse_encode(self.error, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::presentation::BridgeModelRecoveryNotice {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.failure_kind, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
+        <u32>::sse_encode(self.retry_count, serializer);
+        <u32>::sse_encode(self.max_retries, serializer);
+        <Option<u64>>::sse_encode(self.effective_wait_millis, serializer);
+        <crate::api::studio::types::presentation::BridgeModelRecoveryPhase>::sse_encode(
+            self.phase, serializer,
+        );
+        <Option<crate::api::studio::types::thread_stream::BridgeTurnFailureDto>>::sse_encode(
+            self.failure,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::presentation::BridgeModelRecoveryPhase {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Repairing => 0,
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Waiting => 1,
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Retrying => 2,
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Recovered => 3,
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Exhausted => 4,
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Failed => 5,
+                crate::api::studio::types::presentation::BridgeModelRecoveryPhase::Cancelled => 6,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::studio::types::delegation::BridgeModelSelectionGuide {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -56015,6 +56292,7 @@ impl SseEncode for crate::api::studio::types::response::BridgeSessionCostSnapsho
             serializer,
         );
         <bool>::sse_encode(self.has_unpriced_usage, serializer);
+        <bool>::sse_encode(self.has_incomplete_usage, serializer);
     }
 }
 
@@ -58051,8 +58329,15 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeTurnFailureDt
         <Option<String>>::sse_encode(self.code, serializer);
         <Option<u16>>::sse_encode(self.http_status, serializer);
         <String>::sse_encode(self.message, serializer);
-        <bool>::sse_encode(self.retryable, serializer);
+        <String>::sse_encode(self.retry_disposition, serializer);
         <Option<u64>>::sse_encode(self.retry_after_ms, serializer);
+        <Option<String>>::sse_encode(self.error_type, serializer);
+        <Option<String>>::sse_encode(self.request_id, serializer);
+        <Option<String>>::sse_encode(self.stage, serializer);
+        <Option<crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo>>::sse_encode(
+            self.recovery,
+            serializer,
+        );
     }
 }
 
@@ -58427,17 +58712,11 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeUsageGapIssue
 impl SseEncode for crate::api::studio::types::thread_stream::BridgeUsageGapReason {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(
-            match self {
-                crate::api::studio::types::thread_stream::BridgeUsageGapReason::Unreported => 0,
-                crate::api::studio::types::thread_stream::BridgeUsageGapReason::Inconsistent => 1,
-                crate::api::studio::types::thread_stream::BridgeUsageGapReason::Overflow => 2,
-                _ => {
-                    unimplemented!("");
-                }
-            },
-            serializer,
-        );
+        <i32>::sse_encode(match self {crate::api::studio::types::thread_stream::BridgeUsageGapReason::Unreported => { 0 }
+crate::api::studio::types::thread_stream::BridgeUsageGapReason::Inconsistent => { 1 }
+crate::api::studio::types::thread_stream::BridgeUsageGapReason::Overflow => { 2 }
+crate::api::studio::types::thread_stream::BridgeUsageGapReason::NonTerminalSample => { 3 }
+ _ => { unimplemented!(""); }}, serializer);
     }
 }
 
@@ -61314,6 +61593,30 @@ impl SseEncode for Option<crate::api::studio::types::settings::BridgeModelReason
     }
 }
 
+impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::thread_stream::BridgeModelRecoveryInfo>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::presentation::BridgeModelRecoveryNotice> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::presentation::BridgeModelRecoveryNotice>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::studio::types::delegation::BridgeModelSelectionGuide> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -61670,6 +61973,18 @@ impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeTurn> 
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::thread_stream::BridgeTurn>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeTurnFailureDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::thread_stream::BridgeTurnFailureDto>::sse_encode(
+                value, serializer,
+            );
         }
     }
 }

@@ -22,12 +22,15 @@ pub use summary::{TextSummary, TextSummaryRequest};
 pub(crate) mod transport_policy;
 pub(crate) mod wire_capture;
 
-pub use billing::model_attempt_billing;
+pub use billing::{
+    ModelRecoveryDecision, ModelRecoveryStopReason, ModelSubAttemptReceipt,
+    model_committed_sub_attempt_billing, model_recovery_decision, model_saved_sub_attempt_receipt,
+    model_sub_attempt_id, model_sub_attempt_receipt,
+};
 pub use client::{ModelRuntime, NativeCompactionCheckpoint, RemoteCompaction};
 pub use clock::InferenceClock;
 pub use invocation_context::ModelInvocationContext;
 pub(crate) use invocation_context::StreamObserver;
-pub(crate) use provider_error::provider_stream_failure;
 pub use session::ModelSession;
 
 pub use tokio_util::sync::CancellationToken;

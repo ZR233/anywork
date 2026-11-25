@@ -15,7 +15,11 @@ use pl_protocol::{PureError, Result};
 use serde_json::{Map, Value, json};
 
 fn protocol_error(message: impl Into<String>) -> PureError {
-    PureError::LlmError(format!("Gemini request protocol error: {}", message.into()))
+    pl_model_wire::provider_error::invalid_request(format!(
+        "Gemini request protocol error: {}",
+        message.into()
+    ))
+    .into()
 }
 
 pub fn validate_model_path_segment(model: &str) -> Result<String> {

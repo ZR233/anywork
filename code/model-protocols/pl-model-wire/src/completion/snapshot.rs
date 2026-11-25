@@ -11,6 +11,8 @@ pub struct CompletionResponseSnapshot {
     model_observation: Option<crate::completion::InferenceModelObservation>,
     output: Vec<CompletionResponseOutputSnapshot>,
     accounting: crate::model::InferenceAccounting,
+    usage_is_terminal: bool,
+    settlements: Vec<pl_core::context::OpaquePayload>,
     timing: Option<crate::completion::InferenceTiming>,
 }
 
@@ -34,6 +36,18 @@ impl CompletionResponseSnapshot {
     /// Final accounting, including missing usage and disabled pricing states.
     pub fn accounting(&self) -> &crate::model::InferenceAccounting {
         &self.accounting
+    }
+
+    /// Whether the final attempt's latest usage sample came from a terminal wire frame.
+    pub fn usage_is_terminal(&self) -> bool {
+        self.usage_is_terminal
+    }
+
+    /// Every observed sub-attempt's immutable settlement, including failed attempts.
+    /// A durable host has already acknowledged these through its bound delivery capability;
+    /// reading this view does not create another billing contribution.
+    pub fn settlements(&self) -> &[pl_core::context::OpaquePayload] {
+        &self.settlements
     }
 
     pub fn timing(&self) -> Option<crate::completion::InferenceTiming> {
@@ -188,6 +202,8 @@ pub fn completion_response_snapshot(
         model_observation: response.model_observation.clone(),
         output,
         accounting: response.accounting.clone(),
+        usage_is_terminal: response.usage_is_terminal,
+        settlements: response.settlements.clone(),
         timing: response.timing,
     }
 }

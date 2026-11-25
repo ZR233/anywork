@@ -6,7 +6,10 @@ use super::receipt::{
 };
 use crate::runtime::PromptPrefixChangedReason;
 use crate::{
-    completion::CompletionResponse,
+    completion::{
+        CompletionResponse, MODEL_STREAM_CURRENT_FORMAT, MODEL_STREAM_CURRENT_VERSION,
+        ModelStreamCurrent,
+    },
     protocol::{ProtocolId, WireApi},
 };
 use pl_core::{
@@ -29,9 +32,8 @@ const PRESENTATION_PREVIEW_FORMAT: &str = "pl.model.presentation-item";
 /// Returns `None` for unrelated formats and already-current, validated payloads. This function
 /// has no storage or configuration access. Unknown fields and numeric representations survive
 /// outer-object upgrades; embedded provider and tool strings are never parsed or rewritten.
-/// Assistant identity conversion is deliberately separate: this entry retains the existing
-/// legacy upgrade through version 5. Version 6 requires [`upgrade_assistant_frame`] with actual
-/// source context, and current request reconstruction refuses a legacy frame until then.
+/// Assistant frames through version 5 need [`upgrade_assistant_frame`] with actual source context.
+/// Version 6 already carries source identities and can be upgraded here without changing them.
 ///
 /// # Errors
 /// Rejects recognized payloads with unsupported versions, conflicting fields or invalid content.
@@ -41,7 +43,32 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
         super::codec::decode_frame(payload)?;
         return Ok(None);
     }
+    if payload.format() == "pl.model.assistant" && payload.version() == 6 {
+        let mut fields: RawObject = parse(payload.content())?;
+        fields.remove("settlementRelayed");
+        let migrated = OpaquePayload::new(
+            payload.format(),
+            super::codec::FRAME_VERSION,
+            serde_json::to_string(&fields).map_err(json_error)?,
+        )
+        .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
+        super::codec::decode_frame(&migrated)?;
+        return Ok(Some(migrated));
+    }
     let current = match payload.format() {
+        MODEL_STREAM_CURRENT_FORMAT => {
+            match payload.version() {
+                1 => {
+                    parse::<ModelStreamCurrent>(payload.content())?;
+                }
+                MODEL_STREAM_CURRENT_VERSION => {
+                    ModelStreamCurrent::decode(payload)
+                        .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
+                }
+                _ => return Err(invalid("unsupported model stream current version")),
+            }
+            MODEL_STREAM_CURRENT_VERSION
+        }
         "pl.model.compaction" => {
             match payload.version() {
                 2 | 3 => {
@@ -75,6 +102,9 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
                     let legacy: LegacyModelRequestReceipt = parse(payload.content())?;
                     legacy.migrate();
                 }
+                2 => {
+                    parse::<ModelRequestReceipt>(payload.content())?;
+                }
                 REQUEST_RECEIPT_VERSION => {
                     super::receipt::model_request_receipt(payload)?;
                 }
@@ -89,6 +119,7 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
     }
     let mut value: RawObject = parse(payload.content())?;
     match payload.format() {
+        MODEL_STREAM_CURRENT_FORMAT => migrate_legacy_stream_generation(&mut value)?,
         "pl.model.compaction" => {
             if payload.version() == 2 {
                 migrate_binding_field(&mut value)?;
@@ -99,6 +130,8 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
             edit(&mut value, "receipt", migrate_binding_field)?;
         }
         "pl.model.failure" => {
+            value.remove("settlementRelayed");
+            normalize_legacy_provider_failure(&mut value)?;
             if payload.version() <= 2 {
                 migrate_binding_field(&mut value)?;
             }
@@ -165,6 +198,24 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
     Ok(Some(migrated))
 }
 
+fn migrate_legacy_stream_generation(generation: &mut RawObject) -> Result<(), ModelError> {
+    // Version 1 inferred terminal usage from completion; it did not observe a terminal
+    // sample or own a settlement. Keep counters and the original observation intact.
+    generation.remove("settlement");
+    generation.insert(
+        "usageIsTerminal".into(),
+        serde_json::value::to_raw_value(&false).map_err(json_error)?,
+    );
+    if let Some(previous) = generation.get_mut("previousGenerations") {
+        let mut generations: Vec<RawObject> = parse(previous.get())?;
+        for generation in &mut generations {
+            migrate_legacy_stream_generation(generation)?;
+        }
+        *previous = serde_json::value::to_raw_value(&generations).map_err(json_error)?;
+    }
+    Ok(())
+}
+
 /// A contextual assistant upgrade, not a database migration or a new source of execution rights.
 /// Callers must replace all external call references atomically with installing `payload`.
 #[derive(Debug)]
@@ -173,9 +224,59 @@ pub struct AssistantFrameUpgrade {
     pub call_ids: std::collections::BTreeMap<String, String>,
 }
 
+/// Upgrades one saved Core assistant record using its canonical committed output identity.
+/// The enclosing recovery operation owns the returned call-reference changes.
+pub fn upgrade_saved_assistant_record(
+    record: &mut pl_core::context::ContextRecord,
+) -> Result<std::collections::BTreeMap<String, String>, ModelError> {
+    use pl_core::context::{ContextContent, ContextSource};
+    let mut frames = record
+        .content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
+                Some((index, payload))
+            }
+            _ => None,
+        });
+    let Some((index, payload)) = frames.next() else {
+        return Ok(Default::default());
+    };
+    if frames.next().is_some() || record.source != ContextSource::Assistant {
+        return Err(invalid(
+            "saved model response has an invalid assistant envelope",
+        ));
+    }
+    let source = record
+        .id
+        .strip_suffix(":output")
+        .filter(|source| !source.is_empty())
+        .ok_or_else(|| {
+            invalid("saved assistant is missing its committed source attempt identity")
+        })?;
+    let mut changed = std::collections::BTreeMap::new();
+    if payload.version() != super::codec::FRAME_VERSION {
+        let upgrade = upgrade_assistant_frame(payload, source, &record.tool_calls)?;
+        for call in &mut record.tool_calls {
+            let id = upgrade
+                .call_ids
+                .get(&call.call_id)
+                .ok_or_else(|| invalid("missing saved tool call mapping"))?;
+            if id != &call.call_id {
+                changed.insert(std::mem::replace(&mut call.call_id, id.clone()), id.clone());
+            }
+        }
+        record.content[index] = ContextContent::Opaque {
+            payload: upgrade.payload,
+        };
+    }
+    super::codec::record_receipt(record)?;
+    Ok(changed)
+}
+
 /// Upgrades a legacy assistant using its actual source attempt and exact external Core envelope.
-/// The ordinary payload-only migration above intentionally retains its legacy version-5 duty; it
-/// never claims to have performed this contextual version-6 identity conversion.
+/// The payload-only migration leaves older unscoped call identities for this contextual upgrade.
 pub fn upgrade_assistant_frame(
     payload: &OpaquePayload,
     source_attempt_id: &str,
@@ -193,11 +294,31 @@ pub fn upgrade_assistant_frame(
         ));
     }
     let migrated = migrate_payload(payload)?.unwrap_or_else(|| payload.clone());
-    let frame = super::codec::decode_frame(&migrated)?;
+    let frame = if migrated.version() == FRAME_VERSION {
+        let frame = decode_frame_legacy(&migrated)?;
+        super::codec::validate_call_bindings(&frame)?;
+        frame
+    } else {
+        super::codec::decode_frame(&migrated)?
+    };
     if frame.bindings != external_calls {
         return Err(invalid(
             "legacy assistant differs from external call envelope",
         ));
+    }
+    if let Some(source) = &frame.source {
+        if source.source_attempt_id != source_attempt_id {
+            return Err(invalid(
+                "assistant upgrade source differs from the recorded attempt",
+            ));
+        }
+        return Ok(AssistantFrameUpgrade {
+            payload: migrated,
+            call_ids: external_calls
+                .iter()
+                .map(|call| (call.call_id.clone(), call.call_id.clone()))
+                .collect(),
+        });
     }
     let mut call_ids = std::collections::BTreeMap::new();
     let mut identities = Vec::new();
@@ -213,6 +334,7 @@ pub fn upgrade_assistant_frame(
         identities.push(identity);
     }
     let mut value: RawObject = parse(migrated.content())?;
+    value.remove("settlementRelayed");
     let bindings: Vec<Box<serde_json::value::RawValue>> = parse(field(&value, "bindings")?.get())?;
     let mut upgraded = Vec::new();
     for binding in bindings {
@@ -481,6 +603,11 @@ struct FailureReceiptV2 {
 impl FailureReceiptV2 {
     fn migrate(self) -> ModelFailureReceipt {
         ModelFailureReceipt {
+            settlements: Vec::new(),
+            recovery_stop: None,
+            recovery_error: None,
+            retry_count: None,
+            max_retries: None,
             timing: None,
             provider_failure: self.provider_failure,
             message: self.message,
@@ -660,6 +787,11 @@ impl FailureReceiptV1 {
             None => None,
         };
         Ok(ModelFailureReceipt {
+            settlements: Vec::new(),
+            recovery_stop: None,
+            recovery_error: None,
+            retry_count: None,
+            max_retries: None,
             timing: None,
             provider_failure: self.provider_failure,
             message: self.message,
@@ -735,14 +867,65 @@ impl FailureProgressV1 {
     }
 }
 
+fn normalize_legacy_provider_failure(value: &mut RawObject) -> Result<(), ModelError> {
+    if value
+        .get("providerFailure")
+        .is_none_or(|raw| raw.get() == "null")
+    {
+        return Ok(());
+    }
+    edit(value, "providerFailure", |failure| {
+        if let Some(kind) = failure.get("kind")
+            && matches!(kind.get(), "\"capacity\"" | "\"configuration\"")
+        {
+            let legacy: serde_json::Value = parse(kind.get())?;
+            failure.insert("kind".into(), parse("\"unknown\"")?);
+            let existing = failure
+                .get("details")
+                .map(|raw| parse::<serde_json::Value>(raw.get()))
+                .transpose()?
+                .unwrap_or_default();
+            let mut details = match existing {
+                serde_json::Value::Object(fields)
+                    if fields
+                        .get("legacyKind")
+                        .is_none_or(|value| *value == legacy) =>
+                {
+                    fields
+                }
+                serde_json::Value::Null => serde_json::Map::new(),
+                existing => serde_json::Map::from_iter([(String::from("legacyDetails"), existing)]),
+            };
+            details.insert("legacyKind".into(), legacy);
+            failure.insert(
+                "details".into(),
+                serde_json::value::to_raw_value(&details).map_err(json_error)?,
+            );
+        }
+        if failure.get("retry").is_some_and(|raw| raw.get() != "null") {
+            edit(failure, "retry", |retry| {
+                if let Some(delay) = retry.remove("retry_after_ms")
+                    && !retry.contains_key("retryAfterMs")
+                {
+                    put(retry, "retryAfterMs", delay)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })
+}
+
 fn decode_failure(payload: &OpaquePayload) -> Result<ModelFailureReceipt, ModelError> {
-    let content = if payload.version() < FAILURE_RECEIPT_VERSION {
-        legacy_timing_content(payload, false)?
+    let content = if payload.version() < 6 {
+        let mut value: RawObject = parse(&legacy_timing_content(payload, false)?)?;
+        normalize_legacy_provider_failure(&mut value)?;
+        serde_json::to_string(&value).map_err(json_error)?
     } else {
         payload.content().to_owned()
     };
     let receipt = match payload.version() {
-        FAILURE_RECEIPT_VERSION | 4 | LEGACY_FAILURE_RECEIPT_VERSION_V3 => {
+        FAILURE_RECEIPT_VERSION | 6 | 5 | 4 | LEGACY_FAILURE_RECEIPT_VERSION_V3 => {
             serde_json::from_str::<ModelFailureReceipt>(&content)
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))
         }
@@ -771,11 +954,9 @@ fn decode_failure(payload: &OpaquePayload) -> Result<ModelFailureReceipt, ModelE
     Ok(receipt)
 }
 
-use super::{
-    codec::{AssistantFrame, LEGACY_FRAME_VERSION as FRAME_VERSION},
-    failure,
-};
+use super::{codec::AssistantFrame, failure};
 use pl_core::model::ModelToolCall;
+const FRAME_VERSION: u32 = 5;
 const LEGACY_FRAME_VERSION_V3: u32 = 3;
 const LEGACY_FRAME_VERSION_V2: u32 = 2;
 fn invalid(message: &'static str) -> ModelError {

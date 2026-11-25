@@ -8,7 +8,6 @@ use crate::{
     InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
 use anyhow::{Context, Result, ensure};
-use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 use pl_core::thread::{ThreadEffectBatch, UsageSummary};
 use pl_model::model::UnpricedReason;
 use sha2::{Digest, Sha256};
@@ -28,7 +27,7 @@ use crate::history::{
     HistorySingleVisibility, HistoryStore, HistoryTimelineRole, PendingBody, decode_event_envelope,
     pack_bodies,
 };
-use crate::studio::thread_projection::{AuxiliaryBillingReceipt, CurrentState, PreparedAccounting};
+use crate::studio::thread_projection::{CurrentState, PreparedAccounting};
 
 fn export_options(
     cwd: &std::path::Path,
@@ -119,6 +118,7 @@ fn text_original(
         started_at: None,
         finished_at: None,
         text_channel: Some(channel),
+        model_recovery: None,
         single_visibility: Some(HistorySingleVisibility::Content),
         presentation_contract: None,
         source_order: None,
@@ -194,6 +194,7 @@ fn history_change(
         started_at: atom.started_at,
         finished_at: atom.finished_at,
         text_channel: atom.text_channel,
+        model_recovery: atom.model_recovery.clone(),
         single_visibility: None,
         presentation_contract: None,
         source_order: atom.source_order,
@@ -363,9 +364,25 @@ fn aux_effect(
     usage: UsageReport,
     pricing: PricingOutcome,
 ) -> Result<PreparedAccounting> {
-    let payload = AuxiliaryBillingReceipt {
+    use pl_model::completion::{InferenceAttemptMetadata, InferenceAttemptOutcome};
+    let receipt = pl_model::runtime::ModelSubAttemptReceipt {
+        turn_id: None,
+        attempt_id: inference_id.into(),
+        logical_request_id: inference_id.into(),
+        generation: 0,
+        retry: 0,
+        provider_failure: None,
+        message: None,
         billing: InferenceBillingRecord {
-            inference_id: inference_id.to_string(),
+            attempt: Some(InferenceAttemptMetadata {
+                logical_request_id: inference_id.into(),
+                core_attempt_id: inference_id.into(),
+                generation: 0,
+                stage: pl_protocol::ProviderFailureStage::Stream,
+                outcome: InferenceAttemptOutcome::Succeeded,
+                usage_is_terminal: true,
+            }),
+            inference_id: pl_model::runtime::model_sub_attempt_id(inference_id, 0),
             purpose: Some("title".to_string()),
             account_id: account_id.to_string(),
             account_display_name: None,
@@ -387,21 +404,22 @@ fn aux_effect(
             timing: None,
             recorded_at: 1_763_000_000_100 + sequence as i64,
         },
-        succeeded: true,
-    }
-    .into_payload()?;
+    };
+    let payload = pl_core::context::OpaquePayload::new(
+        "pl.model.sub-attempt-settlement",
+        2,
+        serde_json::to_string(&receipt)?,
+    )?;
     let effect = ThreadEffectBatch {
         thread_id: thread_id.to_string(),
         sequence,
         committed_at: 1_763_000_000_100 + sequence as i64,
-        extensions: vec![ExtensionChange::Put {
-            id: inference_id.to_string(),
-            record: ExtensionRecord {
-                revision: 1,
-                payload,
-            },
-        }]
-        .into(),
+        model_sub_attempt_settlements: Arc::from([pl_core::model::ModelSubAttemptSettlement {
+            turn_id: None,
+            attempt_id: inference_id.into(),
+            generation: 0,
+            payload,
+        }]),
         ..Default::default()
     };
     let prepared = PreparedAccounting::prepare(&effect)?;
@@ -866,6 +884,7 @@ async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> 
         tool: None,
         wait: None,
         text_channel: None,
+        model_recovery: None,
         started_at: None,
         finished_at: None,
         content_present: None,

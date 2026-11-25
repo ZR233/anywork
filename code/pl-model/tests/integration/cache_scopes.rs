@@ -215,7 +215,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
                 .complete_text(
                     &request().input,
                     ModelTurnRequest::new(),
-                    ModelTurnOptions::default()
+                    ModelTurnOptions::in_memory()
                         .with_session(physical.clone())
                         .with_prompt_cache_scope(scope)
                         .with_trace_metadata(trace),
@@ -223,7 +223,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
                 .await
                 .unwrap()
         } else {
-            let invocation = ModelInvocationContext::new(physical.clone())
+            let invocation = ModelInvocationContext::in_memory(physical.clone())
                 .with_prompt_cache_scope(scope)
                 .with_trace_metadata(trace);
             runtime

@@ -96,9 +96,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     endpoint.bearer_token = Some(key);
     let model = resolve_model(&args.model)?;
-    let runtime = ModelRuntime::bind("gemini-live", endpoint, model, ADAPTER.codec, None)?;
-    let context =
-        || ModelInvocationContext::default().with_cancellation(Some(CancellationToken::new()));
+    let runtime = ModelRuntime::bind(
+        "gemini-live",
+        endpoint,
+        model,
+        ADAPTER.codec,
+        ADAPTER.error_policy,
+        None,
+    )?;
+    let context = || {
+        ModelInvocationContext::in_memory(Default::default())
+            .with_cancellation(Some(CancellationToken::new()))
+    };
 
     match args.command {
         Command::Chat { prompt } => {

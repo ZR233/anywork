@@ -697,6 +697,7 @@
   "statusOutputTokensLabel": "Output",
   "statusCostEstimateLabel": "Estimated cost",
   "statusUsageIncompleteLabel": "Incomplete",
+  "statusUsageNonTerminalSampleLabel": "Incomplete · Missing final usage reports",
   "statusCacheLabel": "Cache hit rate",
   "statusCacheHitTokensLabel": "Cache read",
   "statusCacheMissTokensLabel": "Cache miss",
@@ -706,6 +707,7 @@
   "statusCacheSavingsLabel": "Cache savings",
   "statusUnpricedUsageLabel": "Unpriced",
   "sessionAllAgentsCostTooltip": "Cost for all agents in this session",
+  "sessionCostIncompleteUsage": "Incomplete usage",
   "sessionMoreActionsTooltip": "More actions",
   "sessionOpenWorkspace": "Open workspace",
   "sessionOpenWith": "Open with",
@@ -3878,20 +3880,87 @@
   "timelineFailureCategoryInternal": "Internal",
   "timelineProviderKindAuth": "Authentication",
   "timelineProviderKindAuthz": "Authorization",
-  "timelineProviderKindCapacity": "Capacity",
-  "timelineProviderKindConfig": "Configuration",
+  "timelineProviderKindQuota": "Balance or quota exhausted",
+  "timelineProviderKindRateLimit": "Temporary rate limit",
+  "timelineProviderKindServiceBusy": "Service busy",
+  "timelineProviderKindContextLimit": "Context limit exceeded",
+  "timelineProviderKindInvalidRequest": "Invalid request",
+  "timelineProviderKindContentBlocked": "Content blocked",
+  "timelineProviderKindOutputLimit": "Output limit reached",
   "timelineProviderKindTransport": "Network transport",
   "timelineProviderKindProtocol": "Response protocol",
-  "timelineRetryableHint": "Retryable",
-  "timelineRetryAfterSeconds": "Retry after {seconds}s",
+  "timelineRetryableHint": "May be eligible for retry",
+  "timelineRetryAfterSeconds": "Provider suggests waiting {seconds}s",
   "@timelineRetryAfterSeconds": {
     "placeholders": {
       "seconds": {
-        "type": "int"
+        "type": "String"
       }
     }
   },
   "timelineRetryPermanent": "Not auto-retried",
+  "timelineRetryWaitUnrepresentable": "Provider wait is beyond the supported range",
+  "timelineRecoveryRetryCount": "Retries used: {count} of {limit}",
+  "@timelineRecoveryRetryCount": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
+  "timelineRecoveryRetryCountOnly": "Retries used: {count}",
+  "@timelineRecoveryRetryCountOnly": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "timelineRecoveryRetryLimit": "Retry limit: {limit}",
+  "@timelineRecoveryRetryLimit": {
+    "placeholders": {"limit": {"type": "int"}}
+  },
+  "timelineRecoveryWaitMillis": "{millis} ms",
+  "@timelineRecoveryWaitMillis": {
+    "placeholders": {"millis": {"type": "String"}}
+  },
+  "timelineRecoveryWaitSeconds": "{seconds} s",
+  "@timelineRecoveryWaitSeconds": {
+    "placeholders": {"seconds": {"type": "String"}}
+  },
+  "timelineRecoveryScheduledWait": "Scheduled wait: {duration}",
+  "@timelineRecoveryScheduledWait": {
+    "placeholders": {"duration": {"type": "String"}}
+  },
+  "timelineRecoveryAttempt": "Retry {count} of {limit}",
+  "@timelineRecoveryAttempt": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "limit": {"type": "int"}
+    }
+  },
+  "timelineRecoveryRepairing": "Repairing the model request",
+  "timelineRecoveryWaiting": "Waiting to retry the model request",
+  "timelineRecoveryRetrying": "Retrying the model request",
+  "timelineRecoveryRecovered": "Model request recovered",
+  "timelineRecoveryFailed": "Model request recovery stopped",
+  "timelineRecoveryActionHttpFallback": "Switch to HTTP",
+  "timelineRecoveryActionRefreshAttachments": "Refresh attachments",
+  "timelineRecoveryActionFullContext": "Resend the full context",
+  "timelineRecoveryStopBudgetExhausted": "Automatic recovery stopped after reaching the retry limit.",
+  "timelineRecoveryStopSideEffects": "Automatic recovery stopped because retrying could repeat an external action.",
+  "timelineRecoveryStopSaveFailed": "Automatic recovery stopped because the recovery state could not be saved.",
+  "timelineRecoveryStopRepairFailed": "Automatic recovery stopped because the repair failed.",
+  "timelineRecoveryStopWaitUnrepresentable": "Automatic recovery stopped because the required wait is too long to schedule safely.",
+  "timelineRecoveryStopContextCompactionRequired": "The input needs to be compacted before execution can continue.",
+  "timelineRecoveryStopPermanentFailure": "This failure cannot be recovered automatically.",
+  "timelineRecoveryStopCancelled": "Automatic recovery was cancelled.",
+  "timelineDetailErrorType": "Provider error type",
+  "timelineDetailRequestId": "Provider request ID",
+  "timelineDetailFailureStage": "Failure stage",
+  "timelineFailureStageUnknown": "Unknown stage",
+  "timelineFailureStageRequest": "Request",
+  "timelineFailureStageHandshake": "Connection handshake",
+  "timelineFailureStageStream": "Response stream",
+  "timelineFailureStageAttachment": "Attachment handling",
+  "timelineDetailRecoveryAction": "Last recovery action",
+  "timelineDetailLastRecoveryWait": "Last scheduled wait",
+  "timelineDetailRecoveryError": "Recovery error",
   "timelineBudgetLimitModelStep": "Model steps",
   "timelineBudgetLimitToolCall": "Tool calls",
   "timelineBudgetLimitWait": "Wait steps",
@@ -3944,7 +4013,7 @@
   "timelineDetailProviderKind": "Failure type",
   "timelineDetailCode": "Error code",
   "timelineDetailHttpStatus": "HTTP status",
-  "timelineDetailRetry": "Retry policy",
+  "timelineDetailRetry": "Retry hint",
   "timelineDetailDuration": "Duration",
   "timelineDetailBudgetKind": "Limit reached",
   "timelineDetailRollover": "Context rollover",

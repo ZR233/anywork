@@ -32,6 +32,7 @@ pub enum CurrentCaptureError {
 impl From<CurrentCaptureError> for ModelError {
     fn from(error: CurrentCaptureError) -> Self {
         Self {
+            context_recovery: None,
             kind: if error == CurrentCaptureError::Cancelled {
                 ModelFailureKind::Cancelled
             } else {

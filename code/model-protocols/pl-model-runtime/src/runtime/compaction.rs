@@ -17,6 +17,7 @@ pub(super) async fn compact_context(
     provider: &ModelRuntime,
     request: ModelCompactionRequest,
     mut context: ModelInvocationContext,
+    report: &mut super::invocation::InvocationReport,
 ) -> std::result::Result<ModelCompactionResponse, CompletionFailure> {
     if !provider.endpoint().service_capabilities.remote_compaction
         || provider.model().extra.binding.transport.protocol != WireApi::Responses
@@ -62,7 +63,9 @@ pub(super) async fn compact_context(
     let completion = request.prefix;
     context.purpose =
         super::invocation_context::InvocationPurpose::RemoteCompaction { headers, body };
-    let response = provider.complete(completion, context).await?;
+    let response = provider
+        .complete_with_report(completion, context, report)
+        .await?;
     let model_observation = response.model_observation.clone();
     let accounting = response.accounting;
     let mut checkpoints = response
@@ -83,8 +86,11 @@ pub(super) async fn compact_context(
         })
     })()
     .map_err(|source| CompletionFailure {
+        recovery_error: None,
+        settlements: response.settlements,
         source: Box::new(source),
         accounting: Box::new(accounting.clone()),
+        usage_is_terminal: response.usage_is_terminal,
         timing: response.timing,
         model_observation: model_observation.clone().map(Box::new),
         presentation_items: response.presentation_items,

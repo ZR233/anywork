@@ -131,11 +131,11 @@ impl OpenAiStreamDecoder {
             }
             self.terminal_received = true;
         }
-        if let Some(choices) = &event.choices {
+        if event.choices.is_some() {
             if event.id.is_some() {
                 self.chat_response_id.clone_from(&event.id);
             }
-            self.chat_finished |= choices.iter().any(|choice| choice.finish_reason.is_some());
+            self.chat_finished |= event.chat_has_finish_reason();
         }
 
         if matches!(self.visible_output, VisibleOutputProtocol::TaggedText) {
@@ -406,9 +406,13 @@ impl OpenAiStreamDecoder {
         self.normalize_fallback_events(with_presentation_item(event, process_sse_events(event)))
     }
 
+    pub(crate) fn chat_finished(&self) -> bool {
+        self.chat_finished
+    }
+
     /// Chat finish_reason closes content, while trailing chunks can still carry final usage.
     pub fn finish(&mut self) -> Vec<ModelStreamEvent> {
-        if self.chat_finished && !self.terminal_received {
+        if self.chat_finished && !self.terminal_received && !self.protocol_failed {
             self.terminal_received = true;
             let response_id = self.chat_response_id.take();
             self.normalize_fallback_events(vec![ModelStreamEvent::Completed { response_id }])
@@ -449,13 +453,14 @@ impl OpenAiStreamDecoder {
     /// before it is still retained in the failure receipt.
     fn protocol_failure(&mut self, message: &str) -> Vec<ModelStreamEvent> {
         self.protocol_failed = true;
-        vec![ModelStreamEvent::Failed {
-            request_id: None,
-            code: Some("invalid_response".to_owned()),
-            http_status: None,
-            retry_after_ms: None,
-            message: message.to_owned(),
-        }]
+        let mut failure = pl_protocol::ProviderFailure::new(
+            pl_protocol::ProviderFailureKind::Protocol,
+            message,
+            pl_protocol::RetryDisposition::Permanent,
+        );
+        failure.context.stage = pl_protocol::ProviderFailureStage::Stream;
+        failure.code = Some("invalid_response".to_owned());
+        vec![ModelStreamEvent::Failed { failure }]
     }
 
     fn normalize_fallback_events(

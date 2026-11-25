@@ -16,7 +16,7 @@ enum UsageCounterField {
   throughputPair,
 }
 
-enum UsageGapReason { unreported, inconsistent, overflow }
+enum UsageGapReason { unreported, inconsistent, overflow, nonTerminalSample }
 
 enum MetricAvailability {
   available,

@@ -683,12 +683,15 @@ impl ThreadCurrent {
                     )?;
                 }
                 ToolDeliveryTarget::Inbox { message_id } => {
-                    deliver_message(
-                        &mut next,
-                        message_id,
-                        delivery,
-                        format!("task:{}", delivery.call_id),
-                    )?;
+                    let source = next
+                        .tasks
+                        .values()
+                        .find(|task| task.call_id == delivery.call_id)
+                        .map_or_else(
+                            || format!("task:{}", delivery.call_id),
+                            |task| task.id.clone(),
+                        );
+                    deliver_message(&mut next, message_id, delivery, source)?;
                 }
                 ToolDeliveryTarget::Nested { parent_call_id } => {
                     // The old parent's future is not revived. Preserve its exact known child result

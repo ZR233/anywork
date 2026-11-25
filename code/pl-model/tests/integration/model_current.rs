@@ -55,15 +55,19 @@ fn endpoint_factory(base_url: impl Into<String>) -> ModelFactory {
         .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    ModelFactory::new(ThreadModel::new(
-        pl_model::runtime::new_with_account_id(
-            "fixture",
-            pl_model::protocol::providers::openai::compatible_endpoint("fixture", base_url),
-            model,
+    ModelFactory::new(
+        ThreadModel::new(
+            pl_model::runtime::new_with_account_id(
+                "fixture",
+                // This fixture exercises OpenAI's structured server errors and continuation rules.
+                pl_model::protocol::providers::openai::endpoint(Some(base_url.into())),
+                model,
+            )
+            .unwrap(),
+            None,
         )
-        .unwrap(),
-        None,
-    ))
+        .with_in_memory_settlement(),
+    )
 }
 
 fn recovery_info(transport: ModelTransportProfile) -> ModelDefinition {
@@ -143,7 +147,8 @@ fn recovery_factory_with_endpoint(
             pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
             reasoning,
         )
-        .with_hosted_tools(hosted),
+        .with_hosted_tools(hosted)
+        .with_in_memory_settlement(),
     )
 }
 
@@ -530,7 +535,7 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
         .unwrap();
     let capture = prepared.current_capture().unwrap().clone();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let execution = tokio::spawn(prepared.execute_with_current());
+    let mut execution = tokio::spawn(prepared.execute_with_current());
     let epoch = RuntimeEpoch::new();
     first.cancelled().await;
     loop {
@@ -556,13 +561,26 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
     }
     release_first.cancel();
     loop {
-        let view = ModelStreamCurrent::decode(
-            &capture
-                .capture(epoch, "retry-source", CancellationToken::new())
-                .await
-                .unwrap(),
-        )
-        .unwrap();
+        let payload = match capture
+            .capture(epoch, "retry-source", CancellationToken::new())
+            .await
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                release_second.cancel();
+                let exit = tokio::time::timeout(Duration::from_secs(3), &mut execution)
+                    .await
+                    .map(|joined| joined.map(|exit| exit.result));
+                if exit.is_err() {
+                    execution.abort();
+                    let _ = execution.await;
+                }
+                panic!(
+                    "capture failed after the first generation: {error:?}; generation result: {exit:?}"
+                );
+            }
+        };
+        let view = ModelStreamCurrent::decode(&payload).unwrap();
         if matches!(view.state, ModelStreamCurrentState::Failed { .. }) {
             assert_eq!(
                 view.generation, 0,
@@ -628,6 +646,61 @@ async fn current_retry_keeps_failed_generations_separate_from_the_successful_res
     let final_view = ModelStreamCurrent::decode(&exit.current.unwrap()).unwrap();
     assert_eq!(final_view.generation, 1);
     assert_eq!(final_view.previous_generations.len(), 1);
+    for generation in [&final_view.previous_generations[0], &final_view] {
+        let settlement = generation
+            .settlement
+            .as_ref()
+            .expect("settled generation retains receipt");
+        let receipt: pl_model::runtime::ModelSubAttemptReceipt =
+            serde_json::from_str(settlement.content()).unwrap();
+        assert_eq!(receipt.generation, generation.generation);
+        assert_eq!(receipt.attempt_id, generation.attempt_id);
+    }
+    // Exercise the explicit upgrade with a downgraded envelope that still contains receipts.
+    // A v1 observation cannot retain those receipts as settlement evidence.
+    let mut legacy = serde_json::to_value(&final_view).unwrap();
+    // The v1 producer inferred this flag from Completed, including when no
+    // usage report existed. It is not evidence of a wire-terminal sample.
+    legacy["finalUsage"] = serde_json::Value::Null;
+    legacy["usageIsTerminal"] = serde_json::Value::Bool(true);
+    legacy["previousGenerations"][0]["usageIsTerminal"] = serde_json::Value::Bool(true);
+    legacy["previousGenerations"][0]["opaqueExtension"] = json!({"counter":u64::MAX});
+    let payload =
+        pl_core::context::OpaquePayload::new("pl.model.stream-current", 1, legacy.to_string())
+            .unwrap();
+    assert!(ModelStreamCurrent::decode(&payload).is_err());
+    let migrated = pl_model::runtime::migration::migrate_payload(&payload)
+        .unwrap()
+        .expect("v1 stream must upgrade at the persistence boundary");
+    assert!(
+        pl_model::runtime::migration::migrate_payload(&migrated)
+            .unwrap()
+            .is_none()
+    );
+    let retained: serde_json::Value = serde_json::from_str(migrated.content()).unwrap();
+    assert_eq!(
+        retained["previousGenerations"][0]["opaqueExtension"]["counter"].as_u64(),
+        Some(u64::MAX)
+    );
+    let historical = ModelStreamCurrent::decode(&migrated).unwrap();
+    assert!(historical.settlement.is_none());
+    assert!(historical.previous_generations[0].settlement.is_none());
+    assert!(historical.final_usage.is_none());
+    assert!(!historical.usage_is_terminal);
+    assert!(!historical.previous_generations[0].usage_is_terminal);
+    assert_eq!(
+        historical.previous_generations[0].final_usage,
+        final_view.previous_generations[0].final_usage
+    );
+    assert_eq!(
+        historical.previous_generations[0].content_parts[0].text,
+        final_view.previous_generations[0].content_parts[0].text
+    );
+    let future =
+        pl_core::context::OpaquePayload::new("pl.model.stream-current", 99, legacy.to_string())
+            .unwrap();
+    assert!(ModelStreamCurrent::decode(&future).is_err());
+    assert!(pl_model::runtime::migration::migrate_payload(&future).is_err());
     session.close().await.unwrap();
     assert_eq!(fixture.finish().await.unwrap().len(), 2);
 }

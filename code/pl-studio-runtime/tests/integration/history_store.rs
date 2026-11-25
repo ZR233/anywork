@@ -28,6 +28,7 @@ fn event_meta(id: &str, active: bool) -> HistoryEventMeta {
         started_at: Some(10),
         finished_at: (!active).then_some(20),
         text_channel: Some(ThreadTextChannel::Final),
+        model_recovery: None,
         single_visibility: None,
         presentation_contract: None,
         source_order: None,
@@ -1063,7 +1064,7 @@ fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
         },
         ..Default::default()
     };
-    HistoryUsageFact { event_id: id.into(), runtime_epoch: run, turn_id: Some("turn-a".into()), outcome: pl_core::usage::UsageOutcome::Succeeded,
+    HistoryUsageFact { event_id: id.into(), runtime_epoch: run, turn_id: Some("turn-a".into()), outcome: pl_core::usage::UsageOutcome::Succeeded, settlement: None,
         record: serde_json::from_value(serde_json::json!({"inferenceId":id,"purpose":null,"accounting":accounting,"recordedAt":20})).unwrap() }
 }
 #[tokio::test]

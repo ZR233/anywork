@@ -43,7 +43,7 @@ fn runtime_with_profile(fixture: &FixtureServer, profile: ModelTransportProfile)
     model.extra.binding.set_transport(profile);
     pl_model::runtime::new_with_account_id(
         "fixture",
-        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url())),
         model,
     )
     .unwrap()
@@ -105,18 +105,22 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
         model.extra.capabilities.tools.programmatic_tool_calling = true;
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
-            pl_model::protocol::providers::openai::compatible_endpoint(
-                "fixture",
-                fixture.base_url(),
-            ),
+            pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url())),
             model,
         )
         .unwrap();
         let failure = runtime
-            .complete(input, ModelInvocationContext::new(session.clone()))
+            .complete(input, ModelInvocationContext::in_memory(session.clone()))
             .await
             .unwrap_err();
-        assert!(failure.is_transient_model_transport());
+        assert!(
+            failure
+                .source
+                .provider_failure_ref()
+                .unwrap()
+                .retry
+                .is_retryable()
+        );
         assert_eq!(
             pl_model::model::usage::analyze(&failure.accounting.usage).status,
             pl_core::usage::UsageStatus::Missing
@@ -191,17 +195,14 @@ async fn cancellation_during_handshake_releases_admission_and_close_reaps_the_ne
         .set_transport(ModelTransportProfile::responses_websocket());
     let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        pl_model::protocol::providers::openai::compatible_endpoint(
-            "fixture",
-            format!("http://{address}/v1"),
-        ),
+        pl_model::protocol::providers::openai::endpoint(Some(format!("http://{address}/v1"))),
         model,
     )
     .unwrap();
     let session = ModelSession::default();
     let cancel = CancellationToken::new();
     let context =
-        ModelInvocationContext::new(session.clone()).with_cancellation(Some(cancel.clone()));
+        ModelInvocationContext::in_memory(session.clone()).with_cancellation(Some(cancel.clone()));
     let first = tokio::spawn({
         let runtime = runtime.clone();
         async move {
@@ -224,7 +225,7 @@ async fn cancellation_during_handshake_releases_admission_and_close_reaps_the_ne
         Duration::from_secs(5),
         runtime.complete(
             request("next"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         ),
     )
     .await
@@ -242,7 +243,10 @@ async fn cancellation_during_handshake_releases_admission_and_close_reaps_the_ne
         .unwrap();
     assert!(
         runtime
-            .complete(request("sealed"), ModelInvocationContext::new(session))
+            .complete(
+                request("sealed"),
+                ModelInvocationContext::in_memory(session)
+            )
             .await
             .is_err()
     );
@@ -255,13 +259,13 @@ async fn two_websocket_failures_fall_back_to_responses_http_and_stay_there() {
             Protocol::ResponsesWebSocket,
             "fallback",
             0,
-            Reply::WebSocket(vec![temporary_error()]),
+            Reply::WebSocketScript(vec![WebSocketAction::Disconnect]),
         ),
         Step::prompt(
             Protocol::ResponsesWebSocket,
             "fallback",
             1,
-            Reply::WebSocket(vec![temporary_error()]),
+            Reply::WebSocketScript(vec![WebSocketAction::Disconnect]),
         ),
         Step::prompt(
             Protocol::ResponsesHttp,
@@ -283,7 +287,7 @@ async fn two_websocket_failures_fall_back_to_responses_http_and_stay_there() {
     let response = runtime
         .complete(
             request("fallback"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap();
@@ -293,7 +297,7 @@ async fn two_websocket_failures_fall_back_to_responses_http_and_stay_there() {
     let next = runtime
         .complete(
             request("next"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap();
@@ -338,7 +342,7 @@ async fn upgrade_required_falls_back_immediately_only_when_http_is_declared() {
         let result = runtime_with_profile(&fixture, profile)
             .complete(
                 request("upgrade"),
-                ModelInvocationContext::new(session.clone()),
+                ModelInvocationContext::in_memory(session.clone()),
             )
             .await;
         session.close().await.unwrap();
@@ -384,14 +388,14 @@ async fn websocket_only_budget_exhaustion_keeps_last_typed_cause_and_failed_obse
     let failure = runtime_with_profile(&fixture, profile)
         .complete(
             request("exhaust"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap_err();
     session.close().await.unwrap();
     let typed = failure.source.provider_failure_ref().unwrap();
     assert_eq!(typed.code.as_deref(), Some("server_error"));
-    assert_eq!(failure.retry_after_ms(), Some(1));
+    assert_eq!(typed.retry.retry_after_ms(), Some(1));
     let progress = failure.partial_progress.unwrap();
     assert_eq!(progress.observation().generation, 5);
     assert_eq!(progress.observation().failed.len(), 5);
@@ -490,7 +494,7 @@ async fn close_and_abrupt_eof_replay_plain_output_but_protocol_and_auth_errors_d
         let result = runtime(&fixture)
             .complete(
                 request("fault"),
-                ModelInvocationContext::new(session.clone()),
+                ModelInvocationContext::in_memory(session.clone()),
             )
             .await;
         session.close().await.unwrap();
@@ -506,7 +510,15 @@ async fn close_and_abrupt_eof_replay_plain_output_but_protocol_and_auth_errors_d
                 "old output"
             );
         } else {
-            assert!(!result.unwrap_err().is_transient_model_transport());
+            let failure = result.unwrap_err();
+            assert!(
+                !failure
+                    .source
+                    .provider_failure_ref()
+                    .unwrap()
+                    .retry
+                    .is_retryable()
+            );
         }
         assert_eq!(
             fixture.finish().await.unwrap().len(),
@@ -530,7 +542,7 @@ async fn invalid_previous_id_after_response_metadata_recovers_with_full_frozen_h
     let first = runtime
         .complete(
             request("first"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap();
@@ -538,7 +550,10 @@ async fn invalid_previous_id_after_response_metadata_recovers_with_full_frozen_h
     second_request.append_response(&first).unwrap();
     second_request.input.extend(request("second").input);
     let response = runtime
-        .complete(second_request, ModelInvocationContext::new(session.clone()))
+        .complete(
+            second_request,
+            ModelInvocationContext::in_memory(session.clone()),
+        )
         .await
         .unwrap();
     session.close().await.unwrap();
@@ -703,18 +718,18 @@ async fn completed_presentation_item_does_not_prevent_safe_recovery() {
 }
 
 #[tokio::test]
-async fn websocket_failed_terminal_preserves_usage_and_does_not_replay() {
+async fn websocket_permanent_failure_preserves_usage_and_does_not_replay() {
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesWebSocket, "billed", 0, Reply::WebSocket(vec![
             json!({"type":"response.created","response":{"id":"billed","model":"recovery-model"}}),
-            json!({"type":"response.failed","response":{"id":"billed","model":"reported-model","usage":{"input_tokens":11,"output_tokens":3},"error":{"code":"upstream_error","message":"billed failure"}}}),
+            json!({"type":"response.failed","response":{"id":"billed","model":"reported-model","usage":{"input_tokens":11,"output_tokens":3},"error":{"code":"insufficient_quota","message":"billed failure"}}}),
         ]),
     )]).await.unwrap();
     let session = ModelSession::default();
     let result = runtime(&fixture)
         .complete(
             request("billed"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await;
     session.close().await.unwrap();
@@ -730,6 +745,83 @@ async fn websocket_failed_terminal_preserves_usage_and_does_not_replay() {
         Some("reported-model")
     );
     assert_eq!(fixture.finish().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn websocket_retry_after_usage_keeps_both_settlements_and_success_usage_separate() {
+    let mut success = responses_text("recovered", "after-billed", "recovery-model");
+    success.last_mut().unwrap()["response"]["usage"] =
+        json!({"input_tokens":5,"output_tokens":3,"total_tokens":8});
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesWebSocket,
+            "billed retry",
+            0,
+            Reply::WebSocket(vec![
+                json!({"type":"response.created","response":{"id":"billed","model":"recovery-model"}}),
+                json!({"type":"response.failed","response":{"id":"billed","model":"reported-model","usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14},"error":{"code":"upstream_error","message":"billed failure","retry_after_ms":1}}}),
+            ]),
+        ),
+        Step::prompt(
+            Protocol::ResponsesWebSocket,
+            "billed retry",
+            1,
+            Reply::WebSocket(success),
+        ),
+    ])
+    .await
+    .unwrap();
+    let session = ModelSession::default();
+    let response = runtime(&fixture)
+        .complete(
+            request("billed retry"),
+            ModelInvocationContext::in_memory(session.clone()),
+        )
+        .await
+        .unwrap();
+    session.close().await.unwrap();
+    assert_eq!(response.content.as_deref(), Some("recovered"));
+    assert_eq!(response.accounting.usage.input_tokens, Some(5));
+    assert_eq!(response.accounting.usage.total_tokens, Some(8));
+    let settlements = response
+        .settlements
+        .iter()
+        .map(|payload| {
+            serde_json::from_str::<pl_model::runtime::ModelSubAttemptReceipt>(payload.content())
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(settlements.len(), 2);
+    assert_eq!(
+        settlements[0].billing.accounting.usage.input_tokens,
+        Some(11)
+    );
+    assert_eq!(
+        settlements[0].billing.accounting.usage.total_tokens,
+        Some(14)
+    );
+    assert_eq!(
+        settlements[1].billing.accounting.usage.total_tokens,
+        Some(8)
+    );
+    assert_eq!(
+        settlements[0].logical_request_id,
+        settlements[1].logical_request_id
+    );
+    assert_ne!(
+        settlements[0].billing.inference_id,
+        settlements[1].billing.inference_id
+    );
+    assert_eq!(
+        settlements[0]
+            .provider_failure
+            .as_ref()
+            .unwrap()
+            .code
+            .as_deref(),
+        Some("upstream_error")
+    );
+    assert_eq!(fixture.finish().await.unwrap().len(), 2);
 }
 
 async fn thread(fixture: &FixtureServer) -> ThreadHandle {
@@ -944,13 +1036,13 @@ async fn thread_http_fallback_survives_physical_reset_after_failed_turn() {
             Protocol::ResponsesWebSocket,
             "failed turn",
             0,
-            Reply::WebSocket(vec![temporary_error()]),
+            Reply::WebSocketScript(vec![WebSocketAction::Disconnect]),
         ),
         Step::prompt(
             Protocol::ResponsesWebSocket,
             "failed turn",
             1,
-            Reply::WebSocket(vec![temporary_error()]),
+            Reply::WebSocketScript(vec![WebSocketAction::Disconnect]),
         ),
         Step::prompt(
             Protocol::ResponsesHttp,
@@ -1352,10 +1444,11 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
             "abandoned reasoning"
         );
         if completed {
-            assert!(
-                response.observation.failed[0]
-                    .message
-                    .contains("websocket_connection_limit_reached")
+            let receipt: pl_model::runtime::ModelSubAttemptReceipt =
+                serde_json::from_str(response.settlements[0].content()).unwrap();
+            assert_eq!(
+                receipt.provider_failure.unwrap().code.as_deref(),
+                Some("websocket_connection_limit_reached")
             );
         }
         let admitted = effects
@@ -1423,7 +1516,7 @@ async fn invalid_continuation_replays_native_phase_reasoning_and_output_fields_w
     let first = runtime
         .complete(
             request("native first"),
-            ModelInvocationContext::new(session.clone()),
+            ModelInvocationContext::in_memory(session.clone()),
         )
         .await
         .unwrap();
@@ -1431,7 +1524,7 @@ async fn invalid_continuation_replays_native_phase_reasoning_and_output_fields_w
     next.append_response(&first).unwrap();
     next.input.extend(request("native second").input);
     let response = runtime
-        .complete(next, ModelInvocationContext::new(session.clone()))
+        .complete(next, ModelInvocationContext::in_memory(session.clone()))
         .await
         .unwrap();
     assert_eq!(response.orchestration.continuation_invalid, 1);
@@ -1512,7 +1605,9 @@ async fn cancellation_during_read_or_backoff_keeps_receipt_and_next_turn_uses_fr
                 };
                 if snapshot.model_progress.as_ref().is_some_and(|active| {
                     if backoff {
-                        active.progress.observation().generation == 1
+                        active.progress.observation().recovery.is_some_and(|recovery| {
+                            recovery.phase == ModelRecoveryPhase::Waiting
+                        })
                     } else {
                         !active.progress.parts().is_empty()
                     }

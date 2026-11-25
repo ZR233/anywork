@@ -3011,6 +3011,12 @@ abstract class AppLocalizations {
   /// **'Incomplete'**
   String get statusUsageIncompleteLabel;
 
+  /// No description provided for @statusUsageNonTerminalSampleLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Incomplete · Missing final usage reports'**
+  String get statusUsageNonTerminalSampleLabel;
+
   /// No description provided for @statusCacheLabel.
   ///
   /// In en, this message translates to:
@@ -3064,6 +3070,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cost for all agents in this session'**
   String get sessionAllAgentsCostTooltip;
+
+  /// No description provided for @sessionCostIncompleteUsage.
+  ///
+  /// In en, this message translates to:
+  /// **'Incomplete usage'**
+  String get sessionCostIncompleteUsage;
 
   /// No description provided for @sessionMoreActionsTooltip.
   ///
@@ -14337,17 +14349,47 @@ abstract class AppLocalizations {
   /// **'Authorization'**
   String get timelineProviderKindAuthz;
 
-  /// No description provided for @timelineProviderKindCapacity.
+  /// No description provided for @timelineProviderKindQuota.
   ///
   /// In en, this message translates to:
-  /// **'Capacity'**
-  String get timelineProviderKindCapacity;
+  /// **'Balance or quota exhausted'**
+  String get timelineProviderKindQuota;
 
-  /// No description provided for @timelineProviderKindConfig.
+  /// No description provided for @timelineProviderKindRateLimit.
   ///
   /// In en, this message translates to:
-  /// **'Configuration'**
-  String get timelineProviderKindConfig;
+  /// **'Temporary rate limit'**
+  String get timelineProviderKindRateLimit;
+
+  /// No description provided for @timelineProviderKindServiceBusy.
+  ///
+  /// In en, this message translates to:
+  /// **'Service busy'**
+  String get timelineProviderKindServiceBusy;
+
+  /// No description provided for @timelineProviderKindContextLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Context limit exceeded'**
+  String get timelineProviderKindContextLimit;
+
+  /// No description provided for @timelineProviderKindInvalidRequest.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid request'**
+  String get timelineProviderKindInvalidRequest;
+
+  /// No description provided for @timelineProviderKindContentBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Content blocked'**
+  String get timelineProviderKindContentBlocked;
+
+  /// No description provided for @timelineProviderKindOutputLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Output limit reached'**
+  String get timelineProviderKindOutputLimit;
 
   /// No description provided for @timelineProviderKindTransport.
   ///
@@ -14364,20 +14406,230 @@ abstract class AppLocalizations {
   /// No description provided for @timelineRetryableHint.
   ///
   /// In en, this message translates to:
-  /// **'Retryable'**
+  /// **'May be eligible for retry'**
   String get timelineRetryableHint;
 
   /// No description provided for @timelineRetryAfterSeconds.
   ///
   /// In en, this message translates to:
-  /// **'Retry after {seconds}s'**
-  String timelineRetryAfterSeconds(int seconds);
+  /// **'Provider suggests waiting {seconds}s'**
+  String timelineRetryAfterSeconds(String seconds);
 
   /// No description provided for @timelineRetryPermanent.
   ///
   /// In en, this message translates to:
   /// **'Not auto-retried'**
   String get timelineRetryPermanent;
+
+  /// No description provided for @timelineRetryWaitUnrepresentable.
+  ///
+  /// In en, this message translates to:
+  /// **'Provider wait is beyond the supported range'**
+  String get timelineRetryWaitUnrepresentable;
+
+  /// No description provided for @timelineRecoveryRetryCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Retries used: {count} of {limit}'**
+  String timelineRecoveryRetryCount(int count, int limit);
+
+  /// No description provided for @timelineRecoveryRetryCountOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Retries used: {count}'**
+  String timelineRecoveryRetryCountOnly(int count);
+
+  /// No description provided for @timelineRecoveryRetryLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry limit: {limit}'**
+  String timelineRecoveryRetryLimit(int limit);
+
+  /// No description provided for @timelineRecoveryWaitMillis.
+  ///
+  /// In en, this message translates to:
+  /// **'{millis} ms'**
+  String timelineRecoveryWaitMillis(String millis);
+
+  /// No description provided for @timelineRecoveryWaitSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'{seconds} s'**
+  String timelineRecoveryWaitSeconds(String seconds);
+
+  /// No description provided for @timelineRecoveryScheduledWait.
+  ///
+  /// In en, this message translates to:
+  /// **'Scheduled wait: {duration}'**
+  String timelineRecoveryScheduledWait(String duration);
+
+  /// No description provided for @timelineRecoveryAttempt.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry {count} of {limit}'**
+  String timelineRecoveryAttempt(int count, int limit);
+
+  /// No description provided for @timelineRecoveryRepairing.
+  ///
+  /// In en, this message translates to:
+  /// **'Repairing the model request'**
+  String get timelineRecoveryRepairing;
+
+  /// No description provided for @timelineRecoveryWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting to retry the model request'**
+  String get timelineRecoveryWaiting;
+
+  /// No description provided for @timelineRecoveryRetrying.
+  ///
+  /// In en, this message translates to:
+  /// **'Retrying the model request'**
+  String get timelineRecoveryRetrying;
+
+  /// No description provided for @timelineRecoveryRecovered.
+  ///
+  /// In en, this message translates to:
+  /// **'Model request recovered'**
+  String get timelineRecoveryRecovered;
+
+  /// No description provided for @timelineRecoveryFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Model request recovery stopped'**
+  String get timelineRecoveryFailed;
+
+  /// No description provided for @timelineRecoveryActionHttpFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Switch to HTTP'**
+  String get timelineRecoveryActionHttpFallback;
+
+  /// No description provided for @timelineRecoveryActionRefreshAttachments.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh attachments'**
+  String get timelineRecoveryActionRefreshAttachments;
+
+  /// No description provided for @timelineRecoveryActionFullContext.
+  ///
+  /// In en, this message translates to:
+  /// **'Resend the full context'**
+  String get timelineRecoveryActionFullContext;
+
+  /// No description provided for @timelineRecoveryStopBudgetExhausted.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic recovery stopped after reaching the retry limit.'**
+  String get timelineRecoveryStopBudgetExhausted;
+
+  /// No description provided for @timelineRecoveryStopSideEffects.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic recovery stopped because retrying could repeat an external action.'**
+  String get timelineRecoveryStopSideEffects;
+
+  /// No description provided for @timelineRecoveryStopSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic recovery stopped because the recovery state could not be saved.'**
+  String get timelineRecoveryStopSaveFailed;
+
+  /// No description provided for @timelineRecoveryStopRepairFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic recovery stopped because the repair failed.'**
+  String get timelineRecoveryStopRepairFailed;
+
+  /// No description provided for @timelineRecoveryStopWaitUnrepresentable.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic recovery stopped because the required wait is too long to schedule safely.'**
+  String get timelineRecoveryStopWaitUnrepresentable;
+
+  /// No description provided for @timelineRecoveryStopContextCompactionRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'The input needs to be compacted before execution can continue.'**
+  String get timelineRecoveryStopContextCompactionRequired;
+
+  /// No description provided for @timelineRecoveryStopPermanentFailure.
+  ///
+  /// In en, this message translates to:
+  /// **'This failure cannot be recovered automatically.'**
+  String get timelineRecoveryStopPermanentFailure;
+
+  /// No description provided for @timelineRecoveryStopCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic recovery was cancelled.'**
+  String get timelineRecoveryStopCancelled;
+
+  /// No description provided for @timelineDetailErrorType.
+  ///
+  /// In en, this message translates to:
+  /// **'Provider error type'**
+  String get timelineDetailErrorType;
+
+  /// No description provided for @timelineDetailRequestId.
+  ///
+  /// In en, this message translates to:
+  /// **'Provider request ID'**
+  String get timelineDetailRequestId;
+
+  /// No description provided for @timelineDetailFailureStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Failure stage'**
+  String get timelineDetailFailureStage;
+
+  /// No description provided for @timelineFailureStageUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown stage'**
+  String get timelineFailureStageUnknown;
+
+  /// No description provided for @timelineFailureStageRequest.
+  ///
+  /// In en, this message translates to:
+  /// **'Request'**
+  String get timelineFailureStageRequest;
+
+  /// No description provided for @timelineFailureStageHandshake.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection handshake'**
+  String get timelineFailureStageHandshake;
+
+  /// No description provided for @timelineFailureStageStream.
+  ///
+  /// In en, this message translates to:
+  /// **'Response stream'**
+  String get timelineFailureStageStream;
+
+  /// No description provided for @timelineFailureStageAttachment.
+  ///
+  /// In en, this message translates to:
+  /// **'Attachment handling'**
+  String get timelineFailureStageAttachment;
+
+  /// No description provided for @timelineDetailRecoveryAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Last recovery action'**
+  String get timelineDetailRecoveryAction;
+
+  /// No description provided for @timelineDetailLastRecoveryWait.
+  ///
+  /// In en, this message translates to:
+  /// **'Last scheduled wait'**
+  String get timelineDetailLastRecoveryWait;
+
+  /// No description provided for @timelineDetailRecoveryError.
+  ///
+  /// In en, this message translates to:
+  /// **'Recovery error'**
+  String get timelineDetailRecoveryError;
 
   /// No description provided for @timelineBudgetLimitModelStep.
   ///
@@ -14484,7 +14736,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineDetailRetry.
   ///
   /// In en, this message translates to:
-  /// **'Retry policy'**
+  /// **'Retry hint'**
   String get timelineDetailRetry;
 
   /// No description provided for @timelineDetailDuration.

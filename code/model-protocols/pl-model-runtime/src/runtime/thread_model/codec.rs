@@ -15,8 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
-pub const FRAME_VERSION: u32 = 6;
-pub(in crate::runtime) const LEGACY_FRAME_VERSION: u32 = 5;
+pub const FRAME_VERSION: u32 = 7;
 
 #[derive(Clone, Copy)]
 enum ArgumentKind {
@@ -82,6 +81,7 @@ pub(super) struct AssistantFrame {
     pub(super) bindings: Vec<ModelToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) compatibility_family: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[serde(skip)]
     pub(super) source: Option<FrameSource>,
 }
@@ -103,23 +103,20 @@ struct CurrentAssistantFrame {
 }
 
 pub(super) fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
-    let frame = match payload.version() {
-        LEGACY_FRAME_VERSION => serde_json::from_str(payload.content()),
-        FRAME_VERSION => {
-            serde_json::from_str::<CurrentAssistantFrame>(payload.content()).map(|current| {
-                let mut frame = current.frame;
-                frame.source = Some(current.source);
-                frame
-            })
-        }
-        _ => return Err(invalid("unsupported model response receipt")),
+    if payload.version() != FRAME_VERSION {
+        return Err(invalid("unsupported model response receipt"));
     }
-    .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
+    let current: CurrentAssistantFrame = serde_json::from_str(payload.content())
+        .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
+    let mut frame = current.frame;
+    frame.source = Some(current.source);
     validate_call_bindings(&frame)?;
     Ok(frame)
 }
 
-fn validate_call_bindings(frame: &AssistantFrame) -> Result<BTreeMap<&str, &ToolCall>, ModelError> {
+pub(super) fn validate_call_bindings(
+    frame: &AssistantFrame,
+) -> Result<BTreeMap<&str, &ToolCall>, ModelError> {
     let mut raw = BTreeMap::new();
     for call in &frame.receipt.response.tool_calls {
         if call.call_id.is_empty()
@@ -697,6 +694,7 @@ pub(super) fn response(
     let failure_accounting = response.accounting.clone();
     let failure_model_observation = response.model_observation.clone();
     let failure_timing = response.timing;
+    let failure_settlements = response.settlements.clone();
     let failure_progress = context
         .request
         .progress
@@ -709,6 +707,7 @@ pub(super) fn response(
             failure_model_observation,
             failure_timing,
             failure_progress,
+            failure_settlements,
             error,
         )
     })
@@ -835,6 +834,7 @@ fn response_inner(
     let encoded =
         serde_json::to_string(&CurrentAssistantFrame { frame, source }).map_err(|error| {
             ModelError {
+                context_recovery: None,
                 details: None,
                 kind: ModelFailureKind::InvalidResponse,
                 usage: Box::new(observed_usage.clone()),

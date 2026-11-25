@@ -44,11 +44,18 @@ impl RequestDiagnostics {
     pub fn redact_error(&self, error: &mut PureError) {
         if let PureError::Provider(failure) = error {
             self.text(&mut failure.message);
-            for value in [&mut failure.code, &mut failure.context.request_id]
-                .into_iter()
-                .flatten()
+            for value in [
+                &mut failure.code,
+                &mut failure.error_type,
+                &mut failure.context.request_id,
+            ]
+            .into_iter()
+            .flatten()
             {
                 self.text(value);
+            }
+            if let Some(details) = &mut failure.details {
+                self.redact_value(details);
             }
         }
     }

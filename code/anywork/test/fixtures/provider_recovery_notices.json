@@ -1,0 +1,59 @@
+{
+  "waiting": {
+    "failureKind": "rateLimit",
+    "reason": "none",
+    "retryCount": 1,
+    "maxRetries": 2,
+    "effectiveWaitMillis": "45000",
+    "phase": "waiting",
+    "failure": {
+      "category": "provider",
+      "providerKind": "rateLimit",
+      "code": "rate_limit_exceeded",
+      "httpStatus": 429,
+      "errorType": "rate_limit_error",
+      "requestId": "req-recovery-waiting",
+      "stage": "request",
+      "message": "The provider limited the request.",
+      "retry": {"kind": "retryable", "retryAfterMs": "45000"}
+    }
+  },
+  "recovered": {
+    "failureKind": "transport",
+    "reason": "httpFallback",
+    "retryCount": 1,
+    "maxRetries": 2,
+    "effectiveWaitMillis": "9007199254740993",
+    "phase": "recovered",
+    "failure": {
+      "category": "provider",
+      "providerKind": "transport",
+      "code": "upstream_connection_closed",
+      "httpStatus": 503,
+      "errorType": "connection_error",
+      "requestId": "req-recovery-recovered",
+      "stage": "handshake",
+      "message": "The provider closed the connection during the handshake.",
+      "retry": {"kind": "retryable", "retryAfterMs": "9007199254740993"}
+    }
+  },
+  "cancelled": {
+    "failureKind": "serviceBusy",
+    "reason": "none",
+    "retryCount": 1,
+    "maxRetries": 2,
+    "effectiveWaitMillis": "18446744073709551615",
+    "phase": "cancelled",
+    "failure": {
+      "category": "provider",
+      "providerKind": "serviceBusy",
+      "code": "service_unavailable",
+      "httpStatus": 503,
+      "errorType": "overloaded_error",
+      "requestId": "req-recovery-cancelled",
+      "stage": "stream",
+      "message": "The provider became unavailable while streaming the answer.",
+      "retry": {"kind": "retryable", "retryAfterMs": "18446744073709551615"}
+    }
+  }
+}

@@ -158,5 +158,6 @@ fn apply_responses_max_tokens_field(
 
 fn protocol_error(message: impl Into<String>) -> PureError {
     let msg = message.into();
-    PureError::LlmError(format!("OpenAI request protocol error: {msg}"))
+    pl_model_wire::provider_error::invalid_request(format!("OpenAI request protocol error: {msg}"))
+        .into()
 }

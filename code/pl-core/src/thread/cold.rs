@@ -497,6 +497,21 @@ pub(crate) trait ErasedStorage: Send + Sync + fmt::Debug {
         thread_id: &'a str,
         sequence: u64,
     ) -> BoxFuture<'a, Result<(), ColdStoreError>>;
+    fn read_saved_model_settlement<'a>(
+        &'a self,
+        _thread: &'a str,
+        _settlement: &'a crate::model::ModelSubAttemptSettlement,
+    ) -> BoxFuture<'a, Result<Option<crate::model::ModelSubAttemptSettlement>, ColdStoreError>>
+    {
+        Box::pin(async { Ok(None) })
+    }
+    fn confirm_model_settlement<'a>(
+        &'a self,
+        thread_id: &'a str,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<(), ColdStoreError>> {
+        self.flush(thread_id, sequence)
+    }
     fn read_tool_task<'a>(
         &'a self,
         thread_id: &'a str,
@@ -1421,6 +1436,7 @@ impl Owner {
         if receipt > self.state.persistence.durable_sequence {
             self.state.persistence.durable_sequence = receipt;
             self.effect_window.release_through(receipt);
+            self.release_saved_model_settlements();
         }
     }
 
@@ -1577,5 +1593,6 @@ impl Owner {
             self.state.persistence.durable_sequence.max(through);
         self.effect_window
             .release_through(self.state.persistence.durable_sequence);
+        self.release_saved_model_settlements();
     }
 }

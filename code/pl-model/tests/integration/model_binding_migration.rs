@@ -24,7 +24,7 @@ fn timing_provenance_upgrades_only_at_the_producer_boundary() {
         (
             "pl.model.failure",
             4,
-            5,
+            7,
             json!({
                 "binding": binding, "accounting": legacy_accounting()
             }),
@@ -214,10 +214,10 @@ fn legacy_prepared_request_keeps_frozen_source_and_identity() {
     );
     assert_eq!(prompt.updated_at, 1234);
 
-    // A migrated record re-serializes as current prepared-request v2 and reads back unchanged.
+    // A migrated record re-serializes as current prepared-request v3 and reads back unchanged.
     let reread_payload = OpaquePayload::new(
         "pl.model.prepared-request",
-        2,
+        3,
         json!({
             "binding": {
                 "accountId": receipt.binding.account_id,
@@ -242,7 +242,7 @@ fn legacy_prepared_request_keeps_frozen_source_and_identity() {
     )
     .expect("payload is valid");
     let reread =
-        model_request_receipt(&reread_payload).expect("current prepared-request v2 decodes");
+        model_request_receipt(&reread_payload).expect("current prepared-request v3 decodes");
     assert_eq!(reread.binding.account_id, "deepseek");
     assert_eq!(reread.binding.model_id, "deepseek-v4-pro");
     assert_eq!(
@@ -257,7 +257,7 @@ fn current_prepared_request_is_read_without_legacy_fields() {
         model_request_receipt(&current(&legacy_request_payload(1))).expect("legacy migrates");
     let current = OpaquePayload::new(
         "pl.model.prepared-request",
-        2,
+        3,
         json!({
             "binding": {
                 "accountId": migrated.binding.account_id,
@@ -315,7 +315,13 @@ fn legacy_assistant_frame_migrates_its_binding() {
         attempt_id: "attempt".into(),
         base_context_revision: 0,
         content: vec![pl_core::context::ContextContent::Opaque {
-            payload: current(&legacy_frame_payload(2)),
+            payload: pl_model::runtime::migration::upgrade_assistant_frame(
+                &legacy_frame_payload(2),
+                "attempt",
+                &[],
+            )
+            .unwrap()
+            .payload,
         }],
         tool_calls: Vec::new(),
         private_context: None,
@@ -341,9 +347,13 @@ fn legacy_assistant_frame_migrates_its_binding() {
     for version in [3, 4] {
         let mut historical = output.clone();
         historical.content = vec![pl_core::context::ContextContent::Opaque {
-            payload: current(
+            payload: pl_model::runtime::migration::upgrade_assistant_frame(
                 &OpaquePayload::new("pl.model.assistant", version, frame.to_string()).unwrap(),
-            ),
+                &historical.attempt_id,
+                &historical.tool_calls,
+            )
+            .unwrap()
+            .payload,
         }];
         let decoded = model_response_receipt(&historical).unwrap().unwrap();
         assert_eq!(decoded.response.accounting, receipt.response.accounting);
@@ -358,11 +368,15 @@ fn legacy_assistant_frame_migrates_its_binding() {
             pl_core::context::ContextContent::Opaque { payload } => payload,
             _ => unreachable!(),
         };
-        let migrated = migrate_payload(payload);
-        let decoded = migrated.and_then(|migrated| {
-            if let Some(payload) = migrated {
-                current.content = vec![pl_core::context::ContextContent::Opaque { payload }];
-            }
+        let decoded = pl_model::runtime::migration::upgrade_assistant_frame(
+            payload,
+            &current.attempt_id,
+            &current.tool_calls,
+        )
+        .and_then(|upgraded| {
+            current.content = vec![pl_core::context::ContextContent::Opaque {
+                payload: upgraded.payload,
+            }];
             model_response_receipt(&current)
         });
         if version == 3 {
@@ -422,6 +436,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
         kind: pl_core::model::ModelFailureKind::Unavailable,
         usage: Box::default(),
         source: None,
+        context_recovery: None,
     };
     assert!(model_failure_receipt(&historical).is_err());
     let error = pl_core::model::ModelError {
@@ -429,6 +444,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
         kind: pl_core::model::ModelFailureKind::Unavailable,
         usage: Box::default(),
         source: None,
+        context_recovery: None,
     };
     let receipt = model_failure_receipt(&error)
         .expect("legacy failure migrates")
@@ -442,7 +458,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
         pl_model::model::PricingOutcome::Disabled
     );
     let mut current = serde_json::to_value(&receipt).unwrap();
-    for version in [3, 4] {
+    for version in [3, 4, 5, 6] {
         let historical = pl_core::model::ModelError {
             details: Some(Box::new(
                 pl_model::runtime::migration::migrate_payload(
@@ -456,6 +472,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
             kind: pl_core::model::ModelFailureKind::Unavailable,
             usage: Box::default(),
             source: None,
+            context_recovery: None,
         };
         assert_eq!(
             model_failure_receipt(&historical)
@@ -465,8 +482,49 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
             receipt.accounting
         );
     }
+    for legacy_kind in ["capacity", "configuration"] {
+        // Version 5 wrote the broad category and snake_case enum field shown by
+        // the previous production ProviderFailure serializer.
+        let mut old = current.clone();
+        old["providerFailure"] = json!({
+            "context": {"stage":"stream", "requestId":"old-request", "recovery":"none"},
+            "kind": legacy_kind,
+            "code": "legacy-business-reason",
+            "httpStatus": 429,
+            "message": "original provider diagnosis",
+            "retry": {"kind":"retryable", "retry_after_ms":45_000}
+        });
+        let payload = OpaquePayload::new("pl.model.failure", 5, old.to_string()).unwrap();
+        let migrated = migrate_payload(&payload)
+            .unwrap()
+            .expect("v5 requires migration");
+        let error = pl_core::model::ModelError {
+            details: Some(Box::new(migrated)),
+            kind: pl_core::model::ModelFailureKind::Unavailable,
+            usage: Box::default(),
+            source: None,
+            context_recovery: None,
+        };
+        let restored = model_failure_receipt(&error).unwrap().unwrap();
+        assert!(restored.settlements.is_empty());
+        assert_eq!(restored.retry_count, None);
+        assert_eq!(restored.accounting, receipt.accounting);
+        let provider = restored.provider_failure.unwrap();
+        assert_eq!(provider.kind, pl_protocol::ProviderFailureKind::Unknown);
+        assert_eq!(provider.message, "original provider diagnosis");
+        assert_eq!(provider.code.as_deref(), Some("legacy-business-reason"));
+        assert_eq!(provider.context.request_id.as_deref(), Some("old-request"));
+        assert_eq!(provider.retry.retry_after_ms(), Some(45_000));
+        assert_eq!(
+            provider.details.as_ref().unwrap()["legacyKind"],
+            legacy_kind
+        );
+        let encoded = serde_json::to_value(&provider).unwrap();
+        assert_eq!(encoded["retry"]["retryAfterMs"], 45_000);
+        assert!(encoded["retry"].get("retry_after_ms").is_none());
+    }
     current["accounting"]["pricing"] = json!({"kind":"noCharge"});
-    for version in [3, 4] {
+    for version in [3, 4, 5, 6] {
         let mut frozen = pl_core::model::ModelError {
             details: Some(Box::new(
                 OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap(),
@@ -474,6 +532,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
             kind: pl_core::model::ModelFailureKind::Unavailable,
             usage: Box::default(),
             source: None,
+            context_recovery: None,
         };
         let decoded = migrate_payload(frozen.details.as_ref().unwrap()).and_then(|payload| {
             if let Some(payload) = payload {
@@ -505,6 +564,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
         kind: pl_core::model::ModelFailureKind::Unavailable,
         usage: Box::default(),
         source: None,
+        context_recovery: None,
     };
     assert!(model_failure_receipt(&error).is_err());
 }
@@ -575,8 +635,7 @@ fn producer_migration_preserves_opaque_material_precision_and_is_idempotent() {
         private_context: None,
         usage: Default::default(),
     };
-    let receipt = model_response_receipt(&output).unwrap().unwrap();
-    assert_eq!(receipt.response.tool_calls[0].payload_text(), vendor);
+    assert!(model_response_receipt(&output).is_err());
     // Identity upgrading is a separate contextual pure function. It cannot infer the source from
     // arguments, array position or the old globally scoped call name.
     let identity_upgrade = pl_model::runtime::migration::upgrade_assistant_frame(
@@ -585,7 +644,7 @@ fn producer_migration_preserves_opaque_material_precision_and_is_idempotent() {
         std::slice::from_ref(&binding),
     )
     .unwrap();
-    assert_eq!(identity_upgrade.payload.version(), 6);
+    assert_eq!(identity_upgrade.payload.version(), 7);
     assert!(
         identity_upgrade
             .payload

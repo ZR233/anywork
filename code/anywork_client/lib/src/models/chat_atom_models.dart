@@ -156,6 +156,7 @@ final class ChatAtom {
     this.tool,
     this.wait,
     this.textChannel,
+    this.modelRecovery,
     this.contentPresent,
     this.startedAt,
     this.finishedAt,
@@ -176,6 +177,7 @@ final class ChatAtom {
   final ChatToolIdentity? tool;
   final ThreadWaitPresentationView? wait;
   final ThreadTextChannel? textChannel;
+  final StudioModelRecoveryNotice? modelRecovery;
 
   /// Whether accepted text or attachments exist; `null` means unknown.
   final bool? contentPresent;

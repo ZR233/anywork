@@ -1,10 +1,10 @@
-//! One-time Schema 26 manifest repair. Schema major stays 26.
+//! One-time Schema 26 maintenance. Schema major stays 26.
 //!
 //! Already-imported usage rows may still name their billing body `canonical_payload`, and
 //! native tool receipts may exist only as `history_bodies` rows. Readers now look up
 //! `payload_json.bodies[]` and do not scan those legacy keys. This pass rewrites the manifest
-//! in one immediate transaction, keeps event and body identity, and restores the append-only
-//! trigger before commit. Body rows and chunks are not updated.
+//! before upgrading typed product Turn failures. Both passes keep existing body rows and chunks,
+//! and the append-only trigger is restored before commit.
 
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, SqliteTransactionMode, TransactionOptions,
@@ -19,6 +19,7 @@ pub(super) const TOOL_TASK_KEY: &str = "native.tool-task.v1";
 
 // The schema major remains in history_store_meta; user_version records this maintenance.
 const MANIFEST_REVISION: i64 = 1;
+const CURRENT_REVISION: i64 = 2;
 
 const RESTORE_EVENT_UPDATE_TRIGGER: &str = "\
 CREATE TRIGGER history_events_no_update
@@ -62,29 +63,45 @@ pub(super) fn rewrite_payload(
 }
 
 pub(in crate::history) async fn repair_needed(db: &impl ConnectionTrait) -> Result<bool> {
+    Ok(revision(db).await? != CURRENT_REVISION)
+}
+
+pub(in crate::history) async fn require_current(db: &impl ConnectionTrait) -> Result<()> {
+    if repair_needed(db).await? {
+        return Err(HistoryError::Integrity(
+            "history requires schema 26 maintenance".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn revision(db: &impl ConnectionTrait) -> Result<i64> {
     let row = db
         .query_one_raw(statement("PRAGMA user_version", vec![]))
         .await?
         .ok_or_else(|| HistoryError::Integrity("history maintenance revision is missing".into()))?;
     let version: i64 = row.try_get("", "user_version")?;
     match version {
-        0 => Ok(true),
-        MANIFEST_REVISION => Ok(false),
+        0 | MANIFEST_REVISION | CURRENT_REVISION => Ok(version),
         _ => Err(HistoryError::Integrity(format!(
             "unsupported history maintenance revision {version}"
         ))),
     }
 }
 
-pub(in crate::history) async fn mark_repaired(
+pub(in crate::history) async fn mark_current(
     db: &impl ConnectionTrait,
 ) -> std::result::Result<(), sea_orm::DbErr> {
-    db.execute_unprepared(&format!("PRAGMA user_version={MANIFEST_REVISION}"))
+    db.execute_unprepared(&format!("PRAGMA user_version={CURRENT_REVISION}"))
         .await?;
     Ok(())
 }
 
-pub(in crate::history) async fn repair(db: &DatabaseConnection) -> Result<()> {
+pub(super) async fn repair(
+    db: &DatabaseConnection,
+    database_id: &str,
+    stage_report: impl FnOnce(u64) -> Result<()>,
+) -> Result<()> {
     let tx = db
         .begin_with_options(TransactionOptions {
             sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
@@ -92,17 +109,33 @@ pub(in crate::history) async fn repair(db: &DatabaseConnection) -> Result<()> {
         })
         .await?;
     require_schema26(&tx).await?;
-    if !repair_needed(&tx).await? {
-        tx.commit().await?;
-        return Ok(());
+    let revision = revision(&tx).await?;
+    if revision == CURRENT_REVISION {
+        return Err(HistoryError::Conflict(
+            "history maintenance revision already changed".into(),
+        ));
     }
-    tx.execute_unprepared("DROP TRIGGER IF EXISTS history_events_no_update")
-        .await?;
-    rewrite_open_events(&tx).await?;
-    tx.execute_unprepared(RESTORE_EVENT_UPDATE_TRIGGER).await?;
-    mark_repaired(&tx).await?;
+    stage_report(repair_in_transaction(&tx, database_id, revision == 0).await?)?;
     tx.commit().await?;
     Ok(())
+}
+
+// The v25 upgrade already indexed bodies while lifting the events. Its caller holds the outer
+// migration transaction and the original backup, just as the schema 26 maintenance entry does.
+pub(super) async fn repair_in_transaction(
+    db: &impl ConnectionTrait,
+    database_id: &str,
+    repair_manifest: bool,
+) -> Result<u64> {
+    db.execute_unprepared("DROP TRIGGER history_events_no_update")
+        .await?;
+    if repair_manifest {
+        rewrite_open_events(db, database_id).await?;
+    }
+    let rewritten = super::provider_failure::migrate(db, database_id).await?;
+    db.execute_unprepared(RESTORE_EVENT_UPDATE_TRIGGER).await?;
+    mark_current(db).await?;
+    Ok(rewritten)
 }
 
 fn rename_usage_keys(value: &mut serde_json::Value) -> Result<bool> {
@@ -271,8 +304,7 @@ async fn require_schema26(db: &impl ConnectionTrait) -> Result<()> {
     Ok(())
 }
 
-async fn rewrite_open_events(db: &impl ConnectionTrait) -> Result<()> {
-    let database_id = database_id(db).await?;
+async fn rewrite_open_events(db: &impl ConnectionTrait, database_id: &str) -> Result<()> {
     let mut after = 0i64;
     loop {
         let rows = db
@@ -299,7 +331,7 @@ async fn rewrite_open_events(db: &impl ConnectionTrait) -> Result<()> {
             if let Some(payload) = rewrite_payload(
                 &payload,
                 scope.as_deref() == Some("accounting"),
-                &database_id,
+                database_id,
                 &event_id,
                 &stored,
             )? {
@@ -313,6 +345,7 @@ async fn rewrite_open_events(db: &impl ConnectionTrait) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 async fn database_id(db: &impl ConnectionTrait) -> Result<String> {
     let row = db
         .query_one_raw(statement(
@@ -371,7 +404,510 @@ async fn stored_bodies(db: &impl ConnectionTrait, event_id: &str) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::{HistoryBusinessRowHead, HistoryDemand, HistoryLimits, HistoryStore};
+    use crate::{ProviderFailureKind, TurnState};
+    use serde_json::json;
     use sha2::Digest;
+
+    fn legacy_failed_turn(thread_id: &str, kind: &str) -> serde_json::Value {
+        json!({
+            "id": "turn-old", "threadId": thread_id, "revision": 2, "updatedAt": 20,
+            "state": {"kind": "failed", "data": {
+                "startedAt": 10, "completedAt": 20, "failure": {
+                    "category": if kind == "capacity" { "providerCapacity" } else { "provider" },
+                    "providerKind": kind,
+                    "code": "old-provider-code", "httpStatus": 429, "message": "old diagnostic",
+                    "retry": {"kind": "retryable", "retry_after_ms": u64::MAX}
+                }
+            }}
+        })
+    }
+
+    #[tokio::test]
+    async fn schema26_migrates_legacy_provider_failure_turns() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let schema = super::super::super::schema::connect(&path, false, true).await?;
+        let thread_id = "legacy-provider-failures";
+        super::super::super::schema::initialize(&schema, thread_id).await?;
+        schema.execute_unprepared("PRAGMA user_version=1").await?;
+
+        let turn = legacy_failed_turn(thread_id, "capacity").to_string();
+        let detail = json!({
+            "head": {
+                "turnId": "turn-old", "state": "failed",
+                "contextDisposition": "active", "updatedAt": 20000, "detailEventId": "detail"
+            },
+            "bodies": [{"key": "turn_detail", "role": "canonical_payload",
+                        "byteLength": turn.len(), "inlineText": turn}]
+        });
+        insert_event(
+            &schema,
+            1,
+            "detail",
+            Some(("turn", "turn:turn-old")),
+            &detail.to_string(),
+            "anywork.turn/1",
+        )
+        .await?;
+        let timeline = json!({
+            "contract": "anywork.event/1", "type": "turn",
+            "meta": {
+                "entityId": "receipt", "entityKind": "turnReceipt", "delivery": "foreground",
+                "state": {"kind":"knownTerminal","outcome":"failed"},
+                "startedAt": 10000, "finishedAt": 20000
+            },
+            "data": { "outcome": legacy_failed_turn(thread_id, "configuration")["state"] }
+        });
+        insert_event(
+            &schema,
+            2,
+            "receipt",
+            None,
+            &timeline.to_string(),
+            "anywork.event/1",
+        )
+        .await?;
+        let mut raw = timeline.clone();
+        raw["type"] = json!("raw");
+        let raw = raw.to_string();
+        insert_event(&schema, 3, "unrelated", None, &raw, "anywork.event/1").await?;
+        let database = database_id(&schema).await?;
+        let original = insert_chunked_turn(&schema, &database, thread_id).await?;
+        schema.close().await?;
+        let Err(rejected) =
+            HistoryStore::open_reader(&path, thread_id, HistoryLimits::default()).await
+        else {
+            panic!("ordinary reader accepted an unmaintained database");
+        };
+        assert!(
+            rejected
+                .to_string()
+                .contains("requires schema 26 maintenance")
+        );
+
+        let report = super::super::upgrade_history(&path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, super::super::UpgradeStatus::Upgraded);
+        assert_eq!(report.imported_categories["turn_payloads_rewritten"], 3);
+        let backup =
+            super::super::super::schema::connect(report.backup.as_ref().unwrap(), true, false)
+                .await?;
+        assert_eq!(payload_json(&backup, "detail").await?, detail.to_string());
+        assert_eq!(
+            payload_json(&backup, "receipt").await?,
+            timeline.to_string()
+        );
+        assert_eq!(revision(&backup).await?, 1);
+        backup.close().await?;
+
+        let reader = HistoryStore::open_reader(&path, thread_id, HistoryLimits::default()).await?;
+        let turns = reader
+            .turns_page(None, None, HistoryDemand::default())
+            .await?;
+        assert_eq!(turns.entries.len(), 2);
+        let original_chunked: crate::Turn = {
+            let mut expected: serde_json::Value = serde_json::from_str(&original)?;
+            let failure = &mut expected["state"]["data"]["failure"];
+            failure["retry"]["retryAfterMs"] = json!("18446744073709551615");
+            failure["recovery"]["effectiveWaitMillis"] = json!("18446744073709551615");
+            serde_json::from_value(expected)?
+        };
+        let mut states = Vec::new();
+        for entry in turns.entries {
+            let HistoryBusinessRowHead::Turn(head) = entry.head else {
+                panic!("expected a Turn row")
+            };
+            let turn = crate::studio::runtime::history_turn(&reader, head).await?;
+            if turn.id == "turn-chunked" {
+                assert_eq!(turn, original_chunked);
+            } else {
+                states.push(turn.state);
+            }
+        }
+        let receipt = reader
+            .read_event("receipt".into(), HistoryDemand::default())
+            .await?;
+        let receipt = crate::history::decode_event_envelope(&receipt)?;
+        let receipt_retry = &receipt.data["outcome"]["data"]["failure"]["retry"];
+        assert_eq!(
+            receipt_retry["retryAfterMs"].as_str(),
+            Some("18446744073709551615")
+        );
+        assert!(receipt_retry.get("retry_after_ms").is_none());
+        states.push(serde_json::from_value::<TurnState>(
+            receipt.data["outcome"].clone(),
+        )?);
+        for state in states {
+            let TurnState::Failed(state) = state else {
+                panic!("expected a failed Turn")
+            };
+            let failure = state.failure();
+            assert_eq!(failure.provider_kind, Some(ProviderFailureKind::Unknown));
+            assert_eq!(failure.retry.retry_after_ms(), Some(u64::MAX));
+            assert_eq!(failure.code.as_deref(), Some("old-provider-code"));
+            assert_eq!(failure.http_status, Some(429));
+            assert_eq!(failure.message, "old diagnostic");
+            assert!(failure.recovery.is_none());
+        }
+        assert_eq!(
+            reader
+                .read_event("unrelated".into(), HistoryDemand::default())
+                .await?
+                .payload_json,
+            raw
+        );
+        let chunked = reader
+            .read_event("chunked".into(), HistoryDemand::default())
+            .await?;
+        let migrated =
+            crate::history::read_event_body_bytes(&reader, &chunked, "turn_detail", None)
+                .await?
+                .unwrap();
+        let chunked_turn: serde_json::Value = serde_json::from_slice(&migrated)?;
+        let chunked_failure = &chunked_turn["state"]["data"]["failure"];
+        assert_eq!(
+            chunked_failure["retry"]["retryAfterMs"].as_str(),
+            Some("18446744073709551615")
+        );
+        assert_eq!(
+            chunked_failure["recovery"]["effectiveWaitMillis"].as_str(),
+            Some("18446744073709551615")
+        );
+        let manifest: serde_json::Value = serde_json::from_str(&chunked.payload_json)?;
+        let reference: crate::history::HistoryEventBodyRef =
+            serde_json::from_value(manifest["bodies"][0]["reference"].clone())?;
+        assert_eq!(manifest["bodies"][0]["byteLength"], migrated.len());
+        assert_eq!(reference.byte_length, migrated.len() as u64);
+        assert_ne!(reference.body_id, "old-body");
+        reader.close().await;
+
+        let second = super::super::upgrade_history(&path, thread_id, directory.path()).await?;
+        assert_eq!(second.status, super::super::UpgradeStatus::AlreadySchema26);
+        assert!(second.backup.is_none());
+        let reader = HistoryStore::open_reader(&path, thread_id, HistoryLimits::default()).await?;
+        assert_eq!(
+            reader
+                .read_event("chunked".into(), HistoryDemand::default())
+                .await?
+                .payload_json,
+            chunked.payload_json
+        );
+        reader.close().await;
+
+        let db = super::super::super::schema::connect(&path, true, false).await?;
+        assert_eq!(revision(&db).await?, CURRENT_REVISION);
+        let original_chunks = db
+            .query_all_raw(statement(
+                "SELECT data FROM history_body_chunks WHERE body_id='old-body' ORDER BY chunk_no",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(original_chunks.len(), 2);
+        let mut original_bytes = Vec::new();
+        for chunk in original_chunks {
+            original_bytes.extend(chunk.try_get::<Vec<u8>>("", "data")?);
+        }
+        assert_eq!(original_bytes, original.as_bytes());
+        let body = super::super::super::db::body(&db, &reference.body_id)
+            .await?
+            .unwrap();
+        assert_eq!(body.digest, sha2::Sha256::digest(&migrated).to_vec());
+        assert_eq!(
+            super::super::history_table_rows(&db).await?["history_bodies"],
+            2
+        );
+        db.close().await?;
+        Ok(())
+    }
+
+    async fn insert_chunked_turn(
+        db: &impl ConnectionTrait,
+        database_id: &str,
+        thread_id: &str,
+    ) -> Result<String> {
+        let mut turn = legacy_failed_turn(thread_id, "unknown");
+        turn["id"] = json!("turn-chunked");
+        let failure = &mut turn["state"]["data"]["failure"];
+        failure["message"] = json!("旧诊断".repeat(8_000));
+        failure["retry"] = json!({"kind":"retryable","retryAfterMs":u64::MAX});
+        failure["recovery"] = json!({"effectiveWaitMillis":u64::MAX});
+        let turn = turn.to_string();
+        let detail = json!({
+            "head": {"turnId":"turn-chunked","state":"failed","contextDisposition":"active",
+                     "updatedAt":20000,"detailEventId":"chunked"},
+            "bodies": [{"key":"turn_detail","role":"canonical_payload","byteLength":turn.len(),
+                        "reference": {"databaseId":database_id,"ownerEventId":"chunked","bodyId":"old-body",
+                                      "bodyKey":"turn_detail","byteStart":0,"byteLength":turn.len()}}]
+        });
+        insert_event(
+            db,
+            4,
+            "chunked",
+            Some(("turn", "turn:turn-chunked")),
+            &detail.to_string(),
+            "anywork.turn/1",
+        )
+        .await?;
+        insert_body(
+            db,
+            "old-body",
+            "chunked",
+            "turn_detail",
+            "canonical_payload",
+            turn.as_bytes(),
+        )
+        .await?;
+        Ok(turn)
+    }
+
+    #[tokio::test]
+    async fn schema26_backup_publish_failure_preserves_crashed_wal() -> Result<()> {
+        use super::super::{
+            BACKUP_ROOT_SCHEMA26, SCHEMA26_BACKUP_NAME, UpgradeFiles,
+            migration_tests::move_with_target_conflict, upgrade_history,
+            upgrade_history_with_files,
+        };
+        use crate::history::schema;
+        use std::io;
+
+        const THREAD: &str = "schema26-backup-crashed-wal";
+        const CHILD_PATH: &str = "ANYWORK_TEST_SCHEMA26_BACKUP_CRASH_DB";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let db = schema::connect(std::path::Path::new(&path), false, false).await?;
+            db.execute_unprepared("PRAGMA wal_autocheckpoint=0").await?;
+            insert_chunked_turn(&db, &database_id(&db).await?, THREAD).await?;
+            // Leave the committed WAL behind without running SQLite's last-close checkpoint.
+            std::process::exit(0);
+        }
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let wal_path = path.with_extension("sqlite-wal");
+        let db = schema::connect(&path, false, true).await?;
+        schema::initialize(&db, THREAD).await?;
+        db.execute_unprepared("PRAGMA user_version=1").await?;
+        db.close().await?;
+        let original_main = std::fs::read(&path)?;
+        assert!(!wal_path.exists());
+
+        let test_name = concat!(
+            module_path!(),
+            "::schema26_backup_publish_failure_preserves_crashed_wal"
+        );
+        let (_, test_name) = test_name.split_once("::").unwrap();
+        let mut child = tokio::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD_PATH, &path)
+            .kill_on_drop(true)
+            .spawn()?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait()).await;
+        let status = match result {
+            Ok(status) => status?,
+            Err(error) => {
+                child.kill().await?;
+                return Err(HistoryError::Storage(error.into()));
+            }
+        };
+        assert!(status.success(), "WAL fixture child returned {status}");
+        let original_wal = std::fs::read(&wal_path)?;
+        assert!(original_wal.len() > 32, "WAL fixture has no frames");
+        assert!(
+            std::fs::read(&path)? == original_main,
+            "fixture already checkpointed"
+        );
+
+        let files = UpgradeFiles {
+            move_owned_path: |source, target| {
+                move_with_target_conflict(source, target, SCHEMA26_BACKUP_NAME)
+            },
+            ..UpgradeFiles::DISK
+        };
+        let error = upgrade_history_with_files(&path, THREAD, directory.path(), files)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, HistoryError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists),
+            "{error:#}"
+        );
+        let operation = std::fs::read_dir(directory.path().join(BACKUP_ROOT_SCHEMA26))?
+            .next()
+            .unwrap()?
+            .path();
+        assert!(!operation.join(SCHEMA26_BACKUP_NAME).exists());
+        let files = std::fs::read_dir(&operation)?.collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(files.len(), 1);
+        let backup = schema::connect(&files[0].path(), true, false).await?;
+        assert_eq!(revision(&backup).await?, 1);
+        let wal_only = payload_json(&backup, "chunked").await?;
+        let wal_counts = super::super::history_table_rows(&backup).await?;
+        assert_eq!(wal_counts["history_bodies"], 1);
+        assert_eq!(wal_counts["history_body_chunks"], 2);
+        backup.close().await?;
+
+        assert!(
+            std::fs::read(&path)? == original_main,
+            "backup changed the main database before publication"
+        );
+        assert!(
+            std::fs::read(&wal_path)? == original_wal,
+            "backup changed the uncheckpointed WAL before publication"
+        );
+
+        let report = upgrade_history(&path, THREAD, directory.path()).await?;
+        let backup = schema::connect(report.backup.as_deref().unwrap(), true, false).await?;
+        assert_eq!(payload_json(&backup, "chunked").await?, wal_only);
+        assert_eq!(super::super::history_table_rows(&backup).await?, wal_counts);
+        backup.close().await?;
+        let reader = HistoryStore::open_reader(&path, THREAD, HistoryLimits::default()).await?;
+        let turns = reader
+            .turns_page(None, None, HistoryDemand::default())
+            .await?;
+        let HistoryBusinessRowHead::Turn(head) = &turns.entries[0].head else {
+            panic!("expected a Turn row")
+        };
+        let turn = crate::studio::runtime::history_turn(&reader, head.clone()).await?;
+        assert_eq!(turn.id, "turn-chunked");
+        reader.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema26_turn_migration_rejects_oversized_final_chunk() -> Result<()> {
+        schema26_turn_migration_rejects_chunks(
+            "UPDATE history_body_chunks SET data=CAST(data || X'01' AS BLOB) \
+             WHERE body_id='old-body' AND chunk_no=1",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn schema26_turn_migration_rejects_extra_chunk() -> Result<()> {
+        schema26_turn_migration_rejects_chunks(
+            "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES('old-body',2,X'01')",
+        )
+        .await
+    }
+
+    async fn schema26_turn_migration_rejects_chunks(corruption: &str) -> Result<()> {
+        use super::super::{BACKUP_ROOT_SCHEMA26, PENDING_REPORT_FILE, upgrade_history};
+        use crate::history::schema;
+
+        const THREAD: &str = "schema26-invalid-turn-chunks";
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let db = schema::connect(&path, false, true).await?;
+        schema::initialize(&db, THREAD).await?;
+        db.execute_unprepared("PRAGMA user_version=1").await?;
+        let earlier = json!({
+            "contract":"anywork.event/1", "type":"turn",
+            "data": {"outcome":legacy_failed_turn(THREAD,"configuration")["state"]}
+        })
+        .to_string();
+        insert_event(&db, 1, "earlier-receipt", None, &earlier, "anywork.event/1").await?;
+        insert_chunked_turn(&db, &database_id(&db).await?, THREAD).await?;
+        let original = payload_json(&db, "chunked").await?;
+        let trigger: String = db
+            .query_one_raw(statement(
+                "SELECT sql FROM sqlite_schema WHERE name='history_body_chunks_no_update'",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get("", "sql")?;
+        db.execute_unprepared("DROP TRIGGER history_body_chunks_no_update")
+            .await?;
+        db.execute_unprepared(corruption).await?;
+        db.execute_unprepared(&trigger).await?;
+        let before_counts = super::super::history_table_rows(&db).await?;
+        db.close().await?;
+
+        let result = upgrade_history(&path, THREAD, directory.path()).await;
+        assert!(
+            matches!(&result, Err(HistoryError::Integrity(message))
+                if message.contains("event chunked") && message.contains("chunk layout")),
+            "{result:?}"
+        );
+        let backups = directory.path().join(BACKUP_ROOT_SCHEMA26);
+        assert!(!backups.join(PENDING_REPORT_FILE).exists());
+        let operation = std::fs::read_dir(backups)?.next().unwrap()?.path();
+        assert!(!operation.join("upgrade-report.json").exists());
+        assert!(operation.join(super::super::SCHEMA26_BACKUP_NAME).is_file());
+        let db = schema::connect(&path, false, false).await?;
+        assert_eq!(revision(&db).await?, 1);
+        assert_eq!(payload_json(&db, "chunked").await?, original);
+        assert_eq!(payload_json(&db, "earlier-receipt").await?, earlier);
+        assert_eq!(super::super::history_table_rows(&db).await?, before_counts);
+        let error = db
+            .execute_unprepared("UPDATE history_events SET recorded_at=recorded_at")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("append-only"), "{error}");
+        db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema26_maintenance_failure_preserves_original_events_and_bodies() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "maintenance-rollback";
+        let db = super::super::super::schema::connect(&path, false, true).await?;
+        super::super::super::schema::initialize(&db, thread_id).await?;
+        db.execute_unprepared("PRAGMA user_version=1").await?;
+        let database = database_id(&db).await?;
+        insert_chunked_turn(&db, &database, thread_id).await?;
+        let original = payload_json(&db, "chunked").await?;
+        let mut malformed = legacy_failed_turn(thread_id, "capacity");
+        malformed["state"]["data"]["failure"]["retry"]["retryAfterMs"] = json!(4000);
+        let malformed = json!({"contract":"anywork.event/1", "type":"turn", "data":{"outcome":malformed["state"]}}).to_string();
+        insert_event(&db, 5, "malformed", None, &malformed, "anywork.event/1").await?;
+        db.close().await?;
+
+        let backups = directory.path().join(super::super::BACKUP_ROOT_SCHEMA26);
+        std::fs::create_dir_all(backups.parent().unwrap())?;
+        std::fs::write(&backups, "prevent the backup directory from being created")?;
+        let error = super::super::upgrade_history(&path, thread_id, directory.path())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, HistoryError::Io(_)), "{error}");
+        let db = super::super::super::schema::connect(&path, true, false).await?;
+        assert_eq!(payload_json(&db, "chunked").await?, original);
+        assert_eq!(revision(&db).await?, 1);
+        db.close().await?;
+
+        std::fs::remove_file(&backups)?;
+        let error = super::super::upgrade_history(&path, thread_id, directory.path())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, HistoryError::Integrity(message)
+                if message.contains("event malformed")
+                    && message.contains("conflicting historical Turn retry wait")),
+            "{error}"
+        );
+        assert!(!backups.join(super::super::PENDING_REPORT_FILE).exists());
+        let operation = std::fs::read_dir(backups)?.next().unwrap()?.path();
+        assert!(!operation.join("upgrade-report.json").exists());
+        let preserved = operation.join(super::super::SCHEMA26_BACKUP_NAME);
+        let backup = super::super::super::schema::connect(&preserved, true, false).await?;
+        assert_eq!(payload_json(&backup, "malformed").await?, malformed);
+        backup.close().await?;
+        let db = super::super::super::schema::connect(&path, false, false).await?;
+        assert_eq!(revision(&db).await?, 1);
+        assert_eq!(payload_json(&db, "chunked").await?, original);
+        assert_eq!(payload_json(&db, "malformed").await?, malformed);
+        assert_eq!(
+            super::super::history_table_rows(&db).await?["history_bodies"],
+            1
+        );
+        let error = db
+            .execute_unprepared("UPDATE history_events SET recorded_at=recorded_at")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("append-only"), "{error}");
+        db.close().await?;
+        Ok(())
+    }
 
     fn usage_payload(database_id: &str) -> String {
         serde_json::json!({
@@ -460,7 +996,7 @@ mod tests {
         assert!(super::super::requires_history_upgrade(&history_path, "thread-1").await?);
         let report =
             super::super::upgrade_history(&history_path, "thread-1", directory.path()).await?;
-        assert_eq!(report.status, super::super::UpgradeStatus::AlreadySchema26);
+        assert_eq!(report.status, super::super::UpgradeStatus::Upgraded);
         assert_eq!(report.database_id, database_id);
         assert!(!super::super::requires_history_upgrade(&history_path, "thread-1").await?);
 
@@ -642,11 +1178,17 @@ mod tests {
             ],
         ))
         .await?;
-        db.execute_raw(statement(
-            "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,0,?)",
-            vec![body_id.into(), bytes.to_vec().into()],
-        ))
-        .await?;
+        for (chunk, bytes) in bytes.chunks(crate::history::BODY_CHUNK_BYTES).enumerate() {
+            db.execute_raw(statement(
+                "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,?,?)",
+                vec![
+                    body_id.into(),
+                    i64::try_from(chunk).unwrap().into(),
+                    bytes.to_vec().into(),
+                ],
+            ))
+            .await?;
+        }
         Ok(())
     }
 }

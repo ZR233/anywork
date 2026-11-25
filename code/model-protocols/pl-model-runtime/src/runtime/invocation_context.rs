@@ -2,8 +2,51 @@ use super::ModelSession;
 use super::transport_policy::MODEL_MAX_RETRIES;
 use crate::completion::stream::event::ModelStreamEvent;
 use crate::completion::{CompletionFailure, CompletionTraceContext};
+use pl_core::model::ModelMemberError;
+use pl_core::thread::ModelSettlementPort;
 use pl_protocol::{PureError, Result};
 use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+pub(super) enum BoundSettlement {
+    Memory,
+    Thread(ModelSettlementPort),
+}
+
+impl BoundSettlement {
+    pub(super) fn turn_id(&self) -> Option<&str> {
+        match self {
+            Self::Memory => None,
+            Self::Thread(port) => port.turn_id(),
+        }
+    }
+
+    pub(super) async fn settle(
+        &self,
+        generation: u32,
+        payload: pl_core::context::OpaquePayload,
+    ) -> std::result::Result<(), ModelMemberError> {
+        match self {
+            Self::Memory => Ok(()),
+            Self::Thread(port) => port.settle(generation, payload).await,
+        }
+    }
+
+    pub(super) fn cancellation(&self) -> Option<&tokio_util::sync::CancellationToken> {
+        match self {
+            Self::Memory => None,
+            Self::Thread(port) => port.cancellation(),
+        }
+    }
+}
+
+pub(super) fn settlement_trace(port: &ModelSettlementPort) -> CompletionTraceContext {
+    CompletionTraceContext {
+        session_id: port.thread_id().into(),
+        turn_id: port.turn_id().unwrap_or_else(|| port.attempt_id()).into(),
+        inference_id: port.attempt_id().into(),
+    }
+}
 
 /// 单次模型调用的运行期上下文。
 ///
@@ -17,12 +60,67 @@ pub struct ModelInvocationContext {
     pub(super) prompt_cache_scope: Option<super::PromptCacheScope>,
     pub(super) progress: Option<pl_core::model::ModelProgressSender>,
     pub(super) members: Option<pl_core::model::ModelMemberSender>,
+    pub(super) settlement: Option<BoundSettlement>,
     pub(super) current: Option<super::current::CurrentInvocation>,
     pub(super) observer: Option<StreamObserver>,
     pub(super) purpose: InvocationPurpose,
+    pub(super) billing_purpose: String,
+    pub(super) billing_prompt: Option<super::ThreadPromptSnapshot>,
 }
 
 impl ModelInvocationContext {
+    /// Selects invocation-owned receipt delivery for an independent, non-persisted call.
+    pub fn in_memory(session: super::ModelSession) -> Self {
+        Self {
+            settlement: Some(BoundSettlement::Memory),
+            ..Self::new(session)
+        }
+    }
+
+    /// Binds the already registered Thread call before the first network send.
+    pub fn with_settlement_port(
+        mut self,
+        purpose: impl Into<String>,
+        port: ModelSettlementPort,
+    ) -> Self {
+        self.billing_purpose = purpose.into();
+        self.trace = Some(settlement_trace(&port));
+        self.settlement = Some(BoundSettlement::Thread(port));
+        self
+    }
+
+    pub(super) fn bind_thread_settlement(mut self, independent: bool) -> Self {
+        self.settlement = match self
+            .members
+            .as_ref()
+            .and_then(|members| members.settlement_port())
+        {
+            Some(port) => {
+                if port.turn_id().is_none()
+                    && let Some(trace) = self.trace.as_mut()
+                {
+                    trace.turn_id = port.attempt_id().into();
+                }
+                Some(BoundSettlement::Thread(port.clone()))
+            }
+            None if independent => Some(BoundSettlement::Memory),
+            None => None,
+        };
+        self
+    }
+
+    pub(super) fn with_billing_purpose(mut self, purpose: String) -> Self {
+        self.billing_purpose = purpose;
+        self
+    }
+
+    pub(super) fn with_billing_prompt(
+        mut self,
+        prompt: Option<super::ThreadPromptSnapshot>,
+    ) -> Self {
+        self.billing_prompt = prompt;
+        self
+    }
     pub(super) fn with_current(mut self, current: super::current::CurrentInvocation) -> Self {
         self.current = Some(current);
         self
@@ -67,12 +165,15 @@ impl ModelInvocationContext {
         Self {
             session,
             purpose: InvocationPurpose::Completion,
+            billing_purpose: "completion".into(),
+            billing_prompt: None,
             observer: None,
             trace: None,
             cancellation: None,
             prompt_cache_scope: None,
             progress: None,
             members: None,
+            settlement: None,
             current: None,
         }
     }
@@ -101,23 +202,45 @@ impl ModelInvocationContext {
         self.prompt_cache_scope = Some(scope);
         self
     }
-    pub(super) fn begin_retry(&self, error: &mut CompletionFailure) -> Result<()> {
+    pub(super) fn begin_retry(
+        &self,
+        error: &mut CompletionFailure,
+        decision: super::ModelRecoveryDecision,
+        phase: pl_core::model::ModelRecoveryPhase,
+        preparation: bool,
+    ) -> Result<()> {
         let sender = self
             .progress
             .as_ref()
             .expect("invocation owns its observation");
-        let message = error.to_string();
+        let message = decision
+            .provider_failure
+            .as_ref()
+            .map_or_else(|| error.to_string(), |failure| failure.message.clone());
+        let retry = decision.retry;
+        let decision = decision.encode()?;
         sender
             .charge_output(
                 sender
                     .charged_output()
                     .saturating_add(message.len() as u64)
+                    .saturating_add(decision.content().len() as u64)
                     .saturating_add(256),
             )
             .map_err(|error| PureError::MemoryError(error.to_string()))?;
-        sender
-            .begin_recovery(MODEL_MAX_RETRIES, Arc::from(message))
-            .map_err(|error| PureError::Protocol(error.to_string()))?;
+        let message = Arc::from(message);
+        let staged = if preparation {
+            sender.stage_preparation_recovery(
+                MODEL_MAX_RETRIES,
+                retry,
+                message,
+                Some(decision),
+                phase,
+            )
+        } else {
+            sender.stage_recovery(MODEL_MAX_RETRIES, retry, message, Some(decision), phase)
+        };
+        staged.map_err(|error| PureError::Protocol(error.to_string()))?;
         // These parts now belong solely to the retained failed generation. A
         // cancellation/refresh failure before the next send must not relabel
         // them as that unsent generation's current presentation.

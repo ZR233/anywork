@@ -67,6 +67,7 @@ impl ModelSession for BlockingModelCall {
             entered.send(()).expect("receiver must still exist");
             request.cancellation.cancelled().await;
             Err(ModelError {
+                context_recovery: None,
                 details: None,
                 kind: ModelFailureKind::Cancelled,
                 usage: Default::default(),

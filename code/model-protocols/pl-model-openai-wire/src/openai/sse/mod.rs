@@ -3,7 +3,6 @@ use serde::Deserialize;
 use crate::completion::ModelTextChannel;
 use crate::completion::stream::event::{ModelStreamEvent, ToolInputDeltaPayload};
 use crate::openai::identity::responses_tool_identity;
-use crate::openai::usage::ProviderTokenUsage;
 
 mod decoder;
 mod item;
@@ -29,20 +28,23 @@ pub struct SseStreamEvent {
     pub item_id: Option<String>,
     pub call_id: Option<String>,
     pub response: Option<serde_json::Value>,
-    pub error: Option<serde_json::Value>,
-    pub code: Option<String>,
-    pub message: Option<String>,
-    /// Transport-owned, validated response header; never read from provider JSON.
-    #[serde(skip)]
-    pub request_id: Option<String>,
-    pub retry_after_ms: Option<u64>,
-    pub status: Option<serde_json::Value>,
-    pub status_code: Option<serde_json::Value>,
     pub summary_index: Option<i64>,
     pub content_index: Option<i64>,
     pub output_index: Option<u32>,
     pub choices: Option<Vec<ChatStreamChoice>>,
-    pub usage: Option<ProviderTokenUsage>,
+}
+
+impl SseStreamEvent {
+    pub(crate) fn chat_has_finish_reason(&self) -> bool {
+        self.choices.as_ref().is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .finish_reason
+                    .as_deref()
+                    .is_some_and(|reason| !reason.is_empty())
+            })
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -88,13 +90,6 @@ const DEFAULT_REASONING_ID: &str = "thinking";
 fn chat_choice_events(event: &SseStreamEvent) -> Option<Vec<ModelStreamEvent>> {
     let choices = event.choices.as_ref()?;
     let mut events = Vec::new();
-    if let Some(usage) = event
-        .usage
-        .as_ref()
-        .and_then(ProviderTokenUsage::to_chat_usage)
-    {
-        events.push(ModelStreamEvent::Usage(usage));
-    }
     let Some(choice) = choices.first() else {
         return Some(events);
     };
@@ -165,11 +160,6 @@ pub fn process_sse_events(event: &SseStreamEvent) -> Vec<ModelStreamEvent> {
         Some(StreamEventBatch::Many(events)) => events,
         None => Vec::new(),
     };
-    for failure in &mut events {
-        if let ModelStreamEvent::Failed { request_id, .. } = failure {
-            request_id.clone_from(&event.request_id);
-        }
-    }
     if let Some(model_observation) = response_model_observation(event) {
         events.insert(0, model_observation);
     }
@@ -197,10 +187,7 @@ fn model_declaration_is_terminal(event: &SseStreamEvent) -> bool {
     matches!(
         event.kind.as_str(),
         "response.completed" | "response.failed" | "response.incomplete"
-    ) || event
-        .choices
-        .as_ref()
-        .is_some_and(|choices| choices.iter().any(|choice| choice.finish_reason.is_some()))
+    ) || event.chat_has_finish_reason()
 }
 
 enum StreamEventBatch {
@@ -278,135 +265,15 @@ fn process_sse_event(event: &SseStreamEvent) -> Option<StreamEventBatch> {
             (!events.is_empty()).then_some(StreamEventBatch::Many(events))
         }),
 
-        "response.completed" => {
-            let usage = event
+        "response.completed" => Some(StreamEventBatch::Single(ModelStreamEvent::Completed {
+            response_id: event
                 .response
                 .as_ref()
-                .and_then(|response| response.get("usage"))
-                .and_then(ProviderTokenUsage::from_value)
-                .and_then(|usage| usage.to_responses_usage());
-            let mut events = Vec::new();
-            if let Some(usage) = usage {
-                events.push(ModelStreamEvent::Usage(usage));
-            }
-            events.push(ModelStreamEvent::Completed {
-                response_id: event
-                    .response
-                    .as_ref()
-                    .and_then(|r| r.get("id")?.as_str().map(String::from)),
-            });
-            Some(StreamEventBatch::Many(events))
-        }
-
-        "response.failed" => {
-            let response = event.response.as_ref();
-            let failure = provider_failure_event(
-                response.and_then(|response| response.get("error")),
-                response.and_then(|response| response.get("code").and_then(|value| value.as_str())),
-                response
-                    .and_then(|response| response.get("message").and_then(|value| value.as_str())),
-                response.and_then(provider_status),
-                response.and_then(|response| {
-                    response
-                        .get("retry_after_ms")
-                        .and_then(|value| value.as_u64())
-                }),
-                "response failed",
-            );
-            let mut events = Vec::new();
-            if let Some(usage) = response
-                .and_then(|r| r.get("usage"))
-                .and_then(ProviderTokenUsage::from_value)
-                .and_then(|usage| usage.to_responses_usage())
-            {
-                events.push(ModelStreamEvent::Usage(usage));
-            }
-            events.push(failure);
-            Some(StreamEventBatch::Many(events))
-        }
-
-        "response.incomplete" => {
-            let response = event.response.as_ref();
-            let reason = response
-                .and_then(|response| response.get("incomplete_details")?.get("reason")?.as_str());
-            let failure = provider_failure_event(
-                response.and_then(|response| response.get("error")),
-                reason,
-                None,
-                response.and_then(provider_status),
-                None,
-                "response incomplete",
-            );
-            let mut events = Vec::new();
-            if let Some(usage) = response
-                .and_then(|r| r.get("usage"))
-                .and_then(ProviderTokenUsage::from_value)
-                .and_then(|usage| usage.to_responses_usage())
-            {
-                events.push(ModelStreamEvent::Usage(usage));
-            }
-            events.push(failure);
-            Some(StreamEventBatch::Many(events))
-        }
-
-        "error" => Some(StreamEventBatch::Single(provider_failure_event(
-            event.error.as_ref(),
-            event.code.as_deref(),
-            event.message.as_deref(),
-            event
-                .status
-                .as_ref()
-                .and_then(provider_status_value)
-                .or_else(|| event.status_code.as_ref().and_then(provider_status_value)),
-            event.retry_after_ms,
-            "provider stream failed",
-        ))),
+                .and_then(|r| r.get("id")?.as_str().map(String::from)),
+        })),
 
         _ => None,
     }
-}
-
-fn provider_failure_event(
-    error: Option<&serde_json::Value>,
-    fallback_code: Option<&str>,
-    fallback_message: Option<&str>,
-    fallback_status: Option<u16>,
-    fallback_retry_after_ms: Option<u64>,
-    default_message: &str,
-) -> ModelStreamEvent {
-    ModelStreamEvent::Failed {
-        request_id: None,
-        code: error
-            .and_then(|error| error.get("code"))
-            .and_then(serde_json::Value::as_str)
-            .or(fallback_code)
-            .map(ToString::to_string),
-        http_status: error.and_then(provider_status).or(fallback_status),
-        retry_after_ms: error
-            .and_then(|error| error.get("retry_after_ms"))
-            .and_then(serde_json::Value::as_u64)
-            .or(fallback_retry_after_ms),
-        message: error
-            .and_then(|error| error.get("message"))
-            .and_then(serde_json::Value::as_str)
-            .or(fallback_message)
-            .unwrap_or(default_message)
-            .to_string(),
-    }
-}
-
-fn provider_status(value: &serde_json::Value) -> Option<u16> {
-    value
-        .get("status")
-        .and_then(provider_status_value)
-        .or_else(|| value.get("status_code").and_then(provider_status_value))
-}
-
-fn provider_status_value(value: &serde_json::Value) -> Option<u16> {
-    value
-        .as_u64()
-        .and_then(|status| u16::try_from(status).ok())
-        .or_else(|| value.as_str()?.parse().ok())
 }
 
 mod replay;

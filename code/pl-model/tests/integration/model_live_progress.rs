@@ -436,7 +436,7 @@ async fn late_commentary_phase_corrects_text_metadata_without_final_authorizatio
                         CompletionRequest::builder()
                             .messages(vec![user_message("late phase")])
                             .build(),
-                        ModelInvocationContext::new(ModelSession::default()),
+                        ModelInvocationContext::in_memory(ModelSession::default()),
                     )
                     .await
                     .unwrap();
@@ -1663,7 +1663,7 @@ async fn reasoning_delta_without_any_identity_fails_instead_of_inventing_an_item
                 CompletionRequest::builder()
                     .messages(vec![user_message("unidentified reasoning")])
                     .build(),
-                ModelInvocationContext::new(ModelSession::default()),
+                ModelInvocationContext::in_memory(ModelSession::default()),
             )
             .await
             .expect_err("an unassociable reasoning delta fails instead of fabricating an item");
@@ -1741,10 +1741,12 @@ async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns()
         resources: None,
         cancellation: Default::default(),
     };
-    let mut session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
-        .open_session()
-        .await
-        .expect("model session opens");
+    let mut session = ModelFactory::new(
+        pl_model::runtime::ThreadModel::new(runtime, None).with_in_memory_settlement(),
+    )
+    .open_session()
+    .await
+    .expect("model session opens");
     let call = session
         .prepare(request)
         .await
@@ -1847,6 +1849,7 @@ fn legacy_receipt(partial_progress: Value) -> ModelError {
         kind: ModelFailureKind::Unavailable,
         usage: Default::default(),
         source: None,
+        context_recovery: None,
     }
 }
 
@@ -1945,6 +1948,7 @@ struct OutputQuotaStore {
     limit: u64,
     limited_operation: Option<&'static str>,
     charges: Arc<Mutex<Vec<u64>>>,
+    settlements: Arc<Mutex<Vec<pl_core::model::ModelSubAttemptSettlement>>>,
 }
 
 impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
@@ -1981,8 +1985,12 @@ impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
     fn admit(
         &self,
         _thread_id: &str,
-        _write: pl_core::thread::cold::ThreadWrite,
+        write: pl_core::thread::cold::ThreadWrite,
     ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+        self.settlements
+            .lock()
+            .expect("admitted settlement log")
+            .extend(write.effect.model_sub_attempt_settlements.iter().cloned());
         Ok(())
     }
 
@@ -2605,14 +2613,18 @@ impl Tool for RecordingLookup {
 
 #[tokio::test]
 async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
-    // Fifteen argument bytes: they fit the 25-byte quota once, but two independent charges of the
-    // same call would overrun it and falsely refuse a well-formed tool call.
     let arguments = "{\"term\":\"rust\"}";
+    assert_eq!(
+        arguments.len(),
+        15,
+        "the fixture has fifteen argument bytes"
+    );
+    let before_terminal = ReplyStage::new();
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "staged identity",
         0,
-        Reply::Sse(vec![
+        before_terminal.gated(vec![
             json!({"type":"response.created","response":{"id":"live-stream","model":"live-fixture"}}),
             json!({"type":"response.output_item.added","output_index":0,
                 "item":{"id":"item-7","type":"function_call","name":"lookup"}}),
@@ -2621,9 +2633,10 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
             json!({"type":"response.output_item.done","output_index":0,
                 "item":{"call_id":"call-7","type":"function_call","name":"lookup",
                     "arguments":arguments}}),
-            // The stream is only terminal once the provider completes the response: without it the
-            // accumulator reports an incomplete transport, the runtime retries, and the second
-            // request no longer matches this step's *single* scripted reply.
+            // This sample acknowledges that the producer processed both forms of the tool input.
+            json!({"type":"response.in_progress","response":{"id":"live-stream",
+                "usage":{"input_tokens":8,"output_tokens":3}}}),
+        ], vec![
             json!({"type":"response.completed","response":{"id":"live-stream","model":"live-fixture",
                 "usage":{"input_tokens":8,"output_tokens":4}}}),
         ]),
@@ -2640,16 +2653,28 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
         .open_session()
         .await
         .expect("model session opens");
-    let thread = ThreadHandle::start("staged-identity".into(), session).expect("thread starts");
+    let progress = Arc::new(Mutex::new(None));
+    let thread = ThreadHandle::start(
+        "staged-identity".into(),
+        DynModelSession::new(MeteredSession {
+            inner: session,
+            progress: progress.clone(),
+        }),
+    )
+    .expect("thread starts");
     let charges = Arc::new(Mutex::new(Vec::new()));
+    let settlements = Arc::new(Mutex::new(Vec::new()));
     thread
         .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
             OutputQuotaStore {
-                limit: 25,
+                // Give the settlement the real operation ceiling. Measure tool input before
+                // the terminal frame makes the settlement eligible for admission.
+                limit: u64::MAX,
                 // Tool execution and its running/result receipts have independent reservations;
                 // this regression limits only the one model attempt that exposes the call twice.
                 limited_operation: Some("live-attempt:0"),
                 charges: charges.clone(),
+                settlements: settlements.clone(),
             },
         ))
         .await
@@ -2683,26 +2708,62 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
         .await
         .expect("tool registers");
 
-    let completed = tokio::time::timeout(
-        Duration::from_secs(10),
-        thread.run_turn(user_turn("staged identity")),
-    )
+    let mut subscription = thread.subscribe();
+    let run = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(user_turn("staged identity")).await })
+    };
+    let charged_before_terminal = tokio::time::timeout(Duration::from_secs(10), async {
+        before_terminal.wait_reached().await;
+        loop {
+            let sender = progress.lock().expect("model progress port").clone();
+            if let Some(sender) = sender
+                && sender
+                    .latest()
+                    .usage_observation()
+                    .is_some_and(|usage| usage.completion_tokens == Some(3))
+            {
+                break sender.charged_output();
+            }
+            subscription.next().await.expect("thread keeps publishing");
+        }
+    })
     .await
-    .expect("the staged identity stream must not stall")
-    .expect("the stream fits the quota once and completes");
-    assert_eq!(completed.model_steps, 1, "one model step produced the call");
-    let charged = charges
+    .expect("the producer observes the sample while the terminal frame is held");
+    assert_eq!(
+        charged_before_terminal, 15,
+        "the producer charges the staged delta and the completed input once in total"
+    );
+    let store_charge_before_terminal = *charges
         .lock()
         .expect("model charge log")
-        .iter()
-        .copied()
-        .max()
-        .expect("the limited model operation was charged");
-    assert!(charged <= 25, "the original model quota still applies");
+        .last()
+        .expect("the model operation charged its cold-store reservation");
+    assert_eq!(store_charge_before_terminal, 15);
+    assert!(calls.lock().expect("tool log").is_empty());
+    before_terminal.release();
+
+    let completed = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("the staged identity stream must not stall")
+        .expect("the turn task returns")
+        .expect("the terminal settlement and tool dispatch complete");
+    assert_eq!(completed.model_steps, 1, "one model step produced the call");
     assert!(
-        charged + arguments.len() as u64 > 25,
-        "charging the staged arguments again would exceed that same quota"
+        charges
+            .lock()
+            .expect("model charge log")
+            .iter()
+            .any(|&charge| charge > store_charge_before_terminal),
+        "the terminal settlement adds a real charge to the same reservation"
     );
+    let admitted = settlements.lock().expect("admitted settlement log").clone();
+    assert_eq!(
+        admitted.len(),
+        1,
+        "the funded settlement reached the store once"
+    );
+    assert_eq!(admitted[0].attempt_id, "live-attempt:0");
     let snapshot = thread.snapshot();
     assert_eq!(
         snapshot.persistence.fault, None,
@@ -2722,8 +2783,11 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
         [accepted_calls[0].call_id.as_str()],
         "the accepted attempt-scoped call is dispatched exactly once"
     );
-    let _ = fixture.shutdown().await;
-    let _ = tokio::time::timeout(Duration::from_secs(10), thread.close()).await;
+    assert_eq!(fixture.finish().await.unwrap().len(), 1);
+    tokio::time::timeout(Duration::from_secs(10), thread.close())
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 /// A host call without a Thread progress channel still has the same bounded output ceiling.
@@ -2785,7 +2849,7 @@ data: {\"type\":\"response.output_text.delta\",\"item_id\":\"message-1\",\"outpu
             CompletionRequest::builder()
                 .messages(vec![user_message("unbounded")])
                 .build(),
-            ModelInvocationContext::new(ModelSession::default()),
+            ModelInvocationContext::in_memory(ModelSession::default()),
         ),
     )
     .await

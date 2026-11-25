@@ -4,12 +4,61 @@ mod connection;
 mod prepare;
 mod recovery;
 mod timing;
+pub(crate) use recovery::InvocationReport;
 
 use super::{ModelInvocationContext, ModelRuntime};
 use crate::completion::{CompletionFailure, CompletionRequest, CompletionResponse};
 use crate::stream::CompletionEventStream;
 use pl_protocol::PureError;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
+
+#[repr(u8)]
+enum DispatchStage {
+    Unsent,
+    Connecting,
+    Submitted,
+}
+
+// The opening future can be dropped by cancellation. Keep the last actual transport boundary
+// outside that future so cancellation and opening errors retain the same evidence.
+pub(super) struct AttemptDispatch<'a> {
+    stage: AtomicU8,
+    progress: Option<&'a pl_core::model::ModelProgressSender>,
+}
+
+impl<'a> AttemptDispatch<'a> {
+    fn new(progress: Option<&'a pl_core::model::ModelProgressSender>) -> Self {
+        Self {
+            stage: AtomicU8::new(DispatchStage::Unsent as u8),
+            progress,
+        }
+    }
+
+    fn mark(&self, stage: DispatchStage) {
+        let previous = self.stage.swap(stage as u8, Ordering::Relaxed);
+        if previous == DispatchStage::Unsent as u8
+            && let Some(progress) = self.progress
+        {
+            progress.start_recovery_send();
+        }
+    }
+
+    pub(super) fn connecting(&self) {
+        self.mark(DispatchStage::Connecting);
+    }
+    pub(super) fn submitting(&self) {
+        self.mark(DispatchStage::Submitted);
+    }
+
+    fn started(&self) -> bool {
+        self.stage.load(Ordering::Relaxed) != DispatchStage::Unsent as u8
+    }
+
+    fn submitted(&self) -> bool {
+        self.stage.load(Ordering::Relaxed) == DispatchStage::Submitted as u8
+    }
+}
 
 struct OpenedCompletionStream {
     events: CompletionEventStream,
@@ -23,13 +72,6 @@ enum OpenAiTransport {
 }
 
 impl OpenAiTransport {
-    fn label(self) -> &'static str {
-        match self {
-            Self::ResponsesWebSocket => "WebSocket",
-            Self::Http => "HTTP",
-        }
-    }
-
     fn trace_label(self) -> &'static str {
         match self {
             Self::ResponsesWebSocket => "ws",
@@ -62,8 +104,37 @@ impl ModelRuntime {
     pub async fn complete(
         &self,
         request: CompletionRequest,
-        mut context: ModelInvocationContext,
+        context: ModelInvocationContext,
     ) -> std::result::Result<CompletionResponse, CompletionFailure> {
+        self.complete_with_report(request, context, &mut InvocationReport::default())
+            .await
+    }
+
+    pub(super) async fn complete_with_report(
+        &self,
+        request: CompletionRequest,
+        mut context: ModelInvocationContext,
+        report: &mut InvocationReport,
+    ) -> std::result::Result<CompletionResponse, CompletionFailure> {
+        use super::invocation_context::BoundSettlement;
+        let settlement = context.settlement.take().ok_or_else(|| {
+            CompletionFailure::from(PureError::Io(std::io::Error::other(
+                pl_core::model::ModelMemberError::SettlementUnavailable,
+            )))
+        })?;
+        if let BoundSettlement::Thread(port) = &settlement
+            && !context.trace.as_ref().is_some_and(|trace| {
+                trace.session_id == port.thread_id()
+                    && trace.turn_id == port.turn_id().unwrap_or_else(|| port.attempt_id())
+                    && trace.inference_id == port.attempt_id()
+            })
+        {
+            return Err(PureError::Protocol(
+                "model invocation identity does not match its settlement port".into(),
+            )
+            .into());
+        }
+        let owner_closing = settlement.cancellation().cloned();
         let progress = context
             .progress
             .get_or_insert_with(|| {
@@ -92,13 +163,19 @@ impl ModelRuntime {
             ));
         }
         let mut result = {
-            let invocation = self.complete_inner(request, context, current.as_mut());
+            let invocation =
+                self.complete_inner(request, context, &settlement, current.as_mut(), report);
             tokio::pin!(invocation);
             // Cancellation is cooperative: await the same invocation so its partial
             // accounting and transport guards finish before releasing admission.
             tokio::select! {
                 biased;
-                _ = closing.cancelled() => {
+                _ = async {
+                    match &owner_closing {
+                        Some(token) => tokio::select! { _ = token.cancelled() => (), _ = closing.cancelled() => () },
+                        None => closing.cancelled().await,
+                    }
+                } => {
                     cancellation.cancel();
                     invocation.await
                 }
@@ -112,15 +189,13 @@ impl ModelRuntime {
                     .expect("current invocation")
                     .handoff(payload),
                 Err(error) if result.is_ok() => {
-                    let accounting = result
-                        .as_ref()
-                        .expect("successful result")
-                        .accounting
-                        .clone();
-                    result = Err(CompletionFailure::new(
+                    let response = result.as_ref().expect("successful result");
+                    let mut failure = CompletionFailure::new(
                         PureError::Protocol(error.to_string()),
-                        Box::new(accounting),
-                    ));
+                        Box::new(response.accounting.clone()),
+                    );
+                    failure.usage_is_terminal = response.usage_is_terminal;
+                    result = Err(failure);
                 }
                 Err(_) => {} // Core rejects an exit without a complete final current payload.
             }
@@ -129,6 +204,7 @@ impl ModelRuntime {
             Ok(response) => {
                 progress.finish_recovery(pl_core::model::ModelRecoveryPhase::Recovered);
                 response.observation = progress.latest().observation().clone();
+                response.settlements = std::mem::take(&mut report.settlements);
             }
             Err(error) => {
                 let phase = if error.is_cancelled() {
@@ -148,6 +224,7 @@ impl ModelRuntime {
                 progress.finish_recovery(phase);
                 let latest = progress.latest();
                 error.partial_progress = (!latest.is_empty()).then_some(Box::new(latest));
+                error.settlements = std::mem::take(&mut report.settlements);
             }
         }
         result
@@ -180,6 +257,7 @@ mod cache_tests {
             endpoint,
             model,
             &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
             None,
         )
         .unwrap()
@@ -369,6 +447,7 @@ pub(in crate::runtime) mod chatgpt_tests {
                 endpoint,
                 info,
                 &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
                 None,
             )
             .unwrap(),
@@ -1011,6 +1090,7 @@ pub(in crate::runtime) mod chatgpt_tests {
             runner.endpoint.clone(),
             runner.model.clone(),
             &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
             None,
         )
         .unwrap();

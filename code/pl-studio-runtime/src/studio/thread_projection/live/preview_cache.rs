@@ -322,14 +322,15 @@ impl PreviewCache {
             None,
             at,
         )?;
-        for (id, message) in
+        for (id, message, notice) in
             super::super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
         {
             let fields = BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(&message))]);
             if self
                 .previews
                 .get(&id)
-                .is_some_and(|entry| fields_equal(&entry.fields, &fields))
+                .is_some_and(|entry| fields_equal(&entry.fields, &fields)
+                    && matches!(&entry.shape, ExecutionShape::Text(text) if text.model_recovery() == Some(&notice)))
             {
                 continue;
             }
@@ -339,12 +340,15 @@ impl PreviewCache {
                 .reserve_observed(&attempt.attempt_id, &id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             let created_at = placement.created_at(&id, at);
-            let state = ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                String::new(),
-                Vec::new(),
-                ThreadContentLifecycle::completed(at),
-            ));
+            let state = ExecutionShape::Text(
+                ThreadTextItem::new(
+                    ThreadTextChannel::Commentary,
+                    String::new(),
+                    Vec::new(),
+                    ThreadContentLifecycle::completed(at),
+                )
+                .with_model_recovery(Some(notice)),
+            );
             placement.store_fact(
                 id.clone(),
                 Fact {

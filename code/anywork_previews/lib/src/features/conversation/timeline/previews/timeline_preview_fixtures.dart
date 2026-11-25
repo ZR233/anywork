@@ -779,7 +779,7 @@ abstract final class TimelinePreviewFixtures {
             'code': 'service_unavailable',
             'httpStatus': 503,
             'message': 'Upstream model gateway returned 503 Service Unavailable while streaming response.',
-            'retry': {'kind': 'retryable', 'retryAfterMs': 5000},
+            'retry': {'kind': 'retryable', 'retryAfterMs': '5000'},
           },
         },
       },

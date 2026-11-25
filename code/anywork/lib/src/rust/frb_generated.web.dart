@@ -1180,6 +1180,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_model_reasoning_descriptor(dynamic raw);
 
   @protected
+  BridgeModelRecoveryInfo dco_decode_box_autoadd_bridge_model_recovery_info(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelRecoveryNotice dco_decode_box_autoadd_bridge_model_recovery_notice(
+    dynamic raw,
+  );
+
+  @protected
   BridgeModelSelectionGuide dco_decode_box_autoadd_bridge_model_selection_guide(
     dynamic raw,
   );
@@ -3088,6 +3098,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelRecoveryInfo dco_decode_bridge_model_recovery_info(dynamic raw);
+
+  @protected
+  BridgeModelRecoveryNotice dco_decode_bridge_model_recovery_notice(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelRecoveryPhase dco_decode_bridge_model_recovery_phase(dynamic raw);
+
+  @protected
   BridgeModelSelectionGuide dco_decode_bridge_model_selection_guide(
     dynamic raw,
   );
@@ -4852,6 +4873,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_model_reasoning_descriptor(dynamic raw);
 
   @protected
+  BridgeModelRecoveryInfo?
+  dco_decode_opt_box_autoadd_bridge_model_recovery_info(dynamic raw);
+
+  @protected
+  BridgeModelRecoveryNotice?
+  dco_decode_opt_box_autoadd_bridge_model_recovery_notice(dynamic raw);
+
+  @protected
   BridgeModelSelectionGuide?
   dco_decode_opt_box_autoadd_bridge_model_selection_guide(dynamic raw);
 
@@ -4978,6 +5007,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn? dco_decode_opt_box_autoadd_bridge_turn(dynamic raw);
+
+  @protected
+  BridgeTurnFailureDto? dco_decode_opt_box_autoadd_bridge_turn_failure_dto(
+    dynamic raw,
+  );
 
   @protected
   BridgeTurnPhase? dco_decode_opt_box_autoadd_bridge_turn_phase(dynamic raw);
@@ -6382,6 +6416,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelReasoningDescriptor
   sse_decode_box_autoadd_bridge_model_reasoning_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelRecoveryInfo sse_decode_box_autoadd_bridge_model_recovery_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelRecoveryNotice sse_decode_box_autoadd_bridge_model_recovery_notice(
     SseDeserializer deserializer,
   );
 
@@ -8896,6 +8940,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelRecoveryInfo sse_decode_bridge_model_recovery_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelRecoveryNotice sse_decode_bridge_model_recovery_notice(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelRecoveryPhase sse_decode_bridge_model_recovery_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeModelSelectionGuide sse_decode_bridge_model_selection_guide(
     SseDeserializer deserializer,
   );
@@ -11036,6 +11095,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelRecoveryInfo?
+  sse_decode_opt_box_autoadd_bridge_model_recovery_info(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelRecoveryNotice?
+  sse_decode_opt_box_autoadd_bridge_model_recovery_notice(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeModelSelectionGuide?
   sse_decode_opt_box_autoadd_bridge_model_selection_guide(
     SseDeserializer deserializer,
@@ -11204,6 +11275,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn? sse_decode_opt_box_autoadd_bridge_turn(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeTurnFailureDto? sse_decode_opt_box_autoadd_bridge_turn_failure_dto(
     SseDeserializer deserializer,
   );
 
@@ -12823,6 +12899,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_model_reasoning_descriptor(
     BridgeModelReasoningDescriptor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_recovery_info(
+    BridgeModelRecoveryInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_recovery_notice(
+    BridgeModelRecoveryNotice self,
     SseSerializer serializer,
   );
 
@@ -15803,6 +15891,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_model_recovery_info(
+    BridgeModelRecoveryInfo self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_recovery_notice(
+    BridgeModelRecoveryNotice self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_recovery_phase(
+    BridgeModelRecoveryPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_model_selection_guide(
     BridgeModelSelectionGuide self,
     SseSerializer serializer,
@@ -18335,6 +18441,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_model_recovery_info(
+    BridgeModelRecoveryInfo? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_model_recovery_notice(
+    BridgeModelRecoveryNotice? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_model_selection_guide(
     BridgeModelSelectionGuide? self,
     SseSerializer serializer,
@@ -18512,6 +18630,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_turn(
     BridgeTurn? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_turn_failure_dto(
+    BridgeTurnFailureDto? self,
     SseSerializer serializer,
   );
 

@@ -775,6 +775,7 @@ async fn known_configuration_migration_and_cold_sessions_survive_initialization(
         thread_id: "cold".into(),
         revision: 7,
         has_unpriced_usage: false,
+        has_incomplete_usage: false,
         purpose_costs: vec![PurposeUsageProjection {
             purpose: Some("turn".into()),
             estimated_costs: vec![frozen_cost.clone()],

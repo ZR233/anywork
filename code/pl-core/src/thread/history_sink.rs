@@ -33,6 +33,20 @@ pub trait HistorySink: Send + Sync + fmt::Debug + 'static {
     fn idle_status(&self, thread_id: &str) -> StorageIdleStatus;
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>>;
     fn admit(&self, thread_id: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError>;
+    /// Reads only the committed original of an already retired settlement identity.
+    fn read_saved_model_settlement(
+        &self,
+        thread_id: &str,
+        settlement: &crate::model::ModelSubAttemptSettlement,
+    ) -> impl Future<
+        Output = Result<Option<crate::model::ModelSubAttemptSettlement>, ColdStoreError>,
+    > + Send;
+    /// Waits for the writer to commit the ordered effect containing this settlement.
+    fn confirm_model_settlement(
+        &self,
+        thread_id: &str,
+        effect_sequence: u64,
+    ) -> impl Future<Output = Result<(), ColdStoreError>> + Send;
     fn read_tool_task(
         &self,
         thread_id: &str,
@@ -121,6 +135,21 @@ impl<T: HistorySink> super::cold::ErasedStorage for ErasedHistorySink<T> {
     }
     fn flush<'a>(&'a self, _: &'a str, _: u64) -> BoxFuture<'a, Result<(), ColdStoreError>> {
         Box::pin(async { Err(checkpoint_port_error()) })
+    }
+    fn read_saved_model_settlement<'a>(
+        &'a self,
+        thread: &'a str,
+        settlement: &'a crate::model::ModelSubAttemptSettlement,
+    ) -> BoxFuture<'a, Result<Option<crate::model::ModelSubAttemptSettlement>, ColdStoreError>>
+    {
+        Box::pin(self.0.read_saved_model_settlement(thread, settlement))
+    }
+    fn confirm_model_settlement<'a>(
+        &'a self,
+        thread: &'a str,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<(), ColdStoreError>> {
+        Box::pin(self.0.confirm_model_settlement(thread, sequence))
     }
     fn read_tool_task<'a>(
         &'a self,

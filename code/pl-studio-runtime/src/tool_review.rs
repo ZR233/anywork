@@ -77,66 +77,22 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         metadata: Default::default(),
     };
     let completion = review_completion(&binding.route.endpoint, binding.reasoning.clone(), message);
-    let inference_id = crate::studio::new_id("review");
+    let settlement = match request.task.begin_model_review().await {
+        Ok(settlement) => settlement,
+        Err(error) => {
+            return ToolApprovalDecision::Denied {
+                reason: format!("AI reviewer failed: {error}"),
+            };
+        }
+    };
     let invocation = ModelInvocationContext::new(Default::default())
+        .with_settlement_port("review", settlement)
         .with_prompt_cache_scope(pl_model::runtime::PromptCacheScope::auxiliary(
             &request.thread_id,
             "tool-review",
         ))
-        .with_trace_metadata(pl_model::completion::CompletionTraceContext {
-            session_id: request.thread_id,
-            turn_id: request.turn_id,
-            inference_id: inference_id.clone(),
-        })
         .with_cancellation(request.cancellation_token);
     let result = binding.runtime.complete(completion, invocation).await;
-    let route = &binding.route;
-    let accounting = match &result {
-        Ok(response) => response.accounting.clone(),
-        Err(failure) => (*failure.accounting).clone(),
-    };
-    let model_observation = match &result {
-        Ok(response) => response.model_observation.clone(),
-        Err(failure) => failure.model_observation().cloned(),
-    };
-    let billing = crate::InferenceBillingRecord {
-        purpose: Some("review".into()),
-        inference_id,
-        account_id: route.account_id.as_str().into(),
-        account_display_name: Some(route.endpoint.name.clone()),
-        // 冻结的目录配置模型；发送/返回模型只留在 observation 诊断里。
-        model_id: Some(route.model.base.slug.clone()),
-        model_observation,
-        effort: route.effort.as_ref().map(|effort| effort.as_str().into()),
-        requested_service_tier: Some("notApplicable".into()),
-        context_window: route.context.context_window,
-        accounting,
-        prompt_generation: None,
-        prompt_cache_policy: None,
-        prefix_changed_reason: None,
-        orchestration: result
-            .as_ref()
-            .ok()
-            .map(|response| response.orchestration.clone())
-            .unwrap_or_default(),
-        timing: result.as_ref().ok().and_then(|response| response.timing),
-        recorded_at: crate::studio::unix_seconds(),
-    };
-    let receipt = crate::studio::thread_projection::AuxiliaryBillingReceipt {
-        billing,
-        succeeded: result.is_ok(),
-    };
-    let saved = async {
-        let payload = receipt.into_payload()?;
-        request.task.record_observation(payload).await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    if let Err(error) = saved {
-        return ToolApprovalDecision::Denied {
-            reason: format!("review accounting could not be admitted: {error}"),
-        };
-    }
     match result {
         Ok(response) => {
             match parse_reviewer_decision(response.content.as_deref().unwrap_or_default()) {
@@ -190,6 +146,256 @@ mod tests {
     use pl_model_auth::chatgpt::{
         ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
     };
+
+    #[tokio::test]
+    async fn review_denies_tool_execution_when_its_original_settlement_cannot_be_saved()
+    -> anyhow::Result<()> {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+        use pl_core::{
+            context::OpaquePayload,
+            model::{
+                DynModelSession, ModelError, ModelRequest, ModelSession, ModelStepOutput,
+                ModelToolCall, PreparedModelCall,
+            },
+            thread::{
+                ThreadHandle, TurnInput,
+                cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+            },
+            tool::{
+                ToolOutput,
+                execution_policy::{ExecutionGrant, ExecutionPolicy, ExecutionPolicyHandle},
+                opaque::{CallContext, Registration, RuntimeTool, ToolError},
+            },
+        };
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        };
+        use tokio::{
+            sync::Notify,
+            time::{Duration, timeout},
+        };
+        use tokio_util::sync::CancellationToken;
+
+        struct OneTool(bool);
+        impl ModelSession for OneTool {
+            async fn prepare(
+                &mut self,
+                request: ModelRequest,
+            ) -> Result<PreparedModelCall, ModelError> {
+                let tool_calls = if std::mem::replace(&mut self.0, true) {
+                    vec![]
+                } else {
+                    vec![ModelToolCall {
+                        call_id: "reviewed-call".into(),
+                        tool_id: "reviewed-tool".into(),
+                        arguments: OpaquePayload::text("preview"),
+                        presentation_contract: None,
+                        rejection: None,
+                    }]
+                };
+                Ok(PreparedModelCall::new(async move {
+                    Ok(ModelStepOutput {
+                        attempt_id: request.attempt_id,
+                        base_context_revision: request.context.revision,
+                        content: vec![],
+                        tool_calls,
+                        private_context: None,
+                        usage: Default::default(),
+                        turn_action: Default::default(),
+                    })
+                }))
+            }
+
+            async fn close(&mut self) -> Result<(), ModelError> {
+                Ok(())
+            }
+        }
+
+        #[derive(Debug)]
+        struct ReviewedTool(Arc<AtomicUsize>);
+        impl pl_agent_tool::Tool for ReviewedTool {
+            type Input = OpaquePayload;
+            type Context = CallContext;
+            type Output = ToolOutput;
+            type Error = ToolError;
+
+            fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+                static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+                    std::sync::LazyLock::new(|| {
+                        pl_agent_tool::ToolDefinition::text("ReviewedTool", "Fixture tool").unwrap()
+                    });
+                &DEFINITION
+            }
+
+            async fn execute(
+                &self,
+                input: OpaquePayload,
+                _: CallContext,
+            ) -> Result<ToolOutput, ToolError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(ToolOutput::new(input, vec![]))
+            }
+        }
+
+        struct Policy(ToolReviewCallback, Arc<Mutex<Option<ToolApprovalDecision>>>);
+        impl std::fmt::Debug for Policy {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("ReviewPolicy")
+            }
+        }
+        impl ExecutionPolicy for Policy {
+            async fn authorize(
+                &self,
+                _: &OpaquePayload,
+                context: &CallContext,
+            ) -> Result<ExecutionGrant, ToolError> {
+                let decision = (self.0)(ToolReviewRequest {
+                    thread_id: context.thread_id.clone(),
+                    task: context.tasks.clone().unwrap(),
+                    tool: crate::approval::ToolApprovalRequest {
+                        id: context.call_id.clone(),
+                        name: "reviewed-tool".into(),
+                        arguments: serde_json::Value::Null,
+                        working_directory: None,
+                        parent_agent_id: None,
+                    },
+                    permission_mode: crate::approval::PermissionMode::AutoReview,
+                    workspace_access: pl_tool::approval::WorkspaceAccess::ExternalAllowed,
+                    workspace_root: Default::default(),
+                    cancellation_token: Some(context.cancellation.clone()),
+                })
+                .await;
+                *self.1.lock().unwrap() = Some(decision.clone());
+                match decision {
+                    ToolApprovalDecision::Approved => Ok(ExecutionGrant::default()),
+                    ToolApprovalDecision::Denied { reason } => {
+                        Err(ToolError::new(std::io::Error::other(reason)))
+                    }
+                }
+            }
+        }
+
+        #[derive(Debug, Default)]
+        struct Gate {
+            sequence: AtomicU64,
+            entered: Notify,
+            release: Notify,
+        }
+        #[derive(Debug)]
+        struct Sink(Arc<Gate>);
+        impl ColdStore for Sink {
+            fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+                for settlement in write.effect.model_sub_attempt_settlements.iter() {
+                    let receipt = pl_model::runtime::model_sub_attempt_receipt(settlement).unwrap();
+                    if receipt.billing.purpose.as_deref() == Some("review") {
+                        self.0
+                            .sequence
+                            .store(write.effect.sequence, Ordering::Release);
+                    }
+                }
+                Ok(())
+            }
+
+            async fn flush(&self, _: &str, sequence: u64) -> Result<(), ColdStoreError> {
+                if sequence == self.0.sequence.load(Ordering::Acquire) {
+                    self.0.entered.notify_one();
+                    self.0.release.notified().await;
+                    return Err(ColdStoreError {
+                        source: Box::new(std::io::Error::other("review write refused")),
+                    });
+                }
+                Ok(())
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}/v1", listener.local_addr()?);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route("/v1/responses", post({
+            let requests = requests.clone();
+            move || async move {
+                requests.fetch_add(1, Ordering::Relaxed);
+                (StatusCode::TOO_MANY_REQUESTS, [("retry-after", "0")], Json(serde_json::json!({
+                    "error":{"code":"rate_limit_exceeded","type":"rate_limit_error","message":"review rate limited"}
+                })))
+            }
+        }));
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown.clone().cancelled_owned())
+                .into_future(),
+        );
+        let mut model = pl_model::model::ModelDefinition::compatible("review-model");
+        model
+            .extra
+            .binding
+            .set_transport(pl_model::model::ModelTransportProfile::responses_http());
+        let route = ResolvedModelRoute {
+            pricing_mode: Default::default(),
+            role: crate::config::root_agent_route_id(),
+            account_id: pl_model::config::AccountId::new("review-fixture")?,
+            endpoint: pl_model_openai::endpoint::endpoint(Some(base)),
+            context: model
+                .resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled),
+            model,
+            effort: None,
+            service_tier: None,
+        };
+        let executed = Arc::new(AtomicUsize::new(0));
+        let decision = Arc::new(Mutex::new(None));
+        let thread = ThreadHandle::start(
+            "review-fail-closed".into(),
+            DynModelSession::new(OneTool(false)),
+        )?;
+        let gate = Arc::new(Gate::default());
+        thread
+            .attach_storage(ColdStoreHandle::new(Sink(gate.clone())))
+            .await?;
+        thread
+            .register_tools(vec![
+                Registration::prepare(
+                    "reviewed-tool".into(),
+                    OpaquePayload::text("review fixture"),
+                )?
+                .attach(RuntimeTool::new(ReviewedTool(executed.clone())))
+                .with_execution_policy(ExecutionPolicyHandle::new(Policy(
+                    reviewer(&route)?,
+                    decision.clone(),
+                )))
+                .foreground_coexisting(),
+            ])
+            .await?;
+        let run = tokio::spawn({
+            let thread = thread.clone();
+            async move {
+                thread
+                    .run_turn(TurnInput {
+                        turn_id: "review-turn".into(),
+                        attempt_prefix: "attempt".into(),
+                        content: vec![],
+                        max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
+                        cancellation: CancellationToken::new(),
+                    })
+                    .await
+            }
+        });
+        timeout(Duration::from_secs(5), gate.entered.notified()).await?;
+        assert!(decision.lock().unwrap().is_none());
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+        gate.release.notify_one();
+        timeout(Duration::from_secs(5), run).await???;
+        assert!(
+            matches!(decision.lock().unwrap().as_ref(), Some(ToolApprovalDecision::Denied { reason }) if reason.contains("review rate limited"))
+        );
+        assert_eq!(executed.load(Ordering::Relaxed), 0);
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+        thread.close().await?;
+        shutdown.cancel();
+        timeout(Duration::from_secs(5), server).await???;
+        Ok(())
+    }
 
     struct NoCredentialIo;
 

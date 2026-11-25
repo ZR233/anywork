@@ -52,6 +52,7 @@ abstract final class TimelineCurrentProjection {
     tool: atom.tool,
     wait: atom.wait,
     textChannel: atom.textChannel,
+    modelRecovery: atom.modelRecovery,
     contentPresent: atom.contentPresent,
     startedAt: atom.startedAt,
     finishedAt: atom.finishedAt,

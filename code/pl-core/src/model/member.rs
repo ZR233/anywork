@@ -64,6 +64,17 @@ pub struct ModelContentAvailableMember {
     pub identity: ObservedPartIdentity,
 }
 
+/// The producer's opaque settlement for one finished model observation generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSubAttemptSettlement {
+    /// The original Turn, when the owner proved this call belongs to one.
+    pub turn_id: Option<String>,
+    pub attempt_id: String,
+    pub generation: u32,
+    pub payload: OpaquePayload,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum StartedKey {
     Aggregate(AggregateChannel),
@@ -97,7 +108,7 @@ pub(crate) fn same_started_identity(a: &ObservedPartIdentity, b: &ObservedPartId
 }
 
 /// A member that did not enter the owner's canonical reliable obligation.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ModelMemberError {
     #[error("model member admission cancelled before sending")]
     Cancelled,
@@ -105,8 +116,16 @@ pub enum ModelMemberError {
     Closed,
     #[error("model member identity is empty")]
     InvalidIdentity,
+    #[error("persistent model settlement requires an owner with a durable writer")]
+    SettlementUnavailable,
+    #[error("model settlement identity already has different content")]
+    SettlementConflict,
+    #[error("model settlement identity is no longer active or saved")]
+    SettlementExpired,
     #[error("model member was rejected: {0}")]
     Rejected(#[source] Arc<ThreadError>),
+    #[error("model sub-attempt settlement was retained but not saved: {0}")]
+    SettlementNotSaved(#[source] Arc<ThreadError>),
 }
 
 /// A single-slot input to the model call's existing Thread owner.
@@ -120,6 +139,8 @@ pub struct ModelMemberSender {
     sender: mpsc::Sender<ModelMemberAdmission>,
     output: Option<Arc<super::OutputBudget>>,
     registry: MemberRegistry,
+    context_recovery: Option<super::ModelContextRecovery>,
+    settlement: Option<crate::thread::ModelSettlementPort>,
 }
 
 #[derive(Debug, Default)]
@@ -127,6 +148,13 @@ pub(crate) struct AdmittedMembers {
     pub(crate) completed:
         std::collections::BTreeMap<(u32, String), (OpaquePayload, Option<MemberCharge>)>,
     pub(crate) started: std::collections::BTreeMap<(u32, StartedKey), AdmittedPart>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedSettlement {
+    pub(crate) payload: OpaquePayload,
+    pub(crate) sequence: u64,
+    pub(crate) _charge: Option<MemberCharge>,
 }
 
 #[derive(Debug)]
@@ -173,6 +201,12 @@ pub(crate) struct MemberCharge {
 }
 
 impl MemberCharge {
+    pub(crate) fn retain(
+        budget: Arc<super::OutputBudget>,
+        bytes: u64,
+    ) -> Result<Self, crate::thread::cold::ColdStoreError> {
+        budget.retain_member(bytes)
+    }
     pub(crate) fn fund_effect(
         &self,
         encoded: u64,
@@ -349,6 +383,8 @@ impl ModelMemberSender {
                 sender,
                 output: None,
                 registry: MemberRegistry::default(),
+                context_recovery: None,
+                settlement: None,
             },
             receiver,
         )
@@ -362,6 +398,31 @@ impl ModelMemberSender {
 
     pub(crate) fn registry(&self) -> MemberRegistry {
         self.registry.clone()
+    }
+
+    pub(crate) fn with_context_recovery(
+        mut self,
+        recovery: Option<super::ModelContextRecovery>,
+    ) -> Self {
+        self.context_recovery = recovery;
+        self
+    }
+
+    pub fn context_recovery(&self) -> Option<&super::ModelContextRecovery> {
+        self.context_recovery.as_ref()
+    }
+
+    pub(crate) fn with_settlement(
+        mut self,
+        settlement: crate::thread::ModelSettlementPort,
+    ) -> Self {
+        self.settlement = Some(settlement);
+        self
+    }
+
+    /// The registered settlement capability of this call, independent of content delivery.
+    pub fn settlement_port(&self) -> Option<&crate::thread::ModelSettlementPort> {
+        self.settlement.as_ref()
     }
 
     /// Transfers a validated, independently ended member to the original call owner.

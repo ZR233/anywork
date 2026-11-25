@@ -125,6 +125,7 @@ impl ModelSession for HeldModel {
                     _ = release => {}
                     () = request.cancellation.cancelled() => {
                         return Err(ModelError {
+                            context_recovery: None,
                             details: None,
                             kind: ModelFailureKind::Cancelled,
                             usage: Default::default(),
@@ -944,6 +945,7 @@ impl ModelSession for FailingModel {
         Ok(PreparedModelCall::new(async move {
             let _ = request;
             Err(ModelError {
+                context_recovery: None,
                 details: None,
                 kind,
                 usage: Default::default(),
@@ -969,6 +971,7 @@ impl pl_core::model::Model for OneSession {
     async fn open_session(&self) -> Result<DynModelSession, ModelError> {
         let session = self.0.lock().expect("factory session").take();
         session.map(DynModelSession::new).ok_or_else(|| ModelError {
+            context_recovery: None,
             details: None,
             kind: ModelFailureKind::Unavailable,
             usage: Default::default(),
@@ -996,6 +999,7 @@ impl ModelSession for ToolThenFailure {
             .push(request.context.clone());
         if self.answered {
             return Err(ModelError {
+                context_recovery: None,
                 details: None,
                 kind: self.kind,
                 usage: Default::default(),

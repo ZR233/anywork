@@ -622,12 +622,14 @@ class BridgeSessionCostSnapshot {
   final List<BridgePurposeCostSnapshot> purposeCosts;
   final List<BridgeRuntimeCostAmount> estimatedCosts;
   final bool hasUnpricedUsage;
+  final bool hasIncompleteUsage;
 
   const BridgeSessionCostSnapshot({
     required this.rootThreadId,
     required this.purposeCosts,
     required this.estimatedCosts,
     required this.hasUnpricedUsage,
+    required this.hasIncompleteUsage,
   });
 
   @override
@@ -635,7 +637,8 @@ class BridgeSessionCostSnapshot {
       rootThreadId.hashCode ^
       purposeCosts.hashCode ^
       estimatedCosts.hashCode ^
-      hasUnpricedUsage.hashCode;
+      hasUnpricedUsage.hashCode ^
+      hasIncompleteUsage.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -645,7 +648,8 @@ class BridgeSessionCostSnapshot {
           rootThreadId == other.rootThreadId &&
           purposeCosts == other.purposeCosts &&
           estimatedCosts == other.estimatedCosts &&
-          hasUnpricedUsage == other.hasUnpricedUsage;
+          hasUnpricedUsage == other.hasUnpricedUsage &&
+          hasIncompleteUsage == other.hasIncompleteUsage;
 }
 
 /// 一个根会话的作用域费用事实；`cost == null` 是显式清除，不是零费用。

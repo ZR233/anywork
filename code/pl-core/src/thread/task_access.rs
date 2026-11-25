@@ -143,9 +143,10 @@ impl TaskAccess {
     /// Rejects completed callers and closed owners. Cancellation or revoked execution permission does
     /// not reject an already incurred receipt; this operation grants no execution permission.
     pub async fn record_observation(&self, payload: OpaquePayload) -> Result<(), ThreadError> {
-        let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
-        commands
+        self.commands
+            .upgrade()
+            .ok_or(ThreadError::Closed)?
             .send(mailbox::MailboxCommand::RecordTaskObservation {
                 caller: self.caller.clone(),
                 payload,
@@ -154,6 +155,25 @@ impl TaskAccess {
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Registers a durable model review bound to this running task's Thread and Turn.
+    pub async fn begin_model_review(
+        &self,
+    ) -> Result<ModelSettlementPort, crate::model::ModelMemberError> {
+        use crate::model::ModelMemberError;
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .upgrade()
+            .ok_or(ModelMemberError::Closed)?
+            .send(mailbox::MailboxCommand::OpenAuxiliaryModel {
+                caller: Some(self.caller.clone()),
+                turn_id: None,
+                reply,
+            })
+            .await
+            .map_err(|_| ModelMemberError::Closed)?;
+        response.await.map_err(|_| ModelMemberError::Closed)?
     }
 
     pub(crate) async fn validate_execution(&self) -> Result<(), ThreadError> {

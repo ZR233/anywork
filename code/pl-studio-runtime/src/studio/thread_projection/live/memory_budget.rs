@@ -52,7 +52,12 @@ pub(in crate::studio::thread_projection) fn state_body_bytes(state: &ExecutionSh
             .saturating_add(raw.notice.len() as u64),
         ExecutionShape::Text(text) => (text.text().len() as u64)
             .saturating_add(attachments_bytes(text.attachments()))
-            .saturating_add(lifecycle_bytes(text.lifecycle())),
+            .saturating_add(lifecycle_bytes(text.lifecycle()))
+            .saturating_add(
+                text.model_recovery()
+                    .and_then(|notice| notice.failure.as_ref())
+                    .map_or(0, turn_failure_bytes),
+            ),
         ExecutionShape::Thinking(thinking) => thinking
             .summary()
             .iter()
@@ -63,7 +68,12 @@ pub(in crate::studio::thread_projection) fn state_body_bytes(state: &ExecutionSh
             .saturating_add(lifecycle_bytes(thinking.lifecycle())),
         ExecutionShape::Tool(tool) => tool_bytes(tool),
         ExecutionShape::Agent(agent) => agent_bytes(agent),
-        ExecutionShape::Turn(turn) => optional_bytes(turn.input_id()),
+        ExecutionShape::Turn(turn) => {
+            optional_bytes(turn.input_id()).saturating_add(match turn.state() {
+                crate::TurnState::Failed(failed) => turn_failure_bytes(failed.failure()),
+                _ => 0,
+            })
+        }
         ExecutionShape::Inference(inference) => inference_bytes(inference),
         ExecutionShape::Skill(skill) => skill_bytes(skill),
         ExecutionShape::File(file) => {
@@ -71,6 +81,19 @@ pub(in crate::studio::thread_projection) fn state_body_bytes(state: &ExecutionSh
         }
         ExecutionShape::ContextCompaction(_) => 0,
     }
+}
+
+fn turn_failure_bytes(failure: &crate::TurnFailure) -> u64 {
+    (failure.message.len() as u64)
+        .saturating_add(optional_bytes(failure.code.as_deref()))
+        .saturating_add(optional_bytes(failure.error_type.as_deref()))
+        .saturating_add(optional_bytes(failure.request_id.as_deref()))
+        .saturating_add(optional_bytes(
+            failure
+                .recovery
+                .as_ref()
+                .and_then(|recovery| recovery.error.as_deref()),
+        ))
 }
 
 pub(in crate::studio::thread_projection) fn optional_bytes(value: Option<&str>) -> u64 {

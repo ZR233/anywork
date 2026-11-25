@@ -4,9 +4,9 @@ use pl_core::context::{
     ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload,
 };
 use pl_core::model::{
-    CancellationToken, CurrentCaptureHandle, DynModelSession, ModelCallExit, ModelError,
-    ModelFailureKind, ModelRequest, ModelSession, ModelStepOutput, ModelToolCall, ModelUsage,
-    PreparedModelCall, ToolCallMode, ToolProgress, ToolProgressUpdate,
+    CancellationToken, CurrentCaptureHandle, DynModelSession, ModelCallExit, ModelContextRecovery,
+    ModelError, ModelFailureKind, ModelRequest, ModelSession, ModelStepOutput, ModelToolCall,
+    ModelUsage, PreparedModelCall, ToolCallMode, ToolProgress, ToolProgressUpdate,
 };
 use pl_core::thread::current::{
     CurrentError, CurrentModelCall, PendingStepInput, RuntimeEpoch, SavedModelPhase,
@@ -395,7 +395,7 @@ impl ModelSession for ProducerSession {
         self.prepare_entered.notify_one();
         tokio::select! {
             () = self.prepare_release.notified() => {},
-            () = request.cancellation.cancelled() => return Err(ModelError { details: None, kind: ModelFailureKind::Cancelled, usage: Box::default(), source: None }),
+            () = request.cancellation.cancelled() => return Err(ModelError { context_recovery: None, details: None, kind: ModelFailureKind::Cancelled, usage: Box::default(), source: None }),
         }
         let (capture, mut receiver) = CurrentCaptureHandle::channel();
         let finish = self.finish.clone();
@@ -407,7 +407,7 @@ impl ModelSession for ProducerSession {
             loop {
                 tokio::select! {
                     () = request.cancellation.cancelled() => return ModelCallExit {
-                        result: Err(ModelError { details: None, kind: ModelFailureKind::Cancelled, usage: Box::default(), source: None }),
+                        result: Err(ModelError { context_recovery: None, details: None, kind: ModelFailureKind::Cancelled, usage: Box::default(), source: None }),
                         current: Some(final_stream),
                     },
                     () = finish.notified() => return ModelCallExit {
@@ -1205,6 +1205,7 @@ impl ModelSession for RecordingSession {
         };
         if matches!(reply, FirstReply::FailPreparation) {
             return Err(ModelError {
+                context_recovery: None,
                 kind: ModelFailureKind::Unavailable,
                 details: None,
                 usage: Default::default(),
@@ -1212,10 +1213,30 @@ impl ModelSession for RecordingSession {
             });
         }
         let executions = self.executions.clone();
+        let input_bytes = serde_json::to_vec(&request.context.records).unwrap().len();
+        if let Some(grant) = request
+            .members
+            .as_ref()
+            .and_then(|members| members.context_recovery())
+        {
+            let (_, retry, _) = grant
+                .consume(&request.thread_id, &request.turn_id, input_bytes, 1)
+                .unwrap();
+            assert_eq!(retry, 1);
+        }
         let prepared = PreparedModelCall::new(async move {
             executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if matches!(reply, FirstReply::ContextLimit) {
                 return Err(ModelError {
+                    context_recovery: Some(Box::new(ModelContextRecovery::new(
+                        request.thread_id.clone(),
+                        request.turn_id.clone(),
+                        request.attempt_id.clone(),
+                        1,
+                        input_bytes,
+                        1,
+                        None,
+                    ))),
                     kind: ModelFailureKind::ContextLimit,
                     details: None,
                     usage: Default::default(),
@@ -1547,6 +1568,7 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for RecoveryAt
         }
         request.enter_compacting().await.unwrap();
         let mut records = request.committed_context.records.to_vec();
+        records.retain(|record| record.id != "oversized-history");
         records.insert(
             0,
             ContextRecord {
@@ -1586,6 +1608,22 @@ async fn current_capacity_recovery_preserves_failed_and_preselected_next_attempt
             ThreadHandle::start("capacity".into(), model).unwrap()
         };
         let hook = RecoveryAttempts::default();
+        thread
+            .replace_context(pl_core::thread::ReplaceContext {
+                expected_revision: 0,
+                reason: pl_core::thread::ContextReplacementReason::Rebuild,
+                records: vec![ContextRecord {
+                    id: "oversized-history".into(),
+                    turn_id: None,
+                    source: ContextSource::Runtime {
+                        source_id: "history".into(),
+                    },
+                    content: vec![text(&"older history ".repeat(50))],
+                    tool_calls: vec![],
+                }],
+            })
+            .await
+            .unwrap();
         thread
             .set_context_preparation(Some(
                 pl_core::thread::context_preparation::ContextPreparer::new(hook.clone()),

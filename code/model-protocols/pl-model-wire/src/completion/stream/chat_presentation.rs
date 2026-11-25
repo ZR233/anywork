@@ -6,7 +6,9 @@ use crate::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind,
 };
-use pl_protocol::{PureError, Result};
+use pl_protocol::{ProviderFailureStage, Result};
+
+use crate::provider_error::protocol_failure;
 
 pub fn completed_chat_presentation(
     content: &str,
@@ -54,7 +56,10 @@ pub fn completed_chat_presentation(
                             && item.kind == CompletionPresentationItemKind::Text(channel)
                     })
                     .ok_or_else(|| {
-                        PureError::Protocol("Chat display delta has no matching segment".into())
+                        protocol_failure(
+                            ProviderFailureStage::Stream,
+                            "Chat display delta has no matching segment",
+                        )
                     })?;
                 current.parts[0].text.push_str(&delta);
             }

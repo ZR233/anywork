@@ -96,6 +96,7 @@ pub use worker_assets::RemoteHelperSource;
 
 // 公开签名或外部 crate 直接命名的下层类型在此精确重导出。
 // 只被 crate 根路径内部使用、且不出现在公开签名中的别名收为 pub(crate)。
+pub use pl_core::model::ModelRecoveryPhase;
 pub(crate) use pl_model::completion::{
     AttachmentModality, InferenceModelObservation, InferenceTiming, MessageContent, MessageRole,
     ToolSpec,
@@ -116,15 +117,15 @@ pub use pl_model::model::{
     AgentTaskCategory, InferenceAccounting, ModelContextAdjustment, ModelContextUnavailable,
     ModelPricingDto, ModelType, ModelTypeExclusion, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
-pub use pl_model::runtime::PromptPrefixChangedReason;
+pub use pl_model::runtime::{ModelRecoveryStopReason, PromptPrefixChangedReason};
 pub use pl_model_auth::chatgpt::ChatGptAccountInfo;
 #[cfg(test)]
 pub(crate) use pl_model_auth::chatgpt::CodexAccountInfo;
 pub use pl_protocol::{
     AgentBackendKind, AgentId, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,
     DelegationMode, DelegationPreference, DelegationSettings, FirstOutputSource,
-    NewThreadModelRoute, ProviderFailureKind, PureError, Result, RetryDisposition, StateError,
-    UnknownLabelError,
+    NewThreadModelRoute, ProviderFailureKind, ProviderFailureStage, ProviderRecovery, PureError,
+    Result, RetryDisposition, StateError, UnknownLabelError,
 };
 pub(crate) use pl_protocol::{
     AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot, AgentThreadIdentity,

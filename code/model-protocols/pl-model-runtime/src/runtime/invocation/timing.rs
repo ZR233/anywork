@@ -301,7 +301,7 @@ mod tests {
         events.pop();
         events.push(serde_json::json!({
             "type": "error", "error": {
-                "code": "server_error", "message": "retry later", "retry_after_ms": 30000
+                "code": "upstream_error", "message": "retry later", "retry_after_ms": 180000
             }
         }));
         let fixture = FixtureServer::start(vec![Step::prompt(
@@ -322,13 +322,14 @@ mod tests {
             pl_model_openai::endpoint::compatible_endpoint("fixture", fixture.base_url()),
             model,
             &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
             None,
         )
         .unwrap();
         let session = ModelSession::default();
         let cancellation = CancellationToken::new();
         let progress = pl_core::model::ModelProgressSender::detached(1024 * 1024);
-        let invocation = runner.complete_inner(
+        let invocation = runner.complete(
             CompletionRequest::builder()
                 .messages(vec![Message {
                     role: MessageRole::User,
@@ -340,17 +341,23 @@ mod tests {
                     metadata: Default::default(),
                 }])
                 .build(),
-            ModelInvocationContext::new(session.clone())
+            ModelInvocationContext::in_memory(session.clone())
                 .with_progress(Some(progress.clone()))
                 .with_cancellation(Some(cancellation.clone())),
-            None,
         );
         tokio::pin!(invocation);
         tokio::time::timeout(
             Duration::from_secs(10),
             poll_fn(|cx| {
                 assert!(invocation.as_mut().poll(cx).is_pending());
-                if progress.latest().observation().generation == 1 {
+                if progress
+                    .latest()
+                    .observation()
+                    .recovery
+                    .is_some_and(|status| {
+                        status.phase == pl_core::model::ModelRecoveryPhase::Waiting
+                    })
+                {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -363,6 +370,13 @@ mod tests {
         // Neither the wall clock nor a scheduler race decides when the second request is sent.
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(31)).await;
+        assert!(futures::poll!(invocation.as_mut()).is_pending());
+        assert_eq!(
+            fixture.recorded().len(),
+            1,
+            "the provider wait exceeds 30 seconds"
+        );
+        tokio::time::advance(Duration::from_secs(150)).await;
         cancellation.cancel();
         let failure = invocation.await.unwrap_err();
         tokio::time::resume();
@@ -524,11 +538,12 @@ mod tests {
             pl_model_openai::endpoint::compatible_endpoint("fixture", fixture.base_url()),
             model,
             &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            pl_model_openai::adapter::COMPATIBLE_ADAPTER.error_policy,
             None,
         )
         .unwrap();
         let progress = pl_core::model::ModelProgressSender::detached(1024 * 1024);
-        let run = runner.complete_inner(
+        let run = runner.complete(
             CompletionRequest::builder()
                 .messages(vec![Message {
                     role: MessageRole::User,
@@ -540,9 +555,8 @@ mod tests {
                     metadata: Default::default(),
                 }])
                 .build(),
-            ModelInvocationContext::new(ModelSession::default())
+            ModelInvocationContext::in_memory(ModelSession::default())
                 .with_progress(Some(progress.clone())),
-            None,
         );
         tokio::pin!(run);
         tokio::time::timeout(
@@ -554,7 +568,7 @@ mod tests {
                     .observation()
                     .recovery
                     .is_some_and(|status| {
-                        status.phase == pl_core::model::ModelRecoveryPhase::Retrying
+                        status.phase == pl_core::model::ModelRecoveryPhase::Waiting
                     })
                 {
                     Poll::Ready(())

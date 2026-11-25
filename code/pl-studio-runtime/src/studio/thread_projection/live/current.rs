@@ -71,6 +71,7 @@ pub(super) fn project(
             tool: None,
             wait: None,
             text_channel: None,
+            model_recovery: None,
             started_at: None,
             finished_at: None,
             contents: Vec::new(),
@@ -132,18 +133,21 @@ pub(super) fn project(
             ));
             atoms.push(atom);
         }
-        for (id, message) in super::super::responses::recovery_notices(
+        for (id, message, notice) in super::super::responses::recovery_notices(
             &attempt.attempt_id,
             progress.progress.observation(),
         ) {
             let block = ContentBlock::from_text(&message);
             let fields = BTreeMap::from([(BodyKey::Body, block.clone())]);
-            let shape = ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                String::new(),
-                Vec::new(),
-                ThreadContentLifecycle::streaming(),
-            ));
+            let shape = ExecutionShape::Text(
+                ThreadTextItem::new(
+                    ThreadTextChannel::Commentary,
+                    String::new(),
+                    Vec::new(),
+                    ThreadContentLifecycle::streaming(),
+                )
+                .with_model_recovery(Some(notice)),
+            );
             let item = ExecutionItem::new(
                 id.clone(),
                 crate::ItemStamp {
@@ -257,6 +261,7 @@ pub(super) fn project(
                 }),
                 wait: None,
                 text_channel: None,
+                model_recovery: None,
                 started_at: None,
                 finished_at: None,
                 contents: Vec::new(),
@@ -358,6 +363,7 @@ pub(super) fn project(
             tool: None,
             wait: None,
             text_channel,
+            model_recovery: None,
             started_at: None,
             finished_at: None,
             contents: atom_contents(
