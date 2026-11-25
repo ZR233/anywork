@@ -178,6 +178,7 @@ impl StudioThreadFactory {
                 &self.services.store,
                 &self.services.ssh_manager,
                 &lease,
+                None,
             )
             .await?;
             manager

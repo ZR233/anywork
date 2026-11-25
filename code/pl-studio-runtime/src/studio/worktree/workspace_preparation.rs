@@ -329,6 +329,7 @@ pub(in crate::studio) async fn manager_from_lease(
     store: &crate::studio::StudioStore,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     lease: &WorktreeLease,
+    project_endpoint: Option<&WorkspaceEndpoint>,
 ) -> Result<WorktreeManager> {
     let repository_root = PathBuf::from(&lease.repository_root);
     let (backend, endpoint) = backend_for(
@@ -338,6 +339,11 @@ pub(in crate::studio) async fn manager_from_lease(
         WorktreeBackendRoot::Repository,
     )
     .await?;
+    if project_endpoint.is_some_and(|expected| expected != &endpoint) {
+        return Err(lifecycle_error(
+            "SSH repository endpoint changed while resolving",
+        ));
+    }
     if let Some(identity) = store.workspace_identity(&lease.owner_thread_id).await?
         && (endpoint != identity.endpoint || !identity.matches_root(&lease.path))
     {
@@ -385,15 +391,8 @@ pub(in crate::studio) async fn repository_manager(
     ssh_alias: Option<&str>,
     project_root: &Path,
 ) -> Result<(PathBuf, WorktreeManager, WorkspaceEndpoint)> {
-    let (resolver, endpoint) = backend_for(
-        ssh_manager,
-        ssh_alias,
-        project_root,
-        WorktreeBackendRoot::Project,
-    )
-    .await?;
-    let repository_root =
-        WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root).await?;
+    let (repository_root, endpoint) =
+        project_repository(ssh_manager, ssh_alias, project_root).await?;
     let (backend, rebound) = backend_for(
         ssh_manager,
         ssh_alias,
@@ -411,6 +410,23 @@ pub(in crate::studio) async fn repository_manager(
         WorktreeManager::new(repository_root, backend),
         endpoint,
     ))
+}
+
+pub(in crate::studio) async fn project_repository(
+    ssh_manager: &Arc<pl_tool::remote::SshManager>,
+    ssh_alias: Option<&str>,
+    project_root: &Path,
+) -> Result<(PathBuf, WorkspaceEndpoint)> {
+    let (resolver, endpoint) = backend_for(
+        ssh_manager,
+        ssh_alias,
+        project_root,
+        WorktreeBackendRoot::Project,
+    )
+    .await?;
+    let repository_root =
+        WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root).await?;
+    Ok((repository_root, endpoint))
 }
 
 pub(in crate::studio) async fn create_root_session_worktree<F>(
@@ -661,7 +677,7 @@ pub(in crate::studio) async fn root_session_workspace_root(
         )
     );
     // Checks the currently configured transport against the frozen endpoint before Git I/O.
-    let manager = manager_from_lease(store, ssh_manager, &lease).await?;
+    let manager = manager_from_lease(store, ssh_manager, &lease, None).await?;
     let (repository_root, _, endpoint) = repository_manager(
         ssh_manager,
         project.ssh_alias.as_deref(),
