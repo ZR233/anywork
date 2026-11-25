@@ -449,13 +449,14 @@ impl OpenAiStreamDecoder {
     /// before it is still retained in the failure receipt.
     fn protocol_failure(&mut self, message: &str) -> Vec<ModelStreamEvent> {
         self.protocol_failed = true;
-        vec![ModelStreamEvent::Failed {
-            request_id: None,
-            code: Some("invalid_response".to_owned()),
-            http_status: None,
-            retry_after_ms: None,
-            message: message.to_owned(),
-        }]
+        let mut failure = pl_model_wire::provider_error::stream_failure(
+            Some("invalid_response"),
+            None,
+            None,
+            message.to_owned(),
+        );
+        failure.kind = pl_protocol::ProviderFailureKind::Protocol;
+        vec![ModelStreamEvent::Failed { failure }]
     }
 
     fn normalize_fallback_events(

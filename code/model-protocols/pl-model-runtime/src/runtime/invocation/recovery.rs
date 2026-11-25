@@ -13,7 +13,26 @@ impl ModelRuntime {
         &self,
         request: CompletionRequest,
         context: ModelInvocationContext,
+        current: Option<&mut crate::runtime::current::CurrentProducer>,
+    ) -> std::result::Result<CompletionResponse, CompletionFailure> {
+        let mut retry_accounting = Vec::new();
+        let mut result = self
+            .complete_with_recovery(request, context, current, &mut retry_accounting)
+            .await;
+        let accounting = match &mut result {
+            Ok(response) => &mut response.accounting,
+            Err(failure) => &mut failure.accounting,
+        };
+        accounting.retry_attempts = retry_accounting;
+        result
+    }
+
+    async fn complete_with_recovery(
+        &self,
+        request: CompletionRequest,
+        context: ModelInvocationContext,
         mut current: Option<&mut crate::runtime::current::CurrentProducer>,
+        retry_accounting: &mut Vec<crate::model::InferenceAccounting>,
     ) -> std::result::Result<CompletionResponse, CompletionFailure> {
         self.validate_context(&request.input)?;
         let admission = async {
@@ -124,10 +143,20 @@ impl ModelRuntime {
                 trace.inference_id =
                     format!("{original_inference_id}-{transport}-retry-{attempt_number}");
             }
-            let request_started_at = self.clock.unix_seconds()?;
+            let request_started_at =
+                self.clock
+                    .unix_seconds()
+                    .map_err(|cause| match retry_failure.take() {
+                        Some(previous) => previous.with_source(cause),
+                        None => cause.into(),
+                    })?;
             let (result, retry_allowed, inference_timer) = match preparation {
                 Ok(()) => {
-                    drop(retry_failure.take());
+                    if let Some(previous) = retry_failure.take()
+                        && previous.accounting.usage != Default::default()
+                    {
+                        retry_accounting.push(*previous.accounting);
+                    }
                     attachments_prepared = true;
                     transport_attempts += 1;
                     let inference_timer = InferenceTimer::start();
@@ -449,7 +478,7 @@ impl ModelRuntime {
                 provider_code,
                 http_status,
                 error_bytes = error.to_string().len(),
-                "模型连接中断，将在统一预算内重试当前请求"
+                "模型请求失败，将在统一预算内重试当前请求"
             );
             let backoff = async {
                 if let Some(token) = &context.cancellation {

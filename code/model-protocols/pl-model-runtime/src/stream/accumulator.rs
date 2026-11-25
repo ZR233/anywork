@@ -510,22 +510,8 @@ impl StreamCompletionAccumulator {
                 }
                 self.state = ModelStreamCurrentState::Completed;
             }
-            ModelStreamEvent::Failed {
-                request_id,
-                code,
-                http_status,
-                retry_after_ms,
-                message,
-            } => {
-                let mut error = crate::runtime::provider_stream_failure(
-                    code.as_deref(),
-                    http_status,
-                    retry_after_ms,
-                    message,
-                );
-                if let PureError::Provider(failure) = &mut error {
-                    failure.context.request_id = request_id;
-                }
+            ModelStreamEvent::Failed { failure } => {
+                let error = PureError::provider_failure(failure);
                 self.state = ModelStreamCurrentState::Failed {
                     message: error.to_string(),
                 };

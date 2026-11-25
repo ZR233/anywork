@@ -131,11 +131,8 @@ pub enum ModelStreamEvent<Replay = OpaquePayload> {
         response_id: Option<String>,
     },
     Failed {
-        request_id: Option<String>,
-        code: Option<String>,
-        http_status: Option<u16>,
-        retry_after_ms: Option<u64>,
-        message: String,
+        /// Classified by the owning wire protocol; normalization must preserve its semantics.
+        failure: pl_protocol::ProviderFailure,
     },
 }
 

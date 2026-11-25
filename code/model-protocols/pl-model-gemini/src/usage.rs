@@ -7,6 +7,8 @@ pub struct GeminiUsageMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_token_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_prompt_token_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidates_token_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thoughts_token_count: Option<u64>,
@@ -27,6 +29,7 @@ impl GeminiUsageMetadata {
     /// double-counting.
     pub fn to_usage_report(&self) -> Option<UsageReport> {
         if self.prompt_token_count.is_none()
+            && self.tool_use_prompt_token_count.is_none()
             && self.candidates_token_count.is_none()
             && self.thoughts_token_count.is_none()
             && self.cached_content_token_count.is_none()
@@ -34,6 +37,10 @@ impl GeminiUsageMetadata {
         {
             return None;
         }
+        let input_tokens = match (self.prompt_token_count, self.tool_use_prompt_token_count) {
+            (None, None) => None,
+            (prompt, tools) => Some(prompt.unwrap_or(0).saturating_add(tools.unwrap_or(0))),
+        };
         let output_tokens = match (self.candidates_token_count, self.thoughts_token_count) {
             (None, None) => None,
             (candidates, thoughts) => Some(
@@ -53,7 +60,7 @@ impl GeminiUsageMetadata {
             self.cached_content_token_count
         };
         Some(UsageReport {
-            input_tokens: self.prompt_token_count,
+            input_tokens,
             output_tokens,
             total_tokens: self.total_token_count,
             cache_read_tokens,
@@ -93,6 +100,20 @@ mod tests {
         assert_eq!(report.reasoning_tokens, Some(30));
         assert_eq!(report.cache_read_tokens, Some(50));
         assert_eq!(report.total_tokens, Some(190));
+    }
+
+    #[test]
+    fn tool_use_prompts_are_input_tokens_without_replacing_the_reported_total() {
+        let meta: GeminiUsageMetadata = serde_json::from_value(serde_json::json!({
+            "promptTokenCount":120,"toolUsePromptTokenCount":15,"candidatesTokenCount":40,
+            "thoughtsTokenCount":30,"cachedContentTokenCount":50,"totalTokenCount":205
+        }))
+        .unwrap();
+        let report = meta.to_usage_report().unwrap();
+        assert_eq!(report.input_tokens, Some(135));
+        assert_eq!(report.output_tokens, Some(70));
+        assert_eq!(report.total_tokens, Some(205));
+        assert_eq!(report.cache_read_tokens, Some(50));
     }
 
     #[test]

@@ -29,6 +29,9 @@ After a successful online catalog refresh, use the account's model switch or
 [`model_enabled_overrides`](references/main-config.md) to enable a bundled model
 that the provider omits.
 
+Gemini 的对象参数、单候选、输出上限及系统指令保留字段见
+[Gemini 请求限制](references/main-config.md#gemini-请求限制)，原生请求配置不能绕过这些边界。
+
 When editing a Mode, Agent Profile or ACP account through Studio, open its current document before saving. Another editor can save a different document independently. If the same document changed, keep your draft and reopen the current version to reconcile the edits. A new document requires an unused ID. Ordinary settings switches and sidebar pins save individual changes.
 
 ## Find the correct location

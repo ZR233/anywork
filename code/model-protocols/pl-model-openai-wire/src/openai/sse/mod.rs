@@ -166,8 +166,8 @@ pub fn process_sse_events(event: &SseStreamEvent) -> Vec<ModelStreamEvent> {
         None => Vec::new(),
     };
     for failure in &mut events {
-        if let ModelStreamEvent::Failed { request_id, .. } = failure {
-            request_id.clone_from(&event.request_id);
+        if let ModelStreamEvent::Failed { failure } = failure {
+            failure.context.request_id.clone_from(&event.request_id);
         }
     }
     if let Some(model_observation) = response_model_observation(event) {
@@ -374,24 +374,28 @@ fn provider_failure_event(
     fallback_retry_after_ms: Option<u64>,
     default_message: &str,
 ) -> ModelStreamEvent {
+    let code = error
+        .and_then(|error| error.get("code"))
+        .and_then(serde_json::Value::as_str)
+        .or(fallback_code);
+    let http_status = error.and_then(provider_status).or(fallback_status);
+    let retry_after_ms = error
+        .and_then(|error| error.get("retry_after_ms"))
+        .and_then(serde_json::Value::as_u64)
+        .or(fallback_retry_after_ms);
+    let message = error
+        .and_then(|error| error.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .or(fallback_message)
+        .unwrap_or(default_message)
+        .to_string();
     ModelStreamEvent::Failed {
-        request_id: None,
-        code: error
-            .and_then(|error| error.get("code"))
-            .and_then(serde_json::Value::as_str)
-            .or(fallback_code)
-            .map(ToString::to_string),
-        http_status: error.and_then(provider_status).or(fallback_status),
-        retry_after_ms: error
-            .and_then(|error| error.get("retry_after_ms"))
-            .and_then(serde_json::Value::as_u64)
-            .or(fallback_retry_after_ms),
-        message: error
-            .and_then(|error| error.get("message"))
-            .and_then(serde_json::Value::as_str)
-            .or(fallback_message)
-            .unwrap_or(default_message)
-            .to_string(),
+        failure: pl_model_wire::provider_error::stream_failure(
+            code,
+            http_status,
+            retry_after_ms,
+            message,
+        ),
     }
 }
 
