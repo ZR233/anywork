@@ -98,3 +98,6 @@ impl BotRuntime {
 fn media_error(message: impl Into<String>) -> FeishuError {
     FeishuError::new(FeishuErrorKind::Rejected, message, false, None)
 }
+
+#[cfg(test)]
+mod tests;

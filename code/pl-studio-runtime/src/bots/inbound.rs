@@ -273,3 +273,6 @@ fn mention_open_id(mention: &EventMention) -> Option<String> {
         .and_then(|ids| ids.open_id.clone())
         .filter(|value| !value.is_empty())
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::bots::storage::{self, InboundAdmit, InboundClaim, WorkFinish};
+use crate::bots::storage::{self, InboundAdmit, InboundClaim, MarkOutcome, WorkFinish};
 use storage::card;
 use storage::test_support::{v3_database, work_status};
 

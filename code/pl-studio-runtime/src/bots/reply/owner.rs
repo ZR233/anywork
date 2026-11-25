@@ -8,77 +8,25 @@
 //! canonical Turn 的取消（含 Interrupted 原因）仍按真实取消结局收束。
 
 use super::content::{FinalError, FinalText, collect_complete_turn_text};
+use super::lease::{ClaimGuard, ClaimLeaseGuard};
 use super::projection::ReplyProjection;
+use super::session::{ReplySession, ReplyTarget, Step};
 use super::watch::ReplyWatch;
 
 use crate::bots::BotInputRead;
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
 use crate::bots::protocol::error::FeishuError;
-use crate::bots::storage::card::{CardBinding, CardLifecycle, CardOperationStatus, CardStream};
-use crate::bots::storage::{ClaimLease, FrozenInbound};
+use crate::bots::storage::FrozenInbound;
+use crate::bots::storage::card::{CardLifecycle, CardOperationStatus};
 use crate::studio::StudioRuntime;
 use crate::{TurnCompletion, TurnState};
 use pl_core::thread::input::{InputDelivery, InputState};
-use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// 认领续约节奏：60 秒租约内保留多次续约机会；等待本身不耗失败预算。
-pub(super) const CLAIM_RENEW_INTERVAL: Duration = Duration::from_secs(15);
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(200);
-
-/// 一次入站工作的恢复执行进度；`watch_input` 是当前 canonical 输入身份。
-pub(super) struct ReplyRun {
-    pub(super) output: crate::channel_output::ChannelOutputBinding,
-    pub(super) bot_id: String,
-    pub(super) chat_id: String,
-    pub(super) message_id: String,
-    pub(super) text: String,
-    pub(super) attachments: Vec<crate::bots::inbound::InboundAttachment>,
-    pub(super) worker_id: String,
-    pub(super) thread_id: String,
-    pub(super) original_input: String,
-    pub(super) watch_input: String,
-    /// 本执行内已受理的提示；真正的去重由发送账本的稳定操作身份保证。
-    pub(super) hinted: BTreeSet<String>,
-    pub(super) delivered_displays: BTreeSet<String>,
-    pub(super) file_delivery_diagnostic: Option<String>,
-    pub(super) card: Option<CardStream>,
-    pub(super) next_observation: tokio::time::Instant,
-}
-
-impl ReplyRun {
-    pub(super) fn watching_original(&self) -> bool {
-        self.watch_input == self.original_input
-    }
-
-    pub(super) fn card_binding(&self) -> CardBinding {
-        CardBinding {
-            bot_id: self.bot_id.clone(),
-            chat_id: self.chat_id.clone(),
-            message_id: self.message_id.clone(),
-            thread_id: self.thread_id.clone(),
-            original_input: self.original_input.clone(),
-        }
-    }
-}
-
-pub(super) enum Step {
-    /// 已得出终局。
-    Done(InboundWorkOutcome),
-    /// 事实尚未就绪：等待流唤醒或下一轮续约重建。
-    Wait,
-    /// 本轮副作用已提交（首次 submit / continuation 切换），立即重建进度。
-    Continue,
-}
-
-pub(super) enum ClaimGuard {
-    Held,
-    Lost,
-}
 
 struct ReplyContent<'a> {
     projection: Option<&'a ReplyProjection>,
@@ -88,70 +36,7 @@ struct ReplyContent<'a> {
     terminal: Option<TurnState>,
 }
 
-/// The target is supplied by canonical input facts, never inferred from an old card.
-#[derive(Clone, Copy)]
-pub(super) enum ReplyTarget<'a> {
-    Consumed(&'a str),
-    Unconsumed,
-}
-
-impl<'a> ReplyTarget<'a> {
-    pub(super) fn turn_id(self) -> Option<&'a str> {
-        match self {
-            Self::Consumed(turn_id) => Some(turn_id),
-            Self::Unconsumed => None,
-        }
-    }
-}
-
-/// 认领租约的并发续约循环：与主执行同任务并发，不是失管后台任务。
-///
-/// 只在「续约被有效 lease 条件拒绝或无法确认」时完成并报告失租；cancel 之后保持
-/// 挂起，把 runtime 停止的收束留给主执行的 Interrupted 路径。与 dispatch 结束后的
-/// finish 不会产生顺序竞态：finish 自身带同一有效 lease + 持有者条件，迟到的续约
-/// 在收束后命中 0 行条件更新，不会复活已收束的状态。
-async fn heartbeat_claims(
-    runtime: BotRuntime,
-    keys: (String, String, String),
-    worker_id: String,
-    cancel: CancellationToken,
-) {
-    let (bot_id, chat_id, message_id) = keys;
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                // runtime 停止：挂起自身，主执行的 cancel 分支负责 Interrupted 收束。
-                std::future::pending::<()>().await;
-            }
-            _ = tokio::time::sleep(CLAIM_RENEW_INTERVAL) => {}
-        }
-        let renewed = match runtime.managed(&bot_id).await {
-            Ok(managed) => {
-                managed
-                    .store
-                    .renew_inbound_claim(&bot_id, &chat_id, &message_id, &worker_id)
-                    .await
-            }
-            // 无法确认续约时按失租处理：不再续权、不再发起新动作。
-            Err(_) => return,
-        };
-        match renewed {
-            Ok(ClaimLease::Renewed) => {}
-            Ok(ClaimLease::LostClaim) | Err(_) => return,
-        }
-    }
-}
-
 impl BotRuntime {
-    pub(crate) fn studio_host(&self) -> Option<std::sync::Arc<StudioRuntime>> {
-        self.inner
-            .host
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-    }
-
     pub(crate) async fn dispatch_prompt(
         &self,
         inbound: FrozenInbound,
@@ -165,14 +50,7 @@ impl BotRuntime {
         // LostClaim，不覆盖后继持有者的账本。所有副作用仍使用原稳定身份核实，
         // 不把受理未知解释为未发生。cancel 由主执行自身收束；heartbeat 在 cancel 后
         // 挂起，不会把 runtime 停止误报成失租。
-        let heartbeat_keys = (
-            inbound.bot_id.clone(),
-            inbound.chat_id.clone(),
-            inbound.message_id.clone(),
-        );
-        let heartbeat_worker = worker_id.to_string();
-        // The same reply owns every started operation until its real completion,
-        // including on lease loss. No detached successor or cleanup task.
+        let lease = ClaimLeaseGuard::new(self.clone(), &inbound, worker_id);
         let reply_cancel = cancel.child_token();
         let mut reply = Box::pin(self.run_reply(
             inbound,
@@ -181,9 +59,8 @@ impl BotRuntime {
             reply_cancel.clone(),
         ));
         tokio::select! {
-        outcome = &mut reply => outcome,
-        // heartbeat 只会因失租完成；cancel 后它保持挂起，不误报 runtime 停止。
-        _ = heartbeat_claims(self.clone(), heartbeat_keys, heartbeat_worker, cancel.clone()) => {
+            outcome = &mut reply => outcome,
+            _ = lease.until_lost(&cancel) => {
                 reply_cancel.cancel();
                 let _ = reply.await;
                 InboundWorkOutcome::LostClaim
@@ -198,27 +75,7 @@ impl BotRuntime {
         registered_thread_id: &str,
         cancel: CancellationToken,
     ) -> InboundWorkOutcome {
-        let run = ReplyRun {
-            output: crate::bots::files::feishu_reply_binding(self.clone(), &inbound, worker_id),
-            bot_id: inbound.bot_id.clone(),
-            chat_id: inbound.chat_id.clone(),
-            message_id: inbound.message_id.clone(),
-            text: inbound.text.clone(),
-            attachments: inbound.attachments.clone(),
-            worker_id: worker_id.to_string(),
-            thread_id: String::new(),
-            original_input: bot_input_id(&inbound.bot_id, &inbound.chat_id, &inbound.message_id),
-            watch_input: if inbound.watch_input.is_empty() {
-                bot_input_id(&inbound.bot_id, &inbound.chat_id, &inbound.message_id)
-            } else {
-                inbound.watch_input.clone()
-            },
-            hinted: BTreeSet::new(),
-            delivered_displays: BTreeSet::new(),
-            file_delivery_diagnostic: None,
-            card: None,
-            next_observation: tokio::time::Instant::now(),
-        };
+        let run = ReplySession::new(self.clone(), &inbound, worker_id);
         if self.inner.sealed.load(Ordering::SeqCst) != 0 || cancel.is_cancelled() {
             return InboundWorkOutcome::Interrupted;
         }
@@ -399,26 +256,11 @@ impl BotRuntime {
         outcome
     }
 
-    pub(super) async fn renew_claim(&self, run: &ReplyRun) -> ClaimGuard {
-        let Ok(managed) = self.managed(&run.bot_id).await else {
-            return ClaimGuard::Lost;
-        };
-        match managed
-            .store
-            .renew_inbound_claim(&run.bot_id, &run.chat_id, &run.message_id, &run.worker_id)
-            .await
-        {
-            Ok(ClaimLease::Renewed) => ClaimGuard::Held,
-            // 失租或续约无法确认：停止旧观察与新动作，不取消其他工作。
-            Ok(ClaimLease::LostClaim) | Err(_) => ClaimGuard::Lost,
-        }
-    }
-
     /// 一轮 canonical 重建：输入路由 → 目标 Turn → 交互终局。
     async fn advance(
         &self,
         runtime: &StudioRuntime,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         watch: &mut ReplyWatch,
         cancel: &CancellationToken,
     ) -> Step {
@@ -529,7 +371,7 @@ impl BotRuntime {
     async fn submit_original(
         &self,
         runtime: &StudioRuntime,
-        run: &ReplyRun,
+        run: &ReplySession,
         cancel: &CancellationToken,
     ) -> Step {
         // Media preparation owns and drains started file work. Its admission
@@ -593,7 +435,7 @@ impl BotRuntime {
     async fn advance_turn(
         &self,
         runtime: &StudioRuntime,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         turn_id: &str,
         content: ReplyContent<'_>,
         cancel: &CancellationToken,
@@ -727,7 +569,7 @@ impl BotRuntime {
     /// Turn 正常完成：完整 Final + Terminal 覆盖校验后，确认最后全文更新与关闭。
     async fn finish_with_final_text(
         &self,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         turn_id: &str,
         collected: FinalText,
         cancel: &CancellationToken,
@@ -777,7 +619,7 @@ impl BotRuntime {
 
     pub(super) async fn finish_known_card(
         &self,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         target: ReplyTarget<'_>,
         lifecycle: CardLifecycle,
         cancel: &CancellationToken,
@@ -793,104 +635,6 @@ impl BotRuntime {
             Err(outcome) => Step::Done(outcome),
         }
     }
-
-    /// 沿冻结绑定解析目标 Thread；归档、缺失与跨项目保持 NeedsAttention 语义。
-    async fn resolve_bound_thread(
-        &self,
-        managed: &Arc<crate::bots::owner::ManagedBot>,
-        runtime: &StudioRuntime,
-        inbound: &FrozenInbound,
-        binding_revision: u64,
-    ) -> Result<String, InboundWorkOutcome> {
-        let FrozenInbound {
-            bot_id,
-            chat_id,
-            workspace_id,
-            creation_id,
-            ..
-        } = inbound;
-        let config = managed.config.lock().await.clone();
-        let claim = managed
-            .store
-            .claim_thread_binding(chat_id, creation_id, workspace_id)
-            .await
-            .map_err(|error| binding_failure("thread binding claim failed", error))?;
-        let thread_id = match claim {
-            crate::bots::storage::ThreadBindingClaim::Bound { thread_id, .. } => thread_id,
-            crate::bots::storage::ThreadBindingClaim::Creating { creation_id, .. } => {
-                let created = runtime
-                    .create_thread_with_id(
-                        creation_id.clone(),
-                        workspace_id,
-                        &format!("{} / {chat_id}", config.name),
-                    )
-                    .await
-                    .map_err(|error| {
-                        recoverable(format!("failed to create bot Thread: {error:#}"))
-                    })?;
-                managed
-                    .store
-                    .bind_thread(chat_id, &created.id, &creation_id, workspace_id)
-                    .await
-                    .map_err(|error| binding_failure("thread binding persist failed", error))?
-            }
-            crate::bots::storage::ThreadBindingClaim::NeedsAttention { diagnostic } => {
-                return Err(InboundWorkOutcome::NeedsAttention { diagnostic });
-            }
-        };
-        let projection = managed
-            .store
-            .binding_for_chat(chat_id, bot_id, workspace_id)
-            .await
-            .map_err(|error| binding_failure("thread binding read failed", error))?;
-        if binding_revision != 0
-            && projection.revision != 0
-            && projection.revision != binding_revision
-        {
-            return Err(InboundWorkOutcome::NeedsAttention {
-                diagnostic: "inbound was admitted against a previous conversation binding"
-                    .to_string(),
-            });
-        }
-        match runtime.find_owned_thread(&thread_id) {
-            Ok(Some(existing)) if existing.workspace_id != config.workspace_id => {
-                managed
-                    .store
-                    .mark_binding_attention(chat_id, "bound Thread belongs to another project")
-                    .await
-                    .map_err(|error| binding_failure("binding attention failed", error))?;
-                Err(InboundWorkOutcome::NeedsAttention {
-                    diagnostic: "bound Thread belongs to another project".to_string(),
-                })
-            }
-            Ok(Some(existing))
-                if existing.visibility != crate::studio::ThreadVisibility::Active =>
-            {
-                managed
-                    .store
-                    .mark_binding_attention(chat_id, "bound Thread is archived")
-                    .await
-                    .map_err(|error| binding_failure("binding attention failed", error))?;
-                Err(InboundWorkOutcome::NeedsAttention {
-                    diagnostic: "archived Thread cannot accept bot traffic".to_string(),
-                })
-            }
-            Ok(None) => {
-                managed
-                    .store
-                    .mark_binding_attention(chat_id, "bound Thread is missing")
-                    .await
-                    .map_err(|error| binding_failure("binding attention failed", error))?;
-                Err(InboundWorkOutcome::NeedsAttention {
-                    diagnostic: "bound Thread is missing".to_string(),
-                })
-            }
-            Err(error) => Err(recoverable(format!(
-                "failed to read bound Thread: {error:#}"
-            ))),
-            Ok(Some(_)) => Ok(thread_id),
-        }
-    }
 }
 
 fn closed_card_outcome(lifecycle: CardLifecycle) -> InboundWorkOutcome {
@@ -904,15 +648,11 @@ pub(super) fn hint_key(local: &str) -> String {
     format!("hint:{local}")
 }
 
-pub(super) fn bot_input_id(bot_id: &str, chat_id: &str, message_id: &str) -> String {
-    format!("bot:{bot_id}:{chat_id}:{message_id}")
-}
-
 pub(super) fn interaction_hint() -> &'static str {
     "This turn is waiting for a local confirmation in the Studio desktop app. It cannot be approved from chat."
 }
 
-pub(super) fn recoverable(diagnostic: impl Into<String>) -> InboundWorkOutcome {
+pub(in crate::bots) fn recoverable(diagnostic: impl Into<String>) -> InboundWorkOutcome {
     InboundWorkOutcome::Recoverable {
         diagnostic: diagnostic.into(),
     }
@@ -936,7 +676,7 @@ pub(super) fn classify_send_error(error: FeishuError) -> InboundWorkOutcome {
 ///
 /// 不可恢复的坏行、归属冲突与坏记录转需处理，不再借 5s→300s 退避预算反复重试；
 /// 真实暂时故障仍是可恢复重试。诊断只带安全类别，不带坏行原值。
-pub(super) fn binding_failure(context: &str, error: FeishuError) -> InboundWorkOutcome {
+pub(in crate::bots) fn binding_failure(context: &str, error: FeishuError) -> InboundWorkOutcome {
     if error.retryable() {
         recoverable(format!("{context}: {error}"))
     } else {
@@ -966,9 +706,12 @@ fn observed_step((step, failure): (Step, Option<FinalError>), cancel: &Cancellat
 
 #[cfg(test)]
 mod archive_cancellation_tests {
+    use super::super::session::bot_input_id;
     use super::*;
-    use crate::bots::commands::archive_tests::Fixture;
     use crate::bots::inbound::InboundAttachment;
+    use crate::bots::storage::card::{CardBinding, CardStream};
+    use crate::bots::test_support::Fixture;
+    use std::collections::BTreeSet;
 
     #[tokio::test]
     async fn completed_card_recovery_keeps_independent_file_delivery_failure() -> anyhow::Result<()>
@@ -1040,7 +783,7 @@ mod archive_cancellation_tests {
         let inbound = fixture.inbound("cancel-admission", true).await?;
         let managed = fixture.bots.managed(&inbound.bot_id).await?;
         for media in [false, true] {
-            let mut run = ReplyRun {
+            let mut run = ReplySession {
                 output: crate::bots::files::feishu_reply_binding(
                     fixture.bots.clone(),
                     &inbound,
@@ -1078,7 +821,7 @@ mod archive_cancellation_tests {
             } else {
                 None
             };
-            let cancel = fixture.bots.inner.reply_cancel.child_token();
+            let cancel = fixture.bots.inner.reply_work.cancel.child_token();
             let action = fixture
                 .bots
                 .submit_original(&fixture.host.runtime, &run, &cancel);
@@ -1089,7 +832,7 @@ mod archive_cancellation_tests {
                 tokio::time::timeout(Duration::from_secs(5), action).await?,
                 Step::Done(InboundWorkOutcome::Interrupted)
             ));
-            assert!(!fixture.bots.inner.reply_cancel.is_cancelled());
+            assert!(!fixture.bots.inner.reply_work.cancel.is_cancelled());
             drop(config);
             drop(lifecycle);
             assert_eq!(
@@ -1103,3 +846,9 @@ mod archive_cancellation_tests {
         fixture.shutdown().await
     }
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod identity;

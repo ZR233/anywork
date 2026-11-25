@@ -6,21 +6,26 @@
 use super::config::{BotConfigFile, validate_bot_id};
 use super::connect::BotConnectionOwner;
 use super::inbound::{InboundDecision, InboundHost};
+use super::inbound_dispatch::join_inbound_recovery;
 use super::occupancy::OccupancyTasks;
-use super::operation::BotRecord;
+use super::operation::BotDiagnosticSet;
 use super::protocol::endpoint::EndpointPolicy;
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::http::FeishuHttp;
 use super::protocol::token::TokenLease;
 use super::registration::ActiveRegistration;
+use super::registry::BotRegistry;
 use super::storage::BotStateStore;
 use crate::config::ConfigRuntime;
+use crate::protocol::{
+    BotsCommandReply, CommandDisposition, CommandEffectPoint, ResourceStamp, StudioCommandReceipt,
+};
 use crate::studio::StudioPaths;
 use crate::studio::unix_seconds;
 use crate::studio::{ProductEventBus, StudioRuntime};
 use crate::{
-    BotCredentialAvailability, BotCredentialOperation, BotDiagnostic, BotPairingRequest,
-    BotPlatform, BotSnapshot, BotsStateSnapshot,
+    BotCredentialAvailability, BotCredentialOperation, BotPairingRequest, BotPlatform, BotSnapshot,
+    BotsStateSnapshot,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -47,23 +52,66 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) config: ConfigRuntime,
     pub(crate) events: ProductEventBus,
     pub(crate) http: FeishuHttp,
-    pub(crate) bots: Mutex<BTreeMap<String, BotRecord>>,
-    pub(crate) canonical: Mutex<BotsStateSnapshot>,
-    pub(crate) publish_gate: Mutex<()>,
-    pub(crate) publish_notify: Arc<Notify>,
-    pub(crate) publisher: Mutex<Option<JoinHandle<()>>>,
-    pub(crate) registration: Mutex<Option<ActiveRegistration>>,
-    pub(crate) registration_start: Mutex<()>,
-    pub(crate) host: std::sync::Mutex<Option<std::sync::Weak<StudioRuntime>>>,
-    pub(super) replies: Mutex<super::archive::BotReplyTasks>,
-    pub(super) reply_archive_seals: std::sync::Mutex<BTreeMap<String, usize>>,
-    pub(crate) reply_slots: Arc<Semaphore>,
-    pub(crate) reply_cancel: CancellationToken,
-    pub(crate) occupancy: OccupancyTasks,
-    pub(crate) sealed: AtomicU64,
-    pub(crate) recovery: Mutex<Option<JoinHandle<()>>>,
-    /// canonical 水位已耗尽：不再发射新 frame，避免复用同一 revision。
-    pub(crate) publish_exhausted: AtomicBool,
+    pub(super) bots: Mutex<BotRegistry>,
+    publication: BotPublication,
+    pub(super) registration: BotRegistrationOwner,
+    pub(super) host: std::sync::Mutex<Option<std::sync::Weak<StudioRuntime>>>,
+    pub(super) reply_work: BotReplyOwner,
+    pub(super) occupancy: OccupancyTasks,
+    pub(super) sealed: AtomicU64,
+}
+
+struct BotPublication {
+    canonical: Mutex<BotsStateSnapshot>,
+    publish_gate: Mutex<()>,
+    publish_notify: Arc<Notify>,
+    publisher: Mutex<Option<JoinHandle<()>>>,
+    // Once exhausted, never issue another frame with a reused revision.
+    publish_exhausted: AtomicBool,
+}
+
+#[derive(Default)]
+pub(super) struct BotRegistrationOwner {
+    pub(super) current: Mutex<Option<ActiveRegistration>>,
+    pub(super) start: Mutex<()>,
+}
+
+pub(super) struct BotReplyOwner {
+    pub(super) tasks: Mutex<super::reply::BotReplyTasks>,
+    pub(super) archive_seals: std::sync::Mutex<BTreeMap<String, usize>>,
+    pub(super) slots: Arc<Semaphore>,
+    pub(super) cancel: CancellationToken,
+    pub(super) recovery: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Default for BotReplyOwner {
+    fn default() -> Self {
+        Self {
+            tasks: Mutex::default(),
+            archive_seals: std::sync::Mutex::default(),
+            slots: Arc::new(Semaphore::new(32)),
+            cancel: CancellationToken::new(),
+            recovery: Mutex::new(None),
+        }
+    }
+}
+
+impl BotPublication {
+    fn new() -> Self {
+        Self {
+            canonical: Mutex::new(BotsStateSnapshot {
+                revision: 1,
+                updated_at: unix_seconds(),
+                bots: Vec::new(),
+                registration: None,
+                pending_credential_operations: Vec::new(),
+            }),
+            publish_gate: Mutex::new(()),
+            publish_notify: Arc::new(Notify::new()),
+            publisher: Mutex::new(None),
+            publish_exhausted: AtomicBool::new(false),
+        }
+    }
 }
 
 pub(crate) struct ManagedBot {
@@ -72,14 +120,12 @@ pub(crate) struct ManagedBot {
     pub(crate) connection: BotConnectionOwner,
     pub(crate) credential: Mutex<BotCredentialAvailability>,
     pub(crate) credential_operation: Mutex<BotCredentialOperation>,
-    pub(crate) diagnostic: Mutex<Option<crate::BotDiagnostic>>,
+    pub(super) diagnostic: Mutex<BotDiagnosticSet>,
     pub(crate) generation: Arc<AtomicU64>,
     pub(crate) token: TokenLease,
     pub(crate) send_rate: super::send::SendRate,
     /// One file-delivery owner through ledger read, both HTTP stages and durable drain.
     pub(crate) file_delivery: Mutex<()>,
-    #[cfg(test)]
-    pub(crate) file_delivery_waiting: Notify,
     pub(crate) bot_open_id: Mutex<Option<(u64, String)>>,
     pub(crate) admission: tokio::sync::Mutex<()>,
     pub(crate) admission_closed: AtomicBool,
@@ -107,28 +153,13 @@ impl BotRuntime {
                 config,
                 events,
                 http,
-                bots: Mutex::new(BTreeMap::new()),
-                canonical: Mutex::new(BotsStateSnapshot {
-                    revision: 1,
-                    updated_at: unix_seconds(),
-                    bots: Vec::new(),
-                    registration: None,
-                    pending_credential_operations: Vec::new(),
-                }),
-                publish_gate: Mutex::new(()),
-                publish_notify: Arc::new(Notify::new()),
-                publisher: Mutex::new(None),
-                registration: Mutex::new(None),
-                registration_start: Mutex::new(()),
+                bots: Mutex::new(BotRegistry::default()),
+                publication: BotPublication::new(),
+                registration: BotRegistrationOwner::default(),
                 host: std::sync::Mutex::new(None),
-                replies: Mutex::new(super::archive::BotReplyTasks::default()),
-                reply_archive_seals: std::sync::Mutex::new(BTreeMap::new()),
-                reply_slots: Arc::new(Semaphore::new(32)),
-                reply_cancel: CancellationToken::new(),
+                reply_work: BotReplyOwner::default(),
                 occupancy: OccupancyTasks::new(),
                 sealed: AtomicU64::new(0),
-                recovery: Mutex::new(None),
-                publish_exhausted: AtomicBool::new(false),
             }),
         })
     }
@@ -204,14 +235,14 @@ impl BotRuntime {
     }
 
     pub(crate) fn request_publish(&self) {
-        self.inner.publish_notify.notify_one();
+        self.inner.publication.publish_notify.notify_one();
     }
 
     pub(crate) async fn ensure_publisher(&self) -> Result<(), FeishuError> {
         if self.runtime_released() {
             return Ok(());
         }
-        let mut slot = self.inner.publisher.lock().await;
+        let mut slot = self.inner.publication.publisher.lock().await;
         if self.runtime_released() {
             return Ok(());
         }
@@ -228,8 +259,8 @@ impl BotRuntime {
             ));
         }
         let runtime = self.clone();
-        let cancel = self.inner.reply_cancel.clone();
-        let notify = self.inner.publish_notify.clone();
+        let cancel = self.inner.reply_work.cancel.clone();
+        let notify = self.inner.publication.publish_notify.clone();
         let handle = tokio::spawn(async move {
             loop {
                 let notified = notify.notified();
@@ -246,19 +277,19 @@ impl BotRuntime {
         });
         *slot = Some(handle);
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
-            self.inner.publish_notify.notify_one();
+            self.inner.publication.publish_notify.notify_one();
             return join_publisher(&mut slot).await;
         }
         Ok(())
     }
 
     pub(crate) async fn close_publisher(&self) -> Result<(), FeishuError> {
-        let mut slot = self.inner.publisher.lock().await;
+        let mut slot = self.inner.publication.publisher.lock().await;
         join_publisher(&mut slot).await
     }
 
     pub async fn snapshot(&self) -> BotsStateSnapshot {
-        self.inner.canonical.lock().await.clone()
+        self.inner.publication.canonical.lock().await.clone()
     }
 
     pub(crate) fn default_model_route(&self) -> Result<crate::BotModelRoute, FeishuError> {
@@ -340,7 +371,7 @@ impl BotRuntime {
     /// 成功关闭末尾：在 publish_gate→bots 锁序内标记已释放并清空运行时资源登记。
     /// 已进入 publish 且通过 released 检查的调用先完成；后继 publish 在门内复查必退出。
     pub(crate) async fn release_runtime_records(&self) {
-        let _gate = self.inner.publish_gate.lock().await;
+        let _gate = self.inner.publication.publish_gate.lock().await;
         let mut bots = self.inner.bots.lock().await;
         if self.inner.sealed.load(Ordering::SeqCst) == BOTS_RUNTIME_RELEASED {
             return;
@@ -355,29 +386,40 @@ impl BotRuntime {
         if self.runtime_released() {
             return;
         }
-        let _gate = self.inner.publish_gate.lock().await;
+        let _gate = self.inner.publication.publish_gate.lock().await;
         if self.runtime_released() {
             return;
         }
-        if self.inner.publish_exhausted.load(Ordering::SeqCst) {
+        if self
+            .inner
+            .publication
+            .publish_exhausted
+            .load(Ordering::SeqCst)
+        {
             return;
         }
         // 读取上一次已发布的 canonical：配对列表读取失败时保留该 bot 的已发布列表。
-        let previous = self.inner.canonical.lock().await.clone();
+        let previous = self.inner.publication.canonical.lock().await.clone();
         let bots = self.list_snapshots(&previous).await;
         let registration = self
             .inner
             .registration
+            .current
             .lock()
             .await
             .as_ref()
             .map(Self::registration_snapshot);
         let pending_credential_operations = self.pending_projections().await;
         let updated_at = unix_seconds();
-        let mut canonical = self.inner.canonical.lock().await;
+        let mut canonical = self.inner.publication.canonical.lock().await;
         let Some(revision) = canonical.revision.checked_add(1) else {
             // 水位耗尽：保留最后合法 canonical，不发射复用 revision 的新 frame。
-            if !self.inner.publish_exhausted.swap(true, Ordering::SeqCst) {
+            if !self
+                .inner
+                .publication
+                .publish_exhausted
+                .swap(true, Ordering::SeqCst)
+            {
                 tracing::error!(
                     "bot canonical revision is exhausted; further state frames are not published"
                 );
@@ -426,7 +468,8 @@ impl BotRuntime {
         previous: Option<&BotSnapshot>,
     ) -> BotSnapshot {
         let config = bot.config.lock().await.clone();
-        let mut diagnostic = bot.diagnostic.lock().await.clone();
+        let diagnostics = bot.diagnostic.lock().await.clone();
+        let mut pairing_fault = None;
         let pairing = match bot.store.list_pairings().await {
             Ok(rows) => rows
                 .into_iter()
@@ -442,18 +485,10 @@ impl BotRuntime {
                 // 读取失败不等于“没有待确认”：保留上次已发布的列表，并把配对不可读
                 // 显式并入诊断（既有其它诊断不得遮住它）。既有不可恢复分类不被弱化，
                 // 不追加底层错误或载荷，也不阻断其他 bot 的投影。
-                let fault =
+                pairing_fault = Some(
                     FeishuError::new(FeishuErrorKind::Unavailable, PAIRING_UNREADABLE, true, None)
-                        .diagnostic();
-                diagnostic = Some(match diagnostic {
-                    Some(existing) if existing.message.contains(PAIRING_UNREADABLE) => existing,
-                    Some(existing) => BotDiagnostic {
-                        message: format!("{}; {}", existing.message, PAIRING_UNREADABLE),
-                        retryable: existing.retryable,
-                        ..existing
-                    },
-                    None => fault,
-                });
+                        .diagnostic(),
+                );
                 previous
                     .map(|snapshot| snapshot.pairing.clone())
                     .unwrap_or_default()
@@ -500,7 +535,7 @@ impl BotRuntime {
             credential: *bot.credential.lock().await,
             credential_operation: bot.credential_operation.lock().await.clone(),
             pairing,
-            diagnostic,
+            diagnostic: diagnostics.project_with_pairing_read(pairing_fault),
             can_change_project,
             can_change_app_id,
             created_at: config.created_at,
@@ -536,4 +571,134 @@ async fn join_publisher(slot: &mut Option<JoinHandle<()>>) -> Result<(), FeishuE
             None,
         )
     })
+}
+
+pub(super) enum ReceiptDurability {
+    Durable,
+    Ephemeral,
+}
+
+impl BotRuntime {
+    pub(super) fn reject_closed_admission(&self, managed: &ManagedBot) -> Result<(), FeishuError> {
+        if managed.admission_closed.load(Ordering::Acquire)
+            || managed.submitting.load(Ordering::Acquire)
+            || self.inner.sealed.load(Ordering::SeqCst) != 0
+        {
+            Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot admission is closed",
+                true,
+                None,
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<(), FeishuError> {
+        if self.runtime_released() {
+            return Ok(());
+        }
+        let previous = self
+            .inner
+            .sealed
+            .fetch_max(super::owner::BOTS_RUNTIME_SEALED, Ordering::SeqCst);
+        if previous == super::owner::BOTS_RUNTIME_RELEASED {
+            return Ok(());
+        }
+        // 占用任务必须在取消发布器之前收束：reply_cancel.cancel() 会让 publisher
+        // 自行退出，之后再等待就无法保证任务终态通知被真实发布。收束后先经既有
+        // publish_gate 做一次真实重建，再冻结并关闭发布器与其余任务。
+        self.drain_occupancy().await?;
+        self.inner.reply_work.cancel.cancel();
+        self.inner.publication.publish_notify.notify_one();
+        self.close_registration().await?;
+        self.close_publisher().await?;
+        {
+            let mut slot = self.inner.reply_work.recovery.lock().await;
+            join_inbound_recovery(&mut slot).await?;
+        }
+        self.drain_replies().await?;
+        self.close_operations().await?;
+        self.close_connection_watches().await?;
+        let records = self.inner.bots.lock().await;
+        let published = records
+            .values()
+            .filter_map(|record| record.published.clone())
+            .collect::<Vec<_>>();
+        drop(records);
+        for bot in published {
+            if let Err(error) = bot.connection.close().await {
+                // 及时上报已观察错误：不再 await 其他资源，剩余连接保持登记可重试。
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    format!("bot connection close failed: {error}"),
+                    true,
+                    None,
+                ));
+            }
+        }
+        self.publish().await;
+        self.release_runtime_records().await;
+        self.clear_host();
+        Ok(())
+    }
+
+    pub(crate) async fn managed(&self, bot_id: &str) -> Result<Arc<ManagedBot>, FeishuError> {
+        self.inner
+            .bots
+            .lock()
+            .await
+            .get(bot_id)
+            .and_then(|record| record.published.clone())
+            .ok_or_else(|| {
+                FeishuError::new(FeishuErrorKind::NotFound, "bot not found", false, None)
+            })
+    }
+
+    pub(crate) async fn reply(
+        &self,
+        operation_id: String,
+        changed: bool,
+        owner_epoch: &str,
+        durability: ReceiptDurability,
+    ) -> BotsCommandReply {
+        let snapshot = self.snapshot().await;
+        BotsCommandReply {
+            stamp: Some(ResourceStamp {
+                resource_key: "bots".to_string(),
+                owner_epoch: owner_epoch.to_string(),
+                revision: snapshot.revision,
+            }),
+            receipt: StudioCommandReceipt {
+                operation_id,
+                disposition: if changed {
+                    CommandDisposition::Applied
+                } else {
+                    CommandDisposition::NoChange
+                },
+                targets: vec![ResourceStamp {
+                    resource_key: "bots".to_string(),
+                    owner_epoch: owner_epoch.to_string(),
+                    revision: snapshot.revision,
+                }],
+                effect: CommandEffectPoint::Immediate,
+                effective: true,
+                durable: matches!(durability, ReceiptDurability::Durable),
+                requires_identity_observation: false,
+            },
+            snapshot,
+        }
+    }
+}
+
+impl BotRuntime {
+    pub(crate) fn studio_host(&self) -> Option<Arc<StudioRuntime>> {
+        self.inner
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+    }
 }

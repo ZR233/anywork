@@ -2,7 +2,8 @@
 
 mod operation;
 
-use super::owner::{ReplyRun, ReplyTarget, attention, classify_send_error};
+use super::owner::{attention, classify_send_error};
+use super::session::{ReplySession, ReplyTarget};
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::{BotRuntime, ManagedBot};
 use crate::bots::protocol::cardkit::validate_card;
@@ -29,7 +30,7 @@ struct CardProgress<'a> {
 impl BotRuntime {
     pub(super) async fn progress_card(
         &self,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         target: ReplyTarget<'_>,
         text: Option<&str>,
         goal: CardLifecycle,
@@ -104,7 +105,7 @@ impl BotRuntime {
 
     pub(super) async fn bind_reply_card_target(
         &self,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         target: ReplyTarget<'_>,
     ) -> Result<(), InboundWorkOutcome> {
         let Some(mut state) = run.card.take() else {
@@ -124,7 +125,7 @@ impl BotRuntime {
     async fn align_card_target(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
         target: ReplyTarget<'_>,
     ) -> Result<(), InboundWorkOutcome> {
@@ -140,7 +141,7 @@ impl BotRuntime {
     async fn drive_card(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
         progress: CardProgress<'_>,
     ) -> Result<(), CardFailure> {
@@ -299,7 +300,7 @@ impl BotRuntime {
     async fn card_action(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
         action: CardAction,
         cancel: &CancellationToken,
@@ -331,7 +332,7 @@ impl BotRuntime {
     async fn recover_card_stream(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
         action: CardAction,
         cancel: &CancellationToken,
@@ -349,7 +350,7 @@ impl BotRuntime {
     async fn resume_card_recovery(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
         cancel: &CancellationToken,
     ) -> Result<(), CardFailure> {
@@ -411,7 +412,7 @@ impl BotRuntime {
     async fn persist_card(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
     ) -> Result<(), InboundWorkOutcome> {
         match managed.store.save_card(state, &run.worker_id).await {
@@ -427,7 +428,7 @@ impl BotRuntime {
 
     async fn card_budget_failure(
         &self,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         error: FeishuError,
     ) -> Result<(), InboundWorkOutcome> {
         if let Some(state) = run.card.as_mut() {

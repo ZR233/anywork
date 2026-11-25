@@ -1,12 +1,9 @@
 use super::config::BotConfigFile;
 use super::inbound::{InboundDecision, InboundHost, classify_event};
-use super::owner::RuntimeInboundHost;
+use super::owner::{BotRuntime, ManagedBot, RuntimeInboundHost};
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::http::FeishuHttp;
-use super::protocol::im::FeishuIm;
 use super::protocol::ws::{FeishuWsSession, WsEndpointDiscovery};
-use super::send::SendPlan;
-use super::storage::{BotStateStore, SendRecord, SendRecordStatus, SendSegmentFact};
 use crate::BotConnectionState;
 use crate::studio::unix_seconds;
 use std::sync::Arc;
@@ -319,196 +316,6 @@ async fn connect_once(
     }
 }
 
-pub struct ClaimedSend<'a> {
-    pub http: &'a FeishuHttp,
-    pub token: &'a str,
-    pub bot_id: &'a str,
-    pub chat_id: &'a str,
-    pub operation_id: &'a str,
-    pub store: &'a BotStateStore,
-    pub plan: SendPlan,
-    pub facts: Vec<SendSegmentFact>,
-    pub rate: &'a super::send::SendRate,
-}
-
-pub async fn send_text(claimed: ClaimedSend<'_>) -> Result<crate::BotSendResult, FeishuError> {
-    let ClaimedSend {
-        http,
-        token,
-        bot_id,
-        chat_id,
-        operation_id,
-        store,
-        plan,
-        mut facts,
-        rate,
-    } = claimed;
-    let im = FeishuIm::new(http.clone());
-    let mut segments = Vec::new();
-    let mut ids = Vec::new();
-    let mut unknown = false;
-    let mut rejected = false;
-    let progress =
-        |ids: &[String], facts: &[SendSegmentFact], unknown: bool, rejected: bool| SendRecord {
-            operation_id: operation_id.to_string(),
-            bot_id: bot_id.to_string(),
-            chat_id: chat_id.to_string(),
-            content_hash: plan.content_hash.clone(),
-            status: overall_send_status(unknown, rejected, ids.len(), plan.segments.len()),
-            platform_message_ids: ids.to_vec(),
-            segments: facts.to_vec(),
-            facts_complete: true,
-        };
-    let mut status = None;
-    for (index, segment) in plan.segments.iter().enumerate() {
-        rate.acquire().await.start();
-        match im
-            .send_markdown(token, chat_id, segment, &plan.uuids[index])
-            .await
-        {
-            Ok(outcome) => {
-                ids.push(outcome.message_id.clone());
-                segments.push(crate::BotSendSegment {
-                    index: index as u32,
-                    status: crate::BotSendStatus::Succeeded,
-                    platform_message_id: Some(outcome.message_id.clone()),
-                    diagnostic: None,
-                });
-                facts[index].status = SendRecordStatus::Succeeded;
-                facts[index].platform_message_id = Some(outcome.message_id.clone());
-            }
-            Err(error) if error.acceptance_unknown() => {
-                unknown = true;
-                segments.push(crate::BotSendSegment {
-                    index: index as u32,
-                    status: crate::BotSendStatus::Unknown,
-                    platform_message_id: None,
-                    diagnostic: Some(error.diagnostic()),
-                });
-                facts[index].status = SendRecordStatus::Unknown;
-                facts[index].diagnostic = Some(error.diagnostic().message);
-            }
-            Err(error) => {
-                rejected = true;
-                segments.push(crate::BotSendSegment {
-                    index: index as u32,
-                    status: crate::BotSendStatus::Rejected,
-                    platform_message_id: None,
-                    diagnostic: Some(error.diagnostic()),
-                });
-                facts[index].status = SendRecordStatus::Rejected;
-                facts[index].diagnostic = Some(error.diagnostic().message);
-            }
-        }
-        // Persist after every segment so a crash never loses which platform messages exist.
-        status =
-            Some(persist_send_progress(store, &progress(&ids, &facts, unknown, rejected)).await?);
-        if unknown || rejected {
-            break;
-        }
-    }
-    // The last iteration already wrote the terminal record; only an empty plan still needs one.
-    let status = match status {
-        Some(status) => status,
-        None => persist_send_progress(store, &progress(&ids, &facts, unknown, rejected)).await?,
-    };
-    Ok(crate::BotSendResult {
-        operation_id: operation_id.to_string(),
-        bot_id: bot_id.to_string(),
-        chat_id: chat_id.to_string(),
-        status: product_send_status(status),
-        segments,
-        receipt: crate::StudioCommandReceipt {
-            operation_id: operation_id.to_string(),
-            disposition: crate::CommandDisposition::Applied,
-            targets: Vec::new(),
-            effect: crate::CommandEffectPoint::Immediate,
-            effective: true,
-            durable: true,
-            requires_identity_observation: false,
-        },
-    })
-}
-
-pub(crate) fn replay_send(
-    existing: SendRecord,
-    operation_id: &str,
-    bot_id: &str,
-    chat_id: &str,
-) -> crate::BotSendResult {
-    let facts_complete = existing.facts_complete;
-    let status = product_send_status(existing.status);
-    crate::BotSendResult {
-        operation_id: operation_id.to_string(),
-        bot_id: bot_id.to_string(),
-        chat_id: chat_id.to_string(),
-        status,
-        segments: existing
-            .segments
-            .into_iter()
-            .map(|fact| crate::BotSendSegment {
-                index: fact.index,
-                status: product_send_status(fact.status),
-                platform_message_id: fact.platform_message_id,
-                diagnostic: fact.diagnostic.map(|message| crate::BotDiagnostic {
-                    code: "sendSegment".to_string(),
-                    message,
-                    retryable: false,
-                    platform_code: None,
-                    guidance: if facts_complete {
-                        None
-                    } else {
-                        Some("legacySegmentFactsUnproven".to_string())
-                    },
-                }),
-            })
-            .collect(),
-        receipt: crate::StudioCommandReceipt {
-            operation_id: operation_id.to_string(),
-            disposition: crate::CommandDisposition::NoChange,
-            targets: Vec::new(),
-            effect: crate::CommandEffectPoint::Immediate,
-            effective: true,
-            durable: true,
-            requires_identity_observation: false,
-        },
-    }
-}
-
-async fn persist_send_progress(
-    store: &BotStateStore,
-    record: &SendRecord,
-) -> Result<SendRecordStatus, FeishuError> {
-    store.save_send(record).await?;
-    Ok(record.status)
-}
-
-fn overall_send_status(
-    unknown: bool,
-    rejected: bool,
-    succeeded: usize,
-    planned_len: usize,
-) -> SendRecordStatus {
-    if unknown {
-        SendRecordStatus::Unknown
-    } else if rejected && succeeded == 0 {
-        SendRecordStatus::Rejected
-    } else if rejected || succeeded != planned_len {
-        SendRecordStatus::Partial
-    } else {
-        SendRecordStatus::Succeeded
-    }
-}
-
-fn product_send_status(status: SendRecordStatus) -> crate::BotSendStatus {
-    match status {
-        SendRecordStatus::Succeeded => crate::BotSendStatus::Succeeded,
-        SendRecordStatus::Partial => crate::BotSendStatus::Partial,
-        SendRecordStatus::Rejected => crate::BotSendStatus::Rejected,
-        SendRecordStatus::Unknown => crate::BotSendStatus::Unknown,
-    }
-}
-
 fn reconnect_wait(attempt: u32, config: Option<&super::protocol::ws::ConnectConfig>) -> Duration {
     let base = config
         .map(|item| item.reconnect_interval)
@@ -519,4 +326,221 @@ fn reconnect_wait(attempt: u32, config: Option<&super::protocol::ws::ConnectConf
     base.saturating_add(Duration::from_millis(
         ((attempt as u64).saturating_mul(37)) % nonce.as_millis().max(1) as u64,
     ))
+}
+
+impl BotRuntime {
+    pub(crate) async fn start_connection(
+        &self,
+        managed: &Arc<ManagedBot>,
+        config: BotConfigFile,
+        secret: String,
+    ) -> Result<(), FeishuError> {
+        let expected = {
+            let _admission = managed.admission.lock().await;
+            self.reject_closed_admission(managed)?;
+            let current = managed.config.lock().await.clone();
+            if current.config_revision != config.config_revision
+                || current.feishu().app_id != config.feishu().app_id
+                || current.workspace_id != config.workspace_id
+                || current.enabled != config.enabled
+                || current.tools_enabled != config.tools_enabled
+                || current.feishu().trusted_open_ids != config.feishu().trusted_open_ids
+                || current.feishu().trusted_chat_ids != config.feishu().trusted_chat_ids
+                || current.name != config.name
+            {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Conflict,
+                    "connection start was superseded by a newer bot config",
+                    true,
+                    None,
+                ));
+            }
+            if !current.enabled {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "bot is disabled",
+                    true,
+                    None,
+                ));
+            }
+            managed.generation.fetch_add(1, Ordering::AcqRel) + 1
+        };
+        let host = Arc::new(RuntimeInboundHost {
+            runtime: self.clone(),
+            current: managed.generation.clone(),
+            expected,
+        });
+        if !host.is_current() {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Conflict,
+                "connection start was superseded before launch",
+                true,
+                None,
+            ));
+        }
+        managed
+            .connection
+            .start(self.inner.http.clone(), config, secret, host)
+            .await?;
+        // 先取标量再 await：不把 config guard 持到入站恢复的 DB 操作之后。
+        let bot_id = managed.config.lock().await.id.clone();
+        let _ = self.restore_unfinished_inbound(&bot_id).await;
+        Ok(())
+    }
+
+    pub(crate) async fn prefetch_bot_open_id(
+        &self,
+        host: &RuntimeInboundHost,
+        config: &BotConfigFile,
+    ) -> Result<String, FeishuError> {
+        if !host.is_current() {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot identity prefetch was superseded",
+                true,
+                None,
+            ));
+        }
+        let managed = self.managed(&config.id).await?;
+        if let Some((cached_generation, existing)) = managed.bot_open_id.lock().await.clone()
+            && cached_generation == host.expected
+        {
+            return Ok(existing);
+        }
+        let token = self.token(&managed, config).await?;
+        let open_id = super::protocol::im::FeishuIm::new(self.inner.http.clone())
+            .bot_open_id(&token)
+            .await?;
+        if !host.is_current() {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot identity prefetch was superseded",
+                true,
+                None,
+            ));
+        }
+        let mut cache = managed.bot_open_id.lock().await;
+        *cache = Some((host.expected, open_id.clone()));
+        Ok(open_id)
+    }
+
+    pub(crate) async fn token(
+        &self,
+        managed: &ManagedBot,
+        config: &BotConfigFile,
+    ) -> Result<String, FeishuError> {
+        self.inner
+            .http
+            .policy()
+            .require_synthetic_app(&config.feishu().app_id)?;
+        if managed
+            .token
+            .identity_matches(&config.feishu().app_id)
+            .await
+        {
+            return managed.token.access_token().await;
+        }
+        let owner = self.ensure_record(&config.id).await?;
+        owner.read_selected_secret(config).await?;
+        managed.token.access_token().await
+    }
+}
+
+pub(crate) struct WatchSlot {
+    cancel: CancellationToken,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl WatchSlot {
+    pub(super) fn new() -> Self {
+        Self {
+            cancel: CancellationToken::new(),
+            handle: None,
+        }
+    }
+
+    async fn join(&mut self) -> Result<(), FeishuError> {
+        self.cancel.cancel();
+        super::join_owned_task(&mut self.handle).await.map_err(|_| {
+            FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot connection watch join failed",
+                true,
+                None,
+            )
+        })
+    }
+}
+
+impl BotRuntime {
+    pub(crate) async fn spawn_connection_watch(&self, managed: &Arc<ManagedBot>) {
+        if self.management_sealed() {
+            return;
+        }
+        let bot_id = managed.config.lock().await.id.clone();
+        let slot = {
+            let records = self.inner.bots.lock().await;
+            let Some(record) = records.get(&bot_id) else {
+                return;
+            };
+            record.watch.clone()
+        };
+        let mut guard = slot.lock().await;
+        if self.management_sealed() {
+            return;
+        }
+        if let Err(error) = guard.join().await {
+            tracing::warn!(bot_id, %error, "previous bot connection watch join failed");
+        }
+        if self.management_sealed() {
+            return;
+        }
+        guard.cancel = CancellationToken::new();
+        let cancel = guard.cancel.clone();
+        let mut rx = managed.connection.subscribe();
+        let runtime = self.clone();
+        runtime.request_publish();
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        runtime.request_publish();
+                    }
+                }
+            }
+        });
+        if self.management_sealed() {
+            guard.cancel.cancel();
+            guard.handle = Some(handle);
+            let _ = guard.join().await;
+            return;
+        }
+        guard.handle = Some(handle);
+    }
+
+    pub(crate) async fn close_connection_watches(&self) -> Result<(), FeishuError> {
+        let records = self.inner.bots.lock().await;
+        let slots = records
+            .values()
+            .map(|record| record.watch.clone())
+            .collect::<Vec<_>>();
+        drop(records);
+        for slot in slots {
+            let mut guard = slot.lock().await;
+            if let Err(error) = guard.join().await {
+                // 及时上报已观察错误：不再 await 其他 slot，剩余句柄保持登记可重试。
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    format!("bot connection watch join failed: {error}"),
+                    true,
+                    None,
+                ));
+            }
+        }
+        Ok(())
+    }
 }
