@@ -473,53 +473,74 @@ async fn mixed_preparation_waits_only_required_and_reuses_its_ready_connection()
     .await?
 }
 
-#[tokio::test]
-async fn required_failures_compensate_and_disabled_required_does_not_start() -> Result<()> {
+async fn check_rejected_required_preparation(failure: &'static str, extra: &str) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(30), async {
-        for (failure, extra) in [
-            ("handshake", "startup_timeout_secs = 2\n"),
-            ("list", "startup_timeout_secs = 2\n"),
-            ("timeout", "startup_timeout_secs = 1\n"),
-            (
-                "credential",
-                "bearer_token_env_var = \"ANYWORK_ISOLATED_MCP_MISSING_CREDENTIAL_6802B2ED\"\n",
-            ),
-            ("disabled", "enabled = false\n"),
-        ] {
-            let server = Server::new(failure).await?;
-            if failure != "timeout" {
-                server.gate.release.cancel();
-            }
-            let env = Environment::new(&[("required", &server, true, extra)])
-                .await
-                .with_context(|| format!("prepare required MCP branch {failure}"))?;
-            let result = env.create().await;
-
-            if failure == "disabled" {
-                assert!(result.is_ok(), "{result:?}");
-                assert_eq!(server.gate.handshakes.load(Ordering::SeqCst), 0);
-            } else {
-                let error = result.expect_err("enabled required failure must reject creation");
-                assert!(
-                    format!("{error:#}").contains("required MCP server"),
-                    "{error:#}"
-                );
-                assert!(
-                    env.runtime
-                        .store
-                        .list_threads_for_project(&env.project_id)
-                        .await?
-                        .iter()
-                        .all(|thread| thread.visibility != crate::studio::ThreadVisibility::Active)
-                );
-                assert!(env.runtime.sessions.observed_threads().is_empty());
-            }
-            env.shutdown().await?;
-            server.close().await?;
+        let server = Server::new(failure).await?;
+        if failure != "timeout" {
+            server.gate.release.cancel();
         }
-        Ok::<_, anyhow::Error>(())
+        let env = Environment::new(&[("required", &server, true, extra)]).await?;
+        let error = env
+            .create()
+            .await
+            .expect_err("enabled required failure must reject creation");
+        assert!(
+            format!("{error:#}").contains("required MCP server"),
+            "{error:#}"
+        );
+        assert!(
+            env.runtime
+                .store
+                .list_threads_for_project(&env.project_id)
+                .await?
+                .iter()
+                .all(|thread| { thread.visibility != crate::studio::ThreadVisibility::Active })
+        );
+        assert!(env.runtime.sessions.observed_threads().is_empty());
+        env.shutdown().await?;
+        server.close().await
     })
-    .await?
+    .await
+    .with_context(|| format!("required MCP {failure} case did not settle"))?
+}
+
+#[tokio::test]
+async fn required_handshake_failure_compensates() -> Result<()> {
+    check_rejected_required_preparation("handshake", "startup_timeout_secs = 2\n").await
+}
+
+#[tokio::test]
+async fn required_tool_list_failure_compensates() -> Result<()> {
+    check_rejected_required_preparation("list", "startup_timeout_secs = 2\n").await
+}
+
+#[tokio::test]
+async fn required_timeout_compensates() -> Result<()> {
+    check_rejected_required_preparation("timeout", "startup_timeout_secs = 1\n").await
+}
+
+#[tokio::test]
+async fn required_missing_credential_compensates() -> Result<()> {
+    check_rejected_required_preparation(
+        "credential",
+        "bearer_token_env_var = \"ANYWORK_ISOLATED_MCP_MISSING_CREDENTIAL_6802B2ED\"\n",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn disabled_required_server_accepts_creation_without_starting() -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let server = Server::new("disabled").await?;
+        server.gate.release.cancel();
+        let env = Environment::new(&[("required", &server, true, "enabled = false\n")]).await?;
+        env.create().await?;
+        assert_eq!(server.gate.handshakes.load(Ordering::SeqCst), 0);
+        env.shutdown().await?;
+        server.close().await
+    })
+    .await
+    .context("disabled required MCP case did not settle")?
 }
 
 #[tokio::test]

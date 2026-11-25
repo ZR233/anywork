@@ -307,6 +307,10 @@ async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
         .create_thread_with_id("required-root", &project.id, "root")
         .await?;
     runtime.ensure_thread_owner(&root.id).await?.flush().await?;
+    runtime
+        .thread_observations
+        .synchronize(Some(&root.id))
+        .await?;
     let mut protocol = crate::Thread::placeholder("required-private");
     protocol.agent_path = protocol.id.clone();
     protocol.workspace_id = project.id.clone();
@@ -370,7 +374,10 @@ async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
     )
     .await
     .context("seed previous Current final handoff stalled")??;
-    runtime.shutdown_runtime().await?;
+    runtime
+        .shutdown_runtime()
+        .await
+        .context("close the seed runtime")?;
     Ok(())
 }
 
@@ -677,6 +684,12 @@ async fn reject_changed_saved_projection(
     runtime: &StudioRuntime,
     scope: &ArchiveScope,
 ) -> Result<()> {
+    // Catalog mutations below must be the only writes to the original directory rows.
+    runtime
+        .agent_facility
+        .product_events
+        .drain_directory_writes()
+        .await?;
     let tree = runtime.store.read_directory_tree("required-root").await?;
     let private_index = tree
         .iter()
@@ -779,7 +792,9 @@ async fn reject_changed_saved_projection(
         catalog
             .test_restore_records(canonical_sessions.clone(), canonical_agents.clone())
             .await?;
-        let error = outcome.unwrap_err();
+        let Err(error) = outcome else {
+            anyhow::bail!("filtered archive accepted a changed {field}");
+        };
         let expected = match field {
             "root" => "directory root identity mismatch",
             "parent" => "directory parent Agent is missing",
@@ -874,7 +889,10 @@ async fn archive_private_catalog_projection_retries_saved_cleaned_and_published_
             );
             reject_changed_saved_projection(&runtime, &scope).await?;
             if restart {
-                runtime.shutdown_runtime().await?;
+                runtime
+                    .shutdown_runtime()
+                    .await
+                    .with_context(|| format!("close {scope:?} after Saved"))?;
                 drop(runtime);
                 runtime = StudioRuntime::initialize(options(&home)).await?;
             }
@@ -909,7 +927,9 @@ async fn archive_private_catalog_projection_retries_saved_cleaned_and_published_
                 crate::studio::ThreadVisibility::Active
             );
             if restart {
-                runtime.shutdown_runtime().await?;
+                runtime.shutdown_runtime().await.with_context(|| {
+                    format!("close {scope:?} after Cleaned acknowledgement failure")
+                })?;
                 drop(runtime);
                 runtime = StudioRuntime::initialize(options(&home)).await?;
             }
@@ -942,7 +962,9 @@ async fn archive_private_catalog_projection_retries_saved_cleaned_and_published_
                 crate::studio::ThreadVisibility::Archived
             );
             if restart {
-                runtime.shutdown_runtime().await?;
+                runtime.shutdown_runtime().await.with_context(|| {
+                    format!("close {scope:?} after Published acknowledgement failure")
+                })?;
                 drop(runtime);
                 runtime = StudioRuntime::initialize(options(&home)).await?;
             }
