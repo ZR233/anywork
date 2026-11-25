@@ -126,7 +126,11 @@ async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
 struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(LedgerSchema), Box::new(WorkspaceOwnership)]
+        vec![
+            Box::new(LedgerSchema),
+            Box::new(WorkspaceOwnership),
+            Box::new(LegacySendSegments),
+        ]
     }
 }
 struct LedgerSchema;
@@ -196,18 +200,21 @@ impl MigrationTrait for LedgerSchema {
     }
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
-        if manager.has_table("bot_meta").await?
-            && let Some(row) = db
+        let fresh = !manager.has_table("bot_meta").await?;
+        if !fresh {
+            let row = db
                 .query_one_raw(statement(
                     "SELECT schema_version FROM bot_meta WHERE id=1",
                     vec![],
                 ))
                 .await?
-            && row.try_get::<i64>("", "schema_version")? == BOT_STATE_SCHEMA_VERSION
-        {
-            // A current ledger without migration records is already validated by preflight.
-            return Ok(());
+                .ok_or_else(|| DbErr::Migration("missing bot ledger version".into()))?;
+            if row.try_get::<i64>("", "schema_version")? == BOT_STATE_SCHEMA_VERSION {
+                // A current ledger without migration records was validated by preflight.
+                return Ok(());
+            }
         }
+        let ownership = if fresh { "workspace_id" } else { "project_id" };
         db.execute_unprepared(
             "CREATE TABLE IF NOT EXISTS bot_meta (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -226,7 +233,7 @@ impl MigrationTrait for LedgerSchema {
         )",
         )
         .await?;
-        db.execute_unprepared(
+        db.execute_unprepared(&format!(
             "CREATE TABLE IF NOT EXISTS inbound_work (
             identity TEXT PRIMARY KEY,
             bot_id TEXT NOT NULL DEFAULT '',
@@ -234,35 +241,39 @@ impl MigrationTrait for LedgerSchema {
             message_id TEXT NOT NULL DEFAULT '',
             content_hash TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL DEFAULT '',
+            attachments TEXT NOT NULL DEFAULT '[]',
             open_id TEXT NOT NULL DEFAULT '',
             chat_kind TEXT NOT NULL DEFAULT '',
             generation INTEGER NOT NULL DEFAULT 0,
             app_id TEXT NOT NULL DEFAULT '',
-            project_id TEXT NOT NULL DEFAULT '',
+            {ownership} TEXT NOT NULL DEFAULT '',
             creation_id TEXT NOT NULL DEFAULT '',
             binding_revision INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL,
             diagnostic TEXT NOT NULL,
             claimed_by TEXT NOT NULL DEFAULT '',
             claimed_at INTEGER NOT NULL DEFAULT 0,
+            watch_input TEXT NOT NULL DEFAULT '',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL
-        )",
-        )
+        )"
+        ))
         .await?;
-        db.execute_unprepared(
+        db.execute_unprepared(&format!(
             "CREATE TABLE IF NOT EXISTS thread_bindings (
             chat_id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'bound',
             creation_id TEXT NOT NULL DEFAULT '',
-            project_id TEXT NOT NULL DEFAULT '',
+            {ownership} TEXT NOT NULL DEFAULT '',
             revision INTEGER NOT NULL DEFAULT 0,
             generation INTEGER NOT NULL DEFAULT 0,
             diagnostic TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL DEFAULT 0
-        )",
-        )
+        )"
+        ))
         .await?;
         db.execute_unprepared(
             "CREATE TABLE IF NOT EXISTS observed_directs (
@@ -290,6 +301,7 @@ impl MigrationTrait for LedgerSchema {
             content_hash TEXT NOT NULL,
             status TEXT NOT NULL,
             platform_message_ids TEXT NOT NULL,
+            segment_facts TEXT NOT NULL DEFAULT '[]',
             updated_at INTEGER NOT NULL
         )",
         )
@@ -307,14 +319,35 @@ impl MigrationTrait for LedgerSchema {
         )",
         )
         .await?;
-        adopt_legacy_ledger(db)
-            .await
-            .map_err(|error| match error.downcast::<DbErr>() {
-                Ok(error) => error,
-                Err(error) => DbErr::Migration(format!("{error:#}")),
-            })?;
-        Ok(())
+        let result = if fresh {
+            create_final_ledger(db).await
+        } else {
+            adopt_legacy_ledger(db).await
+        };
+        result.map_err(|error| match error.downcast::<DbErr>() {
+            Ok(error) => error,
+            Err(error) => DbErr::Migration(format!("{error:#}")),
+        })
     }
+}
+
+async fn create_final_ledger<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+    create_card_streams_v6(db).await?;
+    create_pairing_index(db).await?;
+    db.execute_raw(statement(
+        "INSERT INTO bot_meta(id, schema_version) VALUES(1, ?)",
+        vec![BOT_STATE_SCHEMA_VERSION.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+async fn create_pairing_index<C: ConnectionTrait>(db: &C) -> Result<(), DbErr> {
+    db.execute_unprepared(
+        "CREATE UNIQUE INDEX IF NOT EXISTS pairing_open_id ON pairing_requests(open_id)",
+    )
+    .await?;
+    Ok(())
 }
 
 async fn adopt_legacy_ledger<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
@@ -329,10 +362,7 @@ async fn adopt_legacy_ledger<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
         anyhow::ensure!(version <= 6, "unsupported future bot state schema");
     }
     create_card_streams_v6(db).await?;
-    db.execute_unprepared(
-        "CREATE UNIQUE INDEX IF NOT EXISTS pairing_open_id ON pairing_requests(open_id)",
-    )
-    .await?;
+    create_pairing_index(db).await?;
     ensure_column(
         db,
         "inbound_identities",
@@ -532,4 +562,71 @@ async fn create_card_streams_v6<C: ConnectionTrait>(db: &C) -> anyhow::Result<()
     )
     .await?;
     Ok(())
+}
+
+/// Preserve the known platform IDs and mark per-segment evidence as incomplete.
+/// This is a data migration for both imported ledgers and already current v7 databases.
+struct LegacySendSegments;
+
+impl MigrationName for LegacySendSegments {
+    fn name(&self) -> &str {
+        "m20261030_000003_bot_import_legacy_send_segments"
+    }
+}
+
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for LegacySendSegments {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        loop {
+            let batch = db
+                .query_all_raw(statement(
+                    "SELECT operation_id, status, platform_message_ids FROM send_operations
+                 WHERE segment_facts='' ORDER BY operation_id LIMIT 256",
+                    vec![],
+                ))
+                .await?;
+            if batch.is_empty() {
+                return Ok(());
+            }
+            for row in batch {
+                let id: String = row.try_get("", "operation_id")?;
+                let status: String = row.try_get("", "status")?;
+                let platform_ids: String = row.try_get("", "platform_message_ids")?;
+                let legacy = legacy_segment_facts(&platform_ids, status == "succeeded");
+                let encoded = serde_json::to_string(&legacy).map_err(|error| {
+                    DbErr::Migration(format!("cannot encode imported send segments: {error}"))
+                })?;
+                db.execute_raw(statement(
+                    "UPDATE send_operations SET segment_facts=? WHERE operation_id=? AND segment_facts=''",
+                    vec![encoded.into(), id.into()],
+                )).await?;
+            }
+        }
+    }
+}
+
+fn legacy_segment_facts(raw_ids: &str, succeeded: bool) -> super::send::ImportedSegments {
+    let status = if succeeded {
+        SendRecordStatus::Succeeded
+    } else {
+        SendRecordStatus::Unknown
+    };
+    let legacy_segments = super::send::platform_message_ids(raw_ids)
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| SendSegmentFact {
+            index: index as u32,
+            uuid: String::new(),
+            status,
+            platform_message_id: Some(id),
+            diagnostic: Some("legacy send record lacks per-segment facts".into()),
+            file_delivery: None,
+        })
+        .collect();
+    super::send::ImportedSegments { legacy_segments }
 }
