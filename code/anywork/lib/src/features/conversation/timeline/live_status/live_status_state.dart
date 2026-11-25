@@ -25,16 +25,21 @@ sealed class LiveStatusPrimaryPhase {
 }
 
 final class LiveReconnectingPhase extends LiveStatusPrimaryPhase {
-  const LiveReconnectingPhase({this.detail});
+  const LiveReconnectingPhase({this.detail, this.attempt, this.maxAttempts});
 
   final String? detail;
+  final int? attempt;
+  final int? maxAttempts;
 
   @override
   bool operator ==(Object other) =>
-      other is LiveReconnectingPhase && detail == other.detail;
+      other is LiveReconnectingPhase &&
+      detail == other.detail &&
+      attempt == other.attempt &&
+      maxAttempts == other.maxAttempts;
 
   @override
-  int get hashCode => detail.hashCode;
+  int get hashCode => Object.hash(detail, attempt, maxAttempts);
 }
 
 /// 主模型正在产出流式正文，可选附带未抑制的活动提示。

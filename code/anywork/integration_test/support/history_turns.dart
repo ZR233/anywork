@@ -92,10 +92,10 @@ Future<HistoryTurnHead> waitForCompletedHistoryTurn({
   timeout: timeout,
 );
 
-Future<List<HistoryTimelineItem>> waitForHistoryRows({
+Future<List<HistoryTimelineEntry>> waitForHistoryRows({
   required ConversationRepository conversations,
   required String threadId,
-  required bool Function(List<HistoryTimelineItem> rows) matches,
+  required bool Function(List<HistoryTimelineEntry> rows) matches,
   required String description,
   Duration timeout = const Duration(seconds: 60),
 }) async {
@@ -168,11 +168,11 @@ Future<List<HistoryTurnHead>> _readTurnHeads(
   throw StateError('History Turn scan exceeded $_maxHistoryPages pages');
 }
 
-Future<List<HistoryTimelineItem>> _readMainRows(
+Future<List<HistoryTimelineEntry>> _readMainRows(
   HistoryReader reader,
   HistoryCut cut,
 ) async {
-  final rows = <HistoryTimelineItem>[];
+  final rows = <HistoryTimelineEntry>[];
   String? cursor;
   final seenCursors = <String>{};
   for (var pageIndex = 0; pageIndex < _maxHistoryPages; pageIndex++) {
@@ -184,7 +184,7 @@ Future<List<HistoryTimelineItem>> _readMainRows(
     if (page.cut != cut) {
       throw StateError('History Main page did not preserve its requested cut');
     }
-    rows.addAll(page.items);
+    rows.addAll(page.entries);
     final next = page.next;
     if (next == null) return rows;
     if (!seenCursors.add(next)) {

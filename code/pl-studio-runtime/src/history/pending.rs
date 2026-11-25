@@ -19,16 +19,6 @@ pub(super) struct Accepted {
     pub _reservation: Arc<Reservation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WorkRangeSummary {
-    pub first_seq: u64,
-    pub last_seq: u64,
-    pub started_at: Option<i64>,
-    pub ended_at: Option<i64>,
-    pub run_id: Option<String>,
-    pub event_count: u64,
-}
-
 #[derive(Clone)]
 pub(super) struct Pending {
     pub bytes: usize,
@@ -112,50 +102,39 @@ impl Pending {
             .find(|entry| entry.event.row_key.as_deref() == Some(row_key))
     }
 
-    pub fn latest_divider(&self, upper_seq: u64) -> Option<&Arc<Accepted>> {
+    pub fn boundaries_at_or_before(&self, upper_seq: u64, limit: usize) -> Vec<&Arc<Accepted>> {
+        if upper_seq == 0 || limit == 0 {
+            return Vec::new();
+        }
         self.events
             .range(..=upper_seq)
             .rev()
             .map(|(_, entry)| entry)
-            .find(|entry| entry.event.timeline_role == HistoryTimelineRole::Divider)
+            .filter(|entry| entry.event.timeline_role == HistoryTimelineRole::Boundary)
+            .take(limit)
+            .collect()
     }
 
-    pub fn work_range_summary(&self, lower_excl: u64, upper_incl: u64) -> Option<WorkRangeSummary> {
-        if lower_excl >= upper_incl {
+    pub fn has_work_in_range(&self, lower_excl: u64, upper_excl: u64) -> bool {
+        let start_incl = lower_excl.saturating_add(1);
+        if start_incl >= upper_excl {
+            return false;
+        }
+        self.events
+            .range(start_incl..upper_excl)
+            .any(|(_, entry)| entry.event.timeline_role == HistoryTimelineRole::Work)
+    }
+
+    pub fn latest_work_time_in_range(&self, lower_excl: u64, upper_excl: u64) -> Option<i64> {
+        let start_incl = lower_excl.saturating_add(1);
+        if start_incl >= upper_excl {
             return None;
         }
-        let mut first_seq: Option<u64> = None;
-        let mut last_seq: Option<u64> = None;
-        let mut started_at: Option<i64> = None;
-        let mut ended_at: Option<i64> = None;
-        let mut run_id: Option<String> = None;
-        let mut event_count: u64 = 0;
-        let start_incl = lower_excl.saturating_add(1);
-        for (&seq, entry) in self.events.range(start_incl..=upper_incl) {
-            if entry.event.timeline_role != HistoryTimelineRole::Work {
-                continue;
-            }
-            if first_seq.is_none() {
-                first_seq = Some(seq);
-            }
-            last_seq = Some(seq);
-            if let Some(at) = entry.event.occurred_at {
-                started_at = Some(started_at.map_or(at, |cur| cur.min(at)));
-                ended_at = Some(ended_at.map_or(at, |cur| cur.max(at)));
-            }
-            if let Some(run) = &entry.event.run_id {
-                run_id = Some(run.clone());
-            }
-            event_count += 1;
-        }
-        Some(WorkRangeSummary {
-            first_seq: first_seq?,
-            last_seq: last_seq?,
-            started_at,
-            ended_at,
-            run_id,
-            event_count,
-        })
+        self.events
+            .range(start_incl..upper_excl)
+            .rev()
+            .find(|(_, entry)| entry.event.timeline_role == HistoryTimelineRole::Work)
+            .map(|(_, entry)| entry.event.occurred_at.unwrap_or(entry.event.recorded_at))
     }
 
     pub fn work_range_events(
@@ -215,13 +194,6 @@ impl Pending {
             HistoryEventsQuery::Source { source } => event.source.as_ref() == Some(source),
             HistoryEventsQuery::Call { call_id } => {
                 event.call_id.as_deref() == Some(call_id.as_str())
-            }
-            HistoryEventsQuery::Message { message_id } => {
-                event.message_id.as_deref() == Some(message_id.as_str())
-            }
-            HistoryEventsQuery::Attempt { run_id, attempt_id } => {
-                event.run_id.as_deref() == Some(run_id.as_str())
-                    && event.attempt_id.as_deref() == Some(attempt_id.as_str())
             }
             HistoryEventsQuery::Originals { scope } => {
                 let Some(original) = &event.original else {

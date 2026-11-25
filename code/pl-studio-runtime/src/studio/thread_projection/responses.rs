@@ -662,45 +662,6 @@ fn project_presentation_items(
     Ok(projected)
 }
 
-/// The same provider-neutral facts drive live commentary and durable final projection.
-pub(super) fn recovery_notices(
-    attempt_id: &str,
-    observation: &pl_core::model::ModelObservation,
-) -> Vec<(String, String)> {
-    use pl_core::model::ModelRecoveryPhase;
-    let Some(status) = observation.recovery else {
-        return Vec::new();
-    };
-    let mut notices = observation
-        .failed
-        .iter()
-        .map(|failed| {
-            let retry = failed.generation + 1;
-            (
-                super::order::response_id(attempt_id, &format!("recovery:retry:{retry}")),
-                format!("连接中断，正在重试（{retry}/{}）。", status.max_retries),
-            )
-        })
-        .collect::<Vec<_>>();
-    let message = match status.phase {
-        ModelRecoveryPhase::Retrying => None,
-        ModelRecoveryPhase::Recovered => Some("连接已恢复，继续执行。".to_owned()),
-        ModelRecoveryPhase::Exhausted => Some(format!(
-            "连接重试 {} 次仍失败，本轮已停止。",
-            status.max_retries
-        )),
-        ModelRecoveryPhase::Failed => Some("连接恢复未完成，本轮已停止。".to_owned()),
-        ModelRecoveryPhase::Cancelled => Some("连接恢复已取消，本轮已停止。".to_owned()),
-    };
-    if let Some(message) = message {
-        notices.push((
-            super::order::response_id(attempt_id, "recovery:result"),
-            message,
-        ));
-    }
-    notices
-}
-
 fn project_recovery(
     stamp: AttemptStamp<'_>,
     observation: &pl_core::model::ModelObservation,
@@ -739,25 +700,6 @@ fn project_recovery(
                 state,
             ));
         }
-    }
-    for (id, message) in recovery_notices(&attempt.attempt_id, observation) {
-        items.push(ExecutionItem::new(
-            id,
-            crate::ItemStamp {
-                thread_id: std::borrow::Cow::Owned(thread_id.into()),
-                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
-                ordinal,
-                revision,
-                created_at,
-                updated_at,
-            },
-            ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                message,
-                Vec::new(),
-                ThreadContentLifecycle::completed(updated_at),
-            )),
-        ));
     }
     Ok(items)
 }

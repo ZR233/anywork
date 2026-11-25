@@ -20,6 +20,7 @@ fn batch(extension_id: &str, payload: pl_core::context::OpaquePayload) -> Thread
         model_members: Default::default(),
         model_member_starts: Default::default(),
         model_member_content_available: Default::default(),
+        model_connection_events: Default::default(),
         context_compactions: Default::default(),
         turn: None,
         discovered_tools: None,

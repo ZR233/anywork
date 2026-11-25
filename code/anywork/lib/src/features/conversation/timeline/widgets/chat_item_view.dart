@@ -340,9 +340,46 @@ class _ChatItemViewState extends State<ChatItemView> {
       label: context.l10n.timelineContextCompacted,
       expandable: false,
     ),
+    'connection' => _connection(context),
     'raw' => _raw(context),
     _ => _unavailable('未知内容类别：${item.type}', null),
   };
+
+  Widget _connection(BuildContext context) {
+    final l10n = context.l10n;
+    final state = item.data['state'] as String?;
+    final scope = item.data['scope'] as String?;
+    final disconnected = state == 'disconnected';
+    final recoverable = item.data['recoverable'] as bool? ?? true;
+    final label = switch ((scope, disconnected)) {
+      ('model', true) => l10n.timelineConnectionModelDisconnected,
+      ('model', false) => l10n.timelineConnectionModelReconnected,
+      ('ssh', true) => l10n.timelineConnectionSshDisconnected,
+      ('ssh', false) => l10n.timelineConnectionSshReconnected,
+      (_, true) => l10n.timelineConnectionGenericDisconnected,
+      (_, false) => l10n.timelineConnectionGenericReconnected,
+    };
+    final target = item.data['target'] as String?;
+    final transport = item.data['transport'] as String?;
+    final attempt = item.data['attempt'];
+    final maxAttempts = item.data['maxAttempts'];
+    final reason = item.data['reason'] as String?;
+    final metaParts = <String>[
+      if (target != null && target.isNotEmpty) target,
+      if (transport != null && transport.isNotEmpty) transport,
+      if (attempt is int && maxAttempts is int && maxAttempts > 0)
+        '$attempt/$maxAttempts',
+      if (disconnected && reason != null && reason.isNotEmpty) reason,
+    ];
+    return TimelineActivityRow(
+      icon: disconnected ? Icons.link_off_outlined : Icons.link_outlined,
+      label: label,
+      meta: metaParts.isEmpty ? null : metaParts.join(' · '),
+      isIssue: disconnected && !recoverable,
+      expandable: false,
+    );
+  }
+
   Widget _text() => _textLayout(
     _textBodies.toList(growable: false),
     (body, frame) => _body(

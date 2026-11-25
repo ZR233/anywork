@@ -10,7 +10,8 @@ use crate::{ExecutionItem, ExecutionShape};
 mod history;
 use anyhow::{Result, ensure};
 pub(in crate::studio) use history::{
-    build_active_state_event, build_active_tool_event, build_event_from_draft,
+    build_active_state_event, build_active_tool_event, build_connection_event,
+    build_event_from_draft,
 };
 use pl_core::{
     chat::{

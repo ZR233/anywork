@@ -6,7 +6,7 @@ use sha2::Sha256;
 use super::{HistoryBusinessRowScope, HistoryCut, HistoryError, HistoryEventsQuery, Result};
 
 const MAX_TOKEN_BYTES: usize = 64 * 1024;
-const TOKEN_VERSION: u32 = 2;
+const TOKEN_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Query {
@@ -32,7 +32,7 @@ pub(super) enum Token {
     TimelinePage {
         cut: HistoryCut,
         upper_seq: u64,
-        upper_divider_seq: Option<u64>,
+        upper_boundary_seq: Option<u64>,
     },
     WorkRangePage {
         cut: HistoryCut,

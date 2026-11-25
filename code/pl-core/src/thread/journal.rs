@@ -109,6 +109,9 @@ pub struct ThreadEffectBatch {
     /// First public content evidence; absent older effects do not imply known empty parts.
     #[serde(default)]
     pub model_member_content_available: Vec<crate::model::ModelContentAvailableMember>,
+    /// Canonical model transport disconnect/reconnect boundary events admitted during the attempt.
+    #[serde(default)]
+    pub model_connection_events: Arc<[crate::model::ModelConnectionEvent]>,
     /// Reliable start/end facts; a replaceable execution-phase snapshot is not their source.
     #[serde(default)]
     pub context_compactions: Arc<[ContextCompactionEvent]>,
@@ -186,6 +189,7 @@ impl ThreadEffectBatch {
             completed: model_members,
             started: model_member_starts,
             content_available: model_member_content_available,
+            connections: model_connection_events,
         } = members;
         let context = if previous.context == current.context {
             None
@@ -325,6 +329,7 @@ impl ThreadEffectBatch {
             && model_members.is_empty()
             && model_member_starts.is_empty()
             && model_member_content_available.is_empty()
+            && model_connection_events.is_empty()
             && context_compactions.is_empty()
             && continuations.is_empty()
             && turn.is_none()
@@ -358,6 +363,7 @@ impl ThreadEffectBatch {
             model_members,
             model_member_starts,
             model_member_content_available,
+            model_connection_events,
             context_compactions,
             continuations,
             turn,

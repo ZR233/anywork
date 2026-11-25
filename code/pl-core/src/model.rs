@@ -24,8 +24,8 @@ pub(crate) use member::{
     encoded_member_bytes, same_started_identity,
 };
 pub use member::{
-    ModelCompletedMember, ModelContentAvailableMember, ModelMemberError, ModelMemberSender,
-    ModelStartedMember,
+    ModelCompletedMember, ModelConnectionEvent, ModelConnectionEventKind, ModelConnectionFact,
+    ModelContentAvailableMember, ModelMemberError, ModelMemberSender, ModelStartedMember,
 };
 
 /// Factory for independent Thread sessions. Clients may share pools, but never mutable history.

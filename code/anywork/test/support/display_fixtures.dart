@@ -81,42 +81,38 @@ HistoryTimelinePage historyFixturePage(
   TimelineFixtureBatch update, {
   String databaseId = 'db',
   HistoryCut? cut,
-}) => HistoryTimelinePage(
-  cut: cut ?? HistoryCut('$databaseId:${update.throughOrder}'),
-  items: [
-    // History pages are newest-first; the display owner reverses them into
-    // producer block order when it admits the page.
-    for (final block in update.blocks.reversed)
-      switch (block.body) {
-        WorkDisplayBlock(
-          :final members,
-          :final timing,
-          :final memberCount,
-          :final groupClosed,
-        ) =>
-          WorkRangeTimelineItem(
-            HistoryWorkRange(
-              rangeId: members.blockId,
-              afterSeq: members.afterSeq,
-              beforeSeq:
-                  members.beforeSeq ??
-                  (groupClosed ? block.blockOrder + 1 : null),
-              firstSeq: block.blockOrder,
-              lastSeq: members.headSeq,
-              startedAt: timing.startedAtMillis,
-              endedAt: timing.finishedAtMillis,
-              runId: members.runId,
-              eventCount: memberCount > 0 ? memberCount : 1,
-            ),
+}) {
+  var hasLeadingWork = false;
+  final asc = <HistoryTimelineEntry>[];
+  for (var i = 0; i < update.blocks.length; i++) {
+    final block = update.blocks[i];
+    switch (block.body) {
+      case SingleDisplayBlock(:final record, :final visibility):
+        final next = i + 1 < update.blocks.length ? update.blocks[i + 1] : null;
+        final trailingWork = next?.body is WorkDisplayBlock
+            ? next!.body as WorkDisplayBlock
+            : null;
+        asc.add(
+          HistoryTimelineEntry(
+            event: _fixtureEventRecord(block, record, visibility: visibility),
+            hasFoldedAfter: trailingWork != null,
+            tailFoldedEndedAt:
+                (trailingWork != null && i + 2 >= update.blocks.length)
+                ? trailingWork.timing.finishedAtMillis
+                : null,
           ),
-        SingleDisplayBlock(:final record, :final visibility) =>
-          DividerTimelineItem(
-            _fixtureEventRecord(block, record, visibility: visibility),
-          ),
-      },
-  ],
-  next: update.before,
-);
+        );
+      case WorkDisplayBlock():
+        if (i == 0) hasLeadingWork = true;
+    }
+  }
+  return HistoryTimelinePage(
+    cut: cut ?? HistoryCut('$databaseId:${update.throughOrder}'),
+    entries: asc.reversed.toList(growable: false),
+    hasFoldedBeforeOldest: update.before == null && hasLeadingWork,
+    next: update.before,
+  );
+}
 
 HistoryEventRecord _fixtureEventRecord(
   DisplayBlock block,
@@ -182,7 +178,7 @@ HistoryEventRecord _fixtureEventRecord(
     seq: block.blockOrder,
     eventId: record.historyDetailEventId ?? record.historyEventId ?? atom.id,
     kind: atom.kind == ChatAtomKind.input ? 'input_accepted' : 'text_completed',
-    timelineRole: HistoryTimelineRole.divider,
+    timelineRole: HistoryTimelineRole.boundary,
     occurredAt: _historyMillis(atom.startedAt),
     recordedAt: block.blockOrder,
     runId: record.runId,

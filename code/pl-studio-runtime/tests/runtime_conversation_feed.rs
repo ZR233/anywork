@@ -116,7 +116,38 @@ struct OutputOriginal {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PublicHistory {
     outputs: Vec<OutputOriginal>,
-    recovery_notices: Vec<OutputOriginal>,
+}
+
+async fn connection_boundaries(reader: &HistoryReader) -> Result<Vec<(String, serde_json::Value)>> {
+    let mut events = Vec::new();
+    let mut cursor = None;
+    let demand = HistoryDemand {
+        max_rows: 128,
+        max_bytes: 1024 * 1024,
+    };
+    loop {
+        let page = reader.timeline_page(None, cursor.take(), demand).await?;
+        for entry in page.entries {
+            let record = entry.event;
+            if matches!(
+                record.kind,
+                pl_studio_runtime::history::HistoryEventKind::ConnectionDisconnected
+                    | pl_studio_runtime::history::HistoryEventKind::ConnectionReconnected
+            ) {
+                ensure!(
+                    record.original.is_none(),
+                    "connection boundary must not be indexed as Original"
+                );
+                let envelope = decode_event_envelope(&record)?;
+                events.push((record.event_id, envelope.data));
+            }
+        }
+        if page.next.is_none() {
+            break;
+        }
+        cursor = page.next;
+    }
+    Ok(events)
 }
 
 async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
@@ -163,36 +194,6 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
                 !bodies.is_empty(),
                 "public output omitted its original body"
             );
-            let text: Vec<_> = bodies
-                .iter()
-                .flat_map(|(_, bytes)| bytes.iter().copied())
-                .collect();
-            let notice = match text.as_slice() {
-                value if value == "连接中断，正在重试（1/5）。".as_bytes() => {
-                    Some("连接中断，正在重试（1/5）。")
-                }
-                value if value == "连接已恢复，继续执行。".as_bytes() => {
-                    Some("连接已恢复，继续执行。")
-                }
-                _ => None,
-            };
-            if let Some(notice) = notice {
-                ensure!(
-                    !result.recovery_notices.iter().any(|published| published
-                        .bodies
-                        .iter()
-                        .flat_map(|(_, bytes)| bytes.iter())
-                        .copied()
-                        .eq(notice.as_bytes().iter().copied())),
-                    "recovery notice was published more than once"
-                );
-                result.recovery_notices.push(OutputOriginal {
-                    event_id: event.event_id,
-                    payload,
-                    bodies,
-                });
-                continue;
-            }
             for (_, bytes) in &bodies {
                 let (parts, remainder) = bytes.as_chunks::<2>();
                 ensure!(
@@ -428,13 +429,23 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
         let terminal = support::completed_prompt(&env.runtime, id, "reconnect").await?;
         ensure!(terminal.id == live.projection.active_turn.context("live Turn")?.id);
         let published = public_history(&history).await?;
+        let conn_events = connection_boundaries(&history).await?;
         ensure!(
-            (published.outputs.len(), published.recovery_notices.len()) == (3, 2)
-                && output_shape(&published) == (3, 196),
-            "websocket reconnect changed public output: outputs={}, notices={:?}, shape={:?}",
+            published.outputs.len() == 3 && output_shape(&published) == (3, 196),
+            "websocket reconnect changed public output: outputs={}, shape={:?}",
             published.outputs.len(),
-            published.recovery_notices,
             output_shape(&published)
+        );
+        ensure!(
+            conn_events.len() == 2
+                && conn_events[0].1["state"] == "reconnected"
+                && conn_events[0].1["scope"] == "model"
+                && conn_events[0].1["transport"] == "WebSocket"
+                && conn_events[1].1["state"] == "disconnected"
+                && conn_events[1].1["scope"] == "model"
+                && conn_events[1].1["transport"] == "WebSocket"
+                && conn_events[1].1["recoverable"] == true,
+            "websocket reconnect changed connection boundary events: {conn_events:?}"
         );
         history.close().await;
 
@@ -485,8 +496,9 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
             .await?;
         ensure!(
-            public_history(&restored_history).await? == published,
-            "restart changed websocket output identities, order or bytes"
+            public_history(&restored_history).await? == published
+                && connection_boundaries(&restored_history).await? == conn_events,
+            "restart changed websocket output identities, order, connection boundaries or bytes"
         );
         restored_history.close().await;
         paused.close().await?;
@@ -538,12 +550,12 @@ async fn current_and_history_2000_item_scale() -> Result<()> {
             pl_studio_runtime::TurnState::Completed(_)
         ));
         let published = public_history(&history).await?;
+        let conn_events = connection_boundaries(&history).await?;
         ensure!(
-            output_shape(&published) == (ITEMS, OUTPUT_BYTES)
-                && published.recovery_notices.is_empty(),
-            "scale output changed: shape={:?}, notices={}",
+            output_shape(&published) == (ITEMS, OUTPUT_BYTES) && conn_events.is_empty(),
+            "scale output changed: shape={:?}, conn_events={}",
             output_shape(&published),
-            published.recovery_notices.len()
+            conn_events.len()
         );
         history.close().await;
 

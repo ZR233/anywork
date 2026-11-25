@@ -427,6 +427,27 @@ final class CurrentTurnHead {
   final CurrentTurnPhase phase;
 }
 
+final class CurrentModelRecovery {
+  const CurrentModelRecovery({
+    required this.attempt,
+    required this.maxAttempts,
+    this.reason,
+  });
+  final int attempt;
+  final int maxAttempts;
+  final String? reason;
+
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentModelRecovery &&
+      attempt == other.attempt &&
+      maxAttempts == other.maxAttempts &&
+      reason == other.reason;
+
+  @override
+  int get hashCode => Object.hash(attempt, maxAttempts, reason);
+}
+
 final class CurrentProjection {
   CurrentProjection({
     required this.logicalStatus,
@@ -439,6 +460,7 @@ final class CurrentProjection {
     this.interactions,
     required List<CurrentContentPreview> previews,
     required List<CurrentCollectionRef> collections,
+    this.modelRecovery,
   }) : sources = List.unmodifiable(sources),
        atoms = List.unmodifiable(atoms),
        previews = List.unmodifiable(previews),
@@ -453,6 +475,7 @@ final class CurrentProjection {
   final CurrentCollectionRef? interactions;
   final List<CurrentContentPreview> previews;
   final List<CurrentCollectionRef> collections;
+  final CurrentModelRecovery? modelRecovery;
 }
 
 final class CurrentView {

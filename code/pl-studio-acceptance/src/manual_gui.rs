@@ -6288,7 +6288,7 @@ mod history_fault_tests {
                 let timeline_role = if is_tool {
                     HistoryTimelineRole::Work
                 } else {
-                    HistoryTimelineRole::Divider
+                    HistoryTimelineRole::Boundary
                 };
                 let kind = if atom.kind == ChatAtomKind::Input {
                     HistoryEventKind::InputAccepted

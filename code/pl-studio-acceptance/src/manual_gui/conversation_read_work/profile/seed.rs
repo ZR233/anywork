@@ -6,7 +6,7 @@ use pl_provider_fixture::{
     gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
 use pl_studio_runtime::history::{
-    HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryEventMeta, HistoryTimelineItem,
+    HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryEventMeta, HistoryTimelineEntry,
     decode_event_envelope,
 };
 use pl_studio_runtime::{ChatAtomKind, ChatSourceId, mode::ThreadModeId};
@@ -438,13 +438,36 @@ async fn count(
         let mut inventory = InventoryScan::default();
         let mut cut = None;
         let mut cursor = None;
+        let mut newer_direct_seq: Option<u64> = None;
         loop {
             checkpoint(interrupt)?;
             let page = reader
                 .timeline_page(cut.clone(), cursor.clone(), demand)
                 .await?;
-            for item in &page.items {
-                count_head(&reader, &page.cut, item, demand, &mut inventory, interrupt).await?;
+            for entry in &page.entries {
+                count_head(
+                    &reader,
+                    &page.cut,
+                    entry,
+                    newer_direct_seq,
+                    demand,
+                    &mut inventory,
+                    interrupt,
+                )
+                .await?;
+                newer_direct_seq = Some(entry.event.seq);
+            }
+            if page.next.is_none() && page.has_folded_before_oldest {
+                count_folded_window(
+                    &reader,
+                    &page.cut,
+                    None,
+                    newer_direct_seq,
+                    demand,
+                    &mut inventory,
+                    interrupt,
+                )
+                .await?;
             }
             let Some(next) = page.next else {
                 break;
@@ -481,62 +504,82 @@ struct InventoryScan {
 async fn count_head(
     reader: &pl_studio_runtime::history::HistoryReader,
     cut: &pl_studio_runtime::history::HistoryCut,
-    item: &HistoryTimelineItem,
+    entry: &HistoryTimelineEntry,
+    before_seq: Option<u64>,
     demand: HistoryDemand,
     inventory: &mut InventoryScan,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    match item {
-        HistoryTimelineItem::Divider(record) => {
-            inventory.main_items = inventory
-                .main_items
-                .checked_add(1)
-                .context("Main count overflow")?;
-            if record.payload_schema == "anywork.event/1" {
-                let envelope = decode_event_envelope(record)?;
-                count_entity(record, &envelope.meta, inventory);
+    let record = &entry.event;
+    inventory.main_items = inventory
+        .main_items
+        .checked_add(1)
+        .context("Main count overflow")?;
+    if record.payload_schema == "anywork.event/1" {
+        let envelope = decode_event_envelope(record)?;
+        count_entity(record, &envelope.meta, inventory);
+    }
+    if entry.has_folded_after {
+        count_folded_window(
+            reader,
+            cut,
+            Some(record.seq),
+            before_seq,
+            demand,
+            inventory,
+            interrupt,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn count_folded_window(
+    reader: &pl_studio_runtime::history::HistoryReader,
+    cut: &pl_studio_runtime::history::HistoryCut,
+    after_seq: Option<u64>,
+    before_seq: Option<u64>,
+    demand: HistoryDemand,
+    inventory: &mut InventoryScan,
+    interrupt: &mpsc::Receiver<()>,
+) -> Result<()> {
+    let group_id = format!("work:{}", after_seq.unwrap_or(0));
+    ensure!(
+        inventory.groups.insert(group_id.clone()),
+        "Main inventory repeated WorkRange {group_id}",
+    );
+    inventory.main_items = inventory
+        .main_items
+        .checked_add(1)
+        .context("Main count overflow")?;
+    let mut group_cut = Some(cut.clone());
+    let mut cursor = None;
+    loop {
+        checkpoint(interrupt)?;
+        let page = reader
+            .work_range_page(
+                after_seq,
+                before_seq,
+                group_cut.clone(),
+                cursor.clone(),
+                demand,
+            )
+            .await?;
+        for event in &page.events {
+            if event.payload_schema == "anywork.event/1" {
+                let envelope = decode_event_envelope(event)?;
+                count_entity(event, &envelope.meta, inventory);
             }
         }
-        HistoryTimelineItem::WorkRange(range) => {
-            ensure!(
-                inventory.groups.insert(range.range_id.clone()),
-                "Main inventory repeated WorkRange {}",
-                range.range_id
-            );
-            inventory.main_items = inventory
-                .main_items
-                .checked_add(1)
-                .context("Main count overflow")?;
-            let mut group_cut = Some(cut.clone());
-            let mut cursor = None;
-            loop {
-                checkpoint(interrupt)?;
-                let page = reader
-                    .work_range_page(
-                        range.after_seq,
-                        range.before_seq,
-                        group_cut.clone(),
-                        cursor.clone(),
-                        demand,
-                    )
-                    .await?;
-                for event in &page.events {
-                    if event.payload_schema == "anywork.event/1" {
-                        let envelope = decode_event_envelope(event)?;
-                        count_entity(event, &envelope.meta, inventory);
-                    }
-                }
-                let Some(next) = page.next else {
-                    break;
-                };
-                ensure!(
-                    cursor.as_deref() != Some(next.as_str()),
-                    "member continuation did not advance"
-                );
-                group_cut = Some(page.cut);
-                cursor = Some(next);
-            }
-        }
+        let Some(next) = page.next else {
+            break;
+        };
+        ensure!(
+            cursor.as_deref() != Some(next.as_str()),
+            "member continuation did not advance"
+        );
+        group_cut = Some(page.cut);
+        cursor = Some(next);
     }
     Ok(())
 }

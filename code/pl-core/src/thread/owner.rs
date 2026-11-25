@@ -85,6 +85,7 @@ pub(super) struct Owner {
     pub(super) pending_model_member_starts: Vec<crate::model::ModelStartedMember>,
     pub(super) pending_model_member_content_available:
         Vec<crate::model::ModelContentAvailableMember>,
+    pub(super) pending_model_connection_events: Vec<crate::model::ModelConnectionEvent>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) active_inputs: Vec<String>,
@@ -851,6 +852,7 @@ impl Owner {
                 completed: std::mem::take(&mut self.pending_model_members).into(),
                 started: std::mem::take(&mut self.pending_model_member_starts).into(),
                 content_available: std::mem::take(&mut self.pending_model_member_content_available),
+                connections: std::mem::take(&mut self.pending_model_connection_events).into(),
             },
             std::mem::take(&mut self.pending_context_compactions).into(),
         ) else {

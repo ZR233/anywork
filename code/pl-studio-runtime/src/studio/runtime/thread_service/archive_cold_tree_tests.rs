@@ -1,5 +1,5 @@
 //! Cold archive must not activate execution. Reading the archived current upgrades the
-//! frozen schema-24 checkpoint to Schema 26.
+//! frozen schema-24 checkpoint to Schema 27.
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ use crate::studio::store::directory::DirectoryDelta;
 use crate::{StudioHostKind, StudioRuntimeOptions};
 
 const LEGACY_ROUTE: &str = r#"{"provider":"deepseek","model":"deepseek-flash","effort":"high"}"#;
-const SCHEMA_26_MIGRATION: &str = "m20261119_000026_atomic_event_history";
+const SCHEMA_27_MIGRATION: &str = "m20261125_000027_boundary_role_and_sparse_indexes";
 
 #[tokio::test]
 async fn archive_cold_tree_prepares_legacy_checkpoints_without_execution() -> Result<()> {
@@ -301,17 +301,17 @@ async fn assert_schema26(path: &Path) -> Result<()> {
         .await?
         .context("schema 26 identity")?
         .try_get::<i64>("", "schema_version")?;
-    assert_eq!(version, 26, "cold read must reach Schema 26");
+    assert_eq!(version, 27, "cold read must reach Schema 27");
     let migration = db
         .query_one_raw(Statement::from_sql_and_values(
             DatabaseBackend::Sqlite,
             "SELECT version FROM seaql_migrations WHERE version=?",
-            vec![SCHEMA_26_MIGRATION.into()],
+            vec![SCHEMA_27_MIGRATION.into()],
         ))
         .await?;
     assert!(
         migration.is_some(),
-        "Schema 26 migration {SCHEMA_26_MIGRATION} must be recorded"
+        "Schema 27 migration {SCHEMA_27_MIGRATION} must be recorded"
     );
     db.close().await?;
     Ok(())

@@ -2,7 +2,7 @@ import 'chat_models.dart';
 import 'current_models.dart' show CurrentTurnPhase;
 import 'runtime_models.dart';
 
-const historyProtocolVersion = 2;
+const historyProtocolVersion = 3;
 
 final class HistoryCut {
   const HistoryCut(this.token);
@@ -19,7 +19,7 @@ final class HistoryDemand {
   final int maxBytes;
 }
 
-enum HistoryTimelineRole { divider, work, hidden }
+enum HistoryTimelineRole { boundary, work, hidden }
 
 enum HistoryBusinessRowScope { turn, source, cost, accounting }
 
@@ -75,17 +75,6 @@ final class SourceHistoryEvents extends HistoryEventsQuery {
 final class CallHistoryEvents extends HistoryEventsQuery {
   const CallHistoryEvents(this.callId);
   final String callId;
-}
-
-final class MessageHistoryEvents extends HistoryEventsQuery {
-  const MessageHistoryEvents(this.messageId);
-  final String messageId;
-}
-
-final class AttemptHistoryEvents extends HistoryEventsQuery {
-  const AttemptHistoryEvents({required this.runId, required this.attemptId});
-  final String runId;
-  final String attemptId;
 }
 
 final class OriginalsHistoryEvents extends HistoryEventsQuery {
@@ -243,51 +232,29 @@ final class HistoryEventRecord {
   final String payloadJson;
 }
 
-final class HistoryWorkRange {
-  const HistoryWorkRange({
-    required this.rangeId,
-    this.afterSeq,
-    this.beforeSeq,
-    required this.firstSeq,
-    required this.lastSeq,
-    this.startedAt,
-    this.endedAt,
-    this.runId,
-    required this.eventCount,
+final class HistoryTimelineEntry {
+  const HistoryTimelineEntry({
+    required this.event,
+    required this.hasFoldedAfter,
+    this.tailFoldedEndedAt,
   });
-  final String rangeId;
-  final int? afterSeq;
-  final int? beforeSeq;
-  final int firstSeq;
-  final int lastSeq;
-  final int? startedAt;
-  final int? endedAt;
-  final String? runId;
-  final int eventCount;
-}
-
-sealed class HistoryTimelineItem {
-  const HistoryTimelineItem();
-}
-
-final class DividerTimelineItem extends HistoryTimelineItem {
-  const DividerTimelineItem(this.event);
   final HistoryEventRecord event;
-}
+  final bool hasFoldedAfter;
+  final int? tailFoldedEndedAt;
 
-final class WorkRangeTimelineItem extends HistoryTimelineItem {
-  const WorkRangeTimelineItem(this.range);
-  final HistoryWorkRange range;
+  int get displayTimeMs => event.occurredAt ?? event.recordedAt;
 }
 
 final class HistoryTimelinePage {
   HistoryTimelinePage({
     required this.cut,
-    required List<HistoryTimelineItem> items,
+    required List<HistoryTimelineEntry> entries,
+    this.hasFoldedBeforeOldest = false,
     this.next,
-  }) : items = List.unmodifiable(items);
+  }) : entries = List.unmodifiable(entries);
   final HistoryCut cut;
-  final List<HistoryTimelineItem> items;
+  final List<HistoryTimelineEntry> entries;
+  final bool hasFoldedBeforeOldest;
   final String? next;
 }
 

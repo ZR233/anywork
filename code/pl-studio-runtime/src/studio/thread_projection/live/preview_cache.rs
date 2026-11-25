@@ -9,7 +9,7 @@ use super::{
     provenance::ProvenanceLedger,
 };
 use crate::studio::runtime::chat_item::{BodyKey, TOOL_RESULT_FIELD, static_state};
-use crate::{ExecutionShape, ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
+use crate::{ExecutionShape, ThreadContentLifecycle};
 use pl_core::{
     chat::PresentationPart,
     model::{AggregateChannel, ContentBlock, ObservedPartIdentity},
@@ -322,47 +322,6 @@ impl PreviewCache {
             None,
             at,
         )?;
-        for (id, message) in
-            super::super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
-        {
-            let fields = BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(&message))]);
-            if self
-                .previews
-                .get(&id)
-                .is_some_and(|entry| fields_equal(&entry.fields, &fields))
-            {
-                continue;
-            }
-            let revision = placement.bump_content_revision(&id);
-            let order = placement
-                .order_index_of()?
-                .reserve_observed(&attempt.attempt_id, &id)
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-            let created_at = placement.created_at(&id, at);
-            let state = ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                String::new(),
-                Vec::new(),
-                ThreadContentLifecycle::completed(at),
-            ));
-            placement.store_fact(
-                id.clone(),
-                Fact {
-                    ordinal: order,
-                    revision,
-                    created_at,
-                    turn_id: attempt.turn_id.clone(),
-                },
-            );
-            let entry = LivePreview {
-                fields,
-                observed: None,
-                shape: static_state(&state),
-                observed_version: progress.version(),
-                model_part: None,
-            };
-            self.store_preview(id, entry);
-        }
         Ok(())
     }
 

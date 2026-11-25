@@ -59,6 +59,12 @@ impl ModelRuntime {
         let mut http_fallbacks = 0_u64;
         let mut refreshed_attachments = false;
         let mut last_model_observation = None;
+        struct PendingReconnect {
+            disconnected_at: std::time::Instant,
+            retry: u32,
+            fallback_transport: Option<String>,
+        }
+        let mut pending_reconnect: Option<PendingReconnect> = None;
         // This generation remains the last actually attempted request throughout retry
         // preparation/backoff. A cancellation must not replace its facts with an unsent attempt.
         let mut retry_failure: Option<CompletionFailure> = None;
@@ -125,16 +131,40 @@ impl ModelRuntime {
                     attachments_prepared = true;
                     transport_attempts += 1;
                     let inference_timer = InferenceTimer::start();
+                    let mut reconnected_emitted = false;
+                    let reconnect_arg = pending_reconnect.as_ref().map(|pending| {
+                        (
+                            pl_core::model::ModelConnectionFact {
+                                generation: context.current_generation(),
+                                kind: pl_core::model::ModelConnectionEventKind::Reconnected,
+                                transport: transport.label().to_owned(),
+                                fallback_transport: pending.fallback_transport.clone(),
+                                retry: pending.retry,
+                                max_retries,
+                                recoverable: true,
+                                reason: None,
+                                duration_ms: None,
+                            },
+                            pending.disconnected_at,
+                            &mut reconnected_emitted,
+                        )
+                    });
                     let (result, retry_allowed) = self
                         .run_stream_attempt(
                             attempt_request,
                             &context,
-                            trace,
-                            &inference_timer,
-                            current.as_deref_mut(),
-                            (transport_attempts - 1) as u32,
+                            super::attempt::StreamAttemptExecution {
+                                trace,
+                                inference_timer: &inference_timer,
+                                current: current.as_deref_mut(),
+                                generation: (transport_attempts - 1) as u32,
+                                pending_reconnect: reconnect_arg,
+                            },
                         )
                         .await;
+                    if reconnected_emitted {
+                        pending_reconnect = None;
+                    }
                     (result, retry_allowed, Some(inference_timer))
                 }
                 Err(error) if error.is_cancelled() && retry_failure.is_some() => {
@@ -188,6 +218,7 @@ impl ModelRuntime {
                 return Err(error);
             }
             if !retry_allowed {
+                let mut fallback_transport = None;
                 if transport == OpenAiTransport::ResponsesWebSocket
                     && error.is_transient_model_transport()
                     && self.supports_http_fallback()
@@ -201,6 +232,9 @@ impl ModelRuntime {
                     } else {
                         activation.await
                     };
+                    if activated {
+                        fallback_transport = Some(OpenAiTransport::Http.label().to_owned());
+                    }
                     let (provider_code, http_status) =
                         error.transient_model_metadata().unwrap_or((None, None));
                     tracing::warn!(
@@ -215,6 +249,24 @@ impl ModelRuntime {
                         error_bytes = error.to_string().len(),
                         "Responses WebSocket 已产生事件后失败，当前请求不重放，后续请求切换到 HTTP"
                     );
+                }
+                if error.is_transient_model_transport() && pending_reconnect.is_none() {
+                    let fact = pl_core::model::ModelConnectionFact {
+                        generation: context.current_generation(),
+                        kind: pl_core::model::ModelConnectionEventKind::Disconnected,
+                        transport: transport.label().to_owned(),
+                        fallback_transport,
+                        retry: attempt_number,
+                        max_retries,
+                        recoverable: false,
+                        reason: Some(error.to_string()),
+                        duration_ms: None,
+                    };
+                    if let Err(pl_core::model::ModelMemberError::Cancelled) =
+                        context.admit_connection(fact, current.as_deref_mut()).await
+                    {
+                        error.cancelled = true;
+                    }
                 }
                 return Err(error);
             }
@@ -242,6 +294,42 @@ impl ModelRuntime {
                 attempt_number += 1;
                 if let Err(cause) = context.begin_retry(&mut error) {
                     return Err(error.with_source(cause));
+                }
+                let fallback = activated.then(|| OpenAiTransport::Http.label().to_owned());
+                if let Some(pending) = pending_reconnect.as_mut() {
+                    pending.retry = attempt_number;
+                    if fallback.is_some() {
+                        pending.fallback_transport = fallback;
+                    }
+                } else {
+                    let fact = pl_core::model::ModelConnectionFact {
+                        generation: context.current_generation(),
+                        kind: pl_core::model::ModelConnectionEventKind::Disconnected,
+                        transport: transport.label().to_owned(),
+                        fallback_transport: fallback.clone(),
+                        retry: attempt_number,
+                        max_retries,
+                        recoverable: true,
+                        reason: Some(error.to_string()),
+                        duration_ms: None,
+                    };
+                    match context.admit_connection(fact, current.as_deref_mut()).await {
+                        Ok(()) => {
+                            pending_reconnect = Some(PendingReconnect {
+                                disconnected_at: std::time::Instant::now(),
+                                retry: attempt_number,
+                                fallback_transport: fallback,
+                            });
+                        }
+                        Err(pl_core::model::ModelMemberError::Cancelled) => {
+                            error.cancelled = true;
+                            return Err(error);
+                        }
+                        Err(pl_core::model::ModelMemberError::Closed) => {}
+                        Err(err) => {
+                            return Err(error.with_source(PureError::LlmError(err.to_string())));
+                        }
+                    }
                 }
                 retry_failure = Some(error);
                 continue;
@@ -286,6 +374,7 @@ impl ModelRuntime {
                 return Err(error);
             }
             // WS 重连一次仍失败后切换 HTTP；切换不重置逻辑请求的总预算。
+            let mut ws_fallback_activated = false;
             if transport == OpenAiTransport::ResponsesWebSocket
                 && attempted_stream
                 && attempt_number >= RESPONSES_WEBSOCKET_MAX_RETRIES
@@ -301,11 +390,48 @@ impl ModelRuntime {
                 };
                 if activated {
                     http_fallbacks = http_fallbacks.saturating_add(1);
+                    ws_fallback_activated = true;
                 }
             }
             attempt_number += 1;
             if let Err(cause) = context.begin_retry(&mut error) {
                 return Err(error.with_source(cause));
+            }
+            let fallback = ws_fallback_activated.then(|| OpenAiTransport::Http.label().to_owned());
+            if let Some(pending) = pending_reconnect.as_mut() {
+                pending.retry = attempt_number;
+                if fallback.is_some() {
+                    pending.fallback_transport = fallback;
+                }
+            } else {
+                let fact = pl_core::model::ModelConnectionFact {
+                    generation: context.current_generation(),
+                    kind: pl_core::model::ModelConnectionEventKind::Disconnected,
+                    transport: transport.label().to_owned(),
+                    fallback_transport: fallback.clone(),
+                    retry: attempt_number,
+                    max_retries,
+                    recoverable: true,
+                    reason: Some(error.to_string()),
+                    duration_ms: None,
+                };
+                match context.admit_connection(fact, current.as_deref_mut()).await {
+                    Ok(()) => {
+                        pending_reconnect = Some(PendingReconnect {
+                            disconnected_at: std::time::Instant::now(),
+                            retry: attempt_number,
+                            fallback_transport: fallback,
+                        });
+                    }
+                    Err(pl_core::model::ModelMemberError::Cancelled) => {
+                        error.cancelled = true;
+                        return Err(error);
+                    }
+                    Err(pl_core::model::ModelMemberError::Closed) => {}
+                    Err(err) => {
+                        return Err(error.with_source(PureError::LlmError(err.to_string())));
+                    }
+                }
             }
             let delay = model_request_retry_delay(
                 attempt_number,

@@ -193,12 +193,12 @@ void main() {
     () async {
       final reader = TestHistoryReader();
       final cut = HistoryCut('cut-7');
-      final item = DividerTimelineItem(
-        HistoryEventRecord(
+      final entry = HistoryTimelineEntry(
+        event: HistoryEventRecord(
           seq: 7,
           eventId: 'event-1',
           kind: 'text_completed',
-          timelineRole: HistoryTimelineRole.divider,
+          timelineRole: HistoryTimelineRole.boundary,
           recordedAt: 100,
           turnId: 'turn',
           entityId: 'entity-1',
@@ -206,8 +206,13 @@ void main() {
           payloadSchema: 'anywork.chat/1',
           payloadJson: '{"version":1}',
         ),
+        hasFoldedAfter: false,
       );
-      final page = HistoryTimelinePage(cut: cut, items: [item], next: 'older');
+      final page = HistoryTimelinePage(
+        cut: cut,
+        entries: [entry],
+        next: 'older',
+      );
       var reads = 0;
       reader.onTimeline = (actualCut, cursor, demand) async {
         reads++;
