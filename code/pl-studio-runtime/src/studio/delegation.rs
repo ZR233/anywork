@@ -117,15 +117,21 @@ pub(crate) fn preference_prompt(selection: DelegationSettings) -> Option<&'stati
         return None;
     }
     Some(match selection.preference {
-        DelegationPreference::Economy => {
-            "自动分发偏好：经济。先满足任务难度、必需能力、上下文与交付质量。当前会话是自动模式，Profile 只提供职责与工作区，其预设路由不决定选模。先发现 delegation_model 工具，用 list_delegation_models 读取完整候选目录，再用 get_delegation_models 查询详情与评价；主动批量比较相关型号的近期评价，候选充足时至少比较两个；优先看同类任务的指令遵循、失败原因与返修风险。满足要求时优先不计费与订阅账号，同类仍比较已知参考价及预计输入、输出、缓存和返修成本。简单任务便宜够用，困难任务确需更强能力时再用更贵且适配的模型，不因不另收费默认最贵。未知价格不是免费，不比不同币种裸数值，不编造套餐额度或倍率。同次决策复用资料，相关事实变化后重查；显式选择合法 modelSelection，不改变主模型、冻结身份、权限、预算或验收要求。"
-        }
-        DelegationPreference::Balanced => {
-            include_str!("../agent/prompts/delegation_balanced.md")
-        }
-        DelegationPreference::Fast => {
-            "自动分发偏好：快速。先满足必需能力、上下文与交付质量。当前会话是自动模式，Profile 只提供职责与工作区，其预设路由不决定选模。先发现 delegation_model 工具，用 list_delegation_models 读取完整候选目录，再用 get_delegation_models 查询详情与评价；主动批量比较相关型号的近期评价，候选充足时至少比较两个；结合相近任务的失败原因、指令遵循、首字延迟 TTFT、吞吐 TPS 及样本量，以整项任务完成时间和返修风险为主，不只看最高吞吐。能力和交付时间相近时优先合适的不计费与订阅账号，同类仍比较已知参考价及预计总成本，不因不另收费默认最贵。无样本速度不是零延迟，价格不证明质量，不编造额度、倍率或跨币种换算。同次决策复用资料，相关事实变化后重查；显式选择合法 modelSelection，不改变主模型、冻结身份、权限、预算或验收要求。"
-        }
+        DelegationPreference::Economy => concat!(
+            include_str!("../agent/prompts/delegation_common.md"),
+            "\n",
+            include_str!("../agent/prompts/delegation_economy.md"),
+        ),
+        DelegationPreference::Balanced => concat!(
+            include_str!("../agent/prompts/delegation_common.md"),
+            "\n",
+            include_str!("../agent/prompts/delegation_balanced.md"),
+        ),
+        DelegationPreference::Fast => concat!(
+            include_str!("../agent/prompts/delegation_common.md"),
+            "\n",
+            include_str!("../agent/prompts/delegation_fast.md"),
+        ),
     })
 }
 
