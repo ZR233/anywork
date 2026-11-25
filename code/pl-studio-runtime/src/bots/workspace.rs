@@ -26,38 +26,6 @@ fn completion_matches(
 }
 
 impl BotRuntime {
-    #[cfg(test)]
-    pub(crate) async fn install_workspace_migration_fixture(
-        &self,
-        bot_id: &str,
-        root_id: &str,
-        workspace_id: &str,
-    ) -> Result<(), FeishuError> {
-        let mut config = BotConfigFile::new(
-            bot_id.into(),
-            "Workspace migration".into(),
-            workspace_id.into(),
-            "cli_workspace_fixture".into(),
-        )?;
-        config.enabled = false;
-        config.model_route = Some(self.default_model_route()?);
-        let dir = self.inner.paths.bot_dir(bot_id);
-        super::config::save_config(&dir.join("config.toml"), &config)?;
-        let store = super::storage::BotStateStore::new(dir.join("state.sqlite"));
-        store
-            .claim_thread_binding("workspace-chat", "workspace-creation", workspace_id)
-            .await?;
-        store
-            .bind_thread(
-                "workspace-chat",
-                root_id,
-                "workspace-creation",
-                workspace_id,
-            )
-            .await?;
-        self.load().await
-    }
-
     pub(crate) fn workspace_root(&self, config: &BotConfigFile) -> std::path::PathBuf {
         self.inner.paths.bot_dir(&config.id).join("workspace")
     }

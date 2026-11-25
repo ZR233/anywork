@@ -44,7 +44,7 @@ pub use file_display::{DisplayDownloadOutcome, DisplayDownloadRequest};
 mod history;
 pub(crate) use history::history_turn;
 mod lifecycle;
-pub(in crate::studio) mod lsp_state;
+pub(in crate::studio) mod lsp;
 mod mcp_api;
 mod mode_definitions;
 mod model_catalog;
@@ -66,7 +66,7 @@ mod ssh;
 mod state_query;
 mod thread_mode;
 mod thread_service;
-mod thread_stream;
+mod thread_snapshot_api;
 
 mod tool_refresh;
 pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
@@ -218,14 +218,11 @@ pub struct StudioRuntime {
     observations: std::sync::Arc<observation_lifecycle::RuntimeObservationOwner>,
     thread_observations: thread_observation::ThreadObservations,
     settings_updates: tokio::sync::watch::Sender<crate::config::ConfigRuntimeSnapshot>,
-    settings_refresh: background_task::BackgroundTaskSlot,
     model_catalog_tasks: model_catalog::ModelCatalogTasks,
-    tool_refresh: background_task::BackgroundTaskSlot,
+    tool_refresh: tool_refresh::ToolRefresh,
     rejected_tools: rejected_tools::RejectedToolOwners,
     tool_catalog_updates: std::sync::Arc<tokio::sync::Notify>,
     sessions: crate::session::SessionTable,
-    #[cfg(test)]
-    s2_delete_publication_failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     thread_factory: crate::studio::thread_factory::StudioThreadFactory,
     instance_lock: super::runtime_lock::RuntimeLockOwner,
     store: StudioStore,
@@ -274,7 +271,7 @@ pub struct StudioRuntime {
 #[derive(Clone)]
 struct StudioExternalRuntimes {
     lsp: pl_lsp::runtime::LspRuntimeRegistry,
-    lsp_state: lsp_state::LspStateRuntime,
+    lsp_state: lsp::LspStateRuntime,
 }
 
 #[derive(Clone)]
@@ -306,71 +303,6 @@ impl StudioRuntime {
         self.model_performance.subscribe_statistics()
     }
 
-    /// 读取配置 owner 已发布的 Agent Profiles 资源快照。
-    ///
-    /// 纯缓存读取（完整配置与逐文件诊断），不扫描文件；外部手改 Profile 后需显式
-    /// reload 设置才会形成新事实。
-    pub(crate) fn read_agent_profiles_state(
-        &self,
-    ) -> Result<crate::StudioAgentProfilesStateSnapshot> {
-        Ok(self.config_runtime.agent_profiles_snapshot()?.into())
-    }
-
-    /// 原子创建或保存一个用户 Agent Profile TOML。
-    pub fn save_user_agent_profile(
-        &self,
-        operation_id: String,
-        expected_revision: Option<&str>,
-        profile_id: &str,
-        profile: &crate::config::UserAgentProfile,
-    ) -> Result<crate::SettingsCommandReply> {
-        Self::validate_operation_id(&operation_id)?;
-        let (state, changed) =
-            self.config_runtime
-                .save_user_agent_profile(expected_revision, profile_id, profile)?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            operation_id,
-            &state,
-            changed,
-            crate::CommandEffectPoint::FutureSession,
-        )
-    }
-
-    /// 启用或禁用不可编辑、不可删除的系统 Agent Profile。
-    pub fn set_system_agent_enabled(
-        &self,
-        operation_id: String,
-        profile_id: &str,
-        enabled: bool,
-    ) -> Result<crate::SettingsCommandReply> {
-        Self::validate_operation_id(&operation_id)?;
-        if !crate::config::is_system_profile_id(profile_id)? {
-            anyhow::bail!("`{profile_id}` is not a system Agent Profile");
-        }
-        let profile_id = profile_id.to_string();
-        let mut changed = false;
-        let state = self
-            .config_runtime
-            .update_with_effective(None, |config, _| {
-                let mut config = config.clone();
-                if enabled {
-                    changed = config.disabled_system_agents.remove(&profile_id);
-                } else {
-                    changed = config.disabled_system_agents.insert(profile_id.clone());
-                }
-                Ok(config)
-            })?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            operation_id,
-            &state,
-            changed,
-            crate::CommandEffectPoint::FutureSession,
-        )
-    }
-
-    /// 立即重试待落库事实；查询和停止路径不需要调用本命令。
     pub async fn retry_persistence(&self) -> Result<crate::PersistenceStateSnapshot> {
         let persistence = self.agent_facility.persistence.lock().await.clone();
         let Some(persistence) = persistence else {

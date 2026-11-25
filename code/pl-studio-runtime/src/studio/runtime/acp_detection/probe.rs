@@ -17,6 +17,19 @@ use crate::config::{AcpLaunch, AcpServiceDefinition};
 
 const OUTPUT_LIMIT: usize = 64 * 1024;
 
+pub(super) fn local_definition() -> AcpServiceDefinition {
+    AcpServiceDefinition {
+        id: "local-agy-detection".into(),
+        display_name: "Local agy detection".into(),
+        enabled: true,
+        launch: AcpLaunch::Command {
+            command: "agy".into(),
+            args: Vec::new(),
+        },
+        env: BTreeMap::new(),
+    }
+}
+
 /// One budget spans both commands and both streams. Stderr is captured only
 /// inside this bounded probe, to classify an explicit unsupported-subcommand
 /// response; it is never published or logged.
@@ -93,31 +106,19 @@ async fn detect(
         .map_err(|_| failed(FailureKind::Execution))?
         .keep();
     resources.directory = Some(directory.clone());
-    let definition = AcpServiceDefinition {
-        id: "local-agy-detection".into(),
-        display_name: "Local agy detection".into(),
-        enabled: true,
-        launch: AcpLaunch::Command {
-            command: "agy".into(),
-            args: Vec::new(),
-        },
-        env: BTreeMap::new(),
-    };
-    #[cfg(test)]
-    let definition = inner
-        .fixture_definition
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .unwrap_or(definition);
     // Generic command resolution, never template installation/config lookup.
-    let launch = resolve_launch(&inner.store, &definition, &directory, &operation.cancel)
-        .await
-        .map_err(|error| match error {
-            AcpLaunchError::MissingExecutable => AcpLocalDetectionState::Missing,
-            AcpLaunchError::Cancelled => AcpLocalDetectionState::Cancelled,
-            _ => failed(FailureKind::Execution),
-        })?;
+    let launch = resolve_launch(
+        &inner.store,
+        &inner.services.definition,
+        &directory,
+        &operation.cancel,
+    )
+    .await
+    .map_err(|error| match error {
+        AcpLaunchError::MissingExecutable => AcpLocalDetectionState::Missing,
+        AcpLaunchError::Cancelled => AcpLocalDetectionState::Cancelled,
+        _ => failed(FailureKind::Execution),
+    })?;
     check_budget(operation, output)?;
 
     let version = command(inner, operation, output, resources, &launch, &["--version"]).await?;

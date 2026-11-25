@@ -7,9 +7,7 @@ use crate::studio::records::ThreadRecord;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::store::thread_archive::ArchiveScope;
 
-use super::super::thread_title::{
-    ThreadTitleCancellation, ThreadTitleCancellationCause, manual_title, provisional_title,
-};
+use super::super::thread_title::{ThreadTitleCancellationCause, manual_title, provisional_title};
 use super::super::{ARCHIVE_TREE_SETTLE_TIMEOUT, StudioRuntime};
 use super::super::{
     ArchiveThreadCommandReply, RenameThreadCommandReply, StudioArchiveThreadResult,
@@ -486,7 +484,7 @@ impl StudioRuntime {
         thread_id: &str,
         expected_title: &str,
         title: &str,
-        cancellation: &mut ThreadTitleCancellation,
+        cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<()> {
         let _lifecycle_guard = tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),

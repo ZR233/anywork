@@ -294,3 +294,32 @@ impl BotRuntime {
         self.inner.occupancy.take_abnormal()
     }
 }
+
+/// `crate::studio::new_id` 形态 `前缀-微秒hex-序号hex` 的 UTF-8 上界：
+/// 两段 u64 各最多 16 个十六进制字符，再加两个分隔符。
+pub(super) fn generated_id_bytes(prefix: &str) -> usize {
+    prefix.len() + 1 + 16 + 1 + 16
+}
+
+/// Studio 目录保存的标题是 `non_empty_title` 的 owned 副本：trim 后前 80 个字符。
+pub(super) fn studio_title_bytes(title: &str) -> usize {
+    title.trim().chars().take(80).map(char::len_utf8).sum()
+}
+
+/// 绑定投影行在后续持久写期间仍存活的字段计权。
+///
+/// `creation_copies` 由该路径是否把投影创建身份移入工作行字段并再克隆一次决定：
+/// 创建路径只做比较（1 份），入站受理会移入 FrozenInbound 并成为 SQL 参数（2 份）。
+pub(super) fn projection_freeze_bytes(
+    projection: &super::storage::BindingProjection,
+    creation_copies: usize,
+) -> Result<usize, FeishuError> {
+    super::occupancy::counted_text_bytes([
+        (projection.chat_id.as_str(), 1),
+        (projection.workspace_id.as_str(), 1),
+        (projection.creation_id.as_str(), creation_copies),
+        (projection.thread_id.as_deref().unwrap_or(""), 1),
+        (projection.status.as_str(), 1),
+        (projection.diagnostic.as_deref().unwrap_or(""), 1),
+    ])
+}

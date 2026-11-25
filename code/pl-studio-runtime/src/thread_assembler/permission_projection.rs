@@ -37,31 +37,21 @@ fn require_format(
     payload: &OpaquePayload,
     expected: &str,
 ) -> Result<(), PermissionProjectionError> {
-    if payload.format() != expected || payload.version() != 1 {
-        return Err(PermissionProjectionError::Unsupported {
-            format: payload.format().into(),
-            version: payload.version(),
-        });
-    }
-    Ok(())
+    super::interaction_projection::require_format(payload, expected).map_err(Into::into)
 }
 
-/// The decision frozen into a permission record, in the one shape this host writes and reads.
-///
-/// Write and read used to disagree: the payload was written as `{"decision": …, "operationId": …}`
-/// while the read side decoded the whole document as the flat resolution, so the projection of a
-/// record that had just been committed failed and answered a committed decision with an error. Both
-/// sides therefore share this type. Rows written before the operation identity existed carry the flat
-/// resolution document instead; they are still valid decisions, are decoded through the legacy branch
-/// and simply record no identity.
+pub(crate) const APPROVAL_RESPONSE_FORMAT: &str = "pl.studio.tool-approval-response";
+
+/// The canonical decision stored with a permission record. Storage normalizes legacy responses
+/// before starting a recovered Thread.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredApprovalDecision {
+pub(crate) struct StoredApprovalDecision {
     /// The decision itself, kept as the shared protocol shape so the transport needs no new DTO.
-    decision: ToolApprovalResolutionPayload,
+    pub(crate) decision: ToolApprovalResolutionPayload,
     /// The operation identity the decision was accepted under; absent on legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    operation_id: Option<String>,
+    pub(crate) operation_id: Option<String>,
 }
 
 impl StoredApprovalDecision {
@@ -71,25 +61,6 @@ impl StoredApprovalDecision {
             decision,
             operation_id: Some(operation_id),
         }
-    }
-
-    /// Decodes the stored payload of one record, accepting the legacy flat document.
-    ///
-    /// The shape is decided by the content, not by a version bump: a nested `decision` object is the
-    /// current shape, anything else is the flat legacy resolution whose only field is `decision`.
-    fn decode(content: &str) -> Result<Self, serde_json::Error> {
-        let value: serde_json::Value = serde_json::from_str(content)?;
-        if value
-            .get("decision")
-            .is_some_and(serde_json::Value::is_object)
-        {
-            return serde_json::from_value(value);
-        }
-        let decision: ToolApprovalResolutionPayload = serde_json::from_value(value)?;
-        Ok(Self {
-            decision,
-            operation_id: None,
-        })
     }
 }
 
@@ -105,7 +76,7 @@ fn approval_response_payload(
     operation_id: String,
 ) -> Result<OpaquePayload, PermissionProjectionError> {
     Ok(OpaquePayload::new(
-        "pl.studio.tool-approval-response",
+        APPROVAL_RESPONSE_FORMAT,
         1,
         serde_json::to_string(&StoredApprovalDecision::freeze(decision, operation_id))?,
     )?)
@@ -132,7 +103,7 @@ pub fn project_execution_permission(
         return Err(PermissionProjectionError::Identity);
     }
     let wire_id = super::interaction_key::encode(thread_id, &record.id);
-    let mut projected = InteractionRequest::tool_approval(
+    let projected = InteractionRequest::tool_approval(
         wire_id.clone(),
         InteractionScope {
             thread_id: thread_id.into(),
@@ -150,7 +121,6 @@ pub fn project_execution_permission(
         },
         record.created_at,
     );
-    projected.revision = 1;
     let command = match record.state {
         PermissionState::Pending => None,
         PermissionState::Allowed | PermissionState::Denied => {
@@ -163,8 +133,8 @@ pub fn project_execution_permission(
             };
             let reason = match &record.response {
                 Some(payload) => {
-                    require_format(payload, "pl.studio.tool-approval-response")?;
-                    let response = StoredApprovalDecision::decode(payload.content())?;
+                    require_format(payload, APPROVAL_RESPONSE_FORMAT)?;
+                    let response: StoredApprovalDecision = serde_json::from_str(payload.content())?;
                     if response.decision.decision != expected {
                         return Err(PermissionProjectionError::Identity);
                     }
@@ -191,14 +161,8 @@ pub fn project_execution_permission(
             cancelled_at: record.updated_at,
         })),
     };
-    if let Some(command) = command {
-        let decision = projected.decide(command)?;
-        projected.apply(decision, record.updated_at);
-    }
-    if projected.revision != record.revision {
-        return Err(PermissionProjectionError::Identity);
-    }
-    Ok(projected)
+    super::interaction_projection::replay(projected, command, record.revision, record.updated_at)
+        .map_err(Into::into)
 }
 
 impl SessionRuntime {
@@ -217,10 +181,15 @@ impl SessionRuntime {
         }
         resolution.interaction_id = local_id.to_owned();
         let thread = {
-            self.0.state().entries.get(thread_id).and_then(|entry| {
-                let native = entry.native().ok()?;
-                Some(native.thread.clone())
-            })
+            self.0
+                .state()
+                .members
+                .entries
+                .get(thread_id)
+                .and_then(|entry| {
+                    let native = entry.native().ok()?;
+                    Some(native.thread.clone())
+                })
         }
         .ok_or_else(|| PermissionProjectionError::MissingThread(thread_id.into()))?;
         let snapshot = thread.snapshot();
@@ -253,5 +222,24 @@ impl SessionRuntime {
             })
             .await?;
         project_execution_permission(thread_id, &record)
+    }
+}
+
+impl From<super::interaction_projection::DecodeError> for PermissionProjectionError {
+    fn from(error: super::interaction_projection::DecodeError) -> Self {
+        use super::interaction_projection::DecodeError;
+        match error {
+            DecodeError::Unsupported { format, version } => Self::Unsupported { format, version },
+            DecodeError::Json(error) => Self::Decode(error),
+        }
+    }
+}
+impl From<super::interaction_projection::ReplayError> for PermissionProjectionError {
+    fn from(error: super::interaction_projection::ReplayError) -> Self {
+        use super::interaction_projection::ReplayError;
+        match error {
+            ReplayError::Transition(error) => Self::Projection(error),
+            ReplayError::Revision => Self::Identity,
+        }
     }
 }

@@ -1,11 +1,15 @@
 //! Thread Mode authoring validation and canonicalization.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use serde_json::Value;
 
 use crate::mode::{
     ThreadModeDocument, ThreadModeEditorLayout, ThreadModeValidationIssue,
-    ThreadModeValidationResult,
+    ThreadModeValidationResult, WorkflowPreviewRequest, WorkflowPreviewSnapshot,
 };
+use crate::workflow_tool::{MAX_WORKFLOW_STATES, WorkflowDefinition};
 
 use super::{RegisteredThreadMode, ThreadModeManagerError as ManagerError};
 
@@ -21,12 +25,13 @@ const MAX_LAYOUT_ABSOLUTE_COORDINATE: f64 = 1_000_000.0;
 pub fn validate_mode_document(
     document: ThreadModeDocument,
 ) -> Result<ThreadModeDocument, Vec<ThreadModeValidationIssue>> {
+    let (definition, editor) = document.into_parts();
     let registered =
-        RegisteredThreadMode::from_definition(document.definition, 1).map_err(manager_issues)?;
+        RegisteredThreadMode::from_definition(definition, 1).map_err(manager_issues)?;
     let definition = registered.definition();
     let mut issues = Vec::new();
-    let editor = canonical_editor(document.editor, definition.workflow.as_ref(), &mut issues);
-    let canonical = ThreadModeDocument { definition, editor };
+    let editor = canonical_editor(editor, definition.workflow.as_ref(), &mut issues);
+    let canonical = ThreadModeDocument::from_parts(definition, editor);
     match serde_json::to_vec(&canonical) {
         Ok(bytes) if bytes.len() > MAX_MODE_DOCUMENT_BYTES => issues.push(issue(
             "tooLarge",
@@ -61,29 +66,22 @@ pub fn validate_mode_json(json: &str) -> ThreadModeValidationResult {
             )],
         };
     }
-    let value = match serde_json::from_str::<serde_json::Value>(json) {
-        Ok(value) => value,
-        Err(error) => {
-            return ThreadModeValidationResult {
-                document: None,
-                issues: vec![issue("invalidJson", "$", error.to_string())],
-            };
-        }
-    };
-    let mut shape_issues = Vec::new();
-    reject_unknown_fields(&value, &mut shape_issues);
-    if !shape_issues.is_empty() {
-        return ThreadModeValidationResult {
-            document: None,
-            issues: shape_issues,
-        };
-    }
-    let document = match serde_json::from_value::<ThreadModeDocument>(value) {
+    let document = match serde_json::from_str::<ThreadModeDocument>(json) {
         Ok(document) => document,
         Err(error) => {
+            let mut issues = Vec::new();
+            if error.is_data()
+                && let Ok(value) = serde_json::from_str::<Value>(json)
+            {
+                let schema = document_schema();
+                collect_unknown_fields(&value, schema, schema, "", &mut issues);
+            }
+            if issues.is_empty() {
+                issues.push(issue("invalidJson", "$", error.to_string()));
+            }
             return ThreadModeValidationResult {
                 document: None,
-                issues: vec![issue("invalidJson", "$", error.to_string())],
+                issues,
             };
         }
     };
@@ -99,11 +97,25 @@ pub fn validate_mode_json(json: &str) -> ThreadModeValidationResult {
     }
 }
 
+/// Compiles an editor draft and replays its workflow in an isolated machine.
+pub fn preview_workflow(
+    request: WorkflowPreviewRequest,
+) -> Result<WorkflowPreviewSnapshot, crate::PureError> {
+    let (definition, _) = request.document.into_parts();
+    let mode = RegisteredThreadMode::from_definition(definition, 1)
+        .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
+    crate::workflow_tool::preview_workflow(
+        mode.workflow_binding(),
+        request.path,
+        request.target_state_id,
+        request.reason,
+    )
+}
+
 /// Return the canonical JSON Schema plus the semantic constraints enforced
 /// after structural deserialization.
 pub fn mode_document_schema() -> String {
-    let mut schema = serde_json::to_value(schemars::schema_for!(ThreadModeDocument))
-        .expect("Thread Mode JSON Schema must serialize");
+    let mut schema = document_schema().clone();
     let Some(object) = schema.as_object_mut() else {
         return schema.to_string();
     };
@@ -129,20 +141,71 @@ pub fn mode_document_schema() -> String {
     serde_json::to_string_pretty(&schema).expect("Thread Mode JSON Schema must serialize")
 }
 
+fn document_schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::to_value(schemars::schema_for!(ThreadModeDocument))
+            .expect("Thread Mode JSON Schema must serialize")
+    })
+}
+
+// Strict deserialization decides validity. The generated schema supplies the editor's legacy
+// per-field issue codes and paths from the same Rust declarations, only after decoding fails.
+fn collect_unknown_fields(
+    input: &Value,
+    schema: &Value,
+    root: &Value,
+    path: &str,
+    issues: &mut Vec<ThreadModeValidationIssue>,
+) {
+    if let Some(target) = schema.get("$ref").and_then(Value::as_str)
+        && let Some(definition) = target
+            .strip_prefix('#')
+            .and_then(|pointer| root.pointer(pointer))
+    {
+        collect_unknown_fields(input, definition, root, path, issues);
+    } else if let Some(variants) = schema.get("anyOf").and_then(Value::as_array) {
+        // The document's one union is the nullable workflow definition.
+        for variant in variants {
+            collect_unknown_fields(input, variant, root, path, issues);
+        }
+    } else if let (Some(nodes), Some(item_schema)) = (input.as_array(), schema.get("items")) {
+        for (index, node) in nodes.iter().enumerate() {
+            collect_unknown_fields(node, item_schema, root, &format!("{path}[{index}]"), issues);
+        }
+    } else if let (Some(object), Some(properties)) = (input.as_object(), schema.get("properties")) {
+        for (key, value) in object {
+            if let Some(property) = properties.get(key) {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_unknown_fields(value, property, root, &child, issues);
+            } else if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
+                let object_path = if path.is_empty() { "$" } else { path };
+                issues.push(issue(
+                    "unknownField",
+                    format!("{object_path}.{key}"),
+                    format!("unknown field `{key}`"),
+                ));
+            }
+        }
+    }
+}
+
 fn canonical_editor(
     mut editor: ThreadModeEditorLayout,
-    workflow: Option<&crate::workflow_tool::WorkflowDefinition>,
+    workflow: Option<&WorkflowDefinition>,
     issues: &mut Vec<ThreadModeValidationIssue>,
 ) -> ThreadModeEditorLayout {
-    let state_ids = workflow
-        .map(|workflow| {
-            workflow
-                .states
-                .iter()
-                .map(|state| state.id.as_str())
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
+    let state_ids = workflow.map(|workflow| {
+        workflow
+            .states
+            .iter()
+            .map(|state| state.id.as_str())
+            .collect::<HashSet<_>>()
+    });
     if workflow.is_none() && !editor.nodes.is_empty() {
         issues.push(issue(
             "noWorkflow",
@@ -150,14 +213,11 @@ fn canonical_editor(
             "layout nodes require a workflow",
         ));
     }
-    if editor.nodes.len() > super::MAX_WORKFLOW_STATES {
+    if editor.nodes.len() > MAX_WORKFLOW_STATES {
         issues.push(issue(
             "tooMany",
             "editor.nodes",
-            format!(
-                "layout may contain at most {} nodes",
-                super::MAX_WORKFLOW_STATES
-            ),
+            format!("layout may contain at most {MAX_WORKFLOW_STATES} nodes"),
         ));
     }
     let mut seen = HashSet::new();
@@ -169,19 +229,21 @@ fn canonical_editor(
                 format!("editor.nodes[{index}].stateId"),
                 "layout node stateId must not be empty",
             ));
-        } else if !state_ids.contains(node.state_id.as_str()) {
-            issues.push(issue(
-                "unknownState",
-                format!("editor.nodes[{index}].stateId"),
-                format!("layout references unknown state `{}`", node.state_id),
-            ));
-        }
-        if !seen.insert(node.state_id.clone()) {
-            issues.push(issue(
-                "duplicate",
-                format!("editor.nodes[{index}].stateId"),
-                format!("layout duplicates state `{}`", node.state_id),
-            ));
+        } else if let Some(state_ids) = &state_ids {
+            if !state_ids.contains(node.state_id.as_str()) {
+                issues.push(issue(
+                    "unknownState",
+                    format!("editor.nodes[{index}].stateId"),
+                    format!("layout references unknown state `{}`", node.state_id),
+                ));
+            }
+            if !seen.insert(node.state_id.clone()) {
+                issues.push(issue(
+                    "duplicate",
+                    format!("editor.nodes[{index}].stateId"),
+                    format!("layout duplicates state `{}`", node.state_id),
+                ));
+            }
         }
         for (field, value) in [("x", node.x), ("y", node.y)] {
             if !value.is_finite() || value.abs() > MAX_LAYOUT_ABSOLUTE_COORDINATE {
@@ -227,97 +289,6 @@ fn manager_issues(error: ManagerError) -> Vec<ThreadModeValidationIssue> {
             format!("Mode `{mode_id}` is duplicated"),
         )],
         other => vec![issue("invalidMode", "$", other.to_string())],
-    }
-}
-
-fn reject_unknown_fields(value: &serde_json::Value, issues: &mut Vec<ThreadModeValidationIssue>) {
-    let Some(document) = value.as_object() else {
-        return;
-    };
-    reject_object_keys(
-        document,
-        &[
-            "id",
-            "displayName",
-            "description",
-            "order",
-            "prompt",
-            "workflow",
-            "editor",
-        ],
-        "$",
-        issues,
-    );
-    if let Some(workflow) = document.get("workflow").and_then(|value| value.as_object()) {
-        reject_object_keys(
-            workflow,
-            &["title", "goal", "initialStateId", "states", "transitions"],
-            "workflow",
-            issues,
-        );
-        for (index, state) in workflow
-            .get("states")
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(index, value)| value.as_object().map(|object| (index, object)))
-        {
-            reject_object_keys(
-                state,
-                &["id", "title", "instructions", "completionCriteria", "kind"],
-                &format!("workflow.states[{index}]"),
-                issues,
-            );
-        }
-        for (index, transition) in workflow
-            .get("transitions")
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(index, value)| value.as_object().map(|object| (index, object)))
-        {
-            reject_object_keys(
-                transition,
-                &["sourceStateId", "targetStateId", "guard"],
-                &format!("workflow.transitions[{index}]"),
-                issues,
-            );
-        }
-    }
-    if let Some(editor) = document.get("editor").and_then(|value| value.as_object()) {
-        reject_object_keys(editor, &["nodes"], "editor", issues);
-        for (index, node) in editor
-            .get("nodes")
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-            .enumerate()
-            .filter_map(|(index, value)| value.as_object().map(|object| (index, object)))
-        {
-            reject_object_keys(
-                node,
-                &["stateId", "x", "y"],
-                &format!("editor.nodes[{index}]"),
-                issues,
-            );
-        }
-    }
-}
-
-fn reject_object_keys(
-    object: &serde_json::Map<String, serde_json::Value>,
-    allowed: &[&str],
-    path: &str,
-    issues: &mut Vec<ThreadModeValidationIssue>,
-) {
-    for key in object.keys().filter(|key| !allowed.contains(&key.as_str())) {
-        issues.push(issue(
-            "unknownField",
-            format!("{path}.{key}"),
-            format!("unknown field `{key}`"),
-        ));
     }
 }
 

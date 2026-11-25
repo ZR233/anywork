@@ -12,7 +12,7 @@
 | 检查范围 | 触发与执行边界 |
 | --- | --- |
 | 文档与发布配置 | 仅协作说明、技能与设计文档改动时检查文档索引与本地链接；发布配置与脚本改动时检查发布规则与演练 |
-| Rust 质量与协议语义 | 在 Linux 容器内执行格式、静态检查、工作区集成验证及服务端构建（主要 crate 将集成用例收拢为 `tests/integration.rs`，CI 测试启用 `/tmp` tmpfs 并并行验证多发行版 PackageKit 更新）。Windows 与 macOS 分别在各自宿主上对 `pl-core` 的无默认 feature 配置执行 `cargo check`，并对工作区全部 Cargo targets 执行 Clippy。 |
+| Rust 质量与协议语义 | 在 Linux 容器内执行格式、静态检查与工作区集成验证。主要 crate 将集成用例收拢为 `tests/integration.rs`，CI 测试启用 `/tmp` tmpfs，并行验证多发行版 PackageKit 更新。Windows 与 macOS 分别在各自宿主上对 `pl-core` 的无默认 feature 配置执行 `cargo check`，并对工作区全部 Cargo targets 执行 Clippy。 |
 | 前端静态、生成与边界 | 单遍解析检查（`--all`）同步校验 SDK-only 边界与 UI 导入闭包，并执行格式、静态分析及 GUI 生成产物与代码一致性检查，不引入原生窗口依赖 |
 | Linux 桌面与原生集成 | 由上游准备作业集中构建验收工具、桥接库、辅助进程与模拟服务，经校验后分发给桌面分片与原生生命周期作业只读消费 |
 | Pages 预览与 Rust Scale | PR 改动命中对应路径时，由同一质量门禁构建站点预览或运行规模检查。Pages 部署及 Rust Scale 定时和手动入口各自独立调度。 |

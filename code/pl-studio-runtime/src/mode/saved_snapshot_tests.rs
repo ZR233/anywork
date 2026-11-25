@@ -44,8 +44,14 @@ fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
     let mode = registry
         .mode(&crate::mode::ThreadModeId::new("mode.migration")?)
         .context("registered mode")?;
-    let workflow = crate::mode::reconcile_workflow_for_turn(None, &mode, "migration", 1)?
-        .context("workflow")?;
+    let workflow = crate::workflow_tool::reconcile_workflow_for_turn(
+        None,
+        &mode.descriptor().id,
+        mode.workflow_binding(),
+        "migration",
+        1,
+    )?
+    .context("workflow")?;
     let instructions = legacy_instructions(
         legacy_block("modelBase", "保留的模式名称", "base"),
         vec![legacy_block(

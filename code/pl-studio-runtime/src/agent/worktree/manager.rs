@@ -126,12 +126,12 @@ impl WorktreeManager {
     ) -> Result<bool, WorktreeError> {
         self.validate_handle(handle)?;
         let base = self.repo_root.to_string_lossy();
-        let target = super::backend::resolved_git_path(&handle.path.to_string_lossy(), &base)
+        let target = super::git_path::resolved_git_path(&handle.path.to_string_lossy(), &base)
             .ok_or_else(|| {
                 WorktreeError::IdentityMismatch("managed path cannot be normalized".into())
             })?;
         Ok(self.registered_worktrees().await?.iter().any(|entry| {
-            super::backend::resolved_git_path(&entry.path, &base).as_deref()
+            super::git_path::resolved_git_path(&entry.path, &base).as_deref()
                 == Some(target.as_str())
         }))
     }
@@ -141,7 +141,7 @@ impl WorktreeManager {
         path: &Path,
     ) -> Result<Option<String>, WorktreeError> {
         let raw = self.backend.git_common_dir(path).await?;
-        Ok(super::backend::resolved_git_path(
+        Ok(super::git_path::resolved_git_path(
             &raw,
             &path.to_string_lossy(),
         ))
@@ -226,7 +226,7 @@ impl WorktreeManager {
             .path_exists(&self.repo_root, &handle.path)
             .await?;
         let registered = self.registered_worktrees().await?;
-        let target = super::backend::resolved_git_path(
+        let target = super::git_path::resolved_git_path(
             &handle.path.to_string_lossy(),
             &self.repo_root.to_string_lossy(),
         )
@@ -234,7 +234,7 @@ impl WorktreeManager {
             WorktreeError::IdentityMismatch("managed path cannot be normalized".into())
         })?;
         let registration = registered.iter().find(|entry| {
-            super::backend::resolved_git_path(&entry.path, &self.repo_root.to_string_lossy())
+            super::git_path::resolved_git_path(&entry.path, &self.repo_root.to_string_lossy())
                 .as_deref()
                 == Some(target.as_str())
         });
@@ -251,7 +251,7 @@ impl WorktreeManager {
                         format!(
                             "path={}, normalized={:?}, prunable={}",
                             entry.path,
-                            super::backend::resolved_git_path(
+                            super::git_path::resolved_git_path(
                                 &entry.path,
                                 &self.repo_root.to_string_lossy()
                             ),

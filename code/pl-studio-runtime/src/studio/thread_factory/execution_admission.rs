@@ -101,7 +101,10 @@ impl StudioThreadFactory {
                     check != ExecutionWorkspaceCheck::Audit,
                     "cold child execution binding requires on-demand resolution"
                 );
-                loaded = super::recovery::load_current_read_only(&self.services.store, thread)
+                loaded = self
+                    .services
+                    .store
+                    .load_current_read_only(thread)
                     .await?
                     .context("child execution binding has no saved current")?
                     .state
@@ -178,6 +181,7 @@ impl StudioThreadFactory {
                 &self.services.store,
                 &self.services.ssh_manager,
                 &lease,
+                None,
             )
             .await?;
             manager

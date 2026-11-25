@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::{StudioError, StudioResult};
 use sha2::{Digest, Sha256};
 
-use super::runtime_lock::{ResolvedRuntimeOptions, RuntimeLock, StudioRuntimeOptions};
+use super::runtime_lock::RuntimeLock;
+use super::runtime_options::{ResolvedRuntimeOptions, StudioRuntimeOptions};
 
 /// A resolved Studio home and its physical identity. Preparation creates only directories;
 /// configuration, migrations and databases remain untouched until a lease is acquired.

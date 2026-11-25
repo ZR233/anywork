@@ -23,9 +23,15 @@ impl StateStore {
     /// Reads only this session's complete current file, without opening or consulting history.
     /// Invalid schema/identity or missing/corrupt resources leave all originals untouched.
     pub(crate) async fn load_current(&self) -> Result<Option<ThreadCurrent>> {
-        CurrentFile::new(self.directory.clone(), self.thread_id.clone())
+        let mut current = CurrentFile::new(self.directory.clone(), self.thread_id.clone())
             .load()
-            .await
+            .await?;
+        if let Some(current) = current.as_mut() {
+            crate::studio::producer_migration::permission_responses(
+                current.state.permissions.values_mut(),
+            )?;
+        }
+        Ok(current)
     }
 
     /// Registers the independent current writer for the live Thread owner.
@@ -106,6 +112,76 @@ impl StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cold_current_read_normalizes_legacy_approval_response() -> Result<()> {
+        use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
+        use pl_core::{
+            context::OpaquePayload,
+            thread::permissions::{PermissionRecord, PermissionState},
+        };
+
+        let directory = tempfile::tempdir()?;
+        let thread_id = "approval-response";
+        let mut saved = ThreadCurrent::new(thread_id.into(), RuntimeEpoch::new());
+        let legacy = OpaquePayload::new(
+            APPROVAL_RESPONSE_FORMAT,
+            1,
+            r#"{"decision":"approved","reason":"user confirmed"}"#,
+        )?;
+        let canonical = OpaquePayload::new(
+            APPROVAL_RESPONSE_FORMAT,
+            1,
+            r#"{"decision":{"decision":"denied","reason":null},"operationId":"deny-once"}"#,
+        )?;
+        for (id, state, response) in [
+            ("allowed", PermissionState::Allowed, legacy.clone()),
+            ("denied", PermissionState::Denied, canonical.clone()),
+        ] {
+            saved.state.permissions.insert(
+                id.into(),
+                PermissionRecord {
+                    created_at: 10,
+                    updated_at: 11,
+                    id: id.into(),
+                    task_id: format!("task-{id}"),
+                    call_id: format!("call-{id}"),
+                    turn_id: "turn".into(),
+                    tool_id: "fixture".into(),
+                    revision: 2,
+                    payload: OpaquePayload::new("pl.studio.tool-approval", 1, "{}")?,
+                    response: Some(response),
+                    state,
+                },
+            );
+        }
+        let file = CurrentFile::new(directory.path().into(), thread_id.into());
+        file.save(saved).await?;
+        let loaded = StateStore::new(directory.path().into(), thread_id)
+            .load_current()
+            .await?
+            .context("saved Current")?;
+        let record = &loaded.state.permissions["allowed"];
+        let response = record.response.as_ref().context("permission response")?;
+        let decision: StoredApprovalDecision = serde_json::from_str(response.content())?;
+        assert_eq!(
+            decision.decision.decision,
+            crate::ToolApprovalResolution::Approved
+        );
+        assert_eq!(decision.decision.reason.as_deref(), Some("user confirmed"));
+        assert_eq!(decision.operation_id, None);
+        assert_eq!(record.revision, 2);
+        assert_eq!(
+            loaded.state.permissions["denied"].response.as_ref(),
+            Some(&canonical)
+        );
+        let original = file.load().await?.context("unchanged Current file")?;
+        assert_eq!(
+            original.state.permissions["allowed"].response.as_ref(),
+            Some(&legacy)
+        );
+        Ok(())
+    }
 
     fn named_source(thread_id: &str) -> CurrentSource {
         let capture_id = thread_id.to_owned();

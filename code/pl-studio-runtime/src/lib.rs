@@ -19,9 +19,9 @@ pub mod agent;
 pub(crate) mod approval;
 mod bots;
 pub(crate) mod channel_output;
-mod compaction;
 pub mod config;
 mod config_editor;
+mod context_preparation;
 mod error_mapping;
 pub mod history;
 mod instruction;
@@ -35,6 +35,8 @@ pub use studio::benchmark;
 mod executable_assets;
 mod host_mcp_assets;
 pub(crate) mod session;
+#[cfg(test)]
+mod test_support;
 pub(crate) mod thread_assembler;
 mod worker_assets;
 
@@ -141,6 +143,7 @@ pub mod plan_tool;
 pub mod workflow_tool;
 
 pub mod mode;
+mod thread_mode_id;
 
 mod tool_review;
 

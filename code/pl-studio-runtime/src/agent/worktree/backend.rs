@@ -1,9 +1,12 @@
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::error::{WorktreeCreateFailure, WorktreeError};
+use super::git_path::{
+    MAX_ADMIN_BACKLINK_BYTES, checked_admin_dir, decode_backlink, resolved_git_path,
+};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pl_tool::execution::{
@@ -11,57 +14,6 @@ use pl_tool::execution::{
 };
 
 const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
-pub(super) const MAX_ADMIN_BACKLINK_BYTES: usize = 128 * 1024;
-
-#[derive(Debug, thiserror::Error)]
-pub enum WorktreeError {
-    #[error("worktree path is missing; no cleanup was performed")]
-    Missing,
-    #[error("工作区没有有效的 HEAD commit；请先完成初始 commit 后重试")]
-    MissingHead,
-    #[error("worktree identity mismatch: {0}")]
-    IdentityMismatch(String),
-    #[error("invalid worktree resource: {0}")]
-    InvalidResource(String),
-    #[error("git {args} exited with {exit_code}: {stderr}")]
-    GitExited {
-        args: String,
-        exit_code: i32,
-        stderr: String,
-    },
-    #[error("git {args} status is unknown: {stderr}")]
-    GitStatusUnknown { args: String, stderr: String },
-    #[error("{operation}: target file operation failed")]
-    Target {
-        operation: &'static str,
-        #[source]
-        source: pl_tool::workspace_file::WorkspaceFileError,
-    },
-    #[error("git {}: {}", super::diagnostic::git_operation(.args), super::diagnostic::execution_cause(.source))]
-    Execution {
-        args: String,
-        #[source]
-        source: ExecutionFailure,
-    },
-    #[error("{operation}: {}", super::diagnostic::download_cause(.source))]
-    Download {
-        operation: &'static str,
-        #[source]
-        source: super::WorkspaceDownloadError,
-    },
-    #[error("{operation}: file operation failed")]
-    File {
-        operation: &'static str,
-        #[source]
-        source: crate::PureError,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorktreeCreateFailureDisposition {
-    NoSideEffects,
-    MayHaveCreated,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeStatus {
@@ -73,38 +25,6 @@ pub struct WorktreeStatus {
     pub changed_files: Vec<String>,
     /// Ignored content belongs to Recovery Safe protection, not the spawn dirty gate.
     pub ignored_files: Vec<String>,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{error}")]
-pub struct WorktreeCreateFailure {
-    #[source]
-    error: Box<WorktreeError>,
-    disposition: WorktreeCreateFailureDisposition,
-}
-
-impl WorktreeCreateFailure {
-    pub fn no_side_effects(error: WorktreeError) -> Self {
-        Self {
-            error: Box::new(error),
-            disposition: WorktreeCreateFailureDisposition::NoSideEffects,
-        }
-    }
-
-    pub fn may_have_created(error: WorktreeError) -> Self {
-        Self {
-            error: Box::new(error),
-            disposition: WorktreeCreateFailureDisposition::MayHaveCreated,
-        }
-    }
-
-    pub fn disposition(&self) -> WorktreeCreateFailureDisposition {
-        self.disposition
-    }
-
-    pub fn into_error(self) -> WorktreeError {
-        *self.error
-    }
 }
 
 pub trait WorktreeBackend: fmt::Debug + Send + Sync {
@@ -208,16 +128,13 @@ impl ExecutorWorktreeBackend {
             .ok_or_else(|| WorktreeError::InvalidResource("worktree path is not UTF-8".into()))?;
         // A Windows PathBuf may contain host separators after allocation. Interpret them
         // at the remote Git boundary, without changing native POSIX filename semantics.
-        let path = if !self.executor.is_local() && self.executor.target_info().os == "linux" {
-            Cow::Owned(
-                pl_tool::remote::normalize_remote_absolute_path(path)
-                    .map_err(|error| WorktreeError::InvalidResource(error.to_string()))?,
-            )
-        } else {
-            Cow::Borrowed(path)
-        };
+        let path = super::git_path::workspace_path_text(
+            Path::new(path),
+            !self.executor.is_local() && self.executor.target_info().os == "linux",
+        )
+        .map_err(|error| WorktreeError::InvalidResource(error.to_string()))?;
         self.executor
-            .path(path.as_ref())
+            .path(path)
             .map_err(|source| WorktreeError::Target {
                 operation: "resolve worktree path",
                 source: source.into(),
@@ -638,153 +555,6 @@ pub(super) fn worktree_list_args() -> Vec<String> {
 pub(super) fn git_common_dir_args() -> Vec<String> {
     vec!["rev-parse".to_string(), "--git-common-dir".to_string()]
 }
-
-pub(super) fn checked_admin_dir(raw: &str, common_dir: &str) -> Result<String, WorktreeError> {
-    let admin = resolved_git_path(raw, "").ok_or_else(|| {
-        WorktreeError::IdentityMismatch("registration admin directory cannot be normalized".into())
-    })?;
-    let prefix = format!("{common_dir}/worktrees/");
-    if !admin
-        .strip_prefix(&prefix)
-        .is_some_and(|leaf| !leaf.is_empty() && !leaf.contains('/'))
-    {
-        return Err(WorktreeError::IdentityMismatch(
-            "registration admin directory is outside the owning repository".into(),
-        ));
-    }
-    Ok(admin)
-}
-
-pub(super) fn decode_backlink(bytes: &[u8], admin_dir: &str) -> Result<String, WorktreeError> {
-    if bytes.len() > MAX_ADMIN_BACKLINK_BYTES {
-        return Err(WorktreeError::IdentityMismatch(
-            "registration admin backlink exceeds its path bound".into(),
-        ));
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        WorktreeError::IdentityMismatch("registration admin backlink is not a UTF-8 path".into())
-    })?;
-    // Git can rewrite both linking files to relative paths during creation or repair. The
-    // backlink is relative to this verified admin directory, not to the checkout or common dir.
-    resolved_git_path(text, admin_dir).ok_or_else(|| {
-        WorktreeError::IdentityMismatch("registration admin backlink cannot be normalized".into())
-    })
-}
-
-// --- worktree path normalization ---
-//
-// Git answers `--git-common-dir` in one of two shapes: `.git` (relative to the directory it was asked
-// in) or an absolute path. Two answers are comparable only after the same lexical resolution, and that
-// resolution has to be platform-correct: a Windows drive letter and a UNC share are absolute just like a
-// POSIX `/`, separators differ, and Windows compares paths case-insensitively while POSIX does not.
-
-/// Resolves one `rev-parse` path answer against the directory it was asked in.
-///
-/// `None` means the answer cannot be proven: empty, relative to an unresolvable base, or escaping above
-/// the filesystem root. Windows-style answers (drive letter or UNC) are folded to lower case, because a
-/// Windows path that differs only by case is the same directory; POSIX answers keep their case.
-pub(super) fn resolved_git_path(raw: &str, base: &str) -> Option<String> {
-    let raw = normalized_separators(raw);
-    if raw.is_empty() {
-        return None;
-    }
-    // A drive-relative answer (`C:foo`) is neither an absolute identity nor a usable relative segment:
-    // it depends on a per-drive current directory this comparison never knows.
-    if drive_relative_git_path(&raw) {
-        return None;
-    }
-    let base = normalized_separators(base);
-    let joined = if absolute_git_path(&raw) {
-        raw
-    } else if absolute_git_path(&base) {
-        format!("{}/{}", base.trim_end_matches('/'), raw)
-    } else {
-        return None;
-    };
-    let (prefix, rest, windows_style) = split_git_root(&joined)?;
-    let mut parts: Vec<&str> = Vec::new();
-    for part in rest.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                parts.pop()?;
-            }
-            other => parts.push(other),
-        }
-    }
-    let body = parts.join("/");
-    let normalized = if prefix.is_empty() {
-        format!("/{body}")
-    } else if body.is_empty() {
-        format!("{prefix}/")
-    } else {
-        format!("{prefix}/{body}")
-    };
-    Some(if windows_style {
-        normalized.to_ascii_lowercase()
-    } else {
-        normalized
-    })
-}
-
-/// Normalizes the separators Git may print on either platform.
-fn normalized_separators(value: &str) -> String {
-    value.trim().replace('\\', "/")
-}
-
-/// Whether the value names an absolute location on either platform.
-fn absolute_git_path(value: &str) -> bool {
-    value.starts_with('/') || drive_prefix(value).is_some()
-}
-
-/// The drive designation of a Windows path, when it has one and is not drive-relative (`C:foo`).
-fn drive_prefix(value: &str) -> Option<&str> {
-    let bytes = value.as_bytes();
-    if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
-        return None;
-    }
-    match value[2..].chars().next() {
-        None | Some('/') => Some(&value[..2]),
-        // `C:foo` is relative to the drive's current directory: not an absolute identity.
-        Some(_) => None,
-    }
-}
-
-/// Whether the value names a location relative to a drive's current directory (`C:foo`).
-fn drive_relative_git_path(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
-        return false;
-    }
-    !matches!(value[2..].chars().next(), None | Some('/'))
-}
-
-/// Splits an absolute path into (root, rest, windows_style).
-///
-/// The root is `/` for POSIX, a drive (`c:`) for Windows paths, and `//server/share` for a UNC path. UNC
-/// roots keep their two leading components, which are the share identity and never fold into `..`.
-fn split_git_root(value: &str) -> Option<(String, String, bool)> {
-    if let Some(rest) = value.strip_prefix("//") {
-        let mut parts = rest.splitn(3, '/');
-        let server = parts.next().filter(|part| !part.is_empty())?;
-        let share = parts.next().filter(|part| !part.is_empty())?;
-        let rest = parts.next().unwrap_or_default().to_string();
-        return Some((format!("//{server}/{share}"), rest, true));
-    }
-    if let Some(drive) = drive_prefix(value) {
-        let rest = value[2..].trim_start_matches('/').to_string();
-        return Some((drive.to_ascii_lowercase(), rest, true));
-    }
-    if value.starts_with('/') {
-        return Some((
-            String::new(),
-            value.trim_start_matches('/').to_string(),
-            false,
-        ));
-    }
-    None
-}
-// --- end worktree path normalization ---
 
 /// The repository's registration identity; mutable HEAD/branch state is irrelevant here.
 pub(crate) struct RegisteredWorktree {

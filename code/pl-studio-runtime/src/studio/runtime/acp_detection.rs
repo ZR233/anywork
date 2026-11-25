@@ -16,12 +16,13 @@ use crate::{
     StudioError, StudioErrorCode,
 };
 use anyhow::Result;
-use futures::FutureExt;
+use futures::{FutureExt, future::BoxFuture};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use super::acp_ops::{RetainedJoin, RetainedPoll, RetainedTask};
 use super::acp_worker::{AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim};
+use crate::config::AcpServiceDefinition;
 use crate::studio::{ProductEventBus, StudioStore};
 use pl_remote_helper::Executor;
 
@@ -35,15 +36,34 @@ pub(crate) type AcpLocalDetectionAcceptance =
 
 struct Inner {
     store: StudioStore,
-    events: ProductEventBus,
     source: Executor,
+    services: ProbeServices,
     slot: Mutex<Slot>,
-    /// Test-only launch inputs, never a process-global PATH or user config edit.
-    #[cfg(test)]
-    fixture_definition: Mutex<Option<crate::config::AcpServiceDefinition>>,
-    /// Synchronous stand-in for an observer that re-enters admission during emit.
-    #[cfg(test)]
-    emit_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+type PublishDetection = Arc<dyn Fn(AcpLocalDetectionSnapshot) + Send + Sync>;
+type ReclaimProbe = Arc<dyn for<'a> Fn(&'a Operation) -> BoxFuture<'a, bool> + Send + Sync>;
+
+struct ProbeServices {
+    definition: AcpServiceDefinition,
+    publish: PublishDetection,
+    reclaim: ReclaimProbe,
+}
+
+impl ProbeServices {
+    fn new(events: ProductEventBus) -> Self {
+        Self {
+            definition: probe::local_definition(),
+            publish: Arc::new(move |snapshot| {
+                events.emit(
+                    crate::StudioProductEventKind::AcpLocalDetectionStateChanged(Box::new(
+                        snapshot,
+                    )),
+                );
+            }),
+            reclaim: Arc::new(|operation| Box::pin(release_resources(operation))),
+        }
+    }
 }
 
 struct Slot {
@@ -59,11 +79,6 @@ struct Operation {
     join: RetainedTask<()>,
     resources: AsyncMutex<Resources>,
     resources_released: AtomicBool,
-    /// Thin fault assembly around real resources; production has no such gates.
-    #[cfg(test)]
-    cleanup_pause: Mutex<Option<CancellationToken>>,
-    #[cfg(test)]
-    cleanup_pending: AtomicBool,
 }
 
 #[derive(Default)]
@@ -75,11 +90,15 @@ struct Resources {
 
 impl AcpLocalDetectionRuntime {
     pub(crate) fn new(store: StudioStore, events: ProductEventBus, executor: Executor) -> Self {
+        Self::with_services(store, executor, ProbeServices::new(events))
+    }
+
+    fn with_services(store: StudioStore, executor: Executor, services: ProbeServices) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
-                events,
                 source: executor,
+                services,
                 slot: Mutex::new(Slot {
                     closed: false,
                     snapshot: AcpLocalDetectionSnapshot {
@@ -89,27 +108,8 @@ impl AcpLocalDetectionRuntime {
                     },
                     operation: None,
                 }),
-                #[cfg(test)]
-                fixture_definition: Mutex::new(None),
-                #[cfg(test)]
-                emit_probe: Mutex::new(None),
             }),
         }
-    }
-
-    #[cfg(test)]
-    fn set_emit_probe(&self, probe: impl Fn() + Send + Sync + 'static) {
-        *self
-            .inner
-            .emit_probe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(probe));
-    }
-
-    #[cfg(test)]
-    fn publish_checking_for_probe(&self) {
-        let mut admission = Published::lock(&self.inner);
-        admission.assign(AcpLocalDetectionState::Checking);
     }
 
     pub(crate) fn read_state(&self) -> AcpLocalDetectionSnapshot {
@@ -158,10 +158,6 @@ impl AcpLocalDetectionRuntime {
             join: RetainedTask::empty(),
             resources: AsyncMutex::new(Resources::default()),
             resources_released: AtomicBool::new(false),
-            #[cfg(test)]
-            cleanup_pause: Mutex::new(None),
-            #[cfg(test)]
-            cleanup_pending: AtomicBool::new(false),
         });
         admission.slot().snapshot.operation_id = Some(operation.id.clone());
         admission.slot().operation = Some(Arc::clone(&operation));
@@ -236,7 +232,7 @@ impl AcpLocalDetectionRuntime {
             anyhow::bail!("本机检测任务仍在收束，保留原 owner 待重试");
         }
         // Even a panicked task leaves its physical worker in Operation.resources.
-        let cleaned = release_resources(&operation).await;
+        let cleaned = (self.inner.services.reclaim)(&operation).await;
         // Report a join failure when it is first observed. Retrying still has to prove
         // resource cleanup, even when the original handle has already been consumed.
         if matches!(joined, RetainedJoin::Observed(Err(_))) || !cleaned {
@@ -255,23 +251,7 @@ impl Inner {
 
     fn emit_snapshots(&self, snapshots: Vec<AcpLocalDetectionSnapshot>) {
         for snapshot in snapshots {
-            #[cfg(test)]
-            self.run_emit_probe();
-            self.events.emit(
-                crate::StudioProductEventKind::AcpLocalDetectionStateChanged(Box::new(snapshot)),
-            );
-        }
-    }
-
-    #[cfg(test)]
-    fn run_emit_probe(&self) {
-        let probe = self
-            .emit_probe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        if let Some(probe) = probe {
-            probe();
+            (self.services.publish)(snapshot);
         }
     }
 
@@ -340,7 +320,7 @@ async fn supervise(inner: Arc<Inner>, operation: Arc<Operation>) {
         .catch_unwind()
         .await;
     let state = outcome.unwrap_or_else(|_| failed(AcpLocalDetectionFailureKind::Execution));
-    let cleaned = release_resources(&operation).await;
+    let cleaned = (inner.services.reclaim)(&operation).await;
     inner.finish(
         &operation,
         if cleaned {
@@ -352,20 +332,6 @@ async fn supervise(inner: Arc<Inner>, operation: Arc<Operation>) {
 }
 
 async fn release_resources(operation: &Operation) -> bool {
-    #[cfg(test)]
-    {
-        let pause = operation
-            .cleanup_pause
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        if let Some(pause) = pause {
-            pause.cancelled().await;
-        }
-        if operation.cleanup_pending.load(Ordering::Acquire) {
-            return false;
-        }
-    }
     let mut resources = operation.resources.lock().await;
     let mut succeeded = true;
     if let Some(worker) = resources.worker.as_mut() {
@@ -517,8 +483,28 @@ sys.stderr.flush()
         cwd: PathBuf,
     }
 
+    #[derive(Default)]
+    struct CleanupControl {
+        pause: Mutex<Option<CancellationToken>>,
+        pending: AtomicBool,
+    }
+
+    impl CleanupControl {
+        async fn reclaim(&self, operation: &Operation) -> bool {
+            let pause = self.pause.lock().unwrap().clone();
+            if let Some(pause) = pause {
+                pause.cancelled().await;
+            }
+            if self.pending.load(Ordering::Acquire) {
+                return false;
+            }
+            release_resources(operation).await
+        }
+    }
+
     struct Fixture {
         runtime: StudioRuntime,
+        cleanup: Arc<CleanupControl>,
         home: tempfile::TempDir,
         program: PathBuf,
         gate: tokio::net::TcpListener,
@@ -535,7 +521,7 @@ sys.stderr.flush()
             std::fs::write(&program, FIXTURE)?;
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
             std::fs::write(home.path().join("mode"), mode)?;
-            let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+            let mut runtime = StudioRuntime::initialize(StudioRuntimeOptions {
                 studio_home: Some(home.path().join("studio-home")),
                 host: StudioHostKind::Test,
                 skill_search: pl_tool::skill::SkillSearchOptions {
@@ -568,12 +554,8 @@ sys.stderr.flush()
             ] {
                 env.insert(key.into(), isolated.to_string_lossy().into_owned());
             }
-            *runtime
-                .acp_detection
-                .inner
-                .fixture_definition
-                .lock()
-                .unwrap() = Some(AcpServiceDefinition {
+            let mut services = ProbeServices::new(runtime.agent_facility.product_events.clone());
+            services.definition = AcpServiceDefinition {
                 id: "synthetic-detection".into(),
                 display_name: "Synthetic detection".into(),
                 enabled: true,
@@ -582,9 +564,21 @@ sys.stderr.flush()
                     args: Vec::new(),
                 },
                 env,
+            };
+            let cleanup = Arc::new(CleanupControl::default());
+            let control = cleanup.clone();
+            services.reclaim = Arc::new(move |operation| {
+                let control = control.clone();
+                Box::pin(async move { control.reclaim(operation).await })
             });
+            runtime.acp_detection = AcpLocalDetectionRuntime::with_services(
+                runtime.store.clone(),
+                runtime.acp_detection.inner.source.clone(),
+                services,
+            );
             Ok(Self {
                 runtime,
+                cleanup,
                 home,
                 program,
                 gate,
@@ -722,11 +716,11 @@ sys.stderr.flush()
     impl Drop for Fixture {
         fn drop(&mut self) {
             // Failure unwinding must not deliberately leave a fault gate armed.
+            self.cleanup.pending.store(false, Ordering::Release);
+            if let Some(pause) = self.cleanup.pause.lock().unwrap().as_ref() {
+                pause.cancel();
+            }
             if let Some(operation) = self.runtime.acp_detection.inner.lock().operation.clone() {
-                operation.cleanup_pending.store(false, Ordering::Release);
-                if let Some(pause) = operation.cleanup_pause.lock().unwrap().as_ref() {
-                    pause.cancel();
-                }
                 operation.cancel.cancel();
             }
         }
@@ -893,7 +887,7 @@ sys.stderr.flush()
         fixture.start("deadline");
         let operation = fixture.operation();
         let cleanup = CancellationToken::new();
-        *operation.cleanup_pause.lock().unwrap() = Some(cleanup.clone());
+        *fixture.cleanup.pause.lock().unwrap() = Some(cleanup.clone());
         let outcome = tokio::select! {
             biased;
             _ = wall_deadline => Err(anyhow::anyhow!("the shared probe deadline did not finish")),
@@ -984,7 +978,7 @@ sys.stderr.flush()
         fixture.calls_reached(2).await;
         let operation = fixture.operation();
         let pause = CancellationToken::new();
-        *operation.cleanup_pause.lock().unwrap() = Some(pause.clone());
+        *fixture.cleanup.pause.lock().unwrap() = Some(pause.clone());
         assert!(
             timeout(
                 Duration::from_millis(20),
@@ -1022,8 +1016,6 @@ sys.stderr.flush()
                 directory: Some(directory.clone()),
             }),
             resources_released: AtomicBool::new(false),
-            cleanup_pause: Mutex::new(None),
-            cleanup_pending: AtomicBool::new(false),
         }));
         assert!(detection.close().await.is_err());
         assert!(!directory.exists());
@@ -1041,7 +1033,7 @@ sys.stderr.flush()
         let operation = fixture.operation();
         // The only fault is a Pending cleanup observation; the supervised process,
         // descendants, pipes and directory here are real and still owned.
-        operation.cleanup_pending.store(true, Ordering::Release);
+        fixture.cleanup.pending.store(true, Ordering::Release);
         fixture
             .runtime
             .cancel_acp_local_detection(CancelAcpLocalDetectionRequest {
@@ -1064,7 +1056,7 @@ sys.stderr.flush()
             busy.downcast_ref::<StudioError>().unwrap().code,
             StudioErrorCode::Busy
         );
-        operation.cleanup_pending.store(false, Ordering::Release);
+        fixture.cleanup.pending.store(false, Ordering::Release);
         fixture.finish().await;
         Ok(())
     }
@@ -1088,23 +1080,33 @@ mod publication_tests {
             .expect("store");
         let writer = ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store.clone(), writer);
-        let runtime = AcpLocalDetectionRuntime::new(
-            store,
-            events,
-            pl_remote_helper::Executor::local().expect("local executor"),
-        );
+        let mut services = ProbeServices::new(events);
         let locked = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&locked);
-        let probe_runtime = runtime.clone();
-        runtime.set_emit_probe(move || {
-            let _slot = probe_runtime.inner.lock();
-            flag.store(true, Ordering::Release);
+        let flag = locked.clone();
+        let owner = Arc::new(Mutex::new(std::sync::Weak::<Inner>::new()));
+        let observed = owner.clone();
+        let publish = services.publish.clone();
+        services.publish = Arc::new(move |snapshot| {
+            let inner = observed.lock().unwrap().upgrade().unwrap();
+            {
+                let _slot = inner.lock();
+                flag.store(true, Ordering::Release);
+            }
+            publish(snapshot);
         });
+        let runtime = AcpLocalDetectionRuntime::with_services(
+            store,
+            pl_remote_helper::Executor::local().expect("local executor"),
+            services,
+        );
+        *owner.lock().unwrap() = Arc::downgrade(&runtime.inner);
 
         let publisher = runtime.clone();
         let published = tokio::time::timeout(
             Duration::from_secs(2),
-            tokio::task::spawn_blocking(move || publisher.publish_checking_for_probe()),
+            tokio::task::spawn_blocking(move || {
+                Published::lock(&publisher.inner).assign(AcpLocalDetectionState::Checking);
+            }),
         )
         .await;
         assert!(

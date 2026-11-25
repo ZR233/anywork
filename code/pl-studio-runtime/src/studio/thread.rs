@@ -298,12 +298,12 @@ pub(crate) const REGISTRATION: StaticThreadModeRegistration = StaticThreadModeRe
 
 #[cfg(test)]
 mod tests {
-    use crate::mode::{ThreadModeId, ThreadModeManager, new_run};
+    use crate::mode::{ThreadModeId, ThreadModeManager};
     use crate::studio::thread::register_builtins;
-    use crate::workflow_tool::WorkflowSessionState;
     use crate::workflow_tool::machine::{
         CompletionInput, TransitionInput, WorkflowMachine, WorkflowOperation,
     };
+    use crate::workflow_tool::{WorkflowSessionState, new_run};
 
     #[test]
     fn only_mode_auto_is_registered_as_builtin() {
@@ -323,12 +323,12 @@ mod tests {
         let manager = ThreadModeManager::default();
         let snapshot = register_builtins(&manager).expect("register builtins");
         let mode = snapshot.mode(&ThreadModeId::auto()).unwrap().clone();
-        let compiled = mode.workflow().unwrap();
+        let binding = mode.workflow_binding().unwrap();
 
         let make_machine = || {
-            let run = new_run(&mode, compiled, None, "auto-seed", 1);
+            let run = new_run(&binding, None, "auto-seed", 1);
             WorkflowMachine::new(
-                mode.clone(),
+                binding.clone(),
                 WorkflowSessionState {
                     revision: 1,
                     current_run: Some(run),
@@ -341,11 +341,11 @@ mod tests {
         };
         let step = |machine: &mut WorkflowMachine, from: &str, to: &str, idx: usize| {
             let state = machine.state();
-            let run = state.current_run.unwrap();
+            let run = state.current_run.as_ref().unwrap();
             let res = machine
                 .apply_transition(
                     TransitionInput {
-                        expected_run_id: run.run_id,
+                        expected_run_id: run.run_id.clone(),
                         expected_revision: state.revision,
                         expected_state_id: from.into(),
                         target_state_id: to.into(),
@@ -361,6 +361,7 @@ mod tests {
                         call_id: format!("c{idx}"),
                     },
                     format!("h{idx}"),
+                    2,
                 )
                 .unwrap();
             assert!(res.accepted, "expected {from} -> {to} to succeed");
@@ -371,7 +372,12 @@ mod tests {
         step(&mut simple_machine, "triage", "simple", 1);
         step(&mut simple_machine, "simple", "completed", 2);
         assert_eq!(
-            simple_machine.state().current_run.unwrap().current_state_id,
+            simple_machine
+                .state()
+                .current_run
+                .as_ref()
+                .unwrap()
+                .current_state_id,
             "completed"
         );
 
@@ -388,6 +394,7 @@ mod tests {
             escalated_machine
                 .state()
                 .current_run
+                .as_ref()
                 .unwrap()
                 .current_state_id,
             "completed"

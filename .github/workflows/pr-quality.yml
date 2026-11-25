@@ -254,7 +254,7 @@ jobs:
       archiveSha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
 
   rust-checks:
-    name: Rust quality, workspace tests and server (Linux)
+    name: Rust quality and workspace tests (Linux)
     needs: [changes, linux-environment]
     if: needs.changes.outputs.rust_checks == 'true'
     runs-on: ubuntu-latest
@@ -310,8 +310,6 @@ jobs:
           executable=$(bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-update --lib --no-run --message-format=json |
             python3 -c 'import json,sys; messages=(json.loads(line) for line in sys.stdin if line.startswith("{")); paths=[m["executable"] for m in messages if m.get("reason")=="compiler-artifact" and m.get("executable") and m.get("profile",{}).get("test")]; assert len(paths)==1,paths; print(paths[0])')
           bash .github/scripts/test-linux-updater.sh "$executable"
-      - name: Build the standalone server
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-studio-server
 
   linux-inputs:
     name: Compile Linux engineering tool

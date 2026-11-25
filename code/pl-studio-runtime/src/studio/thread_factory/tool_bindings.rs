@@ -462,9 +462,12 @@ impl StudioThreadFactory {
                 .ok_or_else(|| {
                     ThreadAssemblyError::Identity("current Mode snapshot is unavailable".into())
                 })?;
-            prepared.tools = prepared
-                .tools
-                .with_tools(crate::workflow_tool::workflow_registrations()?);
+            prepared.tools =
+                prepared
+                    .tools
+                    .with_tools(crate::workflow_tool::workflow_registrations(
+                        crate::mode::workflow_binding_from_snapshot,
+                    )?);
             crate::thread_assembler::AgentControlExposure::Enabled
         };
         let commands = prepared

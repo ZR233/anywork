@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallProgress, AcpInstallRelease,
@@ -22,23 +22,17 @@ use super::download::{self, ProgressSink};
 use super::mapping::failure;
 use super::paths::{self, ManagedRoot};
 use super::prepare;
+use super::progress::ProgressThrottle;
 use super::registry::{
     AcpInstallInner, BusinessOutcome, Operation, PublishRejection, ResidueHold, begin_stage,
     register_lock_file, take_stage,
 };
-use super::source::{self, RegistryLookup, ResolvedRelease};
+use super::source::{self, RegistryLookup, ReleaseTransport, ResolvedRelease};
 
 /// 资产锁轮询间隔；等待可取消，不删除锁文件。
 const LOCK_POLL: Duration = Duration::from_millis(100);
 /// 关闭时等待当前 supervisor 收束的预算。
 pub(super) const JOIN_BUDGET: Duration = Duration::from_secs(5);
-/// 进度合并间隔。
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
-
-/// 一次操作的启动意图。
-pub(super) struct OperationPlan {
-    pub(super) provider: AcpProvider,
-}
 
 /// supervisor 主体；终态与资源收尾在同一顺序里完成。
 ///
@@ -48,12 +42,12 @@ pub(super) struct OperationPlan {
 pub(super) async fn run(
     inner: Arc<AcpInstallInner>,
     operation: Arc<Operation>,
-    plan: OperationPlan,
+    transport: impl ReleaseTransport,
 ) {
     let provider = operation.provider;
     let generation = operation.generation;
     let operation_id = operation.operation_id.clone();
-    let outcome = execute(&inner, &operation, plan).await;
+    let outcome = execute(&inner, &operation, &transport).await;
     match release_staging(&inner, &operation).await {
         Ok(()) => {
             let (terminal, from_online_registry) = match outcome {
@@ -99,9 +93,9 @@ pub(super) async fn run(
 async fn execute(
     inner: &Arc<AcpInstallInner>,
     operation: &Arc<Operation>,
-    plan: OperationPlan,
+    transport: &dyn ReleaseTransport,
 ) -> Result<(AcpInstalledServer, bool), AcpInstallFailure> {
-    let provider = plan.provider;
+    let provider = operation.provider;
     let generation = operation.generation;
     let operation_id = operation.operation_id.clone();
     let cancel = operation.cancel.clone();
@@ -118,33 +112,7 @@ async fn execute(
     publish_state(AcpInstallState::Resolving {
         operation_id: operation_id.clone(),
     });
-    let policy = inner.policy();
-    let (resolved, from_online_registry) =
-        match source::fetch_latest_from_registry(&policy, provider, &cancel).await {
-            Ok(RegistryLookup::Release(resolved)) => (resolved, true),
-            Ok(RegistryLookup::IncompatibleMajor { version }) => {
-                inner.note_update_state(
-                    provider,
-                    AcpInstallUpdateState::IncompatibleMajor {
-                        checked_at: crate::studio::unix_seconds(),
-                        latest_version: version,
-                    },
-                );
-                let fallback = match prepare::best_local_release(
-                    &inner.store,
-                    policy.clone(),
-                    provider,
-                    &cancel,
-                )
-                .await
-                {
-                    Some(local) => local,
-                    None => source::resolve_bundled(provider)?,
-                };
-                (fallback, false)
-            }
-            Err(error) => return Err(error),
-        };
+    let (resolved, from_online_registry) = resolve_release(&context, transport).await?;
     let installation_id = source::installation_id(provider, &resolved);
     // 存储键必须是 `sha256:` + 64 位小写十六进制；不合格身份不参与任何路径拼接。
     // installation id 由本模块的 canonical 摘要产生，正常情况必然合格：该分支是不变量护栏，
@@ -187,6 +155,80 @@ async fn execute(
         return Ok((server, from_online_registry));
     }
 
+    let (archive_path, total_bytes) =
+        download_archive(&context, &root, &resolved, &storage_key, transport).await?;
+    let archive_sha256 = verify_archive(&context, &root, &resolved, &archive_path).await?;
+    let (staging, receipt) = stage_archive(
+        &context,
+        &root,
+        &resolved,
+        &installation_id,
+        &archive_path,
+        archive_sha256,
+        total_bytes,
+    )
+    .await?;
+    publish_install(&context, &root, &resolved.release, &installed, &staging).await?;
+
+    let program = installed.join(&receipt.command);
+    Ok((
+        AcpInstalledServer {
+            installation_id,
+            release: resolved.release,
+            program: program.to_string_lossy().into_owned(),
+            ready_at: crate::studio::unix_seconds(),
+            reused: false,
+        },
+        from_online_registry,
+    ))
+}
+
+async fn resolve_release(
+    context: &StageContext<'_>,
+    transport: &dyn ReleaseTransport,
+) -> Result<(ResolvedRelease, bool), AcpInstallFailure> {
+    let StageContext {
+        inner,
+        provider,
+        cancel,
+        ..
+    } = *context;
+    match source::fetch_latest_from_registry(transport, provider, cancel).await {
+        Ok(RegistryLookup::Release(resolved)) => Ok((resolved, true)),
+        Ok(RegistryLookup::IncompatibleMajor { version }) => {
+            inner.note_update_state(
+                provider,
+                AcpInstallUpdateState::IncompatibleMajor {
+                    checked_at: crate::studio::unix_seconds(),
+                    latest_version: version,
+                },
+            );
+            let fallback = match prepare::best_local_release(&inner.store, provider, cancel).await {
+                Some(local) => local,
+                None => source::resolve_bundled(provider)?,
+            };
+            Ok((fallback, false))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn download_archive(
+    context: &StageContext<'_>,
+    root: &ManagedRoot,
+    resolved: &ResolvedRelease,
+    storage_key: &str,
+    transport: &dyn ReleaseTransport,
+) -> Result<(PathBuf, Option<u64>), AcpInstallFailure> {
+    let StageContext {
+        inner,
+        operation,
+        provider,
+        generation,
+        cancel,
+    } = *context;
+    let operation_id = &operation.operation_id;
+    let publish_state = |state| inner.publish_progress(provider, generation, state);
     publish_state(AcpInstallState::Downloading {
         operation_id: operation_id.clone(),
         release: resolved.release.clone(),
@@ -198,10 +240,11 @@ async fn execute(
         AcpInstallStage::Download,
     )?;
     let archive_path = downloads.join(format!("{storage_key}.zip"));
-    validate_download_paths(&root, &archive_path)?;
+    validate_download_paths(root, &archive_path)?;
     let sink = download_sink(inner, operation, &resolved.release);
+    let (client, download_url) = source::archive_request(transport, &resolved.release.archive_url)?;
     let client = downlowd::Client::builder()
-        .reqwest_client(policy.archive_client()?)
+        .reqwest_client(client)
         .max_retries(Some(3))
         .build()
         .map_err(|_| {
@@ -211,7 +254,6 @@ async fn execute(
                 true,
             )
         })?;
-    let download_url = resolved.release.archive_url.clone();
     let download_path = archive_path.clone();
     let download_cancel = cancel.clone();
     // sidecar 重建闭包：路径与权限核对复用本模块的产品边界（缺失则 0600 新建，随后再核验）。
@@ -222,14 +264,14 @@ async fn execute(
         if sidecar_root.require_file(&sidecar_path, stage)? {
             return Ok(());
         }
-        create_private_download_file(&sidecar_path, stage)?;
+        paths::create_new_file(&sidecar_path, paths::PRIVATE_FILE_MODE, stage)?;
         sidecar_root.require_file(&sidecar_path, stage)?;
         Ok(())
     });
-    let downloaded = stage_task(&context, AcpInstallStage::Download, async move {
+    let downloaded = stage_task(context, AcpInstallStage::Download, async move {
         download::download(
             &client,
-            &download_url,
+            download_url.as_str(),
             &download_path,
             sink,
             ensure_sidecar,
@@ -238,13 +280,30 @@ async fn execute(
         .await
     })
     .await?;
-    let total_bytes = downloaded.total;
+    Ok((archive_path, downloaded.total))
+}
+
+async fn verify_archive(
+    context: &StageContext<'_>,
+    root: &ManagedRoot,
+    resolved: &ResolvedRelease,
+    archive_path: &Path,
+) -> Result<String, AcpInstallFailure> {
+    let StageContext {
+        inner,
+        operation,
+        provider,
+        generation,
+        cancel,
+    } = *context;
+    let operation_id = &operation.operation_id;
+    let publish_state = |state| inner.publish_progress(provider, generation, state);
     // 下载库写出的目标与同名 sidecar 必须仍是安装根内的真实普通文件。
     let archive_metadata = root
-        .probe(&archive_path, AcpInstallStage::Verify)?
+        .probe(archive_path, AcpInstallStage::Verify)?
         .filter(|metadata| metadata.is_file())
         .ok_or_else(|| failure(AcpInstallFailureCode::Io, AcpInstallStage::Verify, true))?;
-    verify_download_sidecars(&root, &archive_path)?;
+    verify_download_sidecars(root, archive_path)?;
 
     publish_state(AcpInstallState::Verifying {
         operation_id: operation_id.clone(),
@@ -263,9 +322,9 @@ async fn execute(
         resolved.release.clone(),
         ProgressState::Verifying,
     );
-    let hash_path = archive_path.clone();
+    let hash_path = archive_path.to_path_buf();
     let hash_cancel = cancel.clone();
-    let archive_sha256 = blocking(&context, AcpInstallStage::Verify, move || {
+    let archive_sha256 = blocking(context, AcpInstallStage::Verify, move || {
         archive::sha256_file(&hash_path, &hash_cancel, verify_progress.as_ref())
     })
     .await?;
@@ -279,6 +338,27 @@ async fn execute(
         ));
     }
 
+    Ok(archive_sha256)
+}
+
+async fn stage_archive(
+    context: &StageContext<'_>,
+    root: &ManagedRoot,
+    resolved: &ResolvedRelease,
+    installation_id: &str,
+    archive_path: &Path,
+    archive_sha256: String,
+    total_bytes: Option<u64>,
+) -> Result<(tempfile::TempDir, archive::Receipt), AcpInstallFailure> {
+    let StageContext {
+        inner,
+        operation,
+        provider,
+        generation,
+        cancel,
+    } = *context;
+    let operation_id = &operation.operation_id;
+    let publish_state = |state| inner.publish_progress(provider, generation, state);
     publish_state(AcpInstallState::Extracting {
         operation_id: operation_id.clone(),
         release: resolved.release.clone(),
@@ -296,7 +376,7 @@ async fn execute(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        staging_builder.permissions(std::fs::Permissions::from_mode(0o700));
+        staging_builder.permissions(std::fs::Permissions::from_mode(paths::DIRECTORY_MODE));
     }
     let staging = staging_builder
         .tempdir_in(&staging_root)
@@ -314,14 +394,14 @@ async fn execute(
         ProgressState::Extracting,
     );
     let extract_root = root.clone();
-    let archive_for_extract = archive_path.clone();
+    let archive_for_extract = archive_path.to_path_buf();
     let staging_for_extract = staging_path.clone();
-    let installation_for_extract = installation_id.clone();
+    let installation_for_extract = installation_id.to_owned();
     let release_for_extract = resolved.release.clone();
     let resolved_for_extract = resolved.clone();
-    let sha_for_extract = archive_sha256.clone();
+    let sha_for_extract = archive_sha256;
     let cancel_for_extract = cancel.clone();
-    let receipt = blocking(&context, AcpInstallStage::Extract, move || {
+    let receipt = blocking(context, AcpInstallStage::Extract, move || {
         let receipt = archive::extract(
             archive::ExtractInput {
                 archive: &archive_for_extract,
@@ -341,8 +421,26 @@ async fn execute(
     })
     .await?;
 
+    // Keep the guard through rename in the same operation; the owner also retains the staging path.
+    Ok((staging, receipt))
+}
+
+async fn publish_install(
+    context: &StageContext<'_>,
+    root: &ManagedRoot,
+    release: &AcpInstallRelease,
+    installed: &Path,
+    staging: &tempfile::TempDir,
+) -> Result<(), AcpInstallFailure> {
+    let StageContext {
+        inner,
+        operation,
+        provider,
+        generation,
+        ..
+    } = *context;
     // 发布提交点：owner 锁内裁决；被接受的取消/关闭先线性化，绝不 rename。
-    match inner.try_enter_publish(provider, generation, &resolved.release) {
+    match inner.try_enter_publish(provider, generation, release) {
         Ok(_) => {}
         Err(PublishRejection::Cancelled) => {
             return Err(failure(
@@ -360,34 +458,22 @@ async fn execute(
         }
     }
     let publish_root = root.clone();
-    let publish_target = installed.clone();
-    let staging_for_publish = staging_path.clone();
-    let outcome = blocking(&context, AcpInstallStage::Publish, move || {
+    let publish_target = installed.to_path_buf();
+    let staging_for_publish = staging.path().to_path_buf();
+    let outcome = blocking(context, AcpInstallStage::Publish, move || {
         archive::publish(&publish_root, &staging_for_publish, &publish_target)
     })
     .await?;
 
+    // Either move outcome means the staging path was committed and must never be cleaned up.
+    mark_committed(operation);
     match outcome {
-        PublishOutcome::Confirmed => mark_committed(operation),
+        PublishOutcome::Confirmed => Ok(()),
         PublishOutcome::CommittedButUnconfirmed => {
-            // 移动已提交：暂存已不存在，资源 owner 不再持有可清理的暂存。
-            mark_committed(operation);
             // 安装已是既成事实：不删、不覆盖、不谎称回滚；失败摘要明确"可能已发布"。
-            return Err(archive::unconfirmed_publish_failure());
+            Err(archive::unconfirmed_publish_failure())
         }
     }
-
-    let program = installed.join(&receipt.command);
-    Ok((
-        AcpInstalledServer {
-            installation_id,
-            release: resolved.release,
-            program: program.to_string_lossy().into_owned(),
-            ready_at: crate::studio::unix_seconds(),
-            reused: false,
-        },
-        from_online_registry,
-    ))
 }
 
 /// 复用既有完整安装：冻结描述符、完整树集合、mode/size/hash 与入口全部复核，损坏保留现场。
@@ -562,18 +648,13 @@ fn progress_emitter(
     state: ProgressState,
 ) -> Arc<dyn Fn(u64, Option<u64>) + Send + Sync> {
     let inner = Arc::clone(inner);
-    let last = Mutex::new(None::<Instant>);
+    let throttle = Mutex::new(ProgressThrottle::default());
     Arc::new(move |completed: u64, total: Option<u64>| {
-        let due = {
-            let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
-            let due = last.is_none_or(|previous| previous.elapsed() >= PROGRESS_INTERVAL)
-                || total.is_some_and(|total| completed >= total);
-            if due {
-                *last = Some(Instant::now());
-            }
-            due
-        };
-        if !due {
+        if !throttle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .should_emit(completed, total)
+        {
             return;
         }
         let progress = AcpInstallProgress {
@@ -780,28 +861,10 @@ fn validate_download_paths(root: &ManagedRoot, archive: &Path) -> Result<(), Acp
         // `downlowd` 0.1.4 用 `OpenOptions::create(true).write(true)` 打开 part 与 sidecar，没有
         // 公开的权限配置项；两处都是"存在则复用、打开后 truncate/seek"，因此在私有父目录内
         // 预创建空文件既不改 resume 语义，也不破坏 sidecar 语义，只是把权限固定成 0600。
-        create_private_download_file(path, stage)?;
+        paths::create_new_file(path, paths::PRIVATE_FILE_MODE, stage)?;
         root.require_file(path, stage)?;
     }
     Ok(())
-}
-
-/// 以显式 0600 创建一个空的下载辅助文件；已存在时由调用方处理。
-fn create_private_download_file(
-    path: &Path,
-    stage: AcpInstallStage,
-) -> Result<(), AcpInstallFailure> {
-    let mut options = std::fs::OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options
-        .open(path)
-        .map(|_| ())
-        .map_err(|_| failure(AcpInstallFailureCode::Io, stage, true))
 }
 
 /// 下载完成后再次确认 sidecar 没有变成链接/特殊文件。
@@ -885,7 +948,7 @@ fn open_lock_file(path: &Path, stage: AcpInstallStage) -> Result<std::fs::File, 
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
+                options.mode(paths::PRIVATE_FILE_MODE);
             }
             let file = options
                 .open(path)

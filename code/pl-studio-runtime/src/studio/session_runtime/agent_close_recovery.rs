@@ -1,0 +1,145 @@
+//! Restart resumes only saved explicit child-close jobs, without model/workspace activation.
+use super::{SessionRuntime, owner::StudioSessionOwner};
+use anyhow::{Context, Result, ensure};
+use pl_tool::collaboration::thread::WorkspaceRelease;
+use std::collections::BTreeMap;
+
+impl SessionRuntime {
+    pub(crate) async fn resume_agent_closes(&self) -> Result<()> {
+        let services = self
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .context("child close services are unavailable")?;
+        let mut roots = BTreeMap::<String, Vec<(usize, crate::Thread)>>::new();
+        let mut acp = Vec::new();
+        for pending in services.store.agent_closes().await? {
+            if pending.execution_closed && pending.worktree_cleanup.is_terminal() {
+                continue;
+            }
+            let identity = services.identity(&pending.agent_id)?;
+            if &identity.session_id != self.id() {
+                continue;
+            }
+            if services
+                .events
+                .agent_execution_identity(&pending.agent_id)
+                .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
+            {
+                acp.push(pending);
+                continue;
+            }
+            let thread = services.record(&pending.agent_id).await?;
+            let depth = services
+                .authorize(&thread.root_thread_id, &thread.id)
+                .await?
+                .len();
+            roots
+                .entry(thread.root_thread_id.clone())
+                .or_default()
+                .push((depth, thread));
+        }
+        let mut failures = Vec::new();
+        for pending in acp {
+            let admission = self.clone();
+            let owner = self.clone();
+            let recovery = services.clone();
+            let id = pending.agent_id.clone();
+            let result = self
+                .review_dispatcher()
+                .run(
+                    pending.root_id.clone(),
+                    format!("resume-acp-close:{id}"),
+                    move || {
+                        ensure!(
+                            !admission.0.state().close.closing,
+                            "child close owner is closing"
+                        );
+                        Ok(())
+                    },
+                    // Like Native recovery below, keep the backend operation's state
+                    // out of the caller's admission/wait future.
+                    Box::pin(async move {
+                        let operation = owner.agent_operation(&id).await;
+                        let _seal = owner.seal_agent_operation(&id);
+                        recovery
+                            .factory
+                            .begin_acp_child_close(&id, pending.force)
+                            .await?;
+                        owner.close_with_permit(&id, operation).await?;
+                        let (_, error) = recovery.factory.finish_acp_child_close(&id).await?;
+                        ensure!(error.is_none(), "ACP close recovery incomplete: {error:?}");
+                        Ok::<_, anyhow::Error>(())
+                    }),
+                )
+                .await;
+            if let Err(error) = result {
+                failures.push(format!("{error:#}"));
+            }
+        }
+        for (root, mut targets) in roots {
+            targets.sort_by(|left, right| {
+                right
+                    .0
+                    .cmp(&left.0)
+                    .then_with(|| left.1.id.cmp(&right.1.id))
+            });
+            let admission = self.clone();
+            let owner = self.clone();
+            let recovery = services.clone();
+            if let Err(error) = self
+                .review_dispatcher()
+                .run(
+                    root,
+                    "resume-close".into(),
+                    move || {
+                        ensure!(
+                            !admission.0.state().close.closing,
+                            "child close owner is closing"
+                        );
+                        Ok(())
+                    },
+                    // The operation owner retains this potentially large recovery state.
+                    // Keep its callers' admission/wait futures small without adding a task
+                    // or changing who joins work after a caller stops observing it.
+                    Box::pin(async move { recovery.resume_child_close_tree(owner, targets).await }),
+                )
+                .await
+            {
+                failures.push(format!("{error:#}"));
+            }
+        }
+        ensure!(
+            failures.is_empty(),
+            "child close recovery incomplete: {}",
+            failures.join("; ")
+        );
+        Ok(())
+    }
+}
+
+impl StudioSessionOwner {
+    /// Restart resumes only saved explicit close jobs; the join/cleanup progress is the same one
+    /// an explicit close runs after freezing its intents.
+    async fn resume_child_close_tree(
+        &self,
+        owner: SessionRuntime,
+        targets: Vec<(usize, crate::Thread)>,
+    ) -> Result<()> {
+        let ids = targets
+            .iter()
+            .map(|(depth, thread)| (*depth, thread.id.clone()))
+            .collect::<Vec<_>>();
+        let _seals = owner
+            .seal_agent_close(&ids, WorkspaceRelease::Preserve)
+            .await?;
+        let ordered = targets
+            .into_iter()
+            .map(|(_, thread)| thread)
+            .collect::<Vec<_>>();
+        let failures = self.join_closed_children(&owner, &ordered).await;
+        ensure!(failures.is_empty(), "{}", failures.join("; "));
+        Ok(())
+    }
+}

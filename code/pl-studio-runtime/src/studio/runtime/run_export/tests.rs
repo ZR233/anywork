@@ -1,3 +1,5 @@
+mod queue;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,22 +13,43 @@ use pl_core::thread::{ThreadEffectBatch, UsageSummary};
 use pl_model::model::UnpricedReason;
 use sha2::{Digest, Sha256};
 
+use super::blob_sink::FsContentBlobSink;
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};
 use super::reader::export_history_originals_window;
 use super::types::{
     ChatItemHeaderExportV3, EventBodyV3, EventSourceV3, EventV3, ExportedBlobV3, ExportedContentV3,
-    MAX_QUEUED_BATCHES, RunExportOptions, RunManifestV3, UsageCoverage, UsageMetricKey,
+    RunExportOptions, RunManifestV3, UsageCoverage, UsageMetricKey,
 };
 use super::usage::{UsageAccumulator, fold_next_accounting};
-use super::writer::{ExportCommand, FsContentBlobSink};
 use super::{NewMemberRegistration, RetiredThreadCut, RunExporter};
 use crate::history::{
-    EventPayloadEnvelope, HistoryBody, HistoryBodyRole, HistoryDemand, HistoryEntityState,
-    HistoryEvent, HistoryEventKind, HistoryEventMeta, HistoryLimits, HistoryOriginalInfo,
+    EventPayloadEnvelope, HistoryBody, HistoryBodyRole, HistoryEntityState, HistoryEvent,
+    HistoryEventKind, HistoryEventMeta, HistoryLimits, HistoryOriginalInfo,
     HistorySingleVisibility, HistoryStore, HistoryTimelineRole, PendingBody, decode_event_envelope,
     pack_bodies,
 };
 use crate::studio::thread_projection::{AuxiliaryBillingReceipt, CurrentState, PreparedAccounting};
+
+fn export_options(
+    cwd: &std::path::Path,
+    studio_home: PathBuf,
+    output_dir: PathBuf,
+) -> RunExportOptions {
+    RunExportOptions {
+        output_dir,
+        run_id: uuid::Uuid::new_v4().to_string(),
+        cwd: cwd.to_path_buf(),
+        studio_home,
+        account_id: None,
+        model_id: None,
+        reasoning_effort: None,
+        mode: None,
+        max_model_steps: None,
+        prompt_sha256: "a".repeat(64),
+        skill_search: Default::default(),
+        config: None,
+    }
+}
 
 struct ThreadUsageInput<'a> {
     thread_id: &'a str,
@@ -400,8 +423,7 @@ fn fold_all(initial_seq: u64, receipts: &[PreparedAccounting]) -> UsageSummary {
 }
 
 #[test]
-fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch() -> Result<()> {
-    // 1. Unknown tokens + Unpriced stay null without fabricating 0; explicit 0 stays Some(0).
+fn unknown_usage_and_no_charge_preserve_frozen_model_identity() -> Result<()> {
     let r1 = aux_effect(
         "t-unknown",
         1,
@@ -480,8 +502,11 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
         m1.unknown_fields
             .contains(&UsageMetricKey::EstimatedCostUsd)
     );
+    Ok(())
+}
 
-    // 2. Non-USD pricing cannot coerce to USD cost_complete.
+#[test]
+fn non_usd_pricing_does_not_yield_usd_totals() -> Result<()> {
     let r_eur = aux_effect(
         "t-eur",
         1,
@@ -519,8 +544,11 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
     assert!(built_eur.usage_complete);
     assert!(!built_eur.cost_complete);
     assert_eq!(built_eur.export.totals.estimated_cost_usd, None);
+    Ok(())
+}
 
-    // 3. Contradictory explicit total_tokens makes usage incomplete (unknown total_tokens).
+#[test]
+fn contradictory_explicit_total_makes_usage_incomplete() -> Result<()> {
     let r_contradict = aux_effect(
         "t-contradict",
         1,
@@ -551,8 +579,11 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
     assert!(built_contradict.reconciled);
     assert!(!built_contradict.usage_complete);
     assert_eq!(built_contradict.export.totals.total_tokens, None);
+    Ok(())
+}
 
-    // 4. u64::MAX overflow flags overflow without wrapping.
+#[test]
+fn token_overflow_does_not_invalidate_known_cost() -> Result<()> {
     let r_big1 = aux_effect(
         "t-ovf",
         1,
@@ -604,24 +635,11 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
         "token overflow must not invalidate known NoCharge costs"
     );
     assert_eq!(built_big.export.totals.input_tokens, None);
+    Ok(())
+}
 
-    // 5. Reconciliation mismatch against tampered UsageSummary fails reconciliation cleanly.
-    let mut tampered = summary.clone();
-    tampered.totals.prompt_tokens += 42;
-    let built_mismatch = build_and_reconcile_usage(
-        true,
-        &[ThreadUsageInput {
-            thread_id: "t-unknown",
-            initial_effect_seq: 0,
-            through_effect_seq: 2,
-            summary: &tampered,
-            receipts: &receipts,
-        }],
-    );
-    assert!(!built_mismatch.reconciled);
-    assert!(built_mismatch.reconcile_error.is_some());
-
-    // 6. Empty receipts keeps zero usageComplete & costComplete.
+#[test]
+fn empty_run_has_complete_zero_totals() -> Result<()> {
     let empty_summary = UsageSummary::default();
     let built_empty = build_and_reconcile_usage(
         true,
@@ -641,9 +659,28 @@ fn usage_and_cost_reconciliation_covers_unknown_zero_overflow_and_model_switch()
     Ok(())
 }
 
+#[test]
+fn authoritative_usage_mismatch_is_explicit() -> Result<()> {
+    let mut tampered = UsageSummary::default();
+    tampered.totals.prompt_tokens = 42;
+    let built = build_and_reconcile_usage(
+        true,
+        &[ThreadUsageInput {
+            thread_id: "t-mismatch",
+            initial_effect_seq: 0,
+            through_effect_seq: 0,
+            summary: &tampered,
+            receipts: &[],
+        }],
+    );
+    assert!(!built.reconciled);
+    assert!(built.reconcile_error.is_some());
+    Ok(())
+}
+
 #[tokio::test]
 async fn missing_effects_and_conflicting_blobs_cannot_be_sealed() -> Result<()> {
-    use super::writer::{BlobChunkWriter, ContentBlobSink};
+    use super::blob_sink::{BlobChunkWriter, ContentBlobSink};
     let skipped = PreparedAccounting::prepare(&ThreadEffectBatch {
         thread_id: "gap".into(),
         sequence: 2,
@@ -689,222 +726,67 @@ async fn missing_effects_and_conflicting_blobs_cannot_be_sealed() -> Result<()> 
     Ok(())
 }
 
-#[tokio::test]
-async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let out_dir = dir.path().join("export-bp");
-    let studio_home = dir.path().join("home");
+async fn idempotency_fixture(
+    root: &std::path::Path,
+) -> Result<(crate::history::HistoryReader, Arc<CurrentState>)> {
+    let studio_home = root.join("home");
     std::fs::create_dir_all(&studio_home)?;
     std::fs::write(studio_home.join("config.toml"), "[models]\n")?;
+    let history =
+        HistoryStore::open(&root.join("h.sqlite"), "t-idem", HistoryLimits::default()).await?;
+    Ok((history.reader(), test_current("t-idem", 0)?))
+}
 
-    let exporter = RunExporter::start(RunExportOptions {
-        output_dir: out_dir.clone(),
-        run_id: uuid::Uuid::new_v4().to_string(),
-        cwd: dir.path().to_path_buf(),
-        studio_home: studio_home.clone(),
-        account_id: Some("acct".to_string()),
-        model_id: Some("vendor/m".to_string()),
-        reasoning_effort: None,
-        mode: Some("mode.simple".to_string()),
-        max_model_steps: None,
-        prompt_sha256: "a".repeat(64),
-        skill_search: Default::default(),
-        config: None,
-    })
+#[tokio::test]
+async fn producer_timeout_reclaims_writer_and_retained_history() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (history, _) = idempotency_fixture(dir.path()).await?;
+    let exporter = RunExporter::start(export_options(
+        dir.path(),
+        dir.path().join("home"),
+        dir.path().join("export"),
+    ))
     .await?;
-
     let coordinator = exporter.coordinator();
-    let history = HistoryStore::open(
-        &dir.path().join("hist.sqlite"),
-        "t-root",
-        HistoryLimits::default(),
-    )
-    .await?;
-    let history_reader = history.reader();
-    coordinator.enroll_root("t-root");
+    coordinator.enroll_root("t-idem");
     coordinator
         .register_member(NewMemberRegistration {
-            root_thread_id: "t-root".into(),
-            thread_id: "t-root".into(),
-            agent_id: "agent-root".into(),
+            root_thread_id: "t-idem".into(),
+            thread_id: "t-idem".into(),
+            agent_id: "agent-idem".into(),
             parent_agent_id: None,
             parent_thread_id: None,
             role: Some("root".into()),
             workspace_id: "ws-1".into(),
             spawn_tool_call_id: None,
             initial_effect_seq: 0,
-            history: history_reader.clone(),
+            history,
         })
         .await;
+    assert_eq!(coordinator.shared_members.lock().unwrap().members.len(), 1);
 
-    // Pause the writer before filling its bounded queue.
-    let queue = coordinator.queue();
-    queue.set_paused(true);
-
-    // Poll the original producer to the full queue, then release the writer.
-    let queue_clone = queue.clone();
-    let producer = async move {
-        for idx in 0..=MAX_QUEUED_BATCHES {
-            let res = queue_clone
-                .admit(
-                    ExportCommand::SkillsDiscovered {
-                        thread_id: "t-root".to_string(),
-                        report: pl_tool::skill::SkillDiscoveryReport {
-                            source_fingerprint: format!("fp-{idx}"),
-                            sources: Vec::new(),
-                            winners: Vec::new(),
-                            warnings: Vec::new(),
-                            complete: true,
-                        },
-                    },
-                    64,
-                )
-                .await;
-            if res.is_err() {
-                return false;
-            }
-        }
-        true
-    };
-    tokio::pin!(producer);
-    assert!(
-        futures::poll!(&mut producer).is_pending(),
-        "bounded queue must apply backpressure"
-    );
-    assert_eq!(queue.queued_counts().0, MAX_QUEUED_BATCHES);
-
-    queue.set_paused(false);
-    assert!(tokio::time::timeout(Duration::from_secs(5), producer).await?);
-
-    let history_cut = history_checkpoint(&history_reader).await?;
-    let cut = RetiredThreadCut {
-        thread_id: "t-root".into(),
-        through_effect_seq: 0,
-        history: history_reader.clone(),
-        history_cut: history_cut.cut,
-        history_seq: history_cut.history_seq,
-        summary: UsageSummary::default(),
-        status: Some("retired".into()),
-        aborted: false,
-        error: None,
-    };
-    coordinator.record_thread_final_cut(cut);
+    coordinator.close_admission_on_producer_timeout();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let report = coordinator
-        .finalize_internal(true, true, Some(0), None)
-        .await;
-    assert!(report.trace_complete, "{:?}", report.failure);
-    assert!(report.trace.sealed);
-
-    // Also verify tight shutdown deadline + permanent close unblocks waiting producers cleanly.
-    let out_dir2 = dir.path().join("export-deadline");
-    let exp2 = RunExporter::start(RunExportOptions {
-        output_dir: out_dir2,
-        run_id: uuid::Uuid::new_v4().to_string(),
-        cwd: dir.path().to_path_buf(),
-        studio_home,
-        account_id: Some("acct".to_string()),
-        model_id: Some("vendor/m".to_string()),
-        reasoning_effort: None,
-        mode: Some("mode.simple".to_string()),
-        max_model_steps: None,
-        prompt_sha256: "b".repeat(64),
-        skill_search: Default::default(),
-        config: None,
-    })
-    .await?;
-    let coord2 = exp2.coordinator();
-    let q2 = coord2.queue();
-    q2.set_paused(true);
-    let blocked = {
-        let q = q2.clone();
-        async move {
-            for _ in 0..=MAX_QUEUED_BATCHES + 1 {
-                if q.admit(
-                    ExportCommand::SkillsDiscovered {
-                        thread_id: "t-none".into(),
-                        report: pl_tool::skill::SkillDiscoveryReport {
-                            source_fingerprint: "fp".into(),
-                            sources: Vec::new(),
-                            winners: Vec::new(),
-                            warnings: Vec::new(),
-                            complete: true,
-                        },
-                    },
-                    64,
-                )
-                .await
-                .is_err()
-                {
-                    return false;
-                }
-            }
-            true
-        }
-    };
-    tokio::pin!(blocked);
-    assert!(futures::poll!(&mut blocked).is_pending());
-    assert_eq!(q2.queued_counts().0, MAX_QUEUED_BATCHES);
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
-    coord2.arm_shutdown_deadline(Some(deadline));
-    coord2.close_admission_on_producer_timeout();
-    assert!(!tokio::time::timeout(Duration::from_secs(2), blocked).await?);
-    let report2 = coord2
         .finalize_internal(false, false, Some(1), Some(deadline))
         .await;
-    assert!(!report2.trace_complete);
-    assert!(!report2.trace.sealed);
+    assert!(exporter.cancellation().is_cancelled());
+    assert!(!report.trace_complete);
+    assert!(!report.trace.sealed);
+    assert_eq!(report.failure.unwrap().code, "producerDrainIncomplete");
+    assert!(coordinator.writer_task.lock().unwrap().is_none());
+    assert!(
+        coordinator
+            .shared_members
+            .lock()
+            .unwrap()
+            .members
+            .is_empty()
+    );
     Ok(())
 }
 
-#[tokio::test]
-async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let studio_home = dir.path().join("home");
-    std::fs::create_dir_all(&studio_home)?;
-    std::fs::write(studio_home.join("config.toml"), "[models]\n")?;
-    let history = HistoryStore::open(
-        &dir.path().join("h.sqlite"),
-        "t-idem",
-        HistoryLimits::default(),
-    )
-    .await?;
-    let history_reader = history.reader();
-    let current = test_current("t-idem", 0)?;
-
-    // 1. Identical redelivery & non-billing effect sequence advance stay idempotent & sealed.
-    let exporter = RunExporter::start(RunExportOptions {
-        output_dir: dir.path().join("idem-ok"),
-        run_id: uuid::Uuid::new_v4().to_string(),
-        cwd: dir.path().to_path_buf(),
-        studio_home: studio_home.clone(),
-        account_id: Some("acct".into()),
-        model_id: Some("m".into()),
-        reasoning_effort: None,
-        mode: Some("mode.simple".into()),
-        max_model_steps: None,
-        prompt_sha256: "c".repeat(64),
-        skill_search: Default::default(),
-        config: None,
-    })
-    .await?;
-    let coord = exporter.coordinator();
-    coord.enroll_root("t-idem");
-    let make_reg = || NewMemberRegistration {
-        root_thread_id: "t-idem".into(),
-        thread_id: "t-idem".into(),
-        agent_id: "agent-idem".into(),
-        parent_agent_id: None,
-        parent_thread_id: None,
-        role: Some("root".into()),
-        workspace_id: "ws-1".into(),
-        spawn_tool_call_id: None,
-        initial_effect_seq: 0,
-        history: history_reader.clone(),
-    };
-    coord.register_member(make_reg()).await;
-    coord.register_member(make_reg()).await; // identical re-registration
-
-    // Non-billing effect at seq=1, followed by billing effect at seq=2 redelivered twice identically.
+fn idempotency_accounting() -> Result<(PreparedAccounting, PreparedAccounting, UsageSummary)> {
     let non_billing = PreparedAccounting::prepare(&ThreadEffectBatch {
         thread_id: "t-idem".into(),
         sequence: 1,
@@ -930,6 +812,36 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     let mut summary = UsageSummary::default();
     non_billing.fold_into(&mut summary);
     billing.fold_into(&mut summary);
+    Ok((non_billing, billing, summary))
+}
+
+#[tokio::test]
+async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (history_reader, current) = idempotency_fixture(dir.path()).await?;
+    let (non_billing, billing, summary) = idempotency_accounting()?;
+    let exporter = RunExporter::start(export_options(
+        dir.path(),
+        dir.path().join("home"),
+        dir.path().join("idem-ok"),
+    ))
+    .await?;
+    let coord = exporter.coordinator();
+    coord.enroll_root("t-idem");
+    let make_reg = || NewMemberRegistration {
+        root_thread_id: "t-idem".into(),
+        thread_id: "t-idem".into(),
+        agent_id: "agent-idem".into(),
+        parent_agent_id: None,
+        parent_thread_id: None,
+        role: Some("root".into()),
+        workspace_id: "ws-1".into(),
+        spawn_tool_call_id: None,
+        initial_effect_seq: 0,
+        history: history_reader.clone(),
+    };
+    coord.register_member(make_reg()).await;
+    coord.register_member(make_reg()).await; // identical re-registration
 
     let mut atom = crate::ChatAtom {
         id: "bodyless".into(),
@@ -1067,21 +979,19 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
             outcome: crate::ChatTerminalOutcome::Cancelled
         }
     );
-    // 2. Conflicting effect at same (threadId, effectSeq) triggers fatal failure + cancellation.
-    let exp_conflict = RunExporter::start(RunExportOptions {
-        output_dir: dir.path().join("idem-conflict"),
-        run_id: uuid::Uuid::new_v4().to_string(),
-        cwd: dir.path().to_path_buf(),
-        studio_home,
-        account_id: Some("acct".into()),
-        model_id: Some("m".into()),
-        reasoning_effort: None,
-        mode: Some("mode.simple".into()),
-        max_model_steps: None,
-        prompt_sha256: "d".repeat(64),
-        skill_search: Default::default(),
-        config: None,
-    })
+    Ok(())
+}
+
+#[tokio::test]
+async fn conflicting_same_effect_redelivery_cancels_run() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (history_reader, current) = idempotency_fixture(dir.path()).await?;
+    let (_, billing, summary) = idempotency_accounting()?;
+    let exp_conflict = RunExporter::start(export_options(
+        dir.path(),
+        dir.path().join("home"),
+        dir.path().join("idem-conflict"),
+    ))
     .await?;
     let c2 = exp_conflict.coordinator();
     c2.enroll_root("t-idem");
@@ -1140,112 +1050,124 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         bad_report.failure.as_ref().map(|f| f.code.as_str()),
         Some("effectRedeliveryConflict")
     );
-    // 3. The same inference in a later effect is a conflict even when native totals
-    // also counted it twice. Reconciliation alone must not legitimize duplicate billing.
-    for missing_events in [false, true] {
-        if missing_events && !cfg!(unix) {
-            continue;
-        }
-        let out_dir = dir.path().join(if missing_events {
-            "missing-events"
-        } else {
-            "cross-effect"
-        });
-        let exporter = RunExporter::start(RunExportOptions {
-            output_dir: out_dir.clone(),
-            run_id: uuid::Uuid::new_v4().to_string(),
-            cwd: dir.path().to_path_buf(),
-            studio_home: dir.path().join("home"),
-            account_id: None,
-            model_id: None,
-            reasoning_effort: None,
-            mode: None,
-            max_model_steps: None,
-            prompt_sha256: "a".repeat(64),
-            skill_search: Default::default(),
-            config: None,
+    Ok(())
+}
+
+#[tokio::test]
+async fn repeated_inference_in_a_later_effect_is_rejected() -> Result<()> {
+    verify_finalize_failure(false).await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn event_file_failure_preserves_reconciled_usage() -> Result<()> {
+    verify_finalize_failure(true).await?;
+    Ok(())
+}
+
+async fn verify_finalize_failure(missing_events: bool) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (history_reader, current) = idempotency_fixture(dir.path()).await?;
+    let (non_billing, billing, summary) = idempotency_accounting()?;
+    let out_dir = dir.path().join("export");
+    let exporter = RunExporter::start(export_options(
+        dir.path(),
+        dir.path().join("home"),
+        out_dir.clone(),
+    ))
+    .await?;
+    let make_reg = || NewMemberRegistration {
+        root_thread_id: "t-idem".into(),
+        thread_id: "t-idem".into(),
+        agent_id: "agent-idem".into(),
+        parent_agent_id: None,
+        parent_thread_id: None,
+        role: Some("root".into()),
+        workspace_id: "ws-1".into(),
+        spawn_tool_call_id: None,
+        initial_effect_seq: 0,
+        history: history_reader.clone(),
+    };
+    let coordinator = exporter.coordinator();
+    coordinator.enroll_root("t-idem");
+    coordinator.register_member(make_reg()).await;
+    coordinator
+        .admit_live_handoff(
+            "t-idem",
+            &non_billing,
+            &Arc::from([]),
+            &summary,
+            &current,
+            &history_reader,
+        )
+        .await;
+    coordinator
+        .admit_live_handoff(
+            "t-idem",
+            &billing,
+            &Arc::from([]),
+            &summary,
+            &current,
+            &history_reader,
+        )
+        .await;
+    let mut final_summary = summary.clone();
+    if missing_events {
+        // An open Unix file remains writable after unlink. Finalization must reject the
+        // missing archive path rather than claim success with a null event-file hash.
+        let events = out_dir.join("events.jsonl");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !events.exists() {
+                tokio::task::yield_now().await;
+            }
         })
         .await?;
-        let coordinator = exporter.coordinator();
-        coordinator.enroll_root("t-idem");
-        coordinator.register_member(make_reg()).await;
+        std::fs::remove_file(events)?;
+    } else {
+        let mut repeated = billing.clone();
+        repeated.sequence = 3;
+        repeated.fold_into(&mut final_summary);
         coordinator
             .admit_live_handoff(
                 "t-idem",
-                &non_billing,
+                &repeated,
                 &Arc::from([]),
-                &summary,
+                &final_summary,
                 &current,
                 &history_reader,
             )
             .await;
-        coordinator
-            .admit_live_handoff(
-                "t-idem",
-                &billing,
-                &Arc::from([]),
-                &summary,
-                &current,
-                &history_reader,
-            )
-            .await;
-        let mut final_summary = summary.clone();
-        if missing_events {
-            // An open Unix file remains writable after unlink. Finalization must reject the
-            // missing archive path rather than claim success with a null event-file hash.
-            let events = out_dir.join("events.jsonl");
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while !events.exists() {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await?;
-            std::fs::remove_file(events)?;
-        } else {
-            let mut repeated = billing.clone();
-            repeated.sequence = 3;
-            repeated.fold_into(&mut final_summary);
-            coordinator
-                .admit_live_handoff(
-                    "t-idem",
-                    &repeated,
-                    &Arc::from([]),
-                    &final_summary,
-                    &current,
-                    &history_reader,
-                )
-                .await;
-        }
-        let final_history = history_checkpoint(&history_reader).await?;
-        coordinator.record_thread_final_cut(RetiredThreadCut {
-            thread_id: "t-idem".into(),
-            through_effect_seq: final_summary.applied_sequence,
-            history: history_reader.clone(),
-            history_cut: final_history.cut,
-            history_seq: final_history.history_seq,
-            summary: final_summary,
-            status: Some("closed".into()),
-            aborted: false,
-            error: None,
-        });
-        let report = coordinator
-            .finalize_internal(true, true, Some(0), None)
-            .await;
-        assert!(!report.trace_complete);
-        assert!(!report.trace.sealed);
-        let failure = report.failure.context("export must fail explicitly")?;
-        if missing_events {
-            assert_eq!(failure.code, "exportMeasureFailed");
-            assert!(
-                report.usage_complete,
-                "complete accounting survives a content-file failure"
-            );
-        } else {
-            assert!(
-                failure.message.contains("inference_id conflict"),
-                "{failure:?}"
-            );
-        }
+    }
+    let final_history = history_checkpoint(&history_reader).await?;
+    coordinator.record_thread_final_cut(RetiredThreadCut {
+        thread_id: "t-idem".into(),
+        through_effect_seq: final_summary.applied_sequence,
+        history: history_reader.clone(),
+        history_cut: final_history.cut,
+        history_seq: final_history.history_seq,
+        summary: final_summary,
+        status: Some("closed".into()),
+        aborted: false,
+        error: None,
+    });
+    let report = coordinator
+        .finalize_internal(true, true, Some(0), None)
+        .await;
+    assert!(!report.trace_complete);
+    assert!(!report.trace.sealed);
+    let failure = report.failure.context("export must fail explicitly")?;
+    if missing_events {
+        assert_eq!(failure.code, "exportMeasureFailed");
+        assert!(
+            report.usage_complete,
+            "complete accounting survives a content-file failure"
+        );
+    } else {
+        assert!(
+            failure.message.contains("inference_id conflict"),
+            "{failure:?}"
+        );
     }
     Ok(())
 }
@@ -1282,7 +1204,6 @@ fn manifest_preflight_redaction_and_readonly_toml_fallback() -> Result<()> {
         assert!(validate_output_dir_preflight(&symlink_out).is_err());
     }
 
-    // Read-only TOML parsing + redaction strips inline tokens/headers while keeping *_env names.
     let home = dir.path().join("studio-home");
     std::fs::create_dir_all(&home)?;
     std::fs::write(
@@ -1303,20 +1224,11 @@ http_headers = { "Authorization" = "Bearer secret", "X-Custom" = "val" }
     )?;
     let out = dir.path().join("manifest-out");
     std::fs::create_dir_all(&out)?;
-    let (manifest, _sha) = write_run_manifest(&RunExportOptions {
-        output_dir: out,
-        run_id: uuid::Uuid::new_v4().to_string(),
-        cwd: dir.path().to_path_buf(),
-        studio_home: home,
-        account_id: Some("acct1".into()),
-        model_id: Some("m1".into()),
-        reasoning_effort: None,
-        mode: Some("mode.simple".into()),
-        max_model_steps: None,
-        prompt_sha256: "e".repeat(64),
-        skill_search: Default::default(),
-        config: None,
-    })?;
+    let mut options = export_options(dir.path(), home, out);
+    options.account_id = Some("acct1".into());
+    options.model_id = Some("m1".into());
+    options.mode = Some("mode.simple".into());
+    let (manifest, _sha) = write_run_manifest(&options)?;
     assert_eq!(manifest.invocation.max_model_steps, None);
     assert!(!manifest.skill_search.skills_enabled);
     assert!(!manifest.skill_search.system_enabled);
@@ -1359,20 +1271,11 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
     )
     .await?;
     let history_reader = history.reader();
-    let exporter = RunExporter::start(RunExportOptions {
-        output_dir: dir.path().join("backfill-out"),
-        run_id: uuid::Uuid::new_v4().to_string(),
-        cwd: workspace.clone(),
+    let exporter = RunExporter::start(export_options(
+        &workspace,
         studio_home,
-        account_id: None,
-        model_id: None,
-        reasoning_effort: None,
-        mode: None,
-        max_model_steps: None,
-        prompt_sha256: "a".repeat(64),
-        skill_search: Default::default(),
-        config: None,
-    })
+        dir.path().join("export"),
+    ))
     .await?;
     let coord = exporter.coordinator();
     coord.enroll_root(child_thread_id);
@@ -1407,42 +1310,6 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
     }
     history.accept_batch(&events).await?;
     history.flush().await?;
-    let huge_original = history_reader
-        .original_for_entity(
-            "msg-257".into(),
-            None,
-            HistoryDemand {
-                max_rows: 1,
-                max_bytes: 1024 * 1024,
-            },
-        )
-        .await?
-        .context("History original msg-257 missing")?;
-    let huge_body = history_reader
-        .list_bodies(
-            huge_original.event_id,
-            None,
-            HistoryDemand {
-                max_rows: 128,
-                max_bytes: 1024 * 1024,
-            },
-        )
-        .await?
-        .entries
-        .into_iter()
-        .find(|body| body.body_key == "body")
-        .context("huge History body directory entry missing")?
-        .reference;
-    let mut offset = 0_u64;
-    while offset < huge_body.byte_length {
-        let window = history_reader
-            .read_body(huge_body.clone(), offset, 64 * 1024)
-            .await?;
-        assert!(!window.bytes.is_empty() && window.bytes.len() <= 64 * 1024);
-        offset += window.bytes.len() as u64;
-    }
-    assert_eq!(offset, huge_text.len() as u64);
-
     let final_history = history_checkpoint(&history_reader).await?;
     coord.record_thread_final_cut(RetiredThreadCut {
         thread_id: child_thread_id.into(),

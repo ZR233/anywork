@@ -1,7 +1,9 @@
 //! Self-contained execution snapshots. Execution recovery requires a full definition; passive reads preserve old run facts.
 use super::{RegisteredThreadMode, ThreadModeManager};
 use crate::PureError;
-use crate::mode::{ThreadModeDefinition, ThreadModeId};
+use crate::instruction::INSTRUCTIONS_EXTENSION;
+use crate::mode::{MODE_EXTENSION, ThreadModeDefinition, ThreadModeId};
+use crate::workflow_tool::{WorkflowBinding, WorkflowRuntimeSnapshot, WorkflowSessionState};
 use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -42,6 +44,32 @@ impl SavedThreadMode {
         RegisteredThreadMode::from_definition(self.definition.clone(), self.graph_revision)
             .map_err(|error| PureError::ConfigError(error.to_string()))
     }
+
+    pub(crate) fn project_workflow_state(
+        &self,
+        state: &WorkflowSessionState,
+        mode_deleted: bool,
+    ) -> WorkflowRuntimeSnapshot {
+        // Passive readers use saved metadata without recompiling the executable graph.
+        let current_state_title = state
+            .current_run
+            .as_ref()
+            .and_then(|run| {
+                self.definition
+                    .workflow
+                    .as_ref()?
+                    .states
+                    .iter()
+                    .find(|stage| stage.id == run.current_state_id)
+            })
+            .map_or("", |stage| stage.title.as_str());
+        WorkflowRuntimeSnapshot::from_state(
+            state,
+            current_state_title,
+            &self.definition.display_name,
+            mode_deleted,
+        )
+    }
 }
 pub(crate) fn encode_mode_snapshot(snapshot: &SavedThreadMode) -> Result<OpaquePayload, PureError> {
     OpaquePayload::new(FORMAT, VERSION, serde_json::to_string(snapshot)?)
@@ -57,6 +85,14 @@ pub(crate) fn decode_mode_snapshot(payload: &OpaquePayload) -> Result<SavedThrea
 }
 pub(crate) fn decode_saved_mode(payload: &OpaquePayload) -> Result<ThreadModeId, PureError> {
     Ok(decode_mode_snapshot(payload)?.definition.id)
+}
+
+pub(crate) fn workflow_binding_from_snapshot(
+    payload: &OpaquePayload,
+) -> Result<Option<WorkflowBinding>, PureError> {
+    Ok(decode_mode_snapshot(payload)?
+        .registered()?
+        .workflow_binding())
 }
 
 /// A passive presentation can retain an old run even when its original executable graph is no
@@ -76,7 +112,7 @@ pub(crate) fn saved_registered_mode(
 ) -> Result<Option<Arc<RegisteredThreadMode>>, PureError> {
     state
         .extensions
-        .get("studio.mode")
+        .get(MODE_EXTENSION)
         .map(|record| decode_mode_snapshot(&record.payload)?.registered())
         .transpose()
 }
@@ -87,7 +123,7 @@ pub(crate) fn migrate_mode_snapshot(
     state: &mut ThreadSnapshot,
     modes: &ThreadModeManager,
 ) -> Result<(), PureError> {
-    let Some(record) = state.extensions.get("studio.mode") else {
+    let Some(record) = state.extensions.get(MODE_EXTENSION) else {
         if let Some(record) = state
             .extensions
             .get(crate::workflow_tool::WORKFLOW_EXTENSION)
@@ -118,7 +154,7 @@ pub(crate) fn migrate_mode_snapshot(
         })?;
     let mut saved = SavedThreadMode::capture(&registered, None);
     let mut recovered_prompt = false;
-    if let Some(record) = state.extensions.get("studio.instructions") {
+    if let Some(record) = state.extensions.get(INSTRUCTIONS_EXTENSION) {
         // Mode recovery reads the saved Mode text through the instruction migration boundary, so
         // both the legacy mixed source and the current Mode source are understood here.
         if let Some((label, content)) = crate::instruction::saved_mode_instruction(&record.payload)
@@ -152,7 +188,7 @@ pub(crate) fn migrate_mode_snapshot(
     let payload = encode_mode_snapshot(&saved)?;
     state
         .extensions
-        .get_mut("studio.mode")
+        .get_mut(MODE_EXTENSION)
         .expect("checked saved Mode")
         .payload = payload;
     Ok(())

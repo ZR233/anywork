@@ -139,7 +139,7 @@ impl StateStore {
             checkpoint
                 .state
                 .extensions
-                .insert(crate::compaction::LATEST_RECEIPT.into(), record);
+                .insert(crate::context_preparation::LATEST_RECEIPT.into(), record);
         }
         let legacy_costs = match &self.legacy_calls {
             Some(calls) => {
@@ -308,7 +308,7 @@ impl StateStore {
                     },
                 );
             }
-            crate::compaction::migrate_checkpoint_sources(&mut checkpoint)?;
+            crate::context_preparation::migrate_checkpoint_sources(&mut checkpoint)?;
             return Ok(checkpoint);
         }
         let mut checkpoint = parse_checkpoint(content, path)?;

@@ -78,7 +78,7 @@ impl StudioRuntime {
                 "cannot remove a worktree containing Studio reliable storage"
             );
         }
-        let manager = manager_from_lease(&self.store, &self.ssh_manager, &current).await?;
+        let manager = manager_from_lease(&self.store, &self.ssh_manager, &current, None).await?;
         let handle = WorktreeHandle {
             path: entry.lease.path.clone().into(),
             base_commit: entry.lease.base_commit.clone(),

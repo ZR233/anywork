@@ -11,6 +11,22 @@ use anyhow::Result;
 use std::path::Path;
 
 impl StudioThreadFactory {
+    pub(crate) async fn directory_rows_for_root(
+        &self,
+        caller: &str,
+    ) -> anyhow::Result<Vec<(crate::SessionDirectoryRow, bool)>> {
+        let caller = self.directory_member(caller)?;
+        let members = self
+            .services
+            .store
+            .read_directory_tree(&caller.root_thread_id)
+            .await?;
+        Ok(members
+            .into_iter()
+            .map(|member| (member.row(), member.agent.explicitly_closed))
+            .collect())
+    }
+
     pub(super) async fn confirm_worktree_binding(
         &self,
         verified: &WorktreeLease,

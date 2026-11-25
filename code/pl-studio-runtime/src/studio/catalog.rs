@@ -11,6 +11,7 @@
 //! 与冻结保存批次分别负责当前查询和持久化，不在查询时合并两份当前态。
 
 mod schema;
+mod validation;
 
 use std::path::PathBuf;
 
@@ -76,6 +77,26 @@ impl CatalogStore {
         Ok(Self {
             store: RevisionedTomlStore::new(path, document),
         })
+    }
+
+    /// Topology is validated on load and mutation. Check the remaining external references
+    /// against one Workspace snapshot before opening databases or copying sessions.
+    pub(in crate::studio) fn validate_workspace_references(
+        &self,
+        workspaces: &super::store::workspaces::WorkspaceStore,
+    ) -> Result<()> {
+        let workspace_ids: std::collections::HashSet<_> = workspaces
+            .entries()
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        for session in &self.store.lock().sessions {
+            ensure!(
+                workspace_ids.contains(&session.workspace_id),
+                "catalog references a missing project"
+            );
+        }
+        Ok(())
     }
 
     /// 全部会话记录的稳定快照（按 `(last_user_message_at ?? created_at, session_id)` 降序）。
@@ -366,7 +387,7 @@ impl CatalogStore {
                     !delta.thread_deletions.contains(&agent.thread_id)
                         && !removed_sessions.contains(&agent.session_id)
                 });
-                schema::validate(document)?;
+                validation::validate(document)?;
                 Ok(*document != previous)
             })
             .await

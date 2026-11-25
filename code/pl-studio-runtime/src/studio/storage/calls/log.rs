@@ -70,8 +70,19 @@ pub(super) struct CallLog {
     degraded: Option<String>,
     /// Only retry scheduling; JSONL remains the source of locator contents.
     unindexed_segments: BTreeSet<String>,
-    #[cfg(test)]
-    pub(super) fail_next_sync: bool,
+}
+
+pub(super) trait SegmentSync: Send {
+    fn sync_data(&self, file: &tokio::fs::File) -> impl Future<Output = Result<()>> + Send;
+}
+
+pub(super) struct FileSync;
+
+impl SegmentSync for FileSync {
+    async fn sync_data(&self, file: &tokio::fs::File) -> Result<()> {
+        file.sync_data().await?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,8 +123,6 @@ impl CallLog {
                     next_sequence: 0,
                     degraded: Some(error.to_string()),
                     unindexed_segments: BTreeSet::new(),
-                    #[cfg(test)]
-                    fail_next_sync: false,
                 });
             }
         };
@@ -133,8 +142,6 @@ impl CallLog {
             next_sequence,
             degraded: None,
             unindexed_segments: BTreeSet::new(),
-            #[cfg(test)]
-            fail_next_sync: false,
         };
         if let Some(newest) = segments.last() {
             let path = log.dir.join(&newest.name);
@@ -243,19 +250,19 @@ impl CallLog {
     /// A batch barriers each touched segment once; rotation barriers the old segment before
     /// releasing its handle. Dirty stays set on failure so retries cannot skip the barrier.
     pub(super) async fn sync_pending(&mut self) -> Result<()> {
+        self.sync_pending_with(FileSync).await
+    }
+
+    pub(super) async fn sync_pending_with(&mut self, sync: impl SegmentSync) -> Result<()> {
         if let Some(segment) = self.current.as_mut()
             && segment.dirty
         {
-            #[cfg(test)]
-            if std::mem::take(&mut self.fail_next_sync) {
-                bail!("injected call log sync failure");
-            }
             #[cfg(feature = "benchmarks")]
             self.observation.increment(observation::Metric::JsonlFlush);
             segment.file.flush().await?;
             #[cfg(feature = "benchmarks")]
             self.observation.increment(observation::Metric::JsonlSync);
-            segment.file.sync_data().await?;
+            sync.sync_data(&segment.file).await?;
             segment.dirty = false;
         }
         Ok(())
@@ -395,36 +402,21 @@ impl CallLog {
             };
             let mut retained = Vec::with_capacity(bytes.len());
             let mut locators = Vec::new();
-            let mut offset = 0usize;
-            for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
-                let line_number = index + 1;
-                let complete = line.last() == Some(&b'\n');
-                let record = if complete {
-                    deletion_locator(&line[..line.len() - 1], &segment.name, line_number, offset)
-                } else {
-                    warn_unindexed_line(
-                        &segment.name,
-                        line_number,
-                        offset,
-                        "incomplete_record",
-                        None,
-                        None,
-                    );
-                    if !newest_tail_protected
-                        && let Some((_, newest_day)) = newest_segment
-                            .as_ref()
-                            .filter(|(name, _)| name == &segment.name)
-                    {
-                        let day = event::record_day(crate::studio::unix_seconds()).max(*newest_day);
-                        // Establish the later durable segment before pruning locators or replacing
-                        // this file, so a failed index commit cannot expose its unknown tail to
-                        // ordinary startup tail repair.
-                        self.open_durable_empty_segment(day).await?;
-                        newest_tail_protected = true;
-                    }
-                    None
-                };
-                match record {
+            for line in scan_locators(&segment.name, &bytes) {
+                if !line.complete
+                    && !newest_tail_protected
+                    && let Some((_, newest_day)) = newest_segment
+                        .as_ref()
+                        .filter(|(name, _)| name == &segment.name)
+                {
+                    let day = event::record_day(crate::studio::unix_seconds()).max(*newest_day);
+                    // Establish the later durable segment before pruning locators or replacing
+                    // this file, so a failed index commit cannot expose its unknown tail to
+                    // ordinary startup tail repair.
+                    self.open_durable_empty_segment(day).await?;
+                    newest_tail_protected = true;
+                }
+                match line.record {
                     Some(record)
                         if !ids.contains(&record.thread_id)
                             && !record
@@ -433,13 +425,12 @@ impl CallLog {
                                 .is_some_and(|id| ids.contains(id)) =>
                     {
                         let retained_offset = retained.len();
-                        retained.extend_from_slice(line);
-                        locators.push((record, retained_offset, line.len() - 1));
+                        retained.extend_from_slice(line.bytes);
+                        locators.push((record, retained_offset, line.bytes.len() - 1));
                     }
                     Some(_) => {}
-                    None => retained.extend_from_slice(line),
+                    None => retained.extend_from_slice(line.bytes),
                 }
-                offset += line.len();
             }
             let changed = retained != bytes;
             if changed || self.unindexed_segments.contains(&segment.name) {
@@ -494,35 +485,21 @@ impl CallLog {
             let bytes = tokio::fs::read(path).await?;
             let tx = db.begin().await?;
             super::prune_index(&tx, std::slice::from_ref(&segment)).await?;
-            let mut offset = 0usize;
-            for (index, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
-                if line.last() == Some(&b'\n') {
-                    let text = &line[..line.len() - 1];
-                    if let Some(record) = deletion_locator(text, &segment, index + 1, offset) {
-                        super::index_locator(
-                            &tx,
-                            &record,
-                            &pl_core::context::content_hash(text),
-                            &AppendedRecord {
-                                segment: segment.clone(),
-                                offset: offset as u64,
-                                length: text.len() as u64,
-                            },
-                            record.truncated,
-                        )
-                        .await?;
-                    }
-                } else {
-                    warn_unindexed_line(
-                        &segment,
-                        index + 1,
-                        offset,
-                        "incomplete_record",
-                        None,
-                        None,
-                    );
-                }
-                offset += line.len();
+            for line in scan_locators(&segment, &bytes) {
+                let Some(record) = line.record else { continue };
+                let text = &line.bytes[..line.bytes.len() - 1];
+                super::index_locator(
+                    &tx,
+                    &record,
+                    &pl_core::context::content_hash(text),
+                    &AppendedRecord {
+                        segment: segment.clone(),
+                        offset: line.offset as u64,
+                        length: text.len() as u64,
+                    },
+                    record.truncated,
+                )
+                .await?;
             }
             tx.commit().await?;
             self.unindexed_segments.remove(&segment);
@@ -553,9 +530,7 @@ impl CallLog {
                 let record = match decoded_record(record_bytes) {
                     Ok(record) => record,
                     Err(error) => {
-                        if deletion_locator(record_bytes, &segment.name, index + 1, offset)
-                            .is_none()
-                        {
+                        if line_locator(record_bytes, &segment.name, index + 1, offset).is_none() {
                             offset += line.len();
                             continue;
                         }
@@ -666,7 +641,39 @@ impl CallLog {
     }
 }
 
-fn deletion_locator(
+struct ScannedLine<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    complete: bool,
+    record: Option<event::CallLogLocator>,
+}
+
+fn scan_locators<'a>(segment: &'a str, bytes: &'a [u8]) -> impl Iterator<Item = ScannedLine<'a>> {
+    let mut offset = 0;
+    bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .enumerate()
+        .map(move |(index, bytes)| {
+            let line = index + 1;
+            let complete = bytes.last() == Some(&b'\n');
+            let record = if complete {
+                line_locator(&bytes[..bytes.len() - 1], segment, line, offset)
+            } else {
+                warn_unindexed_line(segment, line, offset, "incomplete_record", None, None);
+                None
+            };
+            let scanned = ScannedLine {
+                bytes,
+                offset,
+                complete,
+                record,
+            };
+            offset += bytes.len();
+            scanned
+        })
+}
+
+fn line_locator(
     bytes: &[u8],
     segment: &str,
     line: usize,

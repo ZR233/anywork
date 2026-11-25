@@ -21,6 +21,7 @@ mod paths;
 #[cfg(unix)]
 mod permissions;
 mod prepare;
+mod progress;
 mod registry;
 mod source;
 #[cfg(test)]

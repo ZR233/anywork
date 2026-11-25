@@ -313,7 +313,6 @@ async fn native_workflow_and_plan_state_recover_after_shutdown_and_restart() -> 
     let definition = restarted.read_thread_mode_definition(&ThreadModeId::auto())?;
     let workflow = definition
         .document
-        .definition
         .workflow
         .as_ref()
         .context("auto mode workflow")?;

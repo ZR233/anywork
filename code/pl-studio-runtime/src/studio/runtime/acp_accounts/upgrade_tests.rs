@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use super::connection::AccountConnection;
+use super::test_support::{wait_account_state, wait_retired};
 use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
 use crate::config::{AcpLaunch, AcpProvider as ConfigAcpProvider};
 use crate::studio::runtime::acp_install::seed_synthetic_install_version;
 use crate::{
-    AcpAuthAccount, AcpAuthAction, AcpAuthState, AcpConnectionState, AcpOpenIntent, AcpProvider,
-    AcpSessionEvent, OpenAcpSessionRequest, StartAcpAuthRequest, StudioProductBaselineState,
-    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioRuntime,
+    AcpAuthAction, AcpAuthState, AcpConnectionState, AcpOpenIntent, AcpProvider, AcpSessionEvent,
+    OpenAcpSessionRequest, StartAcpAuthRequest, StudioProductBaselineState, StudioProductEventKind,
+    StudioProductFrame, StudioProductTopic,
 };
 
 fn peer_wrapper_script(version: &str) -> Vec<u8> {
@@ -24,62 +24,6 @@ fn peer_wrapper_script(version: &str) -> Vec<u8> {
         "#!/bin/sh\nprintf '%s' '{version}' > \"$ACP_FIXTURE_ROOT/server-version\"\nexec python3 '{script_path}' \"$@\"\n"
     )
     .into_bytes()
-}
-
-async fn wait_account_state(
-    runtime: &StudioRuntime,
-    account_id: &str,
-    predicate: impl Fn(&AcpAuthAccount) -> bool,
-) -> AcpAuthAccount {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let mut updates = runtime
-            .subscribe_product_topic(StudioProductTopic::AcpAuth)
-            .await
-            .expect("auth topic opens");
-        loop {
-            let snapshot = match updates
-                .recv()
-                .await
-                .expect("auth subscription receives frame")
-                .expect("auth topic remains open")
-            {
-                StudioProductFrame::Baseline(baseline) => match baseline.state {
-                    StudioProductBaselineState::AcpAuth(snapshot) => *snapshot,
-                    other => panic!("unexpected auth baseline: {other:?}"),
-                },
-                StudioProductFrame::Event(event) => match event.kind {
-                    StudioProductEventKind::AcpAuthStateChanged(snapshot) => *snapshot,
-                    other => panic!("unexpected auth event: {other:?}"),
-                },
-                StudioProductFrame::Lagged { dropped, .. } => {
-                    panic!("lost {dropped} auth frames")
-                }
-            };
-            if let Some(account) = snapshot
-                .accounts
-                .into_iter()
-                .find(|account| account.account_id == account_id)
-                && predicate(&account)
-            {
-                return account;
-            }
-        }
-    })
-    .await
-    .expect("account reached expected state")
-}
-
-async fn wait_retired(runtime: &StudioRuntime, old: &std::sync::Weak<AccountConnection>) {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if runtime.acp_accounts.inner.lock().retiring.is_empty() && old.upgrade().is_none() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("retired connection and old server process cleaned up");
 }
 
 #[tokio::test]

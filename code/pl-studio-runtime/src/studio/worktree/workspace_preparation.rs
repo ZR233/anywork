@@ -1,8 +1,13 @@
 //! Product workspace allocation independent of Agent execution and model sessions.
+
+#[cfg(test)]
+mod cleanup_tests;
+
 use super::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease, WorktreeLeaseOwner,
     WorktreeLeaseOwnerKind, WorktreeLeaseState,
 };
+use crate::agent::worktree::git_path::{workspace_path_text, workspace_paths_equal};
 use crate::agent::worktree::{
     ExecutorWorktreeBackend, WorktreeBackend, WorktreeCleanupPolicy,
     WorktreeCreateFailureDisposition, WorktreeCreateSpec, WorktreeError, WorktreeHandle,
@@ -99,7 +104,7 @@ pub(in crate::studio) async fn prepare_workspace(
                             } else {
                                 session_root.join(path)
                             };
-                            workspace_path_text(&path, remote)
+                            workspace_path_text(&path, remote).map_err(anyhow::Error::from)
                         })
                         .collect::<Result<Vec<_>>>()
                 })
@@ -324,6 +329,7 @@ pub(in crate::studio) async fn manager_from_lease(
     store: &crate::studio::StudioStore,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     lease: &WorktreeLease,
+    project_endpoint: Option<&WorkspaceEndpoint>,
 ) -> Result<WorktreeManager> {
     let repository_root = PathBuf::from(&lease.repository_root);
     let (backend, endpoint) = backend_for(
@@ -333,6 +339,11 @@ pub(in crate::studio) async fn manager_from_lease(
         WorktreeBackendRoot::Repository,
     )
     .await?;
+    if project_endpoint.is_some_and(|expected| expected != &endpoint) {
+        return Err(lifecycle_error(
+            "SSH repository endpoint changed while resolving",
+        ));
+    }
     if let Some(identity) = store.workspace_identity(&lease.owner_thread_id).await?
         && (endpoint != identity.endpoint || !identity.matches_root(&lease.path))
     {
@@ -380,15 +391,8 @@ pub(in crate::studio) async fn repository_manager(
     ssh_alias: Option<&str>,
     project_root: &Path,
 ) -> Result<(PathBuf, WorktreeManager, WorkspaceEndpoint)> {
-    let (resolver, endpoint) = backend_for(
-        ssh_manager,
-        ssh_alias,
-        project_root,
-        WorktreeBackendRoot::Project,
-    )
-    .await?;
-    let repository_root =
-        WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root).await?;
+    let (repository_root, endpoint) =
+        project_repository(ssh_manager, ssh_alias, project_root).await?;
     let (backend, rebound) = backend_for(
         ssh_manager,
         ssh_alias,
@@ -406,6 +410,23 @@ pub(in crate::studio) async fn repository_manager(
         WorktreeManager::new(repository_root, backend),
         endpoint,
     ))
+}
+
+pub(in crate::studio) async fn project_repository(
+    ssh_manager: &Arc<pl_tool::remote::SshManager>,
+    ssh_alias: Option<&str>,
+    project_root: &Path,
+) -> Result<(PathBuf, WorkspaceEndpoint)> {
+    let (resolver, endpoint) = backend_for(
+        ssh_manager,
+        ssh_alias,
+        project_root,
+        WorktreeBackendRoot::Project,
+    )
+    .await?;
+    let repository_root =
+        WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root).await?;
+    Ok((repository_root, endpoint))
 }
 
 pub(in crate::studio) async fn create_root_session_worktree<F>(
@@ -656,7 +677,7 @@ pub(in crate::studio) async fn root_session_workspace_root(
         )
     );
     // Checks the currently configured transport against the frozen endpoint before Git I/O.
-    let manager = manager_from_lease(store, ssh_manager, &lease).await?;
+    let manager = manager_from_lease(store, ssh_manager, &lease, None).await?;
     let (repository_root, _, endpoint) = repository_manager(
         ssh_manager,
         project.ssh_alias.as_deref(),
@@ -757,7 +778,7 @@ async fn prepare_repository_worktree_pool(
 
 pub(in crate::studio) fn resolved_project_root(project: &WorkspaceRecord) -> Result<PathBuf> {
     if project.ssh_alias.is_some() {
-        let value = pl_tool::remote::normalize_remote_absolute_path(project.path.trim())?;
+        let value = workspace_path_text(Path::new(project.path.trim()), true)?;
         if value == "/" {
             return Err(lifecycle_error(format!(
                 "invalid remote project workspace: {}",
@@ -768,28 +789,6 @@ pub(in crate::studio) fn resolved_project_root(project: &WorkspaceRecord) -> Res
     } else {
         pl_tool::workspace::resolve_workspace_root(&PathBuf::from(&project.path))
             .map_err(anyhow::Error::from)
-    }
-}
-
-/// 远端项目的跨端路径文本统一为 POSIX；本地项目保留宿主形态。
-///
-/// 归一化表达本身收敛在 [`pl_tool::remote::normalize_remote_absolute_path`]，这里只负责按
-/// 项目形态选择：远端 lease、会话工作区根与 workspace 打开参数必须以同一 POSIX 结果
-/// 记录，本地项目不得被改写为 POSIX。
-fn workspace_path_text(path: &Path, remote: bool) -> Result<String> {
-    if remote {
-        pl_tool::remote::normalize_remote_absolute_path(&path.to_string_lossy())
-            .map_err(anyhow::Error::from)
-    } else {
-        Ok(path.to_string_lossy().into_owned())
-    }
-}
-
-fn workspace_paths_equal(left: &Path, right: &Path, remote: bool) -> Result<bool> {
-    if remote {
-        Ok(workspace_path_text(left, true)? == workspace_path_text(right, true)?)
-    } else {
-        Ok(left == right)
     }
 }
 

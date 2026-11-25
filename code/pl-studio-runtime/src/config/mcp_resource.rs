@@ -102,35 +102,34 @@ struct ScopeResourceState {
     updates: Arc<watch::Sender<u64>>,
 }
 
-#[derive(Clone, Default)]
+type ScopeScanner = dyn Fn(&ConfigPaths, &pl_model::config::AgentModelConfig, &McpScope) -> Result<ScopedMcpScan>
+    + Send
+    + Sync;
+
+#[derive(Clone)]
 pub struct McpCatalogResource {
     scopes: Arc<Mutex<BTreeMap<McpScope, ScopeResourceState>>>,
     write_lock: Arc<Mutex<()>>,
-    #[cfg(test)]
-    scan_prepared: Arc<Mutex<Option<McpScanPreparedHook>>>,
+    scan: Arc<ScopeScanner>,
 }
 
-#[cfg(test)]
-type McpScanPreparedHook = Arc<dyn Fn(&McpScope) + Send + Sync>;
+impl Default for McpCatalogResource {
+    fn default() -> Self {
+        Self {
+            scopes: Arc::default(),
+            write_lock: Arc::default(),
+            scan: Arc::new(scan_scope_catalog),
+        }
+    }
+}
 
 impl McpCatalogResource {
     #[cfg(test)]
-    pub(crate) fn set_scan_prepared_hook(&self, hook: Option<McpScanPreparedHook>) {
-        *self
-            .scan_prepared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
-    }
-
-    #[cfg(test)]
-    fn notify_scan_prepared(&self, scope: &McpScope) {
-        let hook = self
-            .scan_prepared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(hook) = hook {
-            hook(scope);
+    pub(crate) fn with_scanner(&self, scan: Arc<ScopeScanner>) -> Self {
+        Self {
+            scopes: self.scopes.clone(),
+            write_lock: self.write_lock.clone(),
+            scan,
         }
     }
 
@@ -146,8 +145,6 @@ impl McpCatalogResource {
         models: &pl_model::config::AgentModelConfig,
         scope: &McpScope,
     ) -> Result<McpCatalogSnapshot> {
-        #[cfg(test)]
-        self.notify_scan_prepared(scope);
         let mut guard = self
             .scopes
             .lock()
@@ -160,7 +157,7 @@ impl McpCatalogResource {
                 diagnostics: state.scan.diagnostics.clone(),
             });
         }
-        let scan = scan_scope_catalog(paths, models, scope)?;
+        let scan = (self.scan)(paths, models, scope)?;
         let (tx, _) = watch::channel(1);
         let snapshot = McpCatalogSnapshot {
             scope: scope.clone(),
@@ -186,14 +183,12 @@ impl McpCatalogResource {
         models: &pl_model::config::AgentModelConfig,
         scope: &McpScope,
     ) -> Result<(McpCatalogSnapshot, watch::Receiver<u64>)> {
-        #[cfg(test)]
-        self.notify_scan_prepared(scope);
         let mut guard = self
             .scopes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !guard.contains_key(scope) {
-            let scan = scan_scope_catalog(paths, models, scope)?;
+            let scan = (self.scan)(paths, models, scope)?;
             let (tx, _) = watch::channel(1);
             guard.insert(
                 scope.clone(),
@@ -223,7 +218,7 @@ impl McpCatalogResource {
         models: &pl_model::config::AgentModelConfig,
         scope: &McpScope,
     ) -> Result<(McpCatalogSnapshot, bool)> {
-        let scan = scan_scope_catalog(paths, models, scope)?;
+        let scan = (self.scan)(paths, models, scope)?;
         // Compare inherited scopes before taking the publication lock. Only their validity
         // is revoked here; their original scan/notification owner still publishes new data.
         let inherited = if matches!(scope, McpScope::Host) {
@@ -238,16 +233,14 @@ impl McpCatalogResource {
             scopes
                 .into_iter()
                 .map(|scope| {
-                    let effective = scan_scope_catalog(paths, models, &scope)
-                        .map(|scan| scan.effective_servers);
+                    let effective =
+                        (self.scan)(paths, models, &scope).map(|scan| scan.effective_servers);
                     (scope, effective)
                 })
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
-        #[cfg(test)]
-        self.notify_scan_prepared(scope);
         let mut guard = self
             .scopes
             .lock()

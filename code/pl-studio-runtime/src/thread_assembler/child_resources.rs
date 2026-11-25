@@ -82,12 +82,12 @@ impl WorkspacePreparationOwner {
             .upgrade()
             .ok_or(ThreadAssemblyError::Closed)?;
         let state = registry.state();
-        if state.closing
-            || state.sealed_agents.contains_key(id)
+        if state.close.closing
+            || state.close.sealed_agents.contains_key(id)
             || admission.cancellation.is_cancelled()
-            || !(state.creating.contains_key(id)
-                || state.preparing_children.contains_key(id)
-                || state.unpublished_children.contains_key(id))
+            || !(state.activation.creating.contains_key(id)
+                || state.activation.preparing_children.contains_key(id)
+                || state.activation.unpublished_children.contains_key(id))
         {
             return Err(ThreadAssemblyError::Closed.into());
         }
@@ -116,7 +116,7 @@ impl WorkspacePreparationOwner {
             .replace(usage.clone());
         drop(previous);
     }
-    pub(super) fn take(&self) -> Option<super::WorkspaceUsageLease> {
+    pub(crate) fn take(&self) -> Option<super::WorkspaceUsageLease> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -131,7 +131,7 @@ pub(crate) struct CleanupGate {
     changed: tokio::sync::Notify,
 }
 
-pub(super) struct CleanupPermit(Arc<CleanupGate>);
+pub(crate) struct CleanupPermit(Arc<CleanupGate>);
 impl Drop for CleanupPermit {
     fn drop(&mut self) {
         self.0.busy.store(false, Ordering::Release);
@@ -139,7 +139,7 @@ impl Drop for CleanupPermit {
     }
 }
 impl CleanupGate {
-    pub(super) async fn acquire(self: &Arc<Self>) -> CleanupPermit {
+    pub(crate) async fn acquire(self: &Arc<Self>) -> CleanupPermit {
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -160,32 +160,34 @@ type DisposalTask =
     Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), ThreadAssemblyError>>>>>;
 
 #[derive(Debug, Clone)]
-pub(super) struct UnpublishedChild {
-    pub(super) retirement:
+pub(crate) struct UnpublishedChild {
+    pub(crate) retirement:
         Arc<std::sync::Mutex<Option<pl_tool::collaboration::thread::WorkspaceRelease>>>,
-    pub(super) workspace: WorkspacePreparationOwner,
-    pub(super) parent: String,
-    pub(super) factory: ChildFactory,
-    pub(super) cleanup: Arc<CleanupGate>,
-    pub(super) disposal: DisposalTask,
+    pub(crate) workspace: WorkspacePreparationOwner,
+    pub(crate) parent: String,
+    pub(crate) factory: ChildFactory,
+    pub(crate) cleanup: Arc<CleanupGate>,
+    pub(crate) disposal: DisposalTask,
 }
 
 impl super::SessionRuntime {
-    pub(super) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    pub(crate) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
-        if state.closing
-            || state.sealed_agents.contains_key(id)
+        if state.close.closing
+            || state.close.sealed_agents.contains_key(id)
             || state
+                .activation
                 .preparing_children
                 .get(id)
                 .is_some_and(|child| child.cancellation.is_cancelled())
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        if !state.unpublished_children.contains_key(id) {
+        if !state.activation.unpublished_children.contains_key(id) {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
         let entry = state
+            .members
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
@@ -193,7 +195,7 @@ impl super::SessionRuntime {
             return Err(ThreadAssemblyError::Closed);
         }
         entry.native_mut()?.ready = true;
-        let unpublished = state.unpublished_children.remove(id);
+        let unpublished = state.activation.unpublished_children.remove(id);
         drop(state);
         drop(unpublished);
         Ok(())
@@ -204,17 +206,30 @@ impl super::SessionRuntime {
     /// # Errors
     /// Returns the retained Thread close or product resource cleanup error.
     pub async fn discard_unpublished_child(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        if self.0.state().preparing_children.contains_key(id) {
+        if self
+            .0
+            .state()
+            .activation
+            .preparing_children
+            .contains_key(id)
+        {
             return Err(ThreadAssemblyError::Preparing(id.into()));
         }
         self.discard_child_resources(id).await
     }
 
-    pub(super) async fn discard_child_resources(
+    pub(crate) async fn discard_child_resources(
         &self,
         id: &str,
     ) -> Result<(), ThreadAssemblyError> {
-        let pending = { self.0.state().unpublished_children.get(id).cloned() };
+        let pending = {
+            self.0
+                .state()
+                .activation
+                .unpublished_children
+                .get(id)
+                .cloned()
+        };
         let Some(pending) = pending else {
             return Ok(());
         };
@@ -241,25 +256,31 @@ impl super::SessionRuntime {
         id: &str,
         pending: UnpublishedChild,
     ) -> Result<(), ThreadAssemblyError> {
-        if !self.0.state().unpublished_children.contains_key(id) {
-            return Ok(());
-        }
-        let purpose = if self
+        if !self
             .0
             .state()
-            .agent_services
-            .as_ref()
-            .is_some_and(|services| services.operations.is_deleting(id))
+            .activation
+            .unpublished_children
+            .contains_key(id)
         {
+            return Ok(());
+        }
+        let purpose = if self.review_dispatcher().is_deleting(id) {
             super::ClosePurpose::Delete
         } else {
             super::ClosePurpose::Preserve
         };
-        let closing = self.0.state().entries.get_mut(id).and_then(|entry| {
-            let native = entry.native_mut().ok()?;
-            native.ready = false;
-            Some(native.thread.clone())
-        });
+        let closing = self
+            .0
+            .state()
+            .members
+            .entries
+            .get_mut(id)
+            .and_then(|entry| {
+                let native = entry.native_mut().ok()?;
+                native.ready = false;
+                Some(native.thread.clone())
+            });
         if let Some(thread) = closing {
             drop(self.prepare_close_for_purpose(id, &thread, purpose));
         }
@@ -368,7 +389,7 @@ impl super::SessionRuntime {
                 .await
                 .map_err(retirement_error)?;
         }
-        let removed = { self.0.state().unpublished_children.remove(id) };
+        let removed = { self.0.state().activation.unpublished_children.remove(id) };
         drop(removed);
         Ok(())
     }
@@ -380,3 +401,7 @@ fn retirement_error(source: anyhow::Error) -> ThreadAssemblyError {
         source: source.into_boxed_dyn_error(),
     }
 }
+
+#[cfg(test)]
+#[path = "child_resources/unpublished_tests.rs"]
+mod unpublished_tests;

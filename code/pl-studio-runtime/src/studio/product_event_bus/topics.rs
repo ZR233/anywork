@@ -2,21 +2,113 @@
 //!
 //! 每个订阅者只登记自己声明的 topic；事件按 [`StudioProductTopic::of_kind`] 路由到
 //! 对应通道，无关领域既不进入订阅者缓冲，也不占用该 topic 的容量。通道不持有业务
-//! 投影，只转发 owner 发布的同一 canonical envelope。
+//! 当前投影。AgentDirectory 在队列中只持有版本租约，接收时物化原 canonical
+//! envelope；其他事件仍直接传递已冻结值，公开 payload 与错误契约不变。
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::{broadcast, watch};
 
-use crate::{StudioProductEventEnvelope, StudioProductTopic};
+use crate::{StudioProductEventEnvelope, StudioProductEventKind, StudioProductTopic};
+
+/// Queue material, never a wire payload. Agent values are reconstructed only on delivery.
+#[derive(Clone)]
+pub(super) enum ProductPublication {
+    Value(Arc<StudioProductEventEnvelope>),
+    AgentDirectory {
+        sequence: u64,
+        created_at: i64,
+        state: Arc<super::thread_directory::DeferredAgentDirectory>,
+    },
+}
+
+impl std::fmt::Debug for ProductPublication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ProductPublication")
+            .field(&self.topic())
+            .finish()
+    }
+}
+
+impl ProductPublication {
+    fn topic(&self) -> StudioProductTopic {
+        match self {
+            Self::Value(event) => StudioProductTopic::of_kind(&event.kind),
+            Self::AgentDirectory { .. } => StudioProductTopic::AgentDirectory,
+        }
+    }
+
+    pub(super) fn materialize(self) -> StudioProductEventEnvelope {
+        match self {
+            Self::Value(event) => Arc::unwrap_or_clone(event),
+            Self::AgentDirectory {
+                sequence,
+                created_at,
+                state,
+            } => StudioProductEventEnvelope {
+                event_id: format!("studio-product-{sequence}"),
+                sequence,
+                created_at,
+                kind: StudioProductEventKind::AgentDirectoryChanged(state.materialize()),
+            },
+        }
+    }
+}
+
+/// A receiver over the shared publication buffer. Value consumers materialize on delivery.
+pub(in crate::studio) struct ProductEventReceiver {
+    receiver: broadcast::Receiver<ProductPublication>,
+}
+
+impl ProductEventReceiver {
+    pub(super) fn new(receiver: broadcast::Receiver<ProductPublication>) -> Self {
+        Self { receiver }
+    }
+
+    pub(in crate::studio) async fn recv(
+        &mut self,
+    ) -> Result<StudioProductEventEnvelope, ProductTopicRecvError> {
+        let publication = self.recv_publication().await?;
+        Ok(publication.materialize())
+    }
+
+    /// Catalog refresh uses directory changes as wakes and reads the other event kinds by value.
+    pub(in crate::studio) async fn recv_catalog_change(
+        &mut self,
+    ) -> Result<Option<StudioProductEventKind>, ProductTopicRecvError> {
+        Ok(match self.recv_publication().await? {
+            ProductPublication::Value(event) => Some(Arc::unwrap_or_clone(event).kind),
+            ProductPublication::AgentDirectory { .. } => None,
+        })
+    }
+
+    pub(super) async fn recv_publication(
+        &mut self,
+    ) -> Result<ProductPublication, ProductTopicRecvError> {
+        self.receiver.recv().await
+    }
+
+    pub(in crate::studio) fn try_recv(
+        &mut self,
+    ) -> Result<StudioProductEventEnvelope, ProductTopicTryRecvError> {
+        self.try_recv_publication()
+            .map(ProductPublication::materialize)
+    }
+
+    pub(super) fn try_recv_publication(
+        &mut self,
+    ) -> Result<ProductPublication, ProductTopicTryRecvError> {
+        self.receiver.try_recv()
+    }
+}
 
 pub use tokio::sync::broadcast::error::{
     RecvError as ProductTopicRecvError, TryRecvError as ProductTopicTryRecvError,
 };
 
 /// 单个 topic 通道的容量；与订阅者消费速率无关的进程内环形缓冲。
-const TOPIC_CHANNEL_CAPACITY: usize = 256;
+pub(super) const TOPIC_CHANNEL_CAPACITY: usize = 256;
 
 /// 代次保护的 sender 表。旧凭证只能回收自己登记的那一代。
 #[derive(Debug)]
@@ -46,8 +138,8 @@ pub(in crate::studio::product_event_bus) trait TopicSender:
     fn attach(&self) -> Self::Receiver;
 }
 
-impl TopicSender for broadcast::Sender<StudioProductEventEnvelope> {
-    type Receiver = broadcast::Receiver<StudioProductEventEnvelope>;
+impl<T: Clone> TopicSender for broadcast::Sender<T> {
+    type Receiver = broadcast::Receiver<T>;
 
     fn open() -> Self {
         broadcast::channel(TOPIC_CHANNEL_CAPACITY).0
@@ -169,11 +261,12 @@ impl<K: Ord> TopicMap<watch::Sender<()>, K> {
 
 /// 一个独占的产品主题接收凭证。
 ///
-/// 丢弃凭证先释放接收者，再回收同一登记代次中已无需求的通知通道；不持有产品总线或
-/// 领域 owner。取消一次 [`Self::recv`] 等待不会释放凭证，也不会消费尚未交付的事件。
+/// 丢弃凭证先释放接收者，再回收同一登记代次中已无需求的通知通道。待投递的 Agent
+/// 帧只保留 RAM 目录事实及反向补丁，不保留产品总线、Store、writer 或执行资源。
+/// 取消一次 [`Self::recv`] 等待不会释放凭证，也不会消费尚未交付的事件。
 /// 通道没有 durable replay；重新订阅后须读取当前领域基线。
 pub struct ProductTopicReceiver {
-    receiver: Option<broadcast::Receiver<StudioProductEventEnvelope>>,
+    receiver: Option<ProductEventReceiver>,
     registration: TopicLease<StudioProductTopic>,
     registry: Weak<Mutex<TopicChannels>>,
 }
@@ -194,6 +287,16 @@ impl ProductTopicReceiver {
             .as_mut()
             .expect("live product topic registration")
             .try_recv()
+    }
+
+    #[cfg(test)]
+    pub(super) fn try_recv_publication(
+        &mut self,
+    ) -> Result<ProductPublication, ProductTopicTryRecvError> {
+        self.receiver
+            .as_mut()
+            .expect("live product topic registration")
+            .try_recv_publication()
     }
 }
 
@@ -265,11 +368,18 @@ struct TopicEntry<S> {
 /// replay），新订阅者通过首帧基线取得当前事实。
 #[derive(Debug, Default)]
 pub(super) struct TopicChannels {
-    channels: TopicMap<broadcast::Sender<StudioProductEventEnvelope>>,
+    channels: TopicMap<broadcast::Sender<ProductPublication>>,
     signals: TopicMap<watch::Sender<()>>,
 }
 
 impl TopicChannels {
+    /// Only value subscriptions require a frozen event payload; signals read the owner later.
+    pub(super) fn has_value_receivers(&self, topic: &StudioProductTopic) -> bool {
+        self.channels
+            .sender(topic)
+            .is_some_and(|sender| sender.receiver_count() > 0)
+    }
+
     /// Wake-only latest-state observation: no business payload and no event backlog.
     pub(super) fn subscribe_signal(
         registry: &Arc<Mutex<Self>>,
@@ -296,7 +406,7 @@ impl TopicChannels {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (receiver, registration) = channels.channels.subscribe(topic.clone());
         ProductTopicReceiver {
-            receiver: Some(receiver),
+            receiver: Some(ProductEventReceiver::new(receiver)),
             registration,
             registry: Arc::downgrade(registry),
         }
@@ -307,10 +417,23 @@ impl TopicChannels {
     /// 通道没有订阅者或已关闭时丢弃；`sequence` 是全局序列，消费端按领域 revision
     /// 判断新旧，因此同一通道内序列不连续不是 lag。
     pub(super) fn dispatch(&mut self, envelope: &StudioProductEventEnvelope) {
-        let topic = StudioProductTopic::of_kind(&envelope.kind);
+        self.dispatch_to(StudioProductTopic::of_kind(&envelope.kind), || {
+            ProductPublication::Value(Arc::new(envelope.clone()))
+        });
+    }
+
+    pub(super) fn dispatch_publication(&mut self, publication: &ProductPublication) {
+        self.dispatch_to(publication.topic(), || publication.clone());
+    }
+
+    fn dispatch_to(
+        &mut self,
+        topic: StudioProductTopic,
+        publication: impl FnOnce() -> ProductPublication,
+    ) {
         self.notify(&topic);
         if let Some(sender) = self.channels.sender(&topic)
-            && sender.send(envelope.clone()).is_err()
+            && sender.send(publication()).is_err()
         {
             self.channels.remove(&topic);
         }

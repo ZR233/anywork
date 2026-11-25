@@ -21,7 +21,6 @@ use crate::studio::{ProductEventBus, unix_seconds};
 
 use super::super::acp_ops::{CommandLedger, RetainedTask};
 use super::mapping::failure;
-use super::source::SourcePolicy;
 
 /// 每操作独立的资源 owner：当前阻塞阶段任务与自有暂存都登记在这里，登记先于等待。
 ///
@@ -365,6 +364,16 @@ pub(super) struct Registry {
 }
 
 impl Registry {
+    fn retire_operation(&mut self, operation: Arc<Operation>) {
+        // Release the asset lock and stage resources only after the terminal cut.
+        // Shutdown may already have joined the supervisor while retrying cleanup.
+        operation.release_heavy_resources();
+        if !operation.supervisor_joined() {
+            self.retired
+                .insert(operation.operation_id.clone(), operation);
+        }
+    }
+
     pub(super) fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
         self.updated_at = unix_seconds();
@@ -407,8 +416,6 @@ pub(super) struct AcpInstallInner {
     pub(super) store: crate::studio::StudioStore,
     events: ProductEventBus,
     accounts: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
-    #[cfg(test)]
-    policy_override: Mutex<Option<super::source::TestSourceOverride>>,
     registry: Mutex<Registry>,
 }
 
@@ -422,31 +429,8 @@ impl AcpInstallInner {
             store,
             events,
             accounts,
-            #[cfg(test)]
-            policy_override: Mutex::new(None),
             registry: Mutex::new(Registry::default()),
         }
-    }
-
-    pub(super) fn policy(&self) -> SourcePolicy {
-        #[cfg(test)]
-        if let Some(custom) = self
-            .policy_override
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-        {
-            return SourcePolicy::for_test(custom);
-        }
-        SourcePolicy::official()
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_test_policy(&self, override_source: super::source::TestSourceOverride) {
-        *self
-            .policy_override
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(override_source);
     }
 
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
@@ -642,14 +626,7 @@ impl AcpInstallInner {
             slot.busy = false;
             slot.state = decided;
             slot.operation = None;
-            retired.release_heavy_resources();
-            // 终态提交时已经 joined 的 operation（例如关闭阶段 residue 收束后补发终态）不再退休：
-            // 它的句柄已被关闭 owner 观测到终止，再登记只会留下一个 join=None 的 stale Arc。
-            if !retired.supervisor_joined() {
-                registry
-                    .retired
-                    .insert(retired.operation_id.clone(), retired);
-            }
+            registry.retire_operation(retired);
             registry.bump();
             (registry.snapshot(), ready_version)
         };
@@ -824,12 +801,7 @@ impl AcpInstallInner {
                 failure,
             };
             slot.operation = None;
-            retired.release_heavy_resources();
-            if !retired.supervisor_joined() {
-                registry
-                    .retired
-                    .insert(retired.operation_id.clone(), retired);
-            }
+            registry.retire_operation(retired);
             registry.bump();
             registry.snapshot()
         };

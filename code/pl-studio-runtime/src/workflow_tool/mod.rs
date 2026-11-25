@@ -1,12 +1,26 @@
 //! Product workflow state transitions and Thread-owned dynamic tools.
+mod compiler;
+mod context;
 mod dynamic;
 pub(crate) mod machine;
+mod preview;
+mod runtime;
+mod state;
 mod types;
 
-pub use dynamic::{
-    WORKFLOW_EXTENSION, decode_workflow_state, encode_workflow_state, workflow_registrations,
+pub use compiler::{
+    CompiledWorkflowDefinition, MAX_WORKFLOW_DEFINITION_BYTES, MAX_WORKFLOW_STATES,
+    MAX_WORKFLOW_TRANSITIONS, WorkflowCompilerError, WorkflowValidationIssue,
+    compile_workflow_definition,
 };
-pub(crate) use dynamic::{WorkflowOperationKind, workflow_tool_definitions};
+pub(crate) use context::workflow_model_context_section;
+pub use dynamic::{WORKFLOW_EXTENSION, decode_workflow_state, encode_workflow_state};
+pub(crate) use dynamic::{
+    WorkflowOperationKind, workflow_registrations, workflow_tool_definitions,
+};
+pub(crate) use preview::preview_workflow;
+pub(crate) use runtime::{WorkflowBinding, new_run, reconcile_workflow_for_turn};
+pub(crate) use state::archive_workflow_for_mode_change;
 pub use types::*;
 pub const TOOL_WORKFLOW_CURRENT: &str = "workflow_current";
 pub const TOOL_WORKFLOW_GRAPH: &str = "workflow_graph";

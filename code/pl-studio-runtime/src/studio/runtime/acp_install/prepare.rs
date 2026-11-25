@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::archive::{self, ExpectedInstall};
 use super::paths::ManagedRoot;
-use super::source::{self, ResolvedRelease, SourcePolicy, VersionClassification};
+use super::source::{self, ResolvedRelease, VersionClassification};
 
 const MAX_INSTALLED_DIRS_SCAN: usize = 64;
 
@@ -61,11 +61,7 @@ pub(in crate::studio::runtime) async fn verified_install(
     let home = store.paths().home().to_path_buf();
     let root = store.acp_servers_root();
     let cancel = cancellation.clone();
-    match tokio::task::spawn_blocking(move || {
-        verify(&home, root, &SourcePolicy::official(), provider, &cancel)
-    })
-    .await
-    {
+    match tokio::task::spawn_blocking(move || verify(&home, root, provider, &cancel)).await {
         Ok(result) => result,
         Err(_) => Err(PrepareFailure::Io),
     }
@@ -74,7 +70,6 @@ pub(in crate::studio::runtime) async fn verified_install(
 /// 供 `AcpInstallRuntime` 启动阶段做只读扫描（不因缺失或失败阻断启动）。
 pub(super) async fn scan_installed(
     store: &crate::studio::StudioStore,
-    policy: SourcePolicy,
     provider: AcpProvider,
     cancellation: &CancellationToken,
 ) -> Option<AcpInstalledServer> {
@@ -85,7 +80,7 @@ pub(super) async fn scan_installed(
         AcpProvider::Antigravity => crate::config::AcpProvider::Antigravity,
     };
     tokio::task::spawn_blocking(move || {
-        let verified = verify(&home, root, &policy, config_provider, &cancel).ok()?;
+        let verified = verify(&home, root, config_provider, &cancel).ok()?;
         let receipt_path = verified
             .program
             .parent()
@@ -112,7 +107,6 @@ pub(super) async fn scan_installed(
 /// 查找本机已安装且通过完整性校验的最高 `1.x` 发行描述符，供远端出现 `2.x` 时复核现有 `1.x`。
 pub(super) async fn best_local_release(
     store: &crate::studio::StudioStore,
-    policy: SourcePolicy,
     provider: AcpProvider,
     cancellation: &CancellationToken,
 ) -> Option<ResolvedRelease> {
@@ -123,7 +117,7 @@ pub(super) async fn best_local_release(
         AcpProvider::Antigravity => crate::config::AcpProvider::Antigravity,
     };
     tokio::task::spawn_blocking(move || {
-        let verified = verify(&home, root, &policy, config_provider, &cancel).ok()?;
+        let verified = verify(&home, root, config_provider, &cancel).ok()?;
         let command = archive::normalize_relative(verified.program.file_name()?.to_str()?);
         Some(ResolvedRelease {
             release: verified.release,
@@ -139,7 +133,6 @@ pub(super) async fn best_local_release(
 pub(super) fn verify(
     home: &Path,
     root_path: PathBuf,
-    policy: &SourcePolicy,
     provider: crate::config::AcpProvider,
     cancellation: &CancellationToken,
 ) -> Result<VerifiedInstall, PrepareFailure> {
@@ -203,8 +196,7 @@ pub(super) fn verify(
         }
         let archive_url = reqwest::Url::parse(&receipt.release.archive_url)
             .map_err(|_| PrepareFailure::InstallationInvalid)?;
-        policy
-            .validate_archive_url(&archive_url)
+        source::validate_archive_url(&archive_url)
             .map_err(|_| PrepareFailure::InstallationInvalid)?;
         source::validate_optional_sha256(receipt.release.sha256.as_deref(), stage)
             .map_err(|_| PrepareFailure::InstallationInvalid)?;

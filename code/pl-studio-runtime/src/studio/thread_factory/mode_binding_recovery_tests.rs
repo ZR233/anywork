@@ -142,7 +142,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(same_mode_instruction_records, initial_instruction_records);
-    let saved_binding = crate::compaction::decode_instruction_binding(
+    let saved_binding = crate::context_preparation::decode_instruction_binding(
         &same_mode.extensions["studio.instructions.binding"],
     )?;
     assert!(saved_binding.append_snapshots);
@@ -250,8 +250,8 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
     tokio::fs::create_dir_all(home.join("modes")).await?;
     tokio::fs::write(
         home.join("modes/mode.custom_check.json"),
-        serde_json::to_vec(&crate::mode::ThreadModeDocument {
-            definition: crate::mode::ThreadModeDefinition {
+        serde_json::to_vec(&crate::mode::ThreadModeDocument::from_parts(
+            crate::mode::ThreadModeDefinition {
                 id: second_mode_id.clone(),
                 display_name: "Custom Check".into(),
                 description: "Mode change test".into(),
@@ -259,8 +259,8 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
                 prompt: "Custom prompt".into(),
                 workflow: None,
             },
-            editor: Default::default(),
-        })?,
+            Default::default(),
+        ))?,
     )
     .await?;
     let runtime = crate::StudioRuntime::initialize(options()).await?;
@@ -306,7 +306,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
             text: instructions.trusted_text().into(),
         }]
     );
-    crate::compaction::decode_instruction_binding(
+    crate::context_preparation::decode_instruction_binding(
         &changed.extensions["studio.instructions.binding"],
     )?;
     reopened.close().await?;

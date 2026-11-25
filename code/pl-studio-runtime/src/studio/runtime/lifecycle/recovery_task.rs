@@ -92,7 +92,7 @@ impl StudioRuntime {
             .product_events
             .emit_recovery_state(self.recovery.state());
     }
-    pub(super) async fn stop_recovery_scan(&self) -> Result<()> {
+    pub(in crate::studio::runtime) async fn stop_recovery_scan(&self) -> Result<()> {
         background_task::stop(&self.recovery_task)
             .await
             .map_err(|error| anyhow::anyhow!("recovery task failed: {error}"))?;

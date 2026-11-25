@@ -15,8 +15,13 @@ impl HistoryStore {
             return Ok(None);
         };
         let tx = connection.db.begin().await?;
-        let result = read(&tx, &self.state.thread_id).await?;
+        let mut result = read(&tx, &self.state.thread_id).await?;
         tx.commit().await?;
+        if let Some(checkpoint) = result.as_mut() {
+            crate::studio::producer_migration::permission_responses(
+                checkpoint.state.permissions.values_mut(),
+            )?;
+        }
         Ok(result.map(|checkpoint| *checkpoint))
     }
 

@@ -91,6 +91,11 @@ impl<S, M> PullObservation<S, M> {
     }
 
     #[cfg(test)]
+    pub(in crate::studio::runtime) fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    #[cfg(test)]
     pub(in crate::studio::runtime) async fn lock(
         &self,
     ) -> tokio::sync::MutexGuard<'_, PullGate<S, M>> {

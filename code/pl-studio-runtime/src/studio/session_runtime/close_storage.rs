@@ -1,0 +1,722 @@
+//! A cold owner's exact storage binding and one retained AttachCold operation.
+use super::{ClosePurpose, EntryPurpose, SessionRuntime, ThreadAssemblyError};
+use crate::studio::ThreadStorageBinding;
+use futures::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
+use pl_core::thread::{ThreadError, ThreadLifecycle, current::ThreadCurrent};
+use std::sync::Arc;
+
+type AttachmentCompletion = Shared<BoxFuture<'static, Result<(), Arc<ThreadError>>>>;
+
+/// The Entry owns the binding until its real core/observation/writer joins and compare-remove.
+/// In particular, attachment success does not discard the writer incarnation.
+#[derive(Clone)]
+pub(crate) enum CloseStorage {
+    /// Ordinary assembly retains AttachCold and its exact writer before extension setup can fail.
+    Execution {
+        completion: AttachmentCompletion,
+        binding: Option<Arc<ThreadStorageBinding>>,
+        preparation_storage: Option<String>,
+        observation_installed: bool,
+        joined: bool,
+    },
+    Pending {
+        record: Box<crate::Thread>,
+        current: Box<ThreadCurrent>,
+    },
+    Initialized(Arc<ThreadStorageBinding>),
+    Attaching {
+        binding: Arc<ThreadStorageBinding>,
+        completion: AttachmentCompletion,
+    },
+    Attached(Arc<ThreadStorageBinding>),
+}
+
+impl std::fmt::Debug for CloseStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Execution { .. } => "CloseStorage::Execution",
+            Self::Pending { .. } => "CloseStorage::Pending",
+            Self::Initialized(_) => "CloseStorage::Initialized",
+            Self::Attaching { .. } => "CloseStorage::Attaching",
+            Self::Attached(_) => "CloseStorage::Attached",
+        })
+    }
+}
+
+/// Owns the physical history/current attachment acknowledgement for one exact Core instance.
+/// Implementations must not retain a Registry or call back while the session transaction is held.
+pub(crate) trait StorageAttachment: std::fmt::Debug + Send + Sync {
+    fn attach(
+        &self,
+        thread: pl_core::thread::ThreadHandle,
+        storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+        current: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
+    ) -> BoxFuture<'static, Result<(), Arc<ThreadError>>>;
+}
+#[derive(Debug, Default)]
+pub(crate) struct NativeStorageAttachment;
+impl StorageAttachment for NativeStorageAttachment {
+    fn attach(
+        &self,
+        thread: pl_core::thread::ThreadHandle,
+        storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+        current: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
+    ) -> BoxFuture<'static, Result<(), Arc<ThreadError>>> {
+        Box::pin(async move {
+            thread
+                .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
+                    storage,
+                ))
+                .await
+                .map_err(Arc::new)?;
+            if let Some(current) = current {
+                current.attach_current(thread).await.map_err(|source| {
+                    Arc::new(ThreadError::Storage(Arc::new(
+                        pl_core::thread::cold::ColdStoreError {
+                            source: source.into_boxed_dyn_error(),
+                        },
+                    )))
+                })?;
+            }
+            Ok(())
+        })
+    }
+}
+
+fn retain_attachment(
+    attachment: Arc<dyn StorageAttachment>,
+    thread: pl_core::thread::ThreadHandle,
+    storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+    current: Option<Arc<crate::studio::conversation_store::ConversationStore>>,
+) -> AttachmentCompletion {
+    // Invocation is deferred until poll, outside the registration transaction. This future owns
+    // the exact writer/core pair and its result survives cancellation of every external waiter.
+    async move { attachment.attach(thread, storage, current).await }
+        .boxed()
+        .shared()
+}
+
+impl SessionRuntime {
+    pub(crate) async fn settle_failed_activation(
+        &self,
+        id: &str,
+        workspace: &super::WorkspacePreparationOwner,
+    ) -> Result<(), ThreadAssemblyError> {
+        use crate::studio::store::thread_preparation::PreparationSave;
+        let purpose = self.operation_close_purpose(id, ClosePurpose::Preserve);
+        if self.observed_thread(id).is_some() {
+            self.close(id).await?;
+        }
+        self.close_prepared_resources(
+            id,
+            &crate::session::PreparedResources::Native(workspace.native_resources()),
+        )
+        .await?;
+        let services = { self.0.state().agent_services.clone() };
+        let Some(services) = services else {
+            return Ok(());
+        };
+        let record = if purpose == ClosePurpose::Delete {
+            services.store.thread_preparation_for_deletion(id).await
+        } else {
+            services.store.thread_preparation(id).await
+        }
+        .map_err(preparation_storage_error)?;
+        let Some(record) = record else {
+            return Ok(());
+        };
+        if record.published {
+            return Ok(());
+        }
+        if purpose == ClosePurpose::Delete || record.save == PreparationSave::Unattached {
+            // The stopped factory (including an unwound factory) and its scope have now joined.
+            // No unconfirmed core/storage producer remains before the durable stop ACK.
+            self.confirm_preparation_close_for_purpose(id, false, purpose)
+                .await?;
+        } else if !record.stopped {
+            return Err(ThreadAssemblyError::Identity(
+                "failed activation still owns an unconfirmed checkpoint".into(),
+            ));
+        }
+        let record = services
+            .store
+            .thread_preparation(id)
+            .await
+            .map_err(preparation_storage_error)?
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
+        match purpose {
+            ClosePurpose::Preserve => services.factory.retire_archive_preparation(&record).await?,
+            ClosePurpose::Delete => services.factory.retire_deleted_preparation(&record).await?,
+        }
+        drop(workspace.take());
+        Ok(())
+    }
+
+    /// Cold archive repair is storage-only and retains the normal close binding/ACK owner.
+    pub(crate) async fn ensure_archive_storage_owner(
+        &self,
+        record: &crate::Thread,
+    ) -> Result<(), ThreadAssemblyError> {
+        let _operation = self.agent_operation(&record.id).await;
+        if self.observed_thread(&record.id).is_some() {
+            return Ok(());
+        }
+        let services =
+            { self.0.state().agent_services.clone() }.ok_or(ThreadAssemblyError::Closed)?;
+        if services
+            .store
+            .thread_preparation(&record.id)
+            .await
+            .map_err(preparation_storage_error)?
+            .is_some_and(|owner| !owner.published)
+        {
+            return Err(ThreadAssemblyError::Identity(
+                "private preparation requires its original storage receipt, not a cold owner"
+                    .into(),
+            ));
+        }
+        // A cold descendant may still use a supported old history format even when the root
+        // was already opened. Prepare its storage through the shared recovery boundary before
+        // decoding a complete current document; no model, tools or execution identity are restored.
+        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
+            &services.store,
+            record,
+        )
+        .await
+        .map_err(preparation_storage_error)?
+        .ok_or_else(|| {
+            ThreadAssemblyError::Identity(format!(
+                "archive current is unconfirmed for {}",
+                record.id
+            ))
+        })?;
+        services.install_storage_owner(self, record, current, EntryPurpose::CloseStorage)?;
+        Ok(())
+    }
+
+    pub(crate) async fn attach_execution_storage(
+        &self,
+        id: &str,
+        storage: crate::studio::storage::thread_writer::ThreadStorageSink,
+    ) -> Result<(), ThreadAssemblyError> {
+        let services = { self.0.state().agent_services.clone() };
+        let preparation = match &services {
+            Some(services) => services
+                .store
+                .thread_preparation(id)
+                .await
+                .map_err(preparation_storage_error)?,
+            None => None,
+        };
+        let mut preparation_storage = None;
+        if let Some(services) = &services
+            && preparation.as_ref().is_some_and(|record| !record.published)
+        {
+            let incarnation = crate::studio::new_id("preparation-storage");
+            let through = self
+                .observed_thread(id)
+                .ok_or(ThreadAssemblyError::Closed)?
+                .snapshot()
+                .commit_sequence;
+            services
+                .store
+                .require_preparation_save(id, &incarnation, through)
+                .await
+                .map_err(preparation_storage_error)?;
+            preparation_storage = Some(incarnation);
+        }
+        let (thread, channel) = {
+            let state = self.0.state();
+            let entry = state
+                .members
+                .entries
+                .get(id)
+                .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
+            (
+                entry.native()?.thread.clone(),
+                state
+                    .agent_services
+                    .as_ref()
+                    .map(|services| services.store.thread_persistence().history_channel(id)),
+            )
+        };
+        let conversation = match services.as_ref() {
+            Some(services) => Some(
+                match &preparation {
+                    Some(preparation) => {
+                        services
+                            .store
+                            .conversation_store_for(&preparation.identity.workspace_id, id)
+                            .await
+                    }
+                    None => services.store.conversation_store(id).await,
+                }
+                .map_err(preparation_storage_error)?,
+            ),
+            None => None,
+        };
+        let binding = channel.zip(conversation).map(|(channel, conversation)| {
+            Arc::new(ThreadStorageBinding::new(
+                storage.clone(),
+                channel,
+                conversation,
+            ))
+        });
+        let current = binding.as_ref().map(|binding| binding.conversation.clone());
+        let attachment = self.0.state().close.attachment.clone();
+        let completion = retain_attachment(attachment, thread, storage, current);
+        self.0
+            .state()
+            .members
+            .entries
+            .get_mut(id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?
+            .native_mut()?
+            .close_storage = Some(CloseStorage::Execution {
+            completion: completion.clone(),
+            binding,
+            preparation_storage,
+            observation_installed: false,
+            joined: false,
+        });
+        completion
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "attach ordinary execution storage",
+                source: Box::new(source),
+            })
+    }
+
+    pub(crate) async fn confirm_preparation_close(
+        &self,
+        id: &str,
+        retired: bool,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.confirm_preparation_close_for_purpose(id, retired, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(crate) async fn confirm_preparation_close_for_purpose(
+        &self,
+        id: &str,
+        retired: bool,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
+        let services = { self.0.state().agent_services.clone() };
+        if let Some(services) = services {
+            let record = if purpose == ClosePurpose::Delete {
+                services.store.thread_preparation_for_deletion(id).await
+            } else {
+                services.store.thread_preparation(id).await
+            }
+            .map_err(preparation_storage_error)?;
+            if !record.is_some_and(|record| !record.published) {
+                return Ok(());
+            }
+            if purpose == ClosePurpose::Delete {
+                services
+                    .store
+                    .confirm_preparation_stop_for_deletion(id)
+                    .await
+            } else {
+                services.store.confirm_preparation_stop(id).await
+            }
+            .map_err(preparation_storage_error)?;
+            if retired {
+                services
+                    .store
+                    .confirm_preparation_retirement(id)
+                    .await
+                    .map_err(preparation_storage_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The caller holds this identity's operation permit. Register the one shared operation
+    /// before polling it: cancellation only drops a waiter, not AttachCold or its real result.
+    pub(crate) async fn attach_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        self.attach_close_storage_for_purpose(id, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(crate) async fn attach_close_storage_for_purpose(
+        &self,
+        id: &str,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
+        loop {
+            let owned = self.0.state().members.entries.get(id).and_then(|entry| {
+                let native = entry.native().ok()?;
+                Some({
+                    (
+                        native.incarnation.clone(),
+                        native.thread.clone(),
+                        native.close_storage.clone(),
+                    )
+                })
+            });
+            let (incarnation, thread, storage) =
+                owned.ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+            if purpose == ClosePurpose::Delete
+                && matches!(
+                    storage,
+                    Some(CloseStorage::Pending { .. } | CloseStorage::Initialized(_))
+                )
+            {
+                return Ok(());
+            }
+            match storage {
+                Some(CloseStorage::Execution { completion, .. }) => {
+                    completion
+                        .await
+                        .or_else(|source| match (purpose, source.as_ref()) {
+                            // The original queued AttachCold was consumed and rejected by
+                            // deletion admission. Keep its binding for the actual close/join.
+                            (ClosePurpose::Delete, ThreadError::Closed) => Ok(()),
+                            _ => Err(source),
+                        })
+                        .map_err(|source| ThreadAssemblyError::Resource {
+                            operation: "confirm ordinary storage attachment",
+                            source: Box::new(source),
+                        })?;
+                    return Ok(());
+                }
+                None => {
+                    if self.0.state().members.entries.get(id).is_some_and(|entry| {
+                        entry
+                            .native()
+                            .is_ok_and(|native| native.purpose == EntryPurpose::Execution)
+                    }) {
+                        return Ok(());
+                    }
+                    return Err(ThreadAssemblyError::Identity(id.to_owned()));
+                }
+                Some(CloseStorage::Pending { record, current }) => {
+                    let services = self
+                        .0
+                        .state()
+                        .agent_services
+                        .clone()
+                        .ok_or(ThreadAssemblyError::Closed)?;
+                    let binding = Arc::new(
+                        services
+                            .factory
+                            .child_close_storage(&record, &current)
+                            .await?,
+                    );
+                    {
+                        let mut state = self.0.state();
+                        let entry = state
+                            .members
+                            .entries
+                            .get_mut(id)
+                            .filter(|entry| {
+                                entry.native().is_ok_and(|native| {
+                                    Arc::ptr_eq(&native.incarnation, &incarnation)
+                                })
+                            })
+                            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+                        entry.native_mut()?.close_storage =
+                            Some(CloseStorage::Initialized(binding));
+                    }
+                    // The initialized sink supplies this exact channel; never resolve by ID later.
+                    self.publish_observation(id, &thread);
+                }
+                Some(CloseStorage::Initialized(binding)) => {
+                    let mut state = self.0.state();
+                    let entry = state
+                        .members
+                        .entries
+                        .get(id)
+                        .filter(|entry| {
+                            entry
+                                .native()
+                                .is_ok_and(|native| Arc::ptr_eq(&native.incarnation, &incarnation))
+                        })
+                        .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+                    if !matches!(entry.native()?.close_storage.as_ref(), Some(CloseStorage::Initialized(current))
+                        if Arc::ptr_eq(current, &binding))
+                    {
+                        continue;
+                    }
+                    let attachment = state.close.attachment.clone();
+                    let completion = retain_attachment(
+                        attachment,
+                        thread,
+                        binding.storage.clone(),
+                        Some(binding.conversation.clone()),
+                    );
+                    let entry = state
+                        .members
+                        .entries
+                        .get_mut(id)
+                        .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+                    entry.native_mut()?.close_storage = Some(CloseStorage::Attaching {
+                        binding,
+                        completion,
+                    });
+                }
+                Some(CloseStorage::Attaching {
+                    binding,
+                    completion,
+                }) => {
+                    if let Err(source) = completion.await {
+                        if purpose == ClosePurpose::Delete
+                            && matches!(source.as_ref(), ThreadError::Closed)
+                        {
+                            // Retain the completed rejection, without claiming storage attached.
+                            // The deletion join below still owns and releases this exact binding.
+                            return Ok(());
+                        }
+                        return Err(ThreadAssemblyError::Resource {
+                            operation: "attach close-only Thread storage",
+                            source: Box::new(source),
+                        });
+                    }
+                    let mut state = self.0.state();
+                    let entry = state
+                        .members
+                        .entries
+                        .get_mut(id)
+                        .filter(|entry| {
+                            entry
+                                .native()
+                                .is_ok_and(|native| Arc::ptr_eq(&native.incarnation, &incarnation))
+                        })
+                        .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+                    entry.native_mut()?.close_storage = Some(CloseStorage::Attached(binding));
+                    return Ok(());
+                }
+                Some(CloseStorage::Attached(_)) => return Ok(()),
+            }
+        }
+    }
+
+    /// writer 初始化后观察者即可借用原绑定恢复投影；Core 的附加完成仍由关闭流程确认。
+    /// 观察者不能等待 Core 附加命令，否则该命令的保存屏障可能反过来等待观察者。
+    pub(crate) fn projection_storage_binding(
+        &self,
+        id: &str,
+    ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {
+        let state = self.0.state();
+        let entry = state
+            .members
+            .entries
+            .get(id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        match entry.native()?.close_storage.as_ref() {
+            Some(CloseStorage::Execution { binding, .. }) => Ok(binding.clone()),
+            Some(
+                CloseStorage::Initialized(binding)
+                | CloseStorage::Attaching { binding, .. }
+                | CloseStorage::Attached(binding),
+            ) => Ok(Some(binding.clone())),
+            None if entry.native()?.purpose == EntryPurpose::Execution => Ok(None),
+            _ => Err(ThreadAssemblyError::Preparing(id.to_owned())),
+        }
+    }
+
+    /// Only ordinary execution entries legitimately have no close-only binding. A missing or
+    /// unfinished binding on either storage-only purpose cannot count as successful cleanup.
+    pub(crate) fn close_storage_binding(
+        &self,
+        id: &str,
+    ) -> Result<Option<Arc<ThreadStorageBinding>>, ThreadAssemblyError> {
+        let state = self.0.state();
+        let entry = state
+            .members
+            .entries
+            .get(id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        match entry.native()?.close_storage.as_ref() {
+            Some(CloseStorage::Execution { binding, .. }) => Ok(binding.clone()),
+            Some(CloseStorage::Attached(binding)) => Ok(Some(binding.clone())),
+            None if entry.native()?.purpose == EntryPurpose::Execution => Ok(None),
+            _ => Err(ThreadAssemblyError::Preparing(id.to_owned())),
+        }
+    }
+
+    pub(crate) async fn close_storage_core(
+        &self,
+        id: &str,
+    ) -> Result<Arc<ThreadStorageBinding>, ThreadAssemblyError> {
+        self.attach_close_storage(id).await?;
+        let binding = self
+            .close_storage_binding(id)?
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        let thread = self
+            .observed_thread(id)
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        // Closed can precede a failed close flush while the core is still servicing retries.
+        match thread.close().await {
+            Ok(()) => {}
+            Err(ThreadError::Closed) if thread.snapshot().lifecycle == ThreadLifecycle::Closed => {
+                thread.flush().await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(binding)
+    }
+
+    pub(crate) async fn join_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        self.join_close_storage_for_purpose(id, ClosePurpose::Preserve)
+            .await
+    }
+
+    pub(crate) async fn join_close_storage_for_purpose(
+        &self,
+        id: &str,
+        purpose: ClosePurpose,
+    ) -> Result<(), ThreadAssemblyError> {
+        if purpose == ClosePurpose::Delete {
+            // Await the retained operation even when its result was a seal rejection. This
+            // checks real failures before the binding can enter the physical writer join.
+            self.attach_close_storage_for_purpose(id, purpose).await?;
+            let binding = {
+                let state = self.0.state();
+                match state
+                    .members
+                    .entries
+                    .get(id)
+                    .and_then(|entry| entry.native().ok()?.close_storage.as_ref())
+                {
+                    Some(CloseStorage::Execution { binding, .. }) => binding.clone(),
+                    Some(
+                        CloseStorage::Initialized(binding)
+                        | CloseStorage::Attached(binding)
+                        | CloseStorage::Attaching { binding, .. },
+                    ) => Some(binding.clone()),
+                    Some(CloseStorage::Pending { .. }) | None => None,
+                }
+            };
+            if let Some(binding) = binding {
+                let thread = self
+                    .observed_thread(id)
+                    .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+                binding
+                    .conversation
+                    .close_current(&thread, ClosePurpose::Delete)
+                    .await
+                    .map_err(preparation_storage_error)?;
+                binding
+                    .channel
+                    .stop_and_join_for_deletion()
+                    .await
+                    .map_err(preparation_storage_error)?;
+            }
+            if let Some(CloseStorage::Execution { joined, .. }) = self
+                .0
+                .state()
+                .members
+                .entries
+                .get_mut(id)
+                .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())
+            {
+                *joined = true;
+            }
+            return Ok(());
+        }
+        let original = {
+            let state = self.0.state();
+            match state
+                .members
+                .entries
+                .get(id)
+                .and_then(|entry| entry.native().ok()?.close_storage.as_ref())
+            {
+                Some(CloseStorage::Execution {
+                    preparation_storage: Some(token),
+                    ..
+                }) => state
+                    .agent_services
+                    .clone()
+                    .map(|services| (services, token.clone())),
+                _ => None,
+            }
+        };
+        let original = match original {
+            Some((services, token))
+                if services
+                    .store
+                    .thread_preparation(id)
+                    .await
+                    .map_err(preparation_storage_error)?
+                    .is_some_and(|record| !record.published) =>
+            {
+                Some((services, token))
+            }
+            _ => None,
+        };
+        let through = if original.is_some() {
+            let thread = self
+                .observed_thread(id)
+                .ok_or(ThreadAssemblyError::Closed)?;
+            if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
+                return Err(ThreadAssemblyError::Preparing(id.into()));
+            }
+            thread.snapshot().commit_sequence
+        } else {
+            0
+        };
+        if let Some((services, token)) = &original {
+            services
+                .store
+                .target_preparation_save(id, token, through)
+                .await
+                .map_err(preparation_storage_error)?;
+        }
+        if let Some(binding) = self.close_storage_binding(id)? {
+            let thread = self
+                .observed_thread(id)
+                .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+            binding
+                .conversation
+                .close_current(&thread, ClosePurpose::Preserve)
+                .await
+                .map_err(preparation_storage_error)?;
+            // Closing the producer can admit its final History facts after Current has saved.
+            // Drain this History owner's actual handoff; a Current receipt or Core revision is
+            // neither evidence that these facts are durable nor a reason to stop its worker.
+            binding
+                .channel
+                .await_handoff_durable(id, binding.channel.handoff_ticket())
+                .await
+                .map_err(preparation_storage_error)?;
+            binding.channel.stop_and_join().await.map_err(|source| {
+                ThreadAssemblyError::Resource {
+                    operation: "join close-only Thread storage",
+                    source: source.into_boxed_dyn_error(),
+                }
+            })?;
+        }
+        if let Some((services, token)) = original {
+            services
+                .store
+                .confirm_preparation_save(id, &token, through)
+                .await
+                .map_err(preparation_storage_error)?;
+        }
+        if let Some(CloseStorage::Execution { joined, .. }) = self
+            .0
+            .state()
+            .members
+            .entries
+            .get_mut(id)
+            .and_then(|entry| entry.native_mut().ok()?.close_storage.as_mut())
+        {
+            *joined = true;
+        }
+        Ok(())
+    }
+}
+
+fn preparation_storage_error(source: anyhow::Error) -> ThreadAssemblyError {
+    ThreadAssemblyError::Resource {
+        operation: "retain private storage responsibility",
+        source: source.into_boxed_dyn_error(),
+    }
+}

@@ -112,11 +112,9 @@ impl StudioRuntime {
             // A completed delivery leaves the resident snapshot. Read pending effects first:
             // once the writer releases an effect from this window, its full delivery is already
             // committed in history. The following history read therefore closes that race.
-            if let Some((_, handle)) = self
-                .sessions
-                .observed_threads()
-                .into_iter()
-                .find(|(id, _)| id == &thread_id)
+            if let Some(handle) = self
+                .session_of(&thread_id)
+                .and_then(|session| session.observed_thread(&thread_id))
             {
                 for effect in handle.effects().await? {
                     deliveries.extend(effect.deliveries.iter().cloned());
@@ -125,18 +123,14 @@ impl StudioRuntime {
             let resources = FileResourceStore::new(self.store.session_resources_dir(&thread_id)?);
             // Current and the reliable RAM queue provide still-live deliveries. Historical proof
             // is an exact resource-entity query, never a scan over unrelated tool originals.
-            if crate::studio::thread_projection::resource_references_for_deliveries(
+            if let Some(bytes) = crate::studio::thread_projection::read_persisted_media(
+                &resources,
                 &deliveries,
                 &attachment_id,
-            )?
-            .is_some()
+            )
+            .await?
             {
-                return crate::studio::thread_projection::read_persisted_media(
-                    &resources,
-                    &deliveries,
-                    &attachment_id,
-                )
-                .await;
+                return Ok(bytes);
             }
             let history = self.store.open_history_reader(&thread_id).await?;
             return crate::studio::history_resources::read(&history, &resources, &attachment_id)

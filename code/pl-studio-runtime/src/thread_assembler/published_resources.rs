@@ -56,10 +56,10 @@ impl Drop for AgentOperationSeal {
         };
         let mut state = registry.state();
         for id in &self.ids {
-            if let Some(count) = state.sealed_agents.get_mut(id) {
+            if let Some(count) = state.close.sealed_agents.get_mut(id) {
                 *count -= 1;
                 if *count == 0 {
-                    state.sealed_agents.remove(id);
+                    state.close.sealed_agents.remove(id);
                 }
             }
         }
@@ -68,7 +68,7 @@ impl Drop for AgentOperationSeal {
 
 fn seal(registry: &Arc<Registry>, state: &mut State, ids: Vec<String>) -> AgentOperationSeal {
     for id in &ids {
-        *state.sealed_agents.entry(id.clone()).or_default() += 1;
+        *state.close.sealed_agents.entry(id.clone()).or_default() += 1;
     }
     AgentOperationSeal {
         registry: Arc::downgrade(registry),
@@ -96,16 +96,19 @@ impl SessionRuntime {
                 }
                 Ok(())
             };
-            for (id, entry) in &state.entries {
-                observe(id, super::State::membership_parent(&state.by_agent, entry))?;
+            for (id, entry) in &state.members.entries {
+                observe(
+                    id,
+                    super::EntryRegistry::membership_parent(&state.members.by_agent, entry),
+                )?;
             }
-            for (id, entry) in &state.creating {
+            for (id, entry) in &state.activation.creating {
                 observe(id, entry.parent_id.as_deref())?;
             }
-            for (id, entry) in &state.preparing_children {
+            for (id, entry) in &state.activation.preparing_children {
                 observe(id, Some(&entry.parent))?;
             }
-            for (id, entry) in &state.unpublished_children {
+            for (id, entry) in &state.activation.unpublished_children {
                 observe(id, Some(&entry.parent))?;
             }
             let roots = roots.iter().cloned().collect::<BTreeSet<_>>();
@@ -141,13 +144,18 @@ impl SessionRuntime {
             let private_ids = ids
                 .iter()
                 .filter(|id| {
-                    state.creating.get(*id).is_some_and(|preparation| {
-                        matches!(
-                            preparation.resources,
-                            crate::session::PreparedResources::Native(_)
-                        )
-                    }) || state.preparing_children.contains_key(*id)
-                        || state.unpublished_children.contains_key(*id)
+                    state
+                        .activation
+                        .creating
+                        .get(*id)
+                        .is_some_and(|preparation| {
+                            matches!(
+                                preparation.resources,
+                                crate::session::PreparedResources::Native(_)
+                            )
+                        })
+                        || state.activation.preparing_children.contains_key(*id)
+                        || state.activation.unpublished_children.contains_key(*id)
                 })
                 .cloned()
                 .collect();
@@ -163,7 +171,7 @@ impl SessionRuntime {
                 identities.push((id.clone(), parents.get(id).cloned().flatten(), root.clone()));
             }
             for id in &ids {
-                if let Some(pending) = state.unpublished_children.get(id)
+                if let Some(pending) = state.activation.unpublished_children.get(id)
                     && *pending
                         .retirement
                         .lock()
@@ -174,7 +182,7 @@ impl SessionRuntime {
                 }
             }
             for id in &ids {
-                if let Some(pending) = state.unpublished_children.get(id) {
+                if let Some(pending) = state.activation.unpublished_children.get(id) {
                     *pending
                         .retirement
                         .lock()
@@ -183,12 +191,14 @@ impl SessionRuntime {
                 }
             }
             let cancellation = state
+                .activation
                 .creating
                 .iter()
                 .filter(|(id, _)| depths.contains_key(*id))
                 .map(|(_, entry)| entry.cancellation.clone())
                 .chain(
                     state
+                        .activation
                         .preparing_children
                         .iter()
                         .filter(|(id, _)| depths.contains_key(*id))
@@ -239,7 +249,8 @@ impl SessionRuntime {
             let preparing = {
                 let state = self.0.state();
                 scope.members.iter().any(|(_, id)| {
-                    state.creating.contains_key(id) || state.preparing_children.contains_key(id)
+                    state.activation.creating.contains_key(id)
+                        || state.activation.preparing_children.contains_key(id)
                 })
             };
             if !preparing {
@@ -252,6 +263,7 @@ impl SessionRuntime {
             let acp = self
                 .0
                 .state()
+                .activation
                 .failed_preparations
                 .get(id)
                 .is_some_and(|failed| {
@@ -280,7 +292,7 @@ impl SessionRuntime {
         seal(&self.0, &mut self.0.state(), ids)
     }
 
-    pub(super) async fn seal_agent_close(
+    pub(crate) async fn seal_agent_close(
         &self,
         targets: &[(usize, String)],
         disposition: WorkspaceRelease,
@@ -292,7 +304,7 @@ impl SessionRuntime {
             let mut state = self.0.state();
             if let Some(id) = ids
                 .iter()
-                .find(|id| state.sealed_agents.contains_key(id.as_str()))
+                .find(|id| state.close.sealed_agents.contains_key(id.as_str()))
             {
                 return Err(ThreadAssemblyError::CloseDisposition((*id).clone()));
             }
@@ -308,7 +320,7 @@ impl SessionRuntime {
         }
         let mut state = self.0.state();
         for (_, id) in targets {
-            if let Some(entry) = state.entries.get(id)
+            if let Some(entry) = state.members.entries.get(id)
                 && entry
                     .native()?
                     .workspace_disposition
@@ -319,7 +331,7 @@ impl SessionRuntime {
         }
         let standalone = state.agent_services.is_none();
         for (_, id) in targets {
-            if let Some(entry) = state.entries.get_mut(id) {
+            if let Some(entry) = state.members.entries.get_mut(id) {
                 // Standalone assemblers have no Studio persistence contract. Studio seals only
                 // admission here: publishing Cleanup before a successful flush would let ordinary
                 // shutdown consume an uncommitted request after the owned close fails.
@@ -337,13 +349,14 @@ impl SessionRuntime {
 
     /// Caller holds this identity's operation permit and has just successfully flushed its close
     /// intent. An in-memory marker after a failed flush never authorizes publishing a new policy.
-    pub(super) fn freeze_agent_close_disposition(
+    pub(crate) fn freeze_agent_close_disposition(
         &self,
         id: &str,
         disposition: WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         let entry = state
+            .members
             .entries
             .get_mut(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
@@ -360,17 +373,18 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn close_published_resources(
+    pub(crate) async fn close_published_resources(
         &self,
         id: &str,
         incarnation: &Arc<()>,
     ) -> Result<(), ThreadAssemblyError> {
         let cleanup = {
             let state = self.0.state();
-            if state.unpublished_children.contains_key(id) {
+            if state.activation.unpublished_children.contains_key(id) {
                 return Ok(());
             }
             state
+                .members
                 .entries
                 .get(id)
                 .filter(|entry| {
@@ -391,6 +405,7 @@ impl SessionRuntime {
         let resource = {
             let state = self.0.state();
             state
+                .members
                 .entries
                 .get(id)
                 .filter(|entry| {
@@ -413,7 +428,7 @@ impl SessionRuntime {
         };
         if let Some((factory, disposition)) = resource {
             factory.close_published(id, disposition).await?;
-            if let Some(entry) = self.0.state().entries.get_mut(id)
+            if let Some(entry) = self.0.state().members.entries.get_mut(id)
                 && Arc::ptr_eq(&entry.native()?.incarnation, incarnation)
             {
                 entry.native_mut()?.published_resources_closed = true;
@@ -441,7 +456,7 @@ mod archive_scope_tests {
         let cancellation = CancellationToken::new();
         {
             let mut state = owner.0.state();
-            state.creating.insert(
+            state.activation.creating.insert(
                 "child".into(),
                 Preparation {
                     resources: crate::session::PreparedResources::Native(Arc::new(
@@ -454,7 +469,7 @@ mod archive_scope_tests {
                     result: None,
                 },
             );
-            state.preparing_children.insert(
+            state.activation.preparing_children.insert(
                 "child".into(),
                 PreparingChild {
                     parent: "another-root".into(),
@@ -467,7 +482,7 @@ mod archive_scope_tests {
             Err(ThreadAssemblyError::Identity(_))
         ));
         assert!(!cancellation.is_cancelled());
-        assert!(owner.0.state().sealed_agents.is_empty());
+        assert!(owner.0.state().close.sealed_agents.is_empty());
     }
 
     #[tokio::test]
@@ -475,8 +490,12 @@ mod archive_scope_tests {
         let owner = SessionRuntime::default();
         let reservation = owner.reserve("root", None).unwrap();
         let unrelated = owner.reserve("unrelated", None).unwrap();
-        let root_cancel = owner.0.state().creating["root"].cancellation.clone();
-        let unrelated_cancel = owner.0.state().creating["unrelated"].cancellation.clone();
+        let root_cancel = owner.0.state().activation.creating["root"]
+            .cancellation
+            .clone();
+        let unrelated_cancel = owner.0.state().activation.creating["unrelated"]
+            .cancellation
+            .clone();
         let permit = owner.agent_operation("root").await;
         let scope = owner.seal_archive_scope(&["root".into()]).unwrap();
         assert!(
@@ -584,7 +603,7 @@ mod archive_scope_tests {
         let child_cancel = CancellationToken::new();
         {
             let mut state = owner.0.state();
-            state.creating.insert(
+            state.activation.creating.insert(
                 "creating-child".into(),
                 Preparation {
                     resources: crate::session::PreparedResources::Native(Arc::new(
@@ -597,14 +616,14 @@ mod archive_scope_tests {
                     result: None,
                 },
             );
-            state.preparing_children.insert(
+            state.activation.preparing_children.insert(
                 "unpublished-grandchild".into(),
                 PreparingChild {
                     parent: "creating-child".into(),
                     cancellation: child_cancel.clone(),
                 },
             );
-            state.unpublished_children.insert(
+            state.activation.unpublished_children.insert(
                 "unpublished-grandchild".into(),
                 UnpublishedChild {
                     retirement: Default::default(),
@@ -633,8 +652,11 @@ mod archive_scope_tests {
         assert!(futures::poll!(&mut drain).is_pending());
         {
             let mut state = owner.0.state();
-            state.creating.remove("creating-child");
-            state.preparing_children.remove("unpublished-grandchild");
+            state.activation.creating.remove("creating-child");
+            state
+                .activation
+                .preparing_children
+                .remove("unpublished-grandchild");
         }
         owner.0.changed.notify_waiters();
         assert!(drain.await.is_err());
@@ -643,6 +665,7 @@ mod archive_scope_tests {
             owner
                 .0
                 .state()
+                .activation
                 .unpublished_children
                 .contains_key("unpublished-grandchild")
         );
@@ -653,6 +676,7 @@ mod archive_scope_tests {
             !owner
                 .0
                 .state()
+                .activation
                 .unpublished_children
                 .contains_key("unpublished-grandchild")
         );
@@ -667,7 +691,7 @@ mod archive_scope_tests {
             "root", None,
         ));
         owner
-            .assemble(crate::thread_assembler::archive_test_spec(
+            .assemble(crate::test_support::archive_test_spec(
                 "root".into(),
                 None,
                 temp.path(),
@@ -683,7 +707,7 @@ mod archive_scope_tests {
             crate::thread_assembler::ThreadActivation::native_test("child", Some("root"));
         {
             let mut state = owner.0.state();
-            state.insert_entry(
+            state.members.insert_entry(
                 "child".into(),
                 crate::session::AgentInstance {
                     identity: activation.agent,
@@ -710,7 +734,7 @@ mod archive_scope_tests {
                     )),
                 },
             );
-            state.unpublished_children.insert(
+            state.activation.unpublished_children.insert(
                 "child".into(),
                 UnpublishedChild {
                     retirement: Default::default(),
@@ -732,9 +756,16 @@ mod archive_scope_tests {
             owner.publish_child_resources("child"),
             Err(ThreadAssemblyError::Closed)
         ));
-        assert!(owner.0.state().unpublished_children.contains_key("child"));
+        assert!(
+            owner
+                .0
+                .state()
+                .activation
+                .unpublished_children
+                .contains_key("child")
+        );
         owner.drain_archive_preparations(&scope).await.unwrap();
-        assert!(!owner.0.state().entries.contains_key("child"));
+        assert!(!owner.0.state().members.entries.contains_key("child"));
         assert!(!resource.exists());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         drop(scope);
@@ -750,7 +781,7 @@ mod archive_scope_tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let (entered, mut observed) = tokio::sync::watch::channel(false);
         let release = Arc::new(tokio::sync::Semaphore::new(0));
-        owner.0.state().unpublished_children.insert(
+        owner.0.state().activation.unpublished_children.insert(
             "child".into(),
             UnpublishedChild {
                 retirement: Default::default(),
@@ -775,7 +806,14 @@ mod archive_scope_tests {
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
         assert!(resource.exists());
-        assert!(owner.0.state().unpublished_children.contains_key("child"));
+        assert!(
+            owner
+                .0
+                .state()
+                .activation
+                .unpublished_children
+                .contains_key("child")
+        );
         let retry_scope = owner.seal_archive_scope(&["root".into()]).unwrap();
         let retry = owner.drain_archive_preparations(&retry_scope);
         tokio::pin!(retry);
@@ -790,3 +828,11 @@ mod archive_scope_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "published_resources/seal_tests.rs"]
+mod seal_tests;
+
+#[cfg(test)]
+#[path = "published_resources/archive_scope_tests.rs"]
+mod archive_storage_tests;
