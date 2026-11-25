@@ -2,16 +2,16 @@
 use super::*;
 
 #[derive(Debug, Default)]
-pub(super) struct ActivationCoordinator {
-    pub(super) creating: BTreeMap<String, Preparation>,
-    pub(super) preparing_children: BTreeMap<String, children::PreparingChild>,
-    pub(super) unpublished_children: BTreeMap<String, child_resources::UnpublishedChild>,
-    pub(super) pending_activation: BTreeMap<String, crate::thread_assembler::ThreadActivation>,
-    pub(super) failed_preparations: BTreeMap<String, Arc<FailedPreparation>>,
+pub(crate) struct ActivationCoordinator {
+    pub(crate) creating: BTreeMap<String, Preparation>,
+    pub(crate) preparing_children: BTreeMap<String, children::PreparingChild>,
+    pub(crate) unpublished_children: BTreeMap<String, child_resources::UnpublishedChild>,
+    pub(crate) pending_activation: BTreeMap<String, crate::thread_assembler::ThreadActivation>,
+    pub(crate) failed_preparations: BTreeMap<String, Arc<FailedPreparation>>,
 }
 
 impl ActivationCoordinator {
-    pub(super) fn release_reservation(&mut self, id: &str, registered_owner: bool) {
+    pub(crate) fn release_reservation(&mut self, id: &str, registered_owner: bool) {
         if let Some(preparation) = self.creating.remove(id)
             && (preparation.settlement.is_some()
                 || (!registered_owner && preparation.resources.has_obligations()))
@@ -50,7 +50,7 @@ impl ThreadActivation {
         self.parent_thread_id.as_ref().map(crate::ThreadId::as_str)
     }
 
-    pub(super) fn ensure_native(&self) -> Result<(), ThreadAssemblyError> {
+    pub(crate) fn ensure_native(&self) -> Result<(), ThreadAssemblyError> {
         match &self.binding {
             crate::AgentBinding::Native(_) => Ok(()),
             crate::AgentBinding::Acp(_) => Err(ThreadAssemblyError::UnsupportedBackend {

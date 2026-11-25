@@ -2,12 +2,12 @@
 use crate::{InteractionCommand, InteractionRequest, InteractionTransitionError};
 use pl_core::context::OpaquePayload;
 
-pub(super) enum DecodeError {
+pub(crate) enum DecodeError {
     Unsupported { format: String, version: u32 },
     Json(serde_json::Error),
 }
 
-pub(super) fn require_format(payload: &OpaquePayload, expected: &str) -> Result<(), DecodeError> {
+pub(crate) fn require_format(payload: &OpaquePayload, expected: &str) -> Result<(), DecodeError> {
     if payload.format() != expected || payload.version() != 1 {
         return Err(DecodeError::Unsupported {
             format: payload.format().into(),
@@ -17,7 +17,7 @@ pub(super) fn require_format(payload: &OpaquePayload, expected: &str) -> Result<
     Ok(())
 }
 
-pub(super) fn decode<T: serde::de::DeserializeOwned>(
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(
     payload: &OpaquePayload,
     expected: &str,
 ) -> Result<T, DecodeError> {
@@ -25,12 +25,12 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_str(payload.content()).map_err(DecodeError::Json)
 }
 
-pub(super) enum ReplayError {
+pub(crate) enum ReplayError {
     Transition(InteractionTransitionError),
     Revision,
 }
 
-pub(super) fn replay(
+pub(crate) fn replay(
     mut projected: InteractionRequest,
     command: Option<InteractionCommand>,
     revision: u64,

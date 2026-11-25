@@ -2,19 +2,19 @@
 use super::*;
 
 #[derive(Debug, Default)]
-pub(super) struct EntryRegistry {
-    pub(super) entries: BTreeMap<String, AgentInstance>,
-    pub(super) by_agent: BTreeMap<crate::AgentId, String>,
+pub(crate) struct EntryRegistry {
+    pub(crate) entries: BTreeMap<String, AgentInstance>,
+    pub(crate) by_agent: BTreeMap<crate::AgentId, String>,
 }
 
 impl EntryRegistry {
-    pub(super) fn insert_entry(&mut self, id: String, entry: AgentInstance) {
+    pub(crate) fn insert_entry(&mut self, id: String, entry: AgentInstance) {
         self.by_agent
             .insert(entry.identity.agent_id.clone(), id.clone());
         self.entries.insert(id, entry);
     }
 
-    pub(super) fn remove_entry(&mut self, id: &str) -> Option<AgentInstance> {
+    pub(crate) fn remove_entry(&mut self, id: &str) -> Option<AgentInstance> {
         let entry = self.entries.remove(id)?;
         if self
             .by_agent
@@ -27,7 +27,7 @@ impl EntryRegistry {
     }
 
     /// 成员树父 Thread。只用冻结 `parent_agent_id` 解析，不从 Native 字段回退。
-    pub(super) fn membership_parent<'a>(
+    pub(crate) fn membership_parent<'a>(
         by_agent: &'a BTreeMap<crate::AgentId, String>,
         entry: &'a AgentInstance,
     ) -> Option<&'a str> {
@@ -38,7 +38,7 @@ impl EntryRegistry {
     }
 }
 impl EntryRegistry {
-    pub(super) fn close_targets(
+    pub(crate) fn close_targets(
         &self,
         root: &str,
         members: &[crate::studio::store::thread_preparation::PreparationIdentity],
@@ -76,7 +76,7 @@ impl EntryRegistry {
         }
         Ok(targets)
     }
-    pub(super) fn close_dependencies(
+    pub(crate) fn close_dependencies(
         &self,
         root: &str,
         targets: &[(usize, String)],

@@ -1,17 +1,17 @@
 //! Last-mile admission shared by direct assembler inputs and interaction continuations.
-use super::{SessionRuntime, ThreadAssemblyError, agent_services::AgentServices};
+use super::{SessionRuntime, ThreadAssemblyError, owner::StudioSessionOwner};
 use crate::studio::model_binding::{NativeBundleOwner, NativeModelConfiguration};
 use anyhow::Result;
 use pl_core::thread::{ThreadError, ThreadHandle};
 
 #[derive(Clone, Copy)]
-pub(super) enum WorkspaceAdmission<'a> {
+pub(crate) enum WorkspaceAdmission<'a> {
     Explicit,
     VerifiedReview(&'a crate::studio::thread_factory::ReviewWorkspaceCheck),
 }
 
-impl AgentServices {
-    pub(super) async fn prepare_model_admission(
+impl StudioSessionOwner {
+    pub(crate) async fn prepare_model_admission(
         &self,
         session: &SessionRuntime,
         id: &str,
@@ -106,7 +106,7 @@ impl SessionRuntime {
     }
 
     /// The caller holds the same identity's operation permit through actual core admission.
-    pub(super) async fn prepare_input_admission(
+    pub(crate) async fn prepare_input_admission(
         &self,
         id: &str,
         thread: &ThreadHandle,
@@ -134,7 +134,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn prepare_verified_review_admission(
+    pub(crate) async fn prepare_verified_review_admission(
         &self,
         id: &str,
         thread: &ThreadHandle,

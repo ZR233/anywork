@@ -236,7 +236,7 @@ async fn save_pending_report(
         )
         .await?;
     let pending =
-        crate::thread_assembler::pending_delivery::PendingNativeDelivery::from_terminal_message(
+        crate::studio::session_runtime::pending_delivery::PendingNativeDelivery::from_terminal_message(
             message.clone(),
             false,
         )?;

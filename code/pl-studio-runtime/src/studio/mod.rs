@@ -1,4 +1,5 @@
 pub(crate) mod agent_close;
+pub(crate) mod session_runtime;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub mod benchmark;

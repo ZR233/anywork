@@ -50,7 +50,7 @@ struct PermissionDenied(String);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ApprovalPrompt {
+pub(crate) struct ApprovalPrompt {
     pub name: String,
     pub arguments: OpaquePayload,
     pub working_directory: Option<String>,

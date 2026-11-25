@@ -256,7 +256,10 @@ impl StudioThreadFactory {
         let snapshot = match snapshot {
             Some(snapshot) => snapshot,
             None => {
-                loaded = super::recovery::load_current_read_only(&self.services.store, thread)
+                loaded = self
+                    .services
+                    .store
+                    .load_current_read_only(thread)
                     .await
                     .map_err(|error| resource_error("read saved bot child admission", error))?
                     .ok_or_else(|| {

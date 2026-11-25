@@ -48,7 +48,7 @@ impl std::fmt::Debug for CloseStorage {
 
 /// Owns the physical history/current attachment acknowledgement for one exact Core instance.
 /// Implementations must not retain a Registry or call back while the session transaction is held.
-pub(super) trait StorageAttachment: std::fmt::Debug + Send + Sync {
+pub(crate) trait StorageAttachment: std::fmt::Debug + Send + Sync {
     fn attach(
         &self,
         thread: pl_core::thread::ThreadHandle,
@@ -57,7 +57,7 @@ pub(super) trait StorageAttachment: std::fmt::Debug + Send + Sync {
     ) -> BoxFuture<'static, Result<(), Arc<ThreadError>>>;
 }
 #[derive(Debug, Default)]
-pub(super) struct NativeStorageAttachment;
+pub(crate) struct NativeStorageAttachment;
 impl StorageAttachment for NativeStorageAttachment {
     fn attach(
         &self,
@@ -100,7 +100,7 @@ fn retain_attachment(
 }
 
 impl SessionRuntime {
-    pub(super) async fn settle_failed_activation(
+    pub(crate) async fn settle_failed_activation(
         &self,
         id: &str,
         workspace: &super::WorkspacePreparationOwner,
@@ -197,7 +197,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn attach_execution_storage(
+    pub(crate) async fn attach_execution_storage(
         &self,
         id: &str,
         storage: crate::studio::storage::thread_writer::ThreadStorageSink,
@@ -290,7 +290,7 @@ impl SessionRuntime {
             })
     }
 
-    pub(super) async fn confirm_preparation_close(
+    pub(crate) async fn confirm_preparation_close(
         &self,
         id: &str,
         retired: bool,
@@ -299,7 +299,7 @@ impl SessionRuntime {
             .await
     }
 
-    pub(super) async fn confirm_preparation_close_for_purpose(
+    pub(crate) async fn confirm_preparation_close_for_purpose(
         &self,
         id: &str,
         retired: bool,
@@ -338,12 +338,12 @@ impl SessionRuntime {
 
     /// The caller holds this identity's operation permit. Register the one shared operation
     /// before polling it: cancellation only drops a waiter, not AttachCold or its real result.
-    pub(super) async fn attach_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    pub(crate) async fn attach_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         self.attach_close_storage_for_purpose(id, ClosePurpose::Preserve)
             .await
     }
 
-    pub(super) async fn attach_close_storage_for_purpose(
+    pub(crate) async fn attach_close_storage_for_purpose(
         &self,
         id: &str,
         purpose: ClosePurpose,
@@ -540,7 +540,7 @@ impl SessionRuntime {
         }
     }
 
-    pub(super) async fn close_storage_core(
+    pub(crate) async fn close_storage_core(
         &self,
         id: &str,
     ) -> Result<Arc<ThreadStorageBinding>, ThreadAssemblyError> {
@@ -562,12 +562,12 @@ impl SessionRuntime {
         Ok(binding)
     }
 
-    pub(super) async fn join_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    pub(crate) async fn join_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         self.join_close_storage_for_purpose(id, ClosePurpose::Preserve)
             .await
     }
 
-    pub(super) async fn join_close_storage_for_purpose(
+    pub(crate) async fn join_close_storage_for_purpose(
         &self,
         id: &str,
         purpose: ClosePurpose,

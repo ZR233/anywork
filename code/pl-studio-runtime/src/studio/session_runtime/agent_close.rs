@@ -1,6 +1,6 @@
 //! Managed final child close: permanent execution seal, real joins/save ACKs, one owned worktree.
 use super::{
-    CloseStorage, EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices,
+    CloseStorage, EntryPurpose, SessionRuntime, ThreadAssemblyError, owner::StudioSessionOwner,
 };
 use crate::studio::agent_close::state_error;
 use anyhow::{Context, Result, ensure};
@@ -9,8 +9,8 @@ use pl_tool::collaboration::control::{AgentCloseOutcome, AgentCloseResult, Agent
 use pl_tool::collaboration::thread::{AgentCloseOptions, WorkspaceRelease};
 use std::{collections::BTreeMap, sync::Arc};
 
-impl AgentServices {
-    pub(super) async fn close_child_tree(
+impl StudioSessionOwner {
+    pub(crate) async fn close_child_tree(
         &self,
         owner: SessionRuntime,
         caller: String,
@@ -203,7 +203,7 @@ impl AgentServices {
     /// interrupted first, each saved child's owners are then joined through `close_saved_child`,
     /// and only a child whose durable intent is execution-closed proceeds to owned-worktree
     /// removal. Returns per-child diagnostics; the caller owns admission, sealing and outcome.
-    pub(super) async fn join_closed_children(
+    pub(crate) async fn join_closed_children(
         &self,
         owner: &SessionRuntime,
         targets: &[crate::Thread],
@@ -261,7 +261,7 @@ impl AgentServices {
         failures
     }
 
-    pub(super) async fn close_saved_child(
+    pub(crate) async fn close_saved_child(
         &self,
         owner: &SessionRuntime,
         record: &crate::Thread,
@@ -365,7 +365,7 @@ impl AgentServices {
     /// taking that permit, so adjudicate its reservation and install the retained owner atomically.
     /// Replacing a closed owner additionally requires the caller to have drained its observation
     /// and joined its retained binding; Attached alone is not a release acknowledgement.
-    pub(super) fn install_storage_owner(
+    pub(crate) fn install_storage_owner(
         &self,
         owner: &SessionRuntime,
         record: &crate::Thread,

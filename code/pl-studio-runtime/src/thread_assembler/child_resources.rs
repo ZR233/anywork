@@ -116,7 +116,7 @@ impl WorkspacePreparationOwner {
             .replace(usage.clone());
         drop(previous);
     }
-    pub(super) fn take(&self) -> Option<super::WorkspaceUsageLease> {
+    pub(crate) fn take(&self) -> Option<super::WorkspaceUsageLease> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -131,7 +131,7 @@ pub(crate) struct CleanupGate {
     changed: tokio::sync::Notify,
 }
 
-pub(super) struct CleanupPermit(Arc<CleanupGate>);
+pub(crate) struct CleanupPermit(Arc<CleanupGate>);
 impl Drop for CleanupPermit {
     fn drop(&mut self) {
         self.0.busy.store(false, Ordering::Release);
@@ -139,7 +139,7 @@ impl Drop for CleanupPermit {
     }
 }
 impl CleanupGate {
-    pub(super) async fn acquire(self: &Arc<Self>) -> CleanupPermit {
+    pub(crate) async fn acquire(self: &Arc<Self>) -> CleanupPermit {
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -160,18 +160,18 @@ type DisposalTask =
     Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), ThreadAssemblyError>>>>>;
 
 #[derive(Debug, Clone)]
-pub(super) struct UnpublishedChild {
-    pub(super) retirement:
+pub(crate) struct UnpublishedChild {
+    pub(crate) retirement:
         Arc<std::sync::Mutex<Option<pl_tool::collaboration::thread::WorkspaceRelease>>>,
-    pub(super) workspace: WorkspacePreparationOwner,
-    pub(super) parent: String,
-    pub(super) factory: ChildFactory,
-    pub(super) cleanup: Arc<CleanupGate>,
-    pub(super) disposal: DisposalTask,
+    pub(crate) workspace: WorkspacePreparationOwner,
+    pub(crate) parent: String,
+    pub(crate) factory: ChildFactory,
+    pub(crate) cleanup: Arc<CleanupGate>,
+    pub(crate) disposal: DisposalTask,
 }
 
 impl super::SessionRuntime {
-    pub(super) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    pub(crate) fn publish_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         if state.close.closing
             || state.close.sealed_agents.contains_key(id)
@@ -218,7 +218,7 @@ impl super::SessionRuntime {
         self.discard_child_resources(id).await
     }
 
-    pub(super) async fn discard_child_resources(
+    pub(crate) async fn discard_child_resources(
         &self,
         id: &str,
     ) -> Result<(), ThreadAssemblyError> {
@@ -265,13 +265,7 @@ impl super::SessionRuntime {
         {
             return Ok(());
         }
-        let purpose = if self
-            .0
-            .state()
-            .agent_services
-            .as_ref()
-            .is_some_and(|services| services.operations.is_deleting(id))
-        {
+        let purpose = if self.review_dispatcher().is_deleting(id) {
             super::ClosePurpose::Delete
         } else {
             super::ClosePurpose::Preserve

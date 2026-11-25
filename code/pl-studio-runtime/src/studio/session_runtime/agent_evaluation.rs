@@ -1,5 +1,5 @@
 //! Final evaluations are owned operations, not cancellable tool-side SQL futures.
-use super::{SessionRuntime, agent_services::AgentServices};
+use super::{SessionRuntime, owner::StudioSessionOwner};
 use crate::{AgentEvaluation, EvaluateAgentReceipt, EvaluateAgentRequest};
 use anyhow::{Context, Result, ensure};
 use pl_core::{
@@ -14,7 +14,7 @@ use pl_core::{
     },
 };
 
-impl AgentServices {
+impl StudioSessionOwner {
     async fn evaluate_final(
         &self,
         owner: &SessionRuntime,
@@ -176,7 +176,7 @@ pub(crate) fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
 }
 
 impl SessionRuntime {
-    pub(super) async fn evaluate_agent(
+    pub(crate) async fn evaluate_agent(
         &self,
         caller: String,
         request: EvaluateAgentRequest,
@@ -191,9 +191,7 @@ impl SessionRuntime {
         let owner = self.clone();
         let operation_owner = owner.clone();
         let root = caller.clone();
-        services
-            .operations
-            .clone()
+        self.review_dispatcher()
             .run(
                 caller.clone(),
                 format!(

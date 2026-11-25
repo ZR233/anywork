@@ -40,7 +40,7 @@ fn invalid_cursor() -> ControlError {
 }
 
 fn service(error: anyhow::Error) -> ControlError {
-    ControlError::service(super::agent_services::ServiceError(error))
+    ControlError::service(super::owner::ServiceError(error))
 }
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

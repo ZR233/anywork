@@ -292,7 +292,7 @@ impl SessionRuntime {
         seal(&self.0, &mut self.0.state(), ids)
     }
 
-    pub(super) async fn seal_agent_close(
+    pub(crate) async fn seal_agent_close(
         &self,
         targets: &[(usize, String)],
         disposition: WorkspaceRelease,
@@ -349,7 +349,7 @@ impl SessionRuntime {
 
     /// Caller holds this identity's operation permit and has just successfully flushed its close
     /// intent. An in-memory marker after a failed flush never authorizes publishing a new policy.
-    pub(super) fn freeze_agent_close_disposition(
+    pub(crate) fn freeze_agent_close_disposition(
         &self,
         id: &str,
         disposition: WorkspaceRelease,
@@ -373,7 +373,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn close_published_resources(
+    pub(crate) async fn close_published_resources(
         &self,
         id: &str,
         incarnation: &Arc<()>,

@@ -15,7 +15,7 @@ impl SessionRuntime {
         self.assemble_reserved(spec, &reservation).await
     }
 
-    pub(super) fn validate_assembly_spec(
+    pub(crate) fn validate_assembly_spec(
         spec: &StudioThreadSpec,
         reservation: &Reservation,
     ) -> Result<(), ThreadAssemblyError> {
@@ -47,7 +47,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) fn register_native_entry(
+    pub(crate) fn register_native_entry(
         &self,
         spec: &mut StudioThreadSpec,
         activation: ThreadActivation,
@@ -94,7 +94,7 @@ impl SessionRuntime {
         Ok((thread, resources))
     }
 
-    pub(super) async fn install_initial_bundle(
+    pub(crate) async fn install_initial_bundle(
         &self,
         spec: StudioThreadSpec,
         thread: &ThreadHandle,
@@ -204,12 +204,7 @@ impl SessionRuntime {
                 operation: "install initial Native resources",
                 source: Box::new(source),
             })?;
-        if resources.binding().is_some() {
-            resources.observe_binding(thread.runtime_binding());
-            if let Some(services) = self.0.state().agent_services.as_ref() {
-                services.factory.notify_lsp_binding_changed();
-            }
-        }
+        self.finish_native_binding_installation(resources, thread);
         // Freeze the observer's recovery baseline before exposing this owner to execution.
         // Observers may query the registry, so invoke them without its lock held.
         self.publish_observation(&spec.id, &thread);
@@ -230,7 +225,7 @@ impl SessionRuntime {
         Ok::<_, ThreadAssemblyError>(())
     }
 
-    pub(super) async fn assemble_reserved(
+    pub(crate) async fn assemble_reserved(
         &self,
         mut spec: StudioThreadSpec,
         reservation: &Reservation,
@@ -295,27 +290,7 @@ impl SessionRuntime {
             return Err(setup);
         }
         if is_root {
-            let services = { self.0.state().agent_services.clone() };
-            if let Some(services) = services
-                && services
-                    .store
-                    .thread_preparation(&id)
-                    .await
-                    .map_err(|source| ThreadAssemblyError::Resource {
-                        operation: "read root preparation publication",
-                        source: source.into_boxed_dyn_error(),
-                    })?
-                    .is_some()
-            {
-                services
-                    .store
-                    .publish_preparation(&id)
-                    .await
-                    .map_err(|source| ThreadAssemblyError::Resource {
-                        operation: "confirm root preparation publication",
-                        source: source.into_boxed_dyn_error(),
-                    })?;
-            }
+            self.publish_prepared_root(&id).await?;
         }
         Ok(thread)
     }
@@ -344,7 +319,7 @@ impl SessionRuntime {
         self.assemble(spec).await
     }
 
-    pub(super) fn reserve(
+    pub(crate) fn reserve(
         &self,
         id: &str,
         parent: Option<&str>,
@@ -352,7 +327,7 @@ impl SessionRuntime {
         self.reserve_resources(id, parent, None)
     }
 
-    pub(super) fn reserve_resources(
+    pub(crate) fn reserve_resources(
         &self,
         id: &str,
         parent: Option<&str>,
