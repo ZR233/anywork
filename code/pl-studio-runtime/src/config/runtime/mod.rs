@@ -1285,6 +1285,7 @@ fn config_runtime_poisoned() -> ConfigRuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::mcp_resource::scan_scope_catalog;
     use crate::config::{ConfigPaths, ConfigStore};
 
     #[test]
@@ -1293,7 +1294,7 @@ mod tests {
         use std::time::Duration;
 
         for disable in [false, true] {
-            let (directory, runtime) = runtime();
+            let (directory, mut runtime) = runtime();
             let raw = "schema_version = 1\nid = \"guarded\"\nkind = \"server\"\ntransport = \"streamableHttp\"\nurl = \"https://guarded.example/mcp\"\n";
             let (receipt, _) = runtime
                 .create_mcp_document(&CreateMcpDocumentRequest {
@@ -1313,21 +1314,24 @@ mod tests {
             let (release, proceed) = mpsc::channel();
             let proceed = std::sync::Mutex::new(proceed);
             let first = atomic::AtomicBool::new(true);
-            runtime
-                .mcp_catalog
-                .set_scan_prepared_hook(Some(Arc::new(move |scope| {
-                    if matches!(scope, McpScope::Host)
-                        && std::thread::current().name() == Some("mcp-model-scan")
-                        && first.swap(false, atomic::Ordering::AcqRel)
-                    {
-                        prepared.send(()).unwrap();
-                        proceed
-                            .lock()
-                            .unwrap()
-                            .recv_timeout(Duration::from_secs(10))
-                            .unwrap();
-                    }
-                })));
+            runtime.mcp_catalog =
+                runtime
+                    .mcp_catalog
+                    .with_scanner(Arc::new(move |paths, models, scope| {
+                        let scan = scan_scope_catalog(paths, models, scope)?;
+                        if matches!(scope, McpScope::Host)
+                            && std::thread::current().name() == Some("mcp-model-scan")
+                            && first.swap(false, atomic::Ordering::AcqRel)
+                        {
+                            prepared.send(()).unwrap();
+                            proceed
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(10))
+                                .unwrap();
+                        }
+                        Ok(scan)
+                    }));
             let background_runtime = runtime.clone();
             let background = std::thread::Builder::new()
                 .name("mcp-model-scan".into())
@@ -1361,7 +1365,6 @@ mod tests {
             let _ = release.send(());
             let background = background.join();
             let mutation = mutation.join();
-            runtime.mcp_catalog.set_scan_prepared_hook(None);
             prepared.unwrap();
             background.unwrap().unwrap();
             mutation.unwrap().unwrap();
@@ -1399,7 +1402,7 @@ mod tests {
         use std::time::Duration;
 
         for entrypoint in 0..4 {
-            let (directory, runtime) = runtime();
+            let (directory, mut runtime) = runtime();
             let (receipt, _) = runtime
                 .create_mcp_document(&CreateMcpDocumentRequest {
                     scope: McpScope::Host,
@@ -1422,21 +1425,23 @@ mod tests {
             let (release, proceed) = mpsc::channel();
             let proceed = std::sync::Mutex::new(proceed);
             let selected = scope.clone();
-            runtime
-                .mcp_catalog
-                .set_scan_prepared_hook(Some(Arc::new(move |scope| {
-                    if scope == &selected && std::thread::current().name() == Some("mcp-cold-read")
-                    {
-                        // The caller has obtained its models argument, but has not acquired
-                        // the resource lock or initialized this scope yet.
-                        reached.send(()).unwrap();
-                        proceed
-                            .lock()
-                            .unwrap()
-                            .recv_timeout(Duration::from_secs(10))
-                            .unwrap();
-                    }
-                })));
+            runtime.mcp_catalog =
+                runtime
+                    .mcp_catalog
+                    .with_scanner(Arc::new(move |paths, models, scope| {
+                        if scope == &selected
+                            && std::thread::current().name() == Some("mcp-cold-read")
+                        {
+                            // The caller has the models snapshot and is about to read a cold scope.
+                            reached.send(()).unwrap();
+                            proceed
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_secs(10))
+                                .unwrap();
+                        }
+                        scan_scope_catalog(paths, models, scope)
+                    }));
             let reader_runtime = runtime.clone();
             let reader_scope = scope.clone();
             let root = directory.path().to_path_buf();
@@ -1469,7 +1474,6 @@ mod tests {
             let _ = release.send(());
             let reader = reader.join();
             let mutation = mutation.join();
-            runtime.mcp_catalog.set_scan_prepared_hook(None);
             reached.unwrap();
             reader.unwrap().unwrap();
             mutation.unwrap().unwrap();
