@@ -1,3 +1,4 @@
+use crate::agent::worktree::git_path::workspace_path_text;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,9 @@ pub(crate) use usage::WeakWorkspaceUsageLease;
 pub use usage::WorkspaceUsageLease;
 
 mod migration;
+
+#[cfg(test)]
+mod admission_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,10 +109,9 @@ impl WorktreeLease {
         let expected =
             WorktreeManager::allocate_path(repository_root, &self.root_thread_id, &ownership);
         if self.ssh_alias.is_some() {
-            let expected =
-                pl_tool::remote::normalize_remote_absolute_path(&expected.to_string_lossy())
-                    .map_err(|_| mismatch("path: remote managed leaf is invalid"))?;
-            let actual = pl_tool::remote::normalize_remote_absolute_path(&self.path)
+            let expected = workspace_path_text(&expected, true)
+                .map_err(|_| mismatch("path: remote managed leaf is invalid"))?;
+            let actual = workspace_path_text(std::path::Path::new(&self.path), true)
                 .map_err(|_| mismatch("path: remote lease path is invalid"))?;
             if actual != expected {
                 return Err(mismatch("path: lease differs from its owned leaf"));
@@ -140,8 +143,8 @@ impl PersistedStudioObject for WorktreeLease {
     fn from_persistence_dto(mut dto: Self::PersistenceDto) -> Result<Self> {
         if dto.ssh_alias.is_some() {
             dto.repository_root =
-                pl_tool::remote::normalize_remote_absolute_path(&dto.repository_root)?;
-            dto.path = pl_tool::remote::normalize_remote_absolute_path(&dto.path)?;
+                workspace_path_text(std::path::Path::new(&dto.repository_root), true)?;
+            dto.path = workspace_path_text(std::path::Path::new(&dto.path), true)?;
         }
         dto.validate_identity()?;
         Ok(dto)
@@ -186,6 +189,16 @@ struct LeaseOwnerState {
     workspace: usage::WorkspaceAdmission,
 }
 
+/// Keep receipt release usable during unwinding, as for workspace usage guards. All lease and
+/// admission accesses share this policy; recovering never clears poison or grants a fresh identity.
+fn lock_state(
+    state: &std::sync::Mutex<LeaseOwnerState>,
+) -> std::sync::MutexGuard<'_, LeaseOwnerState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A receipt is associated with the same admitted revision, never a later global queue snapshot.
 #[derive(Clone)]
 struct LeaseEntry {
@@ -203,28 +216,18 @@ impl WorktreeLeaseOwner {
 
     /// Marks a lease as still being created in this process.
     pub(in crate::studio) fn mark_creating(&self, owner_thread_id: &str) {
-        self.state
-            .lock()
-            .expect("worktree creating set lock poisoned")
+        lock_state(&self.state)
             .creating
             .insert(owner_thread_id.to_string());
     }
 
     /// Clears the creating mark once creation converged (active, settled or published).
     pub(in crate::studio) fn clear_creating(&self, owner_thread_id: &str) {
-        self.state
-            .lock()
-            .expect("worktree creating set lock poisoned")
-            .creating
-            .remove(owner_thread_id);
+        lock_state(&self.state).creating.remove(owner_thread_id);
     }
 
     pub(in crate::studio) fn is_creating(&self, owner_thread_id: &str) -> bool {
-        self.state
-            .lock()
-            .expect("worktree creating set lock poisoned")
-            .creating
-            .contains(owner_thread_id)
+        lock_state(&self.state).creating.contains(owner_thread_id)
     }
 
     /// 开始一个创建窗口，返回在**所有**出口（含提前返回、取消与 panic 展开）清除标记的守卫。
@@ -253,7 +256,7 @@ impl WorktreeLeaseOwner {
             }
             restored.push((lease, identity));
         }
-        let mut state = self.state.lock().expect("worktree lease lock poisoned");
+        let mut state = lock_state(&self.state);
         for (mut lease, identity) in restored {
             state.workspace.preserve_restored_lease(&lease, identity);
             let explicitly_retiring = state.workspace.is_retiring(&lease.owner_thread_id);
@@ -280,18 +283,14 @@ impl WorktreeLeaseOwner {
     }
 
     pub(in crate::studio) fn get(&self, owner_thread_id: &str) -> Option<WorktreeLease> {
-        self.state
-            .lock()
-            .expect("worktree lease lock poisoned")
+        lock_state(&self.state)
             .entries
             .get(owner_thread_id)
             .map(|entry| entry.lease.clone())
     }
 
     pub(in crate::studio) fn snapshot(&self) -> Vec<WorktreeLease> {
-        self.state
-            .lock()
-            .expect("worktree lease lock poisoned")
+        lock_state(&self.state)
             .entries
             .values()
             .map(|entry| entry.lease.clone())
@@ -299,7 +298,7 @@ impl WorktreeLeaseOwner {
     }
 
     pub(in crate::studio) fn forget_deleted(&self, id: &str) -> Result<()> {
-        let mut state = self.state.lock().expect("worktree lease lock poisoned");
+        let mut state = lock_state(&self.state);
         anyhow::ensure!(
             state
                 .entries
@@ -313,9 +312,7 @@ impl WorktreeLeaseOwner {
     }
 
     pub(in crate::studio) fn is_durable(&self, lease: &WorktreeLease) -> bool {
-        self.state
-            .lock()
-            .expect("worktree lease lock poisoned")
+        lock_state(&self.state)
             .entries
             .get(&lease.owner_thread_id)
             .is_some_and(|entry| {
@@ -325,7 +322,7 @@ impl WorktreeLeaseOwner {
 
     /// Revision admission and queue order share one short, IO-free critical section.
     fn record_ticket(&self, lease: WorktreeLease) -> Result<u64> {
-        let mut state = self.state.lock().expect("worktree lease lock poisoned");
+        let mut state = lock_state(&self.state);
         self.record_ticket_locked(&mut state, lease)
     }
 
@@ -391,7 +388,7 @@ impl WorktreeLeaseOwner {
             "failed session retention requires a root session binding"
         );
         let (retained, ticket) = {
-            let mut state = self.state.lock().expect("worktree lease lock poisoned");
+            let mut state = lock_state(&self.state);
             let current = &state
                 .entries
                 .get(&expected.owner_thread_id)

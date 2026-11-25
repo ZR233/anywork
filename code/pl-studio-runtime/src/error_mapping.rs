@@ -55,120 +55,10 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         .chain()
         .find_map(|cause| cause.downcast_ref::<crate::agent::worktree::WorktreeError>())
     {
-        use crate::agent::worktree::WorktreeError;
-        let (code, retryable) = match error {
-            WorktreeError::IdentityMismatch(_) => (StudioErrorCode::Conflict, false),
-            WorktreeError::InvalidResource(_) | WorktreeError::MissingHead => {
-                (StudioErrorCode::InvalidArgument, false)
-            }
-            WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
-            WorktreeError::Target { .. } => (StudioErrorCode::Unavailable, true),
-            WorktreeError::GitExited { .. }
-            | WorktreeError::GitStatusUnknown { .. }
-            | WorktreeError::Execution { .. }
-            | WorktreeError::Download { .. }
-            | WorktreeError::File { .. } => (StudioErrorCode::Unavailable, true),
-        };
-        return StudioError::new(code, error.safe_diagnostic(), retryable);
+        return worktree_error(error);
     }
     if let Some(startup) = error.downcast_ref::<crate::StudioStartupError>() {
-        if let Some(ConfigRuntimeError::ModeDefinitions(cause)) = error
-            .chain()
-            .find_map(|cause| cause.downcast_ref::<ConfigRuntimeError>())
-        {
-            return StudioError::new(
-                StudioErrorCode::InvalidArgument,
-                format!("工作模式配置加载失败，原文件已保留：{cause:#}"),
-                false,
-            )
-            .with_details(
-                serde_json::json!({"startupStep": startup.step, "startupKind": "ModeDefinitions"}),
-            );
-        }
-        if startup.kind == crate::StudioStartupErrorKind::Migration {
-            if error
-                .chain()
-                .any(|cause| cause.is::<crate::studio::AccountUsageCacheMigrationError>())
-            {
-                return StudioError::new(
-                    StudioErrorCode::InvalidArgument,
-                    "账号用量缓存升级失败，原记录已保留。请使用支持该数据版本的应用重试。",
-                    false,
-                )
-                .with_details(
-                    serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
-                );
-            }
-            return StudioError::new(
-                StudioErrorCode::InvalidArgument,
-                "配置迁移失败，原文件已保留。请检查模型标识与配置声明后重新启动。",
-                false,
-            )
-            .with_details(
-                serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
-            );
-        }
-        if let Some(original) = error
-            .chain()
-            .find_map(|cause| cause.downcast_ref::<StudioError>())
-        {
-            return original.clone();
-        }
-        let (code, retryable) = match startup.kind {
-            crate::StudioStartupErrorKind::Configuration => {
-                (StudioErrorCode::InvalidArgument, false)
-            }
-            crate::StudioStartupErrorKind::RecoveryRequired => {
-                (StudioErrorCode::Unavailable, false)
-            }
-            crate::StudioStartupErrorKind::PersistentData => (StudioErrorCode::Storage, false),
-            crate::StudioStartupErrorKind::Environment => (StudioErrorCode::Storage, true),
-            crate::StudioStartupErrorKind::Cancelled => (StudioErrorCode::Cancelled, true),
-            crate::StudioStartupErrorKind::Internal => (StudioErrorCode::Internal, false),
-            crate::StudioStartupErrorKind::Migration => (StudioErrorCode::InvalidArgument, false),
-        };
-        let mut message = format!("应用初始化失败（{}，{:?}）", startup.step, startup.kind);
-        let mut details = serde_json::json!({
-            "startupStep": startup.step,
-            "startupKind": format!("{:?}", startup.kind),
-        });
-        if let Some(io) = error
-            .chain()
-            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-            .last()
-        {
-            let kind = format!("{:?}", io.kind());
-            details["startupIoKind"] = kind.clone().into();
-            details["startupOsCode"] = serde_json::json!(io.raw_os_error());
-            message.push_str(&format!("；I/O 错误类型：{kind}"));
-            if let Some(code) = io.raw_os_error() {
-                message.push_str(&format!("，系统码：{code}"));
-            }
-        }
-        if let Some(cause) = error
-            .chain()
-            .find_map(|cause| cause.downcast_ref::<keyring::Error>())
-        {
-            // Only the dependency's typed variant name crosses the redacted boundary.
-            // Backend messages and variant payloads may contain protected material.
-            let kind = match cause {
-                keyring::Error::PlatformFailure(_) => "platformFailure",
-                keyring::Error::NoStorageAccess(_) => "noStorageAccess",
-                keyring::Error::NoEntry => "noEntry",
-                keyring::Error::BadEncoding(_) => "badEncoding",
-                keyring::Error::BadDataFormat(_, _) => "badDataFormat",
-                keyring::Error::BadStoreFormat(_) => "badStoreFormat",
-                keyring::Error::TooLong(_, _) => "tooLong",
-                keyring::Error::Invalid(_, _) => "invalid",
-                keyring::Error::Ambiguous(_) => "ambiguous",
-                keyring::Error::NoDefaultStore => "noDefaultStore",
-                keyring::Error::NotSupportedByStore(_) => "notSupportedByStore",
-                _ => "unclassified",
-            };
-            details["startupCredentialErrorKind"] = kind.into();
-            message.push_str(&format!("；系统凭据错误类型：{kind}"));
-        }
-        return StudioError::new(code, message, retryable).with_details(details);
+        return startup_error(startup, error);
     }
     if let Some(error) = error.downcast_ref::<pl_core::thread::current::CurrentError>() {
         return current_error(error);
@@ -185,58 +75,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         return chat_error(error);
     }
     if let Some(error) = error.downcast_ref::<ConfigRuntimeError>() {
-        return match error {
-            ConfigRuntimeError::RequiredConfiguration { source } => StudioError::invalid_argument("required config.toml could not be read")
-                .with_details(serde_json::json!({"ioKind": format!("{:?}", source.kind()), "rawOsError": source.raw_os_error()})),
-            ConfigRuntimeError::AcpDefinition(error) => {
-                use crate::config::AcpDefinitionError;
-                match error {
-                    AcpDefinitionError::StaleDocument | AcpDefinitionError::StaleConnection => {
-                        StudioError::new(StudioErrorCode::StaleRevision, error.to_string(), true)
-                    }
-                    AcpDefinitionError::Unavailable => {
-                        StudioError::new(StudioErrorCode::NotFound, error.to_string(), false)
-                    }
-                    AcpDefinitionError::Invalid(_) => {
-                        StudioError::invalid_argument(error.to_string())
-                    }
-                    AcpDefinitionError::Io(source) => {
-                        StudioError::storage().with_details(serde_json::json!({
-                            "ioKind": format!("{:?}", source.kind()),
-                            "rawOsError": source.raw_os_error(),
-                        }))
-                    }
-                }
-            }
-            ConfigRuntimeError::ModelDiscoveryUnsupported => {
-                StudioError::invalid_argument("Model discovery is unsupported").with_reason(
-                    crate::StudioErrorReason::AccountModelDiscoveryUnsupported,
-                    serde_json::json!({}),
-                )
-            }
-            ConfigRuntimeError::StaleRevision { expected, actual } => StudioError::new(
-                StudioErrorCode::StaleRevision,
-                "Studio data changed; reload and try again",
-                true,
-            )
-            .with_details(serde_json::json!({
-                "expectedRevision": expected,
-                "actualRevision": actual,
-            })),
-            ConfigRuntimeError::ProfileConflict(_) => StudioError::new(StudioErrorCode::StaleRevision, error.to_string(), false),
-            ConfigRuntimeError::Core(error) => pure_error(error),
-            ConfigRuntimeError::BundledAgentCatalog(_) => StudioError::internal(),
-            ConfigRuntimeError::ModeDefinitions(error) => StudioError::new(
-                StudioErrorCode::InvalidArgument,
-                format!("工作模式配置无效，原文件已保留：{error:#}"),
-                false,
-            ),
-            ConfigRuntimeError::Migration(_) => StudioError::new(
-                StudioErrorCode::InvalidArgument,
-                "配置迁移失败，原文件已保留。请检查模型标识与配置声明。",
-                false,
-            ),
-        };
+        return config_runtime_error(error);
     }
     if error.downcast_ref::<serde_json::Error>().is_some() {
         return StudioError::new(
@@ -282,6 +121,175 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         "unclassified Studio runtime failure"
     );
     studio_error
+}
+
+fn worktree_error(error: &crate::agent::worktree::WorktreeError) -> StudioError {
+    use crate::agent::worktree::WorktreeError;
+    let (code, retryable) = match error {
+        WorktreeError::IdentityMismatch(_) => (StudioErrorCode::Conflict, false),
+        WorktreeError::InvalidResource(_) | WorktreeError::MissingHead => {
+            (StudioErrorCode::InvalidArgument, false)
+        }
+        WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
+        WorktreeError::Target { .. } => (StudioErrorCode::Unavailable, true),
+        WorktreeError::GitExited { .. }
+        | WorktreeError::GitStatusUnknown { .. }
+        | WorktreeError::Execution { .. }
+        | WorktreeError::Download { .. }
+        | WorktreeError::File { .. } => (StudioErrorCode::Unavailable, true),
+    };
+    StudioError::new(code, error.safe_diagnostic(), retryable)
+}
+
+fn startup_error(startup: &crate::StudioStartupError, error: &anyhow::Error) -> StudioError {
+    if let Some(ConfigRuntimeError::ModeDefinitions(cause)) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ConfigRuntimeError>())
+    {
+        return StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            format!("工作模式配置加载失败，原文件已保留：{cause:#}"),
+            false,
+        )
+        .with_details(
+            serde_json::json!({"startupStep": startup.step, "startupKind": "ModeDefinitions"}),
+        );
+    }
+    if startup.kind == crate::StudioStartupErrorKind::Migration {
+        if error
+            .chain()
+            .any(|cause| cause.is::<crate::studio::AccountUsageCacheMigrationError>())
+        {
+            return StudioError::new(
+                StudioErrorCode::InvalidArgument,
+                "账号用量缓存升级失败，原记录已保留。请使用支持该数据版本的应用重试。",
+                false,
+            )
+            .with_details(
+                serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
+            );
+        }
+        return StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            "配置迁移失败，原文件已保留。请检查模型标识与配置声明后重新启动。",
+            false,
+        )
+        .with_details(
+            serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
+        );
+    }
+    if let Some(original) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<StudioError>())
+    {
+        return original.clone();
+    }
+    let (code, retryable) = match startup.kind {
+        crate::StudioStartupErrorKind::Configuration => (StudioErrorCode::InvalidArgument, false),
+        crate::StudioStartupErrorKind::RecoveryRequired => (StudioErrorCode::Unavailable, false),
+        crate::StudioStartupErrorKind::PersistentData => (StudioErrorCode::Storage, false),
+        crate::StudioStartupErrorKind::Environment => (StudioErrorCode::Storage, true),
+        crate::StudioStartupErrorKind::Cancelled => (StudioErrorCode::Cancelled, true),
+        crate::StudioStartupErrorKind::Internal => (StudioErrorCode::Internal, false),
+        crate::StudioStartupErrorKind::Migration => (StudioErrorCode::InvalidArgument, false),
+    };
+    let mut message = format!("应用初始化失败（{}，{:?}）", startup.step, startup.kind);
+    let mut details = serde_json::json!({
+        "startupStep": startup.step,
+        "startupKind": format!("{:?}", startup.kind),
+    });
+    if let Some(io) = error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .last()
+    {
+        let kind = format!("{:?}", io.kind());
+        details["startupIoKind"] = kind.clone().into();
+        details["startupOsCode"] = serde_json::json!(io.raw_os_error());
+        message.push_str(&format!("；I/O 错误类型：{kind}"));
+        if let Some(code) = io.raw_os_error() {
+            message.push_str(&format!("，系统码：{code}"));
+        }
+    }
+    if let Some(cause) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<keyring::Error>())
+    {
+        // Only the dependency's typed variant name crosses the redacted boundary.
+        // Backend messages and variant payloads may contain protected material.
+        let kind = match cause {
+            keyring::Error::PlatformFailure(_) => "platformFailure",
+            keyring::Error::NoStorageAccess(_) => "noStorageAccess",
+            keyring::Error::NoEntry => "noEntry",
+            keyring::Error::BadEncoding(_) => "badEncoding",
+            keyring::Error::BadDataFormat(_, _) => "badDataFormat",
+            keyring::Error::BadStoreFormat(_) => "badStoreFormat",
+            keyring::Error::TooLong(_, _) => "tooLong",
+            keyring::Error::Invalid(_, _) => "invalid",
+            keyring::Error::Ambiguous(_) => "ambiguous",
+            keyring::Error::NoDefaultStore => "noDefaultStore",
+            keyring::Error::NotSupportedByStore(_) => "notSupportedByStore",
+            _ => "unclassified",
+        };
+        details["startupCredentialErrorKind"] = kind.into();
+        message.push_str(&format!("；系统凭据错误类型：{kind}"));
+    }
+    StudioError::new(code, message, retryable).with_details(details)
+}
+
+fn config_runtime_error(error: &ConfigRuntimeError) -> StudioError {
+    match error {
+        ConfigRuntimeError::RequiredConfiguration { source } => StudioError::invalid_argument("required config.toml could not be read")
+            .with_details(serde_json::json!({"ioKind": format!("{:?}", source.kind()), "rawOsError": source.raw_os_error()})),
+        ConfigRuntimeError::AcpDefinition(error) => {
+            use crate::config::AcpDefinitionError;
+            match error {
+                AcpDefinitionError::StaleDocument | AcpDefinitionError::StaleConnection => {
+                    StudioError::new(StudioErrorCode::StaleRevision, error.to_string(), true)
+                }
+                AcpDefinitionError::Unavailable => {
+                    StudioError::new(StudioErrorCode::NotFound, error.to_string(), false)
+                }
+                AcpDefinitionError::Invalid(_) => {
+                    StudioError::invalid_argument(error.to_string())
+                }
+                AcpDefinitionError::Io(source) => {
+                    StudioError::storage().with_details(serde_json::json!({
+                        "ioKind": format!("{:?}", source.kind()),
+                        "rawOsError": source.raw_os_error(),
+                    }))
+                }
+            }
+        }
+        ConfigRuntimeError::ModelDiscoveryUnsupported => {
+            StudioError::invalid_argument("Model discovery is unsupported").with_reason(
+                crate::StudioErrorReason::AccountModelDiscoveryUnsupported,
+                serde_json::json!({}),
+            )
+        }
+        ConfigRuntimeError::StaleRevision { expected, actual } => StudioError::new(
+            StudioErrorCode::StaleRevision,
+            "Studio data changed; reload and try again",
+            true,
+        )
+        .with_details(serde_json::json!({
+            "expectedRevision": expected,
+            "actualRevision": actual,
+        })),
+        ConfigRuntimeError::ProfileConflict(_) => StudioError::new(StudioErrorCode::StaleRevision, error.to_string(), false),
+        ConfigRuntimeError::Core(error) => pure_error(error),
+        ConfigRuntimeError::BundledAgentCatalog(_) => StudioError::internal(),
+        ConfigRuntimeError::ModeDefinitions(error) => StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            format!("工作模式配置无效，原文件已保留：{error:#}"),
+            false,
+        ),
+        ConfigRuntimeError::Migration(_) => StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            "配置迁移失败，原文件已保留。请检查模型标识与配置声明。",
+            false,
+        ),
+    }
 }
 
 fn mcp_document_error(error: &crate::McpDocumentError) -> StudioError {
@@ -615,6 +623,94 @@ fn update_error(error: &StudioUpdateError) -> StudioError {
         format!("Studio update could not be completed: {error}"),
         retryable,
     )
+}
+
+#[cfg(test)]
+mod typed_mapping_tests {
+    use super::*;
+    use crate::agent::worktree::WorktreeError;
+    use crate::{StudioStartupError, StudioStartupErrorKind};
+
+    #[test]
+    fn worktree_causes_keep_priority_codes_and_redaction_through_startup() {
+        let private = "private-diagnostic-payload";
+        for (cause, code, retryable) in [
+            (
+                WorktreeError::IdentityMismatch("registration missing".into()),
+                StudioErrorCode::Conflict,
+                false,
+            ),
+            (
+                WorktreeError::MissingHead,
+                StudioErrorCode::InvalidArgument,
+                false,
+            ),
+            (
+                WorktreeError::InvalidResource(private.into()),
+                StudioErrorCode::InvalidArgument,
+                false,
+            ),
+            (WorktreeError::Missing, StudioErrorCode::Unavailable, true),
+            (
+                WorktreeError::GitExited {
+                    args: "worktree add".into(),
+                    exit_code: 128,
+                    stderr: private.into(),
+                },
+                StudioErrorCode::Unavailable,
+                true,
+            ),
+        ] {
+            let source =
+                StudioStartupError::new("workspace", StudioStartupErrorKind::Internal, cause);
+            let mapped = studio_error_from_anyhow(anyhow::Error::new(source).context(private));
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.retryable, retryable);
+            assert!(!serde_json::to_string(&mapped).unwrap().contains(private));
+        }
+    }
+
+    #[test]
+    fn startup_and_config_keep_distinct_typed_details() {
+        let mapped = studio_error_from_anyhow(
+            ConfigRuntimeError::StaleRevision {
+                expected: 7,
+                actual: 9,
+            }
+            .into(),
+        );
+        assert_eq!(mapped.code, StudioErrorCode::StaleRevision);
+        assert!(mapped.retryable);
+        assert_eq!(
+            mapped.details.as_deref(),
+            Some(&serde_json::json!({"expectedRevision": 7, "actualRevision": 9}))
+        );
+
+        let mapped = studio_error_from_anyhow(
+            StudioStartupError::new(
+                "config",
+                StudioStartupErrorKind::Configuration,
+                ConfigRuntimeError::RequiredConfiguration {
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "private-file-path",
+                    ),
+                },
+            )
+            .into(),
+        );
+        assert_eq!(mapped.code, StudioErrorCode::InvalidArgument);
+        assert!(!mapped.retryable);
+        let details = mapped.details.as_deref().unwrap();
+        assert_eq!(details["startupStep"], "config");
+        assert_eq!(details["startupKind"], "Configuration");
+        assert_eq!(details["startupIoKind"], "PermissionDenied");
+        assert!(
+            !serde_json::to_string(&mapped)
+                .unwrap()
+                .contains("private-file-path")
+        );
+    }
 }
 
 #[cfg(test)]

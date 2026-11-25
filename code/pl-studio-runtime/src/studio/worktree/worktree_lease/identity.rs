@@ -1,5 +1,6 @@
 //! Frozen physical endpoint/path facts; resolution and persistence never hold admission locks.
-use anyhow::{Context, Result, ensure};
+use crate::agent::worktree::git_path::workspace_path_text;
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -55,7 +56,7 @@ impl WorkspaceIdentity {
                 );
             }
             WorkspaceEndpoint::Ssh { .. } => ensure!(
-                pl_tool::remote::normalize_remote_absolute_path(&root)? == root,
+                workspace_path_text(Path::new(&root), true)? == root,
                 "SSH workspace identity is not canonical POSIX"
             ),
         }
@@ -194,13 +195,6 @@ impl crate::studio::StudioStore {
             crate::studio::unix_seconds(),
         )
         .await?;
-        let saved = load_object::<SavedWorkspaceIdentity>(self.database(), owner)
-            .await?
-            .context("workspace identity durable ACK is missing")?;
-        ensure!(
-            saved.identity == *identity,
-            "workspace identity durable ACK changed for {owner}"
-        );
         Ok(())
     }
 }
