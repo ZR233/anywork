@@ -66,7 +66,7 @@ mod ssh;
 mod state_query;
 mod thread_mode;
 mod thread_service;
-mod thread_stream;
+mod thread_snapshot_api;
 
 mod tool_refresh;
 pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};

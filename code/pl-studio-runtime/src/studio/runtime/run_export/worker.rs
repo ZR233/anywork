@@ -1,285 +1,25 @@
-//! Single background writer task owning `events.jsonl`, streaming `contents/<sha256>.bin`,
-//! bounded queue admission (`256 batches / 16 MiB`), backpressure, and failure isolation.
-
-use std::collections::{BTreeMap, VecDeque};
-use std::fs;
-use std::future::Future;
-
-use std::path::{Path, PathBuf};
+//! Ordered export of registered members and reconciliation of terminal cuts.
+use anyhow::{Context, Result, ensure};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
-
-use anyhow::{Context, Result, ensure};
-use sha2::{Digest, Sha256};
-use tokio::sync::Notify;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 
+use super::blob_sink::{FsContentBlobSink, hash_file};
+use super::queue::{
+    BoundedExportQueue, EVENTS_REL_PATH, ExportCommand, FinalizeWriterOutcome, LiveHandoff,
+};
 use super::reader::export_history_originals_window;
 use super::types::{
-    BuildInfoV3, CompletionCursorV3, EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3,
-    ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3, ExportedBlobV3,
-    MAX_QUEUED_BATCHES, MAX_QUEUED_METADATA_BYTES, SealedMemberCutV3, TraceSummaryV3,
-    format_utc_rfc3339, validate_export_relative_path,
+    CompletionCursorV3, EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3,
+    ExecutionErrorV3, SealedMemberCutV3, TraceSummaryV3, format_utc_rfc3339,
 };
 use super::usage::{ThreadUsageInput, UsageAccumulator, fold_next_accounting};
 use crate::history::{HistoryCut, HistoryReader};
-use crate::studio::thread_projection::{BillingFact, PreparedAccounting};
-
-const EVENTS_FILE_NAME: &str = "events.jsonl";
-const EVENTS_REL_PATH: &str = "events.jsonl";
-const VERIFY_CHUNK_BYTES: usize = 64 * 1024;
-
-/// Streaming content-addressed blob writer abstraction (allows test doubles without bypassing real files).
-pub trait ContentBlobSink {
-    type Writer: BlobChunkWriter;
-    fn begin_blob(&mut self) -> impl Future<Output = Result<Self::Writer>> + Send;
-}
-
-pub trait BlobChunkWriter {
-    fn write_chunk(&mut self, chunk: &[u8]) -> impl Future<Output = Result<()>> + Send;
-    fn finish(
-        self,
-        media_type: Option<String>,
-        encoding: String,
-    ) -> impl Future<Output = Result<ExportedBlobV3>> + Send;
-}
-
-pub struct FsContentBlobSink {
-    output_dir: PathBuf,
-    contents_dir: PathBuf,
-}
-
-impl FsContentBlobSink {
-    pub fn new(output_dir: PathBuf) -> Self {
-        let contents_dir = output_dir.join("contents");
-        Self {
-            output_dir,
-            contents_dir,
-        }
-    }
-}
-
-pub struct FsBlobWriter {
-    output_dir: PathBuf,
-    contents_dir: PathBuf,
-    temp_path: PathBuf,
-    file: Option<BufWriter<File>>,
-    hasher: Sha256,
-    byte_length: u64,
-}
-
-impl Drop for FsBlobWriter {
-    fn drop(&mut self) {
-        self.file.take();
-        let _ = fs::remove_file(&self.temp_path);
-    }
-}
-
-impl ContentBlobSink for FsContentBlobSink {
-    type Writer = FsBlobWriter;
-
-    async fn begin_blob(&mut self) -> Result<Self::Writer> {
-        tokio::fs::create_dir_all(&self.contents_dir)
-            .await
-            .with_context(|| format!("ensure contents dir {}", self.contents_dir.display()))?;
-        ensure!(
-            !fs::symlink_metadata(&self.contents_dir)?
-                .file_type()
-                .is_symlink(),
-            "contents directory must not be a symlink"
-        );
-        let nonce = uuid::Uuid::new_v4().simple();
-        let temp_path = self
-            .contents_dir
-            .join(format!(".blob.{}.{nonce}.tmp", std::process::id()));
-        let file = File::create(&temp_path)
-            .await
-            .with_context(|| format!("create content temp file {}", temp_path.display()))?;
-        Ok(FsBlobWriter {
-            output_dir: self.output_dir.clone(),
-            contents_dir: self.contents_dir.clone(),
-            temp_path,
-            file: Some(BufWriter::new(file)),
-            hasher: Sha256::new(),
-            byte_length: 0,
-        })
-    }
-}
-
-impl BlobChunkWriter for FsBlobWriter {
-    async fn write_chunk(&mut self, chunk: &[u8]) -> Result<()> {
-        let writer = self.file.as_mut().context("blob writer already finished")?;
-        writer.write_all(chunk).await?;
-        self.hasher.update(chunk);
-        self.byte_length = self
-            .byte_length
-            .checked_add(chunk.len() as u64)
-            .context("blob length overflow")?;
-        Ok(())
-    }
-
-    async fn finish(
-        mut self,
-        media_type: Option<String>,
-        encoding: String,
-    ) -> Result<ExportedBlobV3> {
-        let mut writer = self.file.take().context("blob writer already finished")?;
-        writer.flush().await?;
-        let file = writer.into_inner();
-        file.sync_all().await?;
-        drop(file);
-
-        let sha256 = hex::encode(self.hasher.clone().finalize());
-        let rel_path = format!("contents/{sha256}.bin");
-        validate_export_relative_path(&rel_path)?;
-        let final_path = self.output_dir.join(&rel_path);
-        ensure!(
-            final_path.starts_with(&self.contents_dir),
-            "resolved content path escaped contents directory: {}",
-            final_path.display()
-        );
-
-        match tokio::fs::symlink_metadata(&final_path).await {
-            Ok(meta) => {
-                ensure!(
-                    !meta.file_type().is_symlink() && meta.is_file(),
-                    "existing content target {} is not a regular file",
-                    final_path.display()
-                );
-                ensure!(
-                    meta.len() == self.byte_length,
-                    "existing content blob {} length {} disagrees with expected {}",
-                    rel_path,
-                    meta.len(),
-                    self.byte_length
-                );
-                verify_existing_file_sha256(&final_path, &sha256).await?;
-                let _ = fs::remove_file(&self.temp_path);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tokio::fs::rename(&self.temp_path, &final_path)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "commit content blob {} -> {}",
-                            self.temp_path.display(),
-                            final_path.display()
-                        )
-                    })?;
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&self.temp_path);
-                return Err(error)
-                    .with_context(|| format!("inspect content target {}", final_path.display()));
-            }
-        }
-
-        Ok(ExportedBlobV3 {
-            path: rel_path,
-            byte_length: self.byte_length,
-            sha256,
-            media_type,
-            encoding,
-        })
-    }
-}
-
-async fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Result<()> {
-    let mut file = File::open(path)
-        .await
-        .with_context(|| format!("open existing content blob {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    // Keep the bounded chunk on the heap: this verifier is nested in the export task's
-    // async state machine, whose inline buffers otherwise multiply across polling frames.
-    let mut buf = vec![0_u8; VERIFY_CHUNK_BYTES];
-    loop {
-        let n = file.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let actual = hex::encode(hasher.finalize());
-    ensure!(
-        actual == expected_sha256,
-        "content hash mismatch in {}: expected {expected_sha256}, observed {actual}",
-        path.display()
-    );
-    Ok(())
-}
-
-/// Commands queued onto the single background writer task.
-pub enum ExportCommand {
-    RunStarted {
-        build: BuildInfoV3,
-        manifest_sha256: String,
-    },
-    AgentRegistered {
-        agent_id: String,
-        thread_id: String,
-        parent_agent_id: Option<String>,
-        parent_thread_id: Option<String>,
-        role: Option<String>,
-        workspace_id: String,
-        spawn_tool_call_id: Option<String>,
-        initial_effect_seq: u64,
-        initial_history_cut: HistoryCut,
-        initial_history_seq: u64,
-        history: HistoryReader,
-    },
-    SkillsDiscovered {
-        thread_id: String,
-        report: pl_tool::skill::SkillDiscoveryReport,
-    },
-    LiveHandoff(Box<LiveHandoff>),
-    Finalize {
-        agent_ok: bool,
-        flush_ok: bool,
-        pending_after: Option<usize>,
-        reply: tokio::sync::oneshot::Sender<FinalizeWriterOutcome>,
-    },
-}
-
-pub(in crate::studio) struct LiveHandoff {
-    pub(super) thread_id: String,
-    pub(super) effect_seq: u64,
-    pub(super) accounting: PreparedAccounting,
-    pub(super) lifecycle: Arc<[ExecutionLifecycleExportV3]>,
-    pub(super) history: HistoryReader,
-    pub(super) history_cut: HistoryCut,
-    pub(super) history_seq: u64,
-    pub(super) current_owner_id: String,
-    pub(super) current_revision: u64,
-}
-
-pub struct FinalizeWriterOutcome {
-    pub trace_complete: bool,
-    pub usage_complete: bool,
-    pub cost_complete: bool,
-    pub trace: TraceSummaryV3,
-    pub usage: Option<super::types::UsageExportV3>,
-    pub failure: Option<ExecutionErrorV3>,
-}
-
-struct QueuedItem {
-    cmd: ExportCommand,
-    metadata_bytes: usize,
-}
-
-#[derive(Default)]
-struct QueueState {
-    queue: VecDeque<QueuedItem>,
-    queued_batches: usize,
-    queued_bytes: usize,
-    admission_closed: bool,
-    fatal_error: Option<ExecutionErrorV3>,
-    writer_exited: bool,
-    #[cfg(test)]
-    paused: bool,
-}
+use crate::studio::thread_projection::BillingFact;
 
 /// Shared immutable member final cut passed cleanly when `ProjectionWorker` retires.
 #[derive(Clone)]
@@ -336,226 +76,6 @@ struct WriterMemberState {
     scan_pivot: u64,
 }
 
-pub struct BoundedExportQueue {
-    state: Mutex<QueueState>,
-    slot_notify: Notify,
-    work_notify: Notify,
-    #[cfg(test)]
-    pause_notify: Notify,
-    run_cancel: CancellationToken,
-}
-
-impl BoundedExportQueue {
-    pub fn new(run_cancel: CancellationToken) -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new(QueueState::default()),
-            slot_notify: Notify::new(),
-            work_notify: Notify::new(),
-            #[cfg(test)]
-            pause_notify: Notify::new(),
-            run_cancel,
-        })
-    }
-
-    pub async fn admit(
-        &self,
-        cmd: ExportCommand,
-        metadata_bytes: usize,
-    ) -> Result<(), Box<ExecutionErrorV3>> {
-        if metadata_bytes > MAX_QUEUED_METADATA_BYTES {
-            let err = ExecutionErrorV3 {
-                stage: ExecutionErrorStage::Export,
-                code: "exportBatchTooLarge".to_string(),
-                message: format!(
-                    "export metadata batch ({metadata_bytes} bytes) exceeds 16 MiB admission bound"
-                ),
-                turn_failure: None,
-            };
-            self.fail_permanently(err.clone());
-            return Err(Box::new(err));
-        }
-
-        loop {
-            let notified = {
-                let mut guard = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(fatal) = &guard.fatal_error {
-                    return Err(Box::new(fatal.clone()));
-                }
-                if guard.admission_closed || guard.writer_exited {
-                    return Err(Box::new(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportAdmissionClosed".to_string(),
-                        message: "run exporter admission gate is closed".to_string(),
-                        turn_failure: None,
-                    }));
-                }
-                if guard.queued_batches < MAX_QUEUED_BATCHES
-                    && guard.queued_bytes.saturating_add(metadata_bytes)
-                        <= MAX_QUEUED_METADATA_BYTES
-                {
-                    guard.queued_batches += 1;
-                    guard.queued_bytes += metadata_bytes;
-                    guard.queue.push_back(QueuedItem {
-                        cmd,
-                        metadata_bytes,
-                    });
-                    drop(guard);
-                    self.work_notify.notify_one();
-                    return Ok(());
-                }
-                self.slot_notify.notified()
-            };
-            notified.await;
-        }
-    }
-
-    /// Enqueues Finalize even when `admission_closed` was armed on deadline, provided writer task
-    /// has not exited, so finalize can still flush/report partial state.
-    pub async fn enqueue_finalize(
-        &self,
-        agent_ok: bool,
-        flush_ok: bool,
-        pending_after: Option<usize>,
-    ) -> Result<tokio::sync::oneshot::Receiver<FinalizeWriterOutcome>, Box<ExecutionErrorV3>> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        {
-            let mut guard = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard.writer_exited {
-                return Err(Box::new(guard.fatal_error.clone().unwrap_or(
-                    ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportWriterStopped".to_string(),
-                        message: "exporter writer task exited before finalization".to_string(),
-                        turn_failure: None,
-                    },
-                )));
-            }
-            guard.queue.push_back(QueuedItem {
-                cmd: ExportCommand::Finalize {
-                    agent_ok,
-                    flush_ok,
-                    pending_after,
-                    reply: tx,
-                },
-                metadata_bytes: 0,
-            });
-            guard.queued_batches += 1;
-        }
-        self.work_notify.notify_one();
-        Ok(rx)
-    }
-
-    pub fn close_admission(&self, reason: ExecutionErrorV3) {
-        self.fail_permanently(reason);
-    }
-
-    pub fn fail_permanently(&self, err: ExecutionErrorV3) {
-        let mut guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.admission_closed = true;
-        if guard.fatal_error.is_none() {
-            guard.fatal_error = Some(err);
-        }
-        drop(guard);
-        self.slot_notify.notify_waiters();
-        self.work_notify.notify_waiters();
-        #[cfg(test)]
-        self.pause_notify.notify_waiters();
-        self.run_cancel.cancel();
-    }
-
-    pub fn fatal_error(&self) -> Option<ExecutionErrorV3> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fatal_error
-            .clone()
-    }
-
-    #[cfg(test)]
-    pub fn queued_counts(&self) -> (usize, usize) {
-        let guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (guard.queued_batches, guard.queued_bytes)
-    }
-
-    #[cfg(test)]
-    pub fn set_paused(&self, paused: bool) {
-        let mut guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.paused = paused;
-        drop(guard);
-        self.pause_notify.notify_waiters();
-    }
-
-    async fn pop(&self) -> Option<ExportCommand> {
-        loop {
-            #[cfg(test)]
-            {
-                let pause_notified = {
-                    let guard = self
-                        .state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if guard.paused && !guard.admission_closed {
-                        Some(self.pause_notify.notified())
-                    } else {
-                        None
-                    }
-                };
-                if let Some(notified) = pause_notified {
-                    notified.await;
-                    continue;
-                }
-            }
-            let notified = {
-                let mut guard = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(item) = guard.queue.pop_front() {
-                    guard.queued_batches = guard.queued_batches.saturating_sub(1);
-                    guard.queued_bytes = guard.queued_bytes.saturating_sub(item.metadata_bytes);
-                    drop(guard);
-                    self.slot_notify.notify_waiters();
-                    return Some(item.cmd);
-                }
-                if guard.writer_exited {
-                    return None;
-                }
-                self.work_notify.notified()
-            };
-            notified.await;
-        }
-    }
-
-    fn mark_writer_exited(&self) {
-        let mut guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.writer_exited = true;
-        guard.admission_closed = true;
-        guard.queue.clear();
-        guard.queued_batches = 0;
-        guard.queued_bytes = 0;
-        drop(guard);
-        self.slot_notify.notify_waiters();
-    }
-}
-
 struct WriterExitGuard {
     queue: Arc<BoundedExportQueue>,
     completed: bool,
@@ -564,12 +84,10 @@ struct WriterExitGuard {
 impl Drop for WriterExitGuard {
     fn drop(&mut self) {
         if !self.completed && self.queue.fatal_error().is_none() {
-            self.queue.fail_permanently(ExecutionErrorV3 {
-                stage: ExecutionErrorStage::Export,
-                code: "exportWriterStopped".into(),
-                message: "export writer stopped before finalization".into(),
-                turn_failure: None,
-            });
+            self.queue.fail_permanently(ExecutionErrorV3::export(
+                "exportWriterStopped",
+                "export writer stopped before finalization",
+            ));
         }
         self.queue.mark_writer_exited();
     }
@@ -614,7 +132,7 @@ impl WriterWorker {
         queue: Arc<BoundedExportQueue>,
         shared_members: Arc<Mutex<SharedMemberState>>,
     ) -> Self {
-        let events_path = output_dir.join(EVENTS_FILE_NAME);
+        let events_path = output_dir.join(EVENTS_REL_PATH);
         let blob_sink = FsContentBlobSink::new(output_dir);
         Self {
             run_id,
@@ -652,12 +170,7 @@ impl WriterWorker {
                         continue;
                     }
                     if let Err(err) = self.process_command(other).await {
-                        let diag = ExecutionErrorV3 {
-                            stage: ExecutionErrorStage::Export,
-                            code: "exportWriteFailed".to_string(),
-                            message: err.to_string(),
-                            turn_failure: None,
-                        };
+                        let diag = ExecutionErrorV3::export("exportWriteFailed", err.to_string());
                         self.queue.fail_permanently(diag);
                     }
                 }
@@ -1006,14 +519,12 @@ impl WriterWorker {
                     missing_final_cut.push(thread_id.clone());
                 }
                 if !self.members.contains_key(thread_id) {
-                    fatal = Some(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "missingMemberRegistration".to_string(),
-                        message: format!(
+                    fatal = Some(ExecutionErrorV3::export(
+                        "missingMemberRegistration",
+                        format!(
                             "member {thread_id} was registered without writer AgentRegistered state"
                         ),
-                        turn_failure: None,
-                    });
+                    ));
                     break;
                 }
                 let expected_seq = final_cut
@@ -1025,36 +536,30 @@ impl WriterWorker {
                 let actual_head = match snap.history.head().await {
                     Ok(head) => head,
                     Err(error) => {
-                        fatal = Some(ExecutionErrorV3 {
-                            stage: ExecutionErrorStage::Export,
-                            code: "historyHeadFailed".to_string(),
-                            message: error.to_string(),
-                            turn_failure: None,
-                        });
+                        fatal = Some(ExecutionErrorV3::export(
+                            "historyHeadFailed",
+                            error.to_string(),
+                        ));
                         break;
                     }
                 };
                 if actual_head < expected_seq {
-                    fatal = Some(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "historyHeadRegressed".to_string(),
-                        message: format!(
+                    fatal = Some(ExecutionErrorV3::export(
+                        "historyHeadRegressed",
+                        format!(
                             "history {thread_id} head {actual_head} is behind final cut {expected_seq}"
                         ),
-                        turn_failure: None,
-                    });
+                    ));
                     break;
                 }
                 if let Err(error) = self
                     .export_history_for_member(thread_id, cut, expected_seq)
                     .await
                 {
-                    fatal = Some(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "historyBackfillFailed".to_string(),
-                        message: error.to_string(),
-                        turn_failure: None,
-                    });
+                    fatal = Some(ExecutionErrorV3::export(
+                        "historyBackfillFailed",
+                        error.to_string(),
+                    ));
                     break;
                 }
             }
@@ -1103,15 +608,13 @@ impl WriterWorker {
         let built_usage = self.usage.finish(accounting_complete, &member_usage_inputs);
 
         if fatal.is_none() && !built_usage.reconciled {
-            fatal = Some(ExecutionErrorV3 {
-                stage: ExecutionErrorStage::Export,
-                code: "usageReconcileFailed".to_string(),
-                message: built_usage
+            fatal = Some(ExecutionErrorV3::export(
+                "usageReconcileFailed",
+                built_usage
                     .reconcile_error
                     .clone()
                     .unwrap_or_else(|| "accounting reconciliation failed".to_string()),
-                turn_failure: None,
-            });
+            ));
         }
 
         let can_seal = native_clean
@@ -1190,12 +693,10 @@ impl WriterWorker {
             {
                 sealed_write_ok = false;
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportWriteFailed".to_string(),
-                        message: err.to_string(),
-                        turn_failure: None,
-                    });
+                    fatal = Some(ExecutionErrorV3::export(
+                        "exportWriteFailed",
+                        err.to_string(),
+                    ));
                 }
             }
 
@@ -1228,12 +729,10 @@ impl WriterWorker {
                 .await
             {
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportWriteFailed".to_string(),
-                        message: err.to_string(),
-                        turn_failure: None,
-                    });
+                    fatal = Some(ExecutionErrorV3::export(
+                        "exportWriteFailed",
+                        err.to_string(),
+                    ));
                 }
             } else {
                 self.sealed = true;
@@ -1243,12 +742,10 @@ impl WriterWorker {
         if let Err(err) = self.flush_and_close_events_file().await {
             self.sealed = false;
             if fatal.is_none() {
-                fatal = Some(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "exportFlushFailed".to_string(),
-                    message: err.to_string(),
-                    turn_failure: None,
-                });
+                fatal = Some(ExecutionErrorV3::export(
+                    "exportFlushFailed",
+                    err.to_string(),
+                ));
             }
         }
 
@@ -1259,12 +756,10 @@ impl WriterWorker {
             Err(error) => {
                 self.sealed = false;
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportMeasureFailed".into(),
-                        message: error.to_string(),
-                        turn_failure: None,
-                    });
+                    fatal = Some(ExecutionErrorV3::export(
+                        "exportMeasureFailed",
+                        error.to_string(),
+                    ));
                 }
                 (None, self.last_event_seq.unwrap_or(0))
             }
@@ -1351,18 +846,8 @@ impl WriterWorker {
     }
 
     async fn measure_events_file(&self) -> Result<(String, u64)> {
-        let mut file = File::open(&self.events_path).await?;
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0_u8; VERIFY_CHUNK_BYTES];
-        loop {
-            let count = file.read(&mut buf).await?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&buf[..count]);
-        }
         Ok((
-            hex::encode(hasher.finalize()),
+            hash_file(&self.events_path).await?,
             self.last_event_seq.unwrap_or(0),
         ))
     }
@@ -1375,15 +860,6 @@ fn fingerprint_billing_fact(fact: &BillingFact) -> Result<String> {
         "record": &fact.record,
     });
     Ok(crate::hash::canonical_json_hash(&value))
-}
-
-/// Estimates serialized metadata byte size charged against the 16 MiB queue bound without copying
-/// body content into the queue.
-pub fn estimate_handoff_metadata_bytes(accounting: &PreparedAccounting) -> usize {
-    usize::try_from(accounting.retained_bytes())
-        .unwrap_or(usize::MAX)
-        .saturating_add(std::mem::size_of::<ExportCommand>())
-        .saturating_add(accounting.thread_id.len())
 }
 
 /// Waits for finalize writer response, closing admission if `deadline` expires while blocked.
@@ -1399,41 +875,21 @@ pub async fn await_finalize_with_budget(
         },
         Some(limit) => {
             if Instant::now() >= limit {
-                queue.close_admission(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "exportDeadlineExceeded".to_string(),
-                    message: "shutdown cleanup deadline expired before export finalization"
-                        .to_string(),
-                    turn_failure: None,
-                });
+                queue.close_admission(ExecutionErrorV3::export(
+                    "exportDeadlineExceeded",
+                    "shutdown cleanup deadline expired before export finalization",
+                ));
             }
             match tokio::time::timeout_at(limit, rx).await {
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(_)) => crashed_outcome(queue),
                 Err(_) => {
-                    let err = ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportDeadlineExceeded".to_string(),
-                        message: "exporter finalization exceeded shared shutdown deadline"
-                            .to_string(),
-                        turn_failure: None,
-                    };
+                    let err = ExecutionErrorV3::export(
+                        "exportDeadlineExceeded",
+                        "exporter finalization exceeded shared shutdown deadline",
+                    );
                     queue.close_admission(err.clone());
-                    FinalizeWriterOutcome {
-                        trace_complete: false,
-                        usage_complete: false,
-                        cost_complete: false,
-                        trace: TraceSummaryV3 {
-                            events_path: EVENTS_REL_PATH.to_string(),
-                            events_sha256: None,
-                            event_count: 0,
-                            last_event_seq: None,
-                            sealed: false,
-                            reason: Some(err.message.clone()),
-                        },
-                        usage: None,
-                        failure: Some(err),
-                    }
+                    FinalizeWriterOutcome::failed(err)
                 }
             }
         }
@@ -1441,25 +897,9 @@ pub async fn await_finalize_with_budget(
 }
 
 fn crashed_outcome(queue: &BoundedExportQueue) -> FinalizeWriterOutcome {
-    let err = queue.fatal_error().unwrap_or(ExecutionErrorV3 {
-        stage: ExecutionErrorStage::Export,
-        code: "exportWriterStopped".to_string(),
-        message: "exporter writer dropped finalize response channel".to_string(),
-        turn_failure: None,
-    });
-    FinalizeWriterOutcome {
-        trace_complete: false,
-        usage_complete: false,
-        cost_complete: false,
-        trace: TraceSummaryV3 {
-            events_path: EVENTS_REL_PATH.to_string(),
-            events_sha256: None,
-            event_count: 0,
-            last_event_seq: None,
-            sealed: false,
-            reason: Some(err.message.clone()),
-        },
-        usage: None,
-        failure: Some(err),
-    }
+    let err = queue.fatal_error().unwrap_or(ExecutionErrorV3::export(
+        "exportWriterStopped",
+        "exporter writer dropped finalize response channel",
+    ));
+    FinalizeWriterOutcome::failed(err)
 }

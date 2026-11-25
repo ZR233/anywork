@@ -466,22 +466,12 @@ impl StudioRuntime {
                     self.observations.close(RuntimeObserver::Persistence, None),
                 )
             },
-            async {
-                let result = self.shutdown_agent_framework().await;
-                #[cfg(test)]
-                if result.is_ok() {
-                    self.service_stops.note_sessions_acked();
-                }
-                result
-            },
+            self.shutdown_agent_framework(),
         );
         let lsp = if sessions.is_ok() && observers.0.is_clean() {
-            #[cfg(test)]
-            self.service_stops
-                .note_stop("lsp", &self.observations.lsp_projection_probe());
-            self.external_runtimes
-                .lsp
-                .shutdown()
+            self.start_lsp_stop()
+                .await
+                .join()
                 .await
                 .map_err(anyhow::Error::from)
         } else {
@@ -490,11 +480,9 @@ impl StudioRuntime {
             ))
         };
         let ssh = if sessions.is_ok() && lsp.is_ok() {
-            #[cfg(test)]
-            self.service_stops
-                .note_stop("ssh", &self.observations.lsp_projection_probe());
-            self.ssh_manager
-                .shutdown()
+            self.start_ssh_stop()
+                .await
+                .join()
                 .await
                 .map_err(anyhow::Error::from)
         } else {

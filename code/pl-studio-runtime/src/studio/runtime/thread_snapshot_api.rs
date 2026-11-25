@@ -31,11 +31,9 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
     ) -> Result<ThreadSnapshot> {
-        if let Some((_, handle)) = self
-            .sessions
-            .observed_threads()
-            .into_iter()
-            .find(|(id, _)| id == thread_id)
+        if let Some(handle) = self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id))
         {
             let snapshot = handle.snapshot();
             self.store
@@ -88,11 +86,9 @@ impl StudioRuntime {
             .await;
         }
         let live_mode = self
-            .sessions
-            .observed_threads()
-            .into_iter()
-            .find(|(id, _)| id == thread_id)
-            .and_then(|(_, handle)| {
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id))
+            .and_then(|handle| {
                 handle
                     .snapshot()
                     .extensions

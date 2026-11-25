@@ -107,11 +107,9 @@ impl StudioRuntime {
         self.check_thread_read_access(&thread)?;
         // Inspect live and pending deliveries before History. The reliable writer commits
         // each original before releasing its pending effect.
-        if let Some((_, handle)) = self
-            .sessions
-            .observed_threads()
-            .into_iter()
-            .find(|(id, _)| id == thread_id)
+        if let Some(handle) = self
+            .session_of(thread_id)
+            .and_then(|session| session.observed_thread(thread_id))
         {
             let snapshot = handle.snapshot();
             let effects = handle.effects().await?;

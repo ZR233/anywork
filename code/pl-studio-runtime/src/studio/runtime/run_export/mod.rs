@@ -4,11 +4,13 @@
 //! content blobs (`events.jsonl` + `contents/<sha256>.bin`), idempotent accounting handoffs with
 //! bounded backpressure, and atomic `result.json` / `runSealed` closure after persistence flush.
 
+mod blob_sink;
 mod manifest;
+mod queue;
 mod reader;
 mod types;
 mod usage;
-mod writer;
+mod worker;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -25,6 +27,9 @@ pub use manifest::{
     prepare_output_dir, sha256_hex, validate_output_dir_preflight, write_result_atomic,
     write_run_manifest,
 };
+use queue::{
+    BoundedExportQueue, ExportCommand, FinalizeWriterOutcome, estimate_handoff_metadata_bytes,
+};
 pub use types::{
     BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3, EventBodyV3,
     EventSourceV3, EventV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3,
@@ -34,9 +39,8 @@ pub use types::{
     SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3, UsageCoverage,
     UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3, format_utc_rfc3339,
 };
-use writer::{
-    BoundedExportQueue, ExportCommand, FinalizeWriterOutcome, MemberFinalCut, MemberSnapshot,
-    SharedMemberState, await_finalize_with_budget, estimate_handoff_metadata_bytes,
+use worker::{
+    MemberFinalCut, MemberSnapshot, SharedMemberState, await_finalize_with_budget,
     spawn_writer_task,
 };
 
@@ -265,15 +269,13 @@ impl RunExportCoordinator {
         {
             Ok(position) => position,
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "historyCaptureFailed".to_string(),
-                    message: format!(
+                self.queue.fail_permanently(ExecutionErrorV3::export(
+                    "historyCaptureFailed",
+                    format!(
                         "failed to capture initial History position for thread {}: {error}",
                         reg.thread_id
                     ),
-                    turn_failure: None,
-                });
+                ));
                 return;
             }
         };
@@ -293,15 +295,13 @@ impl RunExportCoordinator {
                     && existing.spawn_tool_call_id == reg.spawn_tool_call_id
                     && existing.initial_history_seq <= initial_history_seq;
                 if !matches {
-                    self.queue.fail_permanently(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "memberIdentityConflict".to_string(),
-                        message: format!(
+                    self.queue.fail_permanently(ExecutionErrorV3::export(
+                        "memberIdentityConflict",
+                        format!(
                             "conflicting member registration for thread {}",
                             reg.thread_id
                         ),
-                        turn_failure: None,
-                    });
+                    ));
                 }
                 return;
             }
@@ -387,14 +387,10 @@ impl RunExportCoordinator {
         let report = match catalog.discovery_report() {
             Ok(report) => report,
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "skillsDiscoveryReportFailed".to_string(),
-                    message: format!(
-                        "failed to extract frozen skill discovery provenance: {error}"
-                    ),
-                    turn_failure: None,
-                });
+                self.queue.fail_permanently(ExecutionErrorV3::export(
+                    "skillsDiscoveryReportFailed",
+                    format!("failed to extract frozen skill discovery provenance: {error}"),
+                ));
                 return;
             }
         };
@@ -405,12 +401,10 @@ impl RunExportCoordinator {
                 .saturating_add(thread_id.len())
                 .saturating_add(std::mem::size_of::<ExportCommand>()),
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "skillsDiscoveryReportFailed".to_string(),
-                    message: error.to_string(),
-                    turn_failure: None,
-                });
+                self.queue.fail_permanently(ExecutionErrorV3::export(
+                    "skillsDiscoveryReportFailed",
+                    error.to_string(),
+                ));
                 return;
             }
         };
@@ -471,28 +465,24 @@ impl RunExportCoordinator {
         {
             Ok(facts) => facts.into(),
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "lifecycleExportFailed".to_string(),
-                    message: format!(
+                self.queue.fail_permanently(ExecutionErrorV3::export(
+                    "lifecycleExportFailed",
+                    format!(
                         "failed to decode History lifecycle export for thread {thread_id}: {error}"
                     ),
-                    turn_failure: None,
-                });
+                ));
                 return;
             }
         };
         let lifecycle_bytes = match serde_json::to_vec(&lifecycle) {
             Ok(bytes) => bytes.len(),
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "lifecycleExportFailed".to_string(),
-                    message: format!(
+                self.queue.fail_permanently(ExecutionErrorV3::export(
+                    "lifecycleExportFailed",
+                    format!(
                         "failed to encode History lifecycle export for thread {thread_id}: {error}"
                     ),
-                    turn_failure: None,
-                });
+                ));
                 return;
             }
         };
@@ -511,14 +501,9 @@ impl RunExportCoordinator {
                     return;
                 }
                 drop(guard);
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "effectRedeliveryConflict".to_string(),
-                    message: format!(
+                self.queue.fail_permanently(ExecutionErrorV3::export("effectRedeliveryConflict", format!(
                         "conflicting accounting redelivery for thread {thread_id} at effect_seq {effect_seq}"
-                    ),
-                    turn_failure: None,
-                });
+                    )));
                 return;
             }
         }
@@ -526,14 +511,12 @@ impl RunExportCoordinator {
         let (history_cut, history_seq) = match history.capture_position().await {
             Ok(position) => position,
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV3 {
-                    stage: ExecutionErrorStage::Export,
-                    code: "historyCaptureFailed".to_string(),
-                    message: format!(
+                self.queue.fail_permanently(ExecutionErrorV3::export(
+                    "historyCaptureFailed",
+                    format!(
                         "failed to capture live History position for thread {thread_id}: {error}"
                     ),
-                    turn_failure: None,
-                });
+                ));
                 return;
             }
         };
@@ -556,7 +539,7 @@ impl RunExportCoordinator {
             .saturating_add(history_cut.token.len())
             .saturating_add(current_owner_id.len())
             .saturating_add(lifecycle_bytes);
-        let cmd = ExportCommand::LiveHandoff(Box::new(writer::LiveHandoff {
+        let cmd = ExportCommand::LiveHandoff(Box::new(queue::LiveHandoff {
             thread_id: thread_id.to_string(),
             effect_seq,
             accounting: accounting.clone(),
@@ -639,12 +622,7 @@ impl RunExportCoordinator {
             tokio::select! {
                 () = cancel.cancelled() => {}
                 () = tokio::time::sleep_until(deadline) => {
-                    queue.close_admission(ExecutionErrorV3 {
-                        stage: ExecutionErrorStage::Export,
-                        code: "exportShutdownDeadline".to_string(),
-                        message: "shared shutdown deadline expired while exporter queue had pending backpressure".to_string(),
-                        turn_failure: None,
-                    });
+                    queue.close_admission(ExecutionErrorV3::export("exportShutdownDeadline", "shared shutdown deadline expired while exporter queue had pending backpressure"));
                 }
             }
         });
@@ -664,12 +642,10 @@ impl RunExportCoordinator {
 
     /// Closes admission if producer drain itself failed/timed out so no dangling awaits remain.
     pub fn close_admission_on_producer_timeout(&self) {
-        self.queue.close_admission(ExecutionErrorV3 {
-            stage: ExecutionErrorStage::Export,
-            code: "producerDrainIncomplete".to_string(),
-            message: "producer drain did not acknowledge before export finalization".to_string(),
-            turn_failure: None,
-        });
+        self.queue.close_admission(ExecutionErrorV3::export(
+            "producerDrainIncomplete",
+            "producer drain did not acknowledge before export finalization",
+        ));
     }
 
     fn cached_report(&self) -> Option<RunExportReport> {
@@ -698,24 +674,7 @@ impl RunExportCoordinator {
             .await
         {
             Ok(rx) => await_finalize_with_budget(&self.queue, rx, deadline).await,
-            Err(err) => {
-                let err = *err;
-                FinalizeWriterOutcome {
-                    trace_complete: false,
-                    usage_complete: false,
-                    cost_complete: false,
-                    trace: TraceSummaryV3 {
-                        events_path: "events.jsonl".to_string(),
-                        events_sha256: None,
-                        event_count: 0,
-                        last_event_seq: None,
-                        sealed: false,
-                        reason: Some(err.message.clone()),
-                    },
-                    usage: None,
-                    failure: Some(err),
-                }
-            }
+            Err(err) => FinalizeWriterOutcome::failed(*err),
         };
 
         let join_handle = self
@@ -773,11 +732,6 @@ impl RunExportCoordinator {
         };
         guard.report = Some(report.clone());
         report
-    }
-
-    #[cfg(test)]
-    pub fn queue(&self) -> Arc<BoundedExportQueue> {
-        self.queue.clone()
     }
 }
 
