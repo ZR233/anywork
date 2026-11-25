@@ -21,7 +21,6 @@ use crate::studio::{ProductEventBus, unix_seconds};
 
 use super::super::acp_ops::{CommandLedger, RetainedTask};
 use super::mapping::failure;
-use super::source::SourcePolicy;
 
 /// 每操作独立的资源 owner：当前阻塞阶段任务与自有暂存都登记在这里，登记先于等待。
 ///
@@ -417,8 +416,6 @@ pub(super) struct AcpInstallInner {
     pub(super) store: crate::studio::StudioStore,
     events: ProductEventBus,
     accounts: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
-    #[cfg(test)]
-    policy_override: Mutex<Option<super::source::TestSourceOverride>>,
     registry: Mutex<Registry>,
 }
 
@@ -432,31 +429,8 @@ impl AcpInstallInner {
             store,
             events,
             accounts,
-            #[cfg(test)]
-            policy_override: Mutex::new(None),
             registry: Mutex::new(Registry::default()),
         }
-    }
-
-    pub(super) fn policy(&self) -> SourcePolicy {
-        #[cfg(test)]
-        if let Some(custom) = self
-            .policy_override
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-        {
-            return SourcePolicy::for_test(custom);
-        }
-        SourcePolicy::official()
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_test_policy(&self, override_source: super::source::TestSourceOverride) {
-        *self
-            .policy_override
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(override_source);
     }
 
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
