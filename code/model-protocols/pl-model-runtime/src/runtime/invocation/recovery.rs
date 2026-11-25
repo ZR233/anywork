@@ -153,11 +153,13 @@ impl ModelRuntime {
                         .run_stream_attempt(
                             attempt_request,
                             &context,
-                            trace,
-                            &inference_timer,
-                            current.as_deref_mut(),
-                            (transport_attempts - 1) as u32,
-                            reconnect_arg,
+                            super::attempt::StreamAttemptExecution {
+                                trace,
+                                inference_timer: &inference_timer,
+                                current: current.as_deref_mut(),
+                                generation: (transport_attempts - 1) as u32,
+                                pending_reconnect: reconnect_arg,
+                            },
                         )
                         .await;
                     if reconnected_emitted {

@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, Value};
 use sha2::{Digest, Sha256};
 
-use super::{pending::WorkRangeSummary, types::source_key, *};
+use super::{types::source_key, *};
 
 pub(super) fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
@@ -15,6 +15,14 @@ pub(super) fn number(value: u64) -> Result<i64> {
 }
 
 const COLUMNS: &str = "seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,attempt_id,call_id,entity_id,message_id,tool_name,source_id,query_class,parent_id,original_kind,row_scope,row_key,is_anchor,payload_schema,payload_json";
+const D_COLUMNS: &str = "d.seq,d.event_id,d.kind,d.timeline_role,d.occurred_at,d.recorded_at,d.run_id,d.turn_id,d.attempt_id,d.call_id,d.entity_id,d.message_id,d.tool_name,d.source_id,d.query_class,d.parent_id,d.original_kind,d.row_scope,d.row_key,d.is_anchor,d.payload_schema,d.payload_json";
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct DirectTimelineRow {
+    pub record: Record,
+    pub has_folded_after: bool,
+    pub tail_folded_ended_at: Option<i64>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Record {
@@ -129,114 +137,106 @@ pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
         .map_err(|_| HistoryError::Integrity("negative history head".into()))
 }
 
-pub(super) async fn boundaries_at_or_before(
+pub(super) fn direct_timeline_sql() -> &'static str {
+    static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SQL.get_or_init(|| {
+        format!(
+            "SELECT {D_COLUMNS}, \
+                    EXISTS ( \
+                        SELECT 1 FROM history_events w \
+                        WHERE w.timeline_role=1 \
+                          AND w.seq>d.seq \
+                          AND w.seq<COALESCE( \
+                              (SELECT n.seq FROM history_events n \
+                               WHERE n.timeline_role=2 AND n.seq>d.seq AND n.seq<? \
+                               ORDER BY n.seq ASC LIMIT 1), \
+                              ? \
+                          ) \
+                    ) AS has_folded_after, \
+                    CASE \
+                        WHEN ?=1 AND NOT EXISTS ( \
+                            SELECT 1 FROM history_events n2 \
+                            WHERE n2.timeline_role=2 AND n2.seq>d.seq AND n2.seq<? \
+                        ) THEN ( \
+                            SELECT COALESCE(w2.occurred_at, w2.recorded_at) \
+                            FROM history_events w2 \
+                            WHERE w2.timeline_role=1 AND w2.seq>d.seq AND w2.seq<? \
+                            ORDER BY w2.seq DESC LIMIT 1 \
+                        ) \
+                        ELSE NULL \
+                    END AS tail_folded_ended_at \
+             FROM history_events d \
+             WHERE d.timeline_role=2 AND d.seq<=? \
+             ORDER BY d.seq DESC \
+             LIMIT ?"
+        )
+    })
+}
+
+pub(super) async fn direct_timeline_entries_at_or_before(
     db: &impl ConnectionTrait,
     upper_seq: u64,
+    upper_excl: u64,
+    include_tail_end: bool,
     limit: usize,
-) -> Result<Vec<Record>> {
+) -> Result<Vec<DirectTimelineRow>> {
     if upper_seq == 0 || limit == 0 {
         return Ok(Vec::new());
     }
+    let upper_excl_i64 = number(upper_excl)?;
+    let limit_u64 = u64::try_from(limit).map_err(|_| {
+        HistoryError::InvalidDemand("direct timeline prefetch limit overflow".into())
+    })?;
     let rows = db
         .query_all_raw(statement(
-            &format!(
-                "SELECT {COLUMNS} FROM history_events \
-                 WHERE timeline_role=2 AND seq<=? ORDER BY seq DESC LIMIT ?"
-            ),
+            direct_timeline_sql(),
             vec![
+                upper_excl_i64.into(),
+                upper_excl_i64.into(),
+                i64::from(include_tail_end).into(),
+                upper_excl_i64.into(),
+                upper_excl_i64.into(),
                 number(upper_seq)?.into(),
-                number(u64::try_from(limit).map_err(|_| {
-                    HistoryError::InvalidDemand("boundary prefetch limit overflow".into())
-                })?)?
-                .into(),
+                number(limit_u64)?.into(),
             ],
         ))
         .await
         .inspect(|_| {
             tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
         })?;
-    rows.into_iter().map(decode_row).collect()
+    rows.into_iter()
+        .map(|row| {
+            let has_folded_after = row.try_get::<i64>("", "has_folded_after")? != 0;
+            let tail_folded_ended_at: Option<i64> = row.try_get("", "tail_folded_ended_at")?;
+            let record = decode_row(row)?;
+            Ok(DirectTimelineRow {
+                record,
+                has_folded_after,
+                tail_folded_ended_at,
+            })
+        })
+        .collect()
 }
 
-pub(super) async fn work_range_summaries_batch(
+pub(super) async fn has_work_in_range(
     db: &impl ConnectionTrait,
-    windows: &[(u64, u64)],
-) -> Result<Vec<Option<WorkRangeSummary>>> {
-    if windows.is_empty() {
-        return Ok(Vec::new());
+    lower_excl: u64,
+    upper_excl: u64,
+) -> Result<bool> {
+    if lower_excl.saturating_add(1) >= upper_excl {
+        return Ok(false);
     }
-    let mut tuples = Vec::with_capacity(windows.len());
-    let mut values = Vec::with_capacity(windows.len() * 3);
-    for (idx, &(lower_excl, upper_incl)) in windows.iter().enumerate() {
-        tuples.push("(?,?,?)");
-        values.push(
-            i64::try_from(idx)
-                .map_err(|_| HistoryError::Integrity("window index overflow".into()))?
-                .into(),
-        );
-        values.push(number(lower_excl)?.into());
-        values.push(number(upper_incl)?.into());
-    }
-    let sql = format!(
-        "WITH ranges(idx, lo, hi) AS (VALUES {}) \
-         SELECT r.idx AS idx, \
-                MIN(e.seq) AS first_seq, \
-                MAX(e.seq) AS last_seq, \
-                MIN(e.occurred_at) AS min_occurred_at, \
-                MAX(e.occurred_at) AS max_occurred_at, \
-                COUNT(e.seq) AS event_count, \
-                (SELECT e2.run_id FROM history_events e2 \
-                 WHERE e2.timeline_role=1 AND e2.seq>r.lo AND e2.seq<=r.hi \
-                   AND e2.run_id IS NOT NULL \
-                 ORDER BY e2.seq DESC LIMIT 1) AS run_id \
-         FROM ranges r \
-         LEFT JOIN history_events e \
-           ON e.timeline_role=1 AND e.seq>r.lo AND e.seq<=r.hi \
-         GROUP BY r.idx \
-         ORDER BY r.idx ASC",
-        tuples.join(",")
-    );
-    let rows = db
-        .query_all_raw(statement(&sql, values))
+    let row = db
+        .query_one_raw(statement(
+            "SELECT EXISTS(SELECT 1 FROM history_events WHERE timeline_role=1 AND seq>? AND seq<?) AS present",
+            vec![number(lower_excl)?.into(), number(upper_excl)?.into()],
+        ))
         .await
         .inspect(|_| {
             tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-        })?;
-    let mut out = vec![None; windows.len()];
-    for row in rows {
-        let idx = usize::try_from(row.try_get::<i64>("", "idx")?)
-            .map_err(|_| HistoryError::Integrity("negative window index".into()))?;
-        if idx >= out.len() {
-            return Err(HistoryError::Integrity("window index out of bounds".into()));
-        }
-        let event_count = u64::try_from(row.try_get::<i64>("", "event_count")?)
-            .map_err(|_| HistoryError::Integrity("negative work event count".into()))?;
-        if event_count == 0 {
-            continue;
-        }
-        let first_seq = u64::try_from(
-            row.try_get::<Option<i64>>("", "first_seq")?
-                .ok_or_else(|| HistoryError::Integrity("work range missing first_seq".into()))?,
-        )
-        .map_err(|_| HistoryError::Integrity("negative work first_seq".into()))?;
-        let last_seq = u64::try_from(
-            row.try_get::<Option<i64>>("", "last_seq")?
-                .ok_or_else(|| HistoryError::Integrity("work range missing last_seq".into()))?,
-        )
-        .map_err(|_| HistoryError::Integrity("negative work last_seq".into()))?;
-        let started_at: Option<i64> = row.try_get("", "min_occurred_at")?;
-        let ended_at: Option<i64> = row.try_get("", "max_occurred_at")?;
-        let run_id: Option<String> = row.try_get("", "run_id")?;
-        out[idx] = Some(WorkRangeSummary {
-            first_seq,
-            last_seq,
-            started_at,
-            ended_at,
-            run_id,
-            event_count,
-        });
-    }
-    Ok(out)
+        })?
+        .ok_or_else(|| HistoryError::Integrity("has_work_in_range returned no row".into()))?;
+    Ok(row.try_get::<i64>("", "present")? != 0)
 }
 
 pub(super) async fn work_range_events(

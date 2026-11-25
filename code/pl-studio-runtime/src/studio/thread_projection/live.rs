@@ -3513,14 +3513,12 @@ mod append_only_history_tests {
                 },
             )
             .await?;
-        assert_eq!(timeline.items.len(), 1);
-        let crate::history::HistoryTimelineItem::WorkRange(range) = &timeline.items[0] else {
-            anyhow::bail!("expected WorkRange in timeline");
-        };
+        assert!(timeline.entries.is_empty());
+        assert!(timeline.has_folded_before_oldest);
         let work_page = reader
             .work_range_page(
-                range.after_seq,
-                range.before_seq,
+                None,
+                None,
                 Some(timeline.cut),
                 None,
                 HistoryDemand {
@@ -3824,26 +3822,32 @@ mod append_only_history_tests {
                 },
             )
             .await?;
-        let work_ranges: Vec<_> = timeline
-            .items
-            .iter()
-            .rev()
-            .filter_map(|item| match item {
-                crate::history::HistoryTimelineItem::WorkRange(r) => Some(r),
-                _ => None,
-            })
-            .collect();
+        let entries_asc: Vec<_> = timeline.entries.iter().rev().collect();
+        let mut folded_windows = Vec::new();
+        if timeline.has_folded_before_oldest {
+            folded_windows.push((None, entries_asc.first().map(|entry| entry.event.seq)));
+        }
+        folded_windows.extend(
+            entries_asc
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.has_folded_after)
+                .map(|(idx, entry)| {
+                    let before_seq = entries_asc.get(idx + 1).map(|next| next.event.seq);
+                    (Some(entry.event.seq), before_seq)
+                }),
+        );
         assert_eq!(
-            work_ranges.len(),
+            folded_windows.len(),
             2,
             "cancelled turn receipt divider splits pre-cancel and post-cancel work ranges"
         );
         let mut work_events = Vec::new();
-        for work_range in work_ranges {
+        for (after_seq, before_seq) in folded_windows {
             let work_page = reader
                 .work_range_page(
-                    work_range.after_seq,
-                    work_range.before_seq,
+                    after_seq,
+                    before_seq,
                     Some(timeline.cut.clone()),
                     None,
                     HistoryDemand {

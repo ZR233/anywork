@@ -201,20 +201,25 @@ void main() {
       'history Work interval of $elapsedMillis milliseconds displays $label',
       (tester) async {
         const startedAt = 1_785_000_000_800;
-        final block = TimelineHistoryProjection.block(
-          WorkRangeTimelineItem(
-            HistoryWorkRange(
-              rangeId: 'work:history',
-              beforeSeq: 3,
-              firstSeq: 1,
-              lastSeq: 2,
-              startedAt: startedAt,
-              endedAt: elapsedMillis == null ? null : startedAt + elapsedMillis,
-              eventCount: 1,
+        final blocks = TimelineHistoryProjection.blocksFromEntries([
+          HistoryTimelineEntry(
+            event: HistoryEventRecord(
+              seq: 1,
+              eventId: 'ev-start',
+              kind: 'input_accepted',
+              timelineRole: HistoryTimelineRole.boundary,
+              recordedAt: startedAt,
+              occurredAt: startedAt,
+              payloadSchema: 'anywork.event/1',
+              payloadJson: '{"contract":"anywork.event/1","type":"text","meta":{"entityId":"ev-start","entityKind":"input","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"}},"data":{"channel":"user"},"bodies":[]}',
             ),
+            hasFoldedAfter: true,
+            tailFoldedEndedAt: elapsedMillis == null
+                ? null
+                : startedAt + elapsedMillis,
           ),
-          cut: const HistoryCut('work-history-cut'),
-        );
+        ], cut: const HistoryCut('work-history-cut'));
+        final block = blocks.last;
         await tester.pumpWidget(
           _host(
             TimelineDisplayUnitView(
@@ -224,7 +229,7 @@ void main() {
           ),
         );
         final header = find.byKey(
-          const ValueKey('completion-run-header:work:history'),
+          const ValueKey('completion-run-header:work:1'),
         );
         expect(tester.widget<Text>(_workTitle(header)).data, label);
         await tester.pumpWidget(const SizedBox());

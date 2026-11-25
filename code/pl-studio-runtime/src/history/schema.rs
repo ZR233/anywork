@@ -384,7 +384,10 @@ impl MigratorTraitSelf for Migrator {
                 stage_v26_report,
             } => {
                 let mut migrations = applied_legacy_placeholders(legacy_versions);
-                if legacy_versions.iter().any(|version| version == MIGRATION_V25) {
+                if legacy_versions
+                    .iter()
+                    .any(|version| version == MIGRATION_V25)
+                {
                     migrations.push(Box::new(AlreadyAppliedV25Placeholder));
                 }
                 migrations.push(Box::new(AlreadyAppliedV26Placeholder));

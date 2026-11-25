@@ -127,14 +127,13 @@ async fn connection_boundaries(reader: &HistoryReader) -> Result<Vec<(String, se
     };
     loop {
         let page = reader.timeline_page(None, cursor.take(), demand).await?;
-        for item in page.items {
-            if let pl_studio_runtime::history::HistoryTimelineItem::Boundary(record) = item
-                && matches!(
-                    record.kind,
-                    pl_studio_runtime::history::HistoryEventKind::ConnectionDisconnected
-                        | pl_studio_runtime::history::HistoryEventKind::ConnectionReconnected
-                )
-            {
+        for entry in page.entries {
+            let record = entry.event;
+            if matches!(
+                record.kind,
+                pl_studio_runtime::history::HistoryEventKind::ConnectionDisconnected
+                    | pl_studio_runtime::history::HistoryEventKind::ConnectionReconnected
+            ) {
                 ensure!(
                     record.original.is_none(),
                     "connection boundary must not be indexed as Original"

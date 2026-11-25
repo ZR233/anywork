@@ -57,15 +57,63 @@ final class _DemoHistoryReader implements HistoryReader {
     required HistoryDemand demand,
   }) async {
     _checkOpen();
-    final page = reader.historyPage(
-      ReadDemand(maxItems: demand.maxRows, maxBytes: demand.maxBytes),
-      before: cursor,
-      ceiling: cut == null ? null : _cutFrontier(cut),
-    );
+    if (demand.maxRows <= 0 || demand.maxBytes <= 0) {
+      throw _demoQueryFailure('InvalidDemand');
+    }
+    final ceiling = cut == null ? _history.displayHead : _cutFrontier(cut);
+    final upper = cursor == null
+        ? ceiling
+        : reader.boundary(cursor, 'demo-timeline', ceiling) - 1;
+    final blocks = _history.displayBlocks
+        .where((b) => b.blockOrder <= ceiling)
+        .toList();
+    var hasLeadingWork = false;
+    final asc = <HistoryTimelineEntry>[];
+    for (var i = 0; i < blocks.length; i++) {
+      final block = blocks[i];
+      switch (block.body) {
+        case SingleDisplayBlock(:final record, :final visibility):
+          final nextBlock = i + 1 < blocks.length ? blocks[i + 1] : null;
+          final trailingWork = nextBlock?.body is WorkDisplayBlock
+              ? nextBlock!.body as WorkDisplayBlock
+              : null;
+          asc.add(
+            HistoryTimelineEntry(
+              event: _eventRecordFromRecord(
+                record,
+                seq: block.blockOrder,
+                rowKey: block.id,
+                timelineRole: HistoryTimelineRole.boundary,
+                visibility: visibility,
+              ),
+              hasFoldedAfter: trailingWork != null,
+              tailFoldedEndedAt:
+                  (trailingWork != null && i + 2 >= blocks.length)
+                  ? trailingWork.timing.finishedAtMillis
+                  : null,
+            ),
+          );
+        case WorkDisplayBlock():
+          if (i == 0) hasLeadingWork = true;
+      }
+    }
+    final desc = <HistoryTimelineEntry>[];
+    String? next;
+    for (var i = asc.length - 1; i >= 0; i--) {
+      final entry = asc[i];
+      if (entry.event.seq > upper) continue;
+      final token = i > 0
+          ? reader.cursor('demo-timeline', ceiling, entry.event.seq)
+          : null;
+      desc.add(entry);
+      next = token;
+      if (desc.length >= demand.maxRows) break;
+    }
     return HistoryTimelinePage(
       cut: cut ?? _cut(),
-      items: _historyItems(page.blocks),
-      next: page.before,
+      entries: desc,
+      hasFoldedBeforeOldest: next == null && hasLeadingWork,
+      next: next,
     );
   }
 
@@ -91,7 +139,8 @@ final class _DemoHistoryReader implements HistoryReader {
         blockOrder = candidate.blockOrder;
         break;
       }
-      if (afterSeq == null && beforeSeq == null && candidate.blockOrder >= 0) {
+      if ((afterSeq == null || candidate.blockOrder > afterSeq) &&
+          (beforeSeq == null || candidate.blockOrder < beforeSeq)) {
         work ??= body;
         blockOrder ??= candidate.blockOrder;
       }
@@ -370,43 +419,6 @@ final class _DemoHistoryReader implements HistoryReader {
         byteStart: 0,
         byteLength: length,
       );
-
-  List<HistoryTimelineItem> _historyItems(List<DisplayBlock> blocks) => [
-    for (final block in blocks)
-      switch (block.body) {
-        WorkDisplayBlock(
-          :final timing,
-          :final members,
-          :final memberCount,
-          :final groupClosed,
-        ) =>
-          WorkRangeTimelineItem(
-            HistoryWorkRange(
-              rangeId: members.blockId,
-              afterSeq: members.afterSeq,
-              beforeSeq:
-                  members.beforeSeq ??
-                  (groupClosed ? block.blockOrder + 1 : null),
-              firstSeq: block.blockOrder,
-              lastSeq: members.headSeq,
-              startedAt: timing.startedAtMillis,
-              endedAt: timing.finishedAtMillis,
-              runId: members.runId,
-              eventCount: memberCount > 0 ? memberCount : 1,
-            ),
-          ),
-        SingleDisplayBlock(:final record, :final visibility) =>
-          BoundaryTimelineItem(
-            _eventRecordFromRecord(
-              record,
-              seq: block.blockOrder,
-              rowKey: block.id,
-              timelineRole: HistoryTimelineRole.boundary,
-              visibility: visibility,
-            ),
-          ),
-      },
-  ];
 
   HistoryEventRecord _eventRecordFromRecord(
     DisplayRecord record, {

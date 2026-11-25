@@ -661,9 +661,9 @@ class _NativeHistoryTransport extends TestDemoStudioTransport {
   }) => HistoryTimelinePage(
     cut: cut,
     next: next,
-    items: [
+    entries: [
       for (var seq = newest; seq > newest - count; seq--)
-        BoundaryTimelineItem(_row(seq)),
+        HistoryTimelineEntry(event: _row(seq), hasFoldedAfter: false),
     ],
   );
 

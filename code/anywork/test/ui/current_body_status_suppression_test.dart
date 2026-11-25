@@ -69,9 +69,10 @@ final class _BodyStatusTransport extends RecordingDemoTransport {
       expectSync(cursor, isNull);
       return HistoryTimelinePage(
         cut: _cut,
-        items: [
-          BoundaryTimelineItem(
-            HistoryEventRecord(
+        entries: [
+          HistoryTimelineEntry(
+            hasFoldedAfter: false,
+            event: HistoryEventRecord(
               seq: 4,
               eventId: 'event:input-1',
               kind: 'input_accepted',

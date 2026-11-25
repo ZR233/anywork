@@ -385,7 +385,7 @@ impl LiveProjection {
                 HistoryTimelineRole::Boundary,
                 recorded_at,
             );
-            history_event.occurred_at = Some(effect.committed_at);
+            history_event.occurred_at = Some(millis(effect.committed_at)?);
             history_event.run_id = Some(run.to_string());
             history_event.turn_id = Some(conn.turn_id.clone());
             history_event.attempt_id = Some(conn.attempt_id.clone());
@@ -418,10 +418,7 @@ impl LiveProjection {
                 serde_json::Value::Bool(conn.recoverable),
             );
             if let Some(reason) = &conn.reason {
-                data.insert(
-                    "reason".into(),
-                    serde_json::Value::String(reason.clone()),
-                );
+                data.insert("reason".into(), serde_json::Value::String(reason.clone()));
             }
             if let Some(duration_ms) = conn.duration_ms {
                 data.insert(

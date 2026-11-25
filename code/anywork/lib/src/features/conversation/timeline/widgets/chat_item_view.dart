@@ -379,6 +379,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       expandable: false,
     );
   }
+
   Widget _text() => _textLayout(
     _textBodies.toList(growable: false),
     (body, frame) => _body(

@@ -6,107 +6,180 @@ import 'package:anywork_client/models.dart' show ThreadTextChannel;
 import 'chat_item_presentation.dart';
 import 'timeline_display_models.dart';
 
-/// Projects index-derived Divider events and WorkRanges onto Timeline display
-/// blocks, and converts atomic HistoryEventRecord values into DisplayRecords
-/// without dropping single unknown/malformed entries.
+/// Projects direct History timeline entries and adjacent folded work intervals
+/// onto Timeline display blocks, and converts atomic HistoryEventRecord values
+/// into DisplayRecords without dropping single unknown/malformed entries.
 abstract final class TimelineHistoryProjection {
-  static List<DisplayBlock> blocks(
-    Iterable<HistoryTimelineItem> items, {
+  static List<DisplayBlock> blocksFromEntries(
+    List<HistoryTimelineEntry> ascendingEntries, {
     required HistoryCut cut,
-  }) => [for (final item in items) block(item, cut: cut)];
+    ({int seq, int displayTimeMs})? nextDirect,
+    bool hasFoldedBeforeOldest = false,
+    bool suppressTailFold = false,
+  }) {
+    final blocks = <DisplayBlock>[];
+    if (hasFoldedBeforeOldest) {
+      final firstEntry = ascendingEntries.firstOrNull;
+      final beforeSeq = firstEntry?.event.seq ?? nextDirect?.seq;
+      final suppressedByLiveTail =
+          suppressTailFold && ascendingEntries.isEmpty && nextDirect == null;
+      if (!suppressedByLiveTail) {
+        blocks.add(
+          leadingFoldedWorkBlock(
+            cut: cut,
+            beforeSeq: beforeSeq,
+            finishedAtMillis:
+                firstEntry?.displayTimeMs ?? nextDirect?.displayTimeMs,
+          ),
+        );
+      }
+    }
+    for (var i = 0; i < ascendingEntries.length; i++) {
+      final entry = ascendingEntries[i];
+      blocks.add(directBlock(entry.event));
+      if (!entry.hasFoldedAfter) continue;
+      final followingDirect = i + 1 < ascendingEntries.length
+          ? (
+              seq: ascendingEntries[i + 1].event.seq,
+              displayTimeMs: ascendingEntries[i + 1].displayTimeMs,
+            )
+          : nextDirect;
+      if (suppressTailFold &&
+          i == ascendingEntries.length - 1 &&
+          followingDirect == null) {
+        continue;
+      }
+      blocks.add(
+        closedFoldedWorkBlock(entry, cut: cut, nextDirect: followingDirect),
+      );
+    }
+    return blocks;
+  }
+
+  static DisplayBlock directBlock(HistoryEventRecord event) {
+    if (event.eventId.isEmpty) {
+      throw const ConversationContinuityError(
+        'History direct event has no stable event identity',
+      );
+    }
+    final rowKey = (event.rowKey != null && event.rowKey!.isNotEmpty)
+        ? event.rowKey!
+        : 'boundary:${event.eventId}';
+    final projected = _projectEvent(event, idOverride: rowKey);
+    return DisplayBlock(
+      id: rowKey,
+      blockOrder: event.seq,
+      body: SingleDisplayBlock(
+        record: projected.record,
+        visibility: projected.visibility,
+      ),
+    );
+  }
+
+  static DisplayBlock leadingFoldedWorkBlock({
+    required HistoryCut cut,
+    int? beforeSeq,
+    int? finishedAtMillis,
+  }) {
+    final headSeq = beforeSeq == null ? 1 : (beforeSeq > 1 ? beforeSeq - 1 : 1);
+    return DisplayBlock(
+      id: 'work:0',
+      blockOrder: 1,
+      body: WorkDisplayBlock(
+        timing: WorkTiming(
+          startedAtMillis: null,
+          finishedAtMillis: finishedAtMillis,
+        ),
+        members: DisplayBlockRef(
+          blockId: 'work:0',
+          cut: cut,
+          anchorSeq: 1,
+          headSeq: headSeq,
+          afterSeq: null,
+          beforeSeq: beforeSeq,
+        ),
+        executionPresent: false,
+        memberCount: 1,
+        unfinishedCount: 0,
+        groupClosed: true,
+      ),
+    );
+  }
+
+  static DisplayBlock closedFoldedWorkBlock(
+    HistoryTimelineEntry? entry, {
+    required HistoryCut cut,
+    ({int seq, int displayTimeMs})? nextDirect,
+  }) {
+    if (entry == null) {
+      return leadingFoldedWorkBlock(
+        cut: cut,
+        beforeSeq: nextDirect?.seq,
+        finishedAtMillis: nextDirect?.displayTimeMs,
+      );
+    }
+    final startSeq = entry.event.seq;
+    final workId = 'work:$startSeq';
+    final finishedAtMillis =
+        nextDirect?.displayTimeMs ?? entry.tailFoldedEndedAt;
+    return DisplayBlock(
+      id: workId,
+      blockOrder: startSeq + 1,
+      body: WorkDisplayBlock(
+        timing: WorkTiming(
+          startedAtMillis: entry.displayTimeMs,
+          finishedAtMillis: finishedAtMillis,
+        ),
+        members: DisplayBlockRef(
+          blockId: workId,
+          cut: cut,
+          anchorSeq: startSeq + 1,
+          headSeq: nextDirect != null ? nextDirect.seq - 1 : startSeq + 1,
+          afterSeq: startSeq,
+          beforeSeq: nextDirect?.seq,
+        ),
+        executionPresent: false,
+        memberCount: 1,
+        unfinishedCount: 0,
+        groupClosed: true,
+      ),
+    );
+  }
 
   /// Builds an open, live-updating Work block for [LiveStatusBar] only while
-  /// execution is active and the tail range has not been sealed into Timeline.
-  static DisplayBlock liveOpenWorkBlock(
-    HistoryWorkRange range, {
+  /// execution is active and the tail folded interval has not been sealed.
+  static DisplayBlock liveOpenWorkBlockForTail(
+    HistoryTimelineEntry? entry, {
     required HistoryCut cut,
     int unfinishedCount = 1,
     String? summary,
   }) {
-    if (range.rangeId.isEmpty) {
-      throw const ConversationContinuityError(
-        'History WorkRange has no stable range identity',
-      );
-    }
+    final startSeq = entry?.event.seq ?? 0;
+    final workId = 'work:$startSeq';
+    final anchorSeq = startSeq + 1;
     return DisplayBlock(
-      id: range.rangeId,
-      blockOrder: range.firstSeq,
+      id: workId,
+      blockOrder: anchorSeq,
       body: WorkDisplayBlock(
         timing: WorkTiming(
-          startedAtMillis: range.startedAt,
+          startedAtMillis: entry?.displayTimeMs,
           finishedAtMillis: null,
         ),
         members: DisplayBlockRef(
-          blockId: range.rangeId,
+          blockId: workId,
           cut: cut,
-          anchorSeq: range.firstSeq,
-          headSeq: range.lastSeq,
-          afterSeq: range.afterSeq,
-          beforeSeq: range.beforeSeq,
-          runId: range.runId,
+          anchorSeq: anchorSeq,
+          headSeq: anchorSeq,
+          afterSeq: entry?.event.seq,
+          beforeSeq: null,
         ),
         executionPresent: true,
-        memberCount: range.eventCount,
+        memberCount: 1,
         unfinishedCount: unfinishedCount > 0 ? unfinishedCount : 1,
         groupClosed: false,
         summary: summary,
       ),
     );
-  }
-
-  static DisplayBlock block(
-    HistoryTimelineItem item, {
-    required HistoryCut cut,
-  }) {
-    switch (item) {
-      case WorkRangeTimelineItem(:final range):
-        if (range.rangeId.isEmpty) {
-          throw const ConversationContinuityError(
-            'History WorkRange has no stable range identity',
-          );
-        }
-        return DisplayBlock(
-          id: range.rangeId,
-          blockOrder: range.firstSeq,
-          body: WorkDisplayBlock(
-            timing: WorkTiming(
-              startedAtMillis: range.startedAt,
-              finishedAtMillis: range.endedAt,
-            ),
-            members: DisplayBlockRef(
-              blockId: range.rangeId,
-              cut: cut,
-              anchorSeq: range.firstSeq,
-              headSeq: range.lastSeq,
-              afterSeq: range.afterSeq,
-              beforeSeq: range.beforeSeq,
-              runId: range.runId,
-            ),
-            executionPresent: false,
-            memberCount: range.eventCount,
-            unfinishedCount: 0,
-            groupClosed: true,
-          ),
-        );
-      case BoundaryTimelineItem(:final event):
-        if (event.eventId.isEmpty) {
-          throw const ConversationContinuityError(
-            'History Boundary event has no stable event identity',
-          );
-        }
-        final rowKey = (event.rowKey != null && event.rowKey!.isNotEmpty)
-            ? event.rowKey!
-            : 'boundary:${event.eventId}';
-        final projected = _projectEvent(event, idOverride: rowKey);
-        return DisplayBlock(
-          id: rowKey,
-          blockOrder: event.seq,
-          body: SingleDisplayBlock(
-            record: projected.record,
-            visibility: projected.visibility,
-          ),
-        );
-    }
   }
 
   static DisplayBlock eventRecord(

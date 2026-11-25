@@ -285,7 +285,7 @@ final class _ImmutableLiveTransport extends RecordingDemoTransport {
   final Map<String, List<_SnapshotOverrideCurrentReader>> wrappedCurrent = {};
 
   HistoryCut currentCut = const HistoryCut('cut-1');
-  List<HistoryTimelineItem> Function(HistoryCut cut, String ownerId)?
+  List<HistoryTimelineEntry> Function(HistoryCut cut, String ownerId)?
   timelineBuilder;
   List<HistoryEventRecord> Function(
     int? afterSeq,
@@ -341,7 +341,7 @@ final class _ImmutableLiveTransport extends RecordingDemoTransport {
       final activeCut = cut ?? currentCut;
       return HistoryTimelinePage(
         cut: activeCut,
-        items: cursor == null
+        entries: cursor == null
             ? (timelineBuilder?.call(activeCut, ownerId) ?? const [])
             : const [],
       );
@@ -387,113 +387,82 @@ void main() {
         runId = ownerId;
         return switch (stage) {
           1 => [
-            BoundaryTimelineItem(
-              _inputDivider(
+            HistoryTimelineEntry(
+              event: _inputDivider(
                 seq: 1,
                 id: 'input-1',
                 text: 'First prompt',
                 runId: ownerId,
                 turnId: turn1,
               ),
+              hasFoldedAfter: false,
             ),
           ],
           2 => [
-            WorkRangeTimelineItem(
-              HistoryWorkRange(
-                rangeId: 'work:2',
-                afterSeq: 1,
-                beforeSeq: null,
-                firstSeq: 2,
-                lastSeq: 3,
-                startedAt: 2000,
-                endedAt: 3000,
-                runId: ownerId,
-                eventCount: 2,
-              ),
-            ),
-            BoundaryTimelineItem(
-              _inputDivider(
+            HistoryTimelineEntry(
+              event: _inputDivider(
                 seq: 1,
                 id: 'input-1',
                 text: 'First prompt',
                 runId: ownerId,
                 turnId: turn1,
               ),
+              hasFoldedAfter: true,
+              tailFoldedEndedAt: 3000,
             ),
           ],
           3 => [
-            BoundaryTimelineItem(
-              _finalTextDivider(
+            HistoryTimelineEntry(
+              event: _finalTextDivider(
                 seq: 4,
                 id: 'text-1',
                 text: reply1Text,
                 runId: ownerId,
                 turnId: turn1,
               ),
+              hasFoldedAfter: false,
             ),
-            WorkRangeTimelineItem(
-              HistoryWorkRange(
-                rangeId: 'work:2',
-                afterSeq: 1,
-                beforeSeq: 4,
-                firstSeq: 2,
-                lastSeq: 3,
-                startedAt: 2000,
-                endedAt: 3000,
-                runId: ownerId,
-                eventCount: 2,
-              ),
-            ),
-            BoundaryTimelineItem(
-              _inputDivider(
+            HistoryTimelineEntry(
+              event: _inputDivider(
                 seq: 1,
                 id: 'input-1',
                 text: 'First prompt',
                 runId: ownerId,
                 turnId: turn1,
               ),
+              hasFoldedAfter: true,
             ),
           ],
           _ => [
-            BoundaryTimelineItem(
-              _inputDivider(
+            HistoryTimelineEntry(
+              event: _inputDivider(
                 seq: 5,
                 id: 'input-2',
                 text: 'Second prompt',
                 runId: ownerId,
                 turnId: turn2,
               ),
+              hasFoldedAfter: false,
             ),
-            BoundaryTimelineItem(
-              _finalTextDivider(
+            HistoryTimelineEntry(
+              event: _finalTextDivider(
                 seq: 4,
                 id: 'text-1',
                 text: reply1Text,
                 runId: ownerId,
                 turnId: turn1,
               ),
+              hasFoldedAfter: false,
             ),
-            WorkRangeTimelineItem(
-              HistoryWorkRange(
-                rangeId: 'work:2',
-                afterSeq: 1,
-                beforeSeq: 4,
-                firstSeq: 2,
-                lastSeq: 3,
-                startedAt: 2000,
-                endedAt: 3000,
-                runId: ownerId,
-                eventCount: 2,
-              ),
-            ),
-            BoundaryTimelineItem(
-              _inputDivider(
+            HistoryTimelineEntry(
+              event: _inputDivider(
                 seq: 1,
                 id: 'input-1',
                 text: 'First prompt',
                 runId: ownerId,
                 turnId: turn1,
               ),
+              hasFoldedAfter: true,
             ),
           ],
         };
@@ -895,7 +864,7 @@ void main() {
       );
       expect(lease.controller.messages.map((m) => m.id), [
         'row:input-1',
-        'work:2',
+        'work:1',
       ]);
       expect(identical(lease.controller.messages.first, input1Message), isTrue);
       final streamingSettledWorkMessage = lease.controller.messages[1];
@@ -943,14 +912,21 @@ void main() {
       final settledReplyMessage = lease.controller.messages[2];
       expect(lease.controller.messages.map((m) => m.id), [
         'row:input-1',
-        'work:2',
+        'work:1',
         'row:text-1',
       ]);
       expect(identical(lease.controller.messages[0], input1Message), isTrue);
-      expect(
-        identical(settledWorkMessage, streamingSettledWorkMessage),
-        isTrue,
-      );
+      // Once text-1 settles as nextDirect (seq=4, occurredAt=4000), work:1 upgrades
+      // its closing boundary from provisional tailFoldedEndedAt=3000 to beforeSeq=4.
+      expect(settledWorkMessage.id, streamingSettledWorkMessage.id);
+      final settledWorkBody =
+          (settledWorkMessage.metadata![timelineDisplayUnitKey]
+                      as TimelineDisplayUnit)
+                  .block
+                  .body
+              as WorkDisplayBlock;
+      expect(settledWorkBody.members.beforeSeq, 4);
+      expect(settledWorkBody.timing.finishedAtMillis, 4000);
       expect(
         identical(lease.controller.messages[2], settledReplyMessage),
         isTrue,
@@ -993,10 +969,10 @@ void main() {
                 )
                 .evaluate()
                 .isNotEmpty ||
-            lease.isBlockExpanded('work:2'),
+            lease.isBlockExpanded('work:1'),
         'turn 1 WorkRange expanded in Timeline',
       );
-      expect(lease.isBlockExpanded('work:2'), isTrue);
+      expect(lease.isBlockExpanded('work:1'), isTrue);
 
       // Turn 2 arrives and advances HistoryCut: Turn 1 Timeline messages remain object-identical.
       stage = 4;
@@ -1010,7 +986,7 @@ void main() {
       );
       expect(lease.controller.messages.map((m) => m.id), [
         'row:input-1',
-        'work:2',
+        'work:1',
         'row:text-1',
         'row:input-2',
       ]);
@@ -1023,7 +999,7 @@ void main() {
         identical(lease.controller.messages[2], settledReplyMessage),
         isTrue,
       );
-      expect(lease.isBlockExpanded('work:2'), isTrue);
+      expect(lease.isBlockExpanded('work:1'), isTrue);
 
       final work1Unit =
           lease.controller.messages[1].metadata![timelineDisplayUnitKey]

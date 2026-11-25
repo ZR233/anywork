@@ -85,14 +85,15 @@ HistoryEventRecord _textEvent({
   HistoryTimelineRole role = HistoryTimelineRole.boundary,
   HistoryEventBodyRef? reference,
   String channel = 'final',
+  int? timeMs,
 }) {
   return HistoryEventRecord(
     seq: seq,
     eventId: eventId,
     kind: 'text_completed',
     timelineRole: role,
-    occurredAt: seq * 1000,
-    recordedAt: seq * 1000,
+    occurredAt: timeMs ?? seq * 1000,
+    recordedAt: timeMs ?? seq * 1000,
     turnId: 'turn-1',
     entityId: eventId,
     rowKey: 'row:$eventId',
@@ -459,11 +460,16 @@ void main() {
   testWidgets(
     'single unknown payload_schema or malformed payload_json degrades per-row without affecting siblings',
     (tester) async {
-      final goodDivider = BoundaryTimelineItem(
-        _textEvent(seq: 1, eventId: 'ev-good', text: 'healthy sibling row'),
+      final goodDivider = HistoryTimelineEntry(
+        event: _textEvent(
+          seq: 1,
+          eventId: 'ev-good',
+          text: 'healthy sibling row',
+        ),
+        hasFoldedAfter: false,
       );
-      final unknownSchemaDivider = BoundaryTimelineItem(
-        HistoryEventRecord(
+      final unknownSchemaDivider = HistoryTimelineEntry(
+        event: HistoryEventRecord(
           seq: 2,
           eventId: 'ev-unknown-schema',
           kind: 'future_event',
@@ -472,9 +478,10 @@ void main() {
           payloadSchema: 'anywork.future/99',
           payloadJson: '{"future":true}',
         ),
+        hasFoldedAfter: false,
       );
-      final malformedJsonDivider = BoundaryTimelineItem(
-        HistoryEventRecord(
+      final malformedJsonDivider = HistoryTimelineEntry(
+        event: HistoryEventRecord(
           seq: 3,
           eventId: 'ev-malformed',
           kind: 'text_completed',
@@ -483,9 +490,10 @@ void main() {
           payloadSchema: 'anywork.event/1',
           payloadJson: '{broken json',
         ),
+        hasFoldedAfter: false,
       );
 
-      final blocks = TimelineHistoryProjection.blocks([
+      final blocks = TimelineHistoryProjection.blocksFromEntries([
         goodDivider,
         unknownSchemaDivider,
         malformedJsonDivider,
@@ -597,11 +605,8 @@ void main() {
         isEligible: () => true,
       );
 
-      final inlineBlock = TimelineHistoryProjection.block(
-        BoundaryTimelineItem(
-          _textEvent(seq: 1, eventId: 'ev-inline', text: 'hello <= 16k'),
-        ),
-        cut: _cut,
+      final inlineBlock = TimelineHistoryProjection.directBlock(
+        _textEvent(seq: 1, eventId: 'ev-inline', text: 'hello <= 16k'),
       );
       final inlineItem = ChatItemPresentation.forRecord(
         (inlineBlock.body as SingleDisplayBlock).record,
@@ -625,16 +630,13 @@ void main() {
       expect(reader.readEventCalls, 0);
       expect(reader.readBodyCalls, 0);
 
-      final largeBlock = TimelineHistoryProjection.block(
-        BoundaryTimelineItem(
-          _textEvent(
-            seq: 2,
-            eventId: 'ev-large',
-            text: largeText,
-            reference: largeRef,
-          ),
+      final largeBlock = TimelineHistoryProjection.directBlock(
+        _textEvent(
+          seq: 2,
+          eventId: 'ev-large',
+          text: largeText,
+          reference: largeRef,
         ),
-        cut: _cut,
       );
       final largeUnit = TimelineDisplayUnit(block: largeBlock);
       largeUnit.expansion.current = largeUnit;
@@ -670,65 +672,109 @@ void main() {
     },
   );
 
-  testWidgets('connection boundary events render model and ssh disconnect/reconnect cards', (
-    tester,
-  ) async {
-    final modelDisconnect = TimelineHistoryProjection.block(
-      BoundaryTimelineItem(
+  testWidgets(
+    'connection boundary events render model and ssh disconnect/reconnect cards',
+    (tester) async {
+      final modelDisconnect = TimelineHistoryProjection.directBlock(
         HistoryEventRecord(
           seq: 10,
           eventId: 'conn-model-1',
           kind: 'connection_disconnected',
           timelineRole: HistoryTimelineRole.boundary,
           recordedAt: 10_000,
-          occurredAt: 10,
+          occurredAt: 10_000,
           payloadSchema: 'anywork.event/1',
-          payloadJson:
-              '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn-model-1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"disconnected","scope":"model","transport":"websocket","attempt":1,"maxAttempts":5,"recoverable":true,"reason":"peer reset"},"bodies":[]}',
+          payloadJson: '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn-model-1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"disconnected","scope":"model","transport":"websocket","attempt":1,"maxAttempts":5,"recoverable":true,"reason":"peer reset"},"bodies":[]}',
         ),
-      ),
-      cut: _cut,
-    );
-    final sshReconnect = TimelineHistoryProjection.block(
-      BoundaryTimelineItem(
+      );
+      final sshReconnect = TimelineHistoryProjection.directBlock(
         HistoryEventRecord(
           seq: 11,
           eventId: 'conn-ssh-1',
           kind: 'connection_reconnected',
           timelineRole: HistoryTimelineRole.boundary,
           recordedAt: 11_000,
-          occurredAt: 11,
+          occurredAt: 11_000,
           payloadSchema: 'anywork.event/1',
-          payloadJson:
-              '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn-ssh-1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"reconnected","scope":"ssh","target":"runner@10.3.10.194"},"bodies":[]}',
+          payloadJson: '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn-ssh-1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"reconnected","scope":"ssh","target":"runner@10.3.10.194"},"bodies":[]}',
         ),
-      ),
-      cut: _cut,
-    );
-    final modelItem = ChatItemPresentation.forRecord(
-      (modelDisconnect.body as SingleDisplayBlock).record,
-      id: modelDisconnect.id,
-    );
-    final sshItem = ChatItemPresentation.forRecord(
-      (sshReconnect.body as SingleDisplayBlock).record,
-      id: sshReconnect.id,
-    );
+      );
+      final modelItem = ChatItemPresentation.forRecord(
+        (modelDisconnect.body as SingleDisplayBlock).record,
+        id: modelDisconnect.id,
+      );
+      final sshItem = ChatItemPresentation.forRecord(
+        (sshReconnect.body as SingleDisplayBlock).record,
+        id: sshReconnect.id,
+      );
 
-    await tester.pumpWidget(
-      _appHost(
-        Column(
-          children: [
-            ChatItemView(item: modelItem),
-            ChatItemView(item: sshItem),
-          ],
+      await tester.pumpWidget(
+        _appHost(
+          Column(
+            children: [
+              ChatItemView(item: modelItem),
+              ChatItemView(item: sshItem),
+            ],
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.text('模型连接已断开'), findsOneWidget);
-    expect(find.textContaining('websocket · 1/5 · peer reset'), findsOneWidget);
-    expect(find.text('SSH 连接已恢复'), findsOneWidget);
-    expect(find.textContaining('runner@10.3.10.194'), findsOneWidget);
+      expect(find.text('模型连接已断开'), findsOneWidget);
+      expect(
+        find.textContaining('websocket · 1/5 · peer reset'),
+        findsOneWidget,
+      );
+      expect(find.text('SSH 连接已恢复'), findsOneWidget);
+      expect(find.textContaining('runner@10.3.10.194'), findsOneWidget);
+    },
+  );
+
+  test('blocksFromEntries omits empty gaps, computes adjacent intervals, and keeps tail durations', () {
+    final blocks = TimelineHistoryProjection.blocksFromEntries([
+      HistoryTimelineEntry(
+        event: _textEvent(seq: 1, eventId: 'in-1', text: 'q1', timeMs: 10_000),
+        hasFoldedAfter: true,
+      ),
+      HistoryTimelineEntry(
+        event: _textEvent(seq: 5, eventId: 'out-1', text: 'a1', timeMs: 16_000),
+        hasFoldedAfter: false,
+      ),
+      HistoryTimelineEntry(
+        event: _textEvent(seq: 8, eventId: 'in-2', text: 'q2', timeMs: 99_000),
+        hasFoldedAfter: false,
+      ),
+      HistoryTimelineEntry(
+        event: _textEvent(
+          seq: 9,
+          eventId: 'out-2',
+          text: 'a2',
+          timeMs: 100_000,
+        ),
+        hasFoldedAfter: true,
+        tailFoldedEndedAt: 104_000,
+      ),
+    ], cut: _cut);
+
+    // Should have: in-1, work:1 (6s), out-1, in-2 (NO gap between out-1 & in-2, NO gap between in-2 & out-2), out-2, work:9 (4s)
+    expect(blocks.map((b) => b.id).toList(), [
+      'row:in-1',
+      'work:1',
+      'row:out-1',
+      'row:in-2',
+      'row:out-2',
+      'work:9',
+    ]);
+    final work1 = blocks[1].body as WorkDisplayBlock;
+    expect(work1.timing.startedAtMillis, 10_000);
+    expect(work1.timing.finishedAtMillis, 16_000);
+    expect(work1.members.afterSeq, 1);
+    expect(work1.members.beforeSeq, 5);
+
+    final work9 = blocks[5].body as WorkDisplayBlock;
+    expect(work9.timing.startedAtMillis, 100_000);
+    expect(work9.timing.finishedAtMillis, 104_000);
+    expect(work9.members.afterSeq, 9);
+    expect(work9.members.beforeSeq, isNull);
   });
 }

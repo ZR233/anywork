@@ -59,7 +59,7 @@ CREATE TABLE history_events (
 CREATE INDEX idx_events_boundaries
     ON history_events(seq DESC) WHERE timeline_role = 2;
 CREATE INDEX idx_events_work
-    ON history_events(seq DESC, occurred_at, run_id) WHERE timeline_role = 1;
+    ON history_events(seq DESC) WHERE timeline_role = 1;
 CREATE UNIQUE INDEX history_one_anchor
     ON history_events(row_key) WHERE is_anchor = 1;
 CREATE INDEX history_row_head

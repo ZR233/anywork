@@ -4250,7 +4250,8 @@ mod tests {
         let page = reader
             .timeline_page(None, None, crate::history::HistoryDemand::default())
             .await?;
-        assert!(page.items.is_empty());
+        assert!(page.entries.is_empty());
+        assert!(!page.has_folded_before_oldest);
         reader.close().await;
         let accepted = store
             .accept_batch(&[crate::history::HistoryEvent::new(
@@ -4281,8 +4282,8 @@ mod migration_tests {
     use super::*;
     use crate::history::{
         HistoryBusinessRowHead, HistoryDelivery, HistoryEntityKind, HistoryEntityState,
-        HistoryEventKind as CurrentHistoryEventKind, HistoryTimelineItem, HistoryToolIdentity,
-        body, decode_event_envelope, read_event_body_bytes,
+        HistoryEventKind as CurrentHistoryEventKind, HistoryToolIdentity, body,
+        decode_event_envelope, read_event_body_bytes,
     };
     use crate::studio::storage::history::schema::v24_presentation::BlockOrder;
     use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
@@ -5571,12 +5572,9 @@ mod migration_tests {
             .timeline_page(None, None, HistoryDemand::default())
             .await?;
         let draft_divs: Vec<_> = main
-            .items
+            .entries
             .iter()
-            .filter_map(|item| match item {
-                HistoryTimelineItem::Boundary(rec) => Some(rec),
-                _ => None,
-            })
+            .map(|entry| &entry.event)
             .filter_map(|rec| body::decode_event_envelope(rec).ok().map(|env| (rec, env)))
             .filter(|(_, env)| {
                 env.meta.entity_id == "draft-plan"
@@ -5587,23 +5585,17 @@ mod migration_tests {
             .collect();
         assert_eq!(draft_divs.len(), 2);
 
-        let work_range = main
-            .items
+        let work_anchor = main
+            .entries
             .iter()
-            .find_map(|item| match item {
-                HistoryTimelineItem::WorkRange(range) => Some(range.clone()),
-                _ => None,
-            })
-            .ok_or_else(|| HistoryError::NotFound("work range".into()))?;
-        assert_eq!(work_range.event_count, 2);
+            .position(|entry| entry.has_folded_after)
+            .ok_or_else(|| HistoryError::NotFound("folded work gap".into()))?;
+        let after_seq = Some(main.entries[work_anchor].event.seq);
+        let before_seq = work_anchor
+            .checked_sub(1)
+            .map(|i| main.entries[i].event.seq);
         let members = reader
-            .work_range_page(
-                work_range.after_seq,
-                work_range.before_seq,
-                None,
-                None,
-                HistoryDemand::default(),
-            )
+            .work_range_page(after_seq, before_seq, None, None, HistoryDemand::default())
             .await?;
         assert_eq!(members.events.len(), 2);
         let boundary_event = display_member_event_id("work-1", "member-1");
@@ -6513,19 +6505,14 @@ mod migration_tests {
         let timeline = reader
             .timeline_page(None, None, crate::history::HistoryDemand::default())
             .await?;
-        assert_eq!(timeline.items.len(), 2);
-        let HistoryTimelineItem::Boundary(div) = &timeline.items[0] else {
-            panic!("expected final boundary first");
-        };
-        let HistoryTimelineItem::WorkRange(range) = &timeline.items[1] else {
-            panic!("expected work range for background exec");
-        };
-        assert_eq!(range.event_count, 1);
+        assert_eq!(timeline.entries.len(), 1);
+        assert!(timeline.has_folded_before_oldest);
+        let div = &timeline.entries[0].event;
 
         let work = reader
             .work_range_page(
-                range.after_seq,
-                range.before_seq,
+                None,
+                Some(div.seq),
                 Some(timeline.cut.clone()),
                 None,
                 crate::history::HistoryDemand::default(),
@@ -7088,12 +7075,10 @@ mod migration_tests {
         let timeline = reader
             .timeline_page(None, None, crate::history::HistoryDemand::default())
             .await?;
-        // Newest-first dividers + 1 work range: single-text, single-plan, work, single-input
-        assert_eq!(timeline.items.len(), 4);
+        // Newest-first direct entries: single-text, single-plan, single-input (with folded work after input)
+        assert_eq!(timeline.entries.len(), 3);
 
-        let HistoryTimelineItem::Boundary(text_div) = &timeline.items[0] else {
-            panic!("expected single-text boundary");
-        };
+        let text_div = &timeline.entries[0].event;
         assert_eq!(text_div.kind, CurrentHistoryEventKind::TextCompleted);
         let text_env = body::decode_event_envelope(text_div)?;
         assert_eq!(text_env.item_type, "text");
@@ -7103,9 +7088,7 @@ mod migration_tests {
             Some(b"final assistant reply".to_vec())
         );
 
-        let HistoryTimelineItem::Boundary(plan_div) = &timeline.items[1] else {
-            panic!("expected single-plan boundary");
-        };
+        let plan_div = &timeline.entries[1].event;
         assert_eq!(plan_div.kind, CurrentHistoryEventKind::PlanResolved);
         let plan_env = body::decode_event_envelope(plan_div)?;
         assert_eq!(plan_env.item_type, "plan");
@@ -7114,13 +7097,12 @@ mod migration_tests {
             Some(b"# Step 1".to_vec())
         );
 
-        let HistoryTimelineItem::WorkRange(range) = &timeline.items[2] else {
-            panic!("expected work range");
-        };
+        let input_div = &timeline.entries[2].event;
+        assert!(timeline.entries[2].has_folded_after);
         let work = reader
             .work_range_page(
-                range.after_seq,
-                range.before_seq,
+                Some(input_div.seq),
+                Some(plan_div.seq),
                 Some(timeline.cut.clone()),
                 None,
                 crate::history::HistoryDemand::default(),
@@ -7152,9 +7134,6 @@ mod migration_tests {
         assert_eq!(unavail_env.captured_at, Some(9_000));
         assert_eq!(unavail_env.data["legacyUnavailable"], true);
 
-        let HistoryTimelineItem::Boundary(input_div) = &timeline.items[3] else {
-            panic!("expected single-input boundary");
-        };
         assert_eq!(input_div.kind, CurrentHistoryEventKind::InputAccepted);
         assert_eq!(
             body::read_event_body_bytes(&reader, input_div, "body", None).await?,
@@ -7379,19 +7358,23 @@ mod migration_tests {
         let timeline = reader
             .timeline_page(None, None, crate::history::HistoryDemand::default())
             .await?;
-        assert_eq!(timeline.items.len(), 3);
-        let HistoryTimelineItem::Boundary(text_bound) = &timeline.items[0] else {
-            panic!("expected boundary 4");
-        };
+        assert_eq!(timeline.entries.len(), 2);
+        let text_bound = &timeline.entries[0].event;
         assert_eq!(text_bound.event_id, "ev-4");
-        assert!(matches!(
-            &timeline.items[1],
-            HistoryTimelineItem::WorkRange(r) if r.event_count == 1 && r.after_seq == Some(1) && r.before_seq == Some(4)
-        ));
-        assert!(matches!(
-            &timeline.items[2],
-            HistoryTimelineItem::Boundary(b) if b.event_id == "ev-1"
-        ));
+        assert!(!timeline.entries[0].has_folded_after);
+        assert_eq!(timeline.entries[1].event.event_id, "ev-1");
+        assert!(timeline.entries[1].has_folded_after);
+        let folded = reader
+            .work_range_page(
+                Some(timeline.entries[1].event.seq),
+                Some(text_bound.seq),
+                Some(timeline.cut.clone()),
+                None,
+                crate::history::HistoryDemand::default(),
+            )
+            .await?;
+        assert_eq!(folded.events.len(), 1);
+        assert_eq!(folded.events[0].event_id, "ev-2");
         assert_eq!(
             body::read_event_body_bytes(&reader, text_bound, "body", None).await?,
             Some(large_bytes)

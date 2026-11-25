@@ -130,7 +130,7 @@ async fn append_ssh_event(
         HistoryTimelineRole::Boundary,
         recorded_at,
     );
-    event.occurred_at = Some(now_secs);
+    event.occurred_at = Some(recorded_at);
     if let Err(error) = crate::studio::runtime::chat_item::build_connection_event(&mut event, data)
     {
         tracing::warn!(
@@ -152,9 +152,7 @@ async fn append_ssh_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::{
-        HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryTimelineItem, body,
-    };
+    use crate::history::{HistoryDemand, HistoryEventsQuery, HistoryLimits, body};
 
     #[tokio::test]
     async fn ssh_connection_observer_emits_only_post_ready_disconnect_and_reconnect()
@@ -186,7 +184,7 @@ mod tests {
         let initial_page = reader
             .timeline_page(None, None, HistoryDemand::default())
             .await?;
-        assert!(initial_page.items.is_empty());
+        assert!(initial_page.entries.is_empty());
 
         // Ready -> Failed -> Disconnected (duplicate) -> Ready emits 1 disconnect + 1 reconnect.
         tx.send_replace(SshConnectionState::Failed {
@@ -210,13 +208,11 @@ mod tests {
         let page = reader
             .timeline_page(None, None, HistoryDemand::default())
             .await?;
-        assert_eq!(page.items.len(), 2);
-        let HistoryTimelineItem::Boundary(reconnected) = &page.items[0] else {
-            anyhow::bail!("expected reconnected boundary first");
-        };
-        let HistoryTimelineItem::Boundary(disconnected) = &page.items[1] else {
-            anyhow::bail!("expected disconnected boundary second");
-        };
+        assert_eq!(page.entries.len(), 2);
+        let reconnected = &page.entries[0].event;
+        let disconnected = &page.entries[1].event;
+        assert!(!page.entries[0].has_folded_after);
+        assert!(!page.entries[1].has_folded_after);
         assert_eq!(reconnected.kind, HistoryEventKind::ConnectionReconnected);
         assert_eq!(disconnected.kind, HistoryEventKind::ConnectionDisconnected);
         assert!(reconnected.original.is_none());

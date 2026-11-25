@@ -136,29 +136,17 @@ pub struct BridgeHistoryAccountingHead {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryWorkRange {
-    pub range_id: String,
-    pub after_seq: Option<u64>,
-    pub before_seq: Option<u64>,
-    pub first_seq: u64,
-    pub last_seq: u64,
-    pub started_at: Option<i64>,
-    pub ended_at: Option<i64>,
-    pub run_id: Option<String>,
-    pub event_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
-pub enum BridgeHistoryTimelineItem {
-    Boundary(BridgeHistoryEventRecord),
-    WorkRange(BridgeHistoryWorkRange),
+pub struct BridgeHistoryTimelineEntry {
+    pub event: BridgeHistoryEventRecord,
+    pub has_folded_after: bool,
+    pub tail_folded_ended_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeHistoryTimelinePage {
     pub cut: BridgeHistoryCut,
-    pub items: Vec<BridgeHistoryTimelineItem>,
+    pub entries: Vec<BridgeHistoryTimelineEntry>,
+    pub has_folded_before_oldest: bool,
     pub next: Option<String>,
 }
 

@@ -214,38 +214,20 @@ HistoryEventRecord _historyEventRecordFromFrb(
   payloadJson: value.payloadJson,
 );
 
-HistoryWorkRange _historyWorkRangeFromFrb(
-  frb_presentation.BridgeHistoryWorkRange value,
-) => HistoryWorkRange(
-  rangeId: value.rangeId,
-  afterSeq: value.afterSeq == null
-      ? null
-      : _exactTimelineInt(value.afterSeq!, 'history range afterSeq'),
-  beforeSeq: value.beforeSeq == null
-      ? null
-      : _exactTimelineInt(value.beforeSeq!, 'history range beforeSeq'),
-  firstSeq: _exactTimelineInt(value.firstSeq, 'history range firstSeq'),
-  lastSeq: _exactTimelineInt(value.lastSeq, 'history range lastSeq'),
-  startedAt: _timelineTimestampFromFrb(value.startedAt),
-  endedAt: _timelineTimestampFromFrb(value.endedAt),
-  runId: value.runId,
-  eventCount: _exactTimelineInt(value.eventCount, 'history range eventCount'),
+HistoryTimelineEntry _historyTimelineEntryFromFrb(
+  frb_presentation.BridgeHistoryTimelineEntry value,
+) => HistoryTimelineEntry(
+  event: _historyEventRecordFromFrb(value.event),
+  hasFoldedAfter: value.hasFoldedAfter,
+  tailFoldedEndedAt: _timelineTimestampFromFrb(value.tailFoldedEndedAt),
 );
-
-HistoryTimelineItem _historyTimelineItemFromFrb(
-  frb_presentation.BridgeHistoryTimelineItem value,
-) => switch (value) {
-  frb_presentation.BridgeHistoryTimelineItem_Boundary(:final field0) =>
-    BoundaryTimelineItem(_historyEventRecordFromFrb(field0)),
-  frb_presentation.BridgeHistoryTimelineItem_WorkRange(:final field0) =>
-    WorkRangeTimelineItem(_historyWorkRangeFromFrb(field0)),
-};
 
 HistoryTimelinePage _historyTimelinePageFromFrb(
   frb_presentation.BridgeHistoryTimelinePage value,
 ) => HistoryTimelinePage(
   cut: _historyCutFromFrb(value.cut),
-  items: value.items.map(_historyTimelineItemFromFrb).toList(),
+  entries: value.entries.map(_historyTimelineEntryFromFrb).toList(),
+  hasFoldedBeforeOldest: value.hasFoldedBeforeOldest,
   next: value.next,
 );
 

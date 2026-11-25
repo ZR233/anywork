@@ -232,51 +232,29 @@ final class HistoryEventRecord {
   final String payloadJson;
 }
 
-final class HistoryWorkRange {
-  const HistoryWorkRange({
-    required this.rangeId,
-    this.afterSeq,
-    this.beforeSeq,
-    required this.firstSeq,
-    required this.lastSeq,
-    this.startedAt,
-    this.endedAt,
-    this.runId,
-    required this.eventCount,
+final class HistoryTimelineEntry {
+  const HistoryTimelineEntry({
+    required this.event,
+    required this.hasFoldedAfter,
+    this.tailFoldedEndedAt,
   });
-  final String rangeId;
-  final int? afterSeq;
-  final int? beforeSeq;
-  final int firstSeq;
-  final int lastSeq;
-  final int? startedAt;
-  final int? endedAt;
-  final String? runId;
-  final int eventCount;
-}
-
-sealed class HistoryTimelineItem {
-  const HistoryTimelineItem();
-}
-
-final class BoundaryTimelineItem extends HistoryTimelineItem {
-  const BoundaryTimelineItem(this.event);
   final HistoryEventRecord event;
-}
+  final bool hasFoldedAfter;
+  final int? tailFoldedEndedAt;
 
-final class WorkRangeTimelineItem extends HistoryTimelineItem {
-  const WorkRangeTimelineItem(this.range);
-  final HistoryWorkRange range;
+  int get displayTimeMs => event.occurredAt ?? event.recordedAt;
 }
 
 final class HistoryTimelinePage {
   HistoryTimelinePage({
     required this.cut,
-    required List<HistoryTimelineItem> items,
+    required List<HistoryTimelineEntry> entries,
+    this.hasFoldedBeforeOldest = false,
     this.next,
-  }) : items = List.unmodifiable(items);
+  }) : entries = List.unmodifiable(entries);
   final HistoryCut cut;
-  final List<HistoryTimelineItem> items;
+  final List<HistoryTimelineEntry> entries;
+  final bool hasFoldedBeforeOldest;
   final String? next;
 }
 

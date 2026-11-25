@@ -1052,11 +1052,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_history_event_body_ref(dynamic raw);
 
   @protected
-  BridgeHistoryEventRecord dco_decode_box_autoadd_bridge_history_event_record(
-    dynamic raw,
-  );
-
-  @protected
   BridgeHistoryEventsQuery dco_decode_box_autoadd_bridge_history_events_query(
     dynamic raw,
   );
@@ -1076,11 +1071,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnHead dco_decode_box_autoadd_bridge_history_turn_head(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeHistoryWorkRange dco_decode_box_autoadd_bridge_history_work_range(
     dynamic raw,
   );
 
@@ -2854,7 +2844,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryTimelineItem dco_decode_bridge_history_timeline_item(
+  BridgeHistoryTimelineEntry dco_decode_bridge_history_timeline_entry(
     dynamic raw,
   );
 
@@ -2873,9 +2863,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnState dco_decode_bridge_history_turn_state(dynamic raw);
-
-  @protected
-  BridgeHistoryWorkRange dco_decode_bridge_history_work_range(dynamic raw);
 
   @protected
   BridgeHistoryWorkRangePage dco_decode_bridge_history_work_range_page(
@@ -4248,9 +4235,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeHistoryTimelineItem> dco_decode_list_bridge_history_timeline_item(
-    dynamic raw,
-  );
+  List<BridgeHistoryTimelineEntry>
+  dco_decode_list_bridge_history_timeline_entry(dynamic raw);
 
   @protected
   List<BridgeInteractionRequest> dco_decode_list_bridge_interaction_request(
@@ -6235,11 +6221,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryEventRecord sse_decode_box_autoadd_bridge_history_event_record(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeHistoryEventsQuery sse_decode_box_autoadd_bridge_history_events_query(
     SseDeserializer deserializer,
   );
@@ -6261,11 +6242,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnHead sse_decode_box_autoadd_bridge_history_turn_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWorkRange sse_decode_box_autoadd_bridge_history_work_range(
     SseDeserializer deserializer,
   );
 
@@ -8611,7 +8587,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryTimelineItem sse_decode_bridge_history_timeline_item(
+  BridgeHistoryTimelineEntry sse_decode_bridge_history_timeline_entry(
     SseDeserializer deserializer,
   );
 
@@ -8632,11 +8608,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnState sse_decode_bridge_history_turn_state(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWorkRange sse_decode_bridge_history_work_range(
     SseDeserializer deserializer,
   );
 
@@ -10305,9 +10276,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeHistoryTimelineItem> sse_decode_list_bridge_history_timeline_item(
-    SseDeserializer deserializer,
-  );
+  List<BridgeHistoryTimelineEntry>
+  sse_decode_list_bridge_history_timeline_entry(SseDeserializer deserializer);
 
   @protected
   List<BridgeInteractionRequest> sse_decode_list_bridge_interaction_request(
@@ -12675,12 +12645,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_history_event_record(
-    BridgeHistoryEventRecord self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_bridge_history_events_query(
     BridgeHistoryEventsQuery self,
     SseSerializer serializer,
@@ -12707,12 +12671,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_history_turn_head(
     BridgeHistoryTurnHead self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_history_work_range(
-    BridgeHistoryWorkRange self,
     SseSerializer serializer,
   );
 
@@ -15471,8 +15429,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_history_timeline_item(
-    BridgeHistoryTimelineItem self,
+  void sse_encode_bridge_history_timeline_entry(
+    BridgeHistoryTimelineEntry self,
     SseSerializer serializer,
   );
 
@@ -15497,12 +15455,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_history_turn_state(
     BridgeHistoryTurnState self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_work_range(
-    BridgeHistoryWorkRange self,
     SseSerializer serializer,
   );
 
@@ -17526,8 +17478,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_bridge_history_timeline_item(
-    List<BridgeHistoryTimelineItem> self,
+  void sse_encode_list_bridge_history_timeline_entry(
+    List<BridgeHistoryTimelineEntry> self,
     SseSerializer serializer,
   );
 

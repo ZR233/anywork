@@ -155,28 +155,11 @@ pub(crate) fn event_record(value: runtime_history::HistoryEventRecord) -> Bridge
     }
 }
 
-fn work_range(value: runtime_history::HistoryWorkRange) -> BridgeHistoryWorkRange {
-    BridgeHistoryWorkRange {
-        range_id: value.range_id,
-        after_seq: value.after_seq,
-        before_seq: value.before_seq,
-        first_seq: value.first_seq,
-        last_seq: value.last_seq,
-        started_at: value.started_at,
-        ended_at: value.ended_at,
-        run_id: value.run_id,
-        event_count: value.event_count,
-    }
-}
-
-fn timeline_item(value: runtime_history::HistoryTimelineItem) -> BridgeHistoryTimelineItem {
-    match value {
-        runtime_history::HistoryTimelineItem::Boundary(record) => {
-            BridgeHistoryTimelineItem::Boundary(event_record(record))
-        }
-        runtime_history::HistoryTimelineItem::WorkRange(range) => {
-            BridgeHistoryTimelineItem::WorkRange(work_range(range))
-        }
+fn timeline_entry(value: runtime_history::HistoryTimelineEntry) -> BridgeHistoryTimelineEntry {
+    BridgeHistoryTimelineEntry {
+        event: event_record(value.event),
+        has_folded_after: value.has_folded_after,
+        tail_folded_ended_at: value.tail_folded_ended_at,
     }
 }
 
@@ -185,7 +168,8 @@ pub(crate) fn timeline_page(
 ) -> BridgeHistoryTimelinePage {
     BridgeHistoryTimelinePage {
         cut: cut(value.cut),
-        items: value.items.into_iter().map(timeline_item).collect(),
+        entries: value.entries.into_iter().map(timeline_entry).collect(),
+        has_folded_before_oldest: value.has_folded_before_oldest,
         next: value.next,
     }
 }
@@ -627,13 +611,13 @@ fn current_projection(value: protocol::CurrentProjection) -> BridgeCurrentProjec
             .into_iter()
             .map(current_collection_ref)
             .collect(),
-        model_recovery: value.model_recovery.map(|recovery| {
-            BridgeCurrentModelRecovery {
+        model_recovery: value
+            .model_recovery
+            .map(|recovery| BridgeCurrentModelRecovery {
                 attempt: recovery.attempt,
                 max_attempts: recovery.max_attempts,
                 reason: recovery.reason,
-            }
-        }),
+            }),
     }
 }
 

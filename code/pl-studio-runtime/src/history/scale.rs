@@ -341,16 +341,12 @@ fn is_page_select(sql: &[u8]) -> bool {
         && contains(sql, b"ORDER BY seq DESC LIMIT")
         && !contains(sql, b"history_bodies")
         && !contains(sql, b"history_body_chunks");
-    let is_timeline_bounds = contains(sql, b"FROM history_events")
-        && contains(sql, b"WHERE timeline_role=2 AND seq<=? ORDER BY seq DESC LIMIT ?")
+    let is_timeline_direct = contains(sql, b"FROM history_events d")
+        && contains(sql, b"WHERE d.timeline_role=2 AND d.seq<=?")
+        && contains(sql, b"AS has_folded_after")
         && !contains(sql, b"history_bodies")
         && !contains(sql, b"history_body_chunks");
-    let is_timeline_work = contains(sql, b"WITH ranges(idx, lo, hi) AS (VALUES")
-        && contains(sql, b"FROM ranges r")
-        && contains(sql, b"LEFT JOIN history_events e")
-        && !contains(sql, b"history_bodies")
-        && !contains(sql, b"history_body_chunks");
-    is_events_page || is_timeline_bounds || is_timeline_work
+    is_events_page || is_timeline_direct
 }
 
 fn starts_with_ignore_ascii_case(sql: &[u8], prefix: &[u8]) -> bool {
@@ -669,47 +665,31 @@ async fn hundred_thousand_events_use_index_seeks_without_loading_bodies() -> Res
 
 async fn assert_timeline_index_plans(path: &std::path::Path) -> Result<()> {
     let db = schema::connect(path, true, false).await?;
-    let bound_rows = db
+    let plan_rows = db
         .query_all_raw(statement(
-            "EXPLAIN QUERY PLAN SELECT seq FROM history_events \
-             WHERE timeline_role=2 AND seq<=? ORDER BY seq DESC LIMIT ?",
-            vec![100i64.into(), 21i64.into()],
+            &format!("EXPLAIN QUERY PLAN {}", super::db::direct_timeline_sql()),
+            vec![
+                10_000i64.into(),
+                10_000i64.into(),
+                1i64.into(),
+                10_000i64.into(),
+                10_000i64.into(),
+                10_000i64.into(),
+                21i64.into(),
+            ],
         ))
         .await?;
-    let bound_plan = bound_rows
+    let plan = plan_rows
         .iter()
         .map(|row| row.try_get::<String>("", "detail"))
         .collect::<std::result::Result<Vec<_>, _>>()?
         .join("\n");
     ensure!(
-        bound_plan.contains("idx_events_boundaries") && !bound_plan.contains("SCAN"),
-        "boundary query does not use idx_events_boundaries seek: {bound_plan}"
-    );
-
-    let work_rows = db
-        .query_all_raw(statement(
-            "EXPLAIN QUERY PLAN WITH ranges(idx, lo, hi) AS (VALUES (0, 1, 99), (1, 100, 199)) \
-             SELECT r.idx, MIN(e.seq), MAX(e.seq), MIN(e.occurred_at), MAX(e.occurred_at), COUNT(e.seq), \
-                    (SELECT e2.run_id FROM history_events e2 \
-                     WHERE e2.timeline_role=1 AND e2.seq>r.lo AND e2.seq<=r.hi AND e2.run_id IS NOT NULL \
-                     ORDER BY e2.seq DESC LIMIT 1) \
-             FROM ranges r \
-             LEFT JOIN history_events e \
-               ON e.timeline_role=1 AND e.seq>r.lo AND e.seq<=r.hi \
-             GROUP BY r.idx ORDER BY r.idx ASC",
-            vec![],
-        ))
-        .await?;
-    let work_plan = work_rows
-        .iter()
-        .map(|row| row.try_get::<String>("", "detail"))
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .join("\n");
-    ensure!(
-        work_plan.contains("idx_events_work")
-            && !work_plan.contains("SCAN history_events")
-            && !work_plan.contains("history_bodies"),
-        "work range batch query does not use covering idx_events_work: {work_plan}"
+        plan.contains("idx_events_boundaries")
+            && plan.contains("idx_events_work")
+            && !plan.contains("SCAN")
+            && !plan.contains("history_bodies"),
+        "direct timeline 1-SQL query does not use covering indexes without SCAN: {plan}"
     );
     db.close().await?;
     Ok(())
@@ -740,10 +720,10 @@ async fn verify_indexed_timeline_pages(sizes: &[u64]) -> Result<()> {
             .await;
         let work = probe.finish(&store.inner.reader).await?;
         let page = page.context("timeline page failed while body reads were denied")?;
-        assert!(!page.items.is_empty(), "{work:?}");
-        assert!(
-            work.page_statements <= 2,
-            "expected <= 2 SQL statements for timeline_page, got {}: {work:?}",
+        assert!(!page.entries.is_empty(), "{work:?}");
+        assert_eq!(
+            work.page_statements, 1,
+            "expected exactly 1 SQL statement for timeline_page, got {}: {work:?}",
             work.page_statements
         );
         assert_eq!(

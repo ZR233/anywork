@@ -1,4 +1,4 @@
-//! Independent append-only atomic History query and hybrid body protocol (Schema 26 / v2).
+//! Independent append-only atomic History query and hybrid body protocol (Schema 27 / v3).
 pub use crate::{
     CacheUsageSummary, ChatAtomKind as HistoryEntityKind, ChatDeliveryKind as HistoryDelivery,
     ChatScope, ChatSourceId as HistorySource, ChatToolIdentity as HistoryToolIdentity,
@@ -263,33 +263,22 @@ pub struct HistoryEventRecord {
     pub payload_json: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryWorkRange {
-    pub range_id: String,
-    pub after_seq: Option<u64>,
-    pub before_seq: Option<u64>,
-    pub first_seq: u64,
-    pub last_seq: u64,
-    pub started_at: Option<i64>,
-    pub ended_at: Option<i64>,
-    pub run_id: Option<String>,
-    pub event_count: u64,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-#[allow(clippy::large_enum_variant)]
-pub enum HistoryTimelineItem {
-    Boundary(HistoryEventRecord),
-    WorkRange(HistoryWorkRange),
+#[serde(rename_all = "camelCase")]
+pub struct HistoryTimelineEntry {
+    pub event: HistoryEventRecord,
+    pub has_folded_after: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_folded_ended_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryTimelinePage {
     pub cut: HistoryCut,
-    pub items: Vec<HistoryTimelineItem>,
+    pub entries: Vec<HistoryTimelineEntry>,
+    #[serde(default)]
+    pub has_folded_before_oldest: bool,
     pub next: Option<String>,
 }
 

@@ -94,10 +94,10 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   /// Published only by this display's serial admission, never directly by the transport.
   final ValueNotifier<CurrentAtomSnapshot?> live = ValueNotifier(null);
 
-  /// Live, still-executing tail WorkRange routed to LiveStatusBar instead of
+  /// Live, still-executing tail folded work routed to LiveStatusBar instead of
   /// mutating the immutable main Timeline.
   final ValueNotifier<DisplayBlock?> liveOpenWork = ValueNotifier(null);
-  ({HistoryWorkRange range, HistoryCut cut})? _heldTailWork;
+  ({HistoryTimelineEntry? entry, HistoryCut cut})? _heldTailWork;
   final Map<String, TimelineExpansionIntent> _expansions = {};
   final Set<Object> _ownedQueries = {};
   final Map<Object, Future<void>> _closingQueries = {};
@@ -116,6 +116,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   HistoryCut? _historyCut;
   String? _before;
   int? _firstOrder;
+  ({int seq, int displayTimeMs})? _oldestDirect;
   TimelineDisplayMode _mode = TimelineDisplayMode.live;
   bool _hasOlder = false;
   bool _mounted = false;
@@ -1092,20 +1093,23 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
         ? _heldTailWork
         : null;
     if (settledTail != null) _heldTailWork = null;
+    final settledWorkId = settledTail == null
+        ? null
+        : 'work:${settledTail.entry?.event.seq ?? 0}';
     final DisplayBlock? settledBlock =
         settledTail != null &&
             _mode == TimelineDisplayMode.live &&
-            !_isCommittedInController(settledTail.range.rangeId)
-        ? TimelineHistoryProjection.block(
-            WorkRangeTimelineItem(settledTail.range),
+            !_isCommittedInController(settledWorkId!)
+        ? TimelineHistoryProjection.closedFoldedWorkBlock(
+            settledTail.entry,
             cut: settledTail.cut,
           )
         : null;
     DisplayBlock? updatedLiveWork;
     if (executionActive && !streamingText && _heldTailWork != null) {
       final tail = _heldTailWork!;
-      updatedLiveWork = TimelineHistoryProjection.liveOpenWorkBlock(
-        tail.range,
+      updatedLiveWork = TimelineHistoryProjection.liveOpenWorkBlockForTail(
+        tail.entry,
         cut: tail.cut,
         unfinishedCount: atoms
             .where((atom) => atom.lifecycle is ActiveChatAtom)
@@ -1318,11 +1322,9 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
 }
 
 extension TimelineSessionAccess on TimelineSessionOwner {
-  bool _hasOpenTailWork(HistoryTimelinePage page) =>
-      switch (page.items.firstOrNull) {
-        WorkRangeTimelineItem(:final range) => range.beforeSeq == null,
-        _ => false,
-      };
+  bool _hasOpenTailWork(HistoryTimelinePage page) => page.entries.isNotEmpty
+      ? page.entries.first.hasFoldedAfter
+      : page.hasFoldedBeforeOldest;
 
   bool _isExecutionActive(
     ConversationSession session, {
@@ -1366,10 +1368,17 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     return session.state.activity?.kind == ThreadActivityKind.responding;
   }
 
+  ({int seq, int displayTimeMs})? _oldestDirectOf(HistoryTimelinePage page) {
+    final oldest = page.entries.lastOrNull;
+    if (oldest == null) return null;
+    return (seq: oldest.event.seq, displayTimeMs: oldest.displayTimeMs);
+  }
+
   ({
     List<DisplayBlock> timelineBlocks,
-    ({HistoryWorkRange range, HistoryCut cut})? heldTail,
+    ({HistoryTimelineEntry? entry, HistoryCut cut})? heldTail,
     DisplayBlock? liveWorkBlock,
+    ({int seq, int displayTimeMs})? oldestDirect,
   })
   _partitionTimelinePage(
     ConversationSession session,
@@ -1390,30 +1399,33 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       projection: projection,
       loadedAtoms: loadedAtoms,
     );
-    final first = page.items.firstOrNull;
-    final heldRange =
-        first is WorkRangeTimelineItem &&
-            first.range.beforeSeq == null &&
-            active &&
-            !streamingText &&
-            (first.range.runId == null ||
-                ownerId == null ||
-                first.range.runId == ownerId) &&
-            !(existingLease?._isCommittedInController(first.range.rangeId) ??
-                false)
-        ? first.range
-        : null;
-    if (heldRange == null) {
+    final first = page.entries.firstOrNull;
+    final hasTailFold = first != null
+        ? first.hasFoldedAfter
+        : page.hasFoldedBeforeOldest;
+    final tailWorkId = 'work:${first?.event.seq ?? 0}';
+    final holdTail =
+        hasTailFold &&
+        active &&
+        !streamingText &&
+        !(existingLease?._isCommittedInController(tailWorkId) ?? false);
+    final ascendingEntries = page.entries.reversed.toList(growable: false);
+    final hasLeadingFold = page.next == null && page.hasFoldedBeforeOldest;
+    final blocks = TimelineHistoryProjection.blocksFromEntries(
+      ascendingEntries,
+      cut: page.cut,
+      hasFoldedBeforeOldest: hasLeadingFold,
+      suppressTailFold: holdTail,
+    );
+    final oldestDirect = _oldestDirectOf(page);
+    if (!holdTail) {
       return (
-        timelineBlocks: TimelineHistoryProjection.blocks(
-          page.items.reversed,
-          cut: page.cut,
-        ),
+        timelineBlocks: blocks,
         heldTail: null,
         liveWorkBlock: null,
+        oldestDirect: oldestDirect,
       );
     }
-    final timelineItems = page.items.skip(1).toList(growable: false);
     final sourceAtoms = (projection?.atoms.isNotEmpty ?? false)
         ? projection!.atoms
         : loadedAtoms;
@@ -1421,16 +1433,14 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         .where((atom) => atom.lifecycle is ActiveChatAtom)
         .length;
     return (
-      timelineBlocks: TimelineHistoryProjection.blocks(
-        timelineItems.reversed,
-        cut: page.cut,
-      ),
-      heldTail: (range: heldRange, cut: page.cut),
-      liveWorkBlock: TimelineHistoryProjection.liveOpenWorkBlock(
-        heldRange,
+      timelineBlocks: blocks,
+      heldTail: (entry: first, cut: page.cut),
+      liveWorkBlock: TimelineHistoryProjection.liveOpenWorkBlockForTail(
+        first,
         cut: page.cut,
         unfinishedCount: unfinished,
       ),
+      oldestDirect: oldestDirect,
     );
   }
 
@@ -1550,6 +1560,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       current._before = page.next;
       current._hasOlder = page.next != null;
       current._firstOrder = current._firstLoadedOrder;
+      current._oldestDirect = partition.oldestDirect ?? current._oldestDirect;
       current._mode = TimelineDisplayMode.live;
       current._liveWindowGeneration++;
       current._liveReturnHistoryIntent = null;
@@ -1587,8 +1598,9 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     _TimelineRead read,
     ({
       List<DisplayBlock> timelineBlocks,
-      ({HistoryWorkRange range, HistoryCut cut})? heldTail,
+      ({HistoryTimelineEntry? entry, HistoryCut cut})? heldTail,
       DisplayBlock? liveWorkBlock,
+      ({int seq, int displayTimeMs})? oldestDirect,
     })
     partition, {
     required HistoryCut cut,
@@ -1649,6 +1661,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     next._historyCut = cut;
     next._before = olderCursor;
     next._firstOrder = blocks.firstOrNull?.blockOrder;
+    next._oldestDirect = partition.oldestDirect;
     next._recordBatch(TimelineApplyPlacement.set);
     next._hasOlder = olderCursor != null;
     final previous = _current;
@@ -2013,12 +2026,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       await _serialize(() async {
         if (!ownsWindow() || !scope.isActive) return;
         if (page.next == window.before ||
-            page.items.any(
-              (item) => switch (item) {
-                BoundaryTimelineItem(:final event) => event.eventId.isEmpty,
-                WorkRangeTimelineItem(:final range) => range.rangeId.isEmpty,
-              },
-            )) {
+            page.entries.any((entry) => entry.event.eventId.isEmpty)) {
           throw const ConversationContinuityError('Invalid history page');
         }
         if (page.cut != cut) {
@@ -2026,12 +2034,15 @@ extension TimelineSessionAccess on TimelineSessionOwner {
             'History older page changed its fixed cut',
           );
         }
-        final blocks = TimelineHistoryProjection.blocks(
-          page.items.reversed,
+        final blocks = TimelineHistoryProjection.blocksFromEntries(
+          page.entries.reversed.toList(growable: false),
           cut: cut,
+          nextDirect: current._oldestDirect,
+          hasFoldedBeforeOldest:
+              page.next == null && page.hasFoldedBeforeOldest,
         );
         if (window.mode == TimelineDisplayMode.live &&
-            blocks.length > window.maxRows) {
+            page.entries.length > window.maxRows) {
           throw const ConversationContinuityError(
             'History older page exceeded the live window demand',
           );
@@ -2071,6 +2082,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         if (blocks.isNotEmpty) {
           current._firstOrder = blocks.first.blockOrder;
         }
+        current._oldestDirect = _oldestDirectOf(page) ?? current._oldestDirect;
         current._before = page.next;
         current._hasOlder = page.next != null;
         current._recordBatch(TimelineApplyPlacement.prepend);

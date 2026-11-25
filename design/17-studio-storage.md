@@ -712,9 +712,9 @@ Native 展示不再有独立 `conversation_display_blocks`／`conversation_displ
 
 一次可靠 effect 可产生多个独立原子事件，但仍以同一批在私有准备状态中确定性绑定 `database_id` 后一次性接纳，确保重试复用相同 `event_id` 与正文身份；写入器本身无状态，不持有工作组分类器，也不因正文到达而回查、等待或冻结尚未结束的工具。非工具类的进行中模型/压缩/子智能体起始状态仅保留在 Current 内存，不再向 `history_events` 写入无消费者的活跃 `hidden` 起始行。
 
-历史查询先捕获 cut 和 pending 根，主时间线通过稀疏部分索引 `idx_events_boundaries(seq DESC) WHERE timeline_role = 2` 预取边界，并以单一 `WITH ranges(idx, lo, hi)` CTE 查询覆盖索引 `idx_events_work(seq DESC, occurred_at, run_id) WHERE timeline_role = 1` 批量计算相邻 `boundary` 之间的 `WorkRange`；展开后通过 `work_range_page(after_seq, before_seq)` 返回原始原子事件，由 Flutter 工作组 ViewModel 在同区间内按 `call_id` / `entity_id` 折叠为最新态展示行。关闭、失败与背压由 HistoryStore 本身负责；这里不另设定时器、第二 writer 或 UI 确认协议。
+历史查询先捕获 cut 和 pending 根，主时间线通过稀疏部分索引 `idx_events_boundaries(seq DESC) WHERE timeline_role = 2` 读取直展事件，并以相关性 `EXISTS` 沿单列稀疏部分索引 `idx_events_work(seq DESC) WHERE timeline_role = 1` 在 **1 条 SQL** 内短路探测相邻直展条目间是否存在 `work` 过程（并顺带为无后继直接展示的已结束尾段定位末条工作时间 `tail_folded_ended_at`）；展开后通过 `work_range_page(after_seq, before_seq)` 返回原始 `timeline_role = 1` 原子事件，由 Flutter 工作组 ViewModel 在同区间内按 `call_id` / `entity_id` 折叠为最新态展示行。关闭、失败与背压由 HistoryStore 本身负责；这里不另设定时器、第二 writer 或 UI 确认协议。
 
-实时思考摘要、展开、滚动、动画和当前计时只在 Current／UI owner 中存在；模型断连重试倒计时也仅在 Current 内存态 `model_recovery` 中保存。只有真实 `boundary` 原子事件（用户输入、助手可见完成正文、计划公开决议、独立展示工具及模型／SSH 的 `connection_disconnected`／`connection_reconnected`）在主时间线上自然切分前后工作区间；来源结束、空闲、页面关闭和冷重开不产生伪边界。连接边界事件的 `original` 保持为空，不进入对话正文索引。
+实时思考摘要、展开、滚动、动画和当前计时只在 Current／UI owner 中存在；模型断连重试倒计时也仅在 Current 内存态 `model_recovery` 中保存。所有事件写入 `occurred_at` 统一为 Unix 毫秒，只有真实 `boundary` 原子事件（用户输入、助手可见完成正文、计划公开决议、独立展示工具及模型／SSH 的 `connection_disconnected`／`connection_reconnected`）写入 `timeline_role = 2` 并在主时间线上自然切分前后工作区间；来源结束、空闲、页面关闭和冷重开不产生伪边界。未来扩展新的直接展示类型只需写入时标为 `timeline_role = 2`，旧数据保持 `1` 兼容不迁移。连接边界事件的 `original` 保持为空，不进入对话正文索引。
 
 ### 保存停滞阶段与只读隔离
 
@@ -773,5 +773,5 @@ schema 26 到 27 在相同独占维护入口执行零拷贝原地转换（旧 v2
 2. **单事务零拷贝转换**：在单一 SQLite `IMMEDIATE` 事务内（保持既有 `history_bodies` 与 `history_body_chunks` 行及块边界零拷贝）：
    - 建立 `history_events_v27`，将 `timeline_role` 从文本收紧为整型 `INTEGER NOT NULL CHECK(timeline_role IN (0, 1, 2))`（`'hidden' -> 0`、`'work' -> 1`、`'divider' -> 2`），去掉冗余列 `source_kind`，保留 `source_id` 与业务索引字段；
    - 以单条 `INSERT INTO history_events_v27 SELECT ... ORDER BY seq ASC` 无损迁移全量事件行，核对行数一致后替换 `history_events`；
-   - 建立精简后的 12 个稀疏部分索引（`idx_events_boundaries`、`idx_events_work`、`history_one_anchor`、`history_row_head`、`history_business_anchors`、`idx_events_entity`、`idx_events_turn`、`idx_events_source(source_id, seq DESC)`、`idx_events_call`、`idx_events_originals_all(seq DESC, query_class)`、`idx_events_originals_parent(parent_id, seq DESC, query_class) WHERE query_class IS NOT NULL AND parent_id IS NOT NULL`、`idx_events_originals_text`），删除冗余的 `idx_events_message`、`idx_events_attempt`、`idx_events_originals_class`、`idx_events_originals_parent_class`、`idx_events_originals_tool`；
+   - 建立精简后的 12 个稀疏部分索引（`idx_events_boundaries(seq DESC) WHERE timeline_role = 2`、`idx_events_work(seq DESC) WHERE timeline_role = 1`、`history_one_anchor`、`history_row_head`、`history_business_anchors`、`idx_events_entity`、`idx_events_turn`、`idx_events_source(source_id, seq DESC)`、`idx_events_call`、`idx_events_originals_all(seq DESC, query_class)`、`idx_events_originals_parent(parent_id, seq DESC, query_class) WHERE query_class IS NOT NULL AND parent_id IS NOT NULL`、`idx_events_originals_text`），删除冗余的 `idx_events_message`、`idx_events_attempt`、`idx_events_originals_class`、`idx_events_originals_parent_class`、`idx_events_originals_tool`；
    - 重建只追加触发器与 `history_store_meta (schema_version = 27)`，执行 `PRAGMA foreign_key_check` 后提交；任何校验失败完整回滚并保留原库与备份。

@@ -279,8 +279,8 @@ pub(in crate::studio) fn build_connection_event(
             state: HistoryEntityState::KnownTerminal {
                 outcome: crate::ChatTerminalOutcome::Completed,
             },
-            started_at: event.occurred_at.map(milliseconds_from_seconds).transpose()?,
-            finished_at: event.occurred_at.map(milliseconds_from_seconds).transpose()?,
+            started_at: event.occurred_at,
+            finished_at: event.occurred_at,
             text_channel: None,
             single_visibility: None,
             presentation_contract: None,

@@ -16852,29 +16852,20 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeHistorySourceL
     }
 }
 
-impl SseDecode for crate::api::studio::types::presentation::BridgeHistoryTimelineItem {
+impl SseDecode for crate::api::studio::types::presentation::BridgeHistoryTimelineEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut tag_ = <i32>::sse_decode(deserializer);
-        match tag_ {
-            0 => {
-                let mut var_field0 =
-                    <crate::api::studio::types::presentation::BridgeHistoryEventRecord>::sse_decode(
-                        deserializer,
-                    );
-                return crate::api::studio::types::presentation::BridgeHistoryTimelineItem::Boundary(var_field0);
-            }
-            1 => {
-                let mut var_field0 =
-                    <crate::api::studio::types::presentation::BridgeHistoryWorkRange>::sse_decode(
-                        deserializer,
-                    );
-                return crate::api::studio::types::presentation::BridgeHistoryTimelineItem::WorkRange(var_field0);
-            }
-            _ => {
-                unimplemented!("");
-            }
-        }
+        let mut var_event =
+            <crate::api::studio::types::presentation::BridgeHistoryEventRecord>::sse_decode(
+                deserializer,
+            );
+        let mut var_hasFoldedAfter = <bool>::sse_decode(deserializer);
+        let mut var_tailFoldedEndedAt = <Option<i64>>::sse_decode(deserializer);
+        return crate::api::studio::types::presentation::BridgeHistoryTimelineEntry {
+            event: var_event,
+            has_folded_after: var_hasFoldedAfter,
+            tail_folded_ended_at: var_tailFoldedEndedAt,
+        };
     }
 }
 
@@ -16883,14 +16874,15 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeHistoryTimelin
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_cut =
             <crate::api::studio::types::presentation::BridgeHistoryCut>::sse_decode(deserializer);
-        let mut var_items =
-            <Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineItem>>::sse_decode(
-                deserializer,
-            );
+        let mut var_entries = <Vec<
+            crate::api::studio::types::presentation::BridgeHistoryTimelineEntry,
+        >>::sse_decode(deserializer);
+        let mut var_hasFoldedBeforeOldest = <bool>::sse_decode(deserializer);
         let mut var_next = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::presentation::BridgeHistoryTimelinePage {
             cut: var_cut,
-            items: var_items,
+            entries: var_entries,
+            has_folded_before_oldest: var_hasFoldedBeforeOldest,
             next: var_next,
         };
     }
@@ -16961,32 +16953,6 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeHistoryTurnSta
             5 => crate::api::studio::types::presentation::BridgeHistoryTurnState::Failed,
             6 => crate::api::studio::types::presentation::BridgeHistoryTurnState::BudgetLimited,
             _ => unreachable!("Invalid variant for BridgeHistoryTurnState: {}", inner),
-        };
-    }
-}
-
-impl SseDecode for crate::api::studio::types::presentation::BridgeHistoryWorkRange {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_rangeId = <String>::sse_decode(deserializer);
-        let mut var_afterSeq = <Option<u64>>::sse_decode(deserializer);
-        let mut var_beforeSeq = <Option<u64>>::sse_decode(deserializer);
-        let mut var_firstSeq = <u64>::sse_decode(deserializer);
-        let mut var_lastSeq = <u64>::sse_decode(deserializer);
-        let mut var_startedAt = <Option<i64>>::sse_decode(deserializer);
-        let mut var_endedAt = <Option<i64>>::sse_decode(deserializer);
-        let mut var_runId = <Option<String>>::sse_decode(deserializer);
-        let mut var_eventCount = <u64>::sse_decode(deserializer);
-        return crate::api::studio::types::presentation::BridgeHistoryWorkRange {
-            range_id: var_rangeId,
-            after_seq: var_afterSeq,
-            before_seq: var_beforeSeq,
-            first_seq: var_firstSeq,
-            last_seq: var_lastSeq,
-            started_at: var_startedAt,
-            ended_at: var_endedAt,
-            run_id: var_runId,
-            event_count: var_eventCount,
         };
     }
 }
@@ -24730,14 +24696,14 @@ impl SseDecode for Vec<crate::api::studio::types::presentation::BridgeHistoryEve
     }
 }
 
-impl SseDecode for Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineItem> {
+impl SseDecode for Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineEntry> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut len_ = <i32>::sse_decode(deserializer);
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(
-                <crate::api::studio::types::presentation::BridgeHistoryTimelineItem>::sse_decode(
+                <crate::api::studio::types::presentation::BridgeHistoryTimelineEntry>::sse_decode(
                     deserializer,
                 ),
             );
@@ -38131,32 +38097,27 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
-    for crate::api::studio::types::presentation::BridgeHistoryTimelineItem
+    for crate::api::studio::types::presentation::BridgeHistoryTimelineEntry
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        match self {
-            crate::api::studio::types::presentation::BridgeHistoryTimelineItem::Boundary(
-                field0,
-            ) => [0.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
-            crate::api::studio::types::presentation::BridgeHistoryTimelineItem::WorkRange(
-                field0,
-            ) => [1.into_dart(), field0.into_into_dart().into_dart()].into_dart(),
-            _ => {
-                unimplemented!("");
-            }
-        }
+        [
+            self.event.into_into_dart().into_dart(),
+            self.has_folded_after.into_into_dart().into_dart(),
+            self.tail_folded_ended_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::presentation::BridgeHistoryTimelineItem
+    for crate::api::studio::types::presentation::BridgeHistoryTimelineEntry
 {
 }
 impl
     flutter_rust_bridge::IntoIntoDart<
-        crate::api::studio::types::presentation::BridgeHistoryTimelineItem,
-    > for crate::api::studio::types::presentation::BridgeHistoryTimelineItem
+        crate::api::studio::types::presentation::BridgeHistoryTimelineEntry,
+    > for crate::api::studio::types::presentation::BridgeHistoryTimelineEntry
 {
-    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeHistoryTimelineItem {
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeHistoryTimelineEntry {
         self
     }
 }
@@ -38167,7 +38128,8 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.cut.into_into_dart().into_dart(),
-            self.items.into_into_dart().into_dart(),
+            self.entries.into_into_dart().into_dart(),
+            self.has_folded_before_oldest.into_into_dart().into_dart(),
             self.next.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -38273,38 +38235,6 @@ impl
     > for crate::api::studio::types::presentation::BridgeHistoryTurnState
 {
     fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeHistoryTurnState {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart
-    for crate::api::studio::types::presentation::BridgeHistoryWorkRange
-{
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.range_id.into_into_dart().into_dart(),
-            self.after_seq.into_into_dart().into_dart(),
-            self.before_seq.into_into_dart().into_dart(),
-            self.first_seq.into_into_dart().into_dart(),
-            self.last_seq.into_into_dart().into_dart(),
-            self.started_at.into_into_dart().into_dart(),
-            self.ended_at.into_into_dart().into_dart(),
-            self.run_id.into_into_dart().into_dart(),
-            self.event_count.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::presentation::BridgeHistoryWorkRange
-{
-}
-impl
-    flutter_rust_bridge::IntoIntoDart<
-        crate::api::studio::types::presentation::BridgeHistoryWorkRange,
-    > for crate::api::studio::types::presentation::BridgeHistoryWorkRange
-{
-    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeHistoryWorkRange {
         self
     }
 }
@@ -53657,30 +53587,14 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeHistorySourceL
     }
 }
 
-impl SseEncode for crate::api::studio::types::presentation::BridgeHistoryTimelineItem {
+impl SseEncode for crate::api::studio::types::presentation::BridgeHistoryTimelineEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        match self {
-            crate::api::studio::types::presentation::BridgeHistoryTimelineItem::Boundary(
-                field0,
-            ) => {
-                <i32>::sse_encode(0, serializer);
-                <crate::api::studio::types::presentation::BridgeHistoryEventRecord>::sse_encode(
-                    field0, serializer,
-                );
-            }
-            crate::api::studio::types::presentation::BridgeHistoryTimelineItem::WorkRange(
-                field0,
-            ) => {
-                <i32>::sse_encode(1, serializer);
-                <crate::api::studio::types::presentation::BridgeHistoryWorkRange>::sse_encode(
-                    field0, serializer,
-                );
-            }
-            _ => {
-                unimplemented!("");
-            }
-        }
+        <crate::api::studio::types::presentation::BridgeHistoryEventRecord>::sse_encode(
+            self.event, serializer,
+        );
+        <bool>::sse_encode(self.has_folded_after, serializer);
+        <Option<i64>>::sse_encode(self.tail_folded_ended_at, serializer);
     }
 }
 
@@ -53690,9 +53604,11 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeHistoryTimelin
         <crate::api::studio::types::presentation::BridgeHistoryCut>::sse_encode(
             self.cut, serializer,
         );
-        <Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineItem>>::sse_encode(
-            self.items, serializer,
+        <Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineEntry>>::sse_encode(
+            self.entries,
+            serializer,
         );
+        <bool>::sse_encode(self.has_folded_before_oldest, serializer);
         <Option<String>>::sse_encode(self.next, serializer);
     }
 }
@@ -53756,21 +53672,6 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeHistoryTurnSta
             },
             serializer,
         );
-    }
-}
-
-impl SseEncode for crate::api::studio::types::presentation::BridgeHistoryWorkRange {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <String>::sse_encode(self.range_id, serializer);
-        <Option<u64>>::sse_encode(self.after_seq, serializer);
-        <Option<u64>>::sse_encode(self.before_seq, serializer);
-        <u64>::sse_encode(self.first_seq, serializer);
-        <u64>::sse_encode(self.last_seq, serializer);
-        <Option<i64>>::sse_encode(self.started_at, serializer);
-        <Option<i64>>::sse_encode(self.ended_at, serializer);
-        <Option<String>>::sse_encode(self.run_id, serializer);
-        <u64>::sse_encode(self.event_count, serializer);
     }
 }
 
@@ -59650,12 +59551,12 @@ impl SseEncode for Vec<crate::api::studio::types::presentation::BridgeHistoryEve
     }
 }
 
-impl SseEncode for Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineItem> {
+impl SseEncode for Vec<crate::api::studio::types::presentation::BridgeHistoryTimelineEntry> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
-            <crate::api::studio::types::presentation::BridgeHistoryTimelineItem>::sse_encode(
+            <crate::api::studio::types::presentation::BridgeHistoryTimelineEntry>::sse_encode(
                 item, serializer,
             );
         }

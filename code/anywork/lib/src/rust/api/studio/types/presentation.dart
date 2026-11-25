@@ -16,7 +16,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeCurrentActivityHead {
   final String id;
@@ -1127,31 +1127,50 @@ sealed class BridgeHistorySourceLifecycle with _$BridgeHistorySourceLifecycle {
   }) = BridgeHistorySourceLifecycle_Ended;
 }
 
-@freezed
-sealed class BridgeHistoryTimelineItem with _$BridgeHistoryTimelineItem {
-  const BridgeHistoryTimelineItem._();
+class BridgeHistoryTimelineEntry {
+  final BridgeHistoryEventRecord event;
+  final bool hasFoldedAfter;
+  final PlatformInt64? tailFoldedEndedAt;
 
-  const factory BridgeHistoryTimelineItem.boundary(
-    BridgeHistoryEventRecord field0,
-  ) = BridgeHistoryTimelineItem_Boundary;
-  const factory BridgeHistoryTimelineItem.workRange(
-    BridgeHistoryWorkRange field0,
-  ) = BridgeHistoryTimelineItem_WorkRange;
+  const BridgeHistoryTimelineEntry({
+    required this.event,
+    required this.hasFoldedAfter,
+    this.tailFoldedEndedAt,
+  });
+
+  @override
+  int get hashCode =>
+      event.hashCode ^ hasFoldedAfter.hashCode ^ tailFoldedEndedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryTimelineEntry &&
+          runtimeType == other.runtimeType &&
+          event == other.event &&
+          hasFoldedAfter == other.hasFoldedAfter &&
+          tailFoldedEndedAt == other.tailFoldedEndedAt;
 }
 
 class BridgeHistoryTimelinePage {
   final BridgeHistoryCut cut;
-  final List<BridgeHistoryTimelineItem> items;
+  final List<BridgeHistoryTimelineEntry> entries;
+  final bool hasFoldedBeforeOldest;
   final String? next;
 
   const BridgeHistoryTimelinePage({
     required this.cut,
-    required this.items,
+    required this.entries,
+    required this.hasFoldedBeforeOldest,
     this.next,
   });
 
   @override
-  int get hashCode => cut.hashCode ^ items.hashCode ^ next.hashCode;
+  int get hashCode =>
+      cut.hashCode ^
+      entries.hashCode ^
+      hasFoldedBeforeOldest.hashCode ^
+      next.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1159,7 +1178,8 @@ class BridgeHistoryTimelinePage {
       other is BridgeHistoryTimelinePage &&
           runtimeType == other.runtimeType &&
           cut == other.cut &&
-          items == other.items &&
+          entries == other.entries &&
+          hasFoldedBeforeOldest == other.hasFoldedBeforeOldest &&
           next == other.next;
 }
 
@@ -1232,57 +1252,6 @@ enum BridgeHistoryTurnState {
   cancelled,
   failed,
   budgetLimited,
-}
-
-class BridgeHistoryWorkRange {
-  final String rangeId;
-  final BigInt? afterSeq;
-  final BigInt? beforeSeq;
-  final BigInt firstSeq;
-  final BigInt lastSeq;
-  final PlatformInt64? startedAt;
-  final PlatformInt64? endedAt;
-  final String? runId;
-  final BigInt eventCount;
-
-  const BridgeHistoryWorkRange({
-    required this.rangeId,
-    this.afterSeq,
-    this.beforeSeq,
-    required this.firstSeq,
-    required this.lastSeq,
-    this.startedAt,
-    this.endedAt,
-    this.runId,
-    required this.eventCount,
-  });
-
-  @override
-  int get hashCode =>
-      rangeId.hashCode ^
-      afterSeq.hashCode ^
-      beforeSeq.hashCode ^
-      firstSeq.hashCode ^
-      lastSeq.hashCode ^
-      startedAt.hashCode ^
-      endedAt.hashCode ^
-      runId.hashCode ^
-      eventCount.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeHistoryWorkRange &&
-          runtimeType == other.runtimeType &&
-          rangeId == other.rangeId &&
-          afterSeq == other.afterSeq &&
-          beforeSeq == other.beforeSeq &&
-          firstSeq == other.firstSeq &&
-          lastSeq == other.lastSeq &&
-          startedAt == other.startedAt &&
-          endedAt == other.endedAt &&
-          runId == other.runId &&
-          eventCount == other.eventCount;
 }
 
 class BridgeHistoryWorkRangePage {
