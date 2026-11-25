@@ -107,7 +107,7 @@ impl SessionRuntime {
         if let Some(services) = services {
             services
                 .factory
-                .close_scope_tools(id, &resources)
+                .close_scope_tools(id, resources)
                 .await
                 .map_err(|source| ThreadAssemblyError::Resource {
                     operation: "close Native tool binding and MCP",
@@ -116,7 +116,7 @@ impl SessionRuntime {
         }
         self.drain_observation_for_purpose(id, purpose).await?;
         self.join_close_storage_for_purpose(id, purpose).await?;
-        self.close_published_resources(id, &incarnation).await?;
+        self.close_published_resources(id, incarnation).await?;
         let retired = !self
             .0
             .state()

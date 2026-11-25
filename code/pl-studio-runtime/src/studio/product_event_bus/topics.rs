@@ -15,7 +15,7 @@ use crate::{StudioProductEventEnvelope, StudioProductEventKind, StudioProductTop
 /// Queue material, never a wire payload. Agent values are reconstructed only on delivery.
 #[derive(Clone)]
 pub(super) enum ProductPublication {
-    Value(StudioProductEventEnvelope),
+    Value(Arc<StudioProductEventEnvelope>),
     AgentDirectory {
         sequence: u64,
         created_at: i64,
@@ -41,7 +41,7 @@ impl ProductPublication {
 
     pub(super) fn materialize(self) -> StudioProductEventEnvelope {
         match self {
-            Self::Value(event) => event,
+            Self::Value(event) => Arc::unwrap_or_clone(event),
             Self::AgentDirectory {
                 sequence,
                 created_at,
@@ -78,7 +78,7 @@ impl ProductEventReceiver {
         &mut self,
     ) -> Result<Option<StudioProductEventKind>, ProductTopicRecvError> {
         Ok(match self.recv_publication().await? {
-            ProductPublication::Value(event) => Some(event.kind),
+            ProductPublication::Value(event) => Some(Arc::unwrap_or_clone(event).kind),
             ProductPublication::AgentDirectory { .. } => None,
         })
     }
@@ -418,7 +418,7 @@ impl TopicChannels {
     /// 判断新旧，因此同一通道内序列不连续不是 lag。
     pub(super) fn dispatch(&mut self, envelope: &StudioProductEventEnvelope) {
         self.dispatch_to(StudioProductTopic::of_kind(&envelope.kind), || {
-            ProductPublication::Value(envelope.clone())
+            ProductPublication::Value(Arc::new(envelope.clone()))
         });
     }
 

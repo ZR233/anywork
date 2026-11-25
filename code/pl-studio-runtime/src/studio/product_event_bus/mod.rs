@@ -212,7 +212,7 @@ impl ProductEventBus {
         if self.internal.receiver_count() > 0 {
             let _ = self
                 .internal
-                .send(ProductPublication::Value(envelope.clone()));
+                .send(ProductPublication::Value(Arc::new(envelope.clone())));
         }
         self.topics
             .lock()
