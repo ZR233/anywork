@@ -233,7 +233,7 @@ pub(super) struct PendingAccounting {
 }
 
 #[derive(Debug)]
-struct OperationOutput {
+pub(super) struct OperationOutput {
     pub(super) limit: u64,
     pub(super) accepted: u64,
     pub(super) transferred: u64,

@@ -17,7 +17,7 @@ const RETRYABLE_BUSY_WINDOW: Duration = Duration::from_secs(30);
 /// only its own state, and a replacement incarnation is never mistaken for the writer it replaced.
 static NEXT_WRITER_INCARNATION: AtomicUsize = AtomicUsize::new(1);
 
-enum Step {
+pub(super) enum Step {
     /// Progress was made; the loop runs another unit immediately.
     Progressed,
     /// Nothing to do yet; every admitted effect already carries its own checkpoint, so the loop
