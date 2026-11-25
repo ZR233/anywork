@@ -6346,6 +6346,20 @@ mod migration_tests {
         let backup = report.backup.as_ref().expect("v25 backup path");
         assert!(backup.starts_with(directory.path().join(BACKUP_ROOT_V25_TO_V26)));
         assert!(backup.is_file());
+        assert_eq!(
+            backup.file_name().and_then(|name| name.to_str()),
+            Some("history.v25.sqlite")
+        );
+        let backup_db = schema::connect(backup, false, true).await?;
+        let backup_meta = backup_db
+            .query_one_raw(statement(
+                "SELECT schema_version FROM history_store_meta WHERE singleton = 1",
+                vec![],
+            ))
+            .await?
+            .expect("v25 backup meta row");
+        assert_eq!(backup_meta.try_get::<i64>("", "schema_version")?, 25);
+        backup_db.close().await?;
         assert!(!super::requires_history_upgrade(&history_path, thread_id).await?);
 
         // Second call returns AlreadySchema26 cleanly

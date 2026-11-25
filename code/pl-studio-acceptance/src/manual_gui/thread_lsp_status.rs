@@ -29,24 +29,13 @@ pub(super) fn run(
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
         let mut runner = OwnedProcess::start(&mut command, false)?;
-        let deadline = Instant::now() + Duration::from_secs(1_200);
-        loop {
-            if let Some(status) = runner.child.try_wait()? {
-                runner.stopped = true;
-                runner_exit = Some(status);
-                ensure!(status.success(), "Thread LSP integration failed: {status}");
-                break;
-            }
-            ensure!(
-                interrupt.try_recv().is_err(),
-                "Thread LSP integration cancelled"
-            );
-            ensure!(
-                Instant::now() < deadline,
-                "Thread LSP integration timed out"
-            );
-            thread::sleep(Duration::from_millis(200));
-        }
+        runner_exit = Some(wait_desktop_runner(
+            &mut runner,
+            None,
+            interrupt,
+            Duration::from_secs(1_200),
+            "Thread LSP integration",
+        )?);
         Ok(())
     })();
     // Preserve bridge and shutdown evidence before releasing the environment,

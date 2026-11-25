@@ -1740,6 +1740,10 @@ mod tests {
                 !std::path::Path::new(&format!("/proc/{first_pid}")).exists(),
                 "old process must be reaped before reconnect is scheduled"
             );
+            tokio::time::pause();
+            tokio::time::advance(crate::studio::runtime::acp_accounts::lifecycle::retry_delay(1))
+                .await;
+            tokio::time::resume();
             auth_state(&fixture.runtime, "business-peer", |account| {
                 matches!(account.connection, AcpConnectionState::Ready)
                     && matches!(account.state, AcpAuthState::Verified { .. })
@@ -1820,6 +1824,12 @@ mod tests {
                 })
                 .await;
                 assert!(!std::path::Path::new(&format!("/proc/{old_pid}")).exists());
+                tokio::time::pause();
+                tokio::time::advance(
+                    crate::studio::runtime::acp_accounts::lifecycle::retry_delay(expected_attempt),
+                )
+                .await;
+                tokio::time::resume();
                 auth_state(&fixture.runtime, "business-peer", |account| {
                     matches!(account.connection, AcpConnectionState::Ready)
                         && matches!(account.state, AcpAuthState::Verified { .. })

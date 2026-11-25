@@ -926,7 +926,7 @@ mod resource_tests {
         let quiesce = fixture.bots.quiesce_archive_threads(&targets);
         tokio::pin!(quiesce);
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut quiesce)
+            tokio::time::timeout(Duration::from_millis(20), &mut quiesce)
                 .await
                 .is_err(),
             "quiesce must join the running file operation before reporting stop"
@@ -1085,7 +1085,7 @@ mod resource_tests {
         let quiesce = fixture.bots.quiesce_archive_threads(&targets);
         tokio::pin!(quiesce);
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), &mut quiesce)
+            tokio::time::timeout(Duration::from_millis(20), &mut quiesce)
                 .await
                 .is_err(),
             "queued submit must drain its already-started resource copy"

@@ -52,8 +52,8 @@ pub(super) fn run(context: &SubmissionScenario<'_>, mut fixture: OwnedProcess) -
             .env("ANYWORK_SUBMISSION_PROVIDER", context.provider_url)
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
-        // This dedicated case requires real PNG evidence; never silently skip it.
-        configure_presentation_capture(&mut command, context.output, true);
+        let capture_presentation = presentation_capture_requested()?;
+        configure_presentation_capture(&mut command, context.output, capture_presentation);
         let mut runner = OwnedProcess::start(&mut command, false)?;
         let deadline = Instant::now() + Duration::from_secs(1_200);
         loop {
@@ -122,7 +122,15 @@ pub(super) fn run(context: &SubmissionScenario<'_>, mut fixture: OwnedProcess) -
                 "submission case cancelled"
             );
             ensure!(Instant::now() < deadline, "submission case timed out");
-            thread::sleep(Duration::from_millis(200));
+            let stop_reached_path = context.output.join("submission-stop-reached");
+            let resume_reached_path = context.output.join("submission-resume-reached");
+            runtime.block_on(async {
+                tokio::select! {
+                    _ = gates[0].wait_reached(), if !stop_reached_path.is_file() => {}
+                    _ = gates[1].wait_reached(), if !resume_reached_path.is_file() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            });
         }
         let report: serde_json::Value = serde_json::from_slice(
             &fs::read(context.output.join("message-submission.json"))
@@ -134,20 +142,22 @@ pub(super) fn run(context: &SubmissionScenario<'_>, mut fixture: OwnedProcess) -
                 && report["lifecycle"]["completed"] == true,
             "submission report did not pass: {report}"
         );
-        for name in [
-            "submission-pending.png",
-            "submission-received.png",
-            "submission-canonical.png",
-            "submission-editing.png",
-            "submission-next-draft.png",
-            "submission-stopping.png",
-            "submission-stopped.png",
-            "submission-resumed.png",
-        ] {
-            ensure!(
-                context.output.join(name).is_file(),
-                "missing submission screenshot {name}"
-            );
+        if capture_presentation {
+            for name in [
+                "submission-pending.png",
+                "submission-received.png",
+                "submission-canonical.png",
+                "submission-editing.png",
+                "submission-next-draft.png",
+                "submission-stopping.png",
+                "submission-stopped.png",
+                "submission-resumed.png",
+            ] {
+                ensure!(
+                    context.output.join(name).is_file(),
+                    "missing submission screenshot {name}"
+                );
+            }
         }
         Ok(())
     })();

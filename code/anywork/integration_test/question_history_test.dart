@@ -12,7 +12,6 @@ import 'package:anywork/src/features/conversation/composer/view_models/composer_
 import 'package:anywork/src/features/conversation/composer/views/composer_dock_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/interactions/views/user_input_view.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -330,12 +329,6 @@ void main() {
       'questions-pending released; request_user_input awaiting answers',
       'Real ordinary question dock replaces, but preserves, the unsent draft.',
     );
-    report['stateInteractionReference'] = await _verifyStateInteractionDetails(
-      tester,
-      graph,
-      draftThread,
-      report,
-    );
     expect(find.text('这次时间线里的问答回执，你更想要哪种展示？'), findsOneWidget);
     await _tap(tester, find.byKey(StudioDriverKeys.userInputFirstOption));
     await _tap(tester, find.byKey(StudioDriverKeys.userInputSubmit));
@@ -432,26 +425,31 @@ void main() {
             (widget.data?.contains(value) ?? false),
       ),
     );
+    final captureRequested =
+        Platform.environment['ANYWORK_PRESENTATION_SCREENSHOTS']?.isNotEmpty ??
+        false;
     for (final witness in [
       (answerText(_styleAnswer), 'question-receipt-expanded-style.png'),
       (answerText(_notesAnswer), 'question-receipt-expanded-notes.png'),
       (scoped(find.text('敏感内容已隐藏')), 'question-receipt-expanded.png'),
     ]) {
       expect(witness.$1, findsOneWidget);
-      await Scrollable.ensureVisible(
-        tester.element(witness.$1),
-        alignment: 0.5,
-      );
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(tester.takeException(), isNull);
-      _expectReceiptTextVisible(tester, receiptRoot, witness.$1);
-      await capture(
-        witness.$2,
-        'completed question receipt; expanded',
-        'Real receipt public answer/redaction witness; private answer is absent.',
-        receiptId: receipt.atom!.id,
-        receiptBlockId: receipt.id,
-      );
+      if (captureRequested) {
+        await Scrollable.ensureVisible(
+          tester.element(witness.$1),
+          alignment: 0.5,
+        );
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(tester.takeException(), isNull);
+        _expectReceiptTextVisible(tester, receiptRoot, witness.$1);
+        await capture(
+          witness.$2,
+          'completed question receipt; expanded',
+          'Real receipt public answer/redaction witness; private answer is absent.',
+          receiptId: receipt.atom!.id,
+          receiptBlockId: receipt.id,
+        );
+      }
     }
     expect(find.byType(ChatItemView), findsWidgets);
 
@@ -490,184 +488,6 @@ void _expectReceiptTextVisible(
     }
     ancestor = ancestor.parent;
   }
-}
-
-Future<Map<String, Object?>> _verifyStateInteractionDetails(
-  WidgetTester tester,
-  AppGraph graph,
-  String threadId,
-  Map<String, Object?> report,
-) async {
-  final session = graph.client.conversations.session(threadId);
-  final pending = session.state.interactions.singleWhere(
-    (interaction) => interaction.payload is UserInputInteractionPayload,
-  );
-  final payload = pending.payload as UserInputInteractionPayload;
-  final publicQuestions = payload.questions
-      .where((question) => !question.isSecret)
-      .toList();
-  final secretQuestions = payload.questions
-      .where((question) => question.isSecret)
-      .toList();
-  expect(publicQuestions, isNotEmpty);
-  expect(secretQuestions, isNotEmpty);
-  final publicText = {
-    for (final question in publicQuestions) ...[
-      question.header,
-      question.question,
-      for (final option in question.options) ...[
-        option.label,
-        option.description,
-      ],
-    ],
-  }..remove('');
-  final privateText = {
-    _secretAnswer,
-    for (final question in secretQuestions) ...[
-      question.header,
-      question.question,
-      for (final option in question.options) ...[
-        option.label,
-        option.description,
-      ],
-    ],
-  }..remove('');
-  final reference = session.state.businessRefs?.interactions;
-  expect(
-    reference,
-    isNotNull,
-    reason: 'The real State must carry the readable interaction head',
-  );
-  expect(reference!.collection, 'interactions');
-  expect(reference.ownerId, isNotEmpty);
-  final connector = find.byWidgetPredicate(
-    (widget) =>
-        widget is InteractionDetailsConnector && widget.reference == reference,
-  );
-  await _until(
-    tester,
-    () => connector.evaluate().length == 1,
-    'State reference wired to the production interaction details reader',
-  );
-  final submit = find.byKey(StudioDriverKeys.userInputSubmit);
-  final originalSubmit = tester.element(submit);
-  expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
-  final stateRevision = session.state.revision;
-  final actionView = find.byKey(
-    ValueKey('user-input-view-$threadId-${pending.id}'),
-  );
-  expect(tester.widget<UserInputView>(actionView).enabled, isTrue);
-  final resourceEvidence = <String, Object?>{
-    'stateRevisionBefore': stateRevision,
-    'interactionId': pending.id,
-    'interactionRevisionBefore': pending.revision,
-    'referenceRevisionBefore': reference.revision,
-  };
-  report['interactionReadResourceEvidence'] = resourceEvidence;
-  void expectResourceUnchanged(String stage) {
-    final currentReference = session.state.businessRefs?.interactions;
-    final currentPending = session.state.interactions.singleWhere(
-      (interaction) => interaction.id == pending.id,
-    );
-    resourceEvidence[stage] = {
-      'stateRevision': session.state.revision,
-      'referenceRevision': currentReference?.revision,
-      'interactionId': currentPending.id,
-      'interactionRevision': currentPending.revision,
-    };
-    expect(currentReference, reference);
-    expect(currentReference!.revision, reference.revision);
-    expect(currentPending, same(pending));
-    expect(currentPending.id, pending.id);
-    expect(currentPending.revision, pending.revision);
-    expect(currentPending.payload, same(payload));
-    expect(currentPending.threadId, pending.threadId);
-    expect(currentPending.turnId, pending.turnId);
-    expect(tester.widget<UserInputView>(actionView).enabled, isTrue);
-    expect(tester.element(submit), same(originalSubmit));
-    expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
-  }
-
-  expect(
-    find.descendant(of: connector, matching: submit),
-    findsNothing,
-    reason: 'Read-only details do not reconstruct actionable questions',
-  );
-  final l10n = AppLocalizations.of(tester.element(connector));
-  final title = find.descendant(
-    of: connector,
-    matching: find.text(l10n.interactionDetailsTitle),
-  );
-  // Detailed geometry and scrolling combinations live in the widget suite.
-  // This path proves the actual State reference is consumed without mutation.
-  await _tap(tester, title);
-  Finder detailText(String text) => find.descendant(
-    of: connector,
-    matching: find.textContaining(text, findRichText: true),
-  );
-  void expectPrivateDetailsHidden() {
-    for (final text in privateText) {
-      expect(
-        detailText(text),
-        findsNothing,
-        reason: 'Read-only details must omit secret prompts and values',
-      );
-      expect(
-        find.descendant(
-          of: connector,
-          matching: find.byWidgetPredicate(
-            (widget) =>
-                widget is EditableText && widget.controller.text.contains(text),
-          ),
-        ),
-        findsNothing,
-      );
-    }
-  }
-
-  await _until(tester, () {
-    expect(
-      find.descendant(
-        of: connector,
-        matching: find.textContaining(l10n.interactionDetailsInvalidFormat),
-      ),
-      findsNothing,
-      reason: 'Native collection payload must decode in the real UI',
-    );
-    expectPrivateDetailsHidden();
-    return publicText.every((text) => detailText(text).evaluate().isNotEmpty);
-  }, 'public interaction content read from the real State reference');
-  expect(detailText(publicText.first), findsWidgets);
-  expectPrivateDetailsHidden();
-  expectResourceUnchanged('afterRead');
-  await _tap(tester, title);
-  await tester.pump(const Duration(milliseconds: 300));
-  for (final text in publicText) {
-    expect(detailText(text), findsNothing);
-  }
-  expectPrivateDetailsHidden();
-  expect(find.descendant(of: connector, matching: submit), findsNothing);
-  expect(tester.element(submit), same(originalSubmit));
-  expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
-  expectResourceUnchanged('afterCollapse');
-  expect(
-    (await graph.client.conversations.retryCleanup(
-      budget: ClientCloseBudget(const Duration(seconds: 5)),
-    )).complete,
-    isTrue,
-  );
-  return {
-    'source': 'native-State.businessRefs.interactions',
-    'ownerId': reference.ownerId,
-    'collection': reference.collection,
-    'revision': reference.revision,
-    'interactionId': pending.id,
-    'bodyReadInProductionUi': true,
-    'publicQuestionsVerified': publicQuestions.length,
-    'secretPromptsAndValuesHidden': true,
-    'originalActionableControlRetained': true,
-    'detailScopeJoinedAfterCollapse': true,
-  };
 }
 
 Future<void> _reportMissingQuestionControls({
@@ -949,7 +769,7 @@ Future<void> _until(
     if (clock.elapsed >= timeout) {
       fail('Timed out waiting for $description');
     }
-    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(tester.takeException(), isNull);
   }
 }

@@ -41,27 +41,13 @@ pub(super) fn run(context: &SidebarQueryScenario<'_>) -> Result<()> {
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
         let mut runner = OwnedProcess::start(&mut command, false)?;
-        let deadline = Instant::now() + Duration::from_secs(1_200);
-        loop {
-            if let Some(status) = runner.child.try_wait()? {
-                runner.stopped = true;
-                runner_exit = Some(status);
-                ensure!(
-                    status.success(),
-                    "sidebar integration tests failed: {status}"
-                );
-                break;
-            }
-            ensure!(
-                interrupt.try_recv().is_err(),
-                "sidebar integration tests cancelled"
-            );
-            ensure!(
-                Instant::now() < deadline,
-                "sidebar integration tests timed out"
-            );
-            thread::sleep(Duration::from_millis(200));
-        }
+        runner_exit = Some(wait_desktop_runner(
+            &mut runner,
+            None,
+            interrupt,
+            Duration::from_secs(1_200),
+            "sidebar integration tests",
+        )?);
         Ok(())
     })();
 

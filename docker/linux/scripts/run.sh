@@ -31,5 +31,8 @@ if [[ -n ${PURE_REMOTE_HELPER_PREBUILT_DIR:-} ]]; then
     fi
     arguments+=(--env "PURE_REMOTE_HELPER_PREBUILT_DIR=$helper")
 fi
+if [[ ${ANYWORK_CONTAINER_TMPFS:-} == 1 ]]; then
+    arguments+=(--tmpfs /tmp:rw,exec,nosuid,size=2g)
+fi
 arguments+=(--env "LINUX_BUILD_IMAGE=$image")
 exec docker "${arguments[@]}" "$image" "$@"

@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,15 +20,16 @@ from pr_quality_changes import OUTPUT_FLAGS, changed_paths, plan_for_event  # no
 
 
 class ReleaseRoutingTest(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name) / "repository"
-        self.root.mkdir()
-        self.git("init", "-q", "-b", "main")
-        self.git("config", "user.name", "Test Author")
-        self.git("config", "user.email", "test@example.invalid")
-        self.write("release-please-config.json", json.dumps({
+    @classmethod
+    def setUpClass(cls):
+        cls._class_temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._class_temp.cleanup)
+        cls._template = Path(cls._class_temp.name) / "repository"
+        cls._template.mkdir()
+        cls._git(cls._template, "init", "-q", "-b", "main")
+        cls._git(cls._template, "config", "user.name", "Test Author")
+        cls._git(cls._template, "config", "user.email", "test@example.invalid")
+        cls._write(cls._template, "release-please-config.json", json.dumps({
             "changelog-path": "CHANGELOG.md",
             "packages": {".": {
                 "component": "studio",
@@ -41,12 +43,54 @@ class ReleaseRoutingTest(unittest.TestCase):
                 ],
             }},
         }))
-        self.write("CHANGELOG.md", "# Changelog\n")
-        self.write_version("1.2.0")
-        self.base = self.commit("initial")
-        self.write_version("1.3.0")
-        self.write("CHANGELOG.md", "# Changelog\n\n## 1.3.0\n")
-        self.head = self.commit("release")
+        cls._write(cls._template, "CHANGELOG.md", "# Changelog\n")
+        cls._write_version(cls._template, "1.2.0")
+        cls._base = cls._commit(cls._template, "initial")
+        cls._write_version(cls._template, "1.3.0")
+        cls._write(cls._template, "CHANGELOG.md", "# Changelog\n\n## 1.3.0\n")
+        cls._head = cls._commit(cls._template, "release")
+
+    @staticmethod
+    def _git(cwd, *args):
+        return subprocess.check_output(
+            ["git", *args], cwd=cwd, stderr=subprocess.PIPE, text=True
+        ).strip()
+
+    @staticmethod
+    def _write(root, name, content):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    @classmethod
+    def _write_version(cls, root, version):
+        cls._write(root, ".release-please-manifest.json", json.dumps({".": version}) + "\n")
+        cls._write(root, "studio-version.txt", version + "\n")
+        cls._write(
+            root,
+            "code/anywork/pubspec.yaml",
+            f"name: anywork\nversion: {version} # x-release-please-version\ndependencies:\n  foo: 1.0.0\n",
+        )
+        cls._write(
+            root,
+            "code/anywork_previews/pubspec.lock",
+            f"packages:\n  anywork:\n    source: path\n    version: {version}\n"
+            "  foo:\n    source: hosted\n    version: 1.0.0\n",
+        )
+
+    @classmethod
+    def _commit(cls, cwd, message):
+        cls._git(cwd, "add", "-A")
+        cls._git(cwd, "commit", "-qm", message)
+        return cls._git(cwd, "rev-parse", "HEAD")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "repository"
+        shutil.copytree(self._template, self.root)
+        self.base = self._base
+        self.head = self._head
         self.pull = {
             "number": 42,
             "state": "closed",
@@ -63,32 +107,13 @@ class ReleaseRoutingTest(unittest.TestCase):
         self.event_path = Path(self.temporary.name) / "event.json"
 
     def git(self, *args):
-        return subprocess.check_output(
-            ["git", *args], cwd=self.root, stderr=subprocess.PIPE, text=True
-        ).strip()
+        return self._git(self.root, *args)
 
     def write(self, name, content):
-        path = self.root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
-    def write_version(self, version):
-        self.write(".release-please-manifest.json", json.dumps({".": version}) + "\n")
-        self.write("studio-version.txt", version + "\n")
-        self.write(
-            "code/anywork/pubspec.yaml",
-            f"name: anywork\nversion: {version} # x-release-please-version\ndependencies:\n  foo: 1.0.0\n",
-        )
-        self.write(
-            "code/anywork_previews/pubspec.lock",
-            f"packages:\n  anywork:\n    source: path\n    version: {version}\n"
-            "  foo:\n    source: hosted\n    version: 1.0.0\n",
-        )
+        self._write(self.root, name, content)
 
     def commit(self, message):
-        self.git("add", "-A")
-        self.git("commit", "-qm", message)
-        return self.git("rev-parse", "HEAD")
+        return self._commit(self.root, message)
 
     def plan(self, *, event="pull_request", base=None, head=None, pull=None, ref=None):
         base = base or self.base
