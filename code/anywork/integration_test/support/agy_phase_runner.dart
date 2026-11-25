@@ -556,8 +556,10 @@ final class _Phases {
             row.item is AcpTimelineAssistantMessage,
       );
       expect(assistantIndex, greaterThanOrEqualTo(0));
-      Finder rowAt(int index) =>
-          find.byKey(ValueKey(AcpViewKeyValues.timelineItem(threadId, index)));
+      Finder rowAt(int index) => find.descendant(
+        of: find.byType(AcpConversationContentView),
+        matching: find.byKey(ValueKey(rows[index].id)),
+      );
       final assistantItem = rowAt(assistantIndex);
       final scrollable = find
           .descendant(
@@ -597,7 +599,7 @@ final class _Phases {
         final userItem = rowAt(userIndexes.last);
         await scene.tester.scrollUntilVisible(
           userItem,
-          -250,
+          250,
           scrollable: scrollable,
         );
         expect(

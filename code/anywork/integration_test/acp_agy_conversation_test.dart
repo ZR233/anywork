@@ -692,7 +692,7 @@ void main() {
         // A streamed reply can move the user's row outside the lazy list.
         await tester.scrollUntilVisible(
           visiblePrompt,
-          -250,
+          250,
           scrollable: find
               .descendant(
                 of: find.byType(AcpConversationContentView),

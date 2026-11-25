@@ -14721,24 +14721,6 @@ abstract class AppLocalizations {
   /// **'Copy message'**
   String get acpCopyMessage;
 
-  /// No description provided for @acpJumpToPendingPermission.
-  ///
-  /// In en, this message translates to:
-  /// **'Jump to latest · Permission requested'**
-  String get acpJumpToPendingPermission;
-
-  /// No description provided for @acpJumpToRunning.
-  ///
-  /// In en, this message translates to:
-  /// **'Jump to latest · Running'**
-  String get acpJumpToRunning;
-
-  /// No description provided for @acpJumpToNewOutput.
-  ///
-  /// In en, this message translates to:
-  /// **'Jump to latest · New output'**
-  String get acpJumpToNewOutput;
-
   /// No description provided for @acpPlanCompletedHeadline.
   ///
   /// In en, this message translates to:

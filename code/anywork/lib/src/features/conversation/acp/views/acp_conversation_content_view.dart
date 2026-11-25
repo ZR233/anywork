@@ -1,12 +1,18 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../shared/latest_scroll.dart';
 import '../../../../shared/studio_chrome.dart';
+import '../../../../shared/studio_driver_keys.dart';
 import '../../timeline/widgets/timeline_activity_row.dart';
 import '../../timeline/widgets/timeline_reasoning_view.dart';
+import '../state/acp_timeline_row.dart';
 import '../state/acp_view_state.dart';
 import '../widgets/acp_content_block_view.dart';
 import '../widgets/acp_message_actions.dart';
@@ -18,15 +24,15 @@ class AcpConversationContentView extends StatefulWidget {
     super.key,
     required this.threadId,
     required this.header,
+    required this.rows,
     required this.itemBuilder,
-    this.outputRevision,
     this.onInsertSlashCommand,
   });
 
   final String threadId;
   final AcpTimelineHeaderViewState header;
-  final IndexedWidgetBuilder itemBuilder;
-  final Object? outputRevision;
+  final List<AcpTimelineRow> rows;
+  final Widget Function(BuildContext context, AcpTimelineRow row) itemBuilder;
   final ValueChanged<String>? onInsertSlashCommand;
 
   @override
@@ -36,22 +42,52 @@ class AcpConversationContentView extends StatefulWidget {
 
 class _AcpConversationContentViewState
     extends State<AcpConversationContentView> {
-  final _scrollController = ScrollController(keepScrollOffset: false);
+  static const _userId = 'user';
+  static const _agentId = 'agent';
+
+  late InMemoryChatController _chatController;
+  late Map<String, AcpTimelineRow> _rowsById;
+
+  @override
+  void initState() {
+    super.initState();
+    _chatController = InMemoryChatController(messages: _updateRows());
+  }
+
+  @override
+  void didUpdateWidget(covariant AcpConversationContentView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId != widget.threadId) {
+      _chatController.dispose();
+      _chatController = InMemoryChatController(messages: _updateRows());
+    } else if (!identical(oldWidget.rows, widget.rows)) {
+      final messages = _updateRows();
+      if (!listEquals(_chatController.messages, messages)) {
+        unawaited(_chatController.setMessages(messages, animated: false));
+      }
+    }
+  }
+
+  List<Message> _updateRows() {
+    _rowsById = {for (final row in widget.rows) row.id: row};
+    // Flyer only needs row identity and sender for layout and send scrolling.
+    // Streaming content updates the existing row without replacing its widget.
+    return [
+      for (final row in widget.rows)
+        Message.custom(
+          id: row.id,
+          authorId: switch (row) {
+            AcpTimelineMessageRow(item: AcpTimelineUserMessage()) => _userId,
+            _ => _agentId,
+          },
+        ),
+    ];
+  }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _chatController.dispose();
     super.dispose();
-  }
-
-  String _returnLabel(BuildContext context, bool hasNewOutput) {
-    final l10n = context.l10n;
-    final header = widget.header;
-    if (header.pendingPermissionCount > 0) {
-      return l10n.acpJumpToPendingPermission;
-    }
-    if (header.running) return l10n.acpJumpToRunning;
-    return hasNewOutput ? l10n.acpJumpToNewOutput : l10n.timelineJumpToLatest;
   }
 
   List<Widget> _buildNotices(BuildContext context) {
@@ -134,100 +170,104 @@ class _AcpConversationContentViewState
 
   @override
   Widget build(BuildContext context) {
-    final header = widget.header;
+    final welcome = _EmptySessionState(
+      header: widget.header,
+      onInsertSlashCommand: widget.onInsertSlashCommand,
+    );
     final notices = _buildNotices(context);
-    final reading = header.itemCount == 0 && notices.isEmpty
-        ? SelectionArea(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: _EmptySessionState(
-                  header: header,
-                  onInsertSlashCommand: widget.onInsertSlashCommand,
-                ),
-              ),
+    final noticeColumn = notices.isEmpty
+        ? null
+        : _CenteredReadingConstraint(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              spacing: 8,
+              children: notices,
             ),
+          );
+    final isEmpty = widget.rows.isEmpty;
+    final topSliver = isEmpty
+        ? SliverFillRemaining(
+            hasScrollBody: false,
+            child: noticeColumn == null
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Center(child: welcome),
+                  )
+                : Align(alignment: Alignment.topCenter, child: noticeColumn),
           )
-        : _buildReadingList(header, notices);
+        : noticeColumn == null
+        ? null
+        : SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: noticeColumn,
+            ),
+          );
 
     return LiveStatusMotionHost(
-      child: KeyedSubtree(
-        key: const ValueKey('acp-reading-area'),
-        child: reading,
+      child: SelectionArea(
+        key: ValueKey(widget.threadId),
+        child: Chat(
+          chatController: _chatController,
+          currentUserId: _userId,
+          resolveUser: (id) async => User(id: id),
+          theme: ChatTheme.fromThemeData(Theme.of(context)),
+          backgroundColor: Colors.transparent,
+          builders: Builders(
+            composerBuilder: (_) => const SizedBox.shrink(),
+            emptyChatListBuilder: (_) => const SizedBox.shrink(),
+            scrollToBottomBuilder: (context, animation, onPressed) =>
+                ScrollToBottom(
+                  key: StudioDriverKeys.timelineReturnLatest,
+                  animation: animation,
+                  onPressed: onPressed,
+                  useComposerHeightForBottomOffset: false,
+                  icon: Tooltip(
+                    message: context.l10n.timelineJumpToLatest,
+                    child: const Icon(Icons.keyboard_arrow_down),
+                  ),
+                ),
+            chatAnimatedListBuilder: (_, _) => ChatAnimatedListReversed(
+              itemBuilder: _buildItem,
+              handleSafeArea: false,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+              topPadding: isEmpty ? 0 : 16,
+              bottomPadding: 8,
+              topSliver: topSliver,
+              bottomSliver:
+                  !isEmpty &&
+                      !widget.header.hasConversationalContent &&
+                      notices.isEmpty
+                  ? SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+                        child: Center(child: welcome),
+                      ),
+                    )
+                  : null,
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildReadingList(
-    AcpTimelineHeaderViewState header,
-    List<Widget> notices,
-  ) {
-    final leadingCount = notices.isEmpty ? 0 : 1;
-    final showTrailingWelcome =
-        header.itemCount > 0 &&
-        !header.hasConversationalContent &&
-        notices.isEmpty;
-    final totalCount =
-        leadingCount + header.itemCount + (showTrailingWelcome ? 1 : 0);
-    return LatestScrollScope(
-      key: ValueKey(widget.threadId),
-      child: Column(
-        children: [
-          Expanded(
-            child: LatestScrollViewport(
-              controller: _scrollController,
-              outputRevision: (header.itemCount, widget.outputRevision),
-              child: SelectionArea(
-                child: ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                  itemCount: totalCount,
-                  itemBuilder: (context, rawIndex) {
-                    if (leadingCount != 0 && rawIndex == 0) {
-                      return _CenteredReadingConstraint(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            for (var i = 0; i < notices.length; i++) ...[
-                              if (i > 0) const SizedBox(height: 8),
-                              notices[i],
-                            ],
-                            if (header.itemCount > 0)
-                              const SizedBox(height: 16),
-                          ],
-                        ),
-                      );
-                    }
-                    if (showTrailingWelcome && rawIndex == totalCount - 1) {
-                      return Padding(
-                        padding: const EdgeInsets.only(top: 56, bottom: 24),
-                        child: Center(
-                          child: _EmptySessionState(
-                            header: header,
-                            onInsertSlashCommand: widget.onInsertSlashCommand,
-                          ),
-                        ),
-                      );
-                    }
-                    final itemIndex = rawIndex - leadingCount;
-                    return _CenteredReadingConstraint(
-                      key: ValueKey(
-                        AcpViewKeyValues.timelineItem(
-                          widget.threadId,
-                          itemIndex,
-                        ),
-                      ),
-                      child: widget.itemBuilder(context, itemIndex),
-                    );
-                  },
-                ),
-              ),
-            ),
-          ),
-          ReturnToLatestButton(labelBuilder: _returnLabel),
-        ],
-      ),
+  Widget _buildItem(
+    BuildContext context,
+    Message message,
+    int index,
+    Animation<double> animation, {
+    MessagesGroupingMode? messagesGroupingMode,
+    int? messageGroupingTimeoutInSeconds,
+    bool? isRemoved,
+  }) {
+    if (isRemoved == true) return const SizedBox.shrink();
+    final row = _rowsById[message.id];
+    if (row == null) return const SizedBox.shrink();
+    return _CenteredReadingConstraint(
+      key: ValueKey(message.id),
+      child: widget.itemBuilder(context, row),
     );
   }
 }
@@ -239,13 +279,16 @@ class _CenteredReadingConstraint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.topCenter,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(
-          maxWidth: StudioLayout.conversationWidth,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(
+            maxWidth: StudioLayout.conversationWidth,
+          ),
+          child: SizedBox(width: double.infinity, child: child),
         ),
-        child: SizedBox(width: double.infinity, child: child),
       ),
     );
   }
