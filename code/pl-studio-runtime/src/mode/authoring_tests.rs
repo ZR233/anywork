@@ -35,11 +35,11 @@ fn flat_mode_json_rejects_unknown_fields_in_document_and_nested_objects() {
     assert_eq!(encoded["workflow"]["initialStateId"], "review");
     assert!(encoded.get("definition").is_none());
 
-    for path in [
-        "",
-        "/workflow/states/0",
-        "/workflow/transitions/0",
-        "/editor/nodes/0",
+    for (path, expected) in [
+        ("", "$.extra"),
+        ("/workflow/states/0", "workflow.states[0].extra"),
+        ("/workflow/transitions/0", "workflow.transitions[0].extra"),
+        ("/editor/nodes/0", "editor.nodes[0].extra"),
     ] {
         let mut value = valid.clone();
         value.pointer_mut(path).unwrap()["extra"] = true.into();
@@ -50,6 +50,8 @@ fn flat_mode_json_rejects_unknown_fields_in_document_and_nested_objects() {
         );
         let result = validate_mode_json(&json);
         assert!(result.document.is_none(), "{path}");
+        assert_eq!(result.issues[0].code, "unknownField");
+        assert_eq!(result.issues[0].path, expected);
         assert!(
             result.issues[0].message.contains("unknown field `extra`"),
             "{path}"

@@ -1,6 +1,9 @@
 //! Thread Mode authoring validation and canonicalization.
 
 use std::collections::HashSet;
+use std::sync::OnceLock;
+
+use serde_json::Value;
 
 use crate::mode::{
     ThreadModeDocument, ThreadModeEditorLayout, ThreadModeValidationIssue,
@@ -66,9 +69,19 @@ pub fn validate_mode_json(json: &str) -> ThreadModeValidationResult {
     let document = match serde_json::from_str::<ThreadModeDocument>(json) {
         Ok(document) => document,
         Err(error) => {
+            let mut issues = Vec::new();
+            if error.is_data()
+                && let Ok(value) = serde_json::from_str::<Value>(json)
+            {
+                let schema = document_schema();
+                collect_unknown_fields(&value, schema, schema, "", &mut issues);
+            }
+            if issues.is_empty() {
+                issues.push(issue("invalidJson", "$", error.to_string()));
+            }
             return ThreadModeValidationResult {
                 document: None,
-                issues: vec![issue("invalidJson", "$", error.to_string())],
+                issues,
             };
         }
     };
@@ -102,8 +115,7 @@ pub fn preview_workflow(
 /// Return the canonical JSON Schema plus the semantic constraints enforced
 /// after structural deserialization.
 pub fn mode_document_schema() -> String {
-    let mut schema = serde_json::to_value(schemars::schema_for!(ThreadModeDocument))
-        .expect("Thread Mode JSON Schema must serialize");
+    let mut schema = document_schema().clone();
     let Some(object) = schema.as_object_mut() else {
         return schema.to_string();
     };
@@ -127,6 +139,59 @@ pub fn mode_document_schema() -> String {
         ]),
     );
     serde_json::to_string_pretty(&schema).expect("Thread Mode JSON Schema must serialize")
+}
+
+fn document_schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::to_value(schemars::schema_for!(ThreadModeDocument))
+            .expect("Thread Mode JSON Schema must serialize")
+    })
+}
+
+// Strict deserialization decides validity. The generated schema supplies the editor's legacy
+// per-field issue codes and paths from the same Rust declarations, only after decoding fails.
+fn collect_unknown_fields(
+    input: &Value,
+    schema: &Value,
+    root: &Value,
+    path: &str,
+    issues: &mut Vec<ThreadModeValidationIssue>,
+) {
+    if let Some(target) = schema.get("$ref").and_then(Value::as_str)
+        && let Some(definition) = target
+            .strip_prefix('#')
+            .and_then(|pointer| root.pointer(pointer))
+    {
+        collect_unknown_fields(input, definition, root, path, issues);
+    } else if let Some(variants) = schema.get("anyOf").and_then(Value::as_array) {
+        // The document's one union is the nullable workflow definition.
+        for variant in variants {
+            collect_unknown_fields(input, variant, root, path, issues);
+        }
+    } else if let (Some(nodes), Some(item_schema)) = (input.as_array(), schema.get("items")) {
+        for (index, node) in nodes.iter().enumerate() {
+            collect_unknown_fields(node, item_schema, root, &format!("{path}[{index}]"), issues);
+        }
+    } else if let (Some(object), Some(properties)) = (input.as_object(), schema.get("properties")) {
+        for (key, value) in object {
+            if let Some(property) = properties.get(key) {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_unknown_fields(value, property, root, &child, issues);
+            } else if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
+                let object_path = if path.is_empty() { "$" } else { path };
+                issues.push(issue(
+                    "unknownField",
+                    format!("{object_path}.{key}"),
+                    format!("unknown field `{key}`"),
+                ));
+            }
+        }
+    }
 }
 
 fn canonical_editor(
