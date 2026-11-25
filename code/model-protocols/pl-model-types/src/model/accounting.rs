@@ -119,6 +119,11 @@ pub struct InferenceAccounting {
     pub pricing: PricingOutcome,
     pub price_snapshot: Option<ModelPricingSnapshot>,
     pub request_started_at: Option<i64>,
+    /// Frozen accounting of replaced transport generations, in send order. The fields above
+    /// describe the last generation. Billing consumers record each attempt independently so
+    /// missing usage in one attempt never erases another attempt's known consumption.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retry_attempts: Vec<InferenceAccounting>,
 }
 
 impl InferenceAccounting {

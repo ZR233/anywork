@@ -90,10 +90,12 @@ impl ModelRuntime {
                 model_observation.sent_model = opened.sent_model;
                 accumulator.set_model_observation(model_observation.clone());
                 let replay_unsafe = Arc::new(AtomicBool::new(false));
+                let usage_observed = Arc::new(AtomicBool::new(false));
                 let tracked_stream: CompletionEventStream = opened
                     .events
                     .map({
                         let replay_unsafe = Arc::clone(&replay_unsafe);
+                        let usage_observed = Arc::clone(&usage_observed);
                         let inference_timer = inference_timer.clone();
                         let mut progress = crate::runtime::thread_model::progress::ProgressProjection::new(context.progress.clone());
                         move |event| {
@@ -102,12 +104,14 @@ impl ModelRuntime {
                                     || (is_compaction && matches!(event,
                                         crate::stream::event::ModelStreamEvent::NativeContext { .. }))
                                     || matches!(event,
-                                    crate::stream::event::ModelStreamEvent::Usage(_)
-                                    | crate::stream::event::ModelStreamEvent::Completed { .. }))
+                                    crate::stream::event::ModelStreamEvent::Completed { .. }))
                             {
                                 replay_unsafe.store(true, Ordering::Release);
                             }
                             if let Ok(event) = &event {
+                                if matches!(event, crate::stream::event::ModelStreamEvent::Usage(_)) {
+                                    usage_observed.store(true, Ordering::Release);
+                                }
                                 inference_timer.observe(event);
                                 // 终态事件先撤销 live 用量，再考虑发布耗时：失败尝试绝不能
                                 // 先发布一个「失败前的词元 + 失败时钟」的完整 pair。
@@ -140,7 +144,17 @@ impl ModelRuntime {
                     current.as_deref_mut(),
                 )
                 .await;
-                let retry_allowed = !replay_unsafe.load(Ordering::Acquire);
+                // A retryable protocol failure explicitly requests regeneration of invalid
+                // output. Its usage is retained separately by recovery; it cannot override the
+                // hosted-tool, native-context or successful-terminal replay barriers.
+                let regenerate = result.as_ref().is_err_and(|error| {
+                    error.source.provider_failure_ref().is_some_and(|failure| {
+                        failure.kind == pl_protocol::ProviderFailureKind::Protocol
+                            && failure.retry.is_retryable()
+                    })
+                });
+                let retry_allowed = !replay_unsafe.load(Ordering::Acquire)
+                    && (!usage_observed.load(Ordering::Acquire) || regenerate);
                 (result, retry_allowed)
             }
             Err(error) => {

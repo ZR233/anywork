@@ -27,7 +27,6 @@ pub use client::{ModelRuntime, NativeCompactionCheckpoint, RemoteCompaction};
 pub use clock::InferenceClock;
 pub use invocation_context::ModelInvocationContext;
 pub(crate) use invocation_context::StreamObserver;
-pub(crate) use provider_error::provider_stream_failure;
 pub use session::ModelSession;
 
 pub use tokio_util::sync::CancellationToken;

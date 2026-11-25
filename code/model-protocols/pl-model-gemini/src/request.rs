@@ -219,7 +219,7 @@ pub fn build_http_request(
                     } else {
                         "parameters"
                     };
-                    decl.insert(schema_key.into(), input_schema.clone());
+                    decl.insert(schema_key.into(), function_parameters(input_schema)?);
                     declarations.push(Value::Object(decl));
                 }
                 ToolSpec::Custom { .. } => {
@@ -241,7 +241,9 @@ pub fn build_http_request(
         let mode = match request.tool_choice.as_str() {
             "none" => "NONE",
             "required" => "ANY",
-            _ => "AUTO",
+            // VALIDATED preserves automatic text/tool choice and constrains the generated
+            // arguments to the declared schema. AUTO does not enforce that contract.
+            _ => "VALIDATED",
         };
         body.insert(
             "toolConfig".into(),
@@ -299,6 +301,103 @@ pub fn build_http_request(
         visible_output: VisibleOutputProtocol::TaggedText,
         close_on_terminal: false,
     })
+}
+
+/// Gemini function parameters must declare their named fields at the object root.
+/// A tagged union of closed objects can expose those fields without removing any branch
+/// constraints or changing its accepted inputs. Definitions and original branches stay intact.
+fn function_parameters(input: &Value) -> Result<Value> {
+    let mut schema = input.clone();
+    let Some(root) = schema.as_object_mut() else {
+        return Err(protocol_error(
+            "function parameters must be an object schema",
+        ));
+    };
+    if root.contains_key("properties") {
+        return Ok(schema);
+    }
+    let Some(variants) = root
+        .get("oneOf")
+        .or_else(|| root.get("anyOf"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(schema);
+    };
+    if variants.is_empty()
+        || root
+            .get("type")
+            .is_some_and(|value| value.as_str() != Some("object"))
+        || root
+            .get("additionalProperties")
+            .is_some_and(|value| value != &Value::Bool(true))
+        || root.contains_key("unevaluatedProperties")
+        || variants.iter().any(|variant| {
+            variant.get("type").and_then(Value::as_str) != Some("object")
+                || variant.get("additionalProperties") != Some(&Value::Bool(false))
+                || !variant.get("properties").is_some_and(Value::is_object)
+        })
+    {
+        return Err(protocol_error(
+            "a function parameter union without root properties must contain closed object branches",
+        ));
+    }
+    let mut fields: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for variant in variants {
+        for (name, definition) in variant["properties"].as_object().expect("validated object") {
+            let alternatives = fields.entry(name.clone()).or_default();
+            if !alternatives.contains(definition) {
+                alternatives.push(definition.clone());
+            }
+        }
+    }
+    let mut common_required: BTreeSet<String> = variants[0]
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    for variant in &variants[1..] {
+        common_required.retain(|name| {
+            variant
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|required| {
+                    required
+                        .iter()
+                        .any(|value| value.as_str() == Some(name.as_str()))
+                })
+        });
+    }
+    let properties: Map<String, Value> = fields
+        .into_iter()
+        .map(|(name, mut alternatives)| {
+            let definition = if alternatives.len() == 1 {
+                alternatives.pop().expect("one definition")
+            } else {
+                json!({"anyOf": alternatives})
+            };
+            (name, definition)
+        })
+        .collect();
+    // Keep every branch-local requirement and expose only their intersection globally.
+    if !common_required.is_empty() {
+        let required = root
+            .entry("required")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| protocol_error("function required must be an array"))?;
+        for name in common_required {
+            let value = Value::String(name);
+            if !required.contains(&value) {
+                required.push(value);
+            }
+        }
+    }
+    root.insert("type".into(), json!("object"));
+    root.insert("properties".into(), Value::Object(properties));
+    Ok(schema)
 }
 
 fn enables_streamed_function_arguments(body: &Map<String, Value>) -> bool {

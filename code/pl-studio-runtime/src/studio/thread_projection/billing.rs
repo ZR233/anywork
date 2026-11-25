@@ -109,7 +109,42 @@ pub(in crate::studio) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec
             auxiliary: false,
         });
     }
-    Ok(facts)
+    let mut attempts = Vec::new();
+    for fact in facts {
+        append_transport_attempts(&mut attempts, fact);
+    }
+    Ok(attempts)
+}
+
+/// Derives one billing fact per paid transport attempt from the model-owned receipt.
+/// Failed generations are auxiliary to context/throughput, but remain real requests for
+/// consumption and cost statistics. The terminal generation keeps the original call ID.
+fn append_transport_attempts(facts: &mut Vec<BillingFact>, mut terminal: BillingFact) {
+    let retries = std::mem::take(&mut terminal.record.accounting.retry_attempts);
+    terminal.record.orchestration.transport_attempts = terminal
+        .record
+        .orchestration
+        .transport_attempts
+        .saturating_sub(retries.len() as u64);
+    for (ordinal, accounting) in retries.into_iter().enumerate() {
+        let mut record = terminal.record.clone();
+        record.inference_id = format!("{}:transport-retry:{ordinal}", record.inference_id);
+        record.accounting = accounting;
+        // Only the terminal response owns this model observation and clock.
+        record.model_observation = None;
+        record.timing = None;
+        record.orchestration = Default::default();
+        record.orchestration.transport_attempts = 1;
+        append_transport_attempts(
+            facts,
+            BillingFact {
+                status: super::super::storage::calls::CallStatus::Failed,
+                record,
+                auxiliary: true,
+            },
+        );
+    }
+    facts.push(terminal);
 }
 
 fn attempt_billing(
@@ -125,4 +160,60 @@ fn decode_auxiliary_receipt(version: u32, content: &str) -> Result<AuxiliaryBill
         "unsupported auxiliary billing version"
     );
     Ok(serde_json::from_str(content)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::storage::calls::CallStatus;
+
+    #[test]
+    fn retry_billing_does_not_copy_terminal_model_timing_or_double_count_transports() {
+        let record: InferenceBillingRecord = serde_json::from_value(serde_json::json!({
+            "inferenceId":"call", "recordedAt":100,
+            "modelObservation":{"configuredModel":"configured","sentModel":"sent","reportedModel":"terminal-only"},
+            "timing":{"firstOutputSource":"incremental","responseMillis":1000},
+            "orchestration":{"transportAttempts":4},
+            "accounting":{"usage":{"totalTokens":15},"pricing":{"kind":"noCharge"},
+                "retryAttempts":[
+                    {"usage":{"totalTokens":22},"pricing":{"kind":"noCharge"}},
+                    {"usage":{"totalTokens":23},"pricing":{"kind":"noCharge"}}
+                ]
+            }
+        })).unwrap();
+        let mut facts = Vec::new();
+        append_transport_attempts(
+            &mut facts,
+            BillingFact {
+                record,
+                status: CallStatus::Committed,
+                auxiliary: false,
+            },
+        );
+        assert_eq!(facts.len(), 3);
+        assert!(facts[..2].iter().all(|fact| fact.auxiliary
+            && fact.status == CallStatus::Failed
+            && fact.record.model_observation.is_none()
+            && fact.record.timing.is_none()));
+        assert!(!facts[2].auxiliary);
+        assert_eq!(facts[2].record.inference_id, "call");
+        assert_eq!(
+            facts[2]
+                .record
+                .model_observation
+                .as_ref()
+                .unwrap()
+                .reported_model
+                .as_deref(),
+            Some("terminal-only")
+        );
+        assert_eq!(facts[2].record.timing.unwrap().response_millis, 1000);
+        assert_eq!(
+            facts
+                .iter()
+                .map(|fact| fact.record.orchestration.transport_attempts)
+                .sum::<u64>(),
+            4
+        );
+    }
 }

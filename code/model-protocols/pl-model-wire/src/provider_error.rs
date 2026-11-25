@@ -1,53 +1,20 @@
 use pl_protocol::{ProviderFailure, ProviderFailureKind, PureError, RetryDisposition};
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ProviderFailureMetadata<'a> {
-    pub code: Option<&'a str>,
-    pub http_status: Option<u16>,
-    pub retry_after_ms: Option<u64>,
-}
-
-impl ProviderFailureMetadata<'_> {
-    pub fn is_retryable(self) -> bool {
-        match provider_failure_kind(self.code, self.http_status, false) {
-            ProviderFailureKind::Authentication | ProviderFailureKind::Authorization => false,
-            // The Responses WebSocket connection limit is a capacity failure reported as 400.
-            // Other explicit request/configuration failures take precedence over a generic code.
-            ProviderFailureKind::Configuration => {
-                self.http_status == Some(400)
-                    && self.code.is_some_and(|code| {
-                        code.eq_ignore_ascii_case("websocket_connection_limit_reached")
-                    })
-            }
-            _ => {
-                self.http_status.is_some_and(retryable_provider_status)
-                    || self.code.is_some_and(retryable_provider_code)
-            }
+fn retryable_provider_failure(code: Option<&str>, http_status: Option<u16>) -> bool {
+    match provider_failure_kind(code, http_status, false) {
+        ProviderFailureKind::Authentication | ProviderFailureKind::Authorization => false,
+        // Responses WebSocket capacity is reported as 400. Other request/configuration
+        // failures take precedence over a generic upstream code.
+        ProviderFailureKind::Configuration => {
+            http_status == Some(400)
+                && code.is_some_and(|code| {
+                    code.eq_ignore_ascii_case("websocket_connection_limit_reached")
+                })
         }
-    }
-
-    pub fn into_transient(self, message: String) -> PureError {
-        PureError::provider_failure(ProviderFailure {
-            context: Default::default(),
-            kind: provider_failure_kind(self.code, self.http_status, true),
-            code: self.code.map(ToString::to_string),
-            http_status: self.http_status,
-            message,
-            retry: RetryDisposition::Retryable {
-                retry_after_ms: self.retry_after_ms,
-            },
-        })
-    }
-
-    pub fn into_permanent(self, message: String) -> PureError {
-        PureError::provider_failure(ProviderFailure {
-            context: Default::default(),
-            kind: provider_failure_kind(self.code, self.http_status, false),
-            code: self.code.map(ToString::to_string),
-            http_status: self.http_status,
-            message,
-            retry: RetryDisposition::Permanent,
-        })
+        _ => {
+            http_status.is_some_and(retryable_provider_status)
+                || code.is_some_and(retryable_provider_code)
+        }
     }
 }
 
@@ -57,21 +24,32 @@ pub fn provider_stream_failure(
     retry_after_ms: Option<u64>,
     message: String,
 ) -> PureError {
-    let metadata = ProviderFailureMetadata {
-        code,
+    PureError::provider_failure(stream_failure(code, http_status, retry_after_ms, message))
+}
+
+/// Classifies a wire failure once, before it enters protocol-neutral stream processing.
+pub fn stream_failure(
+    code: Option<&str>,
+    http_status: Option<u16>,
+    retry_after_ms: Option<u64>,
+    message: String,
+) -> ProviderFailure {
+    let retryable = retryable_provider_failure(code, http_status);
+    ProviderFailure {
+        context: pl_protocol::ProviderFailureContext {
+            stage: pl_protocol::ProviderFailureStage::Stream,
+            ..Default::default()
+        },
+        kind: provider_failure_kind(code, http_status, retryable),
+        code: code.map(str::to_owned),
         http_status,
-        retry_after_ms,
-    };
-    let message = redact_secret_like_values(&message);
-    let mut error = if metadata.is_retryable() {
-        metadata.into_transient(message)
-    } else {
-        metadata.into_permanent(message)
-    };
-    if let PureError::Provider(failure) = &mut error {
-        failure.context.stage = pl_protocol::ProviderFailureStage::Stream;
+        message: redact_secret_like_values(&message),
+        retry: if retryable {
+            RetryDisposition::Retryable { retry_after_ms }
+        } else {
+            RetryDisposition::Permanent
+        },
     }
-    error
 }
 
 pub fn reqwest_error_to_pure(error: reqwest::Error) -> PureError {

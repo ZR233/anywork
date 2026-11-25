@@ -5,7 +5,7 @@ use pl_model_wire::completion::stream::event::{
 };
 use pl_model_wire::completion::stream::replay::ReplayUpdate;
 use pl_model_wire::wire_codec::{CapturedUsageObservation, DecodedSseFrame, WireStreamDecoder};
-use pl_protocol::{PureError, Result};
+use pl_protocol::{ProviderFailureKind, PureError, Result, RetryDisposition};
 use serde_json::Value;
 
 use crate::error::parse_google_http_error;
@@ -63,11 +63,7 @@ impl GeminiStreamDecoder {
         self.failed = true;
         self.close_open_text_block(&mut events);
         events.push(ModelStreamEvent::Failed {
-            request_id,
-            code: Some("invalid_response".into()),
-            http_status: None,
-            retry_after_ms: None,
-            message: message.into(),
+            failure: gemini_failure("invalid_response", message.into(), request_id),
         });
         DecodedSseFrame {
             events,
@@ -101,16 +97,25 @@ impl WireStreamDecoder for GeminiStreamDecoder {
             self.failed = true;
             let mut events = Vec::new();
             self.close_open_text_block(&mut events);
-            events.push(ModelStreamEvent::Failed {
-                request_id: request_id.map(redact),
-                code: parsed.code.map(|c| redact(&c)),
-                http_status: None,
-                retry_after_ms: None,
-                message: parsed
+            let mut failure = pl_model_wire::provider_error::stream_failure(
+                parsed.code.as_deref(),
+                None,
+                None,
+                parsed
                     .message
-                    .map(|m| redact(&m))
+                    .as_deref()
+                    .map(redact)
                     .unwrap_or_else(|| "Gemini stream returned error".into()),
-            });
+            );
+            failure.code = parsed.code.as_deref().map(redact);
+            failure.context.request_id = request_id.map(redact);
+            if let Some(kind) = parsed.force_kind {
+                failure.kind = kind;
+            }
+            if let Some(retry) = parsed.force_retry {
+                failure.retry = retry;
+            }
+            events.push(ModelStreamEvent::Failed { failure });
             return Ok(DecodedSseFrame {
                 events,
                 usage_capture: None,
@@ -166,11 +171,11 @@ impl WireStreamDecoder for GeminiStreamDecoder {
             self.failed = true;
             self.close_open_text_block(&mut events);
             events.push(ModelStreamEvent::Failed {
-                request_id: request_id.map(redact),
-                code: Some(block_reason.to_owned()),
-                http_status: None,
-                retry_after_ms: None,
-                message: format!("Gemini prompt blocked: {block_reason}"),
+                failure: gemini_failure(
+                    block_reason,
+                    format!("Gemini prompt blocked: {block_reason}"),
+                    request_id.map(redact),
+                ),
             });
             return Ok(DecodedSseFrame {
                 events,
@@ -322,11 +327,11 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                     reached_terminal = true;
                     self.close_open_text_block(&mut events);
                     events.push(ModelStreamEvent::Failed {
-                        request_id: request_id.map(redact),
-                        code: Some(other.to_owned()),
-                        http_status: None,
-                        retry_after_ms: None,
-                        message: format!("Gemini generation terminated with finishReason={other}"),
+                        failure: gemini_failure(
+                            other,
+                            format!("Gemini generation terminated with finishReason={other}"),
+                            request_id.map(redact),
+                        ),
                     });
                 }
             }
@@ -350,6 +355,27 @@ impl WireStreamDecoder for GeminiStreamDecoder {
         });
         events
     }
+}
+
+fn gemini_failure(
+    code: &str,
+    message: String,
+    request_id: Option<String>,
+) -> pl_protocol::ProviderFailure {
+    let mut failure =
+        pl_model_wire::provider_error::stream_failure(Some(code), None, None, message);
+    failure.context.request_id = request_id;
+    match code {
+        "MALFORMED_RESPONSE" => {
+            failure.kind = ProviderFailureKind::Protocol;
+            failure.retry = RetryDisposition::Retryable {
+                retry_after_ms: None,
+            };
+        }
+        "invalid_response" => failure.kind = ProviderFailureKind::Protocol,
+        _ => {}
+    }
+    failure
 }
 
 fn is_ignorable_empty_part(part: &Value) -> bool {

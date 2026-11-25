@@ -529,6 +529,7 @@ fn billing(index: usize, old: bool, padding: usize) -> InferenceBillingRecord {
             },
             price_snapshot: None,
             request_started_at: Some(FIXTURE_TIME),
+            retry_attempts: Vec::new(),
         },
         prompt_generation: None,
         prompt_cache_policy: None,
