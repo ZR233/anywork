@@ -196,7 +196,6 @@ Widget acpUxStickyPlanAndSlashPreview() => _shell(
       header: const AcpTimelineHeaderViewState(
         ready: true,
         loading: false,
-        hasPlan: true,
         capabilities: [
           AcpCapabilityKind.image,
           AcpCapabilityKind.embeddedContext,
@@ -204,6 +203,7 @@ Widget acpUxStickyPlanAndSlashPreview() => _shell(
         ],
         availableCommands: _sampleSlashCommands,
       ),
+      rows: const [],
       onInsertSlashCommand: (_) {},
       itemBuilder: (_, _) => const SizedBox.shrink(),
     ),
@@ -305,17 +305,14 @@ Widget _conversationWithFoldAndPermission({required bool narrow}) {
   return AcpWorkspaceView(
     readingArea: AcpConversationContentView(
       threadId: narrow ? 'preview-narrow' : 'preview-wide',
-      header: AcpTimelineHeaderViewState(
+      header: const AcpTimelineHeaderViewState(
         ready: true,
         loading: false,
-        hasPlan: true,
         hasConversationalContent: true,
-        itemCount: items.length,
       ),
-      itemBuilder: (context, index) => AcpTimelineEntryView(
-        key: ValueKey(items[index].id),
-        item: items[index].item,
-      ),
+      rows: items,
+      itemBuilder: (context, row) =>
+          AcpTimelineEntryView(item: (row as AcpTimelineMessageRow).item),
     ),
     sidebarBuilder: narrow
         ? null

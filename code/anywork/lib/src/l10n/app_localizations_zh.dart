@@ -7833,15 +7833,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpCopyMessage => '复制消息';
 
   @override
-  String get acpJumpToPendingPermission => '跳到最新 · 等待权限确认';
-
-  @override
-  String get acpJumpToRunning => '跳到最新 · 运行中';
-
-  @override
-  String get acpJumpToNewOutput => '跳到最新 · 有新输出';
-
-  @override
   String get acpPlanCompletedHeadline => '执行计划已完成';
 
   @override

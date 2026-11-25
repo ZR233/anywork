@@ -10,6 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patc
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -26,6 +27,22 @@ Widget _zhApp(Widget child) => MaterialApp(
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: child),
 );
+
+Finder get _reading => find.byType(AcpConversationContentView);
+
+Finder get _messages =>
+    find.descendant(of: _reading, matching: find.byType(Scrollable)).first;
+
+AcpTimelineMessageRow _assistant(String id, String text) =>
+    AcpTimelineMessageRow(
+      AcpTimelineAssistantMessage(
+        id: id,
+        blocks: [AcpTextBlockPresentation(text: text)],
+      ),
+    );
+
+Widget _messageView(BuildContext context, AcpTimelineRow row) =>
+    AcpTimelineEntryView(item: (row as AcpTimelineMessageRow).item);
 
 void main() {
   testWidgets('diff 统计徽标、工具 meta 统计与路径一键复制', (tester) async {
@@ -121,6 +138,9 @@ void main() {
     );
 
     var showSteps = false;
+    final rows = [
+      for (var i = 0; i < 40; i++) _assistant('msg-$i', '内容第 $i 条'),
+    ];
     await tester.pumpWidget(
       _zhApp(
         StatefulBuilder(
@@ -130,16 +150,10 @@ void main() {
               header: const AcpTimelineHeaderViewState(
                 ready: true,
                 loading: false,
-                hasPlan: true,
                 hasConversationalContent: true,
-                itemCount: 40,
               ),
-              itemBuilder: (context, index) => AcpTimelineEntryView(
-                item: AcpTimelineAssistantMessage(
-                  id: 'msg-$index',
-                  blocks: [AcpTextBlockPresentation(text: '内容第 $index 条')],
-                ),
-              ),
+              rows: rows,
+              itemBuilder: _messageView,
             ),
             composerBuilder: (_, compact) => AcpConversationComposerView(
               state: const AcpComposerViewState(
@@ -194,6 +208,12 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    final composer = find.byType(AcpConversationComposerView);
+    final statusBar = find.byType(AcpStatusBarView);
+    expect(
+      tester.getTopLeft(statusBar).dy - tester.getBottomLeft(composer).dy,
+      inInclusiveRange(0, 12),
+    );
     expect(find.byType(AcpPlanPanel), findsNothing);
     expect(find.text('1/3'), findsOneWidget);
 
@@ -208,15 +228,21 @@ void main() {
     expect(find.text('中'), findsNothing);
     expect(find.text('低'), findsNothing);
 
-    // Scroll timeline to bottom; sidebar panel stays mounted alongside.
-    final list = tester.widget<ListView>(
-      find.descendant(
-        of: find.byKey(const ValueKey('acp-reading-area')),
-        matching: find.byType(ListView),
+    expect(
+      tester.getTopLeft(statusBar).dy - tester.getBottomLeft(composer).dy,
+      inInclusiveRange(0, 12),
+    );
+    final position = tester.state<ScrollableState>(_messages).position;
+    expect(find.text('内容第 39 条').hitTestable(), findsOneWidget);
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(_messages),
+        scrollDelta: const Offset(0, -400),
       ),
     );
-    list.controller!.jumpTo(list.controller!.position.maxScrollExtent);
     await tester.pumpAndSettle();
+    expect(position.pixels, greaterThan(300));
+    expect(find.text('内容第 39 条').hitTestable(), findsNothing);
     expect(find.byType(AcpPlanPanel), findsOneWidget);
     expect(find.text('步骤二 · 正在执行 Diff 优化'), findsOneWidget);
   });
@@ -307,6 +333,7 @@ void main() {
               AcpSlashCommandPresentation(name: 'review', description: '审查改动'),
             ],
           ),
+          rows: const [],
           onInsertSlashCommand: (cmd) => inserted = cmd,
           itemBuilder: (_, _) => const SizedBox.shrink(),
         ),
@@ -320,7 +347,7 @@ void main() {
     expect(inserted, 'review');
   });
 
-  testWidgets('超长用户消息自动折叠与展开，消息复制及状态感知跳到最新', (tester) async {
+  testWidgets('超长用户消息自动折叠与展开，复制后可跳到最新', (tester) async {
     String? copied;
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -367,34 +394,25 @@ void main() {
           height: 500,
           child: AcpConversationContentView(
             threadId: 'msg-thread',
-            header: AcpTimelineHeaderViewState(
+            header: const AcpTimelineHeaderViewState(
               ready: true,
               loading: false,
-              running: true,
               hasConversationalContent: true,
-              itemCount: rows.length,
             ),
-            itemBuilder: (context, index) => AcpTimelineEntryView(
-              key: ValueKey(rows[index].id),
-              item: rows[index].item,
-            ),
+            rows: rows,
+            itemBuilder: _messageView,
           ),
         ),
       ),
     );
     await tester.pumpAndSettle();
 
-    final controller = tester
-        .widget<ListView>(find.byType(ListView))
-        .controller!;
-    expect(controller.position.extentAfter, lessThan(1));
-    final messageList = find.byWidgetPredicate(
-      (widget) => widget is Scrollable && widget.controller == controller,
-    );
+    final position = tester.state<ScrollableState>(_messages).position;
+    expect(position.extentBefore, lessThan(1));
     await tester.scrollUntilVisible(
       find.text('短消息不折叠'),
-      -300,
-      scrollable: messageList,
+      300,
+      scrollable: _messages,
       maxScrolls: 20,
     );
     await tester.pumpAndSettle();
@@ -414,14 +432,78 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('收起'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('acp-copy-message:u-short')));
-    await tester.pump();
+    final returnButton = find.byKey(StudioDriverKeys.timelineReturnLatest);
+    final copyShort = find.byKey(const ValueKey('acp-copy-message:u-short'));
+    await tester.scrollUntilVisible(copyShort, 300, scrollable: _messages);
+    await tester.tap(copyShort);
     expect(copied, '短消息不折叠');
-
-    expect(find.byKey(StudioDriverKeys.timelineReturnLatest), findsOneWidget);
-    expect(find.text('跳到最新 · 运行中'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pumpAndSettle();
+    expect(returnButton.hitTestable(), findsOneWidget);
+    expect(find.byTooltip('回到最新'), findsOneWidget);
+    await tester.tap(returnButton);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('a-19')).hitTestable(), findsOneWidget);
+    expect(position.extentBefore, lessThan(1));
 
     await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('ACP 同一回复持续增长，发送回显后定位到最新', (tester) async {
+    final history = [
+      for (var i = 0; i < 24; i++) _assistant('old-$i', '旧回复 $i'),
+    ];
+    final rows = ValueNotifier<List<AcpTimelineRow>>([
+      ...history,
+      _assistant('tail', '新回复'),
+    ]);
+    addTearDown(rows.dispose);
+    await tester.pumpWidget(
+      _zhApp(
+        ValueListenableBuilder(
+          valueListenable: rows,
+          builder: (context, value, _) => AcpConversationContentView(
+            threadId: 'stream-thread',
+            header: const AcpTimelineHeaderViewState(
+              ready: true,
+              loading: false,
+              hasConversationalContent: true,
+            ),
+            rows: value,
+            itemBuilder: _messageView,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final tail = find.byKey(const ValueKey('tail'));
+    final initialRow = tester.element(tail);
+    final initialBottom = tester.getBottomLeft(tail).dy;
+    rows.value = [...history, _assistant('tail', '新回复\n\n继续生成的正文')];
+    await tester.pumpAndSettle();
+    expect(tester.element(tail), same(initialRow));
+    final growingText = find.textContaining('继续生成的正文', findRichText: true);
+    expect(growingText.hitTestable(), findsOneWidget);
+    expect(tester.getBottomLeft(tail).dy, closeTo(initialBottom, 1));
+
+    await tester.drag(_messages, const Offset(0, 400));
+    await tester.pumpAndSettle();
+    expect(growingText.hitTestable(), findsNothing);
+    rows.value = [
+      ...rows.value,
+      const AcpTimelineMessageRow(
+        AcpTimelineUserMessage(
+          id: 'sent',
+          blocks: [AcpTextBlockPresentation(text: '发送后的回显')],
+        ),
+      ),
+    ];
+    await tester.pumpAndSettle();
+    expect(find.text('发送后的回显').hitTestable(), findsOneWidget);
+    expect(
+      tester.state<ScrollableState>(_messages).position.extentBefore,
+      lessThan(1),
+    );
   });
 
   testWidgets('权限审批栏展示本地化类别标签与保留原按钮顺序', (tester) async {
@@ -619,16 +701,10 @@ void main() {
                 header: const AcpTimelineHeaderViewState(
                   ready: true,
                   loading: false,
-                  hasPlan: true,
                   hasConversationalContent: true,
-                  itemCount: 1,
                 ),
-                itemBuilder: (context, index) => const AcpTimelineEntryView(
-                  item: AcpTimelineAssistantMessage(
-                    id: 'a-narrow',
-                    blocks: [AcpTextBlockPresentation(text: '窄屏自适应渲染内容。')],
-                  ),
-                ),
+                rows: [_assistant('a-narrow', '窄屏自适应渲染内容。')],
+                itemBuilder: _messageView,
               ),
               sidebarBuilder: (_, presentation) => ConversationRightSidebar(
                 entries: [
@@ -706,6 +782,18 @@ void main() {
 
     expect(find.byType(AcpPlanPanel), findsOneWidget);
     expect(find.byType(AcpPermissionDock), findsOneWidget);
+    final composer = find.byType(AcpConversationComposerView);
+    final status = find.byType(AcpStatusBarView);
+    expect(
+      tester.getTopLeft(status).dy - tester.getBottomLeft(composer).dy,
+      inInclusiveRange(0, 12),
+    );
+    expect(tester.getSize(_reading).height, greaterThan(100));
+    expect(
+      tester.getBottomLeft(_reading).dy -
+          tester.getBottomLeft(find.byKey(const ValueKey('a-narrow'))).dy,
+      inInclusiveRange(0, 16),
+    );
     expect(tester.takeException(), isNull);
   });
 }

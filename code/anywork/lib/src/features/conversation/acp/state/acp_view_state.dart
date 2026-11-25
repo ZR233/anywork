@@ -17,8 +17,6 @@ abstract final class AcpViewKeyValues {
       ('acp-start-input', workspaceId);
   static (String, String) startSubmit(String workspaceId) =>
       ('acp-start-submit', workspaceId);
-  static (String, int) timelineItem(String threadId, int index) =>
-      (threadId, index);
   static (String, String) composerInput(String threadId) =>
       ('acp-input', threadId);
   static (String, String) composerPrimaryAction(String threadId) =>
@@ -128,11 +126,7 @@ abstract class AcpTimelineHeaderViewState with _$AcpTimelineHeaderViewState {
     @Default(false) bool ready,
     @Default(false) bool disconnected,
     @Default(false) bool observationEnded,
-    @Default(0) int itemCount,
     @Default(false) bool hasConversationalContent,
-    @Default(false) bool hasPlan,
-    @Default(false) bool running,
-    @Default(0) int pendingPermissionCount,
     @Default(<AcpCapabilityKind>[]) List<AcpCapabilityKind> capabilities,
     @Default(<AcpSlashCommandPresentation>[])
     List<AcpSlashCommandPresentation> availableCommands,
