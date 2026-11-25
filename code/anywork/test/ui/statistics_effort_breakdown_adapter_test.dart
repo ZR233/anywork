@@ -88,6 +88,9 @@ void main() {
             ); // One total plus seven independent combinations.
             expect((table.rows.first.cells[4].child as Text).data, '7');
           }
+          await _selectStatisticsSection(tester, StatisticsSection.history);
+          expect(find.byType(StatisticsSummarySection), findsNothing);
+          expect(find.byKey(StudioDriverKeys.statisticsSummary), findsNothing);
           expect(
             find.byKey(StudioDriverKeys.statisticsServiceTierFilter),
             findsOneWidget,
@@ -130,6 +133,7 @@ void main() {
       final context = tester.element(find.byType(StatisticsConnector));
       final container = ProviderScope.containerOf(context);
       final vm = container.read(statisticsViewModelProvider.notifier);
+      vm.selectSection(StatisticsSection.history);
       vm.selectModel(snapshot.summaries.first.filterKey);
       vm.selectEffort(snapshot.history.first.effortKey);
       await tester.pumpAndSettle();
@@ -145,14 +149,6 @@ void main() {
       expect(state.modelFilter, snapshot.summaries.first.filterKey);
       expect(state.effortFilter, snapshot.history.first.effortKey);
       expect(state.serviceTierFilter, '["tier:priority"]');
-      expect(
-        tester
-            .widget<StatisticsSummarySection>(
-              find.byType(StatisticsSummarySection),
-            )
-            .summaries,
-        same(snapshot.summaries),
-      );
       await tester.tap(find.byKey(StudioDriverKeys.statisticsMismatchOnly));
       await tester.pumpAndSettle();
       expect(
@@ -166,6 +162,8 @@ void main() {
       expect(state.modelFilter, snapshot.summaries.first.filterKey);
       expect(state.effortFilter, snapshot.history.first.effortKey);
       expect(state.mismatchesOnly, isTrue);
+      expect(state.snapshot, same(snapshot));
+      expect(state.filteredHistory, isEmpty);
       vm.setMismatchesOnly(false);
       vm.selectEffort(null);
       vm.selectModel(null);
@@ -233,6 +231,10 @@ void main() {
       addTearDown(tester.view.reset);
       await tester.pumpWidget(statisticsServiceTiersEnWidePreview());
       await tester.pumpAndSettle();
+      tester
+          .widget<StatisticsView>(find.byType(StatisticsView))
+          .onSectionChanged(StatisticsSection.history);
+      await tester.pumpAndSettle();
       final view = tester.widget<StatisticsView>(find.byType(StatisticsView));
       expect(
         view.state.snapshot!.history,
@@ -258,7 +260,7 @@ void main() {
   );
 
   testWidgets(
-    'View reuses options, overview and scroll body for status-only publications',
+    'View keeps history isolated and reuses options and scroll body for status-only publications',
     (tester) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = const Size(1200, 1600);
@@ -290,6 +292,7 @@ void main() {
         String? modelFilter,
         List<StatisticsSample>? filtered,
         ValueChanged<String?>? onModelChanged,
+        StatisticsSection section = StatisticsSection.history,
       }) async {
         await tester.pumpWidget(
           MaterialApp(
@@ -313,12 +316,15 @@ void main() {
                   effortFilter: null,
                   mismatchesOnly: false,
                   filteredHistory: filtered ?? snapshot.history,
+                  section: section,
                 ),
                 visible: true,
                 onModelChanged: onModelChanged ?? (_) {},
                 onEffortChanged: (_) {},
                 onMismatchesOnlyChanged: (_) {},
-                onRetry: () {},
+                onRefresh: () {},
+                onSectionChanged: (_) {},
+                onPageChanged: (_) {},
               ),
             ),
           ),
@@ -330,18 +336,15 @@ void main() {
       final header = tester.widget<StatisticsHistoryHeader>(
         find.byType(StatisticsHistoryHeader),
       );
-      final summary = tester.widget<StatisticsSummarySection>(
-        find.byType(StatisticsSummarySection),
-      );
-      final overview = tester.widget<DataTable>(find.byType(DataTable));
       final body = tester.widget<CustomScrollView>(
         find.byKey(StudioDriverKeys.statisticsHistory),
       );
+      final scrollController = body.controller;
       expect(header.options.models, hasLength(2));
       expect(header.options.efforts, hasLength(2));
       expect(() => header.options.models.clear(), throwsUnsupportedError);
       final list = tester.widget<SliverList>(find.byType(SliverList));
-      expect((list.delegate as SliverChildBuilderDelegate).childCount, 3000);
+      expect((list.delegate as SliverChildBuilderDelegate).childCount, 50);
 
       final statusOnly = initial.withPublication(
         StatisticsFeedIdentity(
@@ -363,27 +366,22 @@ void main() {
         find.byKey(const ValueKey('statistics-status-gap')),
         findsOneWidget,
       );
-      expect(
-        tester.widget<StatisticsHistoryHeader>(
-          find.byType(StatisticsHistoryHeader),
-        ),
-        same(header),
+      final updatedHeader = tester.widget<StatisticsHistoryHeader>(
+        find.byType(StatisticsHistoryHeader),
       );
+      expect(updatedHeader.options, same(header.options));
+      expect(find.byType(StatisticsSummarySection), findsNothing);
+      expect(find.byType(DataTable), findsNothing);
       expect(
-        tester.widget<StatisticsSummarySection>(
-          find.byType(StatisticsSummarySection),
-        ),
-        same(summary),
+        tester
+            .widget<CustomScrollView>(
+              find.byKey(StudioDriverKeys.statisticsHistory),
+            )
+            .controller,
+        same(scrollController),
       );
-      expect(tester.widget<DataTable>(find.byType(DataTable)), same(overview));
-      expect(
-        tester.widget<CustomScrollView>(
-          find.byKey(StudioDriverKeys.statisticsHistory),
-        ),
-        same(body),
-      );
-      // This is the real View's cached header, not a ViewModel identity assertion.
-      header.onChanged(initial.history.first.filterKey);
+      // The current View header must dispatch through the latest callback.
+      updatedHeader.onChanged(initial.history.first.filterKey);
       expect(oldCallbacks, 0);
       expect(newCallbacks, 1);
 
@@ -402,7 +400,6 @@ void main() {
       );
       expect(selectedHeader.value, initial.history.first.filterKey);
       expect(selectedHeader.options, same(header.options));
-      expect(tester.widget<DataTable>(find.byType(DataTable)), same(overview));
 
       await pump(initial, locale: const Locale('zh'));
       final localizedHeader = tester.widget<StatisticsHistoryHeader>(
@@ -416,14 +413,7 @@ void main() {
         find.text(localized.settingsStatisticsHistoryTitle),
         findsOneWidget,
       );
-      expect(
-        find.text(localized.settingsStatisticsSummaryTitle),
-        findsOneWidget,
-      );
-      expect(
-        tester.widget<DataTable>(find.byType(DataTable)),
-        isNot(same(overview)),
-      );
+      expect(find.byType(StatisticsSummarySection), findsNothing);
 
       final changedTheme = theme.copyWith(
         textTheme: theme.textTheme.copyWith(
@@ -444,11 +434,8 @@ void main() {
         same(header.options),
       );
       expect(
-        tester
-            .widget<Text>(find.text(localized.settingsStatisticsHistoryTitle))
-            .style!
-            .letterSpacing,
-        3,
+        find.text(localized.settingsStatisticsHistoryTitle),
+        findsOneWidget,
       );
 
       tester.view.physicalSize = const Size(360, 1600);
@@ -461,19 +448,10 @@ void main() {
             .options,
         same(header.options),
       );
-      expect(
-        tester
-            .widget<StatisticsSummarySection>(
-              find.byType(StatisticsSummarySection),
-            )
-            .compact,
-        isTrue,
-      );
+      expect(find.byType(StatisticsSummarySection), findsNothing);
       tester.view.physicalSize = const Size(1200, 1600);
       await tester.pumpAndSettle();
-      final wideSummary = tester.widget<StatisticsSummarySection>(
-        find.byType(StatisticsSummarySection),
-      );
+      expect(find.byType(StatisticsSummarySection), findsNothing);
 
       final revisionOnly = StatisticsSnapshot(
         ownerEpoch: initial.ownerEpoch,
@@ -491,13 +469,8 @@ void main() {
       final revisedOptions = tester
           .widget<StatisticsHistoryHeader>(find.byType(StatisticsHistoryHeader))
           .options;
-      expect(revisedOptions, isNot(same(header.options)));
-      expect(
-        tester.widget<StatisticsSummarySection>(
-          find.byType(StatisticsSummarySection),
-        ),
-        same(wideSummary),
-      );
+      expect(revisedOptions, same(header.options));
+      expect(find.byType(StatisticsSummarySection), findsNothing);
       await pump(
         StatisticsSnapshot(
           ownerEpoch: 'new-view-owner',
@@ -518,14 +491,9 @@ void main() {
               find.byType(StatisticsHistoryHeader),
             )
             .options,
-        isNot(same(revisedOptions)),
+        same(revisedOptions),
       );
-      expect(
-        tester.widget<StatisticsSummarySection>(
-          find.byType(StatisticsSummarySection),
-        ),
-        isNot(same(wideSummary)),
-      );
+      expect(find.byType(StatisticsSummarySection), findsNothing);
 
       final changed = StatisticsSnapshot(
         ownerEpoch: initial.ownerEpoch,
@@ -546,12 +514,7 @@ void main() {
       expect(changedHeader.options, isNot(same(header.options)));
       expect(changedHeader.options.models, hasLength(1));
       expect(changedHeader.options.efforts, hasLength(1));
-      expect(
-        tester.widget<StatisticsSummarySection>(
-          find.byType(StatisticsSummarySection),
-        ),
-        isNot(same(summary)),
-      );
+      expect(find.byType(StatisticsSummarySection), findsNothing);
       expect(find.byType(DataTable), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -837,6 +800,7 @@ void main() {
         ),
         findsOneWidget,
       );
+      await _selectStatisticsSection(tester, StatisticsSection.history);
       expect(find.byKey(StudioDriverKeys.statisticsFilter), findsOneWidget);
       expect(
         find.byKey(StudioDriverKeys.statisticsEffortFilter),
@@ -877,9 +841,12 @@ void main() {
       ),
       findsOneWidget,
     );
+    await _selectStatisticsSection(tester, StatisticsSection.history);
+    expect(find.byType(StatisticsSummarySection), findsNothing);
     expect(find.byKey(StudioDriverKeys.statisticsFilter), findsOneWidget);
     expect(find.byKey(StudioDriverKeys.statisticsEffortFilter), findsOneWidget);
     expect(find.byKey(StudioDriverKeys.statisticsMismatchOnly), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('connecting without a snapshot does not claim empty statistics', (
@@ -919,7 +886,7 @@ void main() {
       expect(retry, findsOneWidget);
       await tester.tap(retry);
       await tester.pump();
-      expect(repository.retryCalls, 1);
+      expect(repository.refreshCalls, 1);
     },
   );
 
@@ -927,6 +894,7 @@ void main() {
     tester,
   ) async {
     await _pumpStatistics(tester, _FixtureStatisticsRepository(_snapshot()));
+    await _selectStatisticsSection(tester, StatisticsSection.history);
 
     await tester.tap(
       find.descendant(
@@ -962,6 +930,209 @@ void main() {
     expect(find.byKey(StudioDriverKeys.statisticsFilter), findsOneWidget);
     expect(find.byKey(StudioDriverKeys.statisticsMismatchOnly), findsOneWidget);
   });
+
+  for (final count in [0, 1, 50, 51, 125]) {
+    test('summary and history pagination covers $count entries exactly', () {
+      final snapshot = _pagedSnapshot(summaryCount: count, historyCount: count);
+      final repository = _FixtureStatisticsRepository(snapshot);
+      final container = ProviderContainer(
+        overrides: [statisticsRepositoryProvider.overrideWithValue(repository)],
+      );
+      addTearDown(container.dispose);
+      final subscription = container.listen(
+        statisticsViewModelProvider,
+        (_, _) {},
+      );
+      addTearDown(subscription.close);
+      final vm = container.read(statisticsViewModelProvider.notifier);
+
+      var state = container.read(statisticsViewModelProvider);
+      expect(state.section, StatisticsSection.summaries);
+      expect(state.itemCount, count);
+      expect(state.pageCount, count == 0 ? 1 : (count + 49) ~/ 50);
+      expect(state.firstItem, count == 0 ? 0 : 1);
+      expect(state.lastItem, count < 50 ? count : 50);
+      final summaryModelIds = <String>[];
+      for (var page = 0; page < state.pageCount; page++) {
+        vm.selectPage(page);
+        state = container.read(statisticsViewModelProvider);
+        summaryModelIds.addAll(
+          state.pageSummaries.map((summary) => summary.modelId),
+        );
+      }
+      expect(summaryModelIds, [
+        for (var index = 0; index < count; index++) 'model-$index',
+      ]);
+      expect(summaryModelIds.toSet(), hasLength(count));
+
+      vm.selectSection(StatisticsSection.history);
+      state = container.read(statisticsViewModelProvider);
+      expect(state.pageIndex, 0);
+      expect(state.itemCount, count);
+      final historyCallIds = <String>[];
+      for (var page = 0; page < state.pageCount; page++) {
+        vm.selectPage(page);
+        state = container.read(statisticsViewModelProvider);
+        historyCallIds.addAll(state.pageHistory.map((sample) => sample.callId));
+      }
+      expect(historyCallIds, [
+        for (var index = 0; index < count; index++) 'window-call-$index',
+      ]);
+      expect(historyCallIds.toSet(), hasLength(count));
+
+      if (count > 50) {
+        vm.selectModel(snapshot.history.first.filterKey);
+        expect(container.read(statisticsViewModelProvider).historyPageIndex, 0);
+      }
+    });
+  }
+
+  test('refresh retains valid filters and independently clamps both pages', () {
+    final snapshot = _pagedSnapshot(summaryCount: 125, historyCount: 125);
+    final repository = _FixtureStatisticsRepository(snapshot);
+    final container = ProviderContainer(
+      overrides: [statisticsRepositoryProvider.overrideWithValue(repository)],
+    );
+    addTearDown(container.dispose);
+    final subscription = container.listen(
+      statisticsViewModelProvider,
+      (_, _) {},
+    );
+    addTearDown(subscription.close);
+    final vm = container.read(statisticsViewModelProvider.notifier);
+
+    vm.selectModel(snapshot.history.first.filterKey);
+    vm.selectEffort(snapshot.history.first.effortKey);
+    vm.selectSection(StatisticsSection.history);
+    vm.selectPage(2);
+    expect(container.read(statisticsViewModelProvider).historyPageIndex, 2);
+    vm.selectSection(StatisticsSection.summaries);
+    vm.selectPage(2);
+    expect(container.read(statisticsViewModelProvider).summaryPageIndex, 2);
+
+    vm.refresh();
+    var state = container.read(statisticsViewModelProvider);
+    expect(repository.refreshCalls, 1);
+    expect(state.isRefreshing, isTrue);
+    expect(state.pageSummaries, hasLength(25));
+    expect(state.modelFilter, isNotNull);
+    expect(state.effortFilter, snapshot.history.first.effortKey);
+    expect(state.summaryPageIndex, 2);
+    expect(state.historyPageIndex, 2);
+
+    repository.publish(_pagedSnapshot(summaryCount: 51, historyCount: 51));
+    state = container.read(statisticsViewModelProvider);
+    expect(state.isRefreshing, isFalse);
+    expect(state.modelFilter, isNotNull);
+    expect(state.effortFilter, snapshot.history.first.effortKey);
+    expect(state.summaryPageIndex, 1);
+    expect(state.historyPageIndex, 1);
+    expect(state.pageSummaries.map((item) => item.modelId), ['model-50']);
+    expect(state.pageHistory.map((item) => item.callId), ['window-call-50']);
+  });
+
+  testWidgets(
+    'connector refresh disables repeat action and retains visible page data',
+    (tester) async {
+      final repository = _FixtureStatisticsRepository(
+        _pagedSnapshot(summaryCount: 51, historyCount: 1),
+      );
+      await _pumpStatistics(
+        tester,
+        repository,
+        logicalSize: const Size(1200, 1000),
+      );
+
+      await tester.tap(find.byKey(StudioDriverKeys.statisticsNextPage));
+      await tester.pump();
+      expect(
+        find.byKey(
+          StudioDriverKeys.statisticsSummaryRow('account-a', 'model-50'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(StudioDriverKeys.statisticsRefresh));
+      await tester.pump();
+      var refreshButton = tester.widget<FilledButton>(
+        find.byKey(StudioDriverKeys.statisticsRefresh),
+      );
+      expect(refreshButton.onPressed, isNull);
+      expect(repository.refreshCalls, 1);
+      expect(
+        find.byKey(
+          StudioDriverKeys.statisticsSummaryRow('account-a', 'model-50'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(StudioDriverKeys.statisticsRefresh));
+      await tester.pump();
+      refreshButton = tester.widget<FilledButton>(
+        find.byKey(StudioDriverKeys.statisticsRefresh),
+      );
+      expect(refreshButton.onPressed, isNull);
+      expect(repository.refreshCalls, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+}
+
+Future<void> _selectStatisticsSection(
+  WidgetTester tester,
+  StatisticsSection section,
+) async {
+  final context = tester.element(find.byType(StatisticsConnector));
+  final l10n = AppLocalizations.of(context);
+  final label = section == StatisticsSection.history
+      ? l10n.settingsStatisticsHistoryTitle
+      : l10n.settingsStatisticsSummaryTitle;
+  await tester.tap(
+    find.descendant(
+      of: find.byType(SegmentedButton<StatisticsSection>),
+      matching: find.text(label),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+StatisticsSnapshot _pagedSnapshot({
+  required int summaryCount,
+  required int historyCount,
+}) {
+  final base = _snapshot();
+  final baseSummary = base.summaries.single;
+  return StatisticsSnapshot(
+    ownerEpoch: 'owner-paged',
+    feedId: 'feed-paged',
+    publicationRevision: 1,
+    summariesRevision: 1,
+    historyRevision: 1,
+    summaries: [
+      for (var index = 0; index < summaryCount; index++)
+        StatisticsSummary(
+          accountId: baseSummary.accountId,
+          accountDisplayName: baseSummary.accountDisplayName,
+          modelId: 'model-$index',
+          sampleCount: baseSummary.sampleCount,
+          completionTokens: baseSummary.completionTokens,
+          totalTtftMillis: baseSummary.totalTtftMillis,
+          ttftSampleCount: baseSummary.ttftSampleCount,
+          totalResponseMillis: baseSummary.totalResponseMillis,
+          tokensPerSecond: baseSummary.tokensPerSecond,
+          averageTtftMillis: baseSummary.averageTtftMillis,
+          averageResponseMillis: baseSummary.averageResponseMillis,
+          effortBreakdowns: baseSummary.effortBreakdowns,
+        ),
+    ],
+    history: [
+      for (var index = 0; index < historyCount; index++)
+        _windowSample(index, base.history.first),
+    ],
+    statisticsPending: false,
+    statisticsGap: false,
+    readFailed: false,
+  );
 }
 
 Future<void> _selectStatisticsFilter(
@@ -1256,7 +1427,7 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
   StatisticsRepositoryState _state;
   final _listeners = <void Function(StatisticsRepositoryState)>{};
   int visibleDemands = 0;
-  int retryCalls = 0;
+  int refreshCalls = 0;
 
   @override
   StatisticsRepositoryState get state => _state;
@@ -1313,7 +1484,18 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
       CloseReport();
 
   @override
-  void retry() => retryCalls++;
+  void refresh() {
+    refreshCalls++;
+    _state = StatisticsRepositoryState(
+      snapshot: _state.snapshot,
+      connection: const StatisticsConnectionState(
+        phase: StatisticsConnectionPhase.reconnecting,
+      ),
+    );
+    for (final listener in _listeners.toList()) {
+      listener(_state);
+    }
+  }
 }
 
 final class _FixtureObservation implements StatisticsObservation {

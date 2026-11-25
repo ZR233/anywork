@@ -32,9 +32,9 @@ final class StatisticsConnectionState {
   int get hashCode => Object.hash(phase, failure);
 }
 
-/// Last complete materialized snapshot and the current feed connection state.
+/// Last complete materialized snapshot and the current one-shot read state.
 ///
-/// During refresh or a failed read, `snapshot` remains the previous complete value while the
+/// During refresh or a failed read, [snapshot] remains the previous complete value while the
 /// connection phase explains why it is not a ready value from the current feed.
 final class StatisticsRepositoryState {
   const StatisticsRepositoryState({
@@ -78,6 +78,7 @@ abstract interface class StatisticsRepository {
     void Function(StatisticsRepositoryState state) listener,
   );
 
+  /// Starts one fresh read when visible demand changes from zero to one.
   StatisticsVisibilityLease acquireVisibleDemand();
 
   /// Bounded cleanup joins existing resources; failure retains their owners for retry.
@@ -86,6 +87,9 @@ abstract interface class StatisticsRepository {
   /// Retries cleanup of the same unresolved feed/scope; never opens a replacement to mask it.
   Future<CloseReport> retryCleanup({ClientCloseBudget? budget});
 
-  /// Explicitly restarts a bounded, failed connection attempt while demand remains visible.
-  void retry();
+  /// Reads a fresh complete baseline while visible, coalescing calls during a read or cleanup.
+  ///
+  /// Readiness confirms that both materialization and resource cleanup succeeded.
+  /// A failed cleanup retains its owner; a subsequent refresh first retries that cleanup.
+  void refresh();
 }

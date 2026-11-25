@@ -37,17 +37,12 @@ class StatisticsHistoryHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final filterWidth = constraints.maxWidth < 240
-            ? constraints.maxWidth
-            : 240.0;
-        final title = Text(
-          context.l10n.settingsStatisticsHistoryTitle,
-          style: Theme.of(context).textTheme.titleMedium
-              ?.copyWith(fontWeight: FontWeight.w600),
-        );
+        final narrow = constraints.maxWidth < 620;
+        final modelWidth = narrow ? constraints.maxWidth : 240.0;
+        final filterWidth = narrow ? (constraints.maxWidth - 12) / 2 : 180.0;
         final filter = SizedBox(
           key: StudioDriverKeys.statisticsFilter,
-          width: filterWidth,
+          width: modelWidth,
           child: DropdownMenu<String?>(
             // Caller-owned canonical selection, not a draft edit: the field
             // follows [value] via initialSelection without a value-driven
@@ -172,20 +167,12 @@ class StatisticsHistoryHeader extends StatelessWidget {
             ),
           ),
         );
-        // 筛选区域按可用宽度换行：标题与控件都保持自身宽度，空间不足时整组
-        // 换到下一行，不隐藏、不压缩，也不依赖固定机型阈值。
         return Wrap(
-          alignment: WrapAlignment.spaceBetween,
+          alignment: WrapAlignment.start,
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 12,
           runSpacing: 8,
-          children: [
-            title,
-            mismatchFilter,
-            filter,
-            effortFilter,
-            serviceTierFilter,
-          ],
+          children: [filter, effortFilter, serviceTierFilter, mismatchFilter],
         );
       },
     );
@@ -205,10 +192,16 @@ class StatisticsWideHistoryHeader extends StatelessWidget {
         Text(context.l10n.statisticsReasoningEffort),
         Text(context.l10n.statisticsRequestedServiceTier),
         Text(context.l10n.statisticsOutputTokens),
-        const Text('TTFT'),
+        Tooltip(
+          message: context.l10n.usageFirstOutputNote,
+          child: const Text('TTFT'),
+        ),
         Text(context.l10n.statisticsDecode),
         Text(context.l10n.statisticsTotalResponse),
-        Text(context.l10n.statisticsSpeed),
+        Tooltip(
+          message: context.l10n.settingsStatisticsThroughputNote,
+          child: Text(context.l10n.statisticsSpeed),
+        ),
       ],
     );
   }
@@ -292,7 +285,11 @@ class _WideCells extends StatelessWidget {
                       : Theme.of(context).textTheme.bodySmall!,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  child: children[index],
+                  textAlign: index >= 4 ? TextAlign.end : TextAlign.start,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 5),
+                    child: children[index],
+                  ),
                 ),
               ),
           ],

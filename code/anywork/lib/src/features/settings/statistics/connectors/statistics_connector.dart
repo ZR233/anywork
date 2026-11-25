@@ -46,7 +46,9 @@ class _StatisticsConnectorState extends ConsumerState<StatisticsConnector> {
       onEffortChanged: viewModel.selectEffort,
       onServiceTierChanged: viewModel.selectServiceTier,
       onMismatchesOnlyChanged: viewModel.setMismatchesOnly,
-      onRetry: viewModel.retry,
+      onRefresh: viewModel.refresh,
+      onSectionChanged: viewModel.selectSection,
+      onPageChanged: viewModel.selectPage,
     );
   }
 }

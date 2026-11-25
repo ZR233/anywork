@@ -4,41 +4,32 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 
-/// Statistics-owned transport status with the former topic status geometry and retry behavior.
+/// A failed explicit read keeps its previous content and offers another refresh.
 class StatisticsConnectionStatus extends StatelessWidget {
   const StatisticsConnectionStatus({
     required this.state,
-    required this.onRetry,
+    required this.onRefresh,
     super.key,
   });
 
   final StatisticsConnectionState state;
-  final VoidCallback onRetry;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
-    if (state.phase == StatisticsConnectionPhase.idle ||
-        state.phase == StatisticsConnectionPhase.connecting ||
-        state.phase == StatisticsConnectionPhase.ready) {
+    if (state.phase != StatisticsConnectionPhase.failed) {
       return const SizedBox.shrink();
     }
-    final failed = state.phase == StatisticsConnectionPhase.failed;
     final message = state.failure?.message.trim();
     final label = (message == null || message.isEmpty)
-        ? (failed
-              ? context.l10n.settingsSshStateFailed
-              : context.l10n.settingsSyncStateReconnecting)
+        ? context.l10n.settingsStatisticsReadFailedTitle
         : message;
     return Padding(
       padding: const EdgeInsets.only(top: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(
-            failed ? Icons.error_outline : Icons.sync_problem_outlined,
-            size: 16,
-            color: failed ? context.colors.error : context.statusColors.warning,
-          ),
+          Icon(Icons.error_outline, size: 16, color: context.colors.error),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -50,13 +41,12 @@ class StatisticsConnectionStatus extends StatelessWidget {
               ),
             ),
           ),
-          if (failed)
-            TextButton.icon(
-              key: const ValueKey('settings-topic-retry-ModelPerformanceTopic'),
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh, size: 16),
-              label: Text(context.l10n.sidebarRetry),
-            ),
+          TextButton.icon(
+            key: const ValueKey('settings-topic-retry-ModelPerformanceTopic'),
+            onPressed: onRefresh,
+            icon: const Icon(Icons.refresh, size: 16),
+            label: Text(context.l10n.sidebarRetry),
+          ),
         ],
       ),
     );
