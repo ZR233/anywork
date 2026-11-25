@@ -193,7 +193,7 @@ impl MigrationFixture {
             )
             .await?
             .unwrap();
-        assert_eq!(canonical, dunce::canonicalize(&managed)?);
+        assert_eq!(canonical, dunce::canonicalize(managed)?);
         assert_eq!(
             tokio::fs::read(managed.join(files.scratch()).join("original")).await?,
             b"retained original"
@@ -207,7 +207,7 @@ impl MigrationFixture {
         tokio::fs::write(&marker, completion.as_bytes()).await?;
         assert!(fixture.workspace_is_busy(&root.id));
         let frozen = store.workspace_identity(&root.id).await?.unwrap();
-        assert_eq!(frozen, local_identity(&managed).await?);
+        assert_eq!(frozen, local_identity(managed).await?);
         // Windows' native canonical path uses an extended prefix. Re-admitting that same site
         // must retain both the active use and the original durable spelling, without rebinding.
         let equivalent = WorkspaceIdentity::canonical(
@@ -260,7 +260,7 @@ impl MigrationFixture {
             })
             .await?;
         store
-            .bind_workspace_identity(&target.id, &local_identity(&managed).await?)
+            .bind_workspace_identity(&target.id, &local_identity(managed).await?)
             .await?;
         profile.profile.workspace_mode = AgentWorkspaceMode::Review;
         request.id = "allowed-review".into();
@@ -275,10 +275,10 @@ impl MigrationFixture {
         });
         factory
             .check_bot_spawn_workspace(
-                &request,
+                request,
                 profile.profile.workspace_mode,
                 &factory.directory_member(&root.id)?,
-                Some(&managed),
+                Some(managed),
             )
             .await?;
         assert!(
@@ -339,10 +339,10 @@ async fn worktree_admission_rejects_before_migration_or_lease() -> Result<()> {
     let factory = &fixture.factory;
     let rejected = factory
         .check_bot_spawn_workspace(
-            &request,
+            request,
             profile.profile.workspace_mode,
             &factory.directory_member(&root.id)?,
-            Some(&managed),
+            Some(managed),
         )
         .await;
     assert!(
@@ -396,10 +396,10 @@ async fn review_admission_accepts_only_the_managed_root_without_preparing_files(
     let original_project = store.read_project(&root.workspace_id).await?;
     let rejected = factory
         .check_bot_spawn_workspace(
-            &request,
+            request,
             profile.profile.workspace_mode,
             &factory.directory_member(&root.id)?,
-            Some(&managed),
+            Some(managed),
         )
         .await;
     assert!(
@@ -562,7 +562,7 @@ async fn removed_source_still_uses_managed_root_for_new_directory_and_review_mem
     tokio::fs::rename(&business, temp.path().join("old-source-unmounted")).await?;
     factory
         .verify_execution_workspace(
-            &root,
+            root,
             None,
             super::super::execution_admission::ExecutionWorkspaceCheck::Audit,
         )
@@ -621,7 +621,7 @@ async fn removed_source_still_uses_managed_root_for_new_directory_and_review_mem
         request.review_target = reviewed.map(migration_review_target);
         request.review_workspace = reviewed.and(prepared_workspace.clone());
         profile.profile.workspace_mode = mode;
-        let spec = StudioChildResources::prepare(factory, &request, &profile).await?;
+        let spec = StudioChildResources::prepare(factory, request, profile).await?;
         let registered = factory
             .services
             .product_events

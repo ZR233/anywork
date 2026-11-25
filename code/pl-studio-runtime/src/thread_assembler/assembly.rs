@@ -212,7 +212,7 @@ impl SessionRuntime {
         }
         // Freeze the observer's recovery baseline before exposing this owner to execution.
         // Observers may query the registry, so invoke them without its lock held.
-        self.publish_observation(&spec.id, &thread);
+        self.publish_observation(&spec.id, thread);
         if let Some(guard) = preparation_guard.take() {
             guard.disarm();
         }
