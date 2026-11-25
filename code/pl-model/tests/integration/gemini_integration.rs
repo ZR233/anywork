@@ -619,6 +619,24 @@ async fn other_gemini_finish_reasons_keep_their_terminal_failure_and_usage() {
         "SAFETY",
         "MAX_TOKENS",
         "MALFORMED_FUNCTION_CALL",
+        "FINISH_REASON_UNSPECIFIED",
+        "RECITATION",
+        "LANGUAGE",
+        "OTHER",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_OTHER",
+        "NO_IMAGE",
+        "IMAGE_RECITATION",
+        "UNEXPECTED_TOOL_CALL",
+        "TOO_MANY_TOOL_CALLS",
+        "MISSING_THOUGHT_SIGNATURE",
+        "ESCALATION",
+        "PUP_LIMITED_DISABLED",
+        "CONTINUATION",
         "UNKNOWN_REASON",
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -652,6 +670,49 @@ async fn other_gemini_finish_reasons_keep_their_terminal_failure_and_usage() {
                 .len(),
             1
         );
+    }
+}
+
+#[tokio::test]
+async fn google_http_classification_keeps_transport_retry_after_header() {
+    for (status, code, body_delay, expected_delay) in [
+        (429, "RESOURCE_EXHAUSTED", None, Some(2000)),
+        (503, "UNAVAILABLE", None, Some(2000)),
+        (503, "UNAVAILABLE", Some("3.250s"), Some(3250)),
+        (400, "INVALID_ARGUMENT", Some("3.250s"), None),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                bytes.push(socket.read_u8().await.unwrap());
+            }
+            let mut body =
+                json!({"error":{"code":status,"status":code,"message":"synthetic error"}});
+            if let Some(delay) = body_delay {
+                body["error"]["details"] = json!([{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":delay}]);
+            }
+            let body = body.to_string();
+            let response = format!(
+                "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nRetry-After: 2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let failure = pl_model_wire::transport::sse_frames(
+            reqwest::Client::new().post(url),
+            pl_model_wire::transport::SseContentTypePolicy::Required,
+            Some(&pl_model_gemini::GEMINI_WIRE_CODEC),
+        )
+        .await
+        .err()
+        .expect("HTTP failure");
+        let failure = failure.provider_failure_ref().unwrap();
+        assert_eq!(failure.retry.is_retryable(), expected_delay.is_some());
+        assert_eq!(failure.retry.retry_after_ms(), expected_delay);
+        server.await.unwrap();
     }
 }
 

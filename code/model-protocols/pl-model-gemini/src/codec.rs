@@ -53,9 +53,13 @@ impl WireCodec for GeminiWireCodec {
                 .as_deref()
                 .is_some_and(|source| source != isolation)
                 && span.output.iter().any(|part| {
-                    part.get("thoughtSignature")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|sig| !sig.is_empty())
+                    ["thoughtSignature", "thought_signature"]
+                        .into_iter()
+                        .any(|key| {
+                            part.get(key)
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|sig| !sig.is_empty())
+                        })
                 })
         }) {
             return Err(PureError::ConfigError(

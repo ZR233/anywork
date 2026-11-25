@@ -75,12 +75,9 @@ fn gemini_declares_tagged_union_fields_without_losing_branch_semantics() {
         let schema = &encoded.body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"];
         assert_eq!(schema["required"], json!(["action", "name"]));
         assert_eq!(
-            schema["properties"]["action"],
-            json!({"anyOf":[
-                {"type":"string","const":"create"},{"type":"string","const":"delete"}
-            ]})
+            schema["properties"],
+            json!({"action":{},"name":{},"content":{}})
         );
-        assert_eq!(schema["properties"]["name"], json!({"$ref":"#/$defs/Name"}));
         assert_eq!(schema["oneOf"], original["oneOf"]);
         assert_eq!(schema["$defs"], original["$defs"]);
     }
@@ -91,6 +88,42 @@ fn gemini_declares_tagged_union_fields_without_losing_branch_semantics() {
         input_schema, &original,
         "the frozen author contract must stay unchanged"
     );
+}
+
+#[test]
+fn gemini_refuses_root_unions_that_cannot_declare_equivalent_named_parameters() {
+    let model = bundled_definition().unwrap().models.remove(0);
+    let endpoint = endpoint::gemini_api_endpoint(None);
+    for schema in [
+        json!({"type":"object","oneOf":[{"type":"object","properties":{"value":{"type":"integer"}},"additionalProperties":true}]}),
+        json!({"type":"object","oneOf":[{"type":"object","properties":{"value":{"type":"integer"}},"additionalProperties":false,"patternProperties":{"^x":{"type":"string"}}}]}),
+        json!({"type":"object","additionalProperties":false,"oneOf":[{"type":"object","properties":{"value":{"type":"integer"}},"additionalProperties":false}]}),
+    ] {
+        let request = CompletionRequest::builder()
+            .messages(vec![message(MessageRole::User, "manage")])
+            .tools(vec![ToolSpec::Function {
+                name: "manage".into(),
+                description: "Manage documents".into(),
+                input_schema: schema,
+                allowed_callers: vec![],
+                output_schema: None,
+            }])
+            .build();
+        let error = GEMINI_WIRE_CODEC
+            .encode_http_request(EncodeHttpRequestInput {
+                endpoint: &endpoint,
+                model: &model,
+                request: &request,
+                prompt_cache_key: None,
+                compaction_body: None,
+                is_compaction: false,
+            })
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("closed object branches"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -122,6 +155,25 @@ fn google_rpc_stream_failures_preserve_protocol_classification() {
             true,
         ),
         ("UNAVAILABLE", 503, ProviderFailureKind::Capacity, true),
+        ("INTERNAL", 13, ProviderFailureKind::Capacity, true),
+        (
+            "FAILED_PRECONDITION",
+            9,
+            ProviderFailureKind::Configuration,
+            false,
+        ),
+        (
+            "OUT_OF_RANGE",
+            11,
+            ProviderFailureKind::Configuration,
+            false,
+        ),
+        (
+            "UNIMPLEMENTED",
+            12,
+            ProviderFailureKind::Configuration,
+            false,
+        ),
     ] {
         let mut decoder = GEMINI_WIRE_CODEC
             .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);

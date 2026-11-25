@@ -478,7 +478,7 @@ impl ModelRuntime {
                 provider_code,
                 http_status,
                 error_bytes = error.to_string().len(),
-                "模型连接中断，将在统一预算内重试当前请求"
+                "模型请求失败，将在统一预算内重试当前请求"
             );
             let backoff = async {
                 if let Some(token) = &context.cancellation {

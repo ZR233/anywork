@@ -37,9 +37,15 @@
 
 Gemini 的一个模型响应构成一个工具调用批次。工具可并行执行、逆序完成，但提交给模型时，全部结果须按原调用顺序放入紧随其后的一个 `user` Content，并保持名称及可用上游 ID 对应；同名、无 ID 调用仍按原位置配对。下一步依赖工具结果的调用由下一次模型生成决定，各步的原始模型 Parts 分别完整回放，包括首调用签名、空文本尾部签名及未知字段，不能从显示文本重建或合并带签名的 Part。调用就绪不替代整次生成成功，失败、取消或缺失成功终态的响应不进入成功工具派发路径。
 
-当前 Gemini 适配仅接收完整工具参数。普通 SSE 分块与 Vertex 可选的 `streamFunctionCallArguments` 是不同能力；未实现参数增量组装时，开启该模式的请求及带实际 `partialArgs`／参数续片控制的响应必须明确拒绝，不得将缺少完整参数的首片解释为可执行的空参数调用。完整 `args` 对象可携带空 `partialArgs` 或 `willContinue: false` 这些中性值；缺少完整对象时不能以中性控制值冒充完整调用。公开请求构造与历史回放同样遵循调用批次、身份唯一性和完整参数约束。规则依据对应 API 的 [GenerateContent 函数调用](https://aistudio.google.com/docs/function-calling.md?generate-content=true)、[thought signatures](https://aistudio.google.com/docs/thought-signatures.md?generate-content=true) 与 [Vertex 函数调用](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/tools/function-calling)；Interactions API 的结果映射和 SDK 的自动执行策略不改变本契约。
+当前 Gemini 适配仅接收完整工具参数。普通 SSE 分块与 Vertex 可选的 `streamFunctionCallArguments` 是不同能力；未实现参数增量组装时，开启该模式的请求及带实际 `partialArgs`／参数续片控制的响应必须明确拒绝，不得将缺少完整参数的首片解释为可执行的空参数调用。完整 `args` 对象可携带空 `partialArgs` 或 `willContinue: false` 这些中性值；缺少完整对象时不能以中性控制值冒充完整调用。公开请求构造与历史回放同样遵循调用批次、身份唯一性和完整参数约束。规则依据对应 API 的 [GenerateContent 函数调用](https://aistudio.google.com/docs/function-calling?generate-content=true)、[thought signatures](https://aistudio.google.com/docs/thought-signatures?generate-content=true) 与 [Vertex 函数调用](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/tools/function-calling)；Interactions API 的结果映射和 SDK 的自动执行策略不改变本契约。
 
-Gemini 的自动工具选择映射为官方 `VALIDATED` 模式：模型仍可选择自然语言或工具调用，服务端同时约束参数结构；强制调用与禁止调用分别映射为 `ANY`、`NONE`。`parametersJsonSchema` 在对象根声明命名参数。仅由封闭对象分支组成的顶层 `oneOf`／`anyOf`，在出站副本中补齐各字段声明及共同必填项，保留全部原分支、分支必填项、不允许额外字段的约束及引用定义，不删除联合校验、不将不同操作的字段全部设为必填，也不改写作者声明。无法保持语义的无根字段联合明确报错，不向服务端发送猜测后的参数结构。契约见 [FunctionDeclaration](https://googleapis.github.io/js-genai/release_docs/interfaces/types.FunctionDeclaration.html) 与 [函数调用模式](https://aistudio.google.com/docs/function-calling?generate-content=true#function_calling_modes)。
+Gemini 的自动工具选择映射为官方 `VALIDATED` 模式：模型仍可选择自然语言或工具调用，服务端同时约束参数结构；强制调用与禁止调用分别映射为 `ANY`、`NONE`。使用完整 `parametersJsonSchema`，不将 JSON Schema 原样发送到旧 `parameters` 的受限 Schema 接口。仅由封闭对象分支组成且没有根参数表的顶层 `oneOf`／`anyOf`，在出站副本的根 `properties` 中用空 schema 声明各参数名，并补齐共同必填项；实际类型、说明、分支必填项、额外字段限制和引用仍留在原分支，避免重复发送和改变引用作用域。不删除联合校验、不将不同操作的字段全部设为必填，也不改写作者声明。无法保持语义的无根字段联合明确报错。契约见 [FunctionDeclaration](https://googleapis.github.io/js-genai/release_docs/interfaces/types.FunctionDeclaration.html) 与 [函数调用模式](https://aistudio.google.com/docs/function-calling?generate-content=true#function_calling_modes)。
+
+Gemini 工具参数在流解码、公开回放和出站请求中均须为 JSON 对象；不能将非法原文包装成 `raw` 或 `input` 后继续发送。通用历史用 `call_id` 配对原生函数调用和结果，内部 `item_id` 不冒充上游调用 ID；原始 Gemini 回放继续按实际可选 ID 投影。响应仅支持一个索引为零的候选，异常角色、字段结构、同批重复调用 ID、生成媒体和服务端工具 Parts 明确失败，不能静默跳过后提交空答案；同一帧已收到的用量仍保留。
+
+当前 Gemini 是单次输出上限 65,536 的流式绑定，尚未实现 `CONTINUATION` 的原始请求冻结及多跳续接；不接收超出此上限的配置或外部注入的续接令牌，也不把 `CONTINUATION` 视为 `STOP` 或重新生成异常。普通采样选项、结构化输出约束等原生配置仍按当前 API 发送；系统指令的 camelCase／snake_case 拼写都不能绕过统一 `SystemPrompt` 入口。内置 Gemini 4 不声明上游已忽略的温度能力。目录的 `supportedGenerationMethods` 只用于识别生成方法，不能据此覆盖已核实的媒体限制或凭空声明未知模型的图像／文件能力。
+
+嵌在 `exec` 说明中的 Lua 子工具输入与输出 schema 也复用模型层的同一精简投影，删除嵌套生成器元数据和未引用定义，保留参数说明、约束、引用以及 `enum`／`const` 中的原始数据；不另写递归过滤器，不修改作者声明或工具的真实默认行为。
 
 模型生产者拥有完整流合并事实和不透明保存格式：保留已接受的正文、推理、成员关系和阶段、部分工具输入原文、完整调用、原生 replay、已观察用量和来源。部分参数是不可执行的字符串，不解析补全为工具调用。捕获与生产者退出交接遵循 [15](./15-session-storage.md#捕获保存与关闭)；它们不提供跨进程续接，旧流只供暂停展示，新请求使用新的物理会话和累积器。用户继续后采用当前确认的模型和工具配置，通过普通准备流程检查原生上下文的来源隔离及兼容族；必要原生材料不兼容时保留原件并在发送前报错，普通请求也遵循相同规则。
 

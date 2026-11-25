@@ -457,14 +457,11 @@ pub fn sdk(
     Ok(tools.into_values().collect::<Vec<_>>().join("\n"))
 }
 
-// The Lua SDK is documentation, not a provider validation schema. Omit root
-// generator metadata without traversing data properties or changing the frozen declaration.
+// Embedded SDK declarations are model input too. Reuse the model's schema-position-aware
+// projection; never recursively filter arbitrary JSON data or mutate authored declarations.
 fn sdk_schema(schema: &serde_json::Value) -> String {
     let mut schema = schema.clone();
-    if let Some(object) = schema.as_object_mut() {
-        object.remove("$schema");
-        object.remove("title");
-    }
+    pl_model::completion::tool_schema::project_schema_for_model(&mut schema);
     schema.to_string()
 }
 
@@ -485,14 +482,16 @@ pub fn project_catalog(declarations: &[pl_core::model::ModelToolDeclaration]) ->
 #[cfg(test)]
 mod tests {
     #[test]
-    fn sdk_omits_root_metadata_but_keeps_named_properties_and_references() {
+    fn sdk_omits_nested_generator_metadata_but_keeps_named_properties_and_references() {
         let schema = serde_json::json!({
             "$schema":"https://json-schema.org/draft/2020-12/schema",
             "title":"GeneratedInput", "type":"object",
-            "$defs":{"Item":{"type":"string","title":"ReferencedItem"}},
+            "$defs":{"Item":{"type":"string","title":"ReferencedItem"},"Unused":{"type":"number"}},
             "properties":{
                 "title":{"type":"string","description":"User supplied title"},
-                "$schema":{"$ref":"#/$defs/Item"}
+                "$schema":{"$ref":"#/$defs/Item"},
+                "literal":{"const":{"title":"literal value","default":7}},
+                "count":{"type":"integer","minimum":1,"default":3,"examples":[4]}
             },
             "required":["title"], "additionalProperties":false
         });
@@ -501,15 +500,29 @@ mod tests {
             serde_json::from_str(&super::sdk_schema(&schema)).unwrap();
         assert!(projected.get("title").is_none());
         assert!(projected.get("$schema").is_none());
-        for key in [
-            "type",
-            "$defs",
-            "properties",
-            "required",
-            "additionalProperties",
-        ] {
+        for key in ["type", "required", "additionalProperties"] {
             assert_eq!(projected[key], schema[key]);
         }
+        assert_eq!(
+            projected["properties"]["title"],
+            schema["properties"]["title"]
+        );
+        assert_eq!(
+            projected["properties"]["$schema"],
+            schema["properties"]["$schema"]
+        );
+        assert_eq!(
+            projected["properties"]["literal"],
+            schema["properties"]["literal"]
+        );
+        assert_eq!(
+            projected["properties"]["count"],
+            serde_json::json!({"type":"integer","minimum":1})
+        );
+        assert_eq!(
+            projected["$defs"],
+            serde_json::json!({"Item":{"type":"string"}})
+        );
         assert_eq!(schema.to_string(), original);
     }
 

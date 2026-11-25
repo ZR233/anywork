@@ -51,6 +51,11 @@ pub fn build_http_request(
             "Gemini request requires gemini_generate_content protocol options",
         ));
     };
+    if !options.use_parameters_json_schema {
+        return Err(protocol_error(
+            "Gemini requires parametersJsonSchema; legacy parameters Schema is unsupported",
+        ));
+    }
 
     let raw_model = model
         .extra
@@ -125,21 +130,28 @@ pub fn build_http_request(
                 MessageRole::Assistant => {
                     let mut parts = Vec::new();
                     let mut upstream_ids = BTreeSet::new();
+                    let mut item_ids = BTreeSet::new();
                     let text = message_content_text(&message.content);
                     if !text.is_empty() {
                         parts.push(json!({ "text": text }));
                     }
                     for call in message.tool_calls.iter().flatten() {
+                        if !item_ids.insert(call.item_id.as_str()) {
+                            return Err(protocol_error(
+                                "duplicate functionCall item identity in the same batch",
+                            ));
+                        }
                         let args_text = record_arguments_text(&call.arguments);
-                        let args = match serde_json::from_str::<Value>(&args_text) {
-                            Ok(Value::Object(map)) => Value::Object(map),
-                            Ok(other) => json!({ "input": other }),
-                            Err(_) => json!({ "raw": args_text }),
-                        };
+                        let args = serde_json::from_str::<Value>(&args_text)
+                            .ok()
+                            .filter(Value::is_object)
+                            .ok_or_else(|| {
+                                protocol_error("functionCall args must be a JSON object")
+                            })?;
                         let mut fc = Map::new();
                         fc.insert("name".into(), Value::String(call.name.clone()));
                         fc.insert("args".into(), args);
-                        let id = (!call.item_id.is_empty()).then_some(call.item_id.as_str());
+                        let id = (!call.call_id.is_empty()).then_some(call.call_id.as_str());
                         if let Some(id) = id {
                             if !upstream_ids.insert(id) {
                                 return Err(protocol_error(
@@ -214,12 +226,10 @@ pub fn build_http_request(
                     let mut decl = Map::new();
                     decl.insert("name".into(), Value::String(name.clone()));
                     decl.insert("description".into(), Value::String(description.clone()));
-                    let schema_key = if options.use_parameters_json_schema {
-                        "parametersJsonSchema"
-                    } else {
-                        "parameters"
-                    };
-                    decl.insert(schema_key.into(), function_parameters(input_schema)?);
+                    decl.insert(
+                        "parametersJsonSchema".into(),
+                        function_parameters(input_schema)?,
+                    );
                     declarations.push(Value::Object(decl));
                 }
                 ToolSpec::Custom { .. } => {
@@ -265,17 +275,14 @@ pub fn build_http_request(
         body.insert("generationConfig".into(), Value::Object(generation_config));
     }
 
-    if model
-        .extra
-        .binding
-        .request
-        .body
-        .contains_key("systemInstruction")
-        || parameter_writes_path(model, request, "systemInstruction")
-    {
-        return Err(protocol_error(
-            "model body or parameter wire must not inject reserved `systemInstruction`; use SystemPrompt",
-        ));
+    for reserved in ["systemInstruction", "system_instruction"] {
+        if model.extra.binding.request.body.contains_key(reserved)
+            || parameter_writes_path(model, request, reserved)
+        {
+            return Err(protocol_error(
+                "model body or parameter wire must not inject reserved `systemInstruction`; use SystemPrompt",
+            ));
+        }
     }
 
     finalize_body(&mut body, model, &request.reasoning);
@@ -283,6 +290,40 @@ pub fn build_http_request(
     if enables_streamed_function_arguments(&body) {
         return Err(protocol_error(
             "streamFunctionCallArguments is unsupported; Gemini requires complete function arguments",
+        ));
+    }
+    for config in ["generationConfig", "generation_config"]
+        .into_iter()
+        .filter_map(|key| body.get(key))
+    {
+        for key in ["candidateCount", "candidate_count"] {
+            if config
+                .get(key)
+                .is_some_and(|count| count.as_u64() != Some(1))
+            {
+                return Err(protocol_error(
+                    "Gemini supports exactly one response candidate",
+                ));
+            }
+        }
+        for key in ["maxOutputTokens", "max_output_tokens"] {
+            if config
+                .get(key)
+                .and_then(Value::as_u64)
+                .is_some_and(|limit| limit > 65_536)
+            {
+                return Err(protocol_error(
+                    "Gemini automatic continuation is unsupported; maxOutputTokens must not exceed 65536",
+                ));
+            }
+        }
+    }
+    if ["continuationToken", "continuation_token"]
+        .into_iter()
+        .any(|key| body.contains_key(key))
+    {
+        return Err(protocol_error(
+            "Gemini automatic continuation is unsupported",
         ));
     }
 
@@ -304,8 +345,9 @@ pub fn build_http_request(
 }
 
 /// Gemini function parameters must declare their named fields at the object root.
-/// A tagged union of closed objects can expose those fields without removing any branch
-/// constraints or changing its accepted inputs. Definitions and original branches stay intact.
+/// A tagged union of closed objects can expose those names with unconstrained root entries.
+/// All actual constraints stay in their original branches, preserving reference scopes and
+/// avoiding duplicate parameter descriptions. Definitions and original branches stay intact.
 fn function_parameters(input: &Value) -> Result<Value> {
     let mut schema = input.clone();
     let Some(root) = schema.as_object_mut() else {
@@ -334,6 +376,7 @@ fn function_parameters(input: &Value) -> Result<Value> {
         || variants.iter().any(|variant| {
             variant.get("type").and_then(Value::as_str) != Some("object")
                 || variant.get("additionalProperties") != Some(&Value::Bool(false))
+                || variant.get("patternProperties").is_some()
                 || !variant.get("properties").is_some_and(Value::is_object)
         })
     {
@@ -341,14 +384,15 @@ fn function_parameters(input: &Value) -> Result<Value> {
             "a function parameter union without root properties must contain closed object branches",
         ));
     }
-    let mut fields: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut fields = BTreeSet::new();
     for variant in variants {
-        for (name, definition) in variant["properties"].as_object().expect("validated object") {
-            let alternatives = fields.entry(name.clone()).or_default();
-            if !alternatives.contains(definition) {
-                alternatives.push(definition.clone());
-            }
-        }
+        fields.extend(
+            variant["properties"]
+                .as_object()
+                .expect("validated object")
+                .keys()
+                .cloned(),
+        );
     }
     let mut common_required: BTreeSet<String> = variants[0]
         .get("required")
@@ -370,17 +414,7 @@ fn function_parameters(input: &Value) -> Result<Value> {
                 })
         });
     }
-    let properties: Map<String, Value> = fields
-        .into_iter()
-        .map(|(name, mut alternatives)| {
-            let definition = if alternatives.len() == 1 {
-                alternatives.pop().expect("one definition")
-            } else {
-                json!({"anyOf": alternatives})
-            };
-            (name, definition)
-        })
-        .collect();
+    let properties: Map<String, Value> = fields.into_iter().map(|name| (name, json!({}))).collect();
     // Keep every branch-local requirement and expose only their intersection globally.
     if !common_required.is_empty() {
         let required = root

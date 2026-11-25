@@ -12,6 +12,7 @@ struct GoogleRpcError {
     code: Option<serde_json::Value>,
     message: Option<String>,
     status: Option<String>,
+    details: Option<Vec<serde_json::Value>>,
 }
 
 pub fn parse_google_http_error(body: &[u8]) -> Option<ParsedHttpError> {
@@ -41,8 +42,21 @@ pub fn parse_google_http_error(body: &[u8]) -> Option<ParsedHttpError> {
         })
     });
     let message = rpc.message.clone();
-    let (code_override, force_kind, force_retry) =
+    let (code_override, force_kind, mut force_retry) =
         classify_google_error(status_str, numeric_code, message.as_deref());
+    if let Some(RetryDisposition::Retryable { retry_after_ms }) = &mut force_retry {
+        *retry_after_ms = rpc
+            .details
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|detail| {
+                detail.get("@type").and_then(serde_json::Value::as_str)
+                    == Some("type.googleapis.com/google.rpc.RetryInfo")
+            })
+            .filter_map(|detail| retry_delay_millis(detail.get("retryDelay")?.as_str()?))
+            .max();
+    }
     Some(ParsedHttpError {
         code: code_override.map(str::to_owned).or(code),
         message,
@@ -50,6 +64,32 @@ pub fn parse_google_http_error(body: &[u8]) -> Option<ParsedHttpError> {
         force_kind,
         force_retry,
     })
+}
+
+// google.protobuf.Duration uses decimal seconds with at most nine fractional digits.
+// Round up to milliseconds so retrying never precedes the server's minimum delay.
+fn retry_delay_millis(value: &str) -> Option<u64> {
+    let seconds = value.strip_suffix('s')?;
+    let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || fraction.len() > 9
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let whole = whole.parse::<u64>().ok()?;
+    let nanos = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(10_u64.pow(9 - fraction.len() as u32))?
+    };
+    whole
+        .checked_mul(1000)?
+        .checked_add(nanos.div_ceil(1_000_000))
 }
 
 fn classify_google_error(
@@ -85,7 +125,7 @@ fn classify_google_error(
                 }),
             );
         }
-        Some("UNAVAILABLE" | "DEADLINE_EXCEEDED" | "ABORTED") => {
+        Some("UNAVAILABLE" | "DEADLINE_EXCEEDED" | "ABORTED" | "INTERNAL") => {
             return (
                 None,
                 Some(ProviderFailureKind::Capacity),
@@ -108,7 +148,7 @@ fn classify_google_error(
                 Some(RetryDisposition::Permanent),
             );
         }
-        Some("NOT_FOUND") => {
+        Some("NOT_FOUND" | "FAILED_PRECONDITION" | "OUT_OF_RANGE" | "UNIMPLEMENTED") => {
             return (
                 None,
                 Some(ProviderFailureKind::Configuration),
@@ -128,12 +168,17 @@ fn classify_google_error(
             Some(ProviderFailureKind::Authorization),
             Some(RetryDisposition::Permanent),
         ),
-        Some(429 | 500..=599) => (
+        Some(408 | 429 | 500..=599) => (
             None,
             Some(ProviderFailureKind::Capacity),
             Some(RetryDisposition::Retryable {
                 retry_after_ms: None,
             }),
+        ),
+        Some(400..=499) => (
+            None,
+            Some(ProviderFailureKind::Configuration),
+            Some(RetryDisposition::Permanent),
         ),
         _ => (None, None, None),
     }
@@ -148,6 +193,31 @@ fn is_context_limit_message(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_retry_info_preserves_fractional_minimum_without_changing_permanent_errors() {
+        for (delay, expected) in [
+            ("3s", Some(3000)),
+            ("1.250s", Some(1250)),
+            ("0.000000001s", Some(1)),
+            ("-1s", None),
+            ("1e3s", None),
+            ("1.0000000001s", None),
+        ] {
+            let body = serde_json::json!({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":delay}]}});
+            let parsed = parse_google_http_error(&serde_json::to_vec(&body).unwrap()).unwrap();
+            assert_eq!(
+                parsed.force_retry.unwrap().retry_after_ms(),
+                expected,
+                "{delay}"
+            );
+        }
+        let body = br#"{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"}]}}"#;
+        assert_eq!(
+            parse_google_http_error(body).unwrap().force_retry,
+            Some(RetryDisposition::Permanent)
+        );
+    }
 
     #[test]
     fn parses_google_rpc_object_and_array_envelopes() {

@@ -147,10 +147,18 @@ pub fn provider_compatible_tool(mut tool: ToolSpec, projection: ToolProjection) 
     }
 }
 
+/// Removes generator annotations and redundant declarations from a model-facing copy.
+///
+/// Schema-valued positions are traversed; instance values in enum/const remain data.
+/// This does not impose a function argument root on output or embedded SDK schemas.
+pub fn project_schema_for_model(schema: &mut serde_json::Value) {
+    input_schema::project(schema);
+}
+
 /// Function argument providers require an object root even for a union of objects.
 /// Adapt only the request copy: the frozen author declaration remains intact.
 pub fn project_function_schema(schema: &mut serde_json::Value) {
-    input_schema::project(schema);
+    project_schema_for_model(schema);
     let Some(object) = schema.as_object_mut() else {
         return;
     };
