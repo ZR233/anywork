@@ -35,10 +35,12 @@ use super::topics::{TopicLease, TopicMap};
 const THREAD_DIRECTORY_RESOURCE_KEY: &str = "thread-directory";
 
 mod acp_titles;
+mod agent_delivery;
 mod agent_directory;
 mod commands;
 mod index;
 
+pub(super) use agent_delivery::{AgentDirectoryHistory, DeferredAgentDirectory};
 use agent_directory::cold_native_activity;
 use commands::*;
 pub(in crate::studio) use index::NativeAgentObservation;

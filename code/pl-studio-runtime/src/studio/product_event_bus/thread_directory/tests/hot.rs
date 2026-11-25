@@ -58,7 +58,7 @@ async fn assert_serial_publication(mutation: HotMutation) -> Result<()> {
                 }
                 Ok(())
             });
-            let first_event = runtime.block_on(internal.recv()).unwrap();
+            let first_publication = runtime.block_on(internal.recv_publication()).unwrap();
             let held_index = worker_events.thread_index.try_lock().is_err();
             let (attempted, started) = std::sync::mpsc::sync_channel(0);
             let runtime = &runtime;
@@ -72,7 +72,7 @@ async fn assert_serial_publication(mutation: HotMutation) -> Result<()> {
             drop(topics);
             first_writer.join().unwrap().unwrap();
             second_writer.join().unwrap();
-            let mut published = vec![first_event];
+            let mut published = vec![first_publication.materialize()];
             published.extend(std::iter::from_fn(|| internal.try_recv().ok()));
             let expected_agent_events = usize::from(!matches!(mutation, HotMutation::UserMessage));
             assert_eq!(

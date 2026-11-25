@@ -104,7 +104,7 @@ async fn signal_and_catalog_observers_publish_no_full_collection_at_scale() -> R
 
 enum ValueSubscription {
     Typed(crate::ProductTopicReceiver),
-    Internal(tokio::sync::broadcast::Receiver<StudioProductEventEnvelope>),
+    Internal(crate::studio::product_event_bus::ProductEventReceiver),
 }
 
 impl ValueSubscription {
@@ -132,9 +132,21 @@ async fn preserves_value_cuts(internal: bool) -> Result<()> {
         patch_summary(&events, &token, 2, "second", 1)
     })?;
     assert_eq!(*work.compared.lock().unwrap(), [1, 1, 1]);
-    assert_eq!(*work.materialized.lock().unwrap(), [2, 2]);
-    let first = values.receive()?;
-    let second = values.receive()?;
+    assert!(
+        work.materialized.lock().unwrap().is_empty(),
+        "writers only queue revision leases"
+    );
+    let mut delivered = None;
+    capture(&work, || {
+        delivered = Some((values.receive()?, values.receive()?));
+        Ok(())
+    })?;
+    let (first, second) = delivered.unwrap();
+    assert_eq!(
+        *work.materialized.lock().unwrap(),
+        [2, 2],
+        "full frames materialize on delivery"
+    );
     assert!(values.receive().is_err());
     assert_eq!(second.sequence, first.sequence + 1);
     let states = [&first, &second].map(|event| {
@@ -208,4 +220,45 @@ async fn typed_value_subscribers_keep_complete_ordered_snapshots_and_registratio
 async fn full_internal_subscribers_keep_complete_ordered_snapshots_and_registration_baselines()
 -> Result<()> {
     preserves_value_cuts(true).await
+}
+
+#[tokio::test]
+async fn typed_subscribers_queue_local_changes_before_materializing_a_large_directory() -> Result<()>
+{
+    let (_temp, events) = fixture(vec![], vec![]).await?;
+    let rows = (0..10_000)
+        .map(|n| row(&format!("row-{n:05}"), "p1", n))
+        .collect::<Vec<_>>();
+    *events.thread_index.lock().unwrap() = super::index::memory_index(&rows);
+    let token = events.begin_native_observation("row-00000").unwrap();
+    let mut values = events.subscribe_topic(&crate::StudioProductTopic::AgentDirectory);
+    let writing = PublicationWork::default();
+    capture(&writing, || {
+        patch_summary(&events, &token, 1, "first", 0)?;
+        patch_summary(&events, &token, 2, "second", 0)
+    })?;
+    assert_eq!(*writing.compared.lock().unwrap(), [1, 1]);
+    assert!(
+        writing.materialized.lock().unwrap().is_empty(),
+        "the normal typed subscription must not materialize on writes"
+    );
+    let delivery = PublicationWork::default();
+    capture(&delivery, || {
+        for expected in ["first", "second"] {
+            let StudioProductEventKind::AgentDirectoryChanged(frame) = values.try_recv()?.kind
+            else {
+                panic!("full agent frame")
+            };
+            let agents = &frame.state.value().unwrap().agents;
+            assert_eq!(agents.len(), 10_000);
+            assert_eq!(agents[0].agent_id, "row-00000");
+            assert_eq!(agents[0].summary.as_deref(), Some(expected));
+            assert_eq!(agents.last().unwrap().agent_id, "row-09999");
+            assert_eq!(agents[1].summary, None);
+        }
+        Ok(())
+    })?;
+    assert_eq!(*delivery.materialized.lock().unwrap(), [10_000, 10_000]);
+    events.writer.shutdown().await?;
+    Ok(())
 }

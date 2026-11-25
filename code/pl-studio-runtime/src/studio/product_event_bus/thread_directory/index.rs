@@ -77,6 +77,7 @@ pub(super) struct NativeAgentProjection {
 
 /// A local comparison result. The public event still carries the existing complete baseline.
 pub(super) struct AgentDirectoryChanges {
+    pub(super) previous: BTreeMap<String, Option<StudioAgentDirectoryEntry>>,
     pub(super) upserted: Vec<StudioAgentDirectoryEntry>,
     pub(super) removed: Vec<String>,
     pub(super) compared: usize,
@@ -340,6 +341,7 @@ impl ThreadDirectoryIndex {
         before: BTreeMap<String, Option<StudioAgentDirectoryEntry>>,
     ) -> AgentDirectoryChanges {
         let mut changes = AgentDirectoryChanges {
+            previous: BTreeMap::new(),
             upserted: Vec::new(),
             removed: Vec::new(),
             compared: 0,
@@ -348,6 +350,7 @@ impl ThreadDirectoryIndex {
             changes.compared += 1;
             let current = self.agent_directory_entry(&id);
             if current != previous {
+                changes.previous.insert(id.clone(), previous);
                 match current {
                     Some(entry) => changes.upserted.push(entry),
                     None => changes.removed.push(id),

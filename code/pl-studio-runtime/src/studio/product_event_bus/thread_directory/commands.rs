@@ -102,7 +102,8 @@ impl ProductEventBus {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before_agents = index.agent_directory_members([agent.agent_id.clone()]);
-        if index.agent_by_thread(thread_id).is_none() {
+        let recovered_member = index.agent_by_thread(thread_id).is_none();
+        if recovered_member {
             if index.deleted.contains(thread_id)
                 || index.deleted_sessions.contains(&agent.session_id)
             {
@@ -110,7 +111,11 @@ impl ProductEventBus {
             }
             let session = recovered_session.ok_or_else(|| StudioError::not_found("session"))?;
             let current = recovered_agent.ok_or_else(|| StudioError::not_found("session"))?;
-            index.insert_session(session);
+            // Recovery supplies missing membership, not a replacement for already-published
+            // common metadata. Catalog persistence may lag the current RAM title/delegation.
+            if index.get_session(&session.session_id).is_none() {
+                index.insert_session(session);
+            }
             index.insert_agent(current);
         }
         let Some((session_record, mut agent)) = index
@@ -127,7 +132,7 @@ impl ProductEventBus {
         } else {
             ThreadStatus::Closing
         });
-        if !newly_closed && previous_status == agent.native_status() {
+        if !recovered_member && !newly_closed && previous_status == agent.native_status() {
             return Ok(());
         }
         index.insert_agent(agent.clone());

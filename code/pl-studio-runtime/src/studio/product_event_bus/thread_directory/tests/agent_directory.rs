@@ -665,17 +665,18 @@ fn agent_collection_revision_and_dispatch_share_one_publication_lock() -> Result
                 None,
             )
         });
-        let event = runtime.block_on(internal.recv())?;
-        let StudioProductEventKind::AgentDirectoryChanged(state) = event.kind else {
-            panic!("execution-only agent event");
-        };
-        assert_eq!(state.state.revision(), before.state.revision() + 1);
+        let publication = runtime.block_on(internal.recv_publication())?;
         assert!(
             events.thread_index.try_lock().is_err(),
             "baseline cannot read a new revision with an older collection while dispatch is paused"
         );
         drop(topics);
         writer.join().unwrap()?;
+        let StudioProductEventKind::AgentDirectoryChanged(state) = publication.materialize().kind
+        else {
+            panic!("execution-only agent event");
+        };
+        assert_eq!(state.state.revision(), before.state.revision() + 1);
         Ok(state)
     })?;
     assert_eq!(runtime.block_on(events.read_agent_directory()), published);
