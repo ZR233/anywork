@@ -56,7 +56,7 @@ impl ProductPublication {
     }
 }
 
-/// Internal full-value receiver; its external envelopes and Tokio errors are unchanged.
+/// A receiver over the shared publication buffer. Value consumers materialize on delivery.
 pub(in crate::studio) struct ProductEventReceiver {
     receiver: broadcast::Receiver<ProductPublication>,
 }
@@ -71,6 +71,16 @@ impl ProductEventReceiver {
     ) -> Result<StudioProductEventEnvelope, ProductTopicRecvError> {
         let publication = self.recv_publication().await?;
         Ok(publication.materialize())
+    }
+
+    /// Catalog refresh uses directory changes as wakes and reads the other event kinds by value.
+    pub(in crate::studio) async fn recv_catalog_change(
+        &mut self,
+    ) -> Result<Option<StudioProductEventKind>, ProductTopicRecvError> {
+        Ok(match self.recv_publication().await? {
+            ProductPublication::Value(event) => Some(event.kind),
+            ProductPublication::AgentDirectory { .. } => None,
+        })
     }
 
     pub(super) async fn recv_publication(
@@ -273,10 +283,13 @@ impl ProductTopicReceiver {
 
     /// 不等待地领取下一条事件；空缓冲、关闭和滞后分别返回原始 Tokio 错误。
     pub fn try_recv(&mut self) -> Result<StudioProductEventEnvelope, ProductTopicTryRecvError> {
-        self.try_recv_publication()
-            .map(ProductPublication::materialize)
+        self.receiver
+            .as_mut()
+            .expect("live product topic registration")
+            .try_recv()
     }
 
+    #[cfg(test)]
     pub(super) fn try_recv_publication(
         &mut self,
     ) -> Result<ProductPublication, ProductTopicTryRecvError> {

@@ -312,8 +312,9 @@ impl StudioRuntime {
                     changed = settings.changed() => if changed.is_err() { break; },
                     changed = profiles.changed() => if changed.is_err() { break; },
                     changed = ssh_ready.changed() => if changed.is_err() { break; },
-                    event = events.recv() => match event {
-                        Ok(event) => sources.observe(event.kind),
+                    event = events.recv_catalog_change() => match event {
+                        Ok(Some(kind)) => sources.observe(kind),
+                        Ok(None) => {},
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sources.0.insert("lag".into(), runtime.agent_facility.product_events.current_sequence().to_string()); },
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     },

@@ -58,7 +58,7 @@ async fn signal_and_catalog_observers_publish_no_full_collection_at_scale() -> R
         .map(|n| row(&format!("row-{n:05}"), "p1", n))
         .collect::<Vec<_>>();
     *events.thread_index.lock().unwrap() = super::index::memory_index(&rows);
-    let mut catalog = events.subscribe_catalog_events();
+    let mut catalog = events.subscribe_internal();
     let mut signal = events.subscribe_topic_signal(&crate::StudioProductTopic::AgentDirectory);
     let before = events.read_agent_directory().await;
     let token = events.begin_native_observation("row-00000").unwrap();
@@ -70,19 +70,26 @@ async fn signal_and_catalog_observers_publish_no_full_collection_at_scale() -> R
         patch_summary(&events, &token, 2, "second", 0)
     })?;
     assert_eq!(*work.compared.lock().unwrap(), [1, 1, 1]);
+    assert_eq!(events.current_sequence(), sequence + 2);
+    let recovery = events.emit_recovery_state(crate::ObservedResource::ready(1, 0, vec![]));
+    capture(&work, || {
+        assert_eq!(catalog.recv_catalog_change().now_or_never().unwrap()?, None);
+        assert_eq!(catalog.recv_catalog_change().now_or_never().unwrap()?, None);
+        assert_eq!(
+            catalog.recv_catalog_change().now_or_never().unwrap()?,
+            Some(recovery.kind)
+        );
+        assert!(catalog.recv_catalog_change().now_or_never().is_none());
+        Ok(())
+    })?;
     assert!(
         work.materialized.lock().unwrap().is_empty(),
         "wake-only consumers must not materialize the directory"
     );
-    assert_eq!(events.current_sequence(), sequence + 2);
     assert!(signal.changed().now_or_never().unwrap().is_ok());
     assert!(
         signal.changed().now_or_never().is_none(),
         "the duplicate patch must not produce another wake"
-    );
-    assert!(
-        catalog.try_recv().is_err(),
-        "catalog refresh gets AgentDirectory through its signal"
     );
     let after = events.read_agent_directory().await;
     assert_eq!(after.state.revision(), before.state.revision() + 2);
@@ -92,12 +99,6 @@ async fn signal_and_catalog_observers_publish_no_full_collection_at_scale() -> R
         Some("second")
     );
     assert_eq!(before.state.value().unwrap().agents[0].summary, None);
-    let recovery = events.emit_recovery_state(crate::ObservedResource::ready(1, 0, vec![]));
-    assert_eq!(
-        catalog.try_recv()?,
-        recovery,
-        "other catalog values keep their original envelope"
-    );
     events.writer.shutdown().await?;
     Ok(())
 }
