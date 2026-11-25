@@ -108,6 +108,11 @@ bots-env conversations prepare-pages
 EOF、取消、关闭失败及未完成 fixture 主步骤分别报告，人类 verdict 默认 pending。
 内部内容捕获和 VM 脚本仅服务现有自动化/测量，不再作为人工截图教程。
 
+`done` 由 `manual-gui` 消费，真实供应商入口 `run-gui --inspect --native-launch` 不读取该指令。
+真实实例通过窗口关闭，或经官方 Dart MCP 的 VM Service 调用已有 `ext.anywork.requestExit`
+进入产品退出协调器；随后等待原启动任务终态，核对 `--native-exit-report` 的退出码、信号与后代回收。
+需要实时 VM 地址时，启动前将输出保留在本会话日志中；不要为取得日志取消正在运行的实例。
+
 结合产品关闭结果、所属 launcher 终态及进程树事实判断回收。Windows Job Object、Linux
 subreaper、macOS `process-wrap` 进程组各有边界，macOS 不涵盖主动脱离组的子进程。
 若必须强制回收残留，不能称应用自然退出。取消只处理本次所有的进程，不无差别杀桌面或邻居会话。

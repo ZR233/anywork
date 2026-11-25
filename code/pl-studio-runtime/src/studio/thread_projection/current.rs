@@ -967,13 +967,11 @@ impl CurrentState {
                 ));
             }
         }
-        for (call_id, progress) in &saved.state.tool_previews {
-            let task = saved
-                .state
-                .tasks
-                .values()
-                .find(|task| &task.call_id == call_id)
-                .ok_or_else(|| anyhow::anyhow!("saved preview has no task"))?;
+        for task in saved.state.tasks.values() {
+            let call_id = &task.call_id;
+            let Some(progress) = saved.state.tool_previews.get(call_id) else {
+                continue;
+            };
             let id = super::order::tool_id(call_id);
             for part in &progress.parts {
                 active.push(ActiveTextPart::new(

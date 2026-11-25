@@ -911,7 +911,7 @@ impl Owner {
                 state: history_state,
                 output_claim,
             });
-            self.state.retain_live_facts()?;
+            self.retain_live_facts()?;
             self.published = self.state.clone();
             self.effect_window.push_current(export.clone());
             self.pending_effects.push_back(PendingEffect {
@@ -927,7 +927,7 @@ impl Owner {
         // back a pruned checkpoint; the resident state drops the same facts right after.
         let checkpoint =
             ThreadCheckpoint::capture_transfer(self.id.clone(), sequence, self.state.clone());
-        self.state.retain_live_facts()?;
+        self.retain_live_facts()?;
         self.published = self.state.clone();
         // The operation about to see its result committed names the reservation that funds it; a
         // publish that commits no effect (handled above) drops the claim, so the operation's own
@@ -943,6 +943,17 @@ impl Owner {
         self.effect_window.push(effect);
         self.admit_cold();
         self.publish_snapshot();
+        Ok(())
+    }
+
+    fn retain_live_facts(&mut self) -> Result<(), ThreadError> {
+        self.state.retain_live_facts()?;
+        self.current_retired_previews.retain(|call_id, _| {
+            self.state
+                .tasks
+                .values()
+                .any(|task| &task.call_id == call_id)
+        });
         Ok(())
     }
 

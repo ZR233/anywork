@@ -210,7 +210,6 @@ impl Owner {
             && self.state.inbox.is_empty()
         {
             self.current_call = None;
-            self.current_retired_previews.clear();
         }
     }
 
@@ -250,8 +249,6 @@ impl Owner {
             }
             return;
         }
-        self.current_retired_previews
-            .retain(|call, _| self.state.tasks.values().any(|task| task.call_id == *call));
         self.current_call = Some(CurrentModelCall {
             source_run_id: self.runtime_epoch,
             source_execution_id: self

@@ -252,12 +252,6 @@ impl Owner {
         }
         completion.cancellation = cancellation;
         let id = completion.call.call.call_id.clone();
-        if let Some(progress) = self.state.tool_progress.get(&format!("task:{id}")) {
-            self.current_retired_previews.insert(
-                id.clone(),
-                current::SavedToolProgress::capture(self.runtime_epoch, progress),
-            );
-        }
         let operation = tool_output_operation(&id);
         let result = self.stage_tool_execution(completion);
         let terminal =
