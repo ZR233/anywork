@@ -663,7 +663,7 @@ class _NativeHistoryTransport extends TestDemoStudioTransport {
     next: next,
     items: [
       for (var seq = newest; seq > newest - count; seq--)
-        DividerTimelineItem(_row(seq)),
+        BoundaryTimelineItem(_row(seq)),
     ],
   );
 
@@ -677,7 +677,7 @@ class _NativeHistoryTransport extends TestDemoStudioTransport {
       seq: seq,
       eventId: 'event:$id',
       kind: 'input_accepted',
-      timelineRole: HistoryTimelineRole.divider,
+      timelineRole: HistoryTimelineRole.boundary,
       recordedAt: seq * 1000,
       entityId: id,
       rowKey: 'row:$seq',

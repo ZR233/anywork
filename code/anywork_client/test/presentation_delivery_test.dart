@@ -193,12 +193,12 @@ void main() {
     () async {
       final reader = TestHistoryReader();
       final cut = HistoryCut('cut-7');
-      final item = DividerTimelineItem(
+      final item = BoundaryTimelineItem(
         HistoryEventRecord(
           seq: 7,
           eventId: 'event-1',
           kind: 'text_completed',
-          timelineRole: HistoryTimelineRole.divider,
+          timelineRole: HistoryTimelineRole.boundary,
           recordedAt: 100,
           turnId: 'turn',
           entityId: 'entity-1',

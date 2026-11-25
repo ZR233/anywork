@@ -34,13 +34,6 @@ frb_presentation.BridgeHistoryEventsQuery _historyEventsQueryToFrb(
     ),
   CallHistoryEvents(:final callId) =>
     frb_presentation.BridgeHistoryEventsQuery.call(callId: callId),
-  MessageHistoryEvents(:final messageId) =>
-    frb_presentation.BridgeHistoryEventsQuery.message(messageId: messageId),
-  AttemptHistoryEvents(:final runId, :final attemptId) =>
-    frb_presentation.BridgeHistoryEventsQuery.attempt(
-      runId: runId,
-      attemptId: attemptId,
-    ),
   OriginalsHistoryEvents(:final queryClass, :final parentId) =>
     frb_presentation.BridgeHistoryEventsQuery.originals(
       queryClass: queryClass,
@@ -53,8 +46,8 @@ frb_presentation.BridgeHistoryEventsQuery _historyEventsQueryToFrb(
 HistoryTimelineRole _historyTimelineRoleFromFrb(
   frb_presentation.BridgeHistoryTimelineRole value,
 ) => switch (value) {
-  frb_presentation.BridgeHistoryTimelineRole.divider =>
-    HistoryTimelineRole.divider,
+  frb_presentation.BridgeHistoryTimelineRole.boundary =>
+    HistoryTimelineRole.boundary,
   frb_presentation.BridgeHistoryTimelineRole.work => HistoryTimelineRole.work,
   frb_presentation.BridgeHistoryTimelineRole.hidden =>
     HistoryTimelineRole.hidden,
@@ -242,8 +235,8 @@ HistoryWorkRange _historyWorkRangeFromFrb(
 HistoryTimelineItem _historyTimelineItemFromFrb(
   frb_presentation.BridgeHistoryTimelineItem value,
 ) => switch (value) {
-  frb_presentation.BridgeHistoryTimelineItem_Divider(:final field0) =>
-    DividerTimelineItem(_historyEventRecordFromFrb(field0)),
+  frb_presentation.BridgeHistoryTimelineItem_Boundary(:final field0) =>
+    BoundaryTimelineItem(_historyEventRecordFromFrb(field0)),
   frb_presentation.BridgeHistoryTimelineItem_WorkRange(:final field0) =>
     WorkRangeTimelineItem(_historyWorkRangeFromFrb(field0)),
 };
@@ -530,6 +523,13 @@ CurrentProjection _currentProjectionFromFrb(
       ),
   ],
   collections: value.collections.map(_currentCollectionRefFromFrb).toList(),
+  modelRecovery: value.modelRecovery == null
+      ? null
+      : CurrentModelRecovery(
+          attempt: value.modelRecovery!.attempt,
+          maxAttempts: value.modelRecovery!.maxAttempts,
+          reason: value.modelRecovery!.reason,
+        ),
 );
 
 CurrentAtom _currentAtomFromFrb(frb_presentation.BridgeCurrentAtom value) =>

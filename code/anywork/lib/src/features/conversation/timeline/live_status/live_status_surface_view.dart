@@ -60,13 +60,18 @@ class LiveStatusSurfaceView extends StatelessWidget {
     final barChildren = <Widget>[];
 
     switch (presenting.primary) {
-      case LiveReconnectingPhase(:final detail):
+      case LiveReconnectingPhase(:final detail, :final attempt, :final maxAttempts):
         barChildren.add(
           Flexible(
             key: const ValueKey('live-primary-reconnecting'),
             fit: FlexFit.loose,
             child: _StatusHeaderRow(
-              spec: LiveStatusHeaderSpec.forReconnecting(context, detail),
+              spec: LiveStatusHeaderSpec.forReconnecting(
+                context,
+                detail,
+                attempt: attempt,
+                maxAttempts: maxAttempts,
+              ),
             ),
           ),
         );

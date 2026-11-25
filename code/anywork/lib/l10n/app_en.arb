@@ -3648,6 +3648,23 @@
   "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
   "liveStatusConnectionDisconnected": "Live updates disconnected",
   "liveStatusConnectionReconnecting": "Reconnecting live updates",
+  "liveStatusModelReconnecting": "Model disconnected, retrying ({attempt}/{max})",
+  "@liveStatusModelReconnecting": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      },
+      "max": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineConnectionModelDisconnected": "Model connection disconnected",
+  "timelineConnectionModelReconnected": "Model connection reconnected",
+  "timelineConnectionSshDisconnected": "SSH connection disconnected",
+  "timelineConnectionSshReconnected": "SSH connection reconnected",
+  "timelineConnectionGenericDisconnected": "Connection disconnected",
+  "timelineConnectionGenericReconnected": "Connection reconnected",
   "liveStatusMembersUnavailable": "Member view unavailable",
   "liveStatusMembersLoading": "Loading sealed members…",
   "liveStatusRetryAction": "Retry",

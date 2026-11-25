@@ -205,14 +205,6 @@ pub struct HistoryStatus {
     pub accepting: bool,
 }
 
-pub(super) fn source_key(source: &HistorySource) -> Result<(String, String)> {
-    let kind = match source {
-        HistorySource::ForegroundTurn { .. } => "foreground_turn",
-        HistorySource::Input { .. } => "input",
-        HistorySource::InboxMessage { .. } => "inbox_message",
-        HistorySource::BackgroundResult { .. } => "background_result",
-        HistorySource::Operation { .. } => "operation",
-        HistorySource::Receipt { .. } => "receipt",
-    };
-    Ok((kind.into(), serde_json::to_string(source)?))
+pub(super) fn source_key(source: &HistorySource) -> Result<String> {
+    Ok(serde_json::to_string(source)?)
 }

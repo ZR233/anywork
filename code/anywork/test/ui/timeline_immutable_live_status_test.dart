@@ -45,7 +45,7 @@ HistoryEventRecord _inputDivider({
   seq: seq,
   eventId: 'event:$id',
   kind: 'input_accepted',
-  timelineRole: HistoryTimelineRole.divider,
+  timelineRole: HistoryTimelineRole.boundary,
   recordedAt: seq * 1000,
   occurredAt: seq * 1000,
   runId: runId,
@@ -85,7 +85,7 @@ HistoryEventRecord _finalTextDivider({
   seq: seq,
   eventId: 'event:$id',
   kind: 'text_completed',
-  timelineRole: HistoryTimelineRole.divider,
+  timelineRole: HistoryTimelineRole.boundary,
   recordedAt: seq * 1000,
   occurredAt: seq * 1000,
   runId: runId,
@@ -387,7 +387,7 @@ void main() {
         runId = ownerId;
         return switch (stage) {
           1 => [
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _inputDivider(
                 seq: 1,
                 id: 'input-1',
@@ -411,7 +411,7 @@ void main() {
                 eventCount: 2,
               ),
             ),
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _inputDivider(
                 seq: 1,
                 id: 'input-1',
@@ -422,7 +422,7 @@ void main() {
             ),
           ],
           3 => [
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _finalTextDivider(
                 seq: 4,
                 id: 'text-1',
@@ -444,7 +444,7 @@ void main() {
                 eventCount: 2,
               ),
             ),
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _inputDivider(
                 seq: 1,
                 id: 'input-1',
@@ -455,7 +455,7 @@ void main() {
             ),
           ],
           _ => [
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _inputDivider(
                 seq: 5,
                 id: 'input-2',
@@ -464,7 +464,7 @@ void main() {
                 turnId: turn2,
               ),
             ),
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _finalTextDivider(
                 seq: 4,
                 id: 'text-1',
@@ -486,7 +486,7 @@ void main() {
                 eventCount: 2,
               ),
             ),
-            DividerTimelineItem(
+            BoundaryTimelineItem(
               _inputDivider(
                 seq: 1,
                 id: 'input-1',

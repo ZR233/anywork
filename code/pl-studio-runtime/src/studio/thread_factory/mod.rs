@@ -24,6 +24,7 @@ pub(in crate::studio) use worktree_close::removal_definitely_refused as worktree
 mod root_resources;
 mod session_files;
 mod ssh_binding;
+mod ssh_connection_events;
 mod thread_seed;
 mod thread_tools;
 pub(crate) mod tool_bindings;

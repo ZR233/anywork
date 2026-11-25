@@ -487,7 +487,7 @@ async fn count_head(
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
     match item {
-        HistoryTimelineItem::Divider(record) => {
+        HistoryTimelineItem::Boundary(record) => {
             inventory.main_items = inventory
                 .main_items
                 .checked_add(1)

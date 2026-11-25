@@ -166,23 +166,23 @@ impl HistoryReader {
         self.run(move |reader| async move {
             demand.validate()?;
             let snapshot = reader.snapshot().await?;
-            let (cut, through, mut upper_seq, mut upper_divider_seq) =
+            let (cut, through, mut upper_seq, mut upper_boundary_seq) =
                 if let Some(cursor_token) = cursor {
                     match reader.inner.codec.decode(&cursor_token)? {
                         Token::TimelinePage {
                             cut: saved,
                             upper_seq,
-                            upper_divider_seq,
+                            upper_boundary_seq,
                         } if cut.as_ref().is_none_or(|c| c == &saved) => {
                             let through = reader.inner.codec.through(&saved)?;
                             if through > snapshot.head
                                 || upper_seq > through
-                                || upper_divider_seq
-                                    .is_some_and(|div| div > through || div <= upper_seq)
+                                || upper_boundary_seq
+                                    .is_some_and(|bound| bound > through || bound <= upper_seq)
                             {
                                 return Err(HistoryError::InvalidCursor);
                             }
-                            (saved, through, upper_seq, upper_divider_seq)
+                            (saved, through, upper_seq, upper_boundary_seq)
                         }
                         _ => return Err(HistoryError::InvalidCursor),
                     }
@@ -198,36 +198,50 @@ impl HistoryReader {
                     (saved, through, through, None)
                 };
 
+            let max_rows = demand.max_rows as usize;
             let mut items: Vec<HistoryTimelineItem> = Vec::new();
             let mut examined: u64 = 0;
             let mut next_cursor: Option<String> = None;
 
-            loop {
-                if items.len() >= demand.max_rows as usize {
-                    if has_visible_timeline_items(&snapshot, upper_seq).await? {
-                        next_cursor = Some(reader.inner.codec.encode(Token::TimelinePage {
-                            cut: cut.clone(),
-                            upper_seq,
-                            upper_divider_seq,
-                        })?);
-                    }
-                    break;
-                }
-                if upper_seq == 0 {
-                    break;
-                }
-                let prev_div = latest_divider(&snapshot, upper_seq).await?;
-                let lower_excl = prev_div.as_ref().map_or(0, |d| d.seq);
+            'outer: while items.len() < max_rows && upper_seq > 0 {
+                let remaining_slots = max_rows - items.len();
+                let batch_size = remaining_slots.min(64);
+                let fetch_limit = batch_size + 1;
+                let bounds = prefetch_boundaries(&snapshot, upper_seq, fetch_limit).await?;
+                let exhausted_all_boundaries = bounds.len() < fetch_limit;
+                let process_count = bounds.len().min(batch_size);
 
-                if upper_seq > lower_excl {
-                    examined += 1;
+                let mut windows: Vec<(u64, u64)> = Vec::with_capacity(process_count + 1);
+                let mut gap_indices: Vec<Option<usize>> = vec![None; process_count];
+                let mut gap_upper = upper_seq;
+                for (i, boundary) in bounds.iter().take(process_count).enumerate() {
+                    if gap_upper > boundary.seq {
+                        gap_indices[i] = Some(windows.len());
+                        windows.push((boundary.seq, gap_upper));
+                    }
+                    gap_upper = boundary.seq.saturating_sub(1);
+                }
+                let trailing_gap_index = if exhausted_all_boundaries && gap_upper > 0 {
+                    let idx = windows.len();
+                    windows.push((0, gap_upper));
+                    Some(idx)
+                } else {
+                    None
+                };
+
+                let summaries =
+                    merged_work_range_summaries_batch(&snapshot, &windows).await?;
+
+                for (i, boundary) in bounds.into_iter().take(process_count).enumerate() {
                     if let Some(summary) =
-                        merged_work_range_summary(&snapshot, lower_excl, upper_seq).await?
+                        gap_indices[i].and_then(|w_idx| summaries[w_idx].clone())
                     {
+                        examined += 1;
+                        let lower_excl = boundary.seq;
                         let range = HistoryWorkRange {
                             range_id: format!("work:{}", summary.first_seq),
-                            after_seq: prev_div.as_ref().map(|d| d.seq),
-                            before_seq: upper_divider_seq,
+                            after_seq: Some(lower_excl),
+                            before_seq: upper_boundary_seq,
                             first_seq: summary.first_seq,
                             last_seq: summary.last_seq,
                             started_at: summary.started_at,
@@ -235,20 +249,16 @@ impl HistoryReader {
                             run_id: summary.run_id,
                             event_count: summary.event_count,
                         };
-                        let candidate_next = if lower_excl > 0 {
-                            Some(reader.inner.codec.encode(Token::TimelinePage {
-                                cut: cut.clone(),
-                                upper_seq: lower_excl,
-                                upper_divider_seq,
-                            })?)
-                        } else {
-                            None
-                        };
+                        let candidate_next = Some(reader.inner.codec.encode(Token::TimelinePage {
+                            cut: cut.clone(),
+                            upper_seq: lower_excl,
+                            upper_boundary_seq,
+                        })?);
                         items.push(HistoryTimelineItem::WorkRange(range));
                         let probe = HistoryTimelinePage {
                             cut: cut.clone(),
                             items: items.clone(),
-                            next: candidate_next,
+                            next: candidate_next.clone(),
                         };
                         if !demand.fits(&probe)? {
                             items.pop();
@@ -260,62 +270,105 @@ impl HistoryReader {
                             next_cursor = Some(reader.inner.codec.encode(Token::TimelinePage {
                                 cut: cut.clone(),
                                 upper_seq,
-                                upper_divider_seq,
+                                upper_boundary_seq,
                             })?);
-                            break;
+                            break 'outer;
                         }
-                        if items.len() >= demand.max_rows as usize {
-                            if has_visible_timeline_items(&snapshot, lower_excl).await? {
-                                next_cursor =
-                                    Some(reader.inner.codec.encode(Token::TimelinePage {
-                                        cut: cut.clone(),
-                                        upper_seq: lower_excl,
-                                        upper_divider_seq,
-                                    })?);
-                            }
-                            break;
+                        if items.len() >= max_rows {
+                            next_cursor = candidate_next;
+                            break 'outer;
                         }
+                    }
+
+                    examined += 1;
+                    let boundary_seq = boundary.seq;
+                    let next_upper = boundary_seq.saturating_sub(1);
+                    let next_upper_boundary = Some(boundary_seq);
+                    let has_more_below = if next_upper == 0 {
+                        false
+                    } else if i + 1 < process_count || !exhausted_all_boundaries {
+                        true
+                    } else {
+                        trailing_gap_index.is_some_and(|w_idx| summaries[w_idx].is_some())
+                    };
+                    let candidate_next = if has_more_below {
+                        Some(reader.inner.codec.encode(Token::TimelinePage {
+                            cut: cut.clone(),
+                            upper_seq: next_upper,
+                            upper_boundary_seq: next_upper_boundary,
+                        })?)
+                    } else {
+                        None
+                    };
+                    items.push(HistoryTimelineItem::Boundary(boundary));
+                    let probe = HistoryTimelinePage {
+                        cut: cut.clone(),
+                        items: items.clone(),
+                        next: candidate_next.clone(),
+                    };
+                    if !demand.fits(&probe)? {
+                        items.pop();
+                        if items.is_empty() {
+                            return Err(HistoryError::InvalidDemand(
+                                "single timeline Boundary exceeds byte demand".into(),
+                            ));
+                        }
+                        next_cursor = Some(reader.inner.codec.encode(Token::TimelinePage {
+                            cut: cut.clone(),
+                            upper_seq: boundary_seq,
+                            upper_boundary_seq,
+                        })?);
+                        break 'outer;
+                    }
+                    upper_boundary_seq = next_upper_boundary;
+                    upper_seq = next_upper;
+                    if items.len() >= max_rows {
+                        next_cursor = candidate_next;
+                        break 'outer;
                     }
                 }
 
-                let Some(divider) = prev_div else {
-                    break;
-                };
-                examined += 1;
-                let divider_seq = divider.seq;
-                let next_upper = divider_seq.saturating_sub(1);
-                let next_upper_div = Some(divider_seq);
-                let candidate_next = if next_upper > 0 {
-                    Some(reader.inner.codec.encode(Token::TimelinePage {
+                if items.len() < max_rows
+                    && exhausted_all_boundaries
+                    && let Some(summary) =
+                        trailing_gap_index.and_then(|w_idx| summaries[w_idx].clone())
+                {
+                    examined += 1;
+                    let range = HistoryWorkRange {
+                        range_id: format!("work:{}", summary.first_seq),
+                        after_seq: None,
+                        before_seq: upper_boundary_seq,
+                        first_seq: summary.first_seq,
+                        last_seq: summary.last_seq,
+                        started_at: summary.started_at,
+                        ended_at: summary.ended_at,
+                        run_id: summary.run_id,
+                        event_count: summary.event_count,
+                    };
+                    items.push(HistoryTimelineItem::WorkRange(range));
+                    let probe = HistoryTimelinePage {
                         cut: cut.clone(),
-                        upper_seq: next_upper,
-                        upper_divider_seq: next_upper_div,
-                    })?)
-                } else {
-                    None
-                };
-                items.push(HistoryTimelineItem::Divider(divider));
-                let probe = HistoryTimelinePage {
-                    cut: cut.clone(),
-                    items: items.clone(),
-                    next: candidate_next,
-                };
-                if !demand.fits(&probe)? {
-                    items.pop();
-                    if items.is_empty() {
-                        return Err(HistoryError::InvalidDemand(
-                            "single timeline Divider exceeds byte demand".into(),
-                        ));
+                        items: items.clone(),
+                        next: None,
+                    };
+                    if !demand.fits(&probe)? {
+                        items.pop();
+                        if items.is_empty() {
+                            return Err(HistoryError::InvalidDemand(
+                                "single timeline WorkRange exceeds byte demand".into(),
+                            ));
+                        }
+                        next_cursor = Some(reader.inner.codec.encode(Token::TimelinePage {
+                            cut: cut.clone(),
+                            upper_seq,
+                            upper_boundary_seq,
+                        })?);
+                        break 'outer;
                     }
-                    next_cursor = Some(reader.inner.codec.encode(Token::TimelinePage {
-                        cut: cut.clone(),
-                        upper_seq: divider_seq,
-                        upper_divider_seq,
-                    })?);
-                    break;
+                    upper_seq = 0;
+                } else if exhausted_all_boundaries {
+                    upper_seq = 0;
                 }
-                upper_divider_seq = next_upper_div;
-                upper_seq = next_upper;
             }
 
             snapshot.tx.commit().await?;
@@ -1215,66 +1268,70 @@ async fn resolve_row_head(
     })
 }
 
-async fn latest_divider(snapshot: &Snapshot, upper_seq: u64) -> Result<Option<HistoryEventRecord>> {
-    let pending = snapshot.pending.latest_divider(upper_seq);
-    let database = db::latest_divider_at_or_before(&snapshot.tx, upper_seq).await?;
-    Ok(match (pending, database) {
-        (Some(p), Some(d)) => {
-            if p.event.seq >= d.record.seq {
-                Some(p.event.to_record())
-            } else {
-                Some(d.record)
+async fn prefetch_boundaries(
+    snapshot: &Snapshot,
+    upper_seq: u64,
+    limit: usize,
+) -> Result<Vec<HistoryEventRecord>> {
+    if upper_seq == 0 || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let pending = snapshot.pending.boundaries_at_or_before(upper_seq, limit);
+    let mut merged: Vec<HistoryEventRecord> =
+        pending.into_iter().map(|entry| entry.event.to_record()).collect();
+    if merged.len() < limit {
+        let remaining = limit - merged.len();
+        let db_rows = db::boundaries_at_or_before(&snapshot.tx, upper_seq, remaining).await?;
+        for row in db_rows {
+            if merged.last().is_none_or(|last| last.seq > row.record.seq) {
+                merged.push(row.record);
+            } else if !merged.iter().any(|existing| existing.seq == row.record.seq) {
+                merged.push(row.record);
+                merged.sort_by(|a, b| b.seq.cmp(&a.seq));
             }
         }
-        (Some(p), None) => Some(p.event.to_record()),
-        (None, Some(d)) => Some(d.record),
-        (None, None) => None,
-    })
+        merged.truncate(limit);
+    }
+    Ok(merged)
 }
 
-async fn merged_work_range_summary(
+async fn merged_work_range_summaries_batch(
     snapshot: &Snapshot,
-    lower_excl: u64,
-    upper_incl: u64,
-) -> Result<Option<WorkRangeSummary>> {
-    let db_summary = db::work_range_summary(&snapshot.tx, lower_excl, upper_incl).await?;
-    let pending_after_excl = db_summary
-        .as_ref()
-        .map_or(lower_excl, |s| s.last_seq.max(lower_excl));
-    let pending_summary = snapshot
-        .pending
-        .work_range_summary(pending_after_excl, upper_incl);
-    Ok(match (db_summary, pending_summary) {
-        (Some(db_s), Some(p_s)) => Some(WorkRangeSummary {
-            first_seq: db_s.first_seq,
-            last_seq: p_s.last_seq,
-            started_at: match (db_s.started_at, p_s.started_at) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            },
-            ended_at: match (db_s.ended_at, p_s.ended_at) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (a, b) => a.or(b),
-            },
-            run_id: p_s.run_id.or(db_s.run_id),
-            event_count: db_s.event_count + p_s.event_count,
-        }),
-        (Some(db_s), None) => Some(db_s),
-        (None, Some(p_s)) => Some(p_s),
-        (None, None) => None,
-    })
-}
-
-async fn has_visible_timeline_items(snapshot: &Snapshot, upper_seq: u64) -> Result<bool> {
-    if upper_seq == 0 {
-        return Ok(false);
+    windows: &[(u64, u64)],
+) -> Result<Vec<Option<WorkRangeSummary>>> {
+    if windows.is_empty() {
+        return Ok(Vec::new());
     }
-    if latest_divider(snapshot, upper_seq).await?.is_some() {
-        return Ok(true);
+    let db_summaries = db::work_range_summaries_batch(&snapshot.tx, windows).await?;
+    let mut merged = Vec::with_capacity(windows.len());
+    for (&(lower_excl, upper_incl), db_summary) in windows.iter().zip(db_summaries) {
+        let pending_after_excl = db_summary
+            .as_ref()
+            .map_or(lower_excl, |s| s.last_seq.max(lower_excl));
+        let pending_summary = snapshot
+            .pending
+            .work_range_summary(pending_after_excl, upper_incl);
+        merged.push(match (db_summary, pending_summary) {
+            (Some(db_s), Some(p_s)) => Some(WorkRangeSummary {
+                first_seq: db_s.first_seq,
+                last_seq: p_s.last_seq,
+                started_at: match (db_s.started_at, p_s.started_at) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                },
+                ended_at: match (db_s.ended_at, p_s.ended_at) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                },
+                run_id: p_s.run_id.or(db_s.run_id),
+                event_count: db_s.event_count + p_s.event_count,
+            }),
+            (Some(db_s), None) => Some(db_s),
+            (None, Some(p_s)) => Some(p_s),
+            (None, None) => None,
+        });
     }
-    Ok(merged_work_range_summary(snapshot, 0, upper_seq)
-        .await?
-        .is_some())
+    Ok(merged)
 }
 
 fn validate_body_ref(reference: &HistoryEventBodyRef, body: &Body) -> Result<()> {

@@ -513,9 +513,8 @@ fn validate_requests(requests: &[Value]) -> Result<()> {
         ensure!(
             !input.contains("WS abandoned fragment")
                 && !input.contains("WS abandoned second fragment")
-                && !input.contains("WS cancelled fragment")
-                && !input.contains("连接中断，正在重试"),
-            "failed body or recovery notice entered model input"
+                && !input.contains("WS cancelled fragment"),
+            "failed body entered model input"
         );
     }
     Ok(())

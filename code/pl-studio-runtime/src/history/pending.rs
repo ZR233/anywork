@@ -112,12 +112,17 @@ impl Pending {
             .find(|entry| entry.event.row_key.as_deref() == Some(row_key))
     }
 
-    pub fn latest_divider(&self, upper_seq: u64) -> Option<&Arc<Accepted>> {
+    pub fn boundaries_at_or_before(&self, upper_seq: u64, limit: usize) -> Vec<&Arc<Accepted>> {
+        if upper_seq == 0 || limit == 0 {
+            return Vec::new();
+        }
         self.events
             .range(..=upper_seq)
             .rev()
             .map(|(_, entry)| entry)
-            .find(|entry| entry.event.timeline_role == HistoryTimelineRole::Divider)
+            .filter(|entry| entry.event.timeline_role == HistoryTimelineRole::Boundary)
+            .take(limit)
+            .collect()
     }
 
     pub fn work_range_summary(&self, lower_excl: u64, upper_incl: u64) -> Option<WorkRangeSummary> {
@@ -215,13 +220,6 @@ impl Pending {
             HistoryEventsQuery::Source { source } => event.source.as_ref() == Some(source),
             HistoryEventsQuery::Call { call_id } => {
                 event.call_id.as_deref() == Some(call_id.as_str())
-            }
-            HistoryEventsQuery::Message { message_id } => {
-                event.message_id.as_deref() == Some(message_id.as_str())
-            }
-            HistoryEventsQuery::Attempt { run_id, attempt_id } => {
-                event.run_id.as_deref() == Some(run_id.as_str())
-                    && event.attempt_id.as_deref() == Some(attempt_id.as_str())
             }
             HistoryEventsQuery::Originals { scope } => {
                 let Some(original) = &event.original else {

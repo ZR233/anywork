@@ -13803,6 +13803,48 @@ abstract class AppLocalizations {
   /// **'Reconnecting live updates'**
   String get liveStatusConnectionReconnecting;
 
+  /// No description provided for @liveStatusModelReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Model disconnected, retrying ({attempt}/{max})'**
+  String liveStatusModelReconnecting(int attempt, int max);
+
+  /// No description provided for @timelineConnectionModelDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Model connection disconnected'**
+  String get timelineConnectionModelDisconnected;
+
+  /// No description provided for @timelineConnectionModelReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Model connection reconnected'**
+  String get timelineConnectionModelReconnected;
+
+  /// No description provided for @timelineConnectionSshDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'SSH connection disconnected'**
+  String get timelineConnectionSshDisconnected;
+
+  /// No description provided for @timelineConnectionSshReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'SSH connection reconnected'**
+  String get timelineConnectionSshReconnected;
+
+  /// No description provided for @timelineConnectionGenericDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection disconnected'**
+  String get timelineConnectionGenericDisconnected;
+
+  /// No description provided for @timelineConnectionGenericReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection reconnected'**
+  String get timelineConnectionGenericReconnected;
+
   /// No description provided for @liveStatusMembersUnavailable.
   ///
   /// In en, this message translates to:

@@ -14,7 +14,7 @@ pub(super) fn number(value: u64) -> Result<i64> {
         .map_err(|_| HistoryError::InvalidEvent("history integer exceeds SQLite range".into()))
 }
 
-const COLUMNS: &str = "seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,attempt_id,call_id,entity_id,message_id,tool_name,source_kind,source_id,query_class,parent_id,original_kind,row_scope,row_key,is_anchor,payload_schema,payload_json";
+const COLUMNS: &str = "seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,attempt_id,call_id,entity_id,message_id,tool_name,source_id,query_class,parent_id,original_kind,row_scope,row_key,is_anchor,payload_schema,payload_json";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Record {
@@ -36,22 +36,14 @@ pub(super) fn decode_row(row: QueryResult) -> Result<Record> {
         .map_err(|_| HistoryError::Integrity("negative event sequence".into()))?;
     let event_id: String = row.try_get("", "event_id")?;
     let kind: String = row.try_get("", "kind")?;
-    let timeline_role_str: String = row.try_get("", "timeline_role")?;
-    let timeline_role = HistoryTimelineRole::from_db(&timeline_role_str).ok_or_else(|| {
-        HistoryError::Integrity(format!("unknown timeline_role {timeline_role_str}"))
+    let timeline_role_int: i64 = row.try_get("", "timeline_role")?;
+    let timeline_role = HistoryTimelineRole::from_db_int(timeline_role_int).ok_or_else(|| {
+        HistoryError::Integrity(format!("unknown timeline_role {timeline_role_int}"))
     })?;
-    let source_kind: Option<String> = row.try_get("", "source_kind")?;
     let source_id: Option<String> = row.try_get("", "source_id")?;
     let source = source_id
         .map(|raw| serde_json::from_str::<HistorySource>(&raw))
         .transpose()?;
-    if let Some(src) = &source
-        && Some(source_key(src)?.0) != source_kind
-    {
-        return Err(HistoryError::Integrity(
-            "source identity differs from its indexed kind".into(),
-        ));
-    }
     let tool_name: Option<String> = row.try_get("", "tool_name")?;
     let query_class: Option<String> = row.try_get("", "query_class")?;
     let original = if let Some(query_class) = query_class {
@@ -137,90 +129,114 @@ pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
         .map_err(|_| HistoryError::Integrity("negative history head".into()))
 }
 
-pub(super) async fn latest_divider_at_or_before(
+pub(super) async fn boundaries_at_or_before(
     db: &impl ConnectionTrait,
     upper_seq: u64,
-) -> Result<Option<Record>> {
-    if upper_seq == 0 {
-        return Ok(None);
+    limit: usize,
+) -> Result<Vec<Record>> {
+    if upper_seq == 0 || limit == 0 {
+        return Ok(Vec::new());
     }
-    db.query_one_raw(statement(
-        &format!(
-            "SELECT {COLUMNS} FROM history_events \
-             WHERE timeline_role='divider' AND seq<=? ORDER BY seq DESC LIMIT 1"
-        ),
-        vec![number(upper_seq)?.into()],
-    ))
-    .await
-    .inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?
-    .map(decode_row)
-    .transpose()
-}
-
-pub(super) async fn work_range_summary(
-    db: &impl ConnectionTrait,
-    lower_excl: u64,
-    upper_incl: u64,
-) -> Result<Option<WorkRangeSummary>> {
-    if lower_excl >= upper_incl {
-        return Ok(None);
-    }
-    let row = db
-        .query_one_raw(statement(
-            "SELECT MIN(seq) AS first_seq, MAX(seq) AS last_seq, \
-                    MIN(occurred_at) AS min_occurred_at, MAX(occurred_at) AS max_occurred_at, \
-                    COUNT(*) AS event_count \
-             FROM history_events \
-             WHERE timeline_role='work' AND seq>? AND seq<=?",
-            vec![number(lower_excl)?.into(), number(upper_incl)?.into()],
-        ))
-        .await
-        .inspect(|_| {
-            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-        })?
-        .ok_or_else(|| HistoryError::Integrity("work range aggregate missing row".into()))?;
-    let event_count = u64::try_from(row.try_get::<i64>("", "event_count")?)
-        .map_err(|_| HistoryError::Integrity("negative work event count".into()))?;
-    if event_count == 0 {
-        return Ok(None);
-    }
-    let first_seq = u64::try_from(
-        row.try_get::<Option<i64>>("", "first_seq")?
-            .ok_or_else(|| HistoryError::Integrity("work range missing first_seq".into()))?,
-    )
-    .map_err(|_| HistoryError::Integrity("negative work first_seq".into()))?;
-    let last_seq = u64::try_from(
-        row.try_get::<Option<i64>>("", "last_seq")?
-            .ok_or_else(|| HistoryError::Integrity("work range missing last_seq".into()))?,
-    )
-    .map_err(|_| HistoryError::Integrity("negative work last_seq".into()))?;
-    let started_at: Option<i64> = row.try_get("", "min_occurred_at")?;
-    let ended_at: Option<i64> = row.try_get("", "max_occurred_at")?;
-    let run_row = db
-        .query_one_raw(statement(
-            "SELECT run_id FROM history_events \
-             WHERE timeline_role='work' AND seq>? AND seq<=? AND run_id IS NOT NULL \
-             ORDER BY seq DESC LIMIT 1",
-            vec![number(lower_excl)?.into(), number(upper_incl)?.into()],
+    let rows = db
+        .query_all_raw(statement(
+            &format!(
+                "SELECT {COLUMNS} FROM history_events \
+                 WHERE timeline_role=2 AND seq<=? ORDER BY seq DESC LIMIT ?"
+            ),
+            vec![
+                number(upper_seq)?.into(),
+                number(u64::try_from(limit).map_err(|_| {
+                    HistoryError::InvalidDemand("boundary prefetch limit overflow".into())
+                })?)?
+                .into(),
+            ],
         ))
         .await
         .inspect(|_| {
             tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
         })?;
-    let run_id: Option<String> = match run_row {
-        Some(row) => row.try_get("", "run_id")?,
-        None => None,
-    };
-    Ok(Some(WorkRangeSummary {
-        first_seq,
-        last_seq,
-        started_at,
-        ended_at,
-        run_id,
-        event_count,
-    }))
+    rows.into_iter().map(decode_row).collect()
+}
+
+pub(super) async fn work_range_summaries_batch(
+    db: &impl ConnectionTrait,
+    windows: &[(u64, u64)],
+) -> Result<Vec<Option<WorkRangeSummary>>> {
+    if windows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tuples = Vec::with_capacity(windows.len());
+    let mut values = Vec::with_capacity(windows.len() * 3);
+    for (idx, &(lower_excl, upper_incl)) in windows.iter().enumerate() {
+        tuples.push("(?,?,?)");
+        values.push(
+            i64::try_from(idx)
+                .map_err(|_| HistoryError::Integrity("window index overflow".into()))?
+                .into(),
+        );
+        values.push(number(lower_excl)?.into());
+        values.push(number(upper_incl)?.into());
+    }
+    let sql = format!(
+        "WITH ranges(idx, lo, hi) AS (VALUES {}) \
+         SELECT r.idx AS idx, \
+                MIN(e.seq) AS first_seq, \
+                MAX(e.seq) AS last_seq, \
+                MIN(e.occurred_at) AS min_occurred_at, \
+                MAX(e.occurred_at) AS max_occurred_at, \
+                COUNT(e.seq) AS event_count, \
+                (SELECT e2.run_id FROM history_events e2 \
+                 WHERE e2.timeline_role=1 AND e2.seq>r.lo AND e2.seq<=r.hi \
+                   AND e2.run_id IS NOT NULL \
+                 ORDER BY e2.seq DESC LIMIT 1) AS run_id \
+         FROM ranges r \
+         LEFT JOIN history_events e \
+           ON e.timeline_role=1 AND e.seq>r.lo AND e.seq<=r.hi \
+         GROUP BY r.idx \
+         ORDER BY r.idx ASC",
+        tuples.join(",")
+    );
+    let rows = db
+        .query_all_raw(statement(&sql, values))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    let mut out = vec![None; windows.len()];
+    for row in rows {
+        let idx = usize::try_from(row.try_get::<i64>("", "idx")?)
+            .map_err(|_| HistoryError::Integrity("negative window index".into()))?;
+        if idx >= out.len() {
+            return Err(HistoryError::Integrity("window index out of bounds".into()));
+        }
+        let event_count = u64::try_from(row.try_get::<i64>("", "event_count")?)
+            .map_err(|_| HistoryError::Integrity("negative work event count".into()))?;
+        if event_count == 0 {
+            continue;
+        }
+        let first_seq = u64::try_from(
+            row.try_get::<Option<i64>>("", "first_seq")?
+                .ok_or_else(|| HistoryError::Integrity("work range missing first_seq".into()))?,
+        )
+        .map_err(|_| HistoryError::Integrity("negative work first_seq".into()))?;
+        let last_seq = u64::try_from(
+            row.try_get::<Option<i64>>("", "last_seq")?
+                .ok_or_else(|| HistoryError::Integrity("work range missing last_seq".into()))?,
+        )
+        .map_err(|_| HistoryError::Integrity("negative work last_seq".into()))?;
+        let started_at: Option<i64> = row.try_get("", "min_occurred_at")?;
+        let ended_at: Option<i64> = row.try_get("", "max_occurred_at")?;
+        let run_id: Option<String> = row.try_get("", "run_id")?;
+        out[idx] = Some(WorkRangeSummary {
+            first_seq,
+            last_seq,
+            started_at,
+            ended_at,
+            run_id,
+            event_count,
+        });
+    }
+    Ok(out)
 }
 
 pub(super) async fn work_range_events(
@@ -236,7 +252,7 @@ pub(super) async fn work_range_events(
         .query_all_raw(statement(
             &format!(
                 "SELECT {COLUMNS} FROM history_events \
-                 WHERE timeline_role='work' AND seq>? AND seq<=? \
+                 WHERE timeline_role=1 AND seq>? AND seq<=? \
                  ORDER BY seq ASC LIMIT ?"
             ),
             vec![
@@ -344,20 +360,9 @@ pub(super) fn event_filter(query: &HistoryEventsQuery) -> Result<(String, Vec<Va
         }
         HistoryEventsQuery::Turn { turn_id } => ("turn_id=?".into(), vec![turn_id.clone().into()]),
         HistoryEventsQuery::Source { source } => {
-            let (kind, id) = source_key(source)?;
-            (
-                "source_kind=? AND source_id=?".into(),
-                vec![kind.into(), id.into()],
-            )
+            ("source_id=?".into(), vec![source_key(source)?.into()])
         }
         HistoryEventsQuery::Call { call_id } => ("call_id=?".into(), vec![call_id.clone().into()]),
-        HistoryEventsQuery::Message { message_id } => {
-            ("message_id=?".into(), vec![message_id.clone().into()])
-        }
-        HistoryEventsQuery::Attempt { run_id, attempt_id } => (
-            "run_id=? AND attempt_id=?".into(),
-            vec![run_id.clone().into(), attempt_id.clone().into()],
-        ),
         HistoryEventsQuery::Originals { scope } => {
             let mut clauses = vec!["query_class IS NOT NULL".to_owned()];
             let mut values = Vec::new();
@@ -633,13 +638,7 @@ pub(super) async fn insert(db: &impl ConnectionTrait, event: &HistoryEvent) -> R
 }
 
 pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent) -> Result<()> {
-    let (source_kind, source_id) = match &event.source {
-        Some(source) => {
-            let (kind, id) = source_key(source)?;
-            (Some(kind), Some(id))
-        }
-        None => (None, None),
-    };
+    let source_id = event.source.as_ref().map(source_key).transpose()?;
     let (query_class, parent_id, original_kind) = match &event.original {
         Some(original) => {
             let kind = match serde_json::to_value(original.original_kind)? {
@@ -662,13 +661,13 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
     db.execute_raw(statement(
         &format!(
             "INSERT INTO history_events({COLUMNS}) \
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         ),
         vec![
             number(event.seq)?.into(),
             event.event_id.clone().into(),
             event.kind.as_str().to_owned().into(),
-            event.timeline_role.as_str().to_owned().into(),
+            event.timeline_role.as_db_int().into(),
             event.occurred_at.into(),
             event.recorded_at.into(),
             event.run_id.clone().into(),
@@ -678,7 +677,6 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
             event.entity_id.clone().into(),
             event.message_id.clone().into(),
             event.tool_name.clone().into(),
-            source_kind.into(),
             source_id.into(),
             query_class.into(),
             parent_id.into(),

@@ -706,15 +706,15 @@ v24 的 `conversation_items`、内容表与 typed metadata 只由迁移器读取
 
 迁移保留原 canonical 身份、已知时间、真实边界观察、空终稿、Turn disposition、累积费用、附件和仍需要的历史资源。任何身份、引用、顺序或正文校验失败都完整回滚数据库；不得清库、删除迁移备份、改写 v2 前隔离数据或把合同声明当作迁移验收。
 
-## 17.19 原子事件与混合正文在 schema 26 中的保存位置
+## 17.19 原子事件与混合正文在 schema 27 中的保存位置
 
-Native 展示不再有独立 `conversation_display_blocks`／`conversation_display_members` 运行表、`history_meta` 展示水位、`studio.display-delta` 写入链、持久化 `Work`/`Member` 锚点、`group_*` 派生事件或 `BoundaryObserved` 截断观察。主时间线的 `divider` 与工作过程 `work` 均作为独立原子事件按序追加至 `history_events`（前导纯索引标量列，无 `kind` 枚举 `CHECK`，尾部为动态 `payload_schema` + `payload_json`）；所有内容正文统一按 `<= 16 KiB` 有效 UTF-8（单事件内联总预算 `<= 16 KiB`）内联为 `inlineText`，其余及二进制附件写入既有 `history_bodies` + 64 KiB `WITHOUT ROWID` 分块表 `history_body_chunks`。
+Native 展示不再有独立 `conversation_display_blocks`／`conversation_display_members` 运行表、`history_meta` 展示水位、`studio.display-delta` 写入链、持久化 `Work`/`Member` 锚点、`group_*` 派生事件或 `BoundaryObserved` 截断观察。主时间线的 `boundary`（`timeline_role = 2`）、工作过程 `work`（`timeline_role = 1`）与内部事件 `hidden`（`timeline_role = 0`）均作为独立原子事件按序追加至 `history_events`（前导纯索引标量列，无 `kind`/`source_kind` 冗余列，尾部为动态 `payload_schema` + `payload_json`）；所有内容正文统一按 `<= 16 KiB` 有效 UTF-8（单事件内联总预算 `<= 16 KiB`）内联为 `inlineText`，其余及二进制附件写入既有 `history_bodies` + 64 KiB `WITHOUT ROWID` 分块表 `history_body_chunks`。
 
-一次可靠 effect 可产生多个独立原子事件，但仍以同一批在私有准备状态中确定性绑定 `database_id` 后一次性接纳，确保重试复用相同 `event_id` 与正文身份；写入器本身无状态，不持有工作组分类器，也不因正文到达而回查、等待或冻结尚未结束的工具。
+一次可靠 effect 可产生多个独立原子事件，但仍以同一批在私有准备状态中确定性绑定 `database_id` 后一次性接纳，确保重试复用相同 `event_id` 与正文身份；写入器本身无状态，不持有工作组分类器，也不因正文到达而回查、等待或冻结尚未结束的工具。非工具类的进行中模型/压缩/子智能体起始状态仅保留在 Current 内存，不再向 `history_events` 写入无消费者的活跃 `hidden` 起始行。
 
-历史查询先捕获 cut 和 pending 根，主时间线通过 `idx_events_dividers` 与覆盖索引 `idx_events_work(seq DESC, occurred_at)` 直接切分相邻 `divider` 之间的 `WorkRange`；展开后通过 `work_range_page(after_seq, before_seq)` 返回原始原子事件，由 Flutter 工作组 ViewModel 在同区间内按 `call_id` / `entity_id` 折叠为最新态展示行。关闭、失败与背压由 HistoryStore 本身负责；这里不另设定时器、第二 writer 或 UI 确认协议。
+历史查询先捕获 cut 和 pending 根，主时间线通过稀疏部分索引 `idx_events_boundaries(seq DESC) WHERE timeline_role = 2` 预取边界，并以单一 `WITH ranges(idx, lo, hi)` CTE 查询覆盖索引 `idx_events_work(seq DESC, occurred_at, run_id) WHERE timeline_role = 1` 批量计算相邻 `boundary` 之间的 `WorkRange`；展开后通过 `work_range_page(after_seq, before_seq)` 返回原始原子事件，由 Flutter 工作组 ViewModel 在同区间内按 `call_id` / `entity_id` 折叠为最新态展示行。关闭、失败与背压由 HistoryStore 本身负责；这里不另设定时器、第二 writer 或 UI 确认协议。
 
-实时思考摘要、展开、滚动、动画和当前计时只在 Current／UI owner 中存在。只有真实 `divider` 原子事件（用户输入、助手可见完成正文、计划公开决议等）在主时间线上自然切分前后工作区间；来源结束、空闲、页面关闭和冷重开不产生伪边界。
+实时思考摘要、展开、滚动、动画和当前计时只在 Current／UI owner 中存在；模型断连重试倒计时也仅在 Current 内存态 `model_recovery` 中保存。只有真实 `boundary` 原子事件（用户输入、助手可见完成正文、计划公开决议、独立展示工具及模型／SSH 的 `connection_disconnected`／`connection_reconnected`）在主时间线上自然切分前后工作区间；来源结束、空闲、页面关闭和冷重开不产生伪边界。连接边界事件的 `original` 保持为空，不进入对话正文索引。
 
 ### 保存停滞阶段与只读隔离
 
@@ -764,3 +764,14 @@ schema 25 到 26 的升级同样在会话独占维护阶段完成，不启动模
 3. **索引重建与校验提交**：替换旧 `history_events`，创建 `idx_events_dividers`、`idx_events_work`、`idx_events_call` 等全部 schema 26 索引与只追加触发器，更新 `history_store_meta.schema_version = 26` 并登记迁移版本；执行 `PRAGMA foreign_key_check` 确认无悬空引用后提交事务，失败则完整回滚并保留原库与备份。
 
 正文清单在写入或升级时收录账单 `accounting` 和工具任务 `native.tool-task.v1`。已落库的 schema 26 在相同的独占维护入口按 `seq` 分批补齐清单，保留事件、正文引用和块身份。该维护与只追加触发器的恢复在同一个 SQLite `IMMEDIATE` 事务提交。历史库用 `PRAGMA user_version` 记录清单维护修订，`0` 需要首次维护，`1` 已完成。新建和从 schema 25 升级的库直接写入 `1`。正常读取使用清单定位正文。
+
+## 17.23 Schema 26 到 27 边界语义与索引精简迁移
+
+schema 26 到 27 在相同独占维护入口执行零拷贝原地转换（旧 v24／v25 串联升级为 `24 → 25 → 26 → 27` / `25 → 26 → 27`）：
+
+1. **前置逻辑备份**：核对 schema 26 身份与完整性后，通过 `VACUUM INTO` 将完整 WAL 状态写入 `migration-backups/history-26-to-27/history.v26.sqlite` 并同步磁盘。如原 schema 26 尚有未完成的 `user_version = 0` 清单维护，先完成清单补齐。
+2. **单事务零拷贝转换**：在单一 SQLite `IMMEDIATE` 事务内（保持既有 `history_bodies` 与 `history_body_chunks` 行及块边界零拷贝）：
+   - 建立 `history_events_v27`，将 `timeline_role` 从文本收紧为整型 `INTEGER NOT NULL CHECK(timeline_role IN (0, 1, 2))`（`'hidden' -> 0`、`'work' -> 1`、`'divider' -> 2`），去掉冗余列 `source_kind`，保留 `source_id` 与业务索引字段；
+   - 以单条 `INSERT INTO history_events_v27 SELECT ... ORDER BY seq ASC` 无损迁移全量事件行，核对行数一致后替换 `history_events`；
+   - 建立精简后的 12 个稀疏部分索引（`idx_events_boundaries`、`idx_events_work`、`history_one_anchor`、`history_row_head`、`history_business_anchors`、`idx_events_entity`、`idx_events_turn`、`idx_events_source(source_id, seq DESC)`、`idx_events_call`、`idx_events_originals_all(seq DESC, query_class)`、`idx_events_originals_parent(parent_id, seq DESC, query_class) WHERE query_class IS NOT NULL AND parent_id IS NOT NULL`、`idx_events_originals_text`），删除冗余的 `idx_events_message`、`idx_events_attempt`、`idx_events_originals_class`、`idx_events_originals_parent_class`、`idx_events_originals_tool`；
+   - 重建只追加触发器与 `history_store_meta (schema_version = 27)`，执行 `PRAGMA foreign_key_check` 后提交；任何校验失败完整回滚并保留原库与备份。

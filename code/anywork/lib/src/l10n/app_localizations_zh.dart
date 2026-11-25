@@ -7321,6 +7321,29 @@ class AppLocalizationsZh extends AppLocalizations {
   String get liveStatusConnectionReconnecting => '正在重连实时同步';
 
   @override
+  String liveStatusModelReconnecting(int attempt, int max) {
+    return '模型连接断开，正在重连（$attempt/$max）';
+  }
+
+  @override
+  String get timelineConnectionModelDisconnected => '模型连接已断开';
+
+  @override
+  String get timelineConnectionModelReconnected => '模型连接已恢复';
+
+  @override
+  String get timelineConnectionSshDisconnected => 'SSH 连接已断开';
+
+  @override
+  String get timelineConnectionSshReconnected => 'SSH 连接已恢复';
+
+  @override
+  String get timelineConnectionGenericDisconnected => '连接已断开';
+
+  @override
+  String get timelineConnectionGenericReconnected => '连接已恢复';
+
+  @override
   String get liveStatusMembersUnavailable => '成员读取尚未就绪';
 
   @override

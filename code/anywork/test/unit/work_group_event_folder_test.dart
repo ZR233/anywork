@@ -82,7 +82,7 @@ HistoryEventRecord _textEvent({
   required int seq,
   required String eventId,
   required String text,
-  HistoryTimelineRole role = HistoryTimelineRole.divider,
+  HistoryTimelineRole role = HistoryTimelineRole.boundary,
   HistoryEventBodyRef? reference,
   String channel = 'final',
 }) {
@@ -459,26 +459,26 @@ void main() {
   testWidgets(
     'single unknown payload_schema or malformed payload_json degrades per-row without affecting siblings',
     (tester) async {
-      final goodDivider = DividerTimelineItem(
+      final goodDivider = BoundaryTimelineItem(
         _textEvent(seq: 1, eventId: 'ev-good', text: 'healthy sibling row'),
       );
-      final unknownSchemaDivider = DividerTimelineItem(
+      final unknownSchemaDivider = BoundaryTimelineItem(
         HistoryEventRecord(
           seq: 2,
           eventId: 'ev-unknown-schema',
           kind: 'future_event',
-          timelineRole: HistoryTimelineRole.divider,
+          timelineRole: HistoryTimelineRole.boundary,
           recordedAt: 2000,
           payloadSchema: 'anywork.future/99',
           payloadJson: '{"future":true}',
         ),
       );
-      final malformedJsonDivider = DividerTimelineItem(
+      final malformedJsonDivider = BoundaryTimelineItem(
         HistoryEventRecord(
           seq: 3,
           eventId: 'ev-malformed',
           kind: 'text_completed',
-          timelineRole: HistoryTimelineRole.divider,
+          timelineRole: HistoryTimelineRole.boundary,
           recordedAt: 3000,
           payloadSchema: 'anywork.event/1',
           payloadJson: '{broken json',
@@ -598,7 +598,7 @@ void main() {
       );
 
       final inlineBlock = TimelineHistoryProjection.block(
-        DividerTimelineItem(
+        BoundaryTimelineItem(
           _textEvent(seq: 1, eventId: 'ev-inline', text: 'hello <= 16k'),
         ),
         cut: _cut,
@@ -626,7 +626,7 @@ void main() {
       expect(reader.readBodyCalls, 0);
 
       final largeBlock = TimelineHistoryProjection.block(
-        DividerTimelineItem(
+        BoundaryTimelineItem(
           _textEvent(
             seq: 2,
             eventId: 'ev-large',
@@ -669,4 +669,66 @@ void main() {
       await scope.close();
     },
   );
+
+  testWidgets('connection boundary events render model and ssh disconnect/reconnect cards', (
+    tester,
+  ) async {
+    final modelDisconnect = TimelineHistoryProjection.block(
+      BoundaryTimelineItem(
+        HistoryEventRecord(
+          seq: 10,
+          eventId: 'conn-model-1',
+          kind: 'connection_disconnected',
+          timelineRole: HistoryTimelineRole.boundary,
+          recordedAt: 10_000,
+          occurredAt: 10,
+          payloadSchema: 'anywork.event/1',
+          payloadJson:
+              '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn-model-1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"disconnected","scope":"model","transport":"websocket","attempt":1,"maxAttempts":5,"recoverable":true,"reason":"peer reset"},"bodies":[]}',
+        ),
+      ),
+      cut: _cut,
+    );
+    final sshReconnect = TimelineHistoryProjection.block(
+      BoundaryTimelineItem(
+        HistoryEventRecord(
+          seq: 11,
+          eventId: 'conn-ssh-1',
+          kind: 'connection_reconnected',
+          timelineRole: HistoryTimelineRole.boundary,
+          recordedAt: 11_000,
+          occurredAt: 11,
+          payloadSchema: 'anywork.event/1',
+          payloadJson:
+              '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn-ssh-1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"reconnected","scope":"ssh","target":"runner@10.3.10.194"},"bodies":[]}',
+        ),
+      ),
+      cut: _cut,
+    );
+    final modelItem = ChatItemPresentation.forRecord(
+      (modelDisconnect.body as SingleDisplayBlock).record,
+      id: modelDisconnect.id,
+    );
+    final sshItem = ChatItemPresentation.forRecord(
+      (sshReconnect.body as SingleDisplayBlock).record,
+      id: sshReconnect.id,
+    );
+
+    await tester.pumpWidget(
+      _appHost(
+        Column(
+          children: [
+            ChatItemView(item: modelItem),
+            ChatItemView(item: sshItem),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('模型连接已断开'), findsOneWidget);
+    expect(find.textContaining('websocket · 1/5 · peer reset'), findsOneWidget);
+    expect(find.text('SSH 连接已恢复'), findsOneWidget);
+    expect(find.textContaining('runner@10.3.10.194'), findsOneWidget);
+  });
 }

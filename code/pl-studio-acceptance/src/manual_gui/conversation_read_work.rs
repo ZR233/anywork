@@ -603,7 +603,7 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
                 .await?;
             for item in &page.items {
                 match item {
-                    HistoryTimelineItem::Divider(_) | HistoryTimelineItem::WorkRange(_) => {}
+                    HistoryTimelineItem::Boundary(_) | HistoryTimelineItem::WorkRange(_) => {}
                 }
                 total = total
                     .checked_add(1)

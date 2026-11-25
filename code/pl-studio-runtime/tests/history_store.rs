@@ -41,7 +41,7 @@ fn single(id: &str, run: RuntimeEpoch, database_id: &str, body: &[u8]) -> Histor
     let mut event = HistoryEvent::new(
         id,
         HistoryEventKind::TextCompleted,
-        HistoryTimelineRole::Divider,
+        HistoryTimelineRole::Boundary,
         20,
     );
     let meta = event_meta(id, false);
@@ -617,7 +617,7 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_dividers_split_
 
     let page = reader.timeline_page(None, None, demand()).await?;
     assert_eq!(page.items.len(), 2);
-    assert!(matches!(&page.items[0], HistoryTimelineItem::Divider(d) if d.event_id == "separator"));
+    assert!(matches!(&page.items[0], HistoryTimelineItem::Boundary(d) if d.event_id == "separator"));
     let HistoryTimelineItem::WorkRange(range) = &page.items[1] else {
         panic!("expected work range before divider");
     };
@@ -713,7 +713,7 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
             .await?;
         assert!(serde_json::to_vec(&page)?.len() <= budget as usize);
         ids.extend(page.items.into_iter().map(|item| match item {
-            HistoryTimelineItem::Divider(rec) => rec.event_id,
+            HistoryTimelineItem::Boundary(rec) => rec.event_id,
             HistoryTimelineItem::WorkRange(range) => range.range_id,
         }));
         next = page.next;
@@ -894,8 +894,8 @@ async fn atomic_tool_stages_across_divider_keep_call_id_and_work_ranges() -> Res
         let HistoryTimelineItem::WorkRange(new_range) = &timeline.items[0] else {
             panic!("expected new tail work range");
         };
-        let HistoryTimelineItem::Divider(div) = &timeline.items[1] else {
-            panic!("expected middle divider");
+        let HistoryTimelineItem::Boundary(div) = &timeline.items[1] else {
+            panic!("expected middle boundary");
         };
         assert_eq!(div.event_id, "text");
         let HistoryTimelineItem::WorkRange(old_range) = &timeline.items[2] else {
@@ -1345,7 +1345,7 @@ async fn schema26_index_derived_timeline_and_work_range_ascending_pagination() -
         HistoryTimelineItem::WorkRange(r)
             if r.after_seq == Some(6) && r.before_seq.is_none() && r.first_seq == 7 && r.last_seq == 7 && r.event_count == 1
     ));
-    assert!(matches!(&timeline.items[1], HistoryTimelineItem::Divider(d) if d.event_id == "d2"));
+    assert!(matches!(&timeline.items[1], HistoryTimelineItem::Boundary(d) if d.event_id == "d2"));
     let HistoryTimelineItem::WorkRange(mid) = &timeline.items[2] else {
         panic!("expected middle work range");
     };
@@ -1354,7 +1354,7 @@ async fn schema26_index_derived_timeline_and_work_range_ascending_pagination() -
     assert_eq!(mid.first_seq, 4);
     assert_eq!(mid.last_seq, 5);
     assert_eq!(mid.event_count, 2);
-    assert!(matches!(&timeline.items[3], HistoryTimelineItem::Divider(d) if d.event_id == "d1"));
+    assert!(matches!(&timeline.items[3], HistoryTimelineItem::Boundary(d) if d.event_id == "d1"));
     assert!(matches!(
         &timeline.items[4],
         HistoryTimelineItem::WorkRange(r)

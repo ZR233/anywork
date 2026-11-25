@@ -187,11 +187,11 @@ void main() {
     );
 
     final inputBlock = TimelineHistoryProjection.block(
-      DividerTimelineItem(
+      BoundaryTimelineItem(
         record(
           id: 'legacy:v24:input',
           kind: 'input_accepted',
-          timelineRole: HistoryTimelineRole.divider,
+          timelineRole: HistoryTimelineRole.boundary,
           payloadJson: '{"contract":"anywork.event/1","type":"text","meta":{"entityId":"app-1","entityKind":"input","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"textChannel":"user","singleVisibility":"content"},"data":{"channel":"user","attachments":[]},"bodies":[]}',
         ),
       ),
@@ -230,6 +230,26 @@ void main() {
           .having((s) => s.capturedAt, 'capturedAt', 6000)
           .having((s) => s.available, 'available', isFalse),
     );
+
+    final connDisconnected = TimelineHistoryProjection.block(
+      BoundaryTimelineItem(
+        record(
+          id: 'conn:model:1',
+          kind: 'connection_disconnected',
+          timelineRole: HistoryTimelineRole.boundary,
+          payloadJson: '{"contract":"anywork.event/1","type":"connection","meta":{"entityId":"conn:model:1","entityKind":"turnReceipt","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"state":"disconnected","scope":"model","transport":"websocket","attempt":1,"maxAttempts":5,"recoverable":true,"reason":"eof"},"bodies":[]}',
+        ),
+      ),
+      cut: cut,
+    );
+    expect(connDisconnected.body, isA<SingleDisplayBlock>());
+    final connPresentation = ChatItemPresentation.forRecord(
+      (connDisconnected.body as SingleDisplayBlock).record,
+      id: connDisconnected.id,
+    );
+    expect(connPresentation.type, 'connection');
+    expect(connPresentation.data['scope'], 'model');
+    expect(connPresentation.data['state'], 'disconnected');
   });
 }
 

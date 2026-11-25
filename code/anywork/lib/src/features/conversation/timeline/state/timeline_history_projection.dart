@@ -88,15 +88,15 @@ abstract final class TimelineHistoryProjection {
             groupClosed: true,
           ),
         );
-      case DividerTimelineItem(:final event):
+      case BoundaryTimelineItem(:final event):
         if (event.eventId.isEmpty) {
           throw const ConversationContinuityError(
-            'History Divider event has no stable event identity',
+            'History Boundary event has no stable event identity',
           );
         }
         final rowKey = (event.rowKey != null && event.rowKey!.isNotEmpty)
             ? event.rowKey!
-            : 'divider:${event.eventId}';
+            : 'boundary:${event.eventId}';
         final projected = _projectEvent(event, idOverride: rowKey);
         return DisplayBlock(
           id: rowKey,

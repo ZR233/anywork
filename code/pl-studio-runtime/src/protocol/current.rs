@@ -155,6 +155,18 @@ pub struct CurrentProjection {
     pub interactions: Option<CurrentCollectionRef>,
     pub previews: Vec<CurrentContentPreview>,
     pub collections: Vec<CurrentCollectionRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_recovery: Option<CurrentModelRecovery>,
+}
+
+/// Pure-RAM live recovery status while an active model call is reconnecting/retrying.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentModelRecovery {
+    pub attempt: u32,
+    pub max_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// 与 ThreadActivity 的完整活动工具集合分离；增长成员只由 collections 按需交付。
@@ -192,6 +204,7 @@ impl CurrentProjection {
             interactions: None,
             previews: Vec::new(),
             collections: Vec::new(),
+            model_recovery: None,
         }
     }
 }

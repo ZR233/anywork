@@ -16,7 +16,7 @@ import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeCurrentActivityHead {
   final String id;
@@ -325,6 +325,30 @@ sealed class BridgeCurrentFrame with _$BridgeCurrentFrame {
   }) = BridgeCurrentFrame_Projection;
 }
 
+class BridgeCurrentModelRecovery {
+  final int attempt;
+  final int maxAttempts;
+  final String? reason;
+
+  const BridgeCurrentModelRecovery({
+    required this.attempt,
+    required this.maxAttempts,
+    this.reason,
+  });
+
+  @override
+  int get hashCode => attempt.hashCode ^ maxAttempts.hashCode ^ reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentModelRecovery &&
+          runtimeType == other.runtimeType &&
+          attempt == other.attempt &&
+          maxAttempts == other.maxAttempts &&
+          reason == other.reason;
+}
+
 @freezed
 sealed class BridgeCurrentPayloadData with _$BridgeCurrentPayloadData {
   const BridgeCurrentPayloadData._();
@@ -348,6 +372,7 @@ class BridgeCurrentProjection {
   final BridgeCurrentCollectionRef? interactions;
   final List<BridgeCurrentContentPreview> previews;
   final List<BridgeCurrentCollectionRef> collections;
+  final BridgeCurrentModelRecovery? modelRecovery;
 
   const BridgeCurrentProjection({
     required this.logicalStatus,
@@ -360,6 +385,7 @@ class BridgeCurrentProjection {
     this.interactions,
     required this.previews,
     required this.collections,
+    this.modelRecovery,
   });
 
   @override
@@ -373,7 +399,8 @@ class BridgeCurrentProjection {
       plan.hashCode ^
       interactions.hashCode ^
       previews.hashCode ^
-      collections.hashCode;
+      collections.hashCode ^
+      modelRecovery.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -389,7 +416,8 @@ class BridgeCurrentProjection {
           plan == other.plan &&
           interactions == other.interactions &&
           previews == other.previews &&
-          collections == other.collections;
+          collections == other.collections &&
+          modelRecovery == other.modelRecovery;
 }
 
 class BridgeCurrentRevision {
@@ -1008,12 +1036,6 @@ sealed class BridgeHistoryEventsQuery with _$BridgeHistoryEventsQuery {
   }) = BridgeHistoryEventsQuery_Source;
   const factory BridgeHistoryEventsQuery.call({required String callId}) =
       BridgeHistoryEventsQuery_Call;
-  const factory BridgeHistoryEventsQuery.message({required String messageId}) =
-      BridgeHistoryEventsQuery_Message;
-  const factory BridgeHistoryEventsQuery.attempt({
-    required String runId,
-    required String attemptId,
-  }) = BridgeHistoryEventsQuery_Attempt;
   const factory BridgeHistoryEventsQuery.originals({
     required String queryClass,
     String? parentId,
@@ -1109,9 +1131,9 @@ sealed class BridgeHistorySourceLifecycle with _$BridgeHistorySourceLifecycle {
 sealed class BridgeHistoryTimelineItem with _$BridgeHistoryTimelineItem {
   const BridgeHistoryTimelineItem._();
 
-  const factory BridgeHistoryTimelineItem.divider(
+  const factory BridgeHistoryTimelineItem.boundary(
     BridgeHistoryEventRecord field0,
-  ) = BridgeHistoryTimelineItem_Divider;
+  ) = BridgeHistoryTimelineItem_Boundary;
   const factory BridgeHistoryTimelineItem.workRange(
     BridgeHistoryWorkRange field0,
   ) = BridgeHistoryTimelineItem_WorkRange;
@@ -1141,7 +1163,7 @@ class BridgeHistoryTimelinePage {
           next == other.next;
 }
 
-enum BridgeHistoryTimelineRole { divider, work, hidden }
+enum BridgeHistoryTimelineRole { boundary, work, hidden }
 
 class BridgeHistoryTurnHead {
   final String turnId;

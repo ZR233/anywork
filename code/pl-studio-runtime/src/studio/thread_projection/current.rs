@@ -239,6 +239,18 @@ impl CurrentOwner {
             });
         }
         let active_turn = super::project_active_turn(&thread.id, state, thread.updated_at)?;
+        projection.model_recovery = state.model_progress.as_ref().and_then(|progress| {
+            let obs = progress.progress.observation();
+            let recovery = obs.recovery?;
+            if recovery.phase != pl_core::model::ModelRecoveryPhase::Retrying {
+                return None;
+            }
+            Some(CurrentModelRecovery {
+                attempt: recovery.retry,
+                max_attempts: recovery.max_retries,
+                reason: obs.failed.last().map(|failed| failed.message.to_string()),
+            })
+        });
         projection.active_turn = active_turn
             .as_ref()
             .and_then(|turn| turn.phase().map(|phase| (turn, phase)))

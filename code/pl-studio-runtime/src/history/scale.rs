@@ -335,12 +335,22 @@ fn contains(sql: &[u8], needle: &[u8]) -> bool {
 
 fn is_page_select(sql: &[u8]) -> bool {
     let sql = sql.trim_ascii();
-    contains(sql, b"FROM history_events")
+    let is_events_page = contains(sql, b"FROM history_events")
         && contains(sql, b"seq>?")
         && contains(sql, b"seq<=?")
         && contains(sql, b"ORDER BY seq DESC LIMIT")
         && !contains(sql, b"history_bodies")
-        && !contains(sql, b"history_body_chunks")
+        && !contains(sql, b"history_body_chunks");
+    let is_timeline_bounds = contains(sql, b"FROM history_events")
+        && contains(sql, b"WHERE timeline_role=2 AND seq<=? ORDER BY seq DESC LIMIT ?")
+        && !contains(sql, b"history_bodies")
+        && !contains(sql, b"history_body_chunks");
+    let is_timeline_work = contains(sql, b"WITH ranges(idx, lo, hi) AS (VALUES")
+        && contains(sql, b"FROM ranges r")
+        && contains(sql, b"LEFT JOIN history_events e")
+        && !contains(sql, b"history_bodies")
+        && !contains(sql, b"history_body_chunks");
+    is_events_page || is_timeline_bounds || is_timeline_work
 }
 
 fn starts_with_ignore_ascii_case(sql: &[u8], prefix: &[u8]) -> bool {
@@ -494,7 +504,11 @@ async fn insert_range(db: &impl ConnectionTrait, start: i64, end: i64) -> Result
          INSERT INTO history_events(
             seq,event_id,kind,timeline_role,occurred_at,recorded_at,is_anchor,payload_schema,payload_json
          )
-         SELECT i,'scale-'||i,'item_recorded','work',i,i,0,'scale.v1','{\"ref\":\"body\"}' FROM n",
+         SELECT i,'scale-'||i,
+                CASE WHEN i % 100 = 0 THEN 'text_completed' ELSE 'item_recorded' END,
+                CASE WHEN i % 100 = 0 THEN 2 ELSE 1 END,
+                i,i,0,'scale.v1','{\"ref\":\"body\"}'
+         FROM n",
         vec![start.into(), end.into()],
     ))
     .await?;
@@ -651,4 +665,122 @@ async fn bounded_event_pages_use_index_seeks_without_loading_bodies() -> Result<
 #[ignore = "full event scale coverage runs in Rust Scale Checks"]
 async fn hundred_thousand_events_use_index_seeks_without_loading_bodies() -> Result<()> {
     verify_indexed_event_pages(&[20, 100, 10_000, 100_000]).await
+}
+
+async fn assert_timeline_index_plans(path: &std::path::Path) -> Result<()> {
+    let db = schema::connect(path, true, false).await?;
+    let bound_rows = db
+        .query_all_raw(statement(
+            "EXPLAIN QUERY PLAN SELECT seq FROM history_events \
+             WHERE timeline_role=2 AND seq<=? ORDER BY seq DESC LIMIT ?",
+            vec![100i64.into(), 21i64.into()],
+        ))
+        .await?;
+    let bound_plan = bound_rows
+        .iter()
+        .map(|row| row.try_get::<String>("", "detail"))
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .join("\n");
+    ensure!(
+        bound_plan.contains("idx_events_boundaries") && !bound_plan.contains("SCAN"),
+        "boundary query does not use idx_events_boundaries seek: {bound_plan}"
+    );
+
+    let work_rows = db
+        .query_all_raw(statement(
+            "EXPLAIN QUERY PLAN WITH ranges(idx, lo, hi) AS (VALUES (0, 1, 99), (1, 100, 199)) \
+             SELECT r.idx, MIN(e.seq), MAX(e.seq), MIN(e.occurred_at), MAX(e.occurred_at), COUNT(e.seq), \
+                    (SELECT e2.run_id FROM history_events e2 \
+                     WHERE e2.timeline_role=1 AND e2.seq>r.lo AND e2.seq<=r.hi AND e2.run_id IS NOT NULL \
+                     ORDER BY e2.seq DESC LIMIT 1) \
+             FROM ranges r \
+             LEFT JOIN history_events e \
+               ON e.timeline_role=1 AND e.seq>r.lo AND e.seq<=r.hi \
+             GROUP BY r.idx ORDER BY r.idx ASC",
+            vec![],
+        ))
+        .await?;
+    let work_plan = work_rows
+        .iter()
+        .map(|row| row.try_get::<String>("", "detail"))
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .join("\n");
+    ensure!(
+        work_plan.contains("idx_events_work")
+            && !work_plan.contains("SCAN history_events")
+            && !work_plan.contains("history_bodies"),
+        "work range batch query does not use covering idx_events_work: {work_plan}"
+    );
+    db.close().await?;
+    Ok(())
+}
+
+async fn verify_indexed_timeline_pages(sizes: &[u64]) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("history.sqlite");
+    {
+        let store = HistoryStore::open(&path, THREAD, HistoryLimits::default()).await?;
+        store.close().await?;
+    }
+    let mut baseline = None;
+    for &size in sizes {
+        seed(&path, i64::try_from(size)?).await?;
+        let store = HistoryStore::open(&path, THREAD, HistoryLimits::default()).await?;
+        let probe = Probe::install(&store.inner.reader).await?;
+        let page = store
+            .reader()
+            .timeline_page(
+                None,
+                None,
+                HistoryDemand {
+                    max_rows: PAGE_ROWS,
+                    max_bytes: 256 * 1024,
+                },
+            )
+            .await;
+        let work = probe.finish(&store.inner.reader).await?;
+        let page = page.context("timeline page failed while body reads were denied")?;
+        assert!(!page.items.is_empty(), "{work:?}");
+        assert!(
+            work.page_statements <= 2,
+            "expected <= 2 SQL statements for timeline_page, got {}: {work:?}",
+            work.page_statements
+        );
+        assert_eq!(
+            work.other_statements, 0,
+            "unexpected SQL: {}",
+            work.unexpected_sql
+        );
+        assert_eq!(work.denied_reads, 0, "{work:?}");
+        assert_eq!(work.page_fullscan_steps, 0, "{work:?}");
+        assert!(work.page_vm_steps > 0, "{work:?}");
+        if let Some(steps) = baseline {
+            assert!(
+                work.page_vm_steps <= steps + 256,
+                "timeline_page seek cost grew with table size: baseline={steps} now={} size={size}",
+                work.page_vm_steps
+            );
+        } else {
+            baseline = Some(work.page_vm_steps);
+        }
+        eprintln!(
+            "Schema27 timeline size={size} statements={} vm_steps={} fullscan={} denied_body_reads=0",
+            work.page_statements, work.page_vm_steps, work.page_fullscan_steps
+        );
+        store.close().await?;
+    }
+    assert_timeline_index_plans(&path).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn bounded_timeline_pages_use_covering_indexes_without_loading_bodies() -> Result<()> {
+    verify_indexed_timeline_pages(&[3_000, 10_000]).await
+}
+
+#[tokio::test]
+#[ignore = "full event scale coverage runs in Rust Scale Checks"]
+async fn hundred_thousand_timeline_pages_use_covering_indexes_without_loading_bodies() -> Result<()>
+{
+    verify_indexed_timeline_pages(&[3_000, 10_000, 100_000]).await
 }

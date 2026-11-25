@@ -127,7 +127,7 @@ pub(crate) async fn scan_main(
             for item in items {
                 rows = rows.checked_add(1).context("Main row count overflow")?;
                 match item {
-                    HistoryTimelineItem::Divider(record) => {
+                    HistoryTimelineItem::Boundary(record) => {
                         let envelope = decode_event_envelope(&record)?;
                         if entity_ids.insert(envelope.meta.entity_id.clone()) {
                             entities.push((record, envelope.meta));

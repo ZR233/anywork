@@ -22,6 +22,11 @@ impl ModelRuntime {
         inference_timer: &InferenceTimer,
         mut current: Option<&mut crate::runtime::current::CurrentProducer>,
         generation: u32,
+        pending_reconnect: Option<(
+            pl_core::model::ModelConnectionFact,
+            std::time::Instant,
+            &mut bool,
+        )>,
     ) -> (
         std::result::Result<CompletionResponse, CompletionFailure>,
         bool,
@@ -116,10 +121,8 @@ impl ModelRuntime {
                         model_observation: Some(model_observation),
                         on_stream_end: &on_stream_end,
                         members: context.members.clone(),
-                        generation: context
-                            .progress
-                            .as_ref()
-                            .map_or(0, |p| p.latest().observation().generation),
+                        generation: context.current_generation(),
+                        pending_reconnect,
                     },
                     opened.idle_timeout,
                     Some(accumulator),

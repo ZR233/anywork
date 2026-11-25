@@ -7,26 +7,26 @@
 | 数据 | 所有者 | 交付 |
 | --- | --- | --- |
 | 当前执行、当前正文、交互、Plan、usage 与活动摘要 | Core owner 与 Current assembler | `CurrentReader` 的有界 snapshot、watch、collection、body |
-| 已接纳的不可变原子历史事件与正文 | schema 26 HistoryStore | `HistoryReader` 的 cut、`timeline_page`、`work_range_page`、event、body、change |
+| 已接纳的不可变原子历史事件与正文 | schema 27 HistoryStore | `HistoryReader` 的 cut、`timeline_page`、`work_range_page`、event、body、change |
 | 已加载不可变历史窗口、历史工作组折叠、展开、滚动 | Flutter 时间线会话 owner | 唯一不可变 controller、历史工作组 ViewModel、generation 与 serialized apply |
 | 实时开放工作区、进行中原子项、流式正文与状态提示 | Flutter 实时状态栏（`LiveStatusBar` / `TimelineSessionOwner`） | 仅在 `LiveStatusBar` 呈现当前未封口 `WorkRange`、Current overlay 与流式正文 |
 
-Current 和 History 没有共同事务、共同切点或 ACK。Current 可先显示仍在执行的内容；在执行尚未结算前，未封口 `WorkRange`、进行中工具/思考及流式助手正文仅在底部实时状态栏呈现，主时间线严格只接纳已封口 `WorkRange` 与不可变 `divider` 卡片，不对已入列条目做原地覆盖。后续事件落库封口后，新块再追加到主时间线并同步退出实时状态栏。不能把两个存储的可见性描述成原子，也不能从 Current 字段推断某个历史事件一定已提交。
+Current 和 History 没有共同事务、共同切点或 ACK。Current 可先显示仍在执行的内容；在执行尚未结算前，未封口 `WorkRange`、进行中工具/思考及流式助手正文仅在底部实时状态栏呈现，主时间线严格只接纳已封口 `WorkRange` 与不可变 `boundary` 卡片，不对已入列条目做原地覆盖。后续事件落库封口后，新块再追加到主时间线并同步退出实时状态栏。不能把两个存储的可见性描述成原子，也不能从 Current 字段推断某个历史事件一定已提交。
 
-新的 Native 写入只产生 Current 与 schema 26 原子 History 事件。schema 25 与 v24 类型只存在于显式迁移边界，正常读写路径只使用 schema 26。
+新的 Native 写入只产生 Current 与 schema 27 原子 History 事件。schema 24／25／26 类型只存在于显式迁移边界，正常读写路径只使用 schema 27（历史协议版本 `3`）。
 
-## 26.2 无状态原子事件、`divider` 与索引派生 `WorkRange`
+## 26.2 无状态原子事件、`boundary` 与索引派生 `WorkRange`
 
-历史写入完全无状态，事件之间**互不等待、不维护工作组状态机、不回改历史行、也不改写后台工具终态身份**。每次用户输入、工具调用、等待审批、转后台、取消请求、终态完成与助手回复都作为各自独立的不可变原子事件顺序追加至 `history_events`（前导纯索引标量列，尾部为动态字段 `payload_schema` + `payload_json`；数据库不对 `kind` 设枚举 `CHECK`，新增工具或新事件字段零数据库迁移）：
+历史写入完全无状态，事件之间**互不等待、不维护工作组状态机、不回改历史行、也不改写后台工具终态身份**。每次用户输入、工具调用、等待审批、转后台、取消请求、终态完成、助手回复与连接中断／重连都作为各自独立的不可变原子事件顺序追加至 `history_events`（前导纯索引标量列，整型 `timeline_role` `0=hidden`/`1=work`/`2=boundary`，无 `source_kind` 冗余列，尾部为动态字段 `payload_schema` + `payload_json`；数据库不对 `kind` 设枚举 `CHECK`，新增工具或新事件字段零数据库迁移）：
 
-- `divider`（主时间线分隔事件）：用户输入（`input_accepted`）、助手可见完成正文（`text_completed`，含曾有可见边界但最终为空时的 `finalEmptyAfterContent` 标记）、计划公开决议（`plan_resolved`）及带独立展示资格的终态工具事件。每条 `divider` 本身就是主时间线上的独立卡片。
-- `work`（工作过程原子事件）：工具生命周期原子事件（`tool_called`、`tool_waiting_approval`、`tool_backgrounded`、`tool_cancel_requested`、`tool_completed`，同一次调用全程共享同一个 `call_id` 与 `tool_name`）、推理（`reasoning_started`／`reasoning_completed`）、上下文压缩（`compaction_started`／`compaction_completed`）、子智能体（`agent_spawned`／`agent_completed`）与等待/原始/技能/文件事件。
-- `hidden`（非时间线业务与审计事件）：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded`、`retained_resource_recorded` 及不可见空产物，供业务查询、导出、计费和机器人回复消费。
+- `boundary`（`timeline_role = 2`，主时间线分隔与截断事件）：用户输入（`input_accepted`）、助手可见完成正文（`text_completed`，含曾有可见边界但最终为空时的 `finalEmptyAfterContent` 标记）、计划公开决议（`plan_resolved`）、带独立展示资格的终态工具事件，以及模型或 SSH 的连接状态迁移（`connection_disconnected`／`connection_reconnected`，`itemType = "connection"`，`original = None`，不进入对话正文搜索）。每条 `boundary` 本身就是主时间线上的独立卡片。
+- `work`（`timeline_role = 1`，工作过程原子事件）：工具生命周期原子事件（`tool_called`、`tool_waiting_approval`、`tool_backgrounded`、`tool_cancel_requested`、`tool_completed`，同一次调用全程共享同一个 `call_id` 与 `tool_name`）、推理终态（`reasoning_completed`）、上下文压缩终态（`compaction_completed`）、子智能体终态（`agent_completed`）与等待/原始/技能/文件事件。非工具类的进行中起始状态（模型成员预览、未完成压缩／子智能体）仅保留在 Current 内存，不再向 `history_events` 写入无消费者的活跃 `hidden` 行。
+- `hidden`（`timeline_role = 0`，非时间线业务与审计事件）：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded`、`retained_resource_recorded` 及不可见空产物，供业务查询、导出、计费和机器人回复消费。
 
-主时间线的工作区间 `WorkRange` 不在写入期持久化为 `Work` 锚点或 `group_*` 事件，而是在查询期由 `idx_events_dividers` 与覆盖索引 `idx_events_work(seq DESC, occurred_at)` O(log N) 直接切分：
+主时间线的工作区间 `WorkRange` 不在写入期持久化为 `Work` 锚点或 `group_*` 事件，而是在查询期通过稀疏索引 `idx_events_boundaries(seq DESC) WHERE timeline_role = 2` 与覆盖索引 `idx_events_work(seq DESC, occurred_at, run_id) WHERE timeline_role = 1` O(log N) 直接切分：
 
-- 任意相邻两条 `divider` 之间（以及最新 `divider` 到 `through` 之间）只要存在至少一条 `work` 事件，即自然构成一个稳定的 `WorkRange`（标识 `work:<first_seq>`，边界 `(after_seq, before_seq)`、`first_seq`、`last_seq`、`started_at`、`ended_at`、`run_id`、`event_count`）；
-- 一旦新的 `divider`（如助手可见说明或终稿）落盘，`before_seq` 自动固定，旧工作区间天然封口；即使后台工具跨正文运行或被用户停止，写入器也不做跨事件等待或 `BoundaryObserved` 截断快照。
+- 任意相邻两条 `boundary` 之间（以及最新 `boundary` 到 `through` 之间）只要存在至少一条 `work` 事件，即自然构成一个稳定的 `WorkRange`（标识 `work:<first_seq>`，边界 `(after_seq, before_seq)`、`first_seq`、`last_seq`、`started_at`、`ended_at`、`run_id`、`event_count`）；
+- 一旦新的 `boundary`（如助手可见说明、终稿或 `connection_disconnected`／`connection_reconnected`）落盘，`before_seq` 自动固定，旧工作区间天然封口；即使后台工具跨正文或跨断连重连运行，写入器也不做跨事件等待或 `BoundaryObserved` 截断快照。
 
 ## 26.3 混合正文契约（16 KiB 内联与 64 KiB BLOB 分块）
 
@@ -35,13 +35,13 @@ Current 和 History 没有共同事务、共同切点或 ACK。Current 可先显
 - **有效 UTF-8 文本/JSON 且单正文 `<= 16 KiB` 且单事件累计内联总字节 `<= 16 KiB`**（非二进制附件）：直接以内联字段 `"inlineText"` 存入该事件 `payload_json.bodies[]`，不写入 `history_bodies`／`history_body_chunks`，列表或工作组页拉回即可首帧直出，无需二次 `read_body`；
 - **`> 16 KiB`、超出单事件 16 KiB 内联预算或非 UTF-8 二进制与附件**：写入 `history_bodies` 与 64 KiB `WITHOUT ROWID` 分块表 `history_body_chunks`，并在 `payload_json.bodies[]` 记录 `HistoryEventBodyRef`，由读取侧按 64 KiB 固定窗口 O(log N) 随机读取。
 
-事件不再使用 `CanonicalPayload`／`CanonicalMetadata` 二次正文包装；旧 schema 25 已有 `history_bodies` 与 `history_body_chunks` 在升级到 schema 26 时原地零拷贝复用。正文缺失、越界、摘要不符或引用身份冲突都明确失败，不把损坏显示为“空”。
+事件不再使用 `CanonicalPayload`／`CanonicalMetadata` 二次正文包装；旧 schema 25／26 已有 `history_bodies` 与 `history_body_chunks` 在升级到 schema 27 时原地零拷贝复用。正文缺失、越界、摘要不符或引用身份冲突都明确失败，不把损坏显示为“空”。
 
 ## 26.4 HistoryReader：固定 cut、`WorkRange` 与跨区间反查
 
 History 只提供 query/page/cut/change，不保存全历史缓存或 ACK 状态。读取开始先捕获 accepted head 和 RAM pending 根，再打开新的只读事务；数据库已提交事件与尚未 flush 的 pending 在固定 cut 内合并。flush 成功后才 reclaim 对应 pending；在途查询持有旧根，回收不破坏其读取。
 
-- `timeline_page(cut, cursor, demand)`：沿 `idx_events_dividers` 与覆盖索引 `idx_events_work` 返回 `Divider(HistoryEventRecord)` 与 `WorkRange(HistoryWorkRange)` 有界页，**构建折叠 `WorkRange` 不回读事件 `payload_json` 或正文**；
+- `timeline_page(cut, cursor, demand)`：每批通过 2 条 SQL 完成分页——先沿 `idx_events_boundaries` 预取 `batch_size + 1` 条边界，再用单一 `WITH ranges(idx, lo, hi)` CTE 查询覆盖索引 `idx_events_work` 批量计算相邻边界间隙与尾部 `WorkRange` 摘要，并在同一批内完成 `has_more` 判定，返回 `Boundary(HistoryEventRecord)` 与 `WorkRange(HistoryWorkRange)` 有界页，**构建折叠 `WorkRange` 不回读表行、`payload_json` 或正文**；
 - `work_range_page(after_seq, before_seq, cut, cursor, demand)`：在固定 `cut` 上按 `seq ASC` 有界分页原样返回区间内的 `work` 原子事件 `HistoryEventRecord`，后端不做跨事件融合；
 - `events_page`（含按 `call_id` 走 `idx_events_call` 精确查询 `Call`）、`read_event`、`list_bodies`、`read_body`、`turns_page`、`costs_page` 与 `accounting`：服务跨区间调用参数补拉、全文检索、运行导出、机器人回复与计费；
 - `HistoryReader` 读取 `history_events` 时原样透传 `(kind, payload_schema, payload_json)`，**不使用 `deny_unknown_fields` 或按未知 `kind` 拒绝整页**，保证前向兼容。
@@ -52,13 +52,13 @@ History 只提供 query/page/cut/change，不保存全历史缓存或 ACK 状态
 
 Current 由原 State assembler 生成，`CurrentReader` 是 snapshot/watch、collection、body 与 close 的薄端口。owner、`runtimeEpoch`、`run_id` 和 revision 来自同一 owner；UI 只订阅这一 State 来源，不再接旧 ConversationStateFeed 做二次 apply。
 
-`CurrentView` 包含当前 owner/revision、schema 18 `ThreadSnapshot` 和 `CurrentProjection`。Projection 只携带 logical status、execution presence、当前 activity/turn、真实 sources、当前 atoms、Plan/交互引用、有界 previews 和 collection refs。`CurrentAtom` 不携带历史完成身份。
+`CurrentView` 包含当前 owner/revision、schema 18 `ThreadSnapshot` 和 `CurrentProjection`。Projection 只携带 logical status、execution presence、当前 activity/turn、真实 sources、当前 atoms、Plan/交互引用、有界 previews、collection refs 与纯内存 `model_recovery`（仅在活跃重试中暴露 `attempt`、`max_attempts`、`reason`，驱动 `LiveStatusBar` 的实时重连倒计时）。`CurrentAtom` 不携带历史完成身份。
 
 大字段通过 tagged `CurrentStateField` 明确 deferred：runtime 的 `todo`、`progress`、`mcpHealth`、`workflow`、`plan` 等为 Body；`activeSkills`、`activeMcpServers`、`activeLspServers` 与 activity 的 `tools.active` 为 Collection；`thinkingSummary`、`tools.latestStarted` 等单值为 Body。字段超过 2 KiB 才 deferred，Collection 的 `count` 是完整总量，页条目可为 Inline 或 `CurrentPayloadData::Deferred`，大项不复制进 State。小头空占位不是完整值；调用方按 reference 的 owner、generation、offset 与 length 读取。generation 是 opaque namespace，冷/热公式不公开；两种来源使用同一 State shape，不维护两套 DTO。
 
 state 元数据、usage、live usage、耗时和 controls 不等正文或 collection。Current 正文观察只随该 owner/generation 增长或替换；token 变化可以只发 body 更新，不推动历史事件或全 State 重建。当前正文终态也不必然已有 canonical 历史。
 
-Flutter 不自造持久化历史分组。主时间线严格保持不可变，只展示历史 `divider` 与已封口/已结算 `WorkRange`，从不接收 `CurrentAtom` 叠加或原地行替换。所有实时/可变执行 UI——包括未封口 `WorkRange`（可按需在实时栏内局部展开查看进行中工具与思考）、正在流式输出的 `CurrentAtom`（由 `ConversationResponseView` 渲染）以及活动/审批/保存阻塞提示——统一由底部 `LiveStatusBar` 承载；只有对应 Current 正文在 `LiveStatusBar` 中已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠、遮蔽或卸载时撤销该资格。一旦后续 `divider` 写入封口或执行结束，该尾部 `WorkRange` 与终态事件再作为不可变块一次性追加进主时间线，并退出 `LiveStatusBar`。即使主时间线处于历史浏览模式（固定原 `cut`），`LiveStatusBar` 仍持续独立更新当前执行的开放工作区、流式正文与活动状态，提示存在新输出而不改写旧历史窗口。Current Atoms 保留一个有界集合页，只报告已加载数；进行中工具明细统一在实时状态栏内可展开的开放工作组中查看，不在实时状态栏外单设平行的活动工具分页列表。
+Flutter 不自造持久化历史分组。主时间线严格保持不可变，只展示历史 `boundary` 与已封口/已结算 `WorkRange`，从不接收 `CurrentAtom` 叠加或原地行替换。所有实时/可变执行 UI——包括未封口 `WorkRange`（可按需在实时栏内局部展开查看进行中工具与思考）、正在流式输出的 `CurrentAtom`（由 `ConversationResponseView` 渲染）、模型断连重试倒计时（由 `CurrentProjection.modelRecovery` 驱动 `LiveReconnectingPhase`）以及活动/审批/保存阻塞提示——统一由底部 `LiveStatusBar` 承载；只有对应 Current 正文在 `LiveStatusBar` 中已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠、遮蔽或卸载时撤销该资格。一旦后续 `boundary` 写入封口或执行结束，该尾部 `WorkRange` 与终态事件再作为不可变块一次性追加进主时间线，并退出 `LiveStatusBar`。即使主时间线处于历史浏览模式（固定原 `cut`），`LiveStatusBar` 仍持续独立更新当前执行的开放工作区、流式正文与活动状态，提示存在新输出而不改写旧历史窗口。Current Atoms 保留一个有界集合页，只报告已加载数；进行中工具明细统一在实时状态栏内可展开的开放工作组中查看，不在实时状态栏外单设平行的活动工具分页列表。
 
 Current watch 发生 lag、resync 或 owner 更换时返回小型 Reset，并重新捕获完整小 State；不 replay 历史。collection cursor 固定 owner 和 revision，版本变化返回 stale；body reference 固定 owner 与 generation，replace 后旧引用失效。旧 owner 的迟到 body、collection 和 watch 结果不能写入新 owner。
 

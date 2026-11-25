@@ -1,6 +1,6 @@
 CREATE TABLE history_store_meta (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_version INTEGER NOT NULL CHECK(schema_version = 26),
+    schema_version INTEGER NOT NULL CHECK(schema_version = 27),
     database_id TEXT NOT NULL UNIQUE,
     thread_id TEXT NOT NULL
 );
@@ -30,7 +30,7 @@ CREATE TABLE history_events (
     seq INTEGER PRIMARY KEY CHECK(seq > 0),
     event_id TEXT NOT NULL UNIQUE CHECK(length(event_id) > 0),
     kind TEXT NOT NULL CHECK(length(kind) > 0),
-    timeline_role TEXT NOT NULL CHECK(timeline_role IN ('divider', 'work', 'hidden')),
+    timeline_role INTEGER NOT NULL CHECK(timeline_role IN (0, 1, 2)),
     occurred_at INTEGER,
     recorded_at INTEGER NOT NULL,
     run_id TEXT,
@@ -40,7 +40,6 @@ CREATE TABLE history_events (
     entity_id TEXT,
     message_id TEXT,
     tool_name TEXT,
-    source_kind TEXT,
     source_id TEXT,
     query_class TEXT,
     parent_id TEXT,
@@ -50,18 +49,17 @@ CREATE TABLE history_events (
     is_anchor INTEGER NOT NULL DEFAULT 0 CHECK(is_anchor IN (0, 1)),
     payload_schema TEXT NOT NULL CHECK(length(payload_schema) > 0),
     payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
-    CHECK((source_kind IS NULL) = (source_id IS NULL)),
     CHECK((query_class IS NULL) = (original_kind IS NULL)),
     CHECK(query_class IS NOT NULL OR parent_id IS NULL),
     CHECK((row_scope IS NULL) = (row_key IS NULL)),
     CHECK(is_anchor = 0 OR row_key IS NOT NULL),
-    CHECK(row_scope IS NULL OR timeline_role = 'hidden')
+    CHECK(row_scope IS NULL OR timeline_role = 0)
 );
 
-CREATE INDEX idx_events_dividers
-    ON history_events(seq DESC) WHERE timeline_role = 'divider';
+CREATE INDEX idx_events_boundaries
+    ON history_events(seq DESC) WHERE timeline_role = 2;
 CREATE INDEX idx_events_work
-    ON history_events(seq DESC, occurred_at, run_id) WHERE timeline_role = 'work';
+    ON history_events(seq DESC, occurred_at, run_id) WHERE timeline_role = 1;
 CREATE UNIQUE INDEX history_one_anchor
     ON history_events(row_key) WHERE is_anchor = 1;
 CREATE INDEX history_row_head
@@ -73,27 +71,17 @@ CREATE INDEX idx_events_entity
 CREATE INDEX idx_events_turn
     ON history_events(turn_id, seq DESC) WHERE turn_id IS NOT NULL;
 CREATE INDEX idx_events_source
-    ON history_events(source_kind, source_id, seq DESC) WHERE source_id IS NOT NULL;
+    ON history_events(source_id, seq DESC) WHERE source_id IS NOT NULL;
 CREATE INDEX idx_events_call
     ON history_events(call_id, seq DESC) WHERE call_id IS NOT NULL;
-CREATE INDEX idx_events_message
-    ON history_events(message_id, seq DESC) WHERE message_id IS NOT NULL;
-CREATE INDEX idx_events_attempt
-    ON history_events(run_id, attempt_id, seq DESC) WHERE attempt_id IS NOT NULL;
-CREATE INDEX idx_events_originals_class
-    ON history_events(query_class, seq DESC) WHERE query_class IS NOT NULL;
 CREATE INDEX idx_events_originals_all
-    ON history_events(seq DESC) WHERE query_class IS NOT NULL;
+    ON history_events(seq DESC, query_class) WHERE query_class IS NOT NULL;
 CREATE INDEX idx_events_originals_parent
-    ON history_events(parent_id, seq DESC) WHERE query_class IS NOT NULL;
-CREATE INDEX idx_events_originals_parent_class
-    ON history_events(parent_id, query_class, seq DESC) WHERE query_class IS NOT NULL;
+    ON history_events(parent_id, seq DESC, query_class)
+    WHERE query_class IS NOT NULL AND parent_id IS NOT NULL;
 CREATE INDEX idx_events_originals_text
     ON history_events(seq DESC)
     WHERE query_class IS NOT NULL AND original_kind IN ('text', 'input');
-CREATE INDEX idx_events_originals_tool
-    ON history_events(turn_id, tool_name, seq DESC)
-    WHERE query_class IS NOT NULL AND tool_name IS NOT NULL;
 
 CREATE TRIGGER history_events_no_update
 BEFORE UPDATE ON history_events BEGIN

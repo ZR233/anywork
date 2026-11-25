@@ -6,8 +6,8 @@ pub use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const HISTORY_SCHEMA_VERSION: u32 = 26;
-pub const HISTORY_PROTOCOL_VERSION: u32 = 2;
+pub const HISTORY_SCHEMA_VERSION: u32 = 27;
+pub const HISTORY_PROTOCOL_VERSION: u32 = 3;
 pub const INLINE_BODY_MAX_BYTES: usize = 16 * 1024;
 pub const INLINE_EVENT_MAX_BYTES: usize = 16 * 1024;
 
@@ -69,6 +69,8 @@ event_kinds! {
     CompactionCompleted => "compaction_completed",
     AgentSpawned => "agent_spawned",
     AgentCompleted => "agent_completed",
+    ConnectionDisconnected => "connection_disconnected",
+    ConnectionReconnected => "connection_reconnected",
     ItemRecorded => "item_recorded",
     LegacyObserved => "legacy_observed",
 }
@@ -93,26 +95,34 @@ impl<'de> Deserialize<'de> for HistoryEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HistoryTimelineRole {
-    Divider,
+    Boundary,
     Work,
     Hidden,
 }
 
 impl HistoryTimelineRole {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_db_int(self) -> i64 {
         match self {
-            Self::Divider => "divider",
-            Self::Work => "work",
-            Self::Hidden => "hidden",
+            Self::Hidden => 0,
+            Self::Work => 1,
+            Self::Boundary => 2,
         }
     }
 
-    pub fn from_db(value: &str) -> Option<Self> {
+    pub const fn from_db_int(value: i64) -> Option<Self> {
         match value {
-            "divider" => Some(Self::Divider),
-            "work" => Some(Self::Work),
-            "hidden" => Some(Self::Hidden),
+            0 => Some(Self::Hidden),
+            1 => Some(Self::Work),
+            2 => Some(Self::Boundary),
             _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Boundary => "boundary",
+            Self::Work => "work",
+            Self::Hidden => "hidden",
         }
     }
 }
@@ -271,7 +281,7 @@ pub struct HistoryWorkRange {
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 #[allow(clippy::large_enum_variant)]
 pub enum HistoryTimelineItem {
-    Divider(HistoryEventRecord),
+    Boundary(HistoryEventRecord),
     WorkRange(HistoryWorkRange),
 }
 
@@ -442,8 +452,6 @@ pub enum HistoryEventsQuery {
     Turn { turn_id: String },
     Source { source: HistorySource },
     Call { call_id: String },
-    Message { message_id: String },
-    Attempt { run_id: String, attempt_id: String },
     Originals { scope: ChatScope },
     TextOriginals,
 }

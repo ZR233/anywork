@@ -2147,47 +2147,6 @@ impl LiveProjection {
             None,
             at,
         )?;
-        for (id, message) in
-            super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
-        {
-            let fields = BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(&message))]);
-            if self
-                .previews
-                .get(&id)
-                .is_some_and(|entry| fields_equal(&entry.fields, &fields))
-            {
-                continue;
-            }
-            let revision = self.bump_content_revision(&id);
-            let order = self
-                .order_index_of()?
-                .reserve_observed(&attempt.attempt_id, &id)
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-            let created_at = self.created_at(&id, at);
-            let state = ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                String::new(),
-                Vec::new(),
-                ThreadContentLifecycle::completed(at),
-            ));
-            self.store_fact(
-                id.clone(),
-                Fact {
-                    ordinal: order,
-                    revision,
-                    created_at,
-                    turn_id: attempt.turn_id.clone(),
-                },
-            );
-            let entry = LivePreview {
-                fields,
-                observed: None,
-                shape: static_state(&state),
-                observed_version: progress.version(),
-                model_part: None,
-            };
-            self.store_preview(id, entry);
-        }
         Ok(())
     }
 
@@ -3515,15 +3474,12 @@ mod append_only_history_tests {
                 .iter()
                 .all(|event| { event.kind != crate::history::HistoryEventKind::LegacyObserved })
         );
-        let text_start = prepared
-            .history_events
-            .iter()
-            .find(|event| event.entity_id.as_deref() == Some(final_id.as_str()))
-            .context("final text start event")?;
-        assert_eq!(
-            text_start.timeline_role,
-            crate::history::HistoryTimelineRole::Hidden,
-            "active non-terminal text start must not emit a duplicate Divider"
+        assert!(
+            prepared
+                .history_events
+                .iter()
+                .all(|event| event.entity_id.as_deref() != Some(final_id.as_str())),
+            "active non-terminal text start must stay in Current RAM and not write hidden history_events"
         );
         let terminal_reasoning_id = super::super::order::presentation_id(
             "stateless-attempt",

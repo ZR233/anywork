@@ -204,7 +204,7 @@ final class _DemoHistoryReader implements HistoryReader {
           ),
           seq: item.order,
           rowKey: 'single:${item.message.id}',
-          timelineRole: HistoryTimelineRole.divider,
+          timelineRole: HistoryTimelineRole.boundary,
         ),
     ];
     final filtered = switch (query) {
@@ -216,14 +216,6 @@ final class _DemoHistoryReader implements HistoryReader {
         all.where((event) => event.source == source).toList(),
       CallHistoryEvents(:final callId) =>
         all.where((event) => event.callId == callId).toList(),
-      MessageHistoryEvents(:final messageId) =>
-        all.where((event) => event.messageId == messageId).toList(),
-      AttemptHistoryEvents(:final runId, :final attemptId) =>
-        all
-            .where(
-              (event) => event.runId == runId && event.attemptId == attemptId,
-            )
-            .toList(),
       AllHistoryEvents() ||
       OriginalsHistoryEvents() ||
       TextOriginalHistoryEvents() => all,
@@ -404,12 +396,12 @@ final class _DemoHistoryReader implements HistoryReader {
             ),
           ),
         SingleDisplayBlock(:final record, :final visibility) =>
-          DividerTimelineItem(
+          BoundaryTimelineItem(
             _eventRecordFromRecord(
               record,
               seq: block.blockOrder,
               rowKey: block.id,
-              timelineRole: HistoryTimelineRole.divider,
+              timelineRole: HistoryTimelineRole.boundary,
               visibility: visibility,
             ),
           ),

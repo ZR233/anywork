@@ -4830,7 +4830,7 @@ class DemoStudioTransport extends StudioTransport
     required int historyProtocolVersion,
   }) async {
     _ensureDemoRunning();
-    if (historyProtocolVersion != 2) {
+    if (historyProtocolVersion != 3) {
       throw _demoQueryFailure('ProtocolVersionMismatch');
     }
     _demoWorkspace(threadId);

@@ -38,12 +38,6 @@ pub(crate) fn history_events_query(
         BridgeHistoryEventsQuery::Call { call_id } => {
             runtime_history::HistoryEventsQuery::Call { call_id }
         }
-        BridgeHistoryEventsQuery::Message { message_id } => {
-            runtime_history::HistoryEventsQuery::Message { message_id }
-        }
-        BridgeHistoryEventsQuery::Attempt { run_id, attempt_id } => {
-            runtime_history::HistoryEventsQuery::Attempt { run_id, attempt_id }
-        }
         BridgeHistoryEventsQuery::Originals {
             query_class,
             parent_id,
@@ -109,7 +103,7 @@ fn body_ref(value: runtime_history::HistoryEventBodyRef) -> BridgeHistoryEventBo
 
 fn timeline_role(value: runtime_history::HistoryTimelineRole) -> BridgeHistoryTimelineRole {
     match value {
-        runtime_history::HistoryTimelineRole::Divider => BridgeHistoryTimelineRole::Divider,
+        runtime_history::HistoryTimelineRole::Boundary => BridgeHistoryTimelineRole::Boundary,
         runtime_history::HistoryTimelineRole::Work => BridgeHistoryTimelineRole::Work,
         runtime_history::HistoryTimelineRole::Hidden => BridgeHistoryTimelineRole::Hidden,
     }
@@ -177,8 +171,8 @@ fn work_range(value: runtime_history::HistoryWorkRange) -> BridgeHistoryWorkRang
 
 fn timeline_item(value: runtime_history::HistoryTimelineItem) -> BridgeHistoryTimelineItem {
     match value {
-        runtime_history::HistoryTimelineItem::Divider(record) => {
-            BridgeHistoryTimelineItem::Divider(event_record(record))
+        runtime_history::HistoryTimelineItem::Boundary(record) => {
+            BridgeHistoryTimelineItem::Boundary(event_record(record))
         }
         runtime_history::HistoryTimelineItem::WorkRange(range) => {
             BridgeHistoryTimelineItem::WorkRange(work_range(range))
@@ -633,6 +627,13 @@ fn current_projection(value: protocol::CurrentProjection) -> BridgeCurrentProjec
             .into_iter()
             .map(current_collection_ref)
             .collect(),
+        model_recovery: value.model_recovery.map(|recovery| {
+            BridgeCurrentModelRecovery {
+                attempt: recovery.attempt,
+                max_attempts: recovery.max_attempts,
+                reason: recovery.reason,
+            }
+        }),
     }
 }
 

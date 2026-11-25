@@ -1061,6 +1061,7 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
       ownerId: revision.ownerId,
       executionPresent: projection.executionPresent,
       executionActive: executionActive,
+      modelRecovery: projection.modelRecovery,
     );
   }
 
@@ -2014,7 +2015,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         if (page.next == window.before ||
             page.items.any(
               (item) => switch (item) {
-                DividerTimelineItem(:final event) => event.eventId.isEmpty,
+                BoundaryTimelineItem(:final event) => event.eventId.isEmpty,
                 WorkRangeTimelineItem(:final range) => range.rangeId.isEmpty,
               },
             )) {

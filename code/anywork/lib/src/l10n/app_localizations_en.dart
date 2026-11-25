@@ -7783,6 +7783,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get liveStatusConnectionReconnecting => 'Reconnecting live updates';
 
   @override
+  String liveStatusModelReconnecting(int attempt, int max) {
+    return 'Model disconnected, retrying ($attempt/$max)';
+  }
+
+  @override
+  String get timelineConnectionModelDisconnected =>
+      'Model connection disconnected';
+
+  @override
+  String get timelineConnectionModelReconnected =>
+      'Model connection reconnected';
+
+  @override
+  String get timelineConnectionSshDisconnected => 'SSH connection disconnected';
+
+  @override
+  String get timelineConnectionSshReconnected => 'SSH connection reconnected';
+
+  @override
+  String get timelineConnectionGenericDisconnected => 'Connection disconnected';
+
+  @override
+  String get timelineConnectionGenericReconnected => 'Connection reconnected';
+
+  @override
   String get liveStatusMembersUnavailable => 'Member view unavailable';
 
   @override

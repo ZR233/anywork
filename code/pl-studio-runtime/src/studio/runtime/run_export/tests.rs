@@ -106,7 +106,7 @@ fn text_original(
     let mut event = HistoryEvent::new(
         event_id,
         HistoryEventKind::TextCompleted,
-        HistoryTimelineRole::Divider,
+        HistoryTimelineRole::Boundary,
         index as i64,
     );
     event.entity_id = Some(entity_id);

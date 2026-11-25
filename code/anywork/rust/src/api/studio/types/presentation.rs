@@ -8,7 +8,7 @@ use super::{
     BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation, BridgeTurnPhase,
 };
 
-pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 2;
+pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 3;
 pub const BRIDGE_CURRENT_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,13 +37,6 @@ pub enum BridgeHistoryEventsQuery {
     Call {
         call_id: String,
     },
-    Message {
-        message_id: String,
-    },
-    Attempt {
-        run_id: String,
-        attempt_id: String,
-    },
     Originals {
         query_class: String,
         parent_id: Option<String>,
@@ -53,7 +46,7 @@ pub enum BridgeHistoryEventsQuery {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeHistoryTimelineRole {
-    Divider,
+    Boundary,
     Work,
     Hidden,
 }
@@ -158,7 +151,7 @@ pub struct BridgeHistoryWorkRange {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum BridgeHistoryTimelineItem {
-    Divider(BridgeHistoryEventRecord),
+    Boundary(BridgeHistoryEventRecord),
     WorkRange(BridgeHistoryWorkRange),
 }
 
@@ -414,6 +407,14 @@ pub struct BridgeCurrentProjection {
     pub interactions: Option<BridgeCurrentCollectionRef>,
     pub previews: Vec<BridgeCurrentContentPreview>,
     pub collections: Vec<BridgeCurrentCollectionRef>,
+    pub model_recovery: Option<BridgeCurrentModelRecovery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeCurrentModelRecovery {
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

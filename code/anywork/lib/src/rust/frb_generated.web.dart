@@ -951,6 +951,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCurrentFrame dco_decode_box_autoadd_bridge_current_frame(dynamic raw);
 
   @protected
+  BridgeCurrentModelRecovery
+  dco_decode_box_autoadd_bridge_current_model_recovery(dynamic raw);
+
+  @protected
   BridgeCurrentPersistenceSnapshot
   dco_decode_box_autoadd_bridge_current_persistence_snapshot(dynamic raw);
 
@@ -2651,6 +2655,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCurrentFrame dco_decode_bridge_current_frame(dynamic raw);
+
+  @protected
+  BridgeCurrentModelRecovery dco_decode_bridge_current_model_recovery(
+    dynamic raw,
+  );
 
   @protected
   BridgeCurrentPayloadData dco_decode_bridge_current_payload_data(dynamic raw);
@@ -4749,6 +4758,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCurrentModelRecovery?
+  dco_decode_opt_box_autoadd_bridge_current_model_recovery(dynamic raw);
+
+  @protected
   BridgeCurrentPersistenceSnapshot?
   dco_decode_opt_box_autoadd_bridge_current_persistence_snapshot(dynamic raw);
 
@@ -6091,6 +6104,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCurrentFrame sse_decode_box_autoadd_bridge_current_frame(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCurrentModelRecovery
+  sse_decode_box_autoadd_bridge_current_model_recovery(
     SseDeserializer deserializer,
   );
 
@@ -8331,6 +8350,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCurrentFrame sse_decode_bridge_current_frame(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCurrentModelRecovery sse_decode_bridge_current_model_recovery(
     SseDeserializer deserializer,
   );
 
@@ -10903,6 +10927,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCurrentModelRecovery?
+  sse_decode_opt_box_autoadd_bridge_current_model_recovery(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeCurrentPersistenceSnapshot?
   sse_decode_opt_box_autoadd_bridge_current_persistence_snapshot(
     SseDeserializer deserializer,
@@ -12499,6 +12529,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_current_frame(
     BridgeCurrentFrame self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery self,
     SseSerializer serializer,
   );
 
@@ -15112,6 +15148,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_current_frame(
     BridgeCurrentFrame self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery self,
     SseSerializer serializer,
   );
 
@@ -18187,6 +18229,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_current_frame(
     BridgeCurrentFrame? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery? self,
     SseSerializer serializer,
   );
 

@@ -10837,6 +10837,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeCurrentModelRecovery
+  dco_decode_box_autoadd_bridge_current_model_recovery(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_current_model_recovery(raw);
+  }
+
+  @protected
   BridgeCurrentPersistenceSnapshot
   dco_decode_box_autoadd_bridge_current_persistence_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -16416,6 +16423,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeCurrentModelRecovery dco_decode_bridge_current_model_recovery(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return BridgeCurrentModelRecovery(
+      attempt: dco_decode_u_32(arr[0]),
+      maxAttempts: dco_decode_u_32(arr[1]),
+      reason: dco_decode_opt_String(arr[2]),
+    );
+  }
+
+  @protected
   BridgeCurrentPayloadData dco_decode_bridge_current_payload_data(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
@@ -16470,8 +16492,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeCurrentProjection dco_decode_bridge_current_projection(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return BridgeCurrentProjection(
       logicalStatus: dco_decode_bridge_thread_status(arr[0]),
       executionPresent: dco_decode_bool(arr[1]),
@@ -16485,6 +16507,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ),
       previews: dco_decode_list_bridge_current_content_preview(arr[8]),
       collections: dco_decode_list_bridge_current_collection_ref(arr[9]),
+      modelRecovery: dco_decode_opt_box_autoadd_bridge_current_model_recovery(
+        arr[10],
+      ),
     );
   }
 
@@ -17142,20 +17167,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case 4:
         return BridgeHistoryEventsQuery_Call(callId: dco_decode_String(raw[1]));
       case 5:
-        return BridgeHistoryEventsQuery_Message(
-          messageId: dco_decode_String(raw[1]),
-        );
-      case 6:
-        return BridgeHistoryEventsQuery_Attempt(
-          runId: dco_decode_String(raw[1]),
-          attemptId: dco_decode_String(raw[2]),
-        );
-      case 7:
         return BridgeHistoryEventsQuery_Originals(
           queryClass: dco_decode_String(raw[1]),
           parentId: dco_decode_opt_String(raw[2]),
         );
-      case 8:
+      case 6:
         return BridgeHistoryEventsQuery_TextOriginals();
       default:
         throw Exception("unreachable");
@@ -17226,7 +17242,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
       case 0:
-        return BridgeHistoryTimelineItem_Divider(
+        return BridgeHistoryTimelineItem_Boundary(
           dco_decode_box_autoadd_bridge_history_event_record(raw[1]),
         );
       case 1:
@@ -23678,6 +23694,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeCurrentModelRecovery?
+  dco_decode_opt_box_autoadd_bridge_current_model_recovery(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_current_model_recovery(raw);
+  }
+
+  @protected
   BridgeCurrentPersistenceSnapshot?
   dco_decode_opt_box_autoadd_bridge_current_persistence_snapshot(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -26467,6 +26492,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_current_frame(deserializer));
+  }
+
+  @protected
+  BridgeCurrentModelRecovery
+  sse_decode_box_autoadd_bridge_current_model_recovery(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_current_model_recovery(deserializer));
   }
 
   @protected
@@ -33558,6 +33592,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeCurrentModelRecovery sse_decode_bridge_current_model_recovery(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_attempt = sse_decode_u_32(deserializer);
+    var var_maxAttempts = sse_decode_u_32(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    return BridgeCurrentModelRecovery(
+      attempt: var_attempt,
+      maxAttempts: var_maxAttempts,
+      reason: var_reason,
+    );
+  }
+
+  @protected
   BridgeCurrentPayloadData sse_decode_bridge_current_payload_data(
     SseDeserializer deserializer,
   ) {
@@ -33655,6 +33704,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_collections = sse_decode_list_bridge_current_collection_ref(
       deserializer,
     );
+    var var_modelRecovery =
+        sse_decode_opt_box_autoadd_bridge_current_model_recovery(deserializer);
     return BridgeCurrentProjection(
       logicalStatus: var_logicalStatus,
       executionPresent: var_executionPresent,
@@ -33666,6 +33717,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       interactions: var_interactions,
       previews: var_previews,
       collections: var_collections,
+      modelRecovery: var_modelRecovery,
     );
   }
 
@@ -34454,23 +34506,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_callId = sse_decode_String(deserializer);
         return BridgeHistoryEventsQuery_Call(callId: var_callId);
       case 5:
-        var var_messageId = sse_decode_String(deserializer);
-        return BridgeHistoryEventsQuery_Message(messageId: var_messageId);
-      case 6:
-        var var_runId = sse_decode_String(deserializer);
-        var var_attemptId = sse_decode_String(deserializer);
-        return BridgeHistoryEventsQuery_Attempt(
-          runId: var_runId,
-          attemptId: var_attemptId,
-        );
-      case 7:
         var var_queryClass = sse_decode_String(deserializer);
         var var_parentId = sse_decode_opt_String(deserializer);
         return BridgeHistoryEventsQuery_Originals(
           queryClass: var_queryClass,
           parentId: var_parentId,
         );
-      case 8:
+      case 6:
         return BridgeHistoryEventsQuery_TextOriginals();
       default:
         throw UnimplementedError('');
@@ -34558,7 +34600,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_field0 = sse_decode_box_autoadd_bridge_history_event_record(
           deserializer,
         );
-        return BridgeHistoryTimelineItem_Divider(var_field0);
+        return BridgeHistoryTimelineItem_Boundary(var_field0);
       case 1:
         var var_field0 = sse_decode_box_autoadd_bridge_history_work_range(
           deserializer,
@@ -43224,6 +43266,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeCurrentModelRecovery?
+  sse_decode_opt_box_autoadd_bridge_current_model_recovery(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_current_model_recovery(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BridgeCurrentPersistenceSnapshot?
   sse_decode_opt_box_autoadd_bridge_current_persistence_snapshot(
     SseDeserializer deserializer,
@@ -46634,6 +46692,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_current_frame(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_current_model_recovery(self, serializer);
   }
 
   @protected
@@ -52652,6 +52719,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.attempt, serializer);
+    sse_encode_u_32(self.maxAttempts, serializer);
+    sse_encode_opt_String(self.reason, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_current_payload_data(
     BridgeCurrentPayloadData self,
     SseSerializer serializer,
@@ -52730,6 +52808,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     sse_encode_list_bridge_current_content_preview(self.previews, serializer);
     sse_encode_list_bridge_current_collection_ref(self.collections, serializer);
+    sse_encode_opt_box_autoadd_bridge_current_model_recovery(
+      self.modelRecovery,
+      serializer,
+    );
   }
 
   @protected
@@ -53339,25 +53421,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case BridgeHistoryEventsQuery_Call(callId: final callId):
         sse_encode_i_32(4, serializer);
         sse_encode_String(callId, serializer);
-      case BridgeHistoryEventsQuery_Message(messageId: final messageId):
-        sse_encode_i_32(5, serializer);
-        sse_encode_String(messageId, serializer);
-      case BridgeHistoryEventsQuery_Attempt(
-        runId: final runId,
-        attemptId: final attemptId,
-      ):
-        sse_encode_i_32(6, serializer);
-        sse_encode_String(runId, serializer);
-        sse_encode_String(attemptId, serializer);
       case BridgeHistoryEventsQuery_Originals(
         queryClass: final queryClass,
         parentId: final parentId,
       ):
-        sse_encode_i_32(7, serializer);
+        sse_encode_i_32(5, serializer);
         sse_encode_String(queryClass, serializer);
         sse_encode_opt_String(parentId, serializer);
       case BridgeHistoryEventsQuery_TextOriginals():
-        sse_encode_i_32(8, serializer);
+        sse_encode_i_32(6, serializer);
     }
   }
 
@@ -53420,7 +53492,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     switch (self) {
-      case BridgeHistoryTimelineItem_Divider(field0: final field0):
+      case BridgeHistoryTimelineItem_Boundary(field0: final field0):
         sse_encode_i_32(0, serializer);
         sse_encode_box_autoadd_bridge_history_event_record(field0, serializer);
       case BridgeHistoryTimelineItem_WorkRange(field0: final field0):
@@ -60329,6 +60401,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_current_frame(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_current_model_recovery(self, serializer);
     }
   }
 

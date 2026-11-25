@@ -2,7 +2,7 @@ import 'chat_models.dart';
 import 'current_models.dart' show CurrentTurnPhase;
 import 'runtime_models.dart';
 
-const historyProtocolVersion = 2;
+const historyProtocolVersion = 3;
 
 final class HistoryCut {
   const HistoryCut(this.token);
@@ -19,7 +19,7 @@ final class HistoryDemand {
   final int maxBytes;
 }
 
-enum HistoryTimelineRole { divider, work, hidden }
+enum HistoryTimelineRole { boundary, work, hidden }
 
 enum HistoryBusinessRowScope { turn, source, cost, accounting }
 
@@ -75,17 +75,6 @@ final class SourceHistoryEvents extends HistoryEventsQuery {
 final class CallHistoryEvents extends HistoryEventsQuery {
   const CallHistoryEvents(this.callId);
   final String callId;
-}
-
-final class MessageHistoryEvents extends HistoryEventsQuery {
-  const MessageHistoryEvents(this.messageId);
-  final String messageId;
-}
-
-final class AttemptHistoryEvents extends HistoryEventsQuery {
-  const AttemptHistoryEvents({required this.runId, required this.attemptId});
-  final String runId;
-  final String attemptId;
 }
 
 final class OriginalsHistoryEvents extends HistoryEventsQuery {
@@ -270,8 +259,8 @@ sealed class HistoryTimelineItem {
   const HistoryTimelineItem();
 }
 
-final class DividerTimelineItem extends HistoryTimelineItem {
-  const DividerTimelineItem(this.event);
+final class BoundaryTimelineItem extends HistoryTimelineItem {
+  const BoundaryTimelineItem(this.event);
   final HistoryEventRecord event;
 }
 

@@ -341,11 +341,13 @@ final class CurrentAtomSnapshot {
     this.ownerId,
     this.executionPresent = false,
     this.executionActive = false,
+    this.modelRecovery,
   }) : currentAtoms = List.unmodifiable(currentAtoms);
   final int revision;
   final String? ownerId;
   final bool executionPresent;
   final bool executionActive;
+  final CurrentModelRecovery? modelRecovery;
 
   /// The bounded Current run facts rendered inside LiveStatusBar and open live Work.
   /// They are never overlaid onto immutable main-Timeline rows.

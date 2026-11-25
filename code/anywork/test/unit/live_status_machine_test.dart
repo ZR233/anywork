@@ -672,5 +672,46 @@ void main() {
               as LiveResponsePhase;
       expect(unlaidPhase.activity, isNotNull);
     });
+
+    test('projects pure-RAM CurrentModelRecovery into LiveReconnectingPhase', () {
+      final reconnecting = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          activity: _activity(ThreadActivityKind.responding),
+          current: CurrentAtomSnapshot(
+            revision: 3,
+            executionPresent: true,
+            modelRecovery: const CurrentModelRecovery(
+              attempt: 2,
+              maxAttempts: 5,
+              reason: 'websocket closed',
+            ),
+          ),
+        ),
+      );
+      final primary =
+          (reconnecting.gate as LiveStatusPresenting).presentation.primary
+              as LiveReconnectingPhase;
+      expect(primary.attempt, 2);
+      expect(primary.maxAttempts, 5);
+      expect(primary.detail, 'websocket closed');
+
+      final cleared = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          activity: _activity(ThreadActivityKind.responding),
+          current: CurrentAtomSnapshot(
+            revision: 4,
+            executionPresent: true,
+          ),
+        ),
+      );
+      expect(
+        (cleared.gate as LiveStatusPresenting).presentation.primary,
+        isNot(isA<LiveReconnectingPhase>()),
+      );
+    });
   });
 }

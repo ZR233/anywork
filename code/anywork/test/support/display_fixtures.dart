@@ -110,7 +110,7 @@ HistoryTimelinePage historyFixturePage(
             ),
           ),
         SingleDisplayBlock(:final record, :final visibility) =>
-          DividerTimelineItem(
+          BoundaryTimelineItem(
             _fixtureEventRecord(block, record, visibility: visibility),
           ),
       },
@@ -182,7 +182,7 @@ HistoryEventRecord _fixtureEventRecord(
     seq: block.blockOrder,
     eventId: record.historyDetailEventId ?? record.historyEventId ?? atom.id,
     kind: atom.kind == ChatAtomKind.input ? 'input_accepted' : 'text_completed',
-    timelineRole: HistoryTimelineRole.divider,
+    timelineRole: HistoryTimelineRole.boundary,
     occurredAt: _historyMillis(atom.startedAt),
     recordedAt: block.blockOrder,
     runId: record.runId,

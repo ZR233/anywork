@@ -263,9 +263,9 @@ async fn require_schema26(db: &impl ConnectionTrait) -> Result<()> {
         ))
         .await?
         .ok_or_else(|| HistoryError::Integrity("history identity is missing".into()))?;
-    if row.try_get::<i64>("", "schema_version")? != 26 {
+    if !matches!(row.try_get::<i64>("", "schema_version")?, 26 | 27) {
         return Err(HistoryError::Integrity(
-            "schema 26 manifest repair requires schema 26".into(),
+            "schema 26 manifest repair requires schema 26 or 27".into(),
         ));
     }
     Ok(())
@@ -460,7 +460,7 @@ mod tests {
         assert!(super::super::requires_history_upgrade(&history_path, "thread-1").await?);
         let report =
             super::super::upgrade_history(&history_path, "thread-1", directory.path()).await?;
-        assert_eq!(report.status, super::super::UpgradeStatus::AlreadySchema26);
+        assert_eq!(report.status, super::super::UpgradeStatus::AlreadyCurrent);
         assert_eq!(report.database_id, database_id);
         assert!(!super::super::requires_history_upgrade(&history_path, "thread-1").await?);
 
@@ -506,7 +506,7 @@ mod tests {
             .await?
             .unwrap()
             .try_get("", "schema_version")?;
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
 
         let rejected = db
             .execute_unprepared("UPDATE history_events SET recorded_at = recorded_at")
@@ -534,7 +534,7 @@ mod tests {
 
         let second =
             super::super::upgrade_history(&history_path, "thread-1", directory.path()).await?;
-        assert_eq!(second.status, super::super::UpgradeStatus::AlreadySchema26);
+        assert_eq!(second.status, super::super::UpgradeStatus::AlreadyCurrent);
         Ok(())
     }
 
@@ -606,7 +606,7 @@ mod tests {
                 seq.into(),
                 event_id.into(),
                 "usage_recorded".into(),
-                "hidden".into(),
+                0_i64.into(),
                 1_i64.into(),
                 row_scope.map(str::to_owned).into(),
                 row_key.map(str::to_owned).into(),
