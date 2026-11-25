@@ -76,7 +76,9 @@ flutter:
     - assets/branding/anywork-app-icon.png
     - assets/branding/anywork-startup-cat.webp
     - assets/branding/anywork-startup-cat.png
-    - assets/provider-logos/
+    # Use the same package-qualified key in the app and Widget Previewer.
+    # Flutter resolves this package path from lib/.
+    - packages/anywork/assets/provider-logos/
 
 flutter_rust_bridge:
   rust_root: rust/
