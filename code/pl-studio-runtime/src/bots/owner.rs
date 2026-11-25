@@ -656,7 +656,7 @@ impl BotRuntime {
             })
     }
 
-    pub(crate) async fn reply(
+    pub(super) async fn reply(
         &self,
         operation_id: String,
         changed: bool,

@@ -9,16 +9,16 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 
-pub(crate) struct BotRecord {
+pub(super) struct BotRecord {
     pub(crate) published: Option<Arc<ManagedBot>>,
     pub(crate) operation: Arc<BotOperationOwner>,
     apps: AppReservations,
-    pub(crate) pending: Option<PendingProjection>,
+    pub(super) pending: Option<PendingProjection>,
     pub(crate) watch: Arc<Mutex<WatchSlot>>,
 }
 
 #[derive(Clone)]
-pub(crate) struct PendingProjection {
+pub(super) struct PendingProjection {
     pub bot_id: String,
     pub operation: BotCredentialOperation,
     pub diagnostics: BotDiagnosticSet,
@@ -152,7 +152,7 @@ impl BotRegistry {
 }
 
 impl BotRuntime {
-    pub(crate) fn new_record(runtime: BotRuntime, bot_id: String) -> BotRecord {
+    fn new_record(runtime: BotRuntime, bot_id: String) -> BotRecord {
         BotRecord {
             published: None,
             operation: Arc::new(BotOperationOwner::new(runtime, bot_id)),
