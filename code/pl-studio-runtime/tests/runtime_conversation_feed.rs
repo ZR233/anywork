@@ -116,6 +116,7 @@ struct OutputOriginal {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PublicHistory {
     outputs: Vec<OutputOriginal>,
+    recoveries: Vec<(pl_studio_runtime::ModelRecoveryNotice, OutputOriginal)>,
 }
 
 async fn connection_boundaries(reader: &HistoryReader) -> Result<Vec<(String, serde_json::Value)>> {
@@ -194,11 +195,22 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
                 !bodies.is_empty(),
                 "public output omitted its original body"
             );
-            for (_, bytes) in &bodies {
+            if let Some(notice) = envelope.data.get("modelRecovery") {
+                result.recoveries.push((
+                    serde_json::from_value(notice.clone())?,
+                    OutputOriginal {
+                        event_id: event.event_id,
+                        payload,
+                        bodies,
+                    },
+                ));
+                continue;
+            }
+            for (key, bytes) in &bodies {
                 let (parts, remainder) = bytes.as_chunks::<2>();
                 ensure!(
                     remainder.is_empty() && parts.iter().all(|part| part == b" a"),
-                    "public body differs from provider output"
+                    "public body differs from provider output: key={key}"
                 );
             }
             result.outputs.push(OutputOriginal {
@@ -390,6 +402,26 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
     )
     .await?;
     let result = async {
+        // This script uses OpenAI's connection-lifetime code. Select that policy and
+        // a synthetic loopback credential through the isolated runtime's public API.
+        env.runtime
+            .patch_account(pl_studio_runtime::PatchAccountRequest {
+                operation_id: "reconnect-openai-policy".into(),
+                expected_revision: env.runtime.read_settings()?.config.revision,
+                account_id: "root-fixture".into(),
+                authentication: pl_studio_runtime::AccountAuthenticationIntent::ApiKey,
+                name: Default::default(),
+                base_url: Default::default(),
+                template_id: Default::default(),
+                protocol: pl_studio_runtime::AccountTextPatch::Set {
+                    value: pl_model::protocol::providers::openai::ID.to_string(),
+                },
+                secret: pl_studio_runtime::AccountSecretUpdate::Replace {
+                    value: "isolated-reconnect-fixture-token".into(),
+                },
+                custom_models: Default::default(),
+            })
+            .await?;
         let thread = env
             .start(ThreadWorkspaceMode::Worktree, "reconnect")
             .await?;
@@ -427,9 +459,30 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
 
         release.cancel();
         let terminal = support::completed_prompt(&env.runtime, id, "reconnect").await?;
+        ensure!(
+            matches!(terminal.state, pl_studio_runtime::TurnState::Completed(_)),
+            "websocket reconnect did not complete: {terminal:?}"
+        );
         ensure!(terminal.id == live.projection.active_turn.context("live Turn")?.id);
         let published = public_history(&history).await?;
         let conn_events = connection_boundaries(&history).await?;
+        ensure!(
+            published.recoveries.len() == 2
+                && published.recoveries.iter().all(|(notice, _)| {
+                    notice.retry_count == 1
+                        && notice.max_retries == 5
+                        && notice.failure.as_ref().is_some_and(|failure| {
+                            failure.code.as_deref() == Some("websocket_connection_limit_reached")
+                                && failure.provider_kind
+                                    == Some(pl_protocol::ProviderFailureKind::Transport)
+                        })
+                })
+                && published.recoveries.iter().any(|(notice, _)| {
+                    notice.phase == pl_core::model::ModelRecoveryPhase::Recovered
+                }),
+            "websocket recovery notices lost their failure or successful recovery: {:?}",
+            published.recoveries
+        );
         ensure!(
             published.outputs.len() == 3 && output_shape(&published) == (3, 196),
             "websocket reconnect changed public output: outputs={}, shape={:?}",
@@ -440,10 +493,10 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             conn_events.len() == 2
                 && conn_events[0].1["state"] == "reconnected"
                 && conn_events[0].1["scope"] == "model"
-                && conn_events[0].1["transport"] == "WebSocket"
+                && conn_events[0].1["transport"] == "ws"
                 && conn_events[1].1["state"] == "disconnected"
                 && conn_events[1].1["scope"] == "model"
-                && conn_events[1].1["transport"] == "WebSocket"
+                && conn_events[1].1["transport"] == "ws"
                 && conn_events[1].1["recoverable"] == true,
             "websocket reconnect changed connection boundary events: {conn_events:?}"
         );
@@ -552,7 +605,9 @@ async fn current_and_history_2000_item_scale() -> Result<()> {
         let published = public_history(&history).await?;
         let conn_events = connection_boundaries(&history).await?;
         ensure!(
-            output_shape(&published) == (ITEMS, OUTPUT_BYTES) && conn_events.is_empty(),
+            output_shape(&published) == (ITEMS, OUTPUT_BYTES)
+                && published.recoveries.is_empty()
+                && conn_events.is_empty(),
             "scale output changed: shape={:?}, conn_events={}",
             output_shape(&published),
             conn_events.len()
