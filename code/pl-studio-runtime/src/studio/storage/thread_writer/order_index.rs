@@ -200,15 +200,19 @@ impl RuntimeOrderIndex {
         self.other_thread_bytes.store(bytes, Ordering::Release);
     }
 
-    pub(super) fn set_capacity_notifier(&self, capacity: tokio::sync::watch::Sender<u64>) {
+    pub(super) fn set_capacity_notifier(&self, capacity: Option<tokio::sync::watch::Sender<u64>>) {
         *self
             .capacity_changed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(capacity);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = capacity;
     }
 
     pub(super) fn delivery_counter(&self) -> Arc<AtomicU64> {
         self.delivery_bytes.clone()
+    }
+
+    pub(super) fn ceiling(&self) -> u64 {
+        self.lock_state().ceiling
     }
 
     pub(super) fn new(process_bytes: Arc<AtomicU64>, ceiling: u64) -> Self {

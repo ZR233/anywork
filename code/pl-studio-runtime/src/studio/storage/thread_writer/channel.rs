@@ -413,7 +413,9 @@ impl HistoryChannel {
         capacity: tokio::sync::watch::Sender<u64>,
     ) -> Self {
         let mut channel = Self::new(process_bytes);
-        channel.order_index.set_capacity_notifier(capacity.clone());
+        channel
+            .order_index
+            .set_capacity_notifier(Some(capacity.clone()));
         channel.capacity_changed = Some(capacity);
         channel
     }
@@ -591,7 +593,7 @@ impl HistoryChannel {
         if self.order_index.has_pending() || Arc::strong_count(&self.order_index) > 1 {
             channel.order_index = self.order_index.clone();
         } else {
-            let ceiling = self.order_index.lock_state().ceiling;
+            let ceiling = self.order_index.ceiling();
             channel.order_index = Arc::new(RuntimeOrderIndex::with_delivery(
                 self.process_bytes.clone(),
                 ceiling,
@@ -602,11 +604,9 @@ impl HistoryChannel {
         channel.delivery_admissions = self.delivery_admissions.clone();
         channel.pressure_changed = self.pressure_changed.clone();
         channel.capacity_changed = self.capacity_changed.clone();
-        *channel
+        channel
             .order_index
-            .capacity_changed
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = channel.capacity_changed.clone();
+            .set_capacity_notifier(channel.capacity_changed.clone());
         channel
     }
     /// Wait only for an already handed-over effect, never for a producer's future projection.
