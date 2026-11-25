@@ -110,10 +110,10 @@ fn legacy_output_source() -> crate::FirstOutputSource {
 }
 
 /// 一行版本化 JSONL 日志记录；也是队列事件的载荷。
-#[derive(Debug, Clone, Default, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub(super) struct CallLogRecord {
-    #[serde(default = "record_version")]
+    #[serde(default = "legacy_record_version")]
     pub(super) version: u32,
     pub(super) kind: String,
     pub(super) thread_id: String,
@@ -248,144 +248,39 @@ impl CallLogRecord {
     }
 }
 
-fn record_version() -> u32 {
-    CALL_LOG_RECORD_VERSION
-}
-
-/// 版本化日志记录的读取边界：同时接受当前字段与 v1 的账号/模型接入字段名。
-///
-/// 转换只发生在这里，且只映射已知语义相同的三个字段；未知字段保持忽略，不改写日志正文。
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawCallLogRecord {
-    #[serde(default = "legacy_record_version")]
-    version: u32,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    thread_id: String,
-    #[serde(default)]
-    call_id: String,
-    #[serde(default)]
-    root_thread_id: Option<String>,
-    #[serde(default)]
-    turn_id: Option<String>,
-    #[serde(default)]
-    retry_of: Option<String>,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    terminal: bool,
-    #[serde(default)]
-    revision: i64,
-    #[serde(default)]
-    recorded_at: i64,
-    #[serde(default)]
-    retention: Option<String>,
-    #[serde(default)]
-    purpose: Option<String>,
-    #[serde(default)]
-    account_id: Option<String>,
-    #[serde(default)]
-    account_display_name: Option<String>,
-    #[serde(default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    sent_model: Option<String>,
-    #[serde(default)]
-    reported_model: Option<String>,
-    #[serde(default)]
-    effort: Option<String>,
-    #[serde(default)]
-    requested_service_tier: Option<String>,
-    #[serde(default)]
-    usage: Option<CallUsageRecord>,
-    #[serde(default)]
-    usage_status: Option<pl_core::usage::UsageStatus>,
-    #[serde(default)]
-    cost: Option<RuntimeCostAmount>,
-    #[serde(default)]
-    has_unpriced_usage: bool,
-    #[serde(default)]
-    timing: Option<CallTimingRecord>,
-    #[serde(default)]
-    throughput_epoch: u32,
-    #[serde(default)]
-    truncated: bool,
-    #[serde(default)]
-    input_revision: Option<u64>,
-    #[serde(default)]
-    diagnostic: Option<String>,
-    /// v1 的账号接入身份（真实旧字段 `providerInstanceId`）；只在读取边界并入 `account_id`。
-    #[serde(default)]
-    provider_instance_id: Option<String>,
-    /// v1 的账号展示名（真实旧字段 `providerDisplayName`）。
-    #[serde(default)]
-    provider_display_name: Option<String>,
-    /// v1 的目录配置模型（真实旧字段 `configuredModel`）；只在读取边界并入 `model_id`。
-    #[serde(default)]
-    configured_model: Option<String>,
-    /// v1 的推理强度（真实旧字段 `reasoningEffort`）；只在读取边界并入 `effort`。
-    #[serde(default)]
-    reasoning_effort: Option<String>,
-}
-
 fn legacy_record_version() -> u32 {
     1
 }
 
-impl RawCallLogRecord {
-    fn into_current(self) -> CallLogRecord {
-        CallLogRecord {
-            // 已知旧版本在读取边界归一化为当前版本（身份字段已并入当前语义）；
-            // 未知的未来版本保留原值，交给版本门显式拒绝而不是静默升级。
-            version: if self.version <= CALL_LOG_RECORD_VERSION {
-                record_version()
-            } else {
-                self.version
-            },
-            kind: self.kind,
-            thread_id: self.thread_id,
-            call_id: self.call_id,
-            root_thread_id: self.root_thread_id,
-            turn_id: self.turn_id,
-            retry_of: self.retry_of,
-            status: self.status,
-            terminal: self.terminal,
-            revision: self.revision,
-            recorded_at: self.recorded_at,
-            retention: self.retention,
-            purpose: self.purpose,
-            account_id: self.account_id.or(self.provider_instance_id),
-            account_display_name: self.account_display_name.or(self.provider_display_name),
-            model_id: self.model_id.or(self.configured_model),
-            sent_model: self.sent_model,
-            reported_model: self.reported_model,
-            effort: self.effort.or(self.reasoning_effort),
-            requested_service_tier: self.requested_service_tier,
-            usage: self.usage,
-            usage_status: if self.version < 3 {
-                Some(pl_core::usage::UsageStatus::LegacyUnknown)
-            } else {
-                self.usage_status
-            },
-            cost: self.cost,
-            has_unpriced_usage: self.has_unpriced_usage,
-            timing: self.timing,
-            throughput_epoch: self.throughput_epoch,
-            truncated: self.truncated,
-            input_revision: self.input_revision,
-            diagnostic: self.diagnostic,
-        }
-    }
+/// An old record may contain both spellings. Use the legacy value only when the
+/// current field is absent or null.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredCallRecord {
+    #[serde(flatten)]
+    record: CallLogRecord,
+    provider_instance_id: Option<String>,
+    provider_display_name: Option<String>,
+    configured_model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
-impl<'de> serde::Deserialize<'de> for CallLogRecord {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(RawCallLogRecord::deserialize(deserializer)?.into_current())
+impl StoredCallRecord {
+    fn into_current(self) -> Result<CallLogRecord> {
+        let mut record = self.record;
+        ensure!(
+            record.version <= CALL_LOG_RECORD_VERSION,
+            "unsupported call log record version"
+        );
+        if record.version < 3 {
+            record.usage_status = Some(pl_core::usage::UsageStatus::LegacyUnknown);
+        }
+        record.version = CALL_LOG_RECORD_VERSION;
+        record.account_id = record.account_id.or(self.provider_instance_id);
+        record.account_display_name = record.account_display_name.or(self.provider_display_name);
+        record.model_id = record.model_id.or(self.configured_model);
+        record.effort = record.effort.or(self.reasoning_effort);
+        Ok(record)
     }
 }
 
@@ -560,12 +455,7 @@ pub(super) fn decode_record(line: &str) -> Result<CallLogRecord> {
         line.len() <= CALL_LOG_RECORD_MAX_BYTES,
         "oversized call log record"
     );
-    let record: CallLogRecord = serde_json::from_str(line)?;
-    ensure!(
-        record.version == CALL_LOG_RECORD_VERSION,
-        "unsupported call log record version"
-    );
-    Ok(record)
+    serde_json::from_str::<StoredCallRecord>(line)?.into_current()
 }
 
 /// Stops encoding before allocating an unbounded diagnostic buffer.
@@ -685,11 +575,33 @@ mod tests {
             "providerInstanceId": "deepseek",
             "sentModel": "deepseek-flash"
         }"#;
-        let record: CallLogRecord = serde_json::from_str(line).expect("v1 record decodes");
+        let record = decode_record(line).expect("v1 record decodes");
         assert!(
             record.model_id.is_none(),
             "sent model never becomes configured"
         );
         assert_eq!(record.sent_model.as_deref(), Some("deepseek-flash"));
+    }
+
+    #[test]
+    fn unversioned_records_accept_both_current_and_legacy_field_spellings() -> Result<()> {
+        let record = decode_record(
+            r#"{
+            "accountId":"current-account", "providerInstanceId":"old-account",
+            "accountDisplayName":null, "providerDisplayName":"old name",
+            "modelId":"current-model", "configuredModel":"old-model",
+            "reasoningEffort":"high", "usageStatus":"reported"
+        }"#,
+        )?;
+        assert_eq!(record.version, CALL_LOG_RECORD_VERSION);
+        assert_eq!(record.account_id.as_deref(), Some("current-account"));
+        assert_eq!(record.account_display_name.as_deref(), Some("old name"));
+        assert_eq!(record.model_id.as_deref(), Some("current-model"));
+        assert_eq!(record.effort.as_deref(), Some("high"));
+        assert_eq!(
+            record.usage_status,
+            Some(pl_core::usage::UsageStatus::LegacyUnknown)
+        );
+        Ok(())
     }
 }

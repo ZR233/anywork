@@ -32,10 +32,40 @@ pub(super) enum PersistenceDisposition {
     Blocked,
 }
 
-pub(super) async fn supervise_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>) {
+/// Commits one complete batch. The worker may acknowledge its tickets only after this returns.
+pub(super) trait BatchCommit: Clone + Send + 'static {
+    fn commit(
+        &self,
+        store: &crate::studio::StudioStore,
+        batch: &PendingBatch,
+    ) -> impl Future<Output = Result<(), BatchError>> + Send;
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SqliteBatchCommit;
+
+impl BatchCommit for SqliteBatchCommit {
+    async fn commit(
+        &self,
+        store: &crate::studio::StudioStore,
+        batch: &PendingBatch,
+    ) -> Result<(), BatchError> {
+        apply_batch(store, batch).await
+    }
+}
+
+pub(super) async fn supervise_writer(
+    shared: Arc<WriterShared>,
+    pending_commits: Arc<AtomicUsize>,
+    commit: impl BatchCommit,
+) {
     loop {
         let worker_shared = shared.clone();
-        let worker = tokio::spawn(run_writer(worker_shared, pending_commits.clone()));
+        let worker = tokio::spawn(run_writer(
+            worker_shared,
+            pending_commits.clone(),
+            commit.clone(),
+        ));
         let Err(error) = worker.await else {
             return;
         };
@@ -54,7 +84,11 @@ pub(super) async fn supervise_writer(shared: Arc<WriterShared>, pending_commits:
     }
 }
 
-async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>) {
+async fn run_writer(
+    shared: Arc<WriterShared>,
+    pending_commits: Arc<AtomicUsize>,
+    commit: impl BatchCommit,
+) {
     let mut retries = 0usize;
     loop {
         let stopping = shared.stopping.load(Ordering::Acquire);
@@ -102,26 +136,8 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
         }
         let started_at = std::time::Instant::now();
         let commit_count = batch.commit_count();
-        match apply_batch(&shared.store, &batch).await {
+        match commit.commit(&shared.store, &batch).await {
             Ok(()) => {
-                #[cfg(test)]
-                {
-                    let gate = {
-                        let mut gate = shared.lease_ack_gate.lock().unwrap();
-                        if gate.as_ref().is_some_and(|gate| batch.entries.iter().any(|entry| {
-                            matches!(entry.mutation.as_ref(), super::queue::StudioMutation::WorktreeLease(lease)
-                                if lease.state == gate.state)
-                        })) {
-                            gate.take()
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(gate) = gate {
-                        let _ = gate.entered.send(());
-                        let _ = gate.release.await;
-                    }
-                }
                 let was_unhealthy = matches!(
                     shared.state.borrow().state,
                     PersistenceState::Degraded(_) | PersistenceState::Recovering(_)

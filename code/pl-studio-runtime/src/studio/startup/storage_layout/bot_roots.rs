@@ -1,6 +1,10 @@
 //! Exact bot root relocations, retained as migration evidence, never as an execution fallback.
+use super::files::{copy_tree, original_path, validate_family};
 use super::*;
+use crate::studio::catalog::CatalogStore;
+use crate::studio::paths::storage_key;
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
+use std::collections::BTreeMap;
 
 /// Compare recorded addresses without resolving a source already moved to backup.
 /// Use native path components after safe Windows verbatim-prefix simplification,
