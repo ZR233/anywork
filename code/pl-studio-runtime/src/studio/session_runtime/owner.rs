@@ -370,6 +370,7 @@ mod tests {
     use crate::test_support::storage::{
         ThreadStorageSink, close_factory, spawn_live_projection_for_thread,
     };
+    use crate::thread_assembler::ThreadActivation;
     use base64::Engine as _;
     use pl_core::{
         context::{ContextContent, OpaquePayload},

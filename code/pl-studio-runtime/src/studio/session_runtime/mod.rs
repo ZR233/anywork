@@ -4,11 +4,9 @@
 //! The Core assembly layer owns registration and commit; these implementations use that same
 //! transaction rather than copying membership into a second product registry.
 pub(crate) use crate::thread_assembler::{
-    ArchiveScopeSeal, AssignmentKind, ChildThreadRequest, ClosePurpose, EntryPurpose,
-    EntryRegistry, Registry, Reservation, SessionAssignment, SessionRuntime, State,
-    StudioActivationFactory, StudioChildFactory, StudioChildResources, StudioThreadSpec,
-    ThreadActivation, ThreadAssemblyError, ThreadPreparation, WorkspaceBindingAdmission,
-    WorkspacePreparationOwner, WorkspaceUsageLease, child_resources, children, observation, tools,
+    AssignmentKind, ChildThreadRequest, ClosePurpose, EntryPurpose, EntryRegistry, Registry,
+    Reservation, SessionRuntime, State, ThreadAssemblyError, WorkspaceBindingAdmission,
+    WorkspacePreparationOwner, children, observation, tools,
 };
 pub(crate) use agents::AgentHost;
 pub(crate) use close_storage::CloseStorage;

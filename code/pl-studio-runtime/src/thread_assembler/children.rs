@@ -469,7 +469,7 @@ impl super::SessionRuntime {
 
 #[cfg(test)]
 #[derive(Debug)]
-struct TestChildFactory;
+pub(crate) struct TestChildFactory;
 
 #[cfg(test)]
 impl StudioChildFactory for TestChildFactory {
