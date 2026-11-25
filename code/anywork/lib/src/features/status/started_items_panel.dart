@@ -14,15 +14,31 @@ import 'status_view.dart';
 
 /// Official menu owns focus, Escape dismissal and viewport positioning. Only
 /// the menu content observes services; progress never rebuilds its trigger.
-class StartedItemsEntry extends StatefulWidget {
+class StartedItemsEntry extends StatelessWidget {
   const StartedItemsEntry({required this.threadId, super.key});
   final String threadId;
 
   @override
-  State<StartedItemsEntry> createState() => _StartedItemsEntryState();
+  Widget build(BuildContext context) => StartedItemsMenu(
+    panelBuilder: (context) => StartedItemsConnector(
+      threadId: threadId,
+      observe: MenuController.maybeIsOpenOf(context)!,
+    ),
+  );
 }
 
-class _StartedItemsEntryState extends State<StartedItemsEntry> {
+/// Production menu chrome shared with component previews. The anchor owns
+/// visibility; the panel observes services only while that anchor is open.
+class StartedItemsMenu extends StatefulWidget {
+  const StartedItemsMenu({required this.panelBuilder, super.key});
+
+  final WidgetBuilder panelBuilder;
+
+  @override
+  State<StartedItemsMenu> createState() => _StartedItemsMenuState();
+}
+
+class _StartedItemsMenuState extends State<StartedItemsMenu> {
   final _focusNode = FocusNode();
 
   @override
@@ -34,11 +50,23 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
   @override
   Widget build(BuildContext context) => MenuAnchor(
     childFocusNode: _focusNode,
+    style: MenuStyle(
+      padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+      backgroundColor: WidgetStatePropertyAll(
+        context.colors.surfaceContainerLowest,
+      ),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(StudioRadii.md),
+          side: BorderSide(color: context.colors.outlineVariant),
+        ),
+      ),
+    ),
     menuChildren: [
       SizedBox(
         width: math.max(
           0,
-          math.min(440, MediaQuery.sizeOf(context).width - 48),
+          math.min(360, MediaQuery.sizeOf(context).width - 32),
         ),
         child: ConstrainedBox(
           constraints: BoxConstraints(
@@ -46,13 +74,8 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
           ),
           child: SingleChildScrollView(
             primary: false,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Builder(
-              builder: (context) => StartedItemsConnector(
-                threadId: widget.threadId,
-                observe: MenuController.maybeIsOpenOf(context)!,
-              ),
-            ),
+            padding: const EdgeInsets.all(12),
+            child: Builder(builder: widget.panelBuilder),
           ),
         ),
       ),
@@ -62,6 +85,8 @@ class _StartedItemsEntryState extends State<StartedItemsEntry> {
       focusNode: _focusNode,
       tooltip: context.l10n.statusCapabilitiesTitle,
       visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+      padding: EdgeInsets.zero,
       icon: const Icon(Icons.tune_outlined, size: 18),
       onPressed: () =>
           controller.isOpen ? controller.close() : controller.open(),
@@ -166,16 +191,10 @@ class StartedItemsPanel extends StatelessWidget {
     mainAxisSize: MainAxisSize.min,
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Text(
-          context.l10n.statusCapabilitiesTitle,
-          style: context.text.titleSmall,
-        ),
-      ),
       if (state.skills.isNotEmpty) ...[
         _GroupHeading(
           title: context.l10n.statusSkillsSection,
+          count: state.skillsTotal,
           action: state.skillsHasMore
               ? TextButton(
                   onPressed: state.skillsLoading ? null : onLoadMoreSkills,
@@ -185,7 +204,7 @@ class StartedItemsPanel extends StatelessWidget {
                         : '${state.skills.length}/${state.skillsTotal}',
                   ),
                 )
-              : Text('${state.skills.length}/${state.skillsTotal}'),
+              : null,
         ),
         for (final skill in state.skills)
           _ServiceRow(
@@ -193,9 +212,11 @@ class StartedItemsPanel extends StatelessWidget {
             icon: Icons.extension_outlined,
             name: skill,
           ),
+        const Divider(height: 20),
       ],
       _GroupHeading(
         title: context.l10n.statusMcpSection,
+        count: state.mcpSync.isReady ? state.mcpStateTotal : null,
         sync: state.mcpSync,
         action: _ReconnectButton(
           key: StudioDriverKeys.mcpResetAll,
@@ -236,7 +257,12 @@ class StartedItemsPanel extends StatelessWidget {
                 : '${state.mcp.length}/${state.mcpStateTotal}',
           ),
         ),
-      _GroupHeading(title: context.l10n.statusLspSection, sync: state.lspSync),
+      const Divider(height: 20),
+      _GroupHeading(
+        title: context.l10n.statusLspSection,
+        count: state.lspSync.isReady ? state.lspStateTotal : null,
+        sync: state.lspSync,
+      ),
       if (state.lsp.isEmpty && state.lspSync.isReady)
         _EmptyRow(label: context.l10n.settingsLspEmptyTitle),
       for (final server in state.lsp)
@@ -272,8 +298,14 @@ class StartedItemsPanel extends StatelessWidget {
 }
 
 class _GroupHeading extends StatelessWidget {
-  const _GroupHeading({required this.title, this.action, this.sync});
+  const _GroupHeading({
+    required this.title,
+    required this.count,
+    this.action,
+    this.sync,
+  });
   final String title;
+  final int? count;
   final Widget? action;
   final DomainSyncStatus? sync;
 
@@ -285,11 +317,29 @@ class _GroupHeading extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.text.labelMedium,
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.text.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (count != null) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '$count',
+                    style: context.text.labelSmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           if (sync != null && !sync.isReady)
@@ -360,6 +410,9 @@ class _ReconnectButton extends StatelessWidget {
     visualDensity: VisualDensity.compact,
     constraints: const BoxConstraints.tightFor(width: 32, height: 32),
     padding: EdgeInsets.zero,
+    style: IconButton.styleFrom(
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
     onPressed: onPressed,
     icon: pending
         ? const SizedBox.square(
@@ -411,13 +464,14 @@ class _ServiceRow extends StatelessWidget {
     };
     final label = status == null ? '' : _statusLabel(context, status);
     final progress = percentage;
-    return SizedBox(
-      height: 32,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 36),
       child: Row(
         children: [
-          Icon(icon, size: 15, color: tone.indicator(context)),
+          Icon(icon, size: 16, color: context.colors.onSurfaceVariant),
           const SizedBox(width: 8),
           Expanded(
+            flex: 3,
             child: Tooltip(
               message: name,
               child: Text(
@@ -430,13 +484,15 @@ class _ServiceRow extends StatelessWidget {
           ),
           if (status != null) ...[
             const SizedBox(width: 8),
-            Flexible(
+            Expanded(
+              flex: 2,
               child: Tooltip(
                 message: diagnostic?.isNotEmpty == true ? diagnostic! : label,
                 child: Text(
                   '$label${progress == null ? '' : ' ${context.l10n.statusLspActivityPercentage(progress)}'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
                   style: context.text.labelSmall?.copyWith(
                     color: tone.indicator(context),
                   ),
@@ -444,7 +500,7 @@ class _ServiceRow extends StatelessWidget {
               ),
             ),
           ],
-          ?action,
+          SizedBox(width: 32, child: action),
         ],
       ),
     );

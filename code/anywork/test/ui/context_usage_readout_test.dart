@@ -6,8 +6,9 @@ import 'package:anywork/src/shared/status_detail_panel.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter/gestures.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   testWidgets(
@@ -73,6 +74,8 @@ void main() {
       await _showDetail(tester, projection, onCompact: () => compactCalls++);
       final detail = find.byKey(StudioDriverKeys.contextUsageDetail());
       final l10n = AppLocalizations.of(tester.element(detail));
+      final trigger = find.byKey(StudioDriverKeys.contextUsage());
+      expect(tester.getSize(trigger), const Size(32, 32));
       expect(
         tester
             .widgetList<StatusDetailPanel>(
@@ -91,6 +94,7 @@ void main() {
       );
       expect(find.text('model-under-test'), findsOneWidget);
       expect(find.text('409.78k / 475k'), findsOneWidget);
+      expect(find.text(l10n.statusAutoCompactLimitLabel), findsNothing);
       expect(find.text('71.32m · Incomplete'), findsOneWidget);
       expect(find.text('98% · Incomplete'), findsOneWidget);
       expect(find.text('282'), findsNothing);
@@ -140,20 +144,23 @@ void main() {
     );
     final detail = find.byKey(StudioDriverKeys.contextUsageDetail());
     final l10n = AppLocalizations.of(tester.element(detail));
-    final rows = tester
-        .widgetList<StatusDetailRow>(
-          find.descendant(of: detail, matching: find.byType(StatusDetailRow)),
-        )
-        .toList();
     for (final label in [
+      l10n.statusModelMaxContextLabel,
       l10n.statusInputTokensLabel,
       l10n.statusOutputTokensLabel,
       l10n.statusTotalTokensLabel,
       l10n.statusCacheLabel,
       l10n.statusCostEstimateLabel,
     ]) {
-      expect(rows.singleWhere((row) => row.label == label).value, '—');
+      final row = find
+          .ancestor(of: find.text(label), matching: find.byType(Row))
+          .first;
+      expect(
+        find.descendant(of: row, matching: find.text('—')),
+        findsOneWidget,
+      );
     }
+    expect(find.text('0 / —'), findsOneWidget);
     expect(find.text('0%'), findsNothing);
     expect(find.text(l10n.statusInferenceCountLabel), findsNothing);
     expect(find.text(l10n.statusCacheHitTokensLabel), findsNothing);
@@ -165,15 +172,69 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('narrow scaled detail keeps the full model name accessible', (
+    tester,
+  ) async {
+    const modelId = 'provider/a-model-with-an-extraordinarily-long-name';
+    final mouse = await _showDetail(
+      tester,
+      const StudioContextProjection(
+        threadId: 'thread-narrow',
+        modelId: modelId,
+        contextTokens: 0,
+        contextWindow: 160000,
+        maxContextWindow: 200000,
+        autoCompactLimit: 120000,
+        totalTokens: 0,
+        costLabel: '',
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedPromptTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        inferenceCount: 0,
+        cacheUsage: CacheUsageView(),
+        estimatedCosts: [],
+        estimatedCacheSavings: [],
+        hasUnpricedUsage: false,
+        hasIncompleteUsage: false,
+      ),
+      viewport: const Size(260, 720),
+      textScaler: const TextScaler.linear(2),
+    );
+    final detail = find.byKey(StudioDriverKeys.contextUsageDetail());
+    final name = find.descendant(of: detail, matching: find.text(modelId));
+    expect(tester.widget<Text>(name).maxLines, 1);
+    expect(tester.widget<Text>(name).overflow, TextOverflow.ellipsis);
+    expect(find.text('0%'), findsOneWidget);
+    expect(find.text('160k'), findsOneWidget);
+    expect(find.text('200k'), findsOneWidget);
+
+    await mouse.moveTo(tester.getCenter(name));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(detail, findsOneWidget);
+    expect(find.text(modelId), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(detail, findsOneWidget);
+    expect(find.text(modelId), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
 }
 
-Future<void> _showDetail(
+Future<TestGesture> _showDetail(
   WidgetTester tester,
   StudioContextProjection projection, {
   VoidCallback? onCompact,
+  Size viewport = const Size(1280, 720),
+  TextScaler textScaler = TextScaler.noScaling,
 }) async {
   tester.view.devicePixelRatio = 1;
-  tester.view.physicalSize = const Size(1280, 720);
+  tester.view.physicalSize = viewport;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
@@ -184,6 +245,10 @@ Future<void> _showDetail(
         ...GlobalMaterialLocalizations.delegates,
       ],
       supportedLocales: AppLocalizations.supportedLocales,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+        child: child!,
+      ),
       home: Scaffold(
         body: Align(
           alignment: Alignment.bottomRight,
@@ -203,6 +268,7 @@ Future<void> _showDetail(
   );
   await tester.pump(const Duration(milliseconds: 121));
   await tester.pumpAndSettle();
+  return mouse;
 }
 
 UsageCallSnapshot _call(String callId, {required bool cancelled}) =>

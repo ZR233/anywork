@@ -4,8 +4,8 @@ import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/status_detail_panel.dart';
-import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_context_usage_ring.dart';
+import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_hover_detail.dart';
 
 /// 状态栏上下文读数。
@@ -13,7 +13,7 @@ import '../../shared/studio_hover_detail.dart';
 /// footer 只画紧凑进度图形，不常驻百分比或 token 数字；读数留在悬浮详情和可访问性值里。图形
 /// 以 runtime 已用 token 除以最终自动压缩阈值，填充有界；阈值未知时只画中性底轨，绝不用 `0%`
 /// 冒充未知。用量达到阈值只说明需要准备压缩，不表示压缩已经发生。
-class ContextUsageReadout extends StatefulWidget {
+class ContextUsageReadout extends StatelessWidget {
   const ContextUsageReadout({
     required this.projection,
     this.onCompact,
@@ -28,13 +28,7 @@ class ContextUsageReadout extends StatefulWidget {
   final bool compactionFailed;
 
   @override
-  State<ContextUsageReadout> createState() => _ContextUsageReadoutState();
-}
-
-class _ContextUsageReadoutState extends State<ContextUsageReadout> {
-  @override
   Widget build(BuildContext context) {
-    final projection = widget.projection;
     return KeyedSubtree(
       key: StudioDriverKeys.contextUsage(),
       child: StudioHoverDetail(
@@ -45,16 +39,14 @@ class _ContextUsageReadoutState extends State<ContextUsageReadout> {
           key: StudioDriverKeys.contextUsageDetail(),
           child: _ContextDetail(
             projection: projection,
-            onCompact: widget.onCompact,
-            compacting: widget.compacting,
-            compactionFailed: widget.compactionFailed,
+            onCompact: onCompact,
+            compacting: compacting,
+            compactionFailed: compactionFailed,
           ),
         ),
-        child: Padding(
-          padding: const EdgeInsets.only(right: 2),
-          child: Container(
-            height: 26,
-            padding: const EdgeInsets.symmetric(horizontal: 7),
+        child: SizedBox.square(
+          dimension: 32,
+          child: Center(
             child: ContextUsageRing(
               progress: _clampedProgress(projection),
               trackColor: context.colors.outlineVariant,
@@ -111,18 +103,19 @@ class _ContextDetail extends StatelessWidget {
               color: _progressColor(context, projection),
               trackColor: context.colors.outlineVariant,
             ),
-            const SizedBox(height: 6),
-            Row(
+            const SizedBox(height: 4),
+            OverflowBar(
+              spacing: 8,
+              alignment: MainAxisAlignment.spaceBetween,
+              overflowAlignment: OverflowBarAlignment.end,
               children: [
-                Expanded(
-                  child: Text(
-                    '${context.l10n.statusContextRemainingLabel} ${_remainingLabel(context, projection, limit)}',
-                    style: context.text.bodySmall?.copyWith(
-                      color: context.colors.onSurfaceVariant,
-                    ),
+                Text(
+                  '${context.l10n.statusContextRemainingLabel} ${_remainingLabel(context, projection, limit)}',
+                  textAlign: TextAlign.end,
+                  style: context.text.bodySmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(width: 8),
                 TextButton.icon(
                   key: StudioDriverKeys.compactContext(),
                   onPressed: onCompact,
@@ -131,17 +124,19 @@ class _ContextDetail extends StatelessWidget {
                           dimension: 14,
                           child: CircularProgressIndicator(strokeWidth: 1.5),
                         )
-                      : const Icon(Icons.compress_rounded, size: 16),
+                      : null,
                   label: Text(
                     compacting
                         ? context.l10n.statusCompacting
                         : context.l10n.statusCompactNow,
                   ),
                   style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
+                    minimumSize: const Size(0, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.standard,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
-                      vertical: 6,
+                      vertical: 4,
                     ),
                   ),
                 ),
@@ -167,16 +162,12 @@ class _ContextDetail extends StatelessWidget {
           title: context.l10n.statusModelLabel,
           children: [
             _ModelIdentityLine(modelId: projection.modelId),
-            StatusDetailRow(
-              label: context.l10n.statusAutoCompactLimitLabel,
-              value: formatTokenCount(limit),
-            ),
-            StatusDetailRow(
+            _ContextMetricRow(
               label: context.l10n.statusModelMaxContextLabel,
               value: formatTokenCount(maxWindow),
             ),
             if (effectiveWindow != null && effectiveWindow != maxWindow)
-              StatusDetailRow(
+              _ContextMetricRow(
                 label: context.l10n.statusModelEffectiveWindowLabel,
                 value: formatTokenCount(effectiveWindow),
               ),
@@ -186,19 +177,19 @@ class _ContextDetail extends StatelessWidget {
         StatusDetailPanel(
           title: context.l10n.statusSessionUsageSection,
           children: [
-            StatusDetailRow(
+            _ContextMetricRow(
               label: context.l10n.statusInputTokensLabel,
               value: formatTokenCount(
                 hasSamples ? projection.promptTokens : null,
               ),
             ),
-            StatusDetailRow(
+            _ContextMetricRow(
               label: context.l10n.statusOutputTokensLabel,
               value: formatTokenCount(
                 hasSamples ? projection.completionTokens : null,
               ),
             ),
-            StatusDetailRow(
+            _ContextMetricRow(
               label: context.l10n.statusTotalTokensLabel,
               value: _withIncompleteMarker(
                 context,
@@ -207,11 +198,17 @@ class _ContextDetail extends StatelessWidget {
               ),
             ),
             if (hasSamples)
-              StatusDetailRow(
+              _ContextMetricRow(
                 label: context.l10n.statusInferenceCountLabel,
                 value: _formatCount(projection.inferenceCount),
               ),
-            StatusDetailRow(
+            if (projection.reasoningTokens > 0)
+              _ContextMetricRow(
+                label: context.l10n.statusReasoningTokensLabel,
+                value: formatTokenCount(projection.reasoningTokens),
+              ),
+            const SizedBox(height: 6),
+            _ContextMetricRow(
               label: context.l10n.statusCacheLabel,
               value: _withIncompleteMarker(
                 context,
@@ -220,24 +217,19 @@ class _ContextDetail extends StatelessWidget {
               ),
             ),
             if (cache.hasPositiveDenominator) ...[
-              StatusDetailRow(
+              _ContextMetricRow(
                 label: context.l10n.statusCacheHitTokensLabel,
                 value: formatTokenCount(cache.cacheReadTokens),
               ),
-              StatusDetailRow(
+              _ContextMetricRow(
                 label: context.l10n.statusCacheMissTokensLabel,
                 value: formatTokenCount(cache.missTokens),
               ),
             ],
             if (projection.cacheWriteTokens > 0)
-              StatusDetailRow(
+              _ContextMetricRow(
                 label: context.l10n.statusCacheWriteTokensLabel,
                 value: formatTokenCount(projection.cacheWriteTokens),
-              ),
-            if (projection.reasoningTokens > 0)
-              StatusDetailRow(
-                label: context.l10n.statusReasoningTokensLabel,
-                value: formatTokenCount(projection.reasoningTokens),
               ),
           ],
         ),
@@ -264,6 +256,21 @@ class _ContextDetail extends StatelessWidget {
   }
 }
 
+class _ContextMetricRow extends StatelessWidget {
+  const _ContextMetricRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => StatusDetailRow(
+    label: label,
+    value: value,
+    labelMaxLines: null,
+    valueMaxLines: null,
+  );
+}
+
 /// 费用按币种分行：每个金额完整可见，不用 `+` 拼成可能被省略的一行。
 ///
 /// 金额只来自 canonical 费用事实，这里只做格式化，不换算币种、不重算价格。
@@ -284,7 +291,7 @@ class _CostRows extends StatelessWidget {
   Widget build(BuildContext context) {
     final marker = unpricedMarker;
     if (costs.isEmpty) {
-      return StatusDetailRow(
+      return _ContextMetricRow(
         label: label,
         value: marker == null
             ? tokenCountUnknown
@@ -295,7 +302,7 @@ class _CostRows extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         for (final (index, cost) in costs.indexed)
-          StatusDetailRow(
+          _ContextMetricRow(
             label: index == 0 ? label : '',
             value: [
               formatRuntimeCostAmount(cost.currency, cost.amount),
@@ -324,15 +331,11 @@ class _ContextHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final amountStyle = context.text.titleLarge?.copyWith(
-      fontSize: 23,
-      height: 1.1,
       fontWeight: FontWeight.w600,
       color: context.colors.onSurface,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
     final percentStyle = context.text.titleMedium?.copyWith(
-      fontSize: 20,
-      height: 1.1,
       fontWeight: FontWeight.w700,
       color: limit == null
           ? context.colors.onSurfaceVariant
@@ -341,23 +344,17 @@ class _ContextHero extends StatelessWidget {
           : context.colors.onSurface,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+    return OverflowBar(
+      spacing: 12,
+      overflowSpacing: 2,
+      alignment: MainAxisAlignment.spaceBetween,
+      overflowAlignment: OverflowBarAlignment.end,
       children: [
-        Expanded(
-          // 窄窗口或放大文字下整体等比缩小，而不是裁掉数字。
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Text(
-              '${formatTokenCount(used)} / ${formatTokenCount(limit)}',
-              maxLines: 1,
-              style: amountStyle,
-            ),
-          ),
+        Text(
+          '${formatTokenCount(used)} / ${formatTokenCount(limit)}',
+          style: amountStyle,
         ),
-        const SizedBox(width: 12),
-        Text(percentLabel, maxLines: 1, style: percentStyle),
+        Text(percentLabel, style: percentStyle),
       ],
     );
   }
@@ -389,7 +386,6 @@ class _ContextProgressBar extends StatelessWidget {
   }
 }
 
-/// 模型身份一行：长名称换行而不是裁切，未知时保留占位。
 class _ModelIdentityLine extends StatelessWidget {
   const _ModelIdentityLine({required this.modelId});
 
@@ -400,11 +396,37 @@ class _ModelIdentityLine extends StatelessWidget {
     final style = context.text.bodySmall?.copyWith(
       color: context.colors.onSurface,
       fontWeight: FontWeight.w600,
-      height: 1.3,
     );
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Text(modelId.isEmpty ? tokenCountUnknown : modelId, style: style),
+    if (modelId.isEmpty) {
+      return Text(tokenCountUnknown, style: style);
+    }
+    final tooltip = GlobalObjectKey<TooltipState>(context);
+    return TextButton(
+      onPressed: () => tooltip.currentState?.ensureTooltipVisible(),
+      style: TextButton.styleFrom(
+        alignment: AlignmentDirectional.centerStart,
+        foregroundColor: context.colors.onSurface,
+        minimumSize: Size.zero,
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.standard,
+      ),
+      // 嵌套的悬停 Tooltip 会抢占外层详情。用按钮激活提示，保留外层的悬停区域。
+      child: IgnorePointer(
+        child: Tooltip(
+          key: tooltip,
+          message: modelId,
+          preferBelow: false,
+          triggerMode: TooltipTriggerMode.manual,
+          excludeFromSemantics: true,
+          child: Text(
+            modelId,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+      ),
     );
   }
 }
