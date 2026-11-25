@@ -569,7 +569,7 @@ final class _Phases {
           .first;
       await scene.tester.scrollUntilVisible(
         assistantItem,
-        250,
+        -250,
         scrollable: scrollable,
         maxScrolls: 20,
       );
