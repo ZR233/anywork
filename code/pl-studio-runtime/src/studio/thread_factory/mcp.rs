@@ -127,8 +127,6 @@ pub(crate) struct ThreadMcpOwner {
     projection_ready: AtomicBool,
     projection_revision: AtomicU64,
     projection_publication: ProjectionPublication,
-    #[cfg(test)]
-    refresh_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     reconcile_requested: tokio::sync::Notify,
     shutdown: Mutex<Option<McpCloseCompletion>>,
 }
@@ -172,8 +170,6 @@ impl ThreadMcpOwner {
             projection_ready: AtomicBool::new(true),
             projection_revision: AtomicU64::new(0),
             projection_publication: ProjectionPublication::new(),
-            #[cfg(test)]
-            refresh_probe: Mutex::new(None),
             reconcile_requested: tokio::sync::Notify::new(),
             shutdown: Mutex::new(None),
         })
@@ -342,28 +338,6 @@ impl ThreadMcpOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.projection_ready.store(true, Ordering::Release);
-    }
-
-    #[cfg(test)]
-    fn set_refresh_probe(&self, probe: impl Fn() + Send + Sync + 'static) {
-        *self
-            .refresh_probe
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(probe));
-    }
-
-    fn run_refresh_probe(&self) {
-        #[cfg(test)]
-        {
-            let probe = self
-                .refresh_probe
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone();
-            if let Some(probe) = probe {
-                probe();
-            }
-        }
     }
 
     fn projection_current(&self, revision: u64) -> bool {
@@ -706,9 +680,8 @@ impl ThreadMcpOwner {
             })
             .collect();
         let _publication = self.projection_publication.lock();
-        // A synchronous observer can pause before this final check. The captured revision,
-        // not a new load, decides whether the snapshot computed above is still current.
-        self.run_refresh_probe();
+        // A pause can invalidate this cut while the runtime is reading it, even if projection
+        // was already resumed before publication acquired the gate.
         if !self.projection_current(revision) {
             return;
         }
@@ -1242,16 +1215,6 @@ impl StudioThreadFactory {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(owner) = owner {
-            #[cfg(test)]
-            if scope
-                .s2_mcp_close_failure
-                .lock()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
-            {
-                return Err(std::io::Error::other("injected failed preparation MCP close").into());
-            }
             owner
                 .close(&self.services.product_events)
                 .await
@@ -1312,8 +1275,8 @@ mod refresh_tests {
         Ok(owner)
     }
 
-    #[tokio::test]
-    async fn reentrant_pause_discards_the_snapshot_being_published() -> Result<()> {
+    #[tokio::test(flavor = "current_thread")]
+    async fn pause_discards_an_in_flight_snapshot_even_after_resume() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let fixture = close_factory(&store)?;
@@ -1325,38 +1288,40 @@ mod refresh_tests {
             McpScope::Host,
             temp.path(),
         )?;
-        let paused = Arc::new(AtomicBool::new(false));
-        let probe_owner = Arc::clone(&owner);
-        let probe_flag = Arc::clone(&paused);
-        owner.set_refresh_probe(move || {
-            probe_owner.pause_projection();
-            probe_flag.store(true, Ordering::Release);
-        });
-        let mut events = fixture.factory.services.product_events.subscribe_internal();
-        let published = tokio::time::timeout(
+        let product_events = &fixture.factory.services.product_events;
+        let mut events = product_events.subscribe_internal();
+        let generation = owner.read_snapshot().generation;
+        let refresh = owner.update_snapshot(product_events, true);
+        tokio::pin!(refresh);
+        // The current-thread runtime cannot poll the MCP worker while this poll captures the
+        // revision and sends its snapshot request. The reply is the real async boundary.
+        assert!(
+            futures::poll!(&mut refresh).is_pending(),
+            "refresh must wait for its snapshot reply"
+        );
+        owner.pause_projection();
+        owner.resume_projection();
+        tokio::time::timeout(Duration::from_secs(2), refresh).await?;
+        assert_eq!(owner.read_snapshot().generation, generation);
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        tokio::time::timeout(
             Duration::from_secs(2),
-            owner.update_snapshot(&fixture.factory.services.product_events, true),
+            owner.update_snapshot(product_events, true),
         )
-        .await;
-        assert!(
-            published.is_ok(),
-            "reentrant pause deadlocked the projection publication gate"
-        );
-        assert!(paused.load(Ordering::Acquire));
-        assert!(!owner.projection_ready.load(Ordering::Acquire));
-        assert!(owner.projection_revision.load(Ordering::Acquire) >= 1);
-        let mut published_stale = false;
-        while let Ok(event) = events.try_recv() {
-            if let crate::StudioProductEventKind::ThreadMcpStateChanged(snapshot) = event.kind
-                && snapshot.thread_id == owner.thread_id
-            {
-                published_stale = true;
-            }
-        }
-        assert!(
-            !published_stale,
-            "a refresh snapshot must not be published after reentrant pause"
-        );
+        .await?;
+        let crate::StudioProductEventKind::ThreadMcpStateChanged(snapshot) =
+            events.try_recv()?.kind
+        else {
+            anyhow::bail!("expected a fresh Thread MCP state event");
+        };
+        assert_eq!(snapshot.thread_id, owner.thread_id);
+        assert_eq!(snapshot.generation, generation + 1);
+        assert_eq!(owner.read_snapshot().generation, snapshot.generation);
+        fixture.factory.shutdown_scope_mcp(&resources).await?;
         Ok(())
     }
 
@@ -2361,6 +2326,31 @@ pub(crate) mod tests {
         McpServerSourceKind, McpServerStatusKind, McpServerTransport,
     };
 
+    /// Supplies a failed join handle at the watcher's existing task boundary.
+    pub(crate) async fn install_failed_watcher(
+        owner: &ThreadMcpOwner,
+        message: &'static str,
+    ) -> Result<()> {
+        let previous = owner.watcher.lock().unwrap().take();
+        if let Some(previous) = previous {
+            previous.abort();
+            if let Err(error) = previous.await
+                && !error.is_cancelled()
+            {
+                return Err(error.into());
+            }
+        }
+        let failed = tokio::spawn(async move { panic!("{message}") });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !failed.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        *owner.watcher.lock().unwrap() = Some(failed);
+        Ok(())
+    }
+
     pub(crate) fn sample_resolved_server(id: &str, url: &str) -> ResolvedThreadMcpServer {
         let config = McpServerConfig {
             enabled: true,
@@ -2498,12 +2488,7 @@ pub(crate) mod tests {
         *scope.mcp.lock().unwrap() = Some(owner.clone());
         factory.bind_resource_scope(&owner.thread_id, &scope)?;
         if fail_watcher {
-            let (entered, failed) = tokio::sync::oneshot::channel();
-            *owner.watcher.lock().unwrap() = Some(tokio::spawn(async move {
-                entered.send(()).unwrap();
-                panic!("member MCP watcher regression failure");
-            }));
-            failed.await?;
+            install_failed_watcher(&owner, "member MCP watcher regression failure").await?;
         } else {
             owner.start_watcher(factory.clone());
         }

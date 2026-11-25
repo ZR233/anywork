@@ -1,5 +1,7 @@
 //! Publication retries consume the durable deletion transaction after directory removal.
 use super::*;
+use crate::studio::thread_factory::mcp::tests::install_failed_watcher;
+use std::sync::Arc;
 
 async fn publication_retry(restart: bool) -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -91,7 +93,6 @@ async fn delete_publication_recovers_after_directory_removal_and_restart() -> Re
 struct FailedRestoreFactory {
     native: crate::studio::thread_factory::StudioThreadFactory,
     store: crate::studio::StudioStore,
-    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for FailedRestoreFactory {
@@ -127,8 +128,13 @@ impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
         let id = request.identity.id().to_owned();
         let spec = self.native.prepare(request).await?;
         let scope = self.native.resource_scope(&id).expect("real Native scope");
-        assert!(scope.mcp.lock().unwrap().is_some());
-        *scope.s2_mcp_close_failure.lock().unwrap() = Some(self.fail.clone());
+        let mcp = scope.mcp.lock().unwrap().clone().expect("real MCP owner");
+        install_failed_watcher(&mcp, "cold restoration MCP watcher failed")
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "prepare failed watcher fixture",
+                source: source.into_boxed_dyn_error(),
+            })?;
         drop(spec);
         self.store
             .thread_persistence()
@@ -149,10 +155,6 @@ impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
 #[tokio::test]
 async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let _endpoint = configure(&home).await?;
@@ -181,19 +183,19 @@ async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
                 .unwrap()
                 .published
         );
-        let fail = Arc::new(AtomicBool::new(true));
+        let restore = session
+            .activate(
+                identity,
+                FailedRestoreFactory {
+                    native: runtime.thread_factory.clone(),
+                    store: runtime.store.clone(),
+                },
+            )
+            .await
+            .expect_err("cold preparation must fail and retain its owner");
         assert!(
-            session
-                .activate(
-                    identity,
-                    FailedRestoreFactory {
-                        native: runtime.thread_factory.clone(),
-                        store: runtime.store.clone(),
-                        fail: fail.clone(),
-                    }
-                )
-                .await
-                .is_err()
+            format!("{restore:#}").contains("cold restoration MCP watcher failed"),
+            "{restore:#}"
         );
         assert!(session.observed_thread(&root.id).is_none());
         assert!(session.s2_has_failed_preparation(&root.id));
@@ -201,14 +203,22 @@ async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
             .thread_factory
             .resource_scope(&root.id)
             .context("retained failed Native scope")?;
-        assert!(scope.mcp.lock().unwrap().is_some());
+        let mcp = scope
+            .mcp
+            .lock()
+            .unwrap()
+            .clone()
+            .context("retained MCP owner")?;
+        // The restoration close already consumed its failed watcher. The next attempt needs its
+        // own recoverable failure to exercise deletion through the same retained resources.
+        install_failed_watcher(&mcp, "failed-only deletion MCP watcher failed").await?;
         let original = runtime.store.thread_preparation(&root.id).await?.unwrap();
         let error = runtime
             .delete_thread("failed-only-delete".into(), root.id.clone())
             .await
             .unwrap_err();
         assert!(
-            format!("{error:#}").contains("injected failed preparation MCP close"),
+            format!("{error:#}").contains("failed-only deletion MCP watcher failed"),
             "{error:#}"
         );
         assert_eq!(
@@ -217,11 +227,18 @@ async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
         );
         assert!(runtime.store.read_thread(&root.id).await?.is_some());
         assert!(session.s2_has_failed_preparation(&root.id));
-        assert!(scope.mcp.lock().unwrap().is_some());
+        assert!(Arc::ptr_eq(
+            scope
+                .mcp
+                .lock()
+                .unwrap()
+                .as_ref()
+                .context("MCP owner retained after delete failure")?,
+            &mcp,
+        ));
         let retained = runtime.store.thread_preparation(&root.id).await?.unwrap();
         assert_eq!(retained.save, original.save);
         assert!(session.observed_thread(&root.id).is_none());
-        fail.store(false, Ordering::SeqCst);
         runtime
             .delete_thread("failed-only-retry".into(), root.id.clone())
             .await?
