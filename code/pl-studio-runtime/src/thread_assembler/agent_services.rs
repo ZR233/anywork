@@ -1,17 +1,16 @@
 //! Saved agent identities, explicit cold activation and read-only history/Profile queries.
+pub(super) mod query;
+#[cfg(test)]
+use super::host_agent_tools::query::{Kind, QueryTool};
 use super::*;
-use crate::{AgentSessionPage, AgentSessionReadDetail, AgentSessionReadOrder};
+use crate::AgentSessionPage;
 use anyhow::{Context, Result, bail};
-use base64::Engine;
-use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
-use pl_core::tool::{
-    ToolOutput,
-    opaque::{CallContext, ToolError},
-};
-use pl_model::completion::ToolCallPolicy;
-use pl_tool::binding::prepare_registration;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use pl_agent_tool::{Tool, ToolDefinition};
+#[cfg(test)]
+use pl_core::tool::opaque::CallContext;
+use query::*;
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 /// Publishes (or refreshes) the Recovery diagnosis of a member whose workspace could not be used.
@@ -30,66 +29,14 @@ pub(super) struct AgentServices {
     pub(super) events: crate::studio::ProductEventBus,
     pub(super) performance: crate::studio::ModelPerformanceOwner,
     pub(super) recovery: crate::studio::StudioRecoveryRegistry,
-    pub(super) operations: super::agent_operations::AgentOperations,
+    pub(super) operations: super::agent_operations::ReviewDispatcher,
     pub(super) workspace_recovery: Option<WorkspaceRecoveryPublisher>,
     pub(super) acp_business: Option<crate::studio::runtime::acp_business::AcpBusinessOwner>,
 }
 impl std::fmt::Debug for AgentServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AgentAgentServices")
+        f.write_str("AgentServices")
     }
-}
-#[derive(Debug)]
-enum Kind {
-    Session,
-    Evaluate,
-}
-#[derive(Debug)]
-struct QueryTool {
-    definition: ToolDefinition,
-    host: Arc<super::agents::AgentHost>,
-    kind: Kind,
-}
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-enum Order {
-    Ascending,
-    #[default]
-    Descending,
-}
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-enum Detail {
-    #[default]
-    Text,
-    Full,
-}
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionInput {
-    target: String,
-    #[serde(default)]
-    cursor: Option<String>,
-    #[serde(default = "page_size")]
-    limit: usize,
-    #[serde(default)]
-    order: Order,
-    #[serde(default)]
-    detail: Detail,
-}
-fn page_size() -> usize {
-    20
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Cursor {
-    database_id: Option<String>,
-    version: u32,
-    target: String,
-    through: u64,
-    order: Order,
-    detail: Detail,
-    anchor: u64,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,7 +51,7 @@ struct Profiles<'a> {
 pub(super) struct ServiceError(#[source] pub(super) anyhow::Error);
 
 impl super::agents::AgentHost {
-    fn query_services(
+    pub(super) fn query_services(
         &self,
         context: &pl_tool::collaboration::control::AgentCallContext,
         model: bool,
@@ -181,112 +128,6 @@ impl super::agents::AgentHost {
     }
 }
 
-impl Tool for QueryTool {
-    type Input = pl_core::context::OpaquePayload;
-    type Context = CallContext;
-    type Output = ToolOutput;
-    type Error = ToolError;
-
-    fn definition(&self) -> &ToolDefinition {
-        &self.definition
-    }
-
-    async fn execute(
-        &self,
-        input: pl_core::context::OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(ServiceError(anyhow::anyhow!(
-                "unsupported agent query encoding"
-            ))));
-        }
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
-        }
-        self.query(input, context)
-            .await
-            .map_err(|error| match error.downcast::<ToolError>() {
-                Ok(error) => error,
-                Err(error) => ToolError::new(ServiceError(error)),
-            })
-    }
-    async fn close(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
-}
-impl QueryTool {
-    async fn query(
-        &self,
-        input: pl_core::context::OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput> {
-        anyhow::ensure!(
-            context.thread_id == self.host.identity.thread_id.as_str(),
-            "agent query caller differs from the bound instance"
-        );
-        let call = pl_tool::collaboration::control::AgentCallContext {
-            caller: self.host.identity.agent_id.clone(),
-            call_id: context.call_id.clone(),
-            cancellation: context.cancellation.clone(),
-        };
-        self.host.caller(&call)?;
-        let owner = self.host.owner()?;
-        let services = {
-            let state = owner.0.state();
-            state
-                .agent_services
-                .clone()
-                .context("agent product queries were not configured")?
-        };
-        if matches!(self.kind, Kind::Evaluate) {
-            anyhow::ensure!(
-                self.host.identity.parent_agent_id.is_none(),
-                "delegation tools are root-only"
-            );
-        }
-        match &self.kind {
-            Kind::Session => {
-                let mut input: SessionInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
-                let caller = services.identity(&context.thread_id)?;
-                let target = crate::AgentId::new(&input.target)?;
-                input.target = services
-                    .events
-                    .member_identity(&caller.session_id, &target)
-                    .context("agent session target is outside the caller's session")?
-                    .thread_id
-                    .to_string();
-                let read = async {
-                    let path = services
-                        .authorize(&context.thread_id, &input.target)
-                        .await?;
-                    output(
-                        &services
-                            .session_page(input, path, &context.cancellation)
-                            .await?,
-                    )
-                };
-                tokio::select! {
-                    biased;
-                    () = context.cancellation.cancelled() => {
-                        Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).into())
-                    }
-                    result = read => result,
-                }
-            }
-            Kind::Evaluate => output(
-                &owner
-                    .evaluate_agent(
-                        context.thread_id,
-                        pl_agent_tool::typed::decode_json(input.content())
-                            .map_err(ToolError::new)?,
-                    )
-                    .await?,
-            ),
-        }
-    }
-}
 impl AgentServices {
     pub(super) fn identity(&self, thread: &str) -> Result<crate::AgentThreadIdentity> {
         self.events
@@ -317,7 +158,7 @@ impl AgentServices {
     ) -> Result<Vec<serde_json::Value>> {
         let caller_identity = self.identity(caller)?;
         let mut rows = Vec::new();
-        // 冷 agent 查询只消费 `catalog.toml` 的目录摘要，不逐个 child 读取 checkpoint。
+        // 冷成员查询只消费已保存的目录摘要，不逐个激活成员或读取 Current。
         // 摘要只有 durable status，因此这里只投影 lifecycle，不虚构 Turn/Task 运行态计数。
         for (member, closed) in self.factory.directory_rows_for_root(caller).await? {
             if loaded.contains(&member.agent_id) {
@@ -440,119 +281,6 @@ impl AgentServices {
         path.reverse();
         Ok(path)
     }
-    async fn session_page(
-        &self,
-        input: SessionInput,
-        path: Vec<crate::AgentId>,
-        cancellation: &CancellationToken,
-    ) -> Result<AgentSessionPage> {
-        let read = async {
-            self.recovery
-                .ensure_thread_read_access(&self.record(&input.target).await?)?;
-            if !(1..=50).contains(&input.limit) {
-                bail!("session limit must be between 1 and 50");
-            }
-            let cursor = input
-                .cursor
-                .as_ref()
-                .map(|value| {
-                    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value)?;
-                    Ok::<Cursor, anyhow::Error>(serde_json::from_slice(&bytes)?)
-                })
-                .transpose()?;
-            if let Some(cursor) = &cursor
-                && (cursor.version != 4
-                    || cursor.target != input.target
-                    || cursor.order != input.order
-                    || cursor.detail != input.detail)
-            {
-                bail!("session cursor does not belong to this query");
-            }
-            let reader = self.store.open_history_reader(&input.target).await?;
-            let database_id = Some(reader.database_id().to_owned());
-            if let Some(cursor) = &cursor {
-                anyhow::ensure!(
-                    cursor.database_id == database_id,
-                    "session cursor belongs to another history database"
-                );
-            }
-            let (through, entries, more) = reader
-                .events_window(
-                    if input.detail == Detail::Text {
-                        crate::history::HistoryEventsQuery::TextOriginals
-                    } else {
-                        crate::history::HistoryEventsQuery::Originals {
-                            scope: crate::ChatScope {
-                                query_class: crate::ChatClassFilter::All {},
-                                parent_id: None,
-                            },
-                        }
-                    },
-                    cursor.as_ref().map(|cursor| cursor.through),
-                    cursor.as_ref().map(|cursor| cursor.anchor),
-                    input.order == Order::Ascending,
-                    crate::history::HistoryDemand {
-                        max_rows: input.limit as u32,
-                        max_bytes: 64 * 1024,
-                    },
-                )
-                .await?;
-            let next_cursor =
-                if more {
-                    let anchor = entries
-                        .last()
-                        .context("session continuation has no anchor")?
-                        .seq;
-                    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-                        serde_json::to_vec(&Cursor {
-                            version: 4,
-                            database_id: database_id.clone(),
-                            target: input.target.clone(),
-                            through,
-                            order: input.order,
-                            detail: input.detail,
-                            anchor,
-                        })?,
-                    ))
-                } else {
-                    None
-                };
-            Ok(AgentSessionPage {
-                agent_id: self
-                    .events
-                    .agent_execution_identity(&input.target)
-                    .map(|(identity, _, _)| identity.agent_id)
-                    .context("agent directory identity is missing")?,
-                path,
-                history_through_seq: through,
-                order: match input.order {
-                    Order::Ascending => AgentSessionReadOrder::Ascending,
-                    Order::Descending => AgentSessionReadOrder::Descending,
-                },
-                detail: match input.detail {
-                    Detail::Text => AgentSessionReadDetail::Text,
-                    Detail::Full => AgentSessionReadDetail::Full,
-                },
-                items: entries,
-                has_more: more,
-                next_cursor,
-            })
-        };
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => {
-                Err(ToolError::new(pl_core::thread::ThreadError::Cancelled).into())
-            }
-            result = read => result,
-        }
-    }
-}
-fn output(value: &impl Serialize) -> Result<ToolOutput> {
-    let text = serde_json::to_string(value)?;
-    Ok(ToolOutput::new(
-        pl_core::context::OpaquePayload::new("pl.studio.agent-query", 1, text.clone())?,
-        vec![pl_core::context::ContextContent::Text { text: text.into() }],
-    ))
 }
 impl SessionRuntime {
     #[cfg(test)]
@@ -566,9 +294,9 @@ impl SessionRuntime {
         recovery: crate::studio::StudioRecoveryRegistry,
     ) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
-        if state.closing
-            || !state.entries.is_empty()
-            || !state.creating.is_empty()
+        if state.close.closing
+            || !state.members.entries.is_empty()
+            || !state.activation.creating.is_empty()
             || state.agent_services.is_some()
         {
             return Err(ThreadAssemblyError::Closed);
@@ -603,65 +331,6 @@ impl SessionRuntime {
                 })?;
         Ok(services.config.agent_profiles_snapshot()?)
     }
-
-    pub(super) fn agent_query_tools(
-        &self,
-        host: Arc<super::agents::AgentHost>,
-    ) -> Result<Vec<Registration>, ThreadAssemblyError> {
-        if self.0.state().agent_services.is_none() {
-            return Err(ThreadAssemblyError::Resource {
-                operation: "prepare Agent query catalog",
-                source: Box::new(std::io::Error::other(
-                    "Agent Profile service is not configured",
-                )),
-            });
-        }
-        let mut definitions = vec![(
-            "read_agent_session",
-            "Read this agent or a descendant's saved timeline; unsaved records may be absent. throughSequence describes the saved read range. Reading does not flush or activate the target; an empty page does not imply execution has ended. Continuation cursors freeze the original history watermark and filters.",
-            Kind::Session,
-            pl_agent_tool::typed::input_schema_for::<SessionInput>(),
-        )];
-        definitions.push(("evaluate_agent", "Record the final task evaluation of your direct Native child after delivery, any applicable review, and all rework. Call this alone before close_agent or your final response. Use childId and turnId from that child's latest committed terminal report as target and expectedTurnId. Use expectedRevision 0 for the first evaluation. The child must have no pending work. Use notRated without scores when evidence is insufficient. Comments are non-instruction reference data.", Kind::Evaluate, pl_agent_tool::typed::input_schema_for::<crate::EvaluateAgentRequest>()));
-        definitions
-            .into_iter()
-            .map(|(name, description, kind, schema)| {
-                let definition = ToolDefinition::json(name, description, schema)?;
-                let prepared = prepare_registration(name, &definition, ToolCallPolicy::DirectOnly)?;
-                let foreground = matches!(&kind, Kind::Evaluate);
-                let registration = prepared.attach(ToolHandle::new(QueryTool {
-                    definition,
-                    host: host.clone(),
-                    kind,
-                }));
-                Ok(if foreground {
-                    registration.foreground()
-                } else {
-                    registration
-                })
-            })
-            .collect()
-    }
-}
-
-/// 由 catalog 目录摘要构造只读 snapshot：仅承载 durable lifecycle，不含 Turn/Task 明细。
-fn directory_snapshot(status: crate::ThreadStatus) -> pl_core::thread::ThreadSnapshot {
-    use crate::ThreadStatus;
-    use pl_core::thread::{ThreadLifecycle, ThreadSnapshot};
-    ThreadSnapshot {
-        lifecycle: match status {
-            ThreadStatus::Closing => ThreadLifecycle::Closing,
-            ThreadStatus::Closed => ThreadLifecycle::Closed,
-            ThreadStatus::Idle
-            | ThreadStatus::Queued
-            | ThreadStatus::Running
-            | ThreadStatus::WaitingTool
-            | ThreadStatus::WaitingInteraction
-            | ThreadStatus::Cancelling
-            | ThreadStatus::Faulted => ThreadLifecycle::Open,
-        },
-        ..Default::default()
-    }
 }
 
 #[cfg(test)]
@@ -673,6 +342,7 @@ mod tests {
             ThreadStorageSink, close_factory, spawn_live_projection_for_thread,
         },
     };
+    use base64::Engine as _;
     use pl_core::{
         context::{ContextContent, OpaquePayload},
         model::{
@@ -707,7 +377,11 @@ mod tests {
     fn tool(owner: &SessionRuntime) -> Result<QueryTool> {
         let (identity, resources) = {
             let state = owner.0.state();
-            let entry = state.entries.get("root").context("root is not assembled")?;
+            let entry = state
+                .members
+                .entries
+                .get("root")
+                .context("root is not assembled")?;
             (entry.identity.clone(), entry.native()?.resources.clone())
         };
         let host = owner.native_agent_host(
@@ -965,7 +639,7 @@ mod tests {
                     .is_err()
             );
             assert_eq!(
-                owner.0.state().entries.len(),
+                owner.0.state().members.entries.len(),
                 1,
                 "reading must not activate another execution"
             );

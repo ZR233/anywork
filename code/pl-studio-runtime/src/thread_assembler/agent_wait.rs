@@ -329,7 +329,7 @@ impl super::agents::AgentHost {
             let owner = self.owner()?;
             let (native, acp, services) = {
                 let state = owner.0.state();
-                let entry = state.entries.get(identity.thread_id.as_str());
+                let entry = state.members.entries.get(identity.thread_id.as_str());
                 let (native, acp) = match entry.map(|entry| &entry.runtime) {
                     Some(AgentRuntime::Native(native)) => (
                         Some((native.thread.clone(), native.resources.clone())),

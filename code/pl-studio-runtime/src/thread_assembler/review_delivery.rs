@@ -221,19 +221,6 @@ impl ReviewDeliveryFact {
     }
 }
 
-fn bounded_sources(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
-    let mut source = Some(error);
-    let mut chain = Vec::new();
-    while let Some(error) = source {
-        chain.push(error.to_string().chars().take(512).collect());
-        if chain.len() == 8 {
-            break;
-        }
-        source = error.source();
-    }
-    chain
-}
-
 impl From<&ReviewForwardReason> for DeliveryExceptionReason {
     fn from(reason: &ReviewForwardReason) -> Self {
         match reason {
@@ -242,14 +229,14 @@ impl From<&ReviewForwardReason> for DeliveryExceptionReason {
             ReviewForwardReason::TargetChanged => Self::TargetChanged,
             ReviewForwardReason::TargetUnavailable => Self::TargetUnavailable,
             ReviewForwardReason::AdmissionRejected(error) => {
-                Self::AdmissionRejected(bounded_sources(error.as_ref()))
+                Self::AdmissionRejected(super::agent_review::error_chain(error.as_ref()))
             }
             ReviewForwardReason::IdentityConflict => Self::IdentityConflict,
             ReviewForwardReason::StorageUnavailable(error) => {
-                Self::StorageUnavailable(bounded_sources(error.as_ref()))
+                Self::StorageUnavailable(super::agent_review::error_chain(error.as_ref()))
             }
             ReviewForwardReason::SendUnconfirmed(error) => {
-                Self::SendUnconfirmed(bounded_sources(error.as_ref()))
+                Self::SendUnconfirmed(super::agent_review::error_chain(error.as_ref()))
             }
             ReviewForwardReason::WorkspaceCheckRejected(error) => {
                 Self::WorkspaceCheckRejected(WorkspaceFailure {
@@ -258,7 +245,7 @@ impl From<&ReviewForwardReason> for DeliveryExceptionReason {
                     } else {
                         WorkspaceFailureCertainty::Invalid
                     },
-                    source: bounded_sources(error.as_ref()),
+                    source: super::agent_review::error_chain(error.as_ref()),
                 })
             }
         }

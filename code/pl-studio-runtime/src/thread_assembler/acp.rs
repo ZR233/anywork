@@ -22,13 +22,17 @@ impl super::WorkspaceBindingAdmission for AcpPreparation {
     ) -> anyhow::Result<T> {
         let state = self.owner.0.state();
         if self.identity.thread_id.as_str() != id
-            || state.closing
-            || state.sealed_agents.contains_key(id)
+            || state.close.closing
+            || state.close.sealed_agents.contains_key(id)
             || self.resources.cancellation.is_cancelled()
-            || !state.creating.get(id).is_some_and(|preparation| {
-                matches!(&preparation.resources, PreparedResources::Acp(acp)
+            || !state
+                .activation
+                .creating
+                .get(id)
+                .is_some_and(|preparation| {
+                    matches!(&preparation.resources, PreparedResources::Acp(acp)
                     if Arc::ptr_eq(acp, &self.resources))
-            })
+                })
         {
             return Err(ThreadAssemblyError::Closed.into());
         }
@@ -41,13 +45,14 @@ impl AcpPreparation {
     pub(crate) fn publish(&self) -> Result<crate::AgentThreadIdentity, ThreadAssemblyError> {
         let mut state = self.owner.0.state();
         let id = self.identity.thread_id.as_str();
-        if state.closing
-            || state.sealed_agents.contains_key(id)
+        if state.close.closing
+            || state.close.sealed_agents.contains_key(id)
             || self.resources.cancellation.is_cancelled()
         {
             return Err(ThreadAssemblyError::Closed);
         }
         let original = state
+            .activation
             .creating
             .get(id)
             .and_then(|preparation| match &preparation.resources {
@@ -58,7 +63,7 @@ impl AcpPreparation {
         if !original {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
-        state.insert_entry(
+        state.members.insert_entry(
             id.into(),
             AgentInstance {
                 identity: self.identity.clone(),
@@ -74,6 +79,7 @@ impl SessionRuntime {
     pub(crate) fn acp_roots_for_workspace(&self, workspace_id: &str) -> Vec<String> {
         let state = self.0.state();
         state
+            .members
             .entries
             .values()
             .filter_map(|entry| match &entry.runtime {
@@ -82,39 +88,48 @@ impl SessionRuntime {
                 }
                 _ => None,
             })
-            .chain(state.creating.iter().filter_map(
-                |(id, preparation)| match &preparation.resources {
-                    PreparedResources::Acp(acp) if acp.workspace_id == workspace_id => {
-                        Some(id.clone())
-                    }
-                    _ => None,
-                },
-            ))
-            .chain(state.failed_preparations.iter().filter_map(|(id, failed)| {
-                match &failed.resources {
-                    PreparedResources::Acp(acp) if acp.workspace_id == workspace_id => {
-                        Some(id.clone())
-                    }
-                    _ => None,
-                }
-            }))
+            .chain(
+                state
+                    .activation
+                    .creating
+                    .iter()
+                    .filter_map(|(id, preparation)| match &preparation.resources {
+                        PreparedResources::Acp(acp) if acp.workspace_id == workspace_id => {
+                            Some(id.clone())
+                        }
+                        _ => None,
+                    }),
+            )
+            .chain(
+                state.activation.failed_preparations.iter().filter_map(
+                    |(id, failed)| match &failed.resources {
+                        PreparedResources::Acp(acp) if acp.workspace_id == workspace_id => {
+                            Some(id.clone())
+                        }
+                        _ => None,
+                    },
+                ),
+            )
             .collect()
     }
 
     pub(crate) fn acp_identity(&self, thread_id: &str) -> Option<crate::AgentThreadIdentity> {
         let state = self.0.state();
         state
+            .members
             .entries
             .get(thread_id)
             .map(|entry| entry.identity.clone())
             .or_else(|| {
                 state
+                    .activation
                     .creating
                     .get(thread_id)
                     .and_then(|preparation| preparation.identity.clone())
             })
             .or_else(|| {
                 state
+                    .activation
                     .failed_preparations
                     .get(thread_id)
                     .and_then(|failed| failed.identity.clone())
@@ -125,7 +140,7 @@ impl SessionRuntime {
         thread_id: &str,
     ) -> Result<Option<Arc<AcpResources>>, ThreadAssemblyError> {
         let state = self.0.state();
-        if let Some(entry) = state.entries.get(thread_id) {
+        if let Some(entry) = state.members.entries.get(thread_id) {
             return match &entry.runtime {
                 AgentRuntime::Acp(acp) => Ok(Some(acp.clone())),
                 AgentRuntime::Native(_) => Err(ThreadAssemblyError::UnsupportedBackend {
@@ -134,11 +149,13 @@ impl SessionRuntime {
             };
         }
         let resources = state
+            .activation
             .creating
             .get(thread_id)
             .map(|preparation| &preparation.resources)
             .or_else(|| {
                 state
+                    .activation
                     .failed_preparations
                     .get(thread_id)
                     .map(|failed| &failed.resources)
@@ -166,10 +183,12 @@ impl SessionRuntime {
             let parent = {
                 let state = self.0.state();
                 state
+                    .members
                     .by_agent
                     .get(parent_agent)
                     .and_then(|thread| {
                         state
+                            .members
                             .entries
                             .get(thread)
                             .map(|entry| entry.identity.clone())
@@ -195,6 +214,7 @@ impl SessionRuntime {
         )?;
         self.0
             .state()
+            .activation
             .creating
             .get_mut(identity.thread_id.as_str())
             .expect("registered ACP preparation")
@@ -210,22 +230,23 @@ impl SessionRuntime {
 
     pub(crate) fn publish_acp_child_resources(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
-        if state.closing
-            || state.sealed_agents.contains_key(id)
+        if state.close.closing
+            || state.close.sealed_agents.contains_key(id)
             || state
+                .activation
                 .preparing_children
                 .get(id)
                 .is_some_and(|child| child.cancellation.is_cancelled())
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        if !state.entries.get(id).is_some_and(|entry| {
+        if !state.members.entries.get(id).is_some_and(|entry| {
             matches!(&entry.runtime, AgentRuntime::Acp(acp) if !acp.cancellation.is_cancelled())
         }) {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
         // A cold ACP member has no new-child reservation.
-        let unpublished = state.unpublished_children.remove(id);
+        let unpublished = state.activation.unpublished_children.remove(id);
         drop(state);
         drop(unpublished);
         Ok(())
@@ -300,11 +321,11 @@ impl SessionRuntime {
         instance: u64,
     ) -> Result<Arc<AcpResources>, ThreadAssemblyError> {
         let state = self.0.state();
-        if state.closing || state.sealed_agents.contains_key(thread_id) {
+        if state.close.closing || state.close.sealed_agents.contains_key(thread_id) {
             return Err(ThreadAssemblyError::Closed);
         }
-        let entry = state.entries.get(thread_id).ok_or_else(|| {
-            if state.creating.contains_key(thread_id) {
+        let entry = state.members.entries.get(thread_id).ok_or_else(|| {
+            if state.activation.creating.contains_key(thread_id) {
                 ThreadAssemblyError::Preparing(thread_id.into())
             } else {
                 ThreadAssemblyError::Closed

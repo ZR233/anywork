@@ -52,7 +52,10 @@ impl SessionRuntime {
                     pending.root_id.clone(),
                     format!("resume-acp-close:{id}"),
                     move || {
-                        ensure!(!admission.0.state().closing, "child close owner is closing");
+                        ensure!(
+                            !admission.0.state().close.closing,
+                            "child close owner is closing"
+                        );
                         Ok(())
                     },
                     // Like Native recovery below, keep the backend operation's state
@@ -91,7 +94,10 @@ impl SessionRuntime {
                     root,
                     "resume-close".into(),
                     move || {
-                        ensure!(!admission.0.state().closing, "child close owner is closing");
+                        ensure!(
+                            !admission.0.state().close.closing,
+                            "child close owner is closing"
+                        );
                         Ok(())
                     },
                     // The operation owner retains this potentially large recovery state.

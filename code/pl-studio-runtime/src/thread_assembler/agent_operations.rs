@@ -61,9 +61,9 @@ impl Drop for Shared {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct AgentOperations(Arc<Shared>);
+pub(super) struct ReviewDispatcher(Arc<Shared>);
 
-impl AgentOperations {
+impl ReviewDispatcher {
     pub(super) fn begin_deletion(&self, caller: &str) {
         self.0.jobs().deleting.insert(caller.into());
         self.0.changed.notify_waiters();

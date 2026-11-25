@@ -93,7 +93,7 @@ impl StudioThreadFactory {
                 &thread.root_thread_id,
                 &mut project,
                 &workspace_usage,
-                super::root_resources::BotWorkspacePreparation::Existing,
+                super::bot_workspace::BotWorkspacePreparation::Existing,
             )
             .await?;
         let saved = restored

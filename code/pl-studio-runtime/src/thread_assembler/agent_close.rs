@@ -274,6 +274,7 @@ impl AgentServices {
         let closing = owner
             .0
             .state()
+            .members
             .entries
             .get_mut(&record.id)
             .and_then(|entry| {
@@ -287,10 +288,16 @@ impl AgentServices {
             drop(owner.prepare_close(&record.id, &thread));
         }
         let operation = owner.agent_operation(&record.id).await;
-        let receiver = owner.0.state().entries.get(&record.id).and_then(|entry| {
-            (entry.native().ok()?.purpose == EntryPurpose::ReportReceiver)
-                .then_some(entry.native().ok()?.incarnation.clone())
-        });
+        let receiver = owner
+            .0
+            .state()
+            .members
+            .entries
+            .get(&record.id)
+            .and_then(|entry| {
+                (entry.native().ok()?.purpose == EntryPurpose::ReportReceiver)
+                    .then_some(entry.native().ok()?.incarnation.clone())
+            });
         if let Some(incarnation) = receiver {
             // A parent selected for final close may itself retain a failed report receiver.
             // Settle that exact temporary core before replacing or closing its canonical owner.
@@ -386,13 +393,14 @@ impl AgentServices {
         let thread = ThreadHandle::restore_current(current.clone(), None)?;
         let mut state = owner.0.state();
         if state
+            .activation
             .creating
             .get(&record.id)
             .is_some_and(|preparation| preparation.settlement.is_none())
         {
             return Err(ThreadAssemblyError::Preparing(record.id.clone()));
         }
-        if let Some(entry) = state.entries.get(&record.id)
+        if let Some(entry) = state.members.entries.get(&record.id)
             && (purpose == EntryPurpose::ReportReceiver
                 || entry.native()?.thread.snapshot().lifecycle != ThreadLifecycle::Closed
                 || !matches!(
@@ -403,13 +411,13 @@ impl AgentServices {
         {
             return Err(ThreadAssemblyError::Unpublished(record.id.clone()));
         }
-        let previous = state.remove_entry(&record.id);
+        let previous = state.members.remove_entry(&record.id);
         let cleanup = previous
             .as_ref()
             .map(|entry| entry.native().map(|native| native.cleanup.clone()))
             .transpose()?
             .unwrap_or_default();
-        state.insert_entry(
+        state.members.insert_entry(
             record.id.clone(),
             crate::session::AgentInstance {
                 identity,

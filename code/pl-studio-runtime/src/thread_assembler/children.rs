@@ -332,8 +332,46 @@ pub(super) struct ChildReservation {
 
 impl Drop for ChildReservation {
     fn drop(&mut self) {
-        self.registry.state().preparing_children.remove(&self.id);
+        self.registry
+            .state()
+            .activation
+            .preparing_children
+            .remove(&self.id);
         self.registry.changed.notify_waiters();
+    }
+}
+
+impl super::State {
+    fn child_admission(
+        &self,
+        context: &pl_tool::collaboration::control::AgentCallContext,
+    ) -> Result<(String, ChildFactory), ThreadAssemblyError> {
+        let caller = self
+            .members
+            .by_agent
+            .get(&context.caller)
+            .ok_or(ThreadAssemblyError::Closed)?
+            .clone();
+        if self.close.closing
+            || self.close.sealed_agents.contains_key(&caller)
+            || context.cancellation.is_cancelled()
+        {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        let parent = self
+            .members
+            .entries
+            .get(&caller)
+            .filter(|entry| super::agents::member_open(entry))
+            .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
+        if parent.identity.parent_agent_id.is_some() {
+            return Err(ThreadAssemblyError::ChildDepth);
+        }
+        let factory = self
+            .child_factory
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        Ok((caller, factory))
     }
 }
 
@@ -343,29 +381,7 @@ impl super::SessionRuntime {
         context: &pl_tool::collaboration::control::AgentCallContext,
     ) -> Result<ChildFactory, ThreadAssemblyError> {
         let state = self.0.state();
-        let caller = state
-            .by_agent
-            .get(&context.caller)
-            .ok_or(ThreadAssemblyError::Closed)?
-            .clone();
-        if state.closing
-            || state.sealed_agents.contains_key(&caller)
-            || context.cancellation.is_cancelled()
-        {
-            return Err(ThreadAssemblyError::Closed);
-        }
-        let parent = state
-            .entries
-            .get(&caller)
-            .filter(|entry| super::agents::member_open(entry))
-            .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
-        if parent.identity.parent_agent_id.is_some() {
-            return Err(ThreadAssemblyError::ChildDepth);
-        }
-        state
-            .child_factory
-            .clone()
-            .ok_or(ThreadAssemblyError::Closed)
+        state.child_admission(context).map(|(_, factory)| factory)
     }
 
     pub(super) fn reserve_child(
@@ -374,43 +390,23 @@ impl super::SessionRuntime {
     ) -> Result<(ChildFactory, ChildReservation), ThreadAssemblyError> {
         const MAX_TREE_THREADS: usize = 16;
         let mut state = self.0.state();
-        let caller = state
-            .by_agent
-            .get(&context.caller)
-            .ok_or(ThreadAssemblyError::Closed)?
-            .clone();
-        if state.closing
-            || state.sealed_agents.contains_key(&caller)
-            || context.cancellation.is_cancelled()
-        {
-            return Err(ThreadAssemblyError::Closed);
-        }
-        let parent = state
-            .entries
-            .get(&caller)
-            .filter(|entry| super::agents::member_open(entry))
-            .ok_or_else(|| ThreadAssemblyError::Identity(caller.clone()))?;
-        // Studio's current product policy permits only root agents to create children.
-        if parent.identity.parent_agent_id.is_some() {
-            return Err(ThreadAssemblyError::ChildDepth);
-        }
-        let factory = state
-            .child_factory
-            .clone()
-            .ok_or(ThreadAssemblyError::Closed)?;
+        let (caller, factory) = state.child_admission(context)?;
         let mut occupied = std::collections::BTreeSet::new();
         occupied.insert(caller.as_str());
         occupied.extend(
             state
+                .members
                 .entries
                 .iter()
                 .filter(|(_, entry)| {
-                    super::State::membership_parent(&state.by_agent, entry) == Some(caller.as_str())
+                    super::EntryRegistry::membership_parent(&state.members.by_agent, entry)
+                        == Some(caller.as_str())
                 })
                 .map(|(id, _)| id.as_str()),
         );
         occupied.extend(
             state
+                .activation
                 .creating
                 .iter()
                 .filter(|(_, preparation)| {
@@ -420,6 +416,7 @@ impl super::SessionRuntime {
         );
         occupied.extend(
             state
+                .activation
                 .preparing_children
                 .iter()
                 .filter(|(_, preparing)| preparing.parent == caller)
@@ -427,6 +424,7 @@ impl super::SessionRuntime {
         );
         occupied.extend(
             state
+                .activation
                 .unpublished_children
                 .iter()
                 .filter(|(_, child)| child.parent == caller)
@@ -440,7 +438,7 @@ impl super::SessionRuntime {
         let cancellation = tokio_util::sync::CancellationToken::new();
         let workspace = super::WorkspacePreparationOwner::default();
         workspace.bind_admission(self, &id, &cancellation)?;
-        state.unpublished_children.insert(
+        state.activation.unpublished_children.insert(
             id.clone(),
             UnpublishedChild {
                 retirement: Default::default(),
@@ -451,7 +449,7 @@ impl super::SessionRuntime {
                 cleanup: Arc::new(CleanupGate::default()),
             },
         );
-        state.preparing_children.insert(
+        state.activation.preparing_children.insert(
             id.clone(),
             PreparingChild {
                 parent: caller.clone(),
