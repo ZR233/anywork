@@ -13,8 +13,6 @@ pub(crate) struct NativeResources {
     pub(crate) mcp: Mutex<Option<Arc<ThreadMcpOwner>>>,
     pub(crate) observations: Mutex<Vec<Arc<Observation>>>,
     pub(crate) candidates: NativeToolCandidates,
-    #[cfg(test)]
-    pub(crate) s2_mcp_close_failure: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 // A physical preparation has no Core owner yet. After the first installation this field
