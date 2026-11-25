@@ -2,7 +2,7 @@ import 'package:anywork/src/features/conversation/composer/state/start_backend_v
 import 'package:anywork/src/features/conversation/composer/views/composer_route_selectors.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
-import 'package:anywork/src/shared/account_brand.dart';
+import 'package:anywork/src/shared/widgets/account_brand.dart';
 import 'package:anywork/src/shared/composer_configuration_bar.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork/src/shared/studio_menu_label.dart';

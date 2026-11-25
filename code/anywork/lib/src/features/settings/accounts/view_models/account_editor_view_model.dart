@@ -31,6 +31,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../../presentation/providers/account_domains.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
+import '../state/account_gemini_connection.dart';
 import 'account_operation_result.dart';
 import 'account_projection.dart';
 import 'account_models_view_model.dart';

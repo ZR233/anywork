@@ -1,9 +1,9 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-import '../app/theme/studio_tokens.dart';
+import '../../app/theme/studio_tokens.dart';
 
-// Except for Zhipu, provider glyphs under assets/provider-logos/ originate from
+// Except for Zhipu, provider glyphs under lib/assets/provider-logos/ originate from
 // cc-switch (https://github.com/farion1231/cc-switch, MIT). The Zhipu Z symbol
 // comes from https://www.zhipuai.cn/logo.svg. All brand marks remain trademarks
 // of their respective owners and are bundled for account identification only.

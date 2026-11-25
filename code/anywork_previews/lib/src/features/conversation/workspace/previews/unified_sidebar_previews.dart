@@ -16,7 +16,7 @@ import 'package:anywork/src/features/conversation/workspace/conversation_workspa
 import 'package:anywork/src/features/status/context_usage_readout.dart';
 import 'package:anywork/src/features/status/status_bar_item.dart';
 import 'package:anywork/src/features/status/thread_status_bar.dart';
-import 'package:anywork/src/features/status/workflow_graph_panel.dart';
+import 'package:anywork/src/features/status/views/workflow_graph_panel.dart';
 import 'package:anywork/src/features/todo/todo_panel.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/composer_action_button.dart';

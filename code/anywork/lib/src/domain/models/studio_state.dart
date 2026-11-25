@@ -270,8 +270,6 @@ class StudioState {
     return ordered;
   }
 
-  TimelineTodoListUpdate? get selectedTodoList => selectedWorkspace?.todo;
-
   List<PendingInteraction> get pendingInteractions => [
     for (final workspace in workspacesByThread.values)
       ...workspace.interactions,
@@ -312,7 +310,6 @@ class StudioState {
       rootRow: root,
       syncState: selectedWorkspaceUi.syncState,
       loadError: selectedWorkspaceUi.loadError,
-      todo: selectedTodoList,
       runtime: runtime,
       modelRoute: modelRoute,
       turn: turn,

@@ -1,15 +1,10 @@
 import 'package:anywork_client/models.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:vyuh_node_flow/vyuh_node_flow.dart';
 
-import '../../app/theme/studio_tokens.dart';
-import '../../l10n/studio_l10n.dart';
-import '../../presentation/providers/client_provider.dart';
-import '../conversation/acp/view_models/acp_session_view_model.dart';
-import '../conversation/workspace/deferred_runtime_fields.dart';
-import 'status_view.dart';
-import 'status_bar_item.dart';
+import '../../../app/theme/studio_tokens.dart';
+import '../../../l10n/studio_l10n.dart';
+import '../status_bar_item.dart';
 
 /// Clickable status bar pill displaying the active workflow mode/state and
 /// toggling the vertical workflow graph side panel.
@@ -557,98 +552,4 @@ final class _RuntimeEdgeData {
   final String guard;
   final bool isBackward;
   final bool isCrossBranch;
-}
-
-// The RPC accepts only a thread ID. The other fields identify the requested
-// graph locally, since the snapshot has no revision or hash.
-typedef _WorkflowGraphRequest = ({
-  String threadId,
-  String? modeId,
-  int? revision,
-  String? hash,
-});
-
-final _workflowGraphProvider = FutureProvider.autoDispose
-    .family<WorkflowRuntimeGraphSnapshotView?, _WorkflowGraphRequest>(
-      (ref, request) => ref
-          .watch(anyworkClientProvider)
-          .getThreadWorkflowGraph(request.threadId),
-      retry: (_, _) => null,
-    );
-
-/// Native thread connector combining the graph snapshot with the current run.
-class ThreadWorkflowGraphPanelConnector extends ConsumerWidget {
-  const ThreadWorkflowGraphPanelConnector({required this.threadId, super.key});
-
-  final String threadId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final inline = ref.watch(
-      statusBarViewProvider(threadId).select((value) => value?.workflowRun),
-    );
-    final currentRun = deferredWorkflowRunProvider(threadId);
-    final deferred = ref.watch(hasDeferredWorkflowProvider(threadId))
-        ? ref.watch(currentRun)
-        : null;
-    if (deferred != null && (deferred.isLoading || deferred.hasError)) {
-      return WorkflowGraphPanel(
-        loading: deferred.isLoading,
-        error: deferred.asError?.error,
-        onRetry: () => ref.invalidate(currentRun),
-      );
-    }
-    return _buildRpcWorkflowGraphPanel(
-      ref,
-      threadId,
-      run: deferred == null ? inline : deferred.asData?.value,
-    );
-  }
-}
-
-/// ACP uses its observed graph whenever the Client has one.
-class AcpWorkflowGraphPanelConnector extends ConsumerWidget {
-  const AcpWorkflowGraphPanelConnector({required this.threadId, super.key});
-
-  final String threadId;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final workflow = ref.watch(
-      acpConversationStateProvider(threadId)
-          .select((value) => value.value?.workflowState),
-    );
-    if (workflow == null) return const WorkflowGraphPanel();
-    if (workflow.graph case final graph?) {
-      return WorkflowGraphPanel(graph: graph, run: workflow.run);
-    }
-    return _buildRpcWorkflowGraphPanel(
-      ref,
-      threadId,
-      run: workflow.run,
-      modeId: workflow.modeId,
-    );
-  }
-}
-
-WorkflowGraphPanel _buildRpcWorkflowGraphPanel(
-  WidgetRef ref,
-  String threadId, {
-  required WorkflowRunView? run,
-  String? modeId,
-}) {
-  final graphQuery = _workflowGraphProvider((
-    threadId: threadId,
-    modeId: run?.modeId ?? modeId,
-    revision: run?.graphRevision,
-    hash: run?.graphHash,
-  ));
-  final graph = ref.watch(graphQuery);
-  return WorkflowGraphPanel(
-    graph: graph.isLoading ? null : graph.asData?.value,
-    run: run,
-    loading: graph.isLoading,
-    error: graph.asError?.error,
-    onRetry: () => ref.invalidate(graphQuery),
-  );
 }

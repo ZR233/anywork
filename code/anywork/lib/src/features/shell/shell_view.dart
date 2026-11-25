@@ -355,7 +355,6 @@ AgentWorkspaceView? conversationWorkspace(
     loadError: session?.sync.phase == DomainSyncPhase.failed
         ? session?.sync.errorMessage
         : null,
-    todo: session?.workspace?.todo,
     runtime: session?.runtime ?? shellEmptyRuntime,
     modelRoute: session?.modelRoute,
     turn: session?.activeTurn,

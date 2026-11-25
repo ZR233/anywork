@@ -1,10 +1,10 @@
 import 'package:material_ui/material_ui.dart';
 
-import '../../../../shared/studio_menu_button.dart';
+import '../../../../shared/widgets/studio_menu_button.dart';
 import 'account_sections.dart' show accountActionButtonStyle;
 
-/// Account action anchor. The focus node lives as long as its trigger, not a
-/// build, so Material can return keyboard focus from the menu to the button.
+/// Account action trigger with account-specific labels, icons and styling.
+/// The shared menu owns its focus lifetime and Material interaction.
 class AccountMenuButton extends StatelessWidget {
   const AccountMenuButton({
     required this.tooltip,

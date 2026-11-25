@@ -9,14 +9,14 @@ import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../conversation/workspace/conversation_workspace.dart';
-import '../conversation/workspace/deferred_runtime_fields.dart';
+import '../conversation/timeline/view_models/thread_runtime_fields.dart';
 import '../../shared/studio_driver_keys.dart';
 
 import 'context_usage_readout.dart';
 import 'started_items_panel.dart';
 import 'status_bar_item.dart';
 import 'status_view.dart';
-import 'workflow_graph_panel.dart';
+import 'views/workflow_graph_panel.dart';
 
 /// The shell supplies identity and UI intentions, never domain lists.
 class ThreadStatusConnector extends ConsumerWidget {
@@ -61,9 +61,8 @@ class ThreadStatusConnector extends ConsumerWidget {
         threadId: threadId,
       ),
       startedItemsEntry: StartedItemsEntry(threadId: threadId),
-      workflowReadout: _DeferredWorkflowReadout(
+      workflowReadout: _WorkflowRuntimeConnector(
         threadId: threadId,
-        inline: status.workflowRun,
         expanded: workflowExpanded,
         onToggle: onToggleWorkflow,
       ),
@@ -265,51 +264,33 @@ class ThreadThroughputReadout extends ConsumerWidget {
   }
 }
 
-class _DeferredWorkflowReadout extends ConsumerWidget {
-  const _DeferredWorkflowReadout({
+class _WorkflowRuntimeConnector extends ConsumerWidget {
+  const _WorkflowRuntimeConnector({
     required this.threadId,
-    required this.inline,
     this.expanded = false,
     this.onToggle,
   });
 
   final String threadId;
-  final WorkflowRunView? inline;
   final bool expanded;
   final VoidCallback? onToggle;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final deferred = ref.watch(hasDeferredWorkflowProvider(threadId))
-        ? ref.watch(deferredWorkflowRunProvider(threadId))
-        : null;
-    final run = deferred == null
-        ? inline
-        : deferred.isLoading
-        ? null
-        : deferred.asData?.value;
-    return run == null
-        ? const SizedBox.shrink()
-        : _WorkflowRuntimeConnector(
-            run: run,
-            expanded: expanded,
-            onToggle: onToggle,
-          );
-  }
-}
-
-class _WorkflowRuntimeConnector extends ConsumerWidget {
-  const _WorkflowRuntimeConnector({
-    required this.run,
-    this.expanded = false,
-    this.onToggle,
-  });
-  final WorkflowRunView run;
-  final bool expanded;
-  final VoidCallback? onToggle;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
+    final workflow = ref.watch(threadWorkflowRunProvider(threadId));
+    if (workflow.isLoading) return const SizedBox.shrink();
+    if (workflow.hasError) {
+      return StatusBarButton(
+        key: const ValueKey('workflow-status-pill'),
+        icon: Icons.error_outline,
+        label: context.l10n.rightSidebarTabWorkflow,
+        tooltip: context.l10n.workflowGraphPanelLoadFailed,
+        selected: expanded,
+        onPressed: onToggle,
+      );
+    }
+    final run = workflow.asData?.value?.run;
+    if (run == null) return const SizedBox.shrink();
     final catalog = ref.watch(modeCatalogStoreProvider).value;
     final deleted = catalog == null
         ? run.modeDeleted

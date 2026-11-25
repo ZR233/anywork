@@ -5,7 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/composer_configuration_bar.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_menu_label.dart';
-import '../../../../shared/studio_menu_button.dart';
+import '../../../../shared/widgets/studio_menu_button.dart';
 import '../state/acp_view_state.dart';
 
 String _currentLabel(AcpConfigControlPresentation control) => switch (control) {

@@ -125,276 +125,271 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             threadSessionStoreProvider(threadId)
                 .select((state) => state.businessRefs?.plan),
           );
-    final workflowRun = ref.watch(
-      statusBarViewProvider(threadId).select((value) => value?.workflowRun),
-    );
+    final workflow = ref.watch(threadWorkflowRunProvider(threadId));
     final hasWorkflow =
-        workflowRun != null ||
-        workspace.runtime.deferredField('workflow') != null;
-    return _DeferredTodoPanel(
-      threadId: threadId,
-      runtime: workspace.runtime,
-      inline: workspace.todo,
-      builder: (todo) {
-        final pendingPlan = workspace.activeInteraction?.planConfirmation;
-        final referencedPlan = _referencedPlanPresentation(planHead);
-        // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
-        // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
-        final presentedPlan = pendingPlan != null
-            ? _WorkspacePlanPresentation.fromPending(pendingPlan)
-            : referencedPlan;
-        final sidebar = _sidebarByThread.putIfAbsent(
-          threadId,
-          ConversationSidebarState<FileReadingRequest>.new,
-        );
-        // 同步接收输入，不排队首帧回调，避免旧交互的延迟展开覆盖新选择。
-        sidebar.observePlan(
-          identity: presentedPlan?.identity,
-          pending: pendingPlan != null,
-        );
+        workflow.isLoading ||
+        workflow.hasError ||
+        workflow.asData?.value != null;
+    final todoProvider = threadTodoProvider(threadId);
+    final todoState = widget.needsOpen
+        ? const AsyncData<TimelineTodoListUpdate?>(null)
+        : ref.watch(todoProvider);
+    final todo = todoState.isLoading ? null : todoState.asData?.value;
+    final hasTodo = todo != null || todoState.hasError;
+    final pendingPlan = workspace.activeInteraction?.planConfirmation;
+    final referencedPlan = _referencedPlanPresentation(planHead);
+    // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
+    // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
+    final presentedPlan = pendingPlan != null
+        ? _WorkspacePlanPresentation.fromPending(pendingPlan)
+        : referencedPlan;
+    final sidebar = _sidebarByThread.putIfAbsent(
+      threadId,
+      ConversationSidebarState<FileReadingRequest>.new,
+    );
+    // 同步接收输入，不排队首帧回调，避免旧交互的延迟展开覆盖新选择。
+    sidebar.observePlan(
+      identity: presentedPlan?.identity,
+      pending: pendingPlan != null,
+    );
 
-        final l10n = context.l10n;
-        final timelineDisplay = ref
-            .watch(timelineViewModelProvider(threadId))
-            .asData
-            ?.value;
-        final entries = <ConversationSidebarPanelEntry>[
-          if (hasWorkflow)
-            ConversationSidebarPanelEntry(
-              kind: ConversationSidebarPanelKind.workflow,
-              icon: Icons.account_tree_outlined,
-              label: l10n.rightSidebarTabWorkflow,
-              tooltip: l10n.workflowGraphPanelTitle,
-              defaultWidthBuilder: (w) => (w * 0.36).clamp(360.0, 440.0),
-              builder: (_) =>
-                  ThreadWorkflowGraphPanelConnector(threadId: threadId),
+    final l10n = context.l10n;
+    final timelineDisplay = ref
+        .watch(timelineViewModelProvider(threadId))
+        .asData
+        ?.value;
+    final entries = <ConversationSidebarPanelEntry>[
+      if (hasWorkflow)
+        ConversationSidebarPanelEntry(
+          kind: ConversationSidebarPanelKind.workflow,
+          icon: Icons.account_tree_outlined,
+          label: l10n.rightSidebarTabWorkflow,
+          tooltip: l10n.workflowGraphPanelTitle,
+          defaultWidthBuilder: (w) => (w * 0.36).clamp(360.0, 440.0),
+          builder: (_) => ThreadWorkflowGraphPanelConnector(threadId: threadId),
+        ),
+      if (presentedPlan != null)
+        ConversationSidebarPanelEntry(
+          kind: ConversationSidebarPanelKind.plan,
+          icon: Icons.description_outlined,
+          label: l10n.rightSidebarTabPlan,
+          tooltip: l10n.interactionPlanDetailsTitle,
+          badge: PlanDetailStatusBadge(
+            status: planHead == null
+                ? presentedPlan.status
+                : planDetailStatusFromRuntime(planHead.phase),
+          ),
+          defaultLayoutMode: pendingPlan != null
+              ? ConversationSidebarLayoutMode.expanded
+              : ConversationSidebarLayoutMode.split,
+          expandedDockBehavior: pendingPlan != null
+              ? ConversationExpandedDockBehavior.keepFooterBelow
+              : ConversationExpandedDockBehavior.coverAll,
+          defaultWidthBuilder: (w) => (w * 0.48).clamp(360.0, 620.0),
+          builder: (_) => PlanDetailConnector(
+            threadId: threadId,
+            identity: presentedPlan.identity,
+          ),
+        ),
+      if (sidebar.file case final file?)
+        ConversationSidebarPanelEntry(
+          kind: ConversationSidebarPanelKind.file,
+          icon: Icons.article_outlined,
+          label: file.filename,
+          tooltip: file.filename,
+          onDismiss: () {
+            final remaining = [
+              if (hasWorkflow) ConversationSidebarPanelKind.workflow,
+              if (presentedPlan != null) ConversationSidebarPanelKind.plan,
+              if (hasTodo) ConversationSidebarPanelKind.todo,
+            ];
+            setState(() => sidebar.closeFile(remainingAvailable: remaining));
+          },
+          defaultWidthBuilder: (w) => (w * 0.48).clamp(360.0, 620.0),
+          builder: (_) => FileReadingPanel(request: file),
+        ),
+      if (hasTodo)
+        ConversationSidebarPanelEntry(
+          kind: ConversationSidebarPanelKind.todo,
+          icon: Icons.checklist_outlined,
+          label: l10n.rightSidebarTabTodo,
+          tooltip: todo?.explanation?.trim().isNotEmpty == true
+              ? todo!.explanation!.trim()
+              : l10n.timelineTodoListFallback,
+          badge: todo == null ? null : TodoCountBadge(todo: todo),
+          defaultWidthBuilder: (w) => (w * 0.34).clamp(340.0, 420.0),
+          builder: (_) => switch (todo) {
+            final value? => TodoPanel(todo: value),
+            null when todoState.isLoading => const Center(
+              child: CircularProgressIndicator(),
             ),
-          if (presentedPlan != null)
-            ConversationSidebarPanelEntry(
-              kind: ConversationSidebarPanelKind.plan,
-              icon: Icons.description_outlined,
-              label: l10n.rightSidebarTabPlan,
-              tooltip: l10n.interactionPlanDetailsTitle,
-              badge: PlanDetailStatusBadge(
-                status: planHead == null
-                    ? presentedPlan.status
-                    : planDetailStatusFromRuntime(planHead.phase),
-              ),
-              defaultLayoutMode: pendingPlan != null
-                  ? ConversationSidebarLayoutMode.expanded
-                  : ConversationSidebarLayoutMode.split,
-              expandedDockBehavior: pendingPlan != null
-                  ? ConversationExpandedDockBehavior.keepFooterBelow
-                  : ConversationExpandedDockBehavior.coverAll,
-              defaultWidthBuilder: (w) => (w * 0.48).clamp(360.0, 620.0),
-              builder: (_) => PlanDetailConnector(
-                threadId: threadId,
-                identity: presentedPlan.identity,
-              ),
+            null => _ReadingErrorBanner(
+              message: todoState.asError!.error.toString(),
+              onRetry: () => ref.invalidate(todoProvider),
             ),
-          if (sidebar.file case final file?)
-            ConversationSidebarPanelEntry(
-              kind: ConversationSidebarPanelKind.file,
-              icon: Icons.article_outlined,
-              label: file.filename,
-              tooltip: file.filename,
-              onDismiss: () {
-                final remaining = [
-                  if (hasWorkflow) ConversationSidebarPanelKind.workflow,
-                  if (presentedPlan != null) ConversationSidebarPanelKind.plan,
-                  if (todo != null) ConversationSidebarPanelKind.todo,
-                ];
+          },
+        ),
+    ];
+    sidebar.reconcileAvailable({for (final entry in entries) entry.kind});
+
+    final activeEntry = sidebar.isOpen && entries.isNotEmpty
+        ? entries.firstWhere(
+            (entry) => entry.kind == sidebar.activeKind,
+            orElse: () => entries.first,
+          )
+        : null;
+    final activeLayoutMode = activeEntry == null
+        ? ConversationSidebarLayoutMode.split
+        : sidebar.layoutModeFor(
+            activeEntry.kind,
+            defaultMode: activeEntry.defaultLayoutMode,
+          );
+    final availableOrder = [for (final entry in entries) entry.kind];
+
+    final readingArea = KeyedSubtree(
+      key: _timelineHostKey,
+      child: FileReadingScope(
+        onOpen: (request) {
+          if (!request.isActive()) return;
+          final conversations = ref.read(anyworkClientProvider).conversations;
+          final session = conversations.existingSession(threadId);
+          final timeline = ref.read(appGraphProvider).timeline;
+          final content = timeline.lease(threadId);
+          setState(() {
+            // A document is a shell-local demand, not a borrow from a virtual
+            // timeline row. Scrolling that row away must not retire the panel.
+            sidebar.openFile(
+              FileReadingRequest(
+                identity: request.identity,
+                filename: request.filename,
+                readBytes: request.readBytes,
+                isActive: () =>
+                    mounted &&
+                    widget.threadId == threadId &&
+                    conversations.visibleThreadId.value == threadId &&
+                    identical(
+                      conversations.existingSession(threadId),
+                      session,
+                    ) &&
+                    content != null &&
+                    !content.isRetired &&
+                    identical(timeline.lease(threadId), content),
+              ),
+            );
+          });
+        },
+        child: TimelineConnector(
+          threadId: threadId,
+          planConfirmation: pendingPlan,
+          planExpanded: sidebar.isPanelOpen(ConversationSidebarPanelKind.plan),
+          onPlanToggle: pendingPlan == null
+              ? null
+              : () => setState(
+                  () => sidebar.togglePanel(
+                    ConversationSidebarPanelKind.plan,
+                    defaultMode: ConversationSidebarLayoutMode.expanded,
+                  ),
+                ),
+        ),
+      ),
+    );
+
+    return ConversationWorkspaceShell(
+      topBanner: widget.needsOpen
+          ? _OpenThreadBanner(threadId: threadId)
+          : null,
+      readingArea: readingArea,
+      readingAction: const ReturnToLatestButton(),
+      readingBanner: switch (workspace.loadError) {
+        final error? => _ReadingErrorBanner(
+          message: error,
+          onRetry: () => _retryThreadLoad(threadId),
+        ),
+        null => null,
+      },
+      readingOverlay: workspace.isLoading
+          ? StudioWorkspaceLoading(
+              key: const ValueKey('agent-workspace-loading'),
+              hasContent:
+                  timelineDisplay != null &&
+                  timelineDisplay.threadId == threadId &&
+                  timelineDisplay.generation > 0,
+            )
+          : null,
+      scrollFooter: pendingPlan != null,
+      footerDockBuilder: (context, compact) => _Footer(
+        threadId: threadId,
+        compact: compact,
+        contentKey: StudioDriverKeys.workspaceFooterScroll,
+      ),
+      sidebarBuilder: activeEntry == null
+          ? null
+          : (context, presentation) => ConversationRightSidebar(
+              entries: entries,
+              activeKind: activeEntry.kind,
+              presentation: presentation,
+              onSelectKind: (kind) {
+                final target = entries.firstWhere(
+                  (entry) => entry.kind == kind,
+                );
                 setState(
-                  () => sidebar.closeFile(remainingAvailable: remaining),
+                  () => sidebar.openPanel(
+                    kind,
+                    defaultMode: target.defaultLayoutMode,
+                  ),
                 );
               },
-              defaultWidthBuilder: (w) => (w * 0.48).clamp(360.0, 620.0),
-              builder: (_) => FileReadingPanel(request: file),
-            ),
-          if (todo != null)
-            ConversationSidebarPanelEntry(
-              kind: ConversationSidebarPanelKind.todo,
-              icon: Icons.checklist_outlined,
-              label: l10n.rightSidebarTabTodo,
-              tooltip: todo.explanation?.trim().isNotEmpty == true
-                  ? todo.explanation!.trim()
-                  : l10n.timelineTodoListFallback,
-              badge: TodoCountBadge(todo: todo),
-              defaultWidthBuilder: (w) => (w * 0.34).clamp(340.0, 420.0),
-              builder: (_) => TodoPanel(todo: todo),
-            ),
-        ];
-        sidebar.reconcileAvailable({for (final entry in entries) entry.kind});
-
-        final activeEntry = sidebar.isOpen && entries.isNotEmpty
-            ? entries.firstWhere(
-                (entry) => entry.kind == sidebar.activeKind,
-                orElse: () => entries.first,
-              )
-            : null;
-        final activeLayoutMode = activeEntry == null
-            ? ConversationSidebarLayoutMode.split
-            : sidebar.layoutModeFor(
-                activeEntry.kind,
-                defaultMode: activeEntry.defaultLayoutMode,
-              );
-        final availableOrder = [for (final entry in entries) entry.kind];
-
-        final readingArea = KeyedSubtree(
-          key: _timelineHostKey,
-          child: FileReadingScope(
-            onOpen: (request) {
-              if (!request.isActive()) return;
-              final conversations = ref
-                  .read(anyworkClientProvider)
-                  .conversations;
-              final session = conversations.existingSession(threadId);
-              final timeline = ref.read(appGraphProvider).timeline;
-              final content = timeline.lease(threadId);
-              setState(() {
-                // A document is a shell-local demand, not a borrow from a virtual
-                // timeline row. Scrolling that row away must not retire the panel.
-                sidebar.openFile(
-                  FileReadingRequest(
-                    identity: request.identity,
-                    filename: request.filename,
-                    readBytes: request.readBytes,
-                    isActive: () =>
-                        mounted &&
-                        widget.threadId == threadId &&
-                        conversations.visibleThreadId.value == threadId &&
-                        identical(
-                          conversations.existingSession(threadId),
-                          session,
-                        ) &&
-                        content != null &&
-                        !content.isRetired &&
-                        identical(timeline.lease(threadId), content),
-                  ),
-                );
-              });
-            },
-            child: TimelineConnector(
-              threadId: threadId,
-              planConfirmation: pendingPlan,
-              planExpanded: sidebar.isPanelOpen(
-                ConversationSidebarPanelKind.plan,
-              ),
-              onPlanToggle: pendingPlan == null
-                  ? null
-                  : () => setState(
-                      () => sidebar.togglePanel(
-                        ConversationSidebarPanelKind.plan,
-                        defaultMode: ConversationSidebarLayoutMode.expanded,
-                      ),
-                    ),
-            ),
-          ),
-        );
-
-        return ConversationWorkspaceShell(
-          topBanner: widget.needsOpen
-              ? _OpenThreadBanner(threadId: threadId)
-              : null,
-          readingArea: readingArea,
-          readingAction: const ReturnToLatestButton(),
-          readingBanner: switch (workspace.loadError) {
-            final error? => _ReadingErrorBanner(
-              message: error,
-              onRetry: () => _retryThreadLoad(threadId),
-            ),
-            null => null,
-          },
-          readingOverlay: workspace.isLoading
-              ? StudioWorkspaceLoading(
-                  key: const ValueKey('agent-workspace-loading'),
-                  hasContent:
-                      timelineDisplay != null &&
-                      timelineDisplay.threadId == threadId &&
-                      timelineDisplay.generation > 0,
-                )
-              : null,
-          scrollFooter: pendingPlan != null,
-          footerDockBuilder: (context, compact) => _Footer(
-            threadId: threadId,
-            compact: compact,
-            contentKey: StudioDriverKeys.workspaceFooterScroll,
-          ),
-          sidebarBuilder: activeEntry == null
-              ? null
-              : (context, presentation) => ConversationRightSidebar(
-                  entries: entries,
-                  activeKind: activeEntry.kind,
-                  presentation: presentation,
-                  onSelectKind: (kind) {
-                    final target = entries.firstWhere(
-                      (entry) => entry.kind == kind,
-                    );
-                    setState(
-                      () => sidebar.openPanel(
-                        kind,
-                        defaultMode: target.defaultLayoutMode,
-                      ),
-                    );
-                  },
-                  onToggleLayoutMode: () => setState(
-                    () => sidebar.toggleLayoutMode(
-                      activeEntry.kind,
-                      defaultMode: activeEntry.defaultLayoutMode,
-                    ),
-                  ),
-                  onCollapse: () => setState(sidebar.collapse),
+              onToggleLayoutMode: () => setState(
+                () => sidebar.toggleLayoutMode(
+                  activeEntry.kind,
+                  defaultMode: activeEntry.defaultLayoutMode,
                 ),
-          sidebarExpanded:
-              activeEntry != null &&
-              activeLayoutMode == ConversationSidebarLayoutMode.expanded,
-          expandedDockBehavior:
-              activeEntry?.expandedDockBehavior ??
-              ConversationExpandedDockBehavior.coverAll,
-          sidebarCustomWidth: _sidebarCustomWidth,
-          sidebarDefaultWidthBuilder: activeEntry?.defaultWidthBuilder,
-          onSidebarWidthChanged: (width) => _sidebarCustomWidth = width,
-          onCollapseSidebar: () => setState(sidebar.collapse),
-          statusBar: ThreadStatusConnector(
-            threadId: threadId,
-            showTodo: todo != null,
-            todoExpanded: sidebar.isPanelOpen(
-              ConversationSidebarPanelKind.todo,
+              ),
+              onCollapse: () => setState(sidebar.collapse),
             ),
-            onToggleTodo: todo == null
-                ? null
-                : () => setState(
-                    () =>
-                        sidebar.togglePanel(ConversationSidebarPanelKind.todo),
-                  ),
-            workflowExpanded: sidebar.isPanelOpen(
-              ConversationSidebarPanelKind.workflow,
-            ),
-            onToggleWorkflow: () => setState(
-              () => sidebar.togglePanel(ConversationSidebarPanelKind.workflow),
-            ),
-            showPlanEntry: pendingPlan == null && referencedPlan != null,
-            planExpanded: sidebar.isPanelOpen(
-              ConversationSidebarPanelKind.plan,
-            ),
-            onOpenPlan: pendingPlan != null || referencedPlan == null
-                ? null
-                : () => setState(
-                    () => sidebar.togglePanel(
-                      ConversationSidebarPanelKind.plan,
-                      defaultMode: ConversationSidebarLayoutMode.split,
-                    ),
-                  ),
-            hasSidebarPanels: entries.isNotEmpty,
-            sidebarOpen: sidebar.isOpen,
-            onToggleSidebar: entries.isEmpty
-                ? null
-                : () => setState(
-                    () => sidebar.toggleSidebar(availableOrder: availableOrder),
-                  ),
-          ),
-        );
-      },
+      sidebarExpanded:
+          activeEntry != null &&
+          activeLayoutMode == ConversationSidebarLayoutMode.expanded,
+      expandedDockBehavior:
+          activeEntry?.expandedDockBehavior ??
+          ConversationExpandedDockBehavior.coverAll,
+      sidebarCustomWidth: _sidebarCustomWidth,
+      sidebarDefaultWidthBuilder: activeEntry?.defaultWidthBuilder,
+      onSidebarWidthChanged: (width) => _sidebarCustomWidth = width,
+      onCollapseSidebar: () => setState(sidebar.collapse),
+      statusBar: ThreadStatusConnector(
+        threadId: threadId,
+        showTodo: hasTodo,
+        todoExpanded: sidebar.isPanelOpen(ConversationSidebarPanelKind.todo),
+        onToggleTodo: !hasTodo
+            ? null
+            : () => setState(
+                () => sidebar.togglePanel(ConversationSidebarPanelKind.todo),
+              ),
+        workflowExpanded: sidebar.isPanelOpen(
+          ConversationSidebarPanelKind.workflow,
+        ),
+        onToggleWorkflow: () => setState(
+          () => sidebar.togglePanel(ConversationSidebarPanelKind.workflow),
+        ),
+        showPlanEntry: pendingPlan == null && referencedPlan != null,
+        planExpanded: sidebar.isPanelOpen(ConversationSidebarPanelKind.plan),
+        onOpenPlan: pendingPlan != null || referencedPlan == null
+            ? null
+            : () => setState(
+                () => sidebar.togglePanel(
+                  ConversationSidebarPanelKind.plan,
+                  defaultMode: ConversationSidebarLayoutMode.split,
+                ),
+              ),
+        hasSidebarPanels: entries.isNotEmpty,
+        sidebarOpen: sidebar.isOpen,
+        onToggleSidebar: entries.isEmpty
+            ? null
+            : () => setState(
+                () => sidebar.toggleSidebar(availableOrder: availableOrder),
+              ),
+      ),
     );
   }
 
@@ -624,27 +619,5 @@ class _StandalonePreparationFailureView extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-/// Resolves the mounted workspace's Todo entry and its badge from Current.
-class _DeferredTodoPanel extends ConsumerWidget {
-  const _DeferredTodoPanel({
-    required this.threadId,
-    required this.runtime,
-    required this.inline,
-    required this.builder,
-  });
-
-  final String threadId;
-  final ThreadRuntimeView runtime;
-  final TimelineTodoListUpdate? inline;
-  final Widget Function(TimelineTodoListUpdate? todo) builder;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (runtime.deferredField('todo') == null) return builder(inline);
-    final todo = ref.watch(deferredTodoProvider(threadId));
-    return builder(todo.isLoading ? null : todo.asData?.value);
   }
 }

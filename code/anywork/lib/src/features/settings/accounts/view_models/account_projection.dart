@@ -76,58 +76,6 @@ AccountTemplatePresentation projectAccountTemplate(
   description: template.description,
 );
 
-AccountGeminiConnectionPresentation? projectGeminiConnection({
-  required String protocol,
-  required String? templateId,
-  required String endpoint,
-  required bool canSwitchMode,
-  bool? supportsModelDiscovery,
-  bool hasBundledCatalog = false,
-}) {
-  if (protocol != 'gemini') return null;
-  // Parse only for display; never normalize or write back the user's raw draft.
-  final normalized = endpoint.trim().replaceFirst(RegExp(r'/+$'), '');
-  final uri = Uri.tryParse(normalized);
-  final host = uri?.host ?? '';
-  final vertexHost =
-      host == 'aiplatform.googleapis.com' ||
-      RegExp(r'^[a-z]+(?:-[a-z]+)*[0-9]+-aiplatform\.googleapis\.com$')
-          .hasMatch(host);
-  final aiStudioHost = host == 'generativelanguage.googleapis.com';
-  final vertexPath =
-      uri?.path == '/v1/publishers/google' ||
-      uri?.path == '/v1beta1/publishers/google';
-  final aiStudioPath = uri?.path == '/v1beta' || uri?.path == '/v1';
-  final official =
-      uri != null &&
-      uri.scheme == 'https' &&
-      uri.userInfo.isEmpty &&
-      uri.port == 443 &&
-      !uri.hasQuery &&
-      !uri.hasFragment &&
-      ((vertexHost && vertexPath) || (aiStudioHost && aiStudioPath));
-  final mode = switch (templateId) {
-    'vertex-ai' => AccountGeminiGuidanceMode.vertexAi,
-    'gemini' => AccountGeminiGuidanceMode.aiStudio,
-    _ =>
-      vertexHost
-          ? AccountGeminiGuidanceMode.vertexAi
-          : AccountGeminiGuidanceMode.aiStudio,
-  };
-  return AccountGeminiConnectionPresentation(
-    mode: mode,
-    endpointKind: official
-        ? AccountGeminiEndpointKind.official
-        : AccountGeminiEndpointKind.custom,
-    selectedPreset: AccountGeminiEndpointPreset.values
-        .where((preset) => normalized == preset.endpoint)
-        .firstOrNull,
-    canSwitchMode: canSwitchMode,
-    supportsModelDiscovery: supportsModelDiscovery,
-    hasBundledCatalog: hasBundledCatalog,
-  );
-}
-
 AcpPresentationPhase projectAcpPhase(
   AcpConnectionStateView? connection,
   AcpAuthStateView? auth,

@@ -1,6 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
-import 'studio_menu_button.dart';
+import 'widgets/studio_menu_button.dart';
 
 /// A presentation entry with an inline control and an equivalent menu item.
 ///

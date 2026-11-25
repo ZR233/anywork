@@ -8,10 +8,10 @@ import 'package:material_ui/material_ui.dart';
 
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
-import 'account_brand.dart';
+import 'widgets/account_brand.dart';
 import 'studio_driver_keys.dart';
 import 'studio_menu_label.dart';
-import 'studio_menu_button.dart';
+import 'widgets/studio_menu_button.dart';
 
 /// A catalog model paired with its account-instance identity for selection.
 ///

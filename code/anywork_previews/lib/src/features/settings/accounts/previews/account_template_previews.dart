@@ -6,7 +6,7 @@ import 'account_preview_host.dart';
 import 'account_template_preview_fixtures.dart';
 
 import 'package:anywork/src/features/settings/accounts/state/account_presentations.dart';
-import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
+import 'package:anywork/src/features/settings/accounts/state/account_gemini_connection.dart';
 
 // All interactions use the shared production-View host and local recording.
 // Names intentionally include the exact template ID for Previewer filtering.

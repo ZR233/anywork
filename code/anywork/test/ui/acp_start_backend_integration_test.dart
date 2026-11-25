@@ -7,7 +7,7 @@ import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
-import 'package:anywork/src/shared/account_brand.dart';
+import 'package:anywork/src/shared/widgets/account_brand.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';

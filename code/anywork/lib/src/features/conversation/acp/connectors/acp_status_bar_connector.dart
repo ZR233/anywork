@@ -8,7 +8,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../presentation/providers/mode_catalog_store.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../status/status_bar_item.dart';
-import '../../../status/workflow_graph_panel.dart';
+import '../../../status/views/workflow_graph_panel.dart';
 import '../../workspace/conversation_workspace.dart';
 import '../state/acp_view_state.dart';
 import '../view_models/acp_external_history_view_model.dart';

@@ -13,6 +13,7 @@ import 'package:anywork/src/features/settings/accounts/view_models/account_model
 import 'package:anywork/src/features/settings/accounts/view_models/account_details_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/native_account_draft.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/account_operation_observation.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
@@ -1114,103 +1115,44 @@ void main() {
   }
 
   test(
-    'Gemini endpoint guidance uses wire protocol and structured URI fields',
+    'ManualModelDraft restricts allowed WireApi and connection modes by account protocol',
     () {
-      const cases =
-          <(String, AccountGeminiEndpointKind, AccountGeminiGuidanceMode)>[
-            (
-              'https://generativelanguage.googleapis.com/v1beta',
-              AccountGeminiEndpointKind.official,
-              AccountGeminiGuidanceMode.aiStudio,
-            ),
-            (
-              ' https://aiplatform.googleapis.com/v1/publishers/google/ ',
-              AccountGeminiEndpointKind.official,
-              AccountGeminiGuidanceMode.vertexAi,
-            ),
-            (
-              'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
-              AccountGeminiEndpointKind.official,
-              AccountGeminiGuidanceMode.vertexAi,
-            ),
-            (
-              'https://aiplatform.googleapis.com.example.test/v1/publishers/google',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.aiStudio,
-            ),
-            (
-              'https://proxy.example/aiplatform.googleapis.com',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.aiStudio,
-            ),
-            (
-              'https://aiplatform.googleapis.com@proxy.example/v1',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.aiStudio,
-            ),
-            (
-              'https://proxy.example/v1?host=aiplatform.googleapis.com',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.aiStudio,
-            ),
-            (
-              'http://aiplatform.googleapis.com/v1/publishers/google',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.vertexAi,
-            ),
-            (
-              'https://aiplatform.googleapis.com/unsupported/path',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.vertexAi,
-            ),
-            (
-              'https://aiplatform.googleapis.com:8443/v1/publishers/google',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.vertexAi,
-            ),
-            (
-              'http://[invalid',
-              AccountGeminiEndpointKind.custom,
-              AccountGeminiGuidanceMode.aiStudio,
-            ),
-          ];
-      for (final (endpoint, kind, mode) in cases) {
-        final value = projectGeminiConnection(
-          protocol: 'gemini',
-          templateId: null,
-          endpoint: endpoint,
-          canSwitchMode: false,
-        )!;
-        expect(
-          (value.endpointKind, value.mode),
-          (kind, mode),
-          reason: endpoint,
-        );
-      }
-      for (final protocol in [
-        'Google Gemini',
-        'gemini-compatible',
-        'open_ai',
-      ]) {
-        expect(
-          projectGeminiConnection(
-            protocol: protocol,
-            templateId: 'gemini',
-            endpoint: AccountGeminiEndpointPreset.aiStudio.endpoint,
-            canSwitchMode: false,
-          ),
-          isNull,
-        );
-      }
-      final fixedTemplate = projectGeminiConnection(
-        protocol: 'gemini',
-        templateId: 'gemini',
-        endpoint: AccountGeminiEndpointPreset.vertexGlobal.endpoint,
-        canSwitchMode: false,
-      )!;
-      expect(fixedTemplate.mode, AccountGeminiGuidanceMode.aiStudio);
+      const strings = AccountStrings({'required': 'Required'});
+      const geminiDraft = ManualModelDraft(
+        editorKey: 'g1',
+        id: 'gemini-4-hydrogen',
+        wireApi: AccountWireApi.geminiGenerateContent,
+      );
+      final geminiPresentation = geminiDraft.presentation(
+        strings,
+        null,
+        accountProtocol: 'gemini',
+      );
+      expect(geminiPresentation.allowedWireApis, [
+        AccountWireApi.geminiGenerateContent,
+      ]);
+      expect(geminiPresentation.allowedConnections, [
+        AccountConnection.automatic,
+        AccountConnection.http,
+      ]);
+
+      const openAiDraft = ManualModelDraft(
+        editorKey: 'o1',
+        id: 'gpt-6-astra',
+        wireApi: AccountWireApi.responses,
+      );
+      final openAiPresentation = openAiDraft.presentation(
+        strings,
+        null,
+        accountProtocol: 'openai',
+      );
+      expect(openAiPresentation.allowedWireApis, [
+        AccountWireApi.chatCompletions,
+        AccountWireApi.responses,
+      ]);
     },
   );
+
   test('OpenAI subscription save requires the current editor login with direct permission', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);

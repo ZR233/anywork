@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `shell/add_project_dialog.dart` 1–530 | 本地目录选择与 SSH 连接向导。先非交互探测，只有服务器提供密码认证才提示输入，并沿用现有连接编辑器及远端目录对话框。保留 `_busy`、`_picking` 与 `mounted` 边界。 | LSP 零诊断。未观察本地取消、SSH 免密与密码回退。 |
 | `shell/agent_switcher_menu.dart` 1–712 | 展示目录成员并按执行身份发出停止意图。会话父索引从逐行重建改为每次构建一次，仍沿 `parentAgentId` 并防循环。共享 `StudioMenuButton` 持有触发器焦点，保留宽高约束、按钮 key、15 秒本地提示及 Client 停止命令板。 | LSP 解析到共享触发器定义。未跑嵌套成员、键盘导航、在途重试或停止与行选择互斥。 |
-| `shell/agent_workspace_pane.dart` 1–770 | 按 Native/ACP 身份选择工作区，绑定 Plan、文件、待办与底栏。加载浮层与顶部错误提示改用显式布局插槽，保留测试定位 key。计数由待办组件提供。Native deferred Todo 改为订阅 `deferredTodoProvider`，现役 display lease 到位时触发读取，加载中隐藏旧内容。文件请求仍校验会话和 lease。 | LSP 零诊断。待办 provider 与 `TodoPanel` 的用例在修复图布局后待复跑。首次加载、保留历史时重连及文件面板仍待观察。 |
+| `shell/agent_workspace_pane.dart` | 按 Native/ACP 身份选择工作区，绑定 Plan、文件、待办与底栏。Native 按 Thread 观察统一待办与工作流结果，用其派生侧栏入口、待办计数及错误重试。文件请求仍校验会话和 lease。 | LSP 零诊断。定向用例与执行记录见下文。 |
 | `shell/recovery_issue_indicator.dart` 1–30 | 恢复诊断图标共用实现。信息级和错误级由 `impact` 决定，侧栏两种行以原 16 px 复用。 | LSP 零诊断。未观察恢复提示的悬停及并排状态色。 |
 | `shell/runtime_banners.dart` 1–827 | 启动失败、恢复、队列压力及持久化诊断。清除无人读取的启动失败 Driver 写入，保留错误正文与 `retryStartup`。`_storageBlock` 只接收选中会话，删除永远走不到的其他会话摘要分支，统一插入诊断行。保留队列里的其他会话诊断和真实故障代数、保存重试与继续闸门。 | LSP 零诊断。未跑启动重试、持久化压力、恢复、显式继续或诊断身份变化。 |
 | `shell/shell_view.dart` 1–521 | Riverpod 把 Client 的启动、目录、选择、工作区、恢复及持久化事实投影给各入口。删除全仓零调用的 `threadById` 和恒为真的 `ShellStorageFact.isSelected`，保留标题、数据观察、精确 Thread 选择及 typed 状态。 | LSP 零诊断。父代理已统一生成 `persistencePanelView` 对应产物。未跑目录恢复或冷会话打开。 |
@@ -46,7 +46,7 @@
 | `conversation/workspace/conversation_sidebar_state.dart` 1–173 | 按会话记住面板身份和宽屏模式。待确认 Plan 仅对新身份自动打开，文件关闭回到仍可用的页签。保留局部状态及同步 reconcile。 | LSP 零诊断。未跑同身份重复观察、撤销和文件返回。 |
 | `conversation/workspace/conversation_workspace.dart` 1–3 | Native、ACP、预览和测试的共用布局导出。保留活跃入口。 | LSP 零诊断与消费者文本核对。未运行跨包消费者。 |
 | `conversation/workspace/conversation_workspace_shell.dart` 1–603 | 管理并排、全宽、窄窗浮层、底栏和 `MultiSplitView`。原 `overlays` 根据测试 key 选 `Positioned.fill`，迁移唯一实参消费者到 `readingBanner` / `readingOverlay` 两个有明确位置的插槽。保留堆叠顺序、移树 key 和分隔条交互。 | LSP 零诊断，全仓搜索无旧实参。未跑分栏动画、Overlay 关闭、Plan footer 和保留时间线焦点。 |
-| `conversation/workspace/deferred_runtime_fields.dart` 1–73（本批新增） | 观察 Client 当前字段与时间线 display generation。Todo 和工作流共用读取规则，按现役 lease 借用 `CurrentReadScope`，待办观察独立，状态栏与图共用一个工作流观察。关闭异常经过同一资格检查。 | LSP 零诊断，语义查询定位 `openCurrentScope` 和两处工作流消费者。真实 Client 路径的 widget 用例待复跑。 |
+| `timeline/view_models/thread_runtime_fields.dart` | 汇合 Native inline 与 deferred 待办、工作流字段，按 Thread 交付 Riverpod `AsyncValue`。资源与读取契约见[时间线状态适配](../timeline/state-and-views.md#运行字段)。 | 原 `conversation/workspace/deferred_runtime_fields.dart` 与三份旧 Provider 已删除。 |
 
 ## M18 状态
 
@@ -59,7 +59,7 @@
 | `status/status_bar_item.dart` 1–185 | 状态栏通用按钮、读数和速度格式。保留图标模式、读屏与显式用户激活语义，以及带交互和短提示两类读数。 | LSP 零诊断。未跑读屏、键盘激活或读数省略。 |
 | `status/status_view.dart` 1–658 | 状态及能力 ViewModel。删除无分支 switch 和 `_publishCommands` 单纯转发，保留集合页、同一 owner 的命令保活、资源观察、retire/close 和原值解析。 | LSP 零诊断。父代理已统一生成 `StartedItemsViewModel` 对应产物。未跑 deferred 集合、重连与关闭。 |
 | `status/thread_status_bar.dart` 1–456 | 独立呈现上下文、Throughput、能力和工作流，窄窗允许整条横向滚动。原 `WorkflowStatusReadout` 只转发给 `WorkflowStatusPill`，原位替换并沿用 run/state key。工作流与 Native 图共用当前 run 读取，加载隐藏旧读数。 | LSP 零诊断。deferred run 用例在修复图布局后待复跑。未跑窄窗键盘和吞吐量增量。 |
-| `status/workflow_graph_panel.dart` 1–843 | 运行态工作流图、缩放、快照及 Native/ACP 取值。删除画布无效 hash 缓存与无人读取的 `isInitial`，保留模式变更时 fit。节点底行给长 ID 分配徽章之后的剩余宽度。Native 和缺少 canonical 图的 ACP 使用同一套按请求身份加载、报错和重试的逻辑。保留 `vyuh_node_flow` 主题桥。 | LSP 零诊断。widget 用例覆盖正文代次、Native 图 RPC 乱序及 ACP 切线程，修复后待执行。回边和缩放仍待验证。 |
+| `status/views/workflow_graph_panel.dart`、`status/state/workflow_graph_query.dart`、`status/connectors/workflow_graph_connectors.dart` | 绘图、查询和 Native/ACP 挂载分开。View 使用类型化数据、加载、错误和重试回调，管理画布与 fit。Native 共享当前 run 观察。ACP canonical 有图直接呈现，缺图走同一 RPC。 | LSP 零诊断。请求键仅在本地隔离 Thread、mode、revision 和 hash。RPC 响应没有 revision/hash 回执。 |
 
 ## M19 待办
 
@@ -107,6 +107,14 @@ ACP 切线程回归通过真实 Client 的两个 ACP 会话和受控观察帧，
 
 后续可按场景选择现有 `acp_header_workspace_test.dart`、`thread_status_bar_test.dart`、`sidebar_thread_destructive_action_test.dart`、`agent_list_stop_button_test.dart`、`unified_conversation_workspace_test.dart` 与 `workflow_graph_and_mode_selector_test.dart`。视觉场景包括 300 px 侧栏与大字号、浅深色能力菜单、会话菜单层级、工作区并排与全宽、窄窗浮层及待确认 Plan footer。
 
-## 整合补充
+## 上轮整合记录
 
-统一生成已完成三对失效 OtherSession 文案的删除。最新 deferred Todo/workflow 与 Native/ACP 图请求隔离共 12 项定向通过，官方窄状态栏、侧栏及工作流分栏图已核对；RPC 响应没有图 revision/hash，保护的是本地请求代次，不声明后端版本验证。完整 UI 初轮 580 通过、2 失败来自其他两处旧 finder，两个失败场景已过滤复验通过，最终分析见总台账；不把表内初审未跑项当作最终阻塞。
+上轮整合记录包含 deferred Todo/workflow 与 Native/ACP 图请求隔离的 12 项定向通过，以及窄状态栏、侧栏和工作流分栏观察。完整 UI 初轮 580 通过、2 失败。两个失败场景修正旧 finder 后已过滤复验。旧版原始测试日志路径未在本次会话中找到，汇总记录见[总台账](../flutter-quality-audit.md)。
+
+## PR596 后续分层验证
+
+`thread_runtime_fields_test.dart` 通过真实 Client 状态帧和 Current 读取 scope 验证 inline/deferred、字段先到、相同 generation 上 reader 后到、旧成功与失败隔离、当前错误和重试、退订停止多窗读取及旧 lease 的 join。`workflow_graph_query_test.dart` 通过查询 Provider 验证 Native 本地键隔离、两类重试入口及 ACP canonical 与 fallback 的切换。
+
+`shell_menu_cleanup_test.dart` 保留菜单 Escape 后焦点恢复与键盘打开动作，并使用实际 Native/ACP 工作区检查待办、图打开与图错误后的重试。`workflow_graph_and_mode_selector_test.dart` 保留模式菜单路由、侧栏互斥、图节点与标记；PlanTransition 的纯映射断言位于 `test/unit/plan_tool_presentation_test.dart`。原 T05 Native/ACP 额度验收入口另见[测试清理记录](../testing-cleanup.md)。
+
+本次局部 Dart 格式与 LSP 核对通过。三文件单元首轮为 4 通过、9 失败，退出码 1。观察值补齐 SDK run 相等比较遗漏的请求身份后，3 项 Native 图键复验逐项通过。同轮运行字段夹具失败 5 项，末项仍在执行时进程因超时被信号 9 终止。切到 Demo 正式状态发布入口并等待有效载荷接纳后，6 项运行字段复验通过，退出码 0。首轮通过项为 Plan 映射、Native 两类重试与 ACP canonical/fallback。6 项 widget 留待根整合后运行。

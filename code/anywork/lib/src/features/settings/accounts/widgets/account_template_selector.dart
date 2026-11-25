@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../../../../shared/account_brand.dart';
+import '../../../../shared/widgets/account_brand.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 

@@ -9,7 +9,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
-import '../../shared/studio_menu_button.dart';
+import '../../shared/widgets/studio_menu_button.dart';
 import 'started_items_state.dart';
 import 'status_view.dart';
 

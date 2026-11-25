@@ -9,7 +9,7 @@ import '../../../l10n/studio_l10n.dart';
 import '../../../shared/host_app_artwork.dart';
 import '../../../shared/studio_badges.dart';
 import '../../../shared/studio_driver_keys.dart';
-import '../../../shared/studio_menu_button.dart';
+import '../../../shared/widgets/studio_menu_button.dart';
 import '../recovery_issue_indicator.dart';
 import 'sidebar_models.dart';
 

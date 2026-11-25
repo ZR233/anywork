@@ -12,7 +12,7 @@ import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
-import '../../shared/studio_menu_button.dart';
+import '../../shared/widgets/studio_menu_button.dart';
 import 'recovery_issue_indicator.dart';
 
 /// 智能体切换列表。

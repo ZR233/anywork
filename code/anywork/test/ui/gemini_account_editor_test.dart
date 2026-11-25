@@ -1,9 +1,8 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
-import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
-import 'package:anywork/src/features/settings/accounts/view_models/native_account_draft.dart';
+import 'package:anywork/src/features/settings/accounts/state/account_gemini_connection.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/account_brand.dart';
+import 'package:anywork/src/shared/widgets/account_brand.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -127,27 +126,6 @@ Widget _wrapEditor({
 
 void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
-
-  testWidgets(
-    'Google text outside the host does not identify an official endpoint',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(960, 1080));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(
-        _wrapEditor(
-          presentation: _editorPresentation(
-            templateId: 'vertex-ai',
-            endpoint:
-                'https://proxy.example/v1?upstream=aiplatform.googleapis.com',
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('自定义端点'), findsOneWidget);
-      expect(find.text('隐式缓存'), findsNothing);
-      expect(tester.takeException(), isNull);
-    },
-  );
 
   testWidgets(
     'creating Vertex AI account switches mode and applies region preset',
@@ -316,42 +294,6 @@ void main() {
       expect(find.text('OpenAI Responses (HTTP)'), findsNothing);
     },
   );
-
-  test('ManualModelDraft restricts allowed WireApi and connection modes by account protocol', () {
-    const strings = AccountStrings({'required': 'Required'});
-    const geminiDraft = ManualModelDraft(
-      editorKey: 'g1',
-      id: 'gemini-4-hydrogen',
-      wireApi: AccountWireApi.geminiGenerateContent,
-    );
-    final geminiPresentation = geminiDraft.presentation(
-      strings,
-      null,
-      accountProtocol: 'gemini',
-    );
-    expect(geminiPresentation.allowedWireApis, [
-      AccountWireApi.geminiGenerateContent,
-    ]);
-    expect(geminiPresentation.allowedConnections, [
-      AccountConnection.automatic,
-      AccountConnection.http,
-    ]);
-
-    const openAiDraft = ManualModelDraft(
-      editorKey: 'o1',
-      id: 'gpt-6-astra',
-      wireApi: AccountWireApi.responses,
-    );
-    final openAiPresentation = openAiDraft.presentation(
-      strings,
-      null,
-      accountProtocol: 'openai',
-    );
-    expect(openAiPresentation.allowedWireApis, [
-      AccountWireApi.chatCompletions,
-      AccountWireApi.responses,
-    ]);
-  });
 
   testWidgets(
     'narrow 400x900 viewport with 1.3 text scale renders Gemini editor without overflow',

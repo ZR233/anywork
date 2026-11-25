@@ -41,6 +41,7 @@ void _runClientBoundary(
   final app = Directory('${root.path}/code/anywork/lib');
   final previews = Directory('${root.path}/code/anywork_previews/lib');
   final diagnostics = <String>[];
+  final pureWidgets = <String>[];
   var checked = 0;
   for (final directory in [client, app, previews]) {
     if (!directory.existsSync()) {
@@ -66,6 +67,7 @@ void _runClientBoundary(
         throwIfDiagnostics: false,
       );
       parsedCache?[relative] = parsed;
+      if (relative.startsWith(_sharedWidgetsRoot)) pureWidgets.add(relative);
       diagnostics.addAll(
         _checkParsedClientSource(
           path: relative,
@@ -79,6 +81,16 @@ void _runClientBoundary(
   if (checked == 0) {
     diagnostics.add('Client boundary check discovered no Dart source files');
   }
+  diagnostics.addAll(
+    checkPureWidgetImportClosure(
+      entries: pureWidgets,
+      read: (relative) {
+        final file = File('${root.path}/$relative');
+        return file.existsSync() ? file.readAsStringSync() : null;
+      },
+      parsedCache: parsedCache,
+    ).map((diagnostic) => diagnostic.toString()),
+  );
   if (diagnostics.isNotEmpty) {
     stderr.writeln(diagnostics.join('\n'));
     stderr.writeln(
@@ -239,10 +251,7 @@ String _sourcePath(String from, String uri) {
 }
 
 final class _ParsedUiFile {
-  const _ParsedUiFile({
-    required this.errors,
-    required this.uris,
-  });
+  const _ParsedUiFile({required this.errors, required this.uris});
 
   final List<({int line, int column, String message})> errors;
   final List<({int line, int column, String uri})> uris;
@@ -253,6 +262,41 @@ final class _ParsedUiFile {
 List<ClientBoundaryDiagnostic> checkUiImportClosure({
   required Iterable<String> entries,
   required String? Function(String path) read,
+  Map<String, ParseStringResult>? parsedCache,
+}) => _checkImportClosure(
+  entries: entries,
+  read: read,
+  parsedCache: parsedCache,
+  forbiddenUri: _isForbiddenUiUri,
+  forbiddenPath: _isForbiddenUiPath,
+  rule: 'UI-FRB',
+  contract: 'UI test closure must not reach FRB/Rust',
+);
+
+/// Checks the full local dependency graph of shared pure Widgets, including
+/// theme helpers, conditional exports and parts, with the same AST walker.
+List<ClientBoundaryDiagnostic> checkPureWidgetImportClosure({
+  required Iterable<String> entries,
+  required String? Function(String path) read,
+  Map<String, ParseStringResult>? parsedCache,
+}) => _checkImportClosure(
+  entries: entries,
+  read: read,
+  parsedCache: parsedCache,
+  forbiddenUri: _isBusinessOrPlatformUri,
+  forbiddenPath: (path) => !_isPureWidgetDependencyPath(path),
+  rule: 'UI-02',
+  contract:
+      'Shared Widget closure must only reach pure presentation dependencies',
+);
+
+List<ClientBoundaryDiagnostic> _checkImportClosure({
+  required Iterable<String> entries,
+  required String? Function(String path) read,
+  required bool Function(String uri) forbiddenUri,
+  required bool Function(String path) forbiddenPath,
+  required String rule,
+  required String contract,
   Map<String, ParseStringResult>? parsedCache,
 }) {
   final diagnostics = <ClientBoundaryDiagnostic>[];
@@ -333,7 +377,7 @@ List<ClientBoundaryDiagnostic> checkUiImportClosure({
               path: path,
               line: 1,
               column: 1,
-              rule: 'UI-FRB',
+              rule: rule,
               message:
                   'reachable Dart source is missing: $path '
                   '(from ${[...chain, path].join(' -> ')})',
@@ -354,7 +398,7 @@ List<ClientBoundaryDiagnostic> checkUiImportClosure({
             path: path,
             line: line,
             column: column,
-            rule: 'UI-FRB',
+            rule: rule,
             message: message,
           ),
         );
@@ -367,21 +411,21 @@ List<ClientBoundaryDiagnostic> checkUiImportClosure({
       final nextChain = [...chain, path];
       for (final directive in parsed.uris) {
         final uri = directive.uri;
-        if (_isForbiddenUiUri(uri)) {
+        if (forbiddenUri(uri)) {
           report(
             directive.line,
             directive.column,
-            'UI test closure must not reach FRB/Rust: $uri (from $trail)',
+            '$contract: $uri (from $trail)',
           );
           continue;
         }
         if (!_isFollowedUiUri(uri)) continue;
         final resolved = _normalized(_sourcePath(path, uri));
-        if (_isForbiddenUiPath(resolved) || _isForbiddenUiUri(uri)) {
+        if (forbiddenPath(resolved)) {
           report(
             directive.line,
             directive.column,
-            'UI test closure must not reach FRB/Rust: $uri (from $trail)',
+            '$contract: $uri (from $trail)',
           );
           continue;
         }
@@ -421,6 +465,28 @@ bool _isUiFollowedPath(String path) =>
     path.startsWith('code/anywork/lib/') ||
     path.startsWith('code/anywork_previews/lib/') ||
     path.startsWith('code/anywork/test/');
+
+const _sharedWidgetsRoot = 'code/anywork/lib/src/shared/widgets/';
+
+bool _isBusinessOrPlatformUri(String uri) =>
+    uri.startsWith('package:anywork_client/') ||
+    _isForbiddenUiUri(uri) ||
+    const [
+      'riverpod',
+      'flutter_riverpod',
+      'riverpod_annotation',
+      'provider',
+      'nativeapi',
+      'nativeapi_flutter',
+    ].any((package) => uri.startsWith('package:$package/')) ||
+    const {'dart:io', 'dart:ffi', 'dart:isolate'}.contains(uri);
+
+bool _isPureWidgetDependencyPath(String path) =>
+    path.startsWith(_sharedWidgetsRoot) ||
+    path.startsWith('code/anywork/lib/src/l10n/') ||
+    path.startsWith('code/anywork/lib/src/app/theme/') ||
+    path.startsWith('${_accountsRoot}state/') ||
+    path.startsWith('${_acpRoot}state/');
 
 bool _isAccountPresentation(String path) =>
     path == '${_accountsRoot}accounts_views.dart' ||
@@ -524,6 +590,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   bool get isAcpPresentation => _isAcpPresentation(applicationPath);
   bool get isAcpState => path.startsWith('${_acpRoot}state/');
   bool get isAcpViewModel => path.startsWith('${_acpRoot}view_models/');
+  bool get isSharedWidget => applicationPath.startsWith(_sharedWidgetsRoot);
 
   @override
   void visitImportDirective(ImportDirective node) {
@@ -546,7 +613,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   @override
   void visitPartDirective(PartDirective node) {
     final uri = node.uri.stringValue ?? '';
-    if ((isAccountFeature || isAcpFeature) &&
+    if ((isAccountFeature || isAcpFeature || isSharedWidget) &&
         !uri.endsWith('.g.dart') &&
         !uri.endsWith('.freezed.dart')) {
       report(
@@ -562,7 +629,8 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   void visitPartOfDirective(PartOfDirective node) {
     // Generated files are excluded by the source walker, so a handwritten
     // part cannot evade the dependency boundary of its owning library.
-    if ((isAccountFeature || isAcpFeature) && _isHandwrittenDart(path)) {
+    if ((isAccountFeature || isAcpFeature || isSharedWidget) &&
+        _isHandwrittenDart(path)) {
       report(
         node.offset,
         'UI-02',
@@ -576,6 +644,16 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     final uri = literal.stringValue;
     if (uri == null) return;
     final resolved = _sourcePath(path, uri);
+    if (isSharedWidget &&
+        (_isBusinessOrPlatformUri(uri) ||
+            (_isFollowedUiUri(uri) &&
+                !_isPureWidgetDependencyPath(resolved)))) {
+      report(
+        literal.offset,
+        'UI-02',
+        'Shared Widgets may only depend on pure presentation: $uri',
+      );
+    }
     if (isClient &&
         uri.startsWith('package:') &&
         !uri.startsWith('package:anywork_client/')) {
@@ -633,19 +711,9 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
           _isAccountPresentation(resolved) ||
           resolved.startsWith('code/anywork/lib/src/l10n/') ||
           resolved.startsWith('code/anywork/lib/src/app/theme/') ||
-          resolved == 'code/anywork/lib/src/shared/account_brand.dart';
-      final businessPackage =
-          uri.startsWith('package:anywork_client/') ||
-          uri.startsWith('package:flutter_rust_bridge/') ||
-          const [
-            'riverpod',
-            'flutter_riverpod',
-            'riverpod_annotation',
-            'provider',
-          ].any((package) => uri.startsWith('package:$package/'));
-      if (businessPackage ||
-          (appDependency && !pureAppDependency) ||
-          const {'dart:io', 'dart:ffi', 'dart:isolate'}.contains(uri)) {
+          resolved.startsWith(_sharedWidgetsRoot);
+      if (_isBusinessOrPlatformUri(uri) ||
+          (appDependency && !pureAppDependency)) {
         report(
           literal.offset,
           'UI-02',
@@ -659,7 +727,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             uri.startsWith('package:cupertino_ui/') ||
             resolved.startsWith('code/anywork/lib/src/l10n/') ||
             resolved.startsWith('code/anywork/lib/src/app/theme/') ||
-            resolved == 'code/anywork/lib/src/shared/account_brand.dart' ||
+            resolved.startsWith(_sharedWidgetsRoot) ||
             (resolved.startsWith(_accountsRoot) &&
                 !resolved.startsWith('${_accountsRoot}state/')))) {
       report(
@@ -674,6 +742,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             uri.startsWith('package:material_ui/') ||
             uri.startsWith('package:cupertino_ui/') ||
             uri.startsWith('package:flutter_riverpod/') ||
+            resolved.startsWith(_sharedWidgetsRoot) ||
             resolved == '${_accountsRoot}accounts_views.dart' ||
             const ['views/', 'widgets/', 'connectors/', 'previews/'].any(
               (directory) => resolved.startsWith('$_accountsRoot$directory'),

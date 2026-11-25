@@ -5,7 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/delegation_labels.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_menu_label.dart';
-import '../../../../shared/studio_menu_button.dart';
+import '../../../../shared/widgets/studio_menu_button.dart';
 
 /// 创建期环境控制的呈现；草稿和导航仍由各自的 Client owner 持有。
 class StartEnvironmentView extends StatelessWidget {

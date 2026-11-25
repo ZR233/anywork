@@ -6,7 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../../../../shared/studio_menu_button.dart';
+import '../../../../shared/widgets/studio_menu_button.dart';
 
 class AttachmentMenu extends StatelessWidget {
   const AttachmentMenu({

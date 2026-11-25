@@ -94,6 +94,5 @@ abstract class StatusBarView with _$StatusBarView {
     required List<RoleSettingsView> roles,
     required bool isBusy,
     ThreadModelRouteView? modelRoute,
-    WorkflowRunView? workflowRun,
   }) = _StatusBarView;
 }

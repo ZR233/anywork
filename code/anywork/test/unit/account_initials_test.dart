@@ -1,4 +1,4 @@
-import 'package:anywork/src/shared/account_brand.dart';
+import 'package:anywork/src/shared/widgets/account_brand.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

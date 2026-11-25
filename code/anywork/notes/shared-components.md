@@ -1,6 +1,14 @@
 # M09 共享组件审读
 
-基线 27 个文件均已逐文件全文审读。以下记录 23 个生产组件，另外四个 Driver 文件见[专项记录](driver/review.md)。新增 `studio_menu_button.dart` 同时纳入核对。审读完成不代表全局验证已经通过。
+基线 27 个文件均已逐文件全文审读。以下记录 23 个生产组件，另外四个 Driver 文件见[专项记录](driver/review.md)。新增 `widgets/studio_menu_button.dart` 同时纳入核对。审读完成不代表全局验证已经通过。
+
+## PR #596 分层收束
+
+`AccountBrandMark` 与 `StudioMenuButton` 迁入 `shared/widgets/`，旧路径及所有消费者导入同步退出。该目录是受检查的纯组件边界；共享根仍含 Driver、诊断及其他辅助代码，不整体赋予纯组件资格。检查器复用同一 AST 导入图遍历，直接检查组件，并沿主题、本地化及纯值模块的本地依赖检查 Client、Riverpod、平台所有者和间接越层；条件导入、导出、part、循环及缺失文件均有对应单元信号。
+
+账号 `AccountMenuButton` 保留标签／图标与账号按钮样式职责，稳定焦点与菜单控制只由共享组件和官方 `MenuAnchor` 承担。已核对相关调用方，未发现外部菜单 controller、镜像开关或手动恢复焦点补丁；输入框自身的 FocusNode 与独立菜单观察仍属实际局部职责。
+
+本次边界正反测试、首字母规则和共享菜单定向联合运行 94 项通过。菜单退出、键盘焦点和动态内容仍由组件测试保护；首字母与依赖规则由单元测试保护。此结果不代替后续应用／预览分析及真实合并版本检查。
 
 ## 已审读文件与决定
 
@@ -8,7 +16,7 @@
 
 | 文件 | 职责与处理决定 |
 | --- | --- |
-| account_brand.dart | 供应商品牌资源和自定义账号文字头像。保留品牌映射；首字母截取改用 Flutter 导出的 characters，避免截断 emoji、组合字符，保留前两词首字母/单词前两字规则。 |
+| widgets/account_brand.dart | 供应商品牌资源和自定义账号文字头像。保留品牌映射；首字母截取改用 Flutter 导出的 characters，避免截断 emoji、组合字符，保留前两词首字母/单词前两字规则。 |
 | composer_action_button.dart | Native/ACP 共用固定尺寸主按钮。状态资格来自调用方，官方 IconButton 和 CircularProgressIndicator 管理交互与动画，保留。 |
 | composer_configuration_bar.dart | 配置项宽度分配、窄窗溢出。保留领域布局；溢出入口改用 StudioMenuButton.icon，移除重复 MenuAnchor builder。 |
 | composer_input_frame.dart | 共用输入装饰及工具栏几何。已由领域调用方注入动作/配置，保留。 |
@@ -31,7 +39,7 @@
 | studio_messages.dart | 空状态、行内消息和领域色调提示组件；只负责呈现，无独立消息队列，保留。 |
 | studio_panel.dart | 卡片和分区布局，保留。 |
 | typed_json.dart | 展示边界的宽容 JSON 解码及非 String 键文字化，保留；收紧会改变历史材料呈现，并非本轮质量修复目标。 |
-| studio_menu_button.dart（新增） | 一个稳定 FocusNode 同时交给 MenuAnchor.childFocusNode 和触发按钮。菜单开关、键盘退出/遍历由现有 Material 实现负责；不暴露外层控制器，不镜像开合，不手动 requestFocus。text/icon 共用 owner，保留调用方样式及禁用解释动作。 |
+| widgets/studio_menu_button.dart（新增） | 一个稳定 FocusNode 同时交给 MenuAnchor.childFocusNode 和触发按钮。菜单开关、键盘退出/遍历由现有 Material 实现负责；不暴露外层控制器，不镜像开合，不手动 requestFocus。text/icon 共用 owner，保留调用方样式及禁用解释动作。 |
 
 ## Driver 专项
 

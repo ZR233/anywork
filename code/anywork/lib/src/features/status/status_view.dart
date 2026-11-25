@@ -539,14 +539,13 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
         _chromeFromSession,
         equals: _chromeEquals,
       ) ??
-      (isBusy: false, modelRoute: null, workflowRun: null);
+      (isBusy: false, modelRoute: null);
   return StatusBarView(
     row: row,
     accounts: accounts,
     roles: roles ?? const [],
     isBusy: chrome.isBusy,
     modelRoute: chrome.modelRoute,
-    workflowRun: chrome.workflowRun,
   );
 }
 
@@ -582,25 +581,15 @@ StudioThroughputProjection? statusThroughputProjection(
   });
 }
 
-typedef _StatusChrome = ({
-  bool isBusy,
-  ThreadModelRouteView? modelRoute,
-  WorkflowRunView? workflowRun,
-});
+typedef _StatusChrome = ({bool isBusy, ThreadModelRouteView? modelRoute});
 
-_StatusChrome _chromeFromSession(ThreadSessionState session) {
-  final runtime = session.runtime ?? statusEmptyRuntime;
-  return (
-    isBusy: session.activeTurn?.state.isBusy ?? false,
-    modelRoute: session.modelRoute,
-    workflowRun: runtime.workflow?.currentRun,
-  );
-}
+_StatusChrome _chromeFromSession(ThreadSessionState session) => (
+  isBusy: session.activeTurn?.state.isBusy ?? false,
+  modelRoute: session.modelRoute,
+);
 
 bool _chromeEquals(_StatusChrome left, _StatusChrome right) {
-  return left.isBusy == right.isBusy &&
-      left.modelRoute == right.modelRoute &&
-      left.workflowRun == right.workflowRun;
+  return left.isBusy == right.isBusy && left.modelRoute == right.modelRoute;
 }
 
 bool _sameStrings(List<String> left, List<String> right) {

@@ -4,7 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_menu_label.dart';
-import '../../../../shared/studio_menu_button.dart';
+import '../../../../shared/widgets/studio_menu_button.dart';
 import '../state/composer_view_state.dart';
 import '../view_models/composer_view_model.dart';
 import '../view_models/start_backend_view_model.dart';

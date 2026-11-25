@@ -227,6 +227,12 @@ Current State 的 `CurrentStateField` 只有 `Body` 与 `Collection` 两个分�
 
 ChatController、焦点、滚动、HistoryReader、CurrentReader、body watch、任务、permit、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，Flutter 官方组件及成熟三方优先，不为领域适配再加无职责 Manager/Facade。
 
+待办与工作流的直接字段、延迟字段由时间线状态适配统一选择，消费者按会话身份观察 Riverpod 异步结果，不在多个界面重复传递运行时快照和选择分支。字段早于读取租约到达时，租约就绪须恢复读取；读取资格同时绑定原 owner、reader 和字段身份，旧成功或失败不得接管新身份。读取 scope 的取消与异步 close/join 仍由原资源所有者保责，不因呈现释放而丢弃清理结果。
+
+工作流图分为纯绘图组件、查询状态与 Native／ACP 连接器。绘图只消费类型化数据、加载／失败状态及回调；查询复用现有 Riverpod 异步状态，不复制业务图或建立另一套状态机。ACP canonical 已带图时直接使用，缺图才调用现有 RPC。RPC 查询键包含本地会话及工作流身份以隔离迟到结果；接口未返回图版本回执，因此此隔离不承诺验证后端图与某个 revision/hash 一致。
+
+`shared/widgets/` 是共享纯组件边界，仅持有显示、局部交互和 UI 资源，可消费纯呈现值、主题、本地化及官方组件。其自身与消费者均受依赖检查，禁止经 import、export、条件导入或 part 间接引入 Client、Riverpod、平台业务所有者；`shared/` 下的其他辅助文件不因此获得纯组件资格。共享菜单由官方 `MenuAnchor` 管理开合、退出与焦点遍历，稳定焦点节点由组件创建并释放；领域包装只承担实际标签、图标或样式，不叠加控制器及开关镜像。
+
 应用的 Material 组件、主题扩展和本地化统一使用 Flutter 官方独立 `material_ui`，保持既有 Material 3 视觉、路由与状态所有权。仍依赖 SDK 内旧 Material 类型的第三方组件通过官方 `MaterialUiCompatibilityBridge` 消费同一应用主题和本地化；桥接仅承担第三方类型边界，不维护第二套产品主题、状态或组件实现。应用、预览与测试使用同一组件体系，不为单个 Markdown 组件手工映射平行主题。
 
 本地化类继续由 Flutter 官方生成器和统一生成入口维护；官方 Pub 准备也可能重新生成本地化，不在项目增加输出重写流程。生成模板尚未迁移的默认 Material／Cupertino 代理仅在官方生成 header 中精确豁免弃用诊断，应用本身仍使用独立组件的代理；不修改 SDK、手改生成物或全局屏蔽诊断。桌面托盘直接消费既有 `nativeapi`／`nativeapi_flutter` 的类型和资源生命周期，不经仅重导出这些类型的中间依赖锁定旧 SDK；这不改变托盘平台支持或窗口隐藏与会话执行的关系。
@@ -411,6 +417,8 @@ SSH 产品状态只表达当前显式连接：disconnected、connecting、ready�
 ## 25.14 账号分域与可预览呈现
 
 账号重构采用分域 SDK 与功能优先的呈现架构：`Rust 既有所有者 → typed 端口 / adapter → 对应领域 Repository → 生成式 AsyncNotifier / Freezed ViewState → Connector → 纯 View`。这是账号及必要共享消费者的局部演进，不移植全应用架构或统计专用分页、读取作用域与 ACK 协议。
+
+仅依赖已有输入的显示转换归账号 `state` 纯 Dart 模块，不与 SDK 业务投影放在同一入口。Gemini 连接方式、官方地址分类与预设匹配由生产 ViewModel、交互预览和单元测试直接共享；转换保持精确协议判别、真实 URI host 校验及模板指导优先级，不修改原始输入，也不新增保存限制。预览不得为了纯转换导入业务 ViewModel 或保留复制算法、兼容转发。
 
 ### 数据域与共享消费者
 

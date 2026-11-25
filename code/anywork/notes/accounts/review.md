@@ -133,7 +133,7 @@ cargo flutter test --no-pub test/unit/account_cards_view_model_test.dart test/un
 
 ## 交给父代理的跨界／后续事项
 
-1. 父已实现 `lib/src/shared/studio_menu_button.dart` 的 `StudioMenuButton`（text／icon），并负责把 AccountMenuButton 改为账号样式薄组合；其对外接口保持。本执行者没有改该文件或共享组件。菜单回焦／outside tap 消费由父验证。
+1. 父已实现 `lib/src/shared/widgets/studio_menu_button.dart` 的 `StudioMenuButton`（text／icon），并负责把 AccountMenuButton 改为账号样式薄组合；其对外接口保持。本执行者没有改该文件或共享组件。菜单回焦／outside tap 消费由父验证。PR #596 后续分层将共享组件迁入受检查的 `shared/widgets/`，账号包装只保留标签、图标和按钮样式。
 2. 删除旧 Picker 后，`shared/studio_driver_keys.dart` 与 `shared/studio_driver_key_values.dart` 中仍有 `accountTemplatePicker` 选择器常量，全 code 检索未见现役挂载点。Driver 组已删除这些无消费者常量，没有新增兼容挂载。
 3. Gemini 文本／端点推断已只读追到 NativeAccountDraft、Client details／template 字段及 FRB adapter。具体的权威来源、无模板与缺失模板区别、最小 typed 指导值、能力 badge 的产品决定，以及生产／fixture／生成输入变更清单见 [Gemini 呈现决定](gemini-presentation.md)。随后由主代理完成类型化呈现、投影及生成输入迁移，实际修后测试和官方预览结果以该文档为准。
 4. `account_list_item.dart` 宽布局状态区的 singleLine／非 flex 曾被列为静态风险。官方既有长英文状态场景在 960px、1.0× 与 1.3× 下均完整显示 “Preparing managed connection”，主代理已核对两张真实图，无溢出或不可读；该候选未复现，不据静态结构改写生产布局，也不外推任意字符串／窗口组合。

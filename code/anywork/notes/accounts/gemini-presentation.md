@@ -39,12 +39,15 @@ trim 和尾斜线归一化只用于预设选中和显示判断。端点原文、
 | 文件 | 职责 |
 | --- | --- |
 | `state/account_presentations.dart` | 指导枚举、端点预设、Freezed 呈现输入及 editor 的可空连接呈现 |
-| `view_models/account_projection.dart` | `projectGeminiConnection` 纯转换，唯一显示分类位置 |
+| `state/account_gemini_connection.dart` | `projectGeminiConnection` 的纯 Dart 呈现转换；只依赖 `account_presentations`，负责 protocol、真实 URI、template 优先级和 preset 分类 |
+| `view_models/account_projection.dart` | 保留其他账号业务映射；不再承载 Gemini 呈现转换 |
 | `view_models/account_editor_view_model.dart` | 从当前 draft、模板及目录派生资格和能力 |
 | `views/native_account_editor_view.dart` | 按可空呈现装配指导区 |
 | `widgets/account_editor_fields.dart` | 按类型化 mode 选择凭据标签 |
 | `widgets/account_gemini_connection.dart` | 消费类型化值，删除文字分类、URL 常量及标准化 |
-| 账号预览 fixture／host／注册入口 | 复用同一纯转换，模板或端点编辑后更新合成呈现；增加无模板、自定义和缺失模板场景 |
+| 账号预览 fixture／host／注册入口 | 直接导入同一纯转换；模板或端点编辑后更新合成呈现；增加无模板、自定义和缺失模板场景 |
+
+纯规则测试集中在 `test/unit/account_gemini_connection_test.dart`：`accounts_view_models_test.dart` 保留真实 VM 的 raw／dirty／canSave 与目录能力映射证据，并承载 `ManualModelDraft` 的 wireApi／connection 规则；`gemini_account_editor_test.dart` 只保留真实表单呈现、模板切换、preset 输入、键盘／焦点和品牌资源信号。endpoint 分类及 ManualModelDraft 的纯 `test` 均已从 UI 下沉。当前集成测试目录没有 Gemini 对应重复用例，未删除集成测试。
 
 端点预设使用现有 `material_ui 1.11.0` 的 `ChoiceChip`，保留品牌颜色、圆角和回调；删除手拼 `Semantics`、选中图标和 `InkWell`，选择、禁用及键盘交互交给官方组件实现。已核对锁定源码的 `selected`／`onSelected` 合同，保存中用空回调禁用。保存、删除、dirty、Client 命令和凭据行为不属于此次分类修复的改动。
 
@@ -52,4 +55,4 @@ trim 和尾斜线归一化只用于预设选中和显示判断。端点原文、
 
 修前已运行新增 widget 用例 `Google text outside the host does not identify an official endpoint`：退出码 1，期望“自定义端点”出现一次，实际为零，证明了整段 URL 分类的误判。
 
-修后新增覆盖包括：真实 VM 的无模板／缺失模板账号、raw 与 dirty／canSave 保留、不产生写命令；纯转换覆盖多个结构化 URL、相似协议 wire 及模板指导优先。统一生成已成功。账号 VM/projector 所在测试在定向与完整 unit 438 项运行中通过；Gemini 编辑器、ChoiceChip 键盘/保存禁用回归在七文件联合 30 项运行中通过。官方预览的无模板/自定义端点场景（420px、1.3 倍文字）及预设点击后的 URL/指导组/选中态均已观察并由主代理核对。此前账号首批 79 项联合通过属于焦点、草稿及模式改动，不能代替本项修后证据。
+迁移后运行 `cargo flutter test --no-pub test/unit/account_gemini_connection_test.dart test/unit/accounts_view_models_test.dart`，退出码 0；根核对原始日志终态为 `+52: All tests passed!`，即 52 项通过。补充真实官方 host 上的 userinfo、query 和显式 `:443` 边界后，仅定向复跑分类用例，1 项通过；该用例与原批次重叠，不累加总数。UI、应用／预览联合分析与真实合并版本验收另由总台账记录。

@@ -15,7 +15,6 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
     required SessionDirectoryRow rootRow,
     required AgentWorkspaceSyncState syncState,
     String? loadError,
-    required TimelineTodoListUpdate? todo,
     required ThreadRuntimeView runtime,
     ThreadModelRouteView? modelRoute,
     required StudioTurnView? turn,

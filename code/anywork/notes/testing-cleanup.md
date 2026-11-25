@@ -2,6 +2,23 @@
 
 本记录汇总 B02 审读后落实的测试与工具清理；基线逐文件记录见 [测试边界](testing/review.md)。真实供应商登录与 load 场景仅修订验收逻辑，本轮未发出真实登录、额度或计费请求。
 
+## PR #596 分层后的测试下沉
+
+按可观察行为整理本轮调用链，单元测试能独立证明的规则不再借完整界面夹具重复验证。组件测试继续保护真实装配、输入与焦点；集成测试保留跨层连接和资源关闭的独有信号。
+
+| 行为 | 最窄保护入口与保留理由 |
+| --- | --- |
+| Gemini 协议、URI、模板优先级与预设匹配 | `test/unit/account_gemini_connection_test.dart` 直接调用生产纯转换；从账号 VM 测试和 Gemini UI 测试移除重复分类表。用户名、查询参数反例使用真实官方 host/path，避免仅凭代理域名就通过。 |
+| 账号 raw／dirty／保存资格及模型 wire API 规则 | `accounts_view_models_test.dart` 保留真实 VM 资格与原始输入不变信号，接收从 UI 下沉的 `ManualModelDraft` 规则。 |
+| 待办／工作流直接与延迟读取、迟到结果、失败和收束 | `thread_runtime_fields_test.dart` 通过真实生产 Provider、Client 和 scope 驱动；UI 保留工作区接入与可见错误，不重复枚举数据竞态。 |
+| Native／ACP 图的本地请求身份、canonical 优先及重试 | `workflow_graph_query_test.dart` 独立驱动状态适配；图节点、缩放、侧栏互斥与菜单焦点仍在组件测试。 |
+| Plan 工具字段映射 | `plan_tool_presentation_test.dart` 承接原工作流 UI 文件中的纯映射用例，不挂载 Widget。 |
+| 纯组件依赖与品牌首字母规则 | 真实 AST 正反及导入闭包用例、`account_initials_test.dart` 保留单元保护；菜单键盘退出和品牌 bundle 加载保持组件测试。 |
+
+现有 `integration_test` 没有 Gemini 分类或本轮运行字段／图查询的重复用例，未按目录名删测。Native／ACP 登录、真实刷新受理、持久化与退出等仍保护单元替身不能证明的边界。被移除的重复 UI 逻辑及其专属导入随迁移一起退出，原有效的跨层信号保留。
+
+共享边界、首字母与菜单首批联合 94 项通过；Gemini 与账号 VM 首批实际 52 项通过，补强分类后定向 1 项通过（与前批重叠，不累加）。其余整合后的实际结果见[总台账](flutter-quality-audit.md)，不将历史全量结果当作本次全量重跑。
+
 ## 处理结果
 
 - **T01 — 删除退役 ACP 安装验收链**：删除 `test/support/acp_install_contract.dart` 与唯一消费它、仅自测 DTO/谓词的 `test/unit/acp_usage_query_contract_test.dart`。现役 auth、install draft 与 usage metrics 测试保留。

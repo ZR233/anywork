@@ -1,5 +1,5 @@
 import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
-import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
+import 'package:anywork/src/features/settings/accounts/state/account_gemini_connection.dart';
 
 import 'account_preview_fixtures.dart';
 import 'account_list_preview_data.dart';
