@@ -13,6 +13,28 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.51.0](https://github.com/ZR233/anywork/compare/v6.50.0...v6.51.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 收口运行时协议、历史迁移与测试 ([#576](https://github.com/ZR233/anywork/issues/576))
+
+### Bug Fixes
+
+* **model:** 修复 Gemini 工具调用就绪与回放契约 ([#586](https://github.com/ZR233/anywork/issues/586)) ([0c362dc](https://github.com/ZR233/anywork/commit/0c362dca11a663706790edec95f5f25b15cdd273))
+* **studio:** 修复 ACP 会话布局并交由 Flyer 管理滚动 ([#580](https://github.com/ZR233/anywork/issues/580)) ([15133b1](https://github.com/ZR233/anywork/commit/15133b1cb33360d809abae08fbc4c1265d43e35a))
+* **studio:** 修复多轮及后台任务子智能体最终评价失败 ([#577](https://github.com/ZR233/anywork/issues/577)) ([f321598](https://github.com/ZR233/anywork/commit/f321598e1e5147a794984ee7b584330ea80bea10))
+* **studio:** 修复工具目录刷新取消后的恢复误报 ([#581](https://github.com/ZR233/anywork/issues/581)) ([ecdbbb7](https://github.com/ZR233/anywork/commit/ecdbbb746aacd328728aae23a15b305121178271))
+* **studio:** 平衡分派适量探索缺少评价的模型 ([#582](https://github.com/ZR233/anywork/issues/582)) ([89087f9](https://github.com/ZR233/anywork/commit/89087f9eb777889e87126524fcacb36320a4f917))
+* **studio:** 整理普通会话底部状态栏与详情弹层 ([#587](https://github.com/ZR233/anywork/issues/587)) ([f95caf6](https://github.com/ZR233/anywork/commit/f95caf6d42e95a03d4df74d51494e18fd6e5bf3f))
+
+
+### Refactoring
+
+* **studio:** 拆分运行时模块并优化会话目录更新 ([#579](https://github.com/ZR233/anywork/issues/579)) ([5c05040](https://github.com/ZR233/anywork/commit/5c05040aa6888456d0723288568767359acb9722))
+* **studio:** 收口运行时协议、历史迁移与测试 ([#576](https://github.com/ZR233/anywork/issues/576)) ([c67a333](https://github.com/ZR233/anywork/commit/c67a33385dd3500287b036431db9dc8c2ac0a6de))
+
 ## [6.50.0](https://github.com/ZR233/anywork/compare/v6.49.0...v6.50.0) (2026-11-24)
 
 
