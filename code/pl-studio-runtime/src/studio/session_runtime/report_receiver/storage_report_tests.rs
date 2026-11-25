@@ -1,6 +1,7 @@
 use crate::thread_assembler::test_support::*;
 use crate::thread_assembler::*;
 use anyhow::Context as _;
+use pl_core::thread::{ThreadError, ThreadHandle};
 // Recovery starts with a genuinely cold parent, not a pre-added executable fixture Entry.
 
 use crate::studio::storage_fault_test_support::{close_factory, save_terminal_report};
