@@ -22,6 +22,8 @@ use super::facts::{append_preview_facts, current_facts};
 use super::instructions::{InstructionBinding, instruction_binding, restore_current_instructions};
 use super::mode_workflow::{ModePreparation, freeze_mode_for_turn, prepare_workflow};
 
+pub(crate) const LATEST_RECEIPT: &str = "studio.compaction.latest";
+
 /// Selects the product summary policy without changing provider capabilities.
 fn policy(mode: OpenAiCompactionMode) -> ThreadCompactionOptions {
     ThreadCompactionOptions {

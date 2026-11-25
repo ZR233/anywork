@@ -440,7 +440,7 @@ async fn create_seed_thread(
                     text: format!("read-seed-{index}-00"),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: ThreadModeId::auto().label().into(),
+                mode: ThreadModeId::auto().as_str().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),

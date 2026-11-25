@@ -1510,16 +1510,16 @@ mod tests {
         let mut first = runtime
             .read_thread_mode_definition(&ThreadModeId::auto())?
             .document;
-        first.definition.id = ThreadModeId::new("mode.first")?;
+        first.id = ThreadModeId::new("mode.first")?;
         let mut second = first.clone();
-        second.definition.id = ThreadModeId::new("mode.second")?;
+        second.id = ThreadModeId::new("mode.second")?;
         let opened = runtime
             .save_thread_mode_definition(0, first.clone())?
             .definition
             .unwrap()
             .revision;
         runtime.save_thread_mode_definition(0, second)?;
-        first.definition.prompt.push_str(" edited");
+        first.prompt.push_str(" edited");
         let saved = runtime
             .save_thread_mode_definition(opened, first.clone())?
             .definition
@@ -1531,12 +1531,12 @@ mod tests {
                 .is_err()
         );
         let path = runtime.store.paths().modes_dir().join("mode.first.json");
-        first.definition.prompt.push_str(" externally");
+        first.prompt.push_str(" externally");
         let external = serde_json::to_vec_pretty(&first)?;
         std::fs::write(&path, &external)?;
         assert!(
             runtime
-                .delete_thread_mode_definition(saved, &first.definition.id)
+                .delete_thread_mode_definition(saved, &first.id)
                 .is_err()
         );
         assert!(runtime.save_thread_mode_definition(saved, first).is_err());

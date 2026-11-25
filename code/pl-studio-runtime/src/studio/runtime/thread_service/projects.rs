@@ -1000,7 +1000,7 @@ mod standalone_tests {
                 text: "hello".into(),
                 attachment_draft_ids: vec![],
             },
-            mode: crate::mode::ThreadModeId::auto().label().into(),
+            mode: crate::mode::ThreadModeId::auto().as_str().into(),
             route: crate::NewThreadModelRoute {
                 account_id: "standalone-fixture".into(),
                 model_id: "standalone-model".into(),

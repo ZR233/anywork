@@ -146,6 +146,7 @@ fn non_forced_unknown_target_and_disallowed_transition_return_rich_hints() {
 fn forced_transition_jumps_anywhere_including_out_of_final_state() {
     let mut machine = fixture_machine();
     let run_id = machine.state().current_run.as_ref().unwrap().run_id.clone();
+    assert_eq!(run_id, "run-d63cd08d82aa4eb48e0cc64f");
     // Forced jump directly from `intake` to terminal `done`.
     let jump_final = machine
         .apply_transition(

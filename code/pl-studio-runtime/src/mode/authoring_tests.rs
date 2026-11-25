@@ -1,4 +1,5 @@
 use super::{ThreadModeDocument, WorkflowPreviewRequest, preview_workflow, validate_mode_json};
+use crate::workflow_tool::{WorkflowDefinition, compile_workflow_definition};
 use serde_json::{Value, json};
 
 fn workflow_document() -> Value {
@@ -115,4 +116,57 @@ fn preview_is_replayable_and_counts_the_next_target_in_its_limit() -> anyhow::Re
     let error = preview_workflow(request).unwrap_err();
     assert!(error.to_string().contains("exceeds 128 states"));
     Ok(())
+}
+
+#[test]
+fn graph_hash_survives_definition_reordering_and_the_index_routes_every_edge() -> anyhow::Result<()>
+{
+    let mut definition: WorkflowDefinition =
+        serde_json::from_value(workflow_document()["workflow"].clone())?;
+    let expected = "sha256:824c9cea365a57c9f3e2f04e4d5919a15f959ff1fb0f96505d6578de3f872f24";
+    let graph = compile_workflow_definition(definition.clone())?;
+    assert_eq!(graph.graph_hash(), expected);
+    assert_eq!(graph.initial_state().id, "review");
+    assert_eq!(
+        graph.transition("review", "done").unwrap().guard,
+        "Reviewed"
+    );
+    assert!(graph.outgoing("done").is_empty());
+
+    definition.states.reverse();
+    definition.transitions.reverse();
+    let reordered = compile_workflow_definition(definition)?;
+    assert_eq!(reordered.graph_hash(), expected);
+    assert_eq!(graph.outgoing("review"), reordered.outgoing("review"));
+    Ok(())
+}
+
+#[test]
+fn forward_and_reverse_reachability_report_the_respective_invalid_states() -> anyhow::Result<()> {
+    let mut graph = workflow_document()["workflow"].clone();
+    graph["states"].as_array_mut().unwrap().push(json!({
+        "id": "stalled", "title": "Stalled", "instructions": "Wait", "completionCriteria": ["Ready"], "kind": "atomic"
+    }));
+    graph["transitions"].as_array_mut().unwrap().push(json!({
+        "sourceStateId": "stalled", "targetStateId": "stalled", "guard": "Still waiting"
+    }));
+    let assert_codes = |graph: Value, expected: &[&str]| -> anyhow::Result<()> {
+        let definition = serde_json::from_value(graph)?;
+        let error = compile_workflow_definition(definition).unwrap_err();
+        let codes: Vec<_> = error
+            .issues()
+            .iter()
+            .map(|issue| {
+                assert_eq!(issue.path, "states.stalled");
+                issue.code
+            })
+            .collect();
+        assert_eq!(codes, expected);
+        Ok(())
+    };
+    assert_codes(graph.clone(), &["unreachableState", "cannotReachFinal"])?;
+    graph["transitions"].as_array_mut().unwrap().push(json!({
+        "sourceStateId": "review", "targetStateId": "stalled", "guard": "Waiting on feedback"
+    }));
+    assert_codes(graph, &["cannotReachFinal"])
 }

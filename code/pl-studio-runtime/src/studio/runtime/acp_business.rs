@@ -2501,7 +2501,6 @@ mod tests {
             .context("auto mode definition")?;
         let workflow = definition
             .document
-            .definition
             .workflow
             .as_ref()
             .context("auto mode workflow")?;
