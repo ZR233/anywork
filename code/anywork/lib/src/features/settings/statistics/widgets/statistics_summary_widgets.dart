@@ -22,9 +22,9 @@ class StatisticsSummarySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SettingsSectionPanel(
+    return Column(
       key: StudioDriverKeys.statisticsSummary,
-      title: context.l10n.settingsStatisticsSummaryTitle,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (summaries.isEmpty && showEmptyState)
           Padding(
@@ -51,11 +51,28 @@ class StatisticsSummarySection extends StatelessWidget {
                 DataColumn(
                   label: Text(context.l10n.statisticsRequestedServiceTier),
                 ),
-                DataColumn(label: Text(context.l10n.statisticsSpeed)),
-                DataColumn(label: Text(context.l10n.statisticsSamples)),
-                DataColumn(label: Text(context.l10n.statisticsOutputTokens)),
-                DataColumn(label: Text(context.l10n.statisticsAverageTtft)),
-                DataColumn(label: Text(context.l10n.statisticsAverageResponse)),
+                DataColumn(
+                  numeric: true,
+                  tooltip: context.l10n.settingsStatisticsThroughputNote,
+                  label: Text(context.l10n.statisticsSpeed),
+                ),
+                DataColumn(
+                  numeric: true,
+                  label: Text(context.l10n.statisticsSamples),
+                ),
+                DataColumn(
+                  numeric: true,
+                  label: Text(context.l10n.statisticsOutputTokens),
+                ),
+                DataColumn(
+                  numeric: true,
+                  tooltip: context.l10n.usageFirstOutputNote,
+                  label: Text(context.l10n.statisticsAverageTtft),
+                ),
+                DataColumn(
+                  numeric: true,
+                  label: Text(context.l10n.statisticsAverageResponse),
+                ),
               ],
               rows: [
                 for (final summary in summaries) ...[

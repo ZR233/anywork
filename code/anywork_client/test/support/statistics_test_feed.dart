@@ -26,6 +26,8 @@ final class StatisticsPublicationFixture {
     this.effortGate,
     this.acknowledgementGate,
     this.failHistoryOffset,
+    this.pageFeedId,
+    this.failAcknowledgement = false,
   }) : summaries = List.unmodifiable(summaries),
        history = List.unmodifiable(history),
        efforts = Map.unmodifiable({
@@ -42,6 +44,8 @@ final class StatisticsPublicationFixture {
   final StatisticsTestGate? effortGate;
   final StatisticsTestGate? acknowledgementGate;
   final int? failHistoryOffset;
+  final String? pageFeedId;
+  final bool failAcknowledgement;
 }
 
 final class StatisticsConnectionPlan {
@@ -51,15 +55,23 @@ final class StatisticsConnectionPlan {
     this.failOpen = false,
     this.onOpen,
     this.closeFailures = 0,
-    this.closeAfterBaseline = false,
+    this.closeGate,
+    this.scopeCloseFailures = 0,
+    this.scopeCloseGate,
+    this.initialEvent,
+    this.endWithoutBaseline = false,
   });
 
   final StatisticsPublicationFixture initial;
   final StatisticsTestGate? openGate;
   final bool failOpen;
   final void Function()? onOpen;
-  final bool closeAfterBaseline;
+  final StatisticsTestGate? closeGate;
+  final StatisticsTestGate? scopeCloseGate;
+  final StatisticsFeedEvent? initialEvent;
+  final bool endWithoutBaseline;
   int closeFailures;
+  int scopeCloseFailures;
 }
 
 final class ControlledStatisticsFeedPort implements StatisticsFeedPort {
@@ -115,8 +127,13 @@ final class ControlledStatisticsFeedPort implements StatisticsFeedPort {
 
 final class ControlledStatisticsConnection implements StatisticsFeedConnection {
   ControlledStatisticsConnection(StatisticsConnectionPlan plan) : _plan = plan {
-    _enqueue(plan.initial);
-    if (plan.closeAfterBaseline) _finishUnexpectedly();
+    if (plan.endWithoutBaseline) {
+      unawaited(_events.close());
+    } else if (plan.initialEvent != null) {
+      _events.add(plan.initialEvent!);
+    } else {
+      _enqueue(plan.initial);
+    }
   }
 
   final StatisticsConnectionPlan _plan;
@@ -133,6 +150,7 @@ final class ControlledStatisticsConnection implements StatisticsFeedConnection {
   bool _baselineEmitted = false;
   int closeCalls = 0;
   int scopeOpenCalls = 0;
+  int scopeCloseCalls = 0;
 
   bool get isClosed => closed.isCompleted;
 
@@ -144,8 +162,6 @@ final class ControlledStatisticsConnection implements StatisticsFeedConnection {
     }
     _enqueue(publication);
   }
-
-  void finishUnexpectedly() => _finishUnexpectedly();
 
   void _finishUnexpectedly() {
     if (_events.isClosed) return;
@@ -202,6 +218,9 @@ final class ControlledStatisticsConnection implements StatisticsFeedConnection {
     }
     final gate = fixture.acknowledgementGate;
     if (gate != null) await gate.wait();
+    if (fixture.failAcknowledgement) {
+      throw StateError('Injected statistics ACK failure');
+    }
     if (deliverySequence != acknowledgedSequences.length + 1) {
       throw StateError('Test ACK was not a contiguous prefix');
     }
@@ -220,6 +239,8 @@ final class ControlledStatisticsConnection implements StatisticsFeedConnection {
   Future<void> close() async {
     closeCalls++;
     requestClose();
+    final gate = _plan.closeGate;
+    if (gate != null) await gate.wait();
     if (_plan.closeFailures > 0) {
       _plan.closeFailures--;
       throw StateError('Injected statistics close failure');
@@ -320,7 +341,7 @@ final class ControlledStatisticsScope implements StatisticsReadScope {
     final end = (offset + limit).clamp(0, values.length).toInt();
     return StatisticsPage(
       ownerEpoch: ownerEpoch,
-      feedId: feedId,
+      feedId: _publication.pageFeedId ?? feedId,
       scopeId: scopeId,
       publicationRevision: publicationRevision,
       materialRevision: materialRevision,
@@ -342,6 +363,13 @@ final class ControlledStatisticsScope implements StatisticsReadScope {
   @override
   Future<void> close() async {
     if (_closeRequested) return;
+    _connection.scopeCloseCalls++;
+    final gate = _connection._plan.scopeCloseGate;
+    if (gate != null) await gate.wait();
+    if (_connection._plan.scopeCloseFailures > 0) {
+      _connection._plan.scopeCloseFailures--;
+      throw StateError('Injected statistics scope close failure');
+    }
     _closeRequested = true;
     _connection._scopes.remove(this);
     if (!closed.isCompleted) closed.complete();

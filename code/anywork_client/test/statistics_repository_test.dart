@@ -46,7 +46,302 @@ void main() {
 
   group('StatisticsRepository public behavior', () {
     test(
-      'materializes every bounded page and reuses unchanged material',
+      'refresh always materializes a fresh baseline and coalesces busy clicks',
+      () async {
+        final pageGate = StatisticsTestGate();
+        final ackGate = StatisticsTestGate();
+        final closeGate = StatisticsTestGate();
+        final port = ControlledStatisticsFeedPort([
+          StatisticsConnectionPlan(initial: _publication()),
+          StatisticsConnectionPlan(
+            initial: _publication(
+              historyGate: pageGate,
+              acknowledgementGate: ackGate,
+            ),
+            closeGate: closeGate,
+          ),
+        ]);
+        final repository = _repository(port, 'refresh-same-revisions');
+        repository.refresh();
+        expect(port.openCalls, 0);
+        final demand = repository.acquireVisibleDemand();
+        final first = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        repository.refresh();
+        final connection = await port.waitForConnection(2);
+        await pageGate.entered.future;
+        expect(repository.state.snapshot, same(first.snapshot));
+        expect(
+          repository.state.connection.phase,
+          StatisticsConnectionPhase.reconnecting,
+        );
+        repository.refresh();
+        repository.refresh();
+        pageGate.release.complete();
+        await ackGate.entered.future;
+        repository.refresh();
+        expect(repository.state.snapshot, same(first.snapshot));
+        ackGate.release.complete();
+        await closeGate.entered.future;
+        repository.refresh();
+        expect(repository.state.snapshot, same(first.snapshot));
+        expect(port.openCalls, 2);
+        closeGate.release.complete();
+        final refreshed = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        expect(refreshed.snapshot, first.snapshot);
+        expect(refreshed.snapshot, isNot(same(first.snapshot)));
+        expect(connection.summaryOffsets, [0]);
+        expect(connection.historyOffsets, [0]);
+        expect(connection.acknowledgedSequences, [1]);
+        expect(connection.isClosed, isTrue);
+        expect(port.openCalls, 2);
+        demand.release();
+        repository.refresh();
+        expect(
+          repository.state.connection.phase,
+          StatisticsConnectionPhase.idle,
+        );
+        expect(port.openCalls, 2);
+        expect((await repository.close(budget: _budget())).complete, isTrue);
+      },
+    );
+
+    test(
+      'a new visible entry reads again after the previous baseline settled',
+      () async {
+        final port = ControlledStatisticsFeedPort([
+          StatisticsConnectionPlan(initial: _publication(ownerEpoch: 'first')),
+          StatisticsConnectionPlan(initial: _publication(ownerEpoch: 'second')),
+        ]);
+        final repository = _repository(port, 'entry');
+        final first = repository.acquireVisibleDemand();
+        await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        first.release();
+        first.release();
+        expect(first.isReleased, isTrue);
+        final second = repository.acquireVisibleDemand();
+        final ready = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        expect(ready.snapshot!.ownerEpoch, 'second');
+        expect(port.openCalls, 2);
+        second.release();
+        expect((await repository.close(budget: _budget())).complete, isTrue);
+      },
+    );
+
+    test(
+      'a late successful open is joined before reopening the hidden generation',
+      () async {
+        final openGate = StatisticsTestGate();
+        final closeGate = StatisticsTestGate();
+        final port = ControlledStatisticsFeedPort([
+          StatisticsConnectionPlan(
+            initial: _publication(ownerEpoch: 'late'),
+            openGate: openGate,
+            closeGate: closeGate,
+          ),
+          StatisticsConnectionPlan(
+            initial: _publication(ownerEpoch: 'current'),
+          ),
+        ]);
+        final repository = _repository(port, 'late-open');
+        final first = repository.acquireVisibleDemand();
+        await openGate.entered.future;
+        first.release();
+        final second = repository.acquireVisibleDemand();
+        openGate.release.complete();
+        await closeGate.entered.future;
+        expect(repository.state.snapshot, isNull);
+        expect(port.openCalls, 1);
+        expect(port.connections.single.scopeOpenCalls, 0);
+        closeGate.release.complete();
+        final ready = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        expect(ready.snapshot!.ownerEpoch, 'current');
+        expect(port.connections.first.isClosed, isTrue);
+        expect(port.connections.first.acknowledgedSequences, isEmpty);
+        second.release();
+        expect((await repository.close(budget: _budget())).complete, isTrue);
+      },
+    );
+
+    for (final scenario in [
+      (
+        name: 'noninitial baseline sequence',
+        plan: StatisticsConnectionPlan(initial: _publication(sequence: 2)),
+        category: StatisticsFailureCategory.protocol,
+      ),
+      (
+        name: 'data before baseline',
+        plan: StatisticsConnectionPlan(
+          initial: _publication(),
+          initialEvent: StatisticsFeedData(_publication().identity),
+        ),
+        category: StatisticsFailureCategory.protocol,
+      ),
+      (
+        name: 'close before baseline',
+        plan: StatisticsConnectionPlan(
+          initial: _publication(),
+          initialEvent: const StatisticsFeedClosed(),
+        ),
+        category: StatisticsFailureCategory.closed,
+      ),
+      (
+        name: 'stream end before baseline',
+        plan: StatisticsConnectionPlan(
+          initial: _publication(),
+          endWithoutBaseline: true,
+        ),
+        category: StatisticsFailureCategory.closed,
+      ),
+      (
+        name: 'page from a different feed',
+        plan: StatisticsConnectionPlan(
+          initial: _publication(pageFeedId: 'wrong-feed'),
+        ),
+        category: StatisticsFailureCategory.protocol,
+      ),
+      (
+        name: 'ACK failure',
+        plan: StatisticsConnectionPlan(
+          initial: _publication(failAcknowledgement: true),
+        ),
+        category: StatisticsFailureCategory.acknowledgement,
+      ),
+    ]) {
+      test(
+        '${scenario.name} fails without publishing a partial snapshot',
+        () async {
+          final port = ControlledStatisticsFeedPort([scenario.plan]);
+          final repository = _repository(port, scenario.name);
+          final demand = repository.acquireVisibleDemand();
+          final failed = await _waitForState(
+            repository,
+            (state) =>
+                state.connection.phase == StatisticsConnectionPhase.failed,
+          );
+          expect(failed.snapshot, isNull);
+          expect(failed.connection.failure!.category, scenario.category);
+          expect(port.openCalls, 1);
+          expect(port.connections.single.acknowledgedSequences, isEmpty);
+          expect(port.connections.single.isClosed, isTrue);
+          demand.release();
+          expect((await repository.close(budget: _budget())).complete, isTrue);
+        },
+      );
+    }
+
+    test('scope close failure retains its exact owner through timeout and cleanup retry', () async {
+      final scopeCloseGate = StatisticsTestGate();
+      final port = ControlledStatisticsFeedPort([
+        StatisticsConnectionPlan(
+          initial: _publication(),
+          scopeCloseFailures: 1,
+          scopeCloseGate: scopeCloseGate,
+        ),
+      ]);
+      final repository = _repository(port, 'scope-owner');
+      final demand = repository.acquireVisibleDemand();
+      final connection = await port.waitForConnection(1);
+      await scopeCloseGate.entered.future;
+      expect(repository.state.snapshot, isNull);
+      expect(connection.acknowledgedSequences, [1]);
+      expect(connection.closeCalls, 0);
+      final timedOut = await repository.close(
+        budget: ClientCloseBudget(Duration.zero),
+      );
+      expect(timedOut.complete, isFalse);
+      expect(timedOut.unresolved, hasLength(1));
+      final failedCleanup = repository.retryCleanup(budget: _budget());
+      scopeCloseGate.release.complete();
+      final failed = await failedCleanup;
+      expect(failed.complete, isFalse);
+      expect(
+        failed.unresolved.single.resourceId,
+        timedOut.unresolved.single.resourceId,
+      );
+      expect(connection.scopeCloseCalls, 1);
+      expect(connection.closeCalls, 0);
+      final cleaned = await repository.retryCleanup(budget: _budget());
+      expect(cleaned.complete, isTrue);
+      expect(connection.scopeCloseCalls, 2);
+      expect(connection.closeCalls, 1);
+      expect(connection.isClosed, isTrue);
+      expect(port.openCalls, 1);
+      expect(repository.state.snapshot, isNull);
+      demand.release();
+    });
+
+    test('one visible read closes its feed before becoming ready', () async {
+      final pageGate = StatisticsTestGate();
+      final port = ControlledStatisticsFeedPort([
+        StatisticsConnectionPlan(initial: _publication(historyGate: pageGate)),
+      ]);
+      final repository = _repository(port, 'one-read');
+      final demand = repository.acquireVisibleDemand();
+      final connection = await port.waitForConnection(1);
+      await pageGate.entered.future;
+      connection.emit(_publication(sequence: 2, publicationRevision: 2));
+      pageGate.release.complete();
+      await _waitForState(
+        repository,
+        (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+      );
+      try {
+        expect(connection.isClosed, isTrue);
+        expect(repository.state.snapshot!.publicationRevision, 1);
+        expect(connection.acknowledgedSequences, [1]);
+        expect(connection.scopeOpenCalls, 1);
+      } finally {
+        demand.release();
+        expect((await repository.close(budget: _budget())).complete, isTrue);
+      }
+    });
+
+    test(
+      'ready observation may refresh then close in the same callback',
+      () async {
+        final port = ControlledStatisticsFeedPort([
+          StatisticsConnectionPlan(initial: _publication()),
+        ]);
+        final repository = _repository(port, 'ready-refresh-close');
+        final closing = Completer<CloseReport>();
+        final observation = repository.observe((state) {
+          if (state.connection.phase != StatisticsConnectionPhase.ready ||
+              closing.isCompleted)
+            return;
+          expect(port.connections.single.isClosed, isTrue);
+          repository.refresh();
+          closing.complete(repository.close(budget: _budget()));
+        });
+        final demand = repository.acquireVisibleDemand();
+        final report = await closing.future.timeout(const Duration(seconds: 5));
+        expect(report.complete, isTrue);
+        expect(port.openCalls, 1);
+        expect(
+          repository.state.connection.phase,
+          StatisticsConnectionPhase.closing,
+        );
+        observation.cancel();
+        demand.release();
+      },
+    );
+
+    test(
+      'materializes the complete bounded window once, including nested pages',
       () async {
         final summaries = List.generate(
           129,
@@ -77,16 +372,6 @@ void main() {
           summaries: summaries,
           history: history,
           efforts: efforts,
-        );
-        final statusOnly = _publication(
-          sequence: 2,
-          publicationRevision: 2,
-          summariesRevision: initial.identity.summariesRevision,
-          historyRevision: initial.identity.historyRevision,
-          summaries: summaries,
-          history: history,
-          efforts: efforts,
-          statisticsPending: true,
         );
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: initial),
@@ -130,204 +415,136 @@ void main() {
           [0, 128],
         );
         expect(connection.acknowledgedSequences, [1]);
-        final materialReads = (
-          connection.scopeOpenCalls,
-          connection.summaryOffsets.length,
-          connection.historyOffsets.length,
-          connection.effortReads.length,
-        );
-
-        connection.emit(statusOnly);
-        final statusUpdate = await _waitForState(
-          repository,
-          (state) =>
-              state.connection.phase == StatisticsConnectionPhase.ready &&
-              state.snapshot?.publicationRevision == 2,
-        );
-        expect(statusUpdate.snapshot!.statisticsPending, isTrue);
+        expect(connection.isClosed, isTrue);
         expect(
-          statusUpdate.snapshot!.summaries,
-          same(baseline.snapshot!.summaries),
-        );
-        expect(
-          statusUpdate.snapshot!.history,
-          same(baseline.snapshot!.history),
-        );
-        expect(
-          () => statusUpdate.snapshot!.history.clear(),
+          () => baseline.snapshot!.history.clear(),
           throwsUnsupportedError,
         );
         expect(
-          () => statusUpdate.snapshot!.summaries.clear(),
+          () => baseline.snapshot!.summaries.clear(),
           throwsUnsupportedError,
         );
-        final republished = baseline.snapshot!.withPublication(
-          statusOnly.identity,
-        );
-        expect(republished.history, same(baseline.snapshot!.history));
-        expect(republished.summaries, same(baseline.snapshot!.summaries));
-        expect((
-          connection.scopeOpenCalls,
-          connection.summaryOffsets.length,
-          connection.historyOffsets.length,
-          connection.effortReads.length,
-        ), materialReads);
-        expect(connection.acknowledgedSequences, [1, 2]);
-
-        final changedHistory = [_sample(500)];
-        connection.emit(
-          _publication(
-            sequence: 3,
-            publicationRevision: 3,
-            historyRevision: 2,
-            summaries: summaries,
-            history: changedHistory,
-            efforts: efforts,
-          ),
-        );
-        final changed = await _waitForState(
-          repository,
-          (state) => state.snapshot?.publicationRevision == 3,
-        );
-        expect(changed.snapshot!.summaries, same(baseline.snapshot!.summaries));
-        expect(
-          changed.snapshot!.history,
-          isNot(same(baseline.snapshot!.history)),
-        );
-        expect(changed.snapshot!.history.single.callId, 'call-500');
-        expect(baseline.snapshot!.history, hasLength(3000));
-        expect(connection.acknowledgedSequences, [1, 2, 3]);
 
         demand.release();
         expect((await repository.close(budget: _budget())).complete, isTrue);
       },
     );
 
-    test('a partial page failure keeps the last complete snapshot', () async {
-      final initial = _publication(
-        summaries: [_summaryItem('last-good')],
-        history: [_sample(0, modelId: 'last-good')],
-      );
-      final failed = _publication(
-        sequence: 2,
-        publicationRevision: 2,
-        summariesRevision: 2,
-        historyRevision: 2,
-        summaries: [_summaryItem('partial-new')],
-        history: [_sample(1, modelId: 'partial-new')],
-        failHistoryOffset: 0,
-      );
-      final port = ControlledStatisticsFeedPort([
-        StatisticsConnectionPlan(initial: initial),
-      ]);
-      final repository = _repository(port, 'last-good');
-      final demand = repository.acquireVisibleDemand();
-      final connection = await port.waitForConnection(1);
-      final ready = await _waitForState(
-        repository,
-        (state) => state.connection.phase == StatisticsConnectionPhase.ready,
-      );
-
-      connection.emit(failed);
-      final failedState = await _waitForState(
-        repository,
-        (state) =>
-            state.connection.phase == StatisticsConnectionPhase.reconnecting &&
-            state.snapshot?.publicationRevision == 1,
-      );
-      expect(failedState.snapshot, ready.snapshot);
-      expect(failedState.snapshot!.summaries.single.modelId, 'last-good');
-      expect(connection.acknowledgedSequences, [1]);
-
-      demand.release();
-      expect((await repository.close(budget: _budget())).complete, isTrue);
-    });
-
     test(
-      'hidden and reopened views discard a late old-generation page',
+      'a partial refresh failure keeps last-good until an explicit fresh read',
       () async {
-        final pageGate = StatisticsTestGate();
         final initial = _publication(
-          ownerEpoch: 'owner-old',
-          feedId: 'feed-old',
-          summaries: [_summaryItem('old-owner')],
-          history: [_sample(0, modelId: 'old-owner')],
+          summaries: [_summaryItem('last-good')],
+          history: [_sample(0, modelId: 'last-good')],
         );
-        final lateOldPublication = _publication(
-          ownerEpoch: 'owner-old',
-          feedId: 'feed-old',
-          sequence: 2,
-          publicationRevision: 2,
-          summariesRevision: 2,
-          historyRevision: 2,
-          summaries: [_summaryItem('late-old')],
-          history: [_sample(1, modelId: 'late-old')],
-          historyGate: pageGate,
-        );
-        final openGate = StatisticsTestGate();
-        final reopened = _publication(
-          ownerEpoch: 'owner-new',
-          feedId: 'feed-new',
-          summaries: [_summaryItem('new-owner')],
-          history: [_sample(2, modelId: 'new-owner')],
+        final failed = _publication(
+          ownerEpoch: 'failed-owner',
+          feedId: 'failed-feed',
+          summaries: [_summaryItem('partial-new')],
+          history: [_sample(1, modelId: 'partial-new')],
+          failHistoryOffset: 0,
         );
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: initial),
-          StatisticsConnectionPlan(initial: reopened, openGate: openGate),
+          StatisticsConnectionPlan(initial: failed),
+          StatisticsConnectionPlan(
+            initial: _publication(ownerEpoch: 'recovered'),
+          ),
         ]);
-        final repository = _repository(port, 'reopen');
-        final firstDemand = repository.acquireVisibleDemand();
-        final oldConnection = await port.waitForConnection(1);
-        final oldReady = await _waitForState(
+        final repository = _repository(port, 'last-good');
+        final demand = repository.acquireVisibleDemand();
+        final ready = await _waitForState(
           repository,
           (state) => state.connection.phase == StatisticsConnectionPhase.ready,
         );
-
-        oldConnection.emit(lateOldPublication);
-        await pageGate.entered.future.timeout(const Duration(seconds: 5));
-        firstDemand.release();
-        final secondDemand = repository.acquireVisibleDemand();
-        pageGate.release.complete();
-
-        final reconnecting = await _waitForState(
-          repository,
-          (state) =>
-              state.connection.phase ==
-                  StatisticsConnectionPhase.reconnecting &&
-              state.snapshot?.ownerEpoch == 'owner-old',
-        );
-        expect(reconnecting.snapshot, oldReady.snapshot);
-        expect(reconnecting.snapshot!.summaries.single.modelId, 'old-owner');
-        await port.waitForOpenCall(2).timeout(const Duration(seconds: 5));
-        await openGate.entered.future.timeout(const Duration(seconds: 5));
+        repository.refresh();
+        expect(repository.state.snapshot, same(ready.snapshot));
         expect(
           repository.state.connection.phase,
           StatisticsConnectionPhase.reconnecting,
         );
-        expect(
-          repository.state.snapshot!.summaries.single.modelId,
-          'old-owner',
-        );
-
-        openGate.release.complete();
-        final newConnection = await port
-            .waitForConnection(2)
-            .timeout(const Duration(seconds: 5));
-        final newReady = await _waitForState(
+        final connection = await port.waitForConnection(2);
+        final failedState = await _waitForState(
           repository,
-          (state) =>
-              state.connection.phase == StatisticsConnectionPhase.ready &&
-              state.snapshot?.ownerEpoch == 'owner-new',
+          (state) => state.connection.phase == StatisticsConnectionPhase.failed,
         );
-        expect(newReady.snapshot!.summaries.single.modelId, 'new-owner');
-        expect(oldConnection.acknowledgedSequences, [1]);
-        expect(oldConnection.scopeOpenCalls, 2);
-        expect(newConnection.scopeOpenCalls, 1);
-
-        secondDemand.release();
+        expect(failedState.snapshot, same(ready.snapshot));
+        expect(failedState.snapshot!.ownerEpoch, 'owner-1');
+        expect(failedState.snapshot!.summaries.single.modelId, 'last-good');
+        expect(connection.acknowledgedSequences, isEmpty);
+        expect(connection.isClosed, isTrue);
+        await expectLater(
+          port.waitForOpenCall(3).timeout(const Duration(milliseconds: 500)),
+          throwsA(isA<TimeoutException>()),
+        );
+        repository.refresh();
+        final recovered = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        expect(recovered.snapshot!.ownerEpoch, 'recovered');
+        expect(port.openCalls, 3);
+        demand.release();
         expect((await repository.close(budget: _budget())).complete, isTrue);
       },
     );
+
+    test('hidden and reopened views join a late old-generation page before a fresh baseline', () async {
+      final pageGate = StatisticsTestGate();
+      final openGate = StatisticsTestGate();
+      final port = ControlledStatisticsFeedPort([
+        StatisticsConnectionPlan(
+          initial: _publication(ownerEpoch: 'last-good'),
+        ),
+        StatisticsConnectionPlan(
+          initial: _publication(
+            ownerEpoch: 'old-in-flight',
+            historyGate: pageGate,
+          ),
+        ),
+        StatisticsConnectionPlan(
+          initial: _publication(ownerEpoch: 'new-owner', feedId: 'new-feed'),
+          openGate: openGate,
+        ),
+      ]);
+      final repository = _repository(port, 'reopen');
+      final firstDemand = repository.acquireVisibleDemand();
+      final lastGood = await _waitForState(
+        repository,
+        (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+      );
+      repository.refresh();
+      final oldConnection = await port.waitForConnection(2);
+      await pageGate.entered.future;
+      firstDemand.release();
+      final secondDemand = repository.acquireVisibleDemand();
+      expect(port.openCalls, 2);
+      expect(repository.state.snapshot, same(lastGood.snapshot));
+      expect(
+        repository.state.connection.phase,
+        StatisticsConnectionPhase.closing,
+      );
+      pageGate.release.complete();
+      await openGate.entered.future.timeout(const Duration(seconds: 5));
+      expect(oldConnection.isClosed, isTrue);
+      expect(oldConnection.acknowledgedSequences, isEmpty);
+      expect(repository.state.snapshot, same(lastGood.snapshot));
+      expect(
+        repository.state.connection.phase,
+        StatisticsConnectionPhase.reconnecting,
+      );
+      openGate.release.complete();
+      final newReady = await _waitForState(
+        repository,
+        (state) =>
+            state.connection.phase == StatisticsConnectionPhase.ready &&
+            state.snapshot?.ownerEpoch == 'new-owner',
+      );
+      expect(newReady.snapshot!.feedId, 'new-feed');
+      expect(port.connections.last.isClosed, isTrue);
+      secondDemand.release();
+      expect((await repository.close(budget: _budget())).complete, isTrue);
+    });
 
     test(
       'close waits for an admitted feed open before releasing ownership',
@@ -397,7 +614,7 @@ void main() {
     );
 
     test(
-      'connecting observation may retry without leaving the repository closing',
+      'connecting observation may refresh without opening a second feed',
       () async {
         final port = ControlledStatisticsFeedPort([
           StatisticsConnectionPlan(initial: _publication()),
@@ -408,7 +625,7 @@ void main() {
           if (state.connection.phase == StatisticsConnectionPhase.connecting &&
               !retried) {
             retried = true;
-            repository.retry();
+            repository.refresh();
           }
         });
         final demand = repository.acquireVisibleDemand();
@@ -572,45 +789,36 @@ void main() {
     });
 
     test(
-      'an unexpectedly closed feed exhausts five total connection attempts',
+      'open failure waits for user refresh without automatic reconnection',
       () async {
         final port = ControlledStatisticsFeedPort([
-          for (var attempt = 1; attempt <= 5; attempt++)
-            StatisticsConnectionPlan(
-              initial: _publication(
-                ownerEpoch: 'owner-$attempt',
-                feedId: 'feed-$attempt',
-              ),
-              closeAfterBaseline: true,
-            ),
+          StatisticsConnectionPlan(initial: _publication(), failOpen: true),
+          StatisticsConnectionPlan(
+            initial: _publication(ownerEpoch: 'recovered'),
+          ),
         ]);
-        final repository = _repository(port, 'finite-retry');
+        final repository = _repository(port, 'no-auto-retry');
         final demand = repository.acquireVisibleDemand();
-
         final failed = await _waitForState(
           repository,
           (state) => state.connection.phase == StatisticsConnectionPhase.failed,
         );
-        expect(failed.snapshot, isNotNull);
-        expect(failed.connection.failure, isNotNull);
-        expect(port.openCalls, 5);
-        expect(port.connections, hasLength(5));
+        expect(failed.snapshot, isNull);
         expect(
-          port.connections.map(
-            (connection) => connection.acknowledgedSequences,
-          ),
-          everyElement([1]),
+          failed.connection.failure!.category,
+          StatisticsFailureCategory.connection,
         );
-
-        // The retry policy's last possible backoff is shorter than this bound. Waiting on the
-        // open event (rather than sleeping) distinguishes a terminal fifth attempt from a queued
-        // sixth connection while still allowing the real timer to fire.
         await expectLater(
-          port.waitForOpenCall(6).timeout(const Duration(seconds: 5)),
+          port.waitForOpenCall(2).timeout(const Duration(milliseconds: 500)),
           throwsA(isA<TimeoutException>()),
         );
-        expect(port.openCalls, 5);
-
+        repository.refresh();
+        final ready = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        expect(ready.snapshot!.ownerEpoch, 'recovered');
+        expect(port.openCalls, 2);
         demand.release();
         expect((await repository.close(budget: _budget())).complete, isTrue);
       },
@@ -698,7 +906,7 @@ void main() {
       expect(second.state.snapshot!.feedId, 'feed-b');
 
       firstDemand.release();
-      expect(connectionA.closeRequested, isFalse);
+      expect(connectionA.isClosed, isTrue);
       secondDemand.release();
       await _waitForState(
         first,
@@ -706,7 +914,7 @@ void main() {
       );
       expect(connectionA.isClosed, isTrue);
       expect(second.state.connection.phase, StatisticsConnectionPhase.ready);
-      expect(connectionB.closeRequested, isFalse);
+      expect(connectionB.isClosed, isTrue);
 
       otherGraphDemand.release();
       expect((await first.close(budget: _budget())).complete, isTrue);
@@ -717,14 +925,14 @@ void main() {
       'unconfirmed close retains the same owner for explicit cleanup retry',
       () async {
         final port = ControlledStatisticsFeedPort([
-          StatisticsConnectionPlan(initial: _publication(), closeFailures: 1),
+          StatisticsConnectionPlan(initial: _publication(), closeFailures: 2),
         ]);
         final repository = _repository(port, 'retry-close');
         final demand = repository.acquireVisibleDemand();
         final connection = await port.waitForConnection(1);
         await _waitForState(
           repository,
-          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+          (state) => state.connection.phase == StatisticsConnectionPhase.failed,
         );
 
         final unresolved = await repository.close(budget: _budget());
@@ -735,66 +943,77 @@ void main() {
         final typedCleanupFailure = cleanupFailure as StatisticsFailure;
         expect(typedCleanupFailure.category, StatisticsFailureCategory.cleanup);
         expect(typedCleanupFailure.cause, isA<StateError>());
-        expect(connection.closeCalls, 1);
+        expect(connection.closeCalls, 2);
 
         final retried = await repository.retryCleanup(budget: _budget());
         demand.release();
         expect(retried.complete, isTrue);
         expect(port.openCalls, 1);
         expect(identical(port.connections.single, connection), isTrue);
-        expect(connection.closeCalls, 2);
+        expect(connection.closeCalls, 3);
       },
     );
 
-    test('retry supervises repeated native close failures and cleanup keeps the same feed', () async {
-      final port = ControlledStatisticsFeedPort([
-        StatisticsConnectionPlan(initial: _publication(), closeFailures: 3),
-      ]);
-      final repository = _repository(port, 'retry-supervision');
-      final demand = repository.acquireVisibleDemand();
-      final connection = await port.waitForConnection(1);
-      await _waitForState(
-        repository,
-        (state) => state.connection.phase == StatisticsConnectionPhase.ready,
-      );
-
-      // The Settings retry affordance calls this public repository operation. Both failed
-      // retirement futures must be supervised and retained instead of escaping the UI callback.
-      repository.retry();
-      final firstFailure = await _waitForState(
-        repository,
-        (state) =>
-            state.connection.phase == StatisticsConnectionPhase.failed &&
-            state.connection.failure?.category ==
-                StatisticsFailureCategory.cleanup,
-      );
-      expect(connection.closeCalls, 1);
-      expect(port.openCalls, 1);
-
-      repository.retry();
-      final secondFailure = await _waitForState(
-        repository,
-        (state) =>
-            state.connection.phase == StatisticsConnectionPhase.failed &&
-            state.connection.failure?.category ==
-                StatisticsFailureCategory.cleanup &&
-            state.connection.failure?.correlationId !=
-                firstFailure.connection.failure?.correlationId,
-      );
-      expect(secondFailure.connection.failure, isNotNull);
-      expect(connection.closeCalls, 2);
-      expect(port.openCalls, 1);
-
-      final closing = await repository.close(budget: _budget());
-      expect(closing.complete, isFalse);
-      demand.release();
-      final retried = await repository.retryCleanup(budget: _budget());
-
-      expect(retried.complete, isTrue);
-      expect(port.openCalls, 1);
-      expect(identical(port.connections.single, connection), isTrue);
-      expect(connection.closeCalls, 4);
-    });
+    test(
+      'refresh retries the same failed close before opening a replacement',
+      () async {
+        final closeGate = StatisticsTestGate();
+        final port = ControlledStatisticsFeedPort([
+          StatisticsConnectionPlan(initial: _publication()),
+          StatisticsConnectionPlan(
+            initial: _publication(ownerEpoch: 'discarded'),
+            closeFailures: 2,
+            closeGate: closeGate,
+          ),
+          StatisticsConnectionPlan(initial: _publication(ownerEpoch: 'fresh')),
+        ]);
+        final repository = _repository(port, 'refresh-cleanup');
+        final demand = repository.acquireVisibleDemand();
+        final lastGood = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        repository.refresh();
+        final connection = await port.waitForConnection(2);
+        await closeGate.entered.future;
+        expect(repository.state.snapshot, same(lastGood.snapshot));
+        expect(
+          repository.state.connection.phase,
+          StatisticsConnectionPhase.reconnecting,
+        );
+        repository.refresh();
+        repository.refresh();
+        expect(port.openCalls, 2);
+        closeGate.release.complete();
+        final firstFailure = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.failed,
+        );
+        expect(firstFailure.snapshot, same(lastGood.snapshot));
+        expect(connection.closeCalls, 1);
+        repository.refresh();
+        final secondFailure = await _waitForState(
+          repository,
+          (state) =>
+              state.connection.phase == StatisticsConnectionPhase.failed &&
+              state.connection.failure != firstFailure.connection.failure,
+        );
+        expect(secondFailure.snapshot, same(lastGood.snapshot));
+        expect(connection.closeCalls, 2);
+        expect(port.openCalls, 2);
+        repository.refresh();
+        final ready = await _waitForState(
+          repository,
+          (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        );
+        expect(ready.snapshot!.ownerEpoch, 'fresh');
+        expect(connection.closeCalls, 3);
+        expect(connection.isClosed, isTrue);
+        expect(port.openCalls, 3);
+        demand.release();
+        expect((await repository.close(budget: _budget())).complete, isTrue);
+      },
+    );
 
     test('hide and reopen supervises repeated close failure without replacing the owner', () async {
       final port = ControlledStatisticsFeedPort([
@@ -805,7 +1024,7 @@ void main() {
       final connection = await port.waitForConnection(1);
       await _waitForState(
         repository,
-        (state) => state.connection.phase == StatisticsConnectionPhase.ready,
+        (state) => state.connection.phase == StatisticsConnectionPhase.failed,
       );
 
       firstDemand.release();
@@ -820,7 +1039,7 @@ void main() {
             state.connection.failure?.category ==
                 StatisticsFailureCategory.cleanup,
       );
-      expect(reopenedFailure.snapshot, isNotNull);
+      expect(reopenedFailure.snapshot, isNull);
       expect(connection.closeCalls, greaterThanOrEqualTo(2));
       expect(port.openCalls, 1);
 
@@ -881,6 +1100,8 @@ StatisticsPublicationFixture _publication({
   StatisticsTestGate? effortGate,
   StatisticsTestGate? acknowledgementGate,
   int? failHistoryOffset,
+  String? pageFeedId,
+  bool failAcknowledgement = false,
 }) {
   final summaryItems = summaries?.toList() ?? [_summaryItem('model-1')];
   final historyItems = history?.toList() ?? [_sample(0)];
@@ -906,6 +1127,8 @@ StatisticsPublicationFixture _publication({
     effortGate: effortGate,
     acknowledgementGate: acknowledgementGate,
     failHistoryOffset: failHistoryOffset,
+    pageFeedId: pageFeedId,
+    failAcknowledgement: failAcknowledgement,
   );
 }
 

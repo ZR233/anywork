@@ -725,9 +725,27 @@
   "acpEstimatedOutputSpeed": "Estimated ACP text speed (includes the first-chunk wait)",
   "statusLastConfirmedAgentTokenSpeed": "Last confirmed output speed (includes the first-token wait)",
   "settingsStatisticsTitle": "Statistics",
-  "settingsStatisticsSubtitle": "Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.",
-  "settingsStatisticsSummaryTitle": "Model performance",
+  "settingsStatisticsSummaryTitle": "Model summary",
   "settingsStatisticsHistoryTitle": "Call history",
+  "statisticsRefresh": "Refresh",
+  "statisticsRefreshing": "Refreshing",
+  "statisticsPreviousPage": "Previous page",
+  "statisticsNextPage": "Next page",
+  "statisticsItemRange": "{first}–{last} of {total}",
+  "@statisticsItemRange": {
+    "placeholders": {
+      "first": {"type": "int"},
+      "last": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "statisticsPageNumber": "{page} / {pages}",
+  "@statisticsPageNumber": {
+    "placeholders": {
+      "page": {"type": "int"},
+      "pages": {"type": "int"}
+    }
+  },
   "settingsStatisticsAllModels": "All models",
   "settingsStatisticsEmpty": "No call history yet.",
   "settingsStatisticsSummaryEmpty": "No model performance summaries yet.",
