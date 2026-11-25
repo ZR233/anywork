@@ -266,36 +266,44 @@ async fn production_binding_serializes_same_operation_until_both_stages_are_dura
                     .binding
                     .send_file(operation, &file, b"file".to_vec(), &cancel);
                 tokio::pin!(second);
-                assert!(futures::poll!(&mut second).is_pending());
-                assert!(fixture.managed.file_delivery.try_lock().is_err());
-                let current = fixture
-                    .managed
-                    .store
-                    .load_send(operation)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(
-                    current.segments[0].file_delivery.as_ref().unwrap().upload,
-                    DeliveryStage::Unknown
-                );
-                let report = fixture.peer.control().snapshot_report().await;
-                assert_eq!(
-                    report
-                        .calls
-                        .iter()
-                        .filter(|call| call.kind == Some(CallKind::FileUpload))
-                        .count(),
-                    1
-                );
-                assert_eq!(
-                    report
-                        .calls
-                        .iter()
-                        .filter(|call| call.kind == Some(CallKind::MessageSend))
-                        .count(),
-                    0
-                );
+                // Authorization renews the inbound claim in SQLite before the second
+                // send reaches the file mutex. Drive that future while reading the
+                // ledger so a paused SQL operation cannot keep its sole connection.
+                tokio::select! {
+                    biased;
+                    result = &mut second => panic!("second send finished before upload release: {result:?}"),
+                    () = async {
+                        assert!(fixture.managed.file_delivery.try_lock().is_err());
+                        let current = fixture
+                            .managed
+                            .store
+                            .load_send(operation)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(
+                            current.segments[0].file_delivery.as_ref().unwrap().upload,
+                            DeliveryStage::Unknown
+                        );
+                        let report = fixture.peer.control().snapshot_report().await;
+                        assert_eq!(
+                            report
+                                .calls
+                                .iter()
+                                .filter(|call| call.kind == Some(CallKind::FileUpload))
+                                .count(),
+                            1
+                        );
+                        assert_eq!(
+                            report
+                                .calls
+                                .iter()
+                                .filter(|call| call.kind == Some(CallKind::MessageSend))
+                                .count(),
+                            0
+                        );
+                    } => {}
+                }
                 fixture.peer.control().release_upload().await;
                 second.await
             }

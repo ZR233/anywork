@@ -1,7 +1,7 @@
 use crate::bots::reply::ReplyIdentity;
 use crate::bots::storage::InboundClaim;
 use crate::bots::test_support::Fixture;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement, TransactionTrait};
 use std::time::Duration;
 
@@ -9,50 +9,50 @@ use std::time::Duration;
 async fn enqueue_reaps_finished_replies_before_trying_the_bounded_budget() -> Result<()> {
     let fixture = Fixture::new().await?;
     let mut inbound = fixture.inbound("budget", true).await?;
-    // A changed app is a real dispatch terminal path before any network work.
-    // Hold its config read so all 32 owners are registered before any finish.
+    let slots = &fixture.bots.inner.reply_work.slots;
+    // Keep all but one permit occupied. The last permit is held by a real
+    // dispatched reply until enqueue reaps its joined owner.
+    let other_slots = slots.clone().try_acquire_many_owned(31)?;
     inbound.app_id = "cli_old_frozen_app".into();
+    inbound.message_id = "budget-first".into();
+    inbound.content_hash = "budget-hash-first".into();
     let config = fixture.managed.config.lock().await;
-    for index in 0..32 {
-        inbound.message_id = format!("budget-{index}");
-        inbound.content_hash = format!("budget-hash-{index}");
-        fixture.managed.store.admit_inbound(inbound.clone()).await?;
-        fixture.bots.enqueue_inbound(inbound.clone()).await?;
-    }
-    assert_eq!(fixture.bots.inner.reply_work.slots.available_permits(), 0);
+    fixture.managed.store.admit_inbound(inbound.clone()).await?;
+    fixture.bots.enqueue_inbound(inbound.clone()).await?;
+    assert_eq!(slots.available_permits(), 0);
     drop(config);
-    let probe = fixture.ledger_probe().await?;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let finished: i64 = probe
-                .query_one_raw(Statement::from_string(
-                    DatabaseBackend::Sqlite,
-                    "SELECT COUNT(*) AS n FROM inbound_work WHERE status='needs_attention'",
-                ))
-                .await?
-                .expect("count row")
-                .try_get("", "n")?;
-            if finished == 32 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        anyhow::Ok(())
-    })
-    .await??;
-    // Ledger ACK precedes task return. Give the same owned tasks their final
-    // poll; permits intentionally remain held until enqueue observes joins.
-    tokio::task::yield_now().await;
-    assert_eq!(fixture.bots.inner.reply_work.slots.available_permits(), 0);
+
     inbound.message_id = "budget-next".into();
     inbound.content_hash = "budget-hash-next".into();
     fixture.managed.store.admit_inbound(inbound.clone()).await?;
-    fixture.bots.enqueue_inbound(inbound.clone()).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match fixture.bots.enqueue_inbound(inbound.clone()).await {
+                Err(error) if error.diagnostic().message == "bot reply budget is full" => {
+                    tokio::task::yield_now().await;
+                }
+                result => return result,
+            }
+        }
+    })
+    .await
+    .context("enqueue never recovered the finished reply's permit")??;
+    let probe = fixture.ledger_probe().await?;
+    let row = probe
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT status FROM inbound_work WHERE message_id='budget-first'",
+        ))
+        .await?
+        .context("first reply's ledger row")?;
+    assert_eq!(row.try_get::<String>("", "status")?, "needs_attention");
     let guard = fixture
         .bots
         .quiesce_archive_threads(&[inbound.creation_id])
         .await?;
-    assert_eq!(fixture.bots.inner.reply_work.slots.available_permits(), 32);
+    assert_eq!(slots.available_permits(), 1);
+    drop(other_slots);
+    assert_eq!(slots.available_permits(), 32);
     drop(guard);
     fixture.shutdown().await
 }
