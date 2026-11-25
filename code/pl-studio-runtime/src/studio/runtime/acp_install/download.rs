@@ -12,13 +12,12 @@ use crate::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallProgress, AcpIns
 use tokio_util::sync::CancellationToken;
 
 use super::mapping::failure;
+use super::progress::ProgressThrottle;
 
 /// 下载总预算。
 pub(super) const DOWNLOAD_BUDGET: Duration = Duration::from_secs(60 * 60);
 /// 允许的自动重试累计次数。
 const MAX_AUTO_RETRIES: u64 = 3;
-/// 进度合并间隔。
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 /// 单个分发包上限。
 pub(super) const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 
@@ -29,7 +28,7 @@ pub(super) type SidecarEnsure = Arc<dyn Fn() -> Result<(), AcpInstallFailure> + 
 
 #[derive(Default)]
 struct Throttle {
-    last_emit: Option<Instant>,
+    progress: ProgressThrottle,
     sample: Option<(u64, Instant)>,
     total: Option<u64>,
     retries: u32,
@@ -87,11 +86,7 @@ pub(super) async fn download(
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             guard.total = total;
-            let complete = total.is_some_and(|total| bytes >= total);
-            let due = guard
-                .last_emit
-                .is_none_or(|last| last.elapsed() >= PROGRESS_INTERVAL);
-            if !due && !complete {
+            if !guard.progress.should_emit(bytes, total) {
                 None
             } else {
                 let speed = guard.sample.map(|(sample_bytes, sample_at)| {
@@ -100,7 +95,6 @@ pub(super) async fn download(
                 });
                 let retries = guard.retries;
                 guard.sample = Some((bytes, Instant::now()));
-                guard.last_emit = Some(Instant::now());
                 Some((
                     AcpInstallProgress {
                         completed_bytes: bytes,
@@ -131,7 +125,7 @@ pub(super) async fn download(
             let local = guard.sample.map(|(bytes, _)| bytes).unwrap_or(0);
             // 重启传输后旧样本不再代表同一段字节流：清空采样，等新 attempt 形成有效样本。
             guard.sample = None;
-            guard.last_emit = None;
+            guard.progress = ProgressThrottle::default();
             (guard.retries, local, guard.total)
         };
         if retry_cancel.is_cancelled() {

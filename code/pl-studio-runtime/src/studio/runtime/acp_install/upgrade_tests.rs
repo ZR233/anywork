@@ -20,12 +20,11 @@ use super::prepare::{self, PrepareFailure};
 #[cfg(any(target_os = "linux", windows))]
 use super::seed_synthetic_install_version;
 use super::source::{self, RegistryLookup, SourcePolicy, TestSourceOverride};
-use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+use crate::studio::runtime::acp_accounts::test_support::test_runtime;
 use crate::{
     AcpInstallFailureCode, AcpInstallSnapshot, AcpInstallState, AcpInstallUpdateState, AcpProvider,
-    CheckAcpInstallUpdateRequest, StartAcpInstallRequest, StudioHostKind,
-    StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
-    StudioRuntime, StudioRuntimeOptions,
+    CheckAcpInstallUpdateRequest, StartAcpInstallRequest, StudioProductBaselineState,
+    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioRuntime,
 };
 
 #[derive(Clone, Default)]
@@ -187,20 +186,6 @@ fn registry_json(
         }]
     }))
     .unwrap()
-}
-
-async fn test_runtime() -> Result<(tempfile::TempDir, StudioRuntime)> {
-    let home = tempfile::tempdir()?;
-    let config = StudioConfig::default_config()?;
-    let paths = ConfigPaths::from_config_dir(home.path());
-    ConfigStore::new(paths).save(&config)?;
-    let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
-        studio_home: Some(home.path().to_owned()),
-        host: StudioHostKind::Test,
-        ..StudioRuntimeOptions::desktop()
-    })
-    .await?;
-    Ok((home, runtime))
 }
 
 async fn wait_install_snapshot(
@@ -399,7 +384,7 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
         &sha_152,
     );
 
-    let (_home, runtime) = test_runtime().await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     runtime
         .acp_install
         .set_test_source_override(TestSourceOverride {
@@ -511,7 +496,7 @@ async fn mock_http_install_and_upgrade_from_1_5_2_to_1_5_3() -> Result<()> {
 #[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_latest() -> Result<()> {
-    let (_home, runtime) = test_runtime().await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     let retired =
         seed_synthetic_install_version(&runtime.store, "1.4.5", b"#!/bin/sh\necho 1.4.5\n");
     seed_synthetic_install_version(&runtime.store, "1.5.2", b"#!/bin/sh\necho 1.5.2\n");
@@ -546,7 +531,7 @@ async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_late
 #[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn offline_scan_distinguishes_unsupported_versions_from_invalid_receipts() -> Result<()> {
-    let (_home, runtime) = test_runtime().await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     let retired = seed_synthetic_install_version(&runtime.store, "1.4.5", b"retired");
     for version in ["0.9.0", "1.5.1", "1.6.0-beta.1", "1.6.0+build.1", "2.0.0"] {
         seed_synthetic_install_version(&runtime.store, version, b"unsupported");
@@ -585,7 +570,7 @@ async fn background_check_cancels_and_joins_cleanly_on_shutdown() -> Result<()> 
         ..Default::default()
     };
     let (registry_url, archive_base_url, server_handle) = start_mock_server(state).await?;
-    let (_home, runtime) = test_runtime().await?;
+    let (_home, runtime) = test_runtime(|_| Ok(())).await?;
     runtime
         .acp_install
         .set_test_source_override(TestSourceOverride {

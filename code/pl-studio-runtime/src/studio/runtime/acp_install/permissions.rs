@@ -25,7 +25,7 @@ pub(super) fn verify(
     let private = if is_directory {
         mode == super::paths::DIRECTORY_MODE
     } else {
-        mode & 0o022 == 0 && mode & 0o7000 == 0
+        !forbidden_bits(mode)
     };
     if private {
         Ok(())
@@ -41,4 +41,9 @@ pub(super) fn verify(
             "受管对象的权限不是产品私有权限，请检查后重试",
         ))
     }
+}
+
+/// Group/other write, setuid, setgid and sticky are forbidden on installed members.
+pub(super) fn forbidden_bits(mode: u32) -> bool {
+    mode & 0o7022 != 0
 }

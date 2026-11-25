@@ -365,6 +365,16 @@ pub(super) struct Registry {
 }
 
 impl Registry {
+    fn retire_operation(&mut self, operation: Arc<Operation>) {
+        // Release the asset lock and stage resources only after the terminal cut.
+        // Shutdown may already have joined the supervisor while retrying cleanup.
+        operation.release_heavy_resources();
+        if !operation.supervisor_joined() {
+            self.retired
+                .insert(operation.operation_id.clone(), operation);
+        }
+    }
+
     pub(super) fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
         self.updated_at = unix_seconds();
@@ -642,14 +652,7 @@ impl AcpInstallInner {
             slot.busy = false;
             slot.state = decided;
             slot.operation = None;
-            retired.release_heavy_resources();
-            // 终态提交时已经 joined 的 operation（例如关闭阶段 residue 收束后补发终态）不再退休：
-            // 它的句柄已被关闭 owner 观测到终止，再登记只会留下一个 join=None 的 stale Arc。
-            if !retired.supervisor_joined() {
-                registry
-                    .retired
-                    .insert(retired.operation_id.clone(), retired);
-            }
+            registry.retire_operation(retired);
             registry.bump();
             (registry.snapshot(), ready_version)
         };
@@ -824,12 +827,7 @@ impl AcpInstallInner {
                 failure,
             };
             slot.operation = None;
-            retired.release_heavy_resources();
-            if !retired.supervisor_joined() {
-                registry
-                    .retired
-                    .insert(retired.operation_id.clone(), retired);
-            }
+            registry.retire_operation(retired);
             registry.bump();
             registry.snapshot()
         };
