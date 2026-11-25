@@ -19,7 +19,10 @@ impl ProductEventBus {
         self.initialize_revision(&self.revisions.thread);
         self.initialize_revision(&self.revisions.agent);
         let durable_projects = self.store.list_projects().await?;
-        let mut projects = self.project_snapshot.lock().await;
+        let mut projects = self
+            .project_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for project in durable_projects {
             if !projects.iter().any(|current| current.id == project.id) {
                 projects.push(project);
@@ -35,18 +38,25 @@ impl ProductEventBus {
     }
 
     pub async fn read_project_directory(&self) -> Result<StudioProjectDirectoryState> {
+        let projects = self
+            .project_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(StudioProjectDirectoryState {
             state: self.resource(
                 &self.revisions.project,
                 StudioProjectDirectoryData {
-                    projects: self.project_snapshot.lock().await.clone(),
+                    projects: projects.clone(),
                 },
             ),
         })
     }
 
     pub(in crate::studio) async fn project_snapshot(&self) -> Vec<crate::WorkspaceRecord> {
-        self.project_snapshot.lock().await.clone()
+        self.project_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     #[cfg(test)]
@@ -62,18 +72,19 @@ impl ProductEventBus {
             let mut index = self
                 .thread_index
                 .lock()
-                .expect("thread index lock poisoned");
-            index.update_projects(upserted, removed);
-            self.bump(&self.revisions.thread);
-            self.topics
-                .lock()
-                .expect("product topic channels lock poisoned")
-                .notify(&crate::StudioProductTopic::ThreadDirectory);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if index.update_projects(upserted, removed) {
+                self.bump(&self.revisions.thread);
+                self.topics
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .notify(&crate::StudioProductTopic::ThreadDirectory);
+            }
         }
-        self.apply_project_snapshot_delta(upserted, removed).await
+        self.apply_project_snapshot_delta(upserted, removed)
     }
 
-    pub(super) async fn apply_project_snapshot_delta(
+    pub(super) fn apply_project_snapshot_delta(
         &self,
         upserted: &[crate::WorkspaceRecord],
         removed: &[ProjectRemoval],
@@ -81,7 +92,11 @@ impl ProductEventBus {
         if upserted.is_empty() && removed.is_empty() {
             return Ok(None);
         }
-        let mut projects = self.project_snapshot.lock().await;
+        let mut projects = self
+            .project_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = projects.clone();
         for project in upserted {
             if let Some(existing) = projects.iter_mut().find(|entry| entry.id == project.id) {
                 *existing = project.clone();
@@ -98,9 +113,18 @@ impl ProductEventBus {
                 .cmp(&left.updated_at)
                 .then_with(|| right.id.cmp(&left.id))
         });
-        drop(projects);
+        if *projects == before {
+            return Ok(None);
+        }
         self.bump(&self.revisions.project);
-        let state = self.read_project_directory().await?;
+        let state = StudioProjectDirectoryState {
+            state: self.resource(
+                &self.revisions.project,
+                StudioProjectDirectoryData {
+                    projects: projects.clone(),
+                },
+            ),
+        };
         Ok(Some(self.emit(
             StudioProductEventKind::ProjectDirectoryChanged(state),
         )))
