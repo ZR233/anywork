@@ -26,6 +26,8 @@ mod state;
 mod worker;
 
 pub(in crate::studio) use handle::ThreadWriteBehindWriter;
+#[cfg(test)]
+pub(in crate::studio) use handle::test_support;
 
 fn store_error(error: impl std::fmt::Display) -> crate::PureError {
     crate::PureError::MemoryError(error.to_string())
