@@ -3,17 +3,10 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
 import 'package:anywork/src/features/shell/agent_switcher_menu.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/terminal_launcher.dart';
 import 'package:anywork/src/platform/vscode_launcher.dart';
 import 'package:anywork/src/platform/zed_launcher.dart';
-import 'package:anywork/src/rust/api/studio/types/product_topic.dart'
-    as topic_dto;
-import 'package:anywork/src/rust/api/studio/types/response.dart'
-    as response_dto;
-import 'package:anywork/src/rust/api/studio/types/thread_stream.dart'
-    as thread_dto;
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -194,53 +187,28 @@ void main() {
   ) async {
     final graph = _testGraph(tester);
     final costChip = find.byKey(StudioDriverKeys.sessionCost);
-    const amount = thread_dto.BridgeRuntimeCostAmount(
-      currency: 'USD',
-      amount: 0.25,
-    );
+    const amount = RuntimeCostView(currency: 'USD', amount: 0.25);
     for (final (incomplete, unpriced) in [(true, false), (false, true)]) {
-      const rootThreadId = 'root-thread';
-      const topic = topic_dto.BridgeProductTopic.sessionCosts(
-        rootThreadId: rootThreadId,
-      );
-      final frame = productTopicFrameFromEnvelope(
-        const SessionCostsTopic(rootThreadId: rootThreadId),
-        topic_dto.BridgeProductTopicStreamEnvelope.baseline(
-          topic: topic,
-          revision: BigInt.one,
-          state: topic_dto.BridgeProductBaseline.sessionCosts(
-            response_dto.BridgeSessionCostsState(
-              rootThreadId: rootThreadId,
-              revision: BigInt.one,
-              updatedAt: 0,
-              statisticsPending: false,
-              statisticsGap: false,
-              readFailed: false,
-              cost: response_dto.BridgeSessionCostSnapshot(
-                rootThreadId: rootThreadId,
-                purposeCosts: [
-                  response_dto.BridgePurposeCostSnapshot(
-                    purpose: 'main',
-                    estimatedCosts: const [amount],
-                    hasUnpricedUsage: unpriced,
-                  ),
-                ],
-                estimatedCosts: const [amount],
-                hasUnpricedUsage: unpriced,
-                hasIncompleteUsage: incomplete,
-              ),
-            ),
+      final cost = SessionCostView(
+        rootThreadId: 'root-thread',
+        purposeCosts: [
+          PurposeCostView(
+            purpose: 'main',
+            estimatedCosts: const [amount],
+            hasUnpricedUsage: unpriced,
           ),
-        ),
-      ) as ProductTopicBaselineFrame;
-      final costs = (frame.state as SessionCostsBaseline).state;
+        ],
+        estimatedCosts: const [amount],
+        hasUnpricedUsage: unpriced,
+        hasIncompleteUsage: incomplete,
+      );
       await tester.pumpWidget(
         _host(
           _header(
             row: _root(acp: false),
             project: _project,
             agents: [_nativeAgent],
-            sessionCost: costs.cost,
+            sessionCost: cost,
           ),
           width: 360,
           graph: graph,
