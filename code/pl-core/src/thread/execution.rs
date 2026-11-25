@@ -214,12 +214,14 @@ impl Owner {
                 result,
                 reply,
             } => {
+                self.model_settlement_jobs -= 1;
                 if result.is_ok() {
                     self.confirm_flush(sequence);
                 }
                 let _ = reply.send(result);
             }
             MaintenanceCompletion::RetireModelSettlement(attempt) => {
+                self.model_settlement_jobs -= 1;
                 self.retire_model_settlement(&attempt);
             }
         }
@@ -677,7 +679,8 @@ impl Owner {
                     || self.interrupt.is_deleting();
                 // The original calls can still deliver incurred receipts while unwinding.
                 // Wait for their retirement and save confirmations before the final fence.
-                if !deleting && !self.maintenance.is_empty() {
+                // Ordinary flush requests may await that fence themselves and must not block it.
+                if !deleting && self.model_settlement_jobs != 0 {
                     return Ok(false);
                 }
                 if !deleting && self.cold.as_ref().is_some_and(|store| store.0.is_history()) {

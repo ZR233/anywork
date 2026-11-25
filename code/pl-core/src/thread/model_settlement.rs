@@ -107,6 +107,7 @@ impl Owner {
             let retired = CancellationToken::new();
             let wait = retired.clone();
             let attempt = attempt_id.clone();
+            self.model_settlement_jobs += 1;
             self.maintenance.push(Box::pin(async move {
                 wait.cancelled().await;
                 execution::MaintenanceCompletion::RetireModelSettlement(attempt)
@@ -404,6 +405,7 @@ impl Owner {
         call.confirming = Some((sequence, confirmation.clone()));
         let thread = self.id.clone();
         let deletion = self.interrupt.deletion_token();
+        self.model_settlement_jobs += 1;
         self.maintenance.push(Box::pin(async move {
             let result = tokio::select! {
                 biased;

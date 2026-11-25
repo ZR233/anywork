@@ -81,6 +81,8 @@ pub(super) struct Owner {
     pub(super) pending_context_compactions: Vec<ContextCompactionEvent>,
     pub(super) model_progress: Option<(String, watch::Receiver<crate::model::ModelProgress>)>,
     pub(super) model_members: Option<super::model_members::MemberCall>,
+    /// Outstanding receipt confirmations and auxiliary producer retirements, excluding ordinary flushes.
+    pub(super) model_settlement_jobs: usize,
     pub(super) model_settlements:
         std::collections::BTreeMap<String, super::model_settlement::SettlementCall>,
     pub(super) pending_model_members: Vec<crate::model::ModelCompletedMember>,

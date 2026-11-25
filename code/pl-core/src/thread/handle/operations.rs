@@ -210,6 +210,7 @@ impl ThreadHandle {
             compaction_call: None,
             pending_context_compactions: Vec::new(),
             model_progress: None,
+            model_settlement_jobs: 0,
             model_settlements: Default::default(),
             effect_window: effect_window.clone(),
             permission_leases: Default::default(),

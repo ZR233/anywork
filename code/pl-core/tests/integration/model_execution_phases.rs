@@ -99,13 +99,42 @@ async fn gated_call(
         }
     }
     match failure_kind {
-        Some(kind) => Err(model_failure(kind)),
+        Some(kind) => {
+            let mut error = model_failure(kind);
+            if kind == ModelFailureKind::ContextLimit {
+                error.context_recovery = Some(Box::new(pl_core::model::ModelContextRecovery::new(
+                    request.thread_id.clone(),
+                    request.turn_id.clone(),
+                    request.attempt_id.clone(),
+                    1,
+                    serde_json::to_vec(&request.context.records).unwrap().len(),
+                    1,
+                    None,
+                )));
+            }
+            Err(error)
+        }
         None => Ok(response(&request, Vec::new())),
     }
 }
 
 impl ModelSession for GatedModel {
     async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        if let Some(grant) = request
+            .members
+            .as_ref()
+            .and_then(|members| members.context_recovery())
+        {
+            let (_, retry, _) = grant
+                .consume(
+                    &request.thread_id,
+                    &request.turn_id,
+                    serde_json::to_vec(&request.context.records).unwrap().len(),
+                    1,
+                )
+                .expect("forced recovery must dispatch a shorter request with the same binding");
+            assert_eq!(retry, 1);
+        }
         if let Some(entered) = self.prepare_entered.take() {
             entered
                 .send(())
@@ -559,7 +588,13 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for LifecycleH
                                 tool_calls: vec![],
                             }]
                         } else {
-                            request.committed_context.records.to_vec()
+                            request
+                                .committed_context
+                                .records
+                                .iter()
+                                .filter(|record| record.id != "large-history")
+                                .cloned()
+                                .collect()
                         },
                     }),
                     facts: request.current_facts.to_vec(),
@@ -760,6 +795,22 @@ async fn force_and_host_share_one_operation_and_idle_does_not_borrow_an_old_turn
         }
         let thread =
             ThreadHandle::start("forced-compaction".into(), DynModelSession::new(model)).unwrap();
+        thread
+            .replace_context(pl_core::thread::ReplaceContext {
+                expected_revision: 0,
+                reason: pl_core::thread::ContextReplacementReason::Rebuild,
+                records: vec![pl_core::context::ContextRecord {
+                    id: "large-history".into(),
+                    turn_id: None,
+                    source: pl_core::context::ContextSource::Runtime {
+                        source_id: "history".into(),
+                    },
+                    content: vec![text("oversized committed history")],
+                    tool_calls: vec![],
+                }],
+            })
+            .await
+            .unwrap();
         let store = CompactionStore::default();
         *store.thread.lock().unwrap() = Some(thread.clone());
         thread
@@ -942,8 +993,9 @@ async fn local_capacity_recovery_without_hook_has_no_compaction_operation() {
     assert!(compaction_events(&thread).await.is_empty());
     prepare_gate.send(()).unwrap();
     assert!(
-        matches!(task.await.unwrap(), Err(ThreadError::Model(ref error))
-        if error.kind == ModelFailureKind::ContextLimit)
+        matches!(task.await.unwrap(), Err(ThreadError::ModelRepair { ref primary, ref repair })
+        if primary.kind == ModelFailureKind::ContextLimit
+            && matches!(repair.as_ref(), ThreadError::InvalidContext))
     );
     assert!(compaction_events(&thread).await.is_empty());
     assert_eq!(thread.snapshot().model_execution, None);
