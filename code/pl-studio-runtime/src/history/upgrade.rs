@@ -5560,7 +5560,7 @@ mod migration_tests {
         } else if main.has_folded_before_oldest {
             (None, main.entries.last().map(|entry| entry.event.seq))
         } else {
-            return Err(HistoryError::NotFound("folded work gap".into()).into());
+            return Err(HistoryError::NotFound("folded work gap".into()));
         };
         let members = reader
             .work_range_page(after_seq, before_seq, None, None, HistoryDemand::default())
