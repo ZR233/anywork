@@ -501,39 +501,31 @@ impl AcpInstallRuntime {
         for operation in self.inner.retired_operations() {
             let operation_id = operation.operation_id.clone();
             match operation.join.join_until(deadline).await {
-                RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) => {
-                    operation.mark_supervisor_joined();
-                    self.inner.remove_retired(&operation_id);
-                }
+                RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(_) => {}
                 RetainedJoin::Observed(Err(_)) => {
                     // 终态已发布但 task 异常结束：不吞，如实报告非 Clean。
-                    operation.mark_supervisor_joined();
-                    self.inner.remove_retired(&operation_id);
                     issues.push(format!(
                         "ACP install retired supervisor {operation_id} terminated without a clean join"
                     ));
                 }
-                RetainedJoin::Settled(Err(_)) => {
-                    // 上一轮已观察并清槽。重试不再把 JoinError 说成没有句柄，也不重复报同一终态。
-                    operation.mark_supervisor_joined();
-                    self.inner.remove_retired(&operation_id);
-                }
                 RetainedJoin::Absent => {
-                    if operation.supervisor_joined() {
-                        self.inner.remove_retired(&operation_id);
+                    if !operation.supervisor_joined() {
+                        issues.push(format!(
+                            "ACP install retired supervisor {operation_id} is neither joined nor confirmed finished"
+                        ));
                         continue;
                     }
-                    issues.push(format!(
-                        "ACP install retired supervisor {operation_id} is neither joined nor confirmed finished"
-                    ));
                 }
                 RetainedJoin::TimedOut => {
                     // 句柄留在退休登记里，下一次关闭继续等同一个 owner。
                     issues.push(format!(
                         "ACP install retired supervisor {operation_id} did not finish within the shutdown budget"
                     ));
+                    continue;
                 }
             }
+            operation.mark_supervisor_joined();
+            self.inner.remove_retired(&operation_id);
         }
 
         // 清理未收束的残留：owner 仍持有真实 Operation（含未删除的暂存与资产锁）。这里在本 stage 的

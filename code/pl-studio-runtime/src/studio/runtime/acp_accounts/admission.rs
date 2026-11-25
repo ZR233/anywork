@@ -532,40 +532,32 @@ impl AcpAccountInner {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::test_runtime;
     use super::*;
-    use crate::config::{
-        AcpProvider, AcpServiceDefinition, ConfigPaths, ConfigStore, StudioConfig,
-    };
+    use crate::StudioRuntime;
+    use crate::config::{AcpProvider, AcpServiceDefinition};
     use crate::{
         AcpAuthAction, AcpAuthActiveOperation, AcpAuthBusyDetails, AcpAuthBusyRejection,
         StudioError,
     };
-    use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
-    async fn test_runtime() -> Result<(tempfile::TempDir, StudioRuntime)> {
-        let home = tempfile::tempdir()?;
-        let config = StudioConfig::default_config()?;
-        let paths = ConfigPaths::from_config_dir(home.path());
-        ConfigStore::new(paths.clone()).save(&config)?;
-        std::fs::create_dir_all(paths.acp_dir())?;
-        std::fs::write(
-            paths.acp_dir().join("account.toml"),
-            AcpServiceDefinition::template(
-                "account".into(),
-                "Antigravity".into(),
-                AcpProvider::Antigravity,
-            )
-            .encode()?,
-        )?;
-        let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
-            studio_home: Some(home.path().to_owned()),
-            host: StudioHostKind::Test,
-            ..StudioRuntimeOptions::desktop()
+    async fn test_account_runtime() -> Result<(tempfile::TempDir, StudioRuntime)> {
+        test_runtime(|paths| {
+            std::fs::create_dir_all(paths.acp_dir())?;
+            std::fs::write(
+                paths.acp_dir().join("account.toml"),
+                AcpServiceDefinition::template(
+                    "account".into(),
+                    "Antigravity".into(),
+                    AcpProvider::Antigravity,
+                )
+                .encode()?,
+            )?;
+            Ok(())
         })
-        .await?;
-        Ok((home, runtime))
+        .await
     }
 
     /// 用真实受理身份的冻结字段占用槽位；busy 状态与占用操作保持一致。
@@ -627,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn busy_rejection_carries_the_atomic_slot_slice() -> Result<()> {
         for action in [AcpAuthAction::Check, AcpAuthAction::QueryUsage] {
-            let (home, runtime) = test_runtime().await?;
+            let (home, runtime) = test_account_runtime().await?;
             let (revision, generation) = occupy_slot(&runtime, action.clone());
             let snapshot_revision = runtime.acp_accounts.inner.lock().revision;
             // 请求动作与占用方不同也只投影占用方的真实身份与动作。
@@ -666,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn busy_rejection_keeps_the_old_connection_slice_after_replacement() -> Result<()> {
-        let (_home, runtime) = test_runtime().await?;
+        let (_home, runtime) = test_account_runtime().await?;
         let (frozen_revision, generation) = occupy_slot(&runtime, AcpAuthAction::QueryUsage);
         // 模拟 observe_committed 的身份变化分支：账号已换新修订，旧操作仍在收束。
         let current_revision = {
@@ -715,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn busy_slice_is_immutable_after_the_occupant_finishes() -> Result<()> {
-        let (_home, runtime) = test_runtime().await?;
+        let (_home, runtime) = test_account_runtime().await?;
         let (revision, generation) = occupy_slot(&runtime, AcpAuthAction::Check);
         let snapshot_revision = runtime.acp_accounts.inner.lock().revision;
         let rejection = busy_rejection(&runtime, revision);
@@ -756,7 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn idle_admission_and_non_busy_errors_carry_no_fabricated_details() -> Result<()> {
-        let (_home, runtime) = test_runtime().await?;
+        let (_home, runtime) = test_account_runtime().await?;
         let revision = runtime.acp_accounts.inner.lock().slots["account"].revision;
         // 未占用：正常受理，没有任何错误详情。
         let accepted = runtime.acp_accounts.start(StartAcpAuthRequest {
