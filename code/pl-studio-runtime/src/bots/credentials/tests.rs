@@ -8,27 +8,26 @@ use super::journal::{
 use super::legacy_migration::MIGRATION_INTENT_FILE;
 use super::*;
 use crate::config::{BotCredentialRefKind, BotProtectedPayload, BotSecretVersion};
-use crate::config::{ConfigPaths, ConfigStore, memory_faults};
+use crate::config::{FaultingBotCredentialStore, faulting_bot_capability};
 use std::cell::Cell;
+use std::sync::Arc;
 
-fn capability() -> CredentialHome {
-    memory_faults::reset();
-    let home = tempfile::tempdir().unwrap();
-    let credentials = ConfigStore::new(ConfigPaths::from_config_dir(home.path())).bot_credentials();
-    CredentialHome {
-        _home: home,
+fn capability() -> CredentialFixture {
+    let (credentials, store) = faulting_bot_capability();
+    CredentialFixture {
         credentials,
+        store,
         fs: FaultingJournalFs::default(),
     }
 }
 
-struct CredentialHome {
-    _home: tempfile::TempDir,
+struct CredentialFixture {
     credentials: BotCredentialCapability,
+    store: Arc<FaultingBotCredentialStore>,
     fs: FaultingJournalFs,
 }
 
-impl std::ops::Deref for CredentialHome {
+impl std::ops::Deref for CredentialFixture {
     type Target = BotCredentialCapability;
 
     fn deref(&self) -> &Self::Target {
@@ -40,7 +39,7 @@ impl std::ops::Deref for CredentialHome {
 fn commit_bot_credentials(
     dir: &Path,
     expected_bot_id: &str,
-    credentials: &CredentialHome,
+    credentials: &CredentialFixture,
     previous: &BotConfigFile,
     candidate: BotConfigFile,
     secret: BotSecretUpdate,
@@ -534,7 +533,7 @@ fn cleanup_failure_does_not_swallow_a_later_clear() {
     .unwrap();
     assert_eq!(stored.decision, CredentialDecision::Applied);
     let with_secret = stored.config.clone();
-    memory_faults::set_recycle_fails(1);
+    credentials.store.fail_next_system_recycle();
     let first = commit_bot_credentials(
         directory.path(),
         "botA1234",
@@ -662,7 +661,7 @@ fn preserve_across_app_unavailable_is_not_auth_missing() {
     .unwrap();
     let mut candidate = stored.config.clone();
     candidate.feishu_mut().app_id = "cli_b".into();
-    memory_faults::set_system_unavailable(true);
+    credentials.store.set_system_unavailable(true);
     let error = commit_bot_credentials(
         directory.path(),
         "botA1234",
@@ -675,7 +674,7 @@ fn preserve_across_app_unavailable_is_not_auth_missing() {
     .unwrap_err();
     assert_eq!(error.kind(), FeishuErrorKind::Unavailable);
     assert!(error.retryable());
-    memory_faults::reset();
+    credentials.store.set_system_unavailable(false);
     let still = load_config(&directory.path().join("config.toml")).unwrap();
     assert_eq!(still.selected_ref, stored.config.selected_ref);
     assert_eq!(still.feishu().app_id, "cli_a");
@@ -790,7 +789,7 @@ fn not_applied_reclaims_candidate_and_keeps_previous_secret() {
         candidate_version: Some("cred-new".into()),
     };
     write_journal(directory.path(), &journal).unwrap();
-    memory_faults::set_persist_unavailable(true);
+    credentials.store.set_persist_unavailable(true);
     let pending_candidate = recover_bot_directory(
         directory.path(),
         "botA1234",
@@ -798,7 +797,7 @@ fn not_applied_reclaims_candidate_and_keeps_previous_secret() {
         Some(previous.clone()),
     )
     .unwrap();
-    memory_faults::reset();
+    credentials.store.set_persist_unavailable(false);
     assert_eq!(pending_candidate.decision, CredentialDecision::NotApplied);
     assert_eq!(
         pending_candidate
@@ -1055,7 +1054,7 @@ fn first_create_not_applied_reclaims_candidate_without_reserving_app_identity() 
             candidate_version: Some("cred-new".into()),
         };
         write_journal(directory.path(), &journal).unwrap();
-        memory_faults::set_recycle_fails(1);
+        credentials.store.fail_next_system_recycle();
         let first = recover_operation(directory.path(), &credentials, journal).unwrap();
         assert_eq!(first.decision, CredentialDecision::NotApplied);
         assert!(first.config.selected_ref.is_none());
@@ -1072,7 +1071,6 @@ fn first_create_not_applied_reclaims_candidate_without_reserving_app_identity() 
             payload_ids(&credentials, "botA1234", true),
             vec!["cred-new".to_string()]
         );
-        memory_faults::reset();
         let journal = read_journal(directory.path())
             .unwrap()
             .expect("cleanup pending journal");
@@ -1193,7 +1191,7 @@ fn replace_when_system_unavailable_uses_independent_session_lease() {
     let directory = tempfile::tempdir().unwrap();
     let credentials = capability();
     let previous = bot_config("cli_a");
-    memory_faults::set_system_unavailable(true);
+    credentials.store.set_system_unavailable(true);
     let committed = commit_bot_credentials(
         directory.path(),
         "botA1234",
@@ -1214,7 +1212,7 @@ fn replace_when_system_unavailable_uses_independent_session_lease() {
     assert_eq!(committed.secret.as_deref(), Some("lease-only-secret"));
     let selected = committed.config.selected_ref.clone().unwrap();
     assert_eq!(selected.kind, BotCredentialRefKind::Session);
-    memory_faults::reset();
+    credentials.store.set_system_unavailable(false);
     credentials.recycle_lease("botA1234").unwrap();
     let reopened = recover_bot_directory(
         directory.path(),
@@ -1263,7 +1261,7 @@ fn system_write_unavailable_appends_candidate_on_existing_lease() {
             },
         )
         .unwrap();
-    memory_faults::set_persist_unavailable(true);
+    credentials.store.set_persist_unavailable(true);
     credentials.fs.skip_writes.set(1);
     let first = commit_bot_credentials(
         directory.path(),
@@ -1363,7 +1361,7 @@ fn journal_historical_v2_snapshot_matches_disk_without_upgrading_schema() {
 fn prepare_bot_credentials(
     dir: &Path,
     expected_bot_id: &str,
-    credentials: &CredentialHome,
+    credentials: &CredentialFixture,
     previous: &BotConfigFile,
     candidate: BotConfigFile,
     secret: BotSecretUpdate,
@@ -1385,7 +1383,7 @@ fn prepare_bot_credentials(
 
 fn commit_prepared_credentials(
     dir: &Path,
-    credentials: &CredentialHome,
+    credentials: &CredentialFixture,
     prepared: PreparedCredential,
 ) -> Result<CredentialCommit, FeishuError> {
     commit_prepared_credentials_with_fs(&credentials.fs, dir, credentials, prepared)
@@ -1394,7 +1392,7 @@ fn commit_prepared_credentials(
 fn recover_bot_directory(
     dir: &Path,
     expected_bot_id: &str,
-    credentials: &CredentialHome,
+    credentials: &CredentialFixture,
     loaded: Option<BotConfigFile>,
 ) -> Result<CredentialRecovery, FeishuError> {
     recover_bot_directory_with_fs(&credentials.fs, dir, expected_bot_id, credentials, loaded)
@@ -1402,7 +1400,7 @@ fn recover_bot_directory(
 
 fn recover_operation(
     dir: &Path,
-    credentials: &CredentialHome,
+    credentials: &CredentialFixture,
     journal: CredentialJournal,
 ) -> Result<CredentialCommit, FeishuError> {
     recover_operation_with_fs(&credentials.fs, dir, credentials, journal)
