@@ -265,7 +265,8 @@ impl SessionRuntime {
             .agent_services
             .clone()
             .context("terminal services unavailable")?;
-        let operations = services.operations.clone();
+        let operations = self.review_dispatcher();
+        let dispatch = operations.clone();
         let owner = self.clone();
         let key =
             crate::studio::agent_close::terminal_report_id(&terminal.thread.id, terminal.sequence);
@@ -277,7 +278,7 @@ impl SessionRuntime {
             let mut persistence = services.store.thread_persistence().subscribe();
             let mut first_failure = None;
             loop {
-                if services.operations.is_deleting(&terminal.thread.id) {
+                if dispatch.is_deleting(&terminal.thread.id) {
                     return Ok(());
                 }
                 let before = owner.terminal_resources(&services, &terminal, parent);
@@ -285,14 +286,14 @@ impl SessionRuntime {
                 let mut parent_changes = before.parent.as_ref().map(|channel| channel.subscribe());
                 let result = tokio::select! {
                     biased;
-                    () = services.operations.deletion_requested(&terminal.thread.id) => return Ok(()),
+                    () = dispatch.deletion_requested(&terminal.thread.id) => return Ok(()),
                     result = Box::pin(owner.deliver_terminal_once(&services, &terminal)) => result,
                 };
                 match result {
                     Ok(()) => return Ok(()),
                     Err(error) => {
                         terminal.revocation.fetch_max(terminal.sequence, Ordering::AcqRel);
-                        services.operations.block_terminal(&terminal.thread.id, &registered_key, &error, &mut first_failure);
+                        dispatch.block_terminal(&terminal.thread.id, &registered_key, &error, &mut first_failure);
                         let budget = error.downcast_ref::<TerminalBudgetBlocked>().is_some();
                         let permanent = error.downcast_ref::<TerminalIntegrityError>().is_some()
                             || error.downcast_ref::<serde_json::Error>().is_some();
@@ -300,42 +301,28 @@ impl SessionRuntime {
                             let changed = owner.0.changed.notified();
                             tokio::pin!(changed);
                             changed.as_mut().enable();
-                            if services.operations.is_deleting(&terminal.thread.id) {
+                            if dispatch.is_deleting(&terminal.thread.id) {
                                 return Ok(());
                             }
                             let current = owner.terminal_resources(&services, &terminal, parent);
-                            let explicit_retry = !services.operations.terminal_blocked(&terminal.thread.id, &registered_key);
+                            let explicit_retry = !dispatch.terminal_blocked(&terminal.thread.id, &registered_key);
                             if permanent && explicit_retry {
-                                services.operations.block_terminal(&terminal.thread.id, &registered_key, &error, &mut first_failure);
+                                dispatch.block_terminal(&terminal.thread.id, &registered_key, &error, &mut first_failure);
                             }
                             if !permanent && (explicit_retry || current.improved(&before, budget)) {
-                                services.operations.resume_terminal(&terminal.thread.id, &registered_key);
+                                dispatch.resume_terminal(&terminal.thread.id, &registered_key);
                                 break;
                             }
                             // Watchers were installed before the attempt. Failed reservation rollback
                             // can wake this select, but cannot satisfy improved() against before.
                             let waiting = async { tokio::select! {
-                                () = services.operations.deletion_requested(&terminal.thread.id) => {},
+                                () = dispatch.deletion_requested(&terminal.thread.id) => {},
                                 _ = capacity.changed() => {},
                                 _ = persistence.changed() => {},
                                 () = &mut changed => {},
                                 _ = async { match source_changes.as_mut() { Some(receiver) => { let _ = receiver.changed().await; }, None => std::future::pending::<()>().await } } => {},
                                 _ = async { match parent_changes.as_mut() { Some(receiver) => { let _ = receiver.changed().await; }, None => std::future::pending::<()>().await } } => {},
                             }};
-                            #[cfg(test)]
-                            {
-                                tokio::pin!(waiting);
-                                futures::future::poll_fn(|context| {
-                                    let polled = std::future::Future::poll(waiting.as_mut(), context);
-                                    if polled.is_pending() && let Some(channel) = &terminal.channel {
-                                        // This signal runs only when ALL real wake sources returned
-                                        // Pending. It cannot mask a missing capacity notification.
-                                        channel.terminal_parked.send_replace(*channel.effects_released.borrow());
-                            }
-                                    polled
-                                }).await;
-                            }
-                            #[cfg(not(test))]
                             waiting.await;
                         }
                     }
@@ -348,7 +335,7 @@ impl SessionRuntime {
 
     fn terminal_resources(
         &self,
-        services: &super::agent_services::AgentServices,
+        services: &super::owner::StudioSessionOwner,
         terminal: &TerminalDelivery,
         parent: &str,
     ) -> TerminalResources {
@@ -395,7 +382,7 @@ impl SessionRuntime {
 
     async fn deliver_terminal_once(
         &self,
-        services: &super::agent_services::AgentServices,
+        services: &super::owner::StudioSessionOwner,
         terminal: &TerminalDelivery,
     ) -> Result<()> {
         // A prior failed exception CAS may also have left a temporary source receiver to join.
@@ -467,7 +454,7 @@ impl SessionRuntime {
     async fn recover_review_feedback_settlements(
         &self,
         reviewer: &crate::Thread,
-        services: &super::agent_services::AgentServices,
+        services: &super::owner::StudioSessionOwner,
     ) -> Result<()> {
         let Some(current) = self.restore_delivery_snapshot(reviewer).await? else {
             return Ok(());
@@ -509,7 +496,7 @@ impl SessionRuntime {
     async fn recover_review_decisions(
         &self,
         reviewer: &crate::Thread,
-        services: &super::agent_services::AgentServices,
+        services: &super::owner::StudioSessionOwner,
     ) -> Result<()> {
         let decisions = self
             .pending_native_deliveries(reviewer)
@@ -569,7 +556,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn acknowledge_review_exception(
+    pub(crate) async fn acknowledge_review_exception(
         &self,
         parent: &str,
         message: pl_core::thread::inbox::ThreadMessage,
@@ -938,11 +925,11 @@ impl SessionRuntime {
 
     /// An explicit close retry may repair a failed producer, but never consumes its failure just
     /// to let shutdown pass. Recovery remains receipt-first/storage-only and uses the same key.
-    pub(super) async fn retry_failed_review_deliveries(&self, id: &str) -> Result<()> {
+    pub(crate) async fn retry_failed_review_deliveries(&self, id: &str) -> Result<()> {
         let Some(services) = self.0.state().agent_services.clone() else {
             return Ok(());
         };
-        if services.operations.has_failed_producer(id) {
+        if self.review_dispatcher().has_failed_producer(id) {
             let record = services.record(id).await?;
             Box::pin(self.recover_saved_review_deliveries(&record)).await?;
         }

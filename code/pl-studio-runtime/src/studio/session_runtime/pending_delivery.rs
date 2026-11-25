@@ -6,7 +6,7 @@
 //! process crash cannot recover RAM-only material. This is not a cross-store atomic transaction.
 use super::{
     SessionRuntime,
-    agent_services::AgentServices,
+    owner::StudioSessionOwner,
     review_delivery::{DeliveryObservation, ReviewDeliveryException},
 };
 use anyhow::{Context, Result, ensure};
@@ -16,13 +16,13 @@ use pl_core::{
 };
 use serde::{Deserialize, Serialize};
 
-pub(super) const PENDING_NATIVE_DELIVERY_FORMAT: &str = "pl.studio.pending-native-delivery";
-pub(super) const PENDING_NATIVE_DELIVERY_VERSION: u32 = 1;
-pub(super) const PENDING_NATIVE_DELIVERY_EXTENSION_PREFIX: &str = "studio.pending-native-delivery:";
+pub(crate) const PENDING_NATIVE_DELIVERY_FORMAT: &str = "pl.studio.pending-native-delivery";
+pub(crate) const PENDING_NATIVE_DELIVERY_VERSION: u32 = 1;
+pub(crate) const PENDING_NATIVE_DELIVERY_EXTENSION_PREFIX: &str = "studio.pending-native-delivery:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum PendingNativeDeliveryKind {
+pub(crate) enum PendingNativeDeliveryKind {
     ParentReport,
     ReviewDecision,
     ReviewException,
@@ -36,7 +36,7 @@ pub(super) enum PendingNativeDeliveryKind {
     content = "detail",
     deny_unknown_fields
 )]
-pub(super) enum PendingNativeDeliverySource {
+pub(crate) enum PendingNativeDeliverySource {
     Terminal {
         child_id: String,
         terminal_sequence: u64,
@@ -51,7 +51,7 @@ pub(super) enum PendingNativeDeliverySource {
 /// Exact original delivery material. The extension key is its stable message ID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct PendingNativeDelivery {
+pub(crate) struct PendingNativeDelivery {
     kind: PendingNativeDeliveryKind,
     message: ThreadMessage,
     message_digest: String,
@@ -72,7 +72,7 @@ struct ParentReportIdentity {
 
 impl PendingNativeDelivery {
     /// Reconstructs the typed marker from one message produced by an existing terminal path.
-    pub(super) fn from_terminal_message(message: ThreadMessage, wake: bool) -> Result<Self> {
+    pub(crate) fn from_terminal_message(message: ThreadMessage, wake: bool) -> Result<Self> {
         let (kind, source, wake) = if message.payload.format() == "pl.studio.turn-report"
             && message.payload.version() == 3
         {
@@ -111,7 +111,7 @@ impl PendingNativeDelivery {
     }
 
     /// Source-owned decision marker retained until review feedback or its exception is settled.
-    pub(super) fn review_decision(message: ThreadMessage) -> Result<Self> {
+    pub(crate) fn review_decision(message: ThreadMessage) -> Result<Self> {
         ensure!(
             message.payload.format() == "pl.studio.turn-report" && message.payload.version() == 3,
             "review decision requires the immutable terminal report"
@@ -150,15 +150,15 @@ impl PendingNativeDelivery {
         Ok(pending)
     }
 
-    pub(super) fn message(&self) -> &ThreadMessage {
+    pub(crate) fn message(&self) -> &ThreadMessage {
         &self.message
     }
 
-    pub(super) fn source(&self) -> &PendingNativeDeliverySource {
+    pub(crate) fn source(&self) -> &PendingNativeDeliverySource {
         &self.source
     }
 
-    pub(super) fn is_review_decision(&self) -> bool {
+    pub(crate) fn is_review_decision(&self) -> bool {
         self.kind == PendingNativeDeliveryKind::ReviewDecision
     }
 
@@ -180,7 +180,7 @@ impl PendingNativeDelivery {
             && self.wake == other.wake
     }
 
-    pub(super) fn terminal_sequence(&self) -> Option<u64> {
+    pub(crate) fn terminal_sequence(&self) -> Option<u64> {
         match &self.source {
             PendingNativeDeliverySource::Terminal {
                 terminal_sequence, ..
@@ -189,14 +189,14 @@ impl PendingNativeDelivery {
         }
     }
 
-    pub(super) fn extension_id(&self) -> String {
+    pub(crate) fn extension_id(&self) -> String {
         format!(
             "{PENDING_NATIVE_DELIVERY_EXTENSION_PREFIX}{}",
             self.message.id
         )
     }
 
-    pub(super) fn encode(&self) -> Result<OpaquePayload> {
+    pub(crate) fn encode(&self) -> Result<OpaquePayload> {
         Ok(OpaquePayload::new(
             PENDING_NATIVE_DELIVERY_FORMAT,
             PENDING_NATIVE_DELIVERY_VERSION,
@@ -204,7 +204,7 @@ impl PendingNativeDelivery {
         )?)
     }
 
-    pub(super) fn decode(extension_id: &str, payload: &OpaquePayload) -> Result<Self> {
+    pub(crate) fn decode(extension_id: &str, payload: &OpaquePayload) -> Result<Self> {
         ensure!(
             payload.format() == PENDING_NATIVE_DELIVERY_FORMAT
                 && payload.version() == PENDING_NATIVE_DELIVERY_VERSION,
@@ -389,7 +389,7 @@ fn parse_acp_source(message: &ThreadMessage) -> Result<PendingNativeDeliverySour
 
 impl SessionRuntime {
     /// Inspect only the resident owner, including a closing one.
-    pub(super) fn delivery_snapshot(
+    pub(crate) fn delivery_snapshot(
         &self,
         record: &crate::Thread,
     ) -> Result<Option<pl_core::thread::ThreadSnapshot>> {
@@ -399,7 +399,7 @@ impl SessionRuntime {
     }
 
     /// Cold recovery preparation, never a lookup used to validate live delivery or admission.
-    pub(super) async fn restore_delivery_snapshot(
+    pub(crate) async fn restore_delivery_snapshot(
         &self,
         record: &crate::Thread,
     ) -> Result<Option<pl_core::thread::ThreadSnapshot>> {
@@ -412,19 +412,16 @@ impl SessionRuntime {
             .agent_services
             .clone()
             .context("pending delivery services unavailable")?;
-        Ok(
-            crate::studio::thread_factory::recovery::load_current_read_only(
-                &services.store,
-                record,
-            )
+        Ok(services
+            .store
+            .load_current_read_only(record)
             .await?
-            .map(|current| current.state.to_paused_snapshot()),
-        )
+            .map(|current| current.state.to_paused_snapshot()))
     }
 
     /// Reads only explicit markers in one Thread's Current. Absence never reconstructs work from
     /// History; recipient deliveries and source-owned review decisions are classified by kind.
-    pub(super) async fn pending_native_deliveries(
+    pub(crate) async fn pending_native_deliveries(
         &self,
         recipient: &crate::Thread,
     ) -> Result<Vec<PendingNativeDelivery>> {
@@ -440,7 +437,7 @@ impl SessionRuntime {
     }
 
     /// Replays only explicit Current markers through the storage-only recipient path.
-    pub(super) async fn recover_pending_native_deliveries(
+    pub(crate) async fn recover_pending_native_deliveries(
         &self,
         recipient: &crate::Thread,
     ) -> Result<()> {
@@ -468,8 +465,8 @@ impl SessionRuntime {
     }
 }
 
-pub(super) async fn complete_pending_native_delivery(
-    services: &AgentServices,
+pub(crate) async fn complete_pending_native_delivery(
+    services: &StudioSessionOwner,
     owner: &SessionRuntime,
     recipient: &str,
     thread: &ThreadHandle,
@@ -659,7 +656,7 @@ async fn ensure_marker(
     Ok(record.revision)
 }
 
-pub(super) async fn persist_pending_marker(
+pub(crate) async fn persist_pending_marker(
     thread: &ThreadHandle,
     pending: &PendingNativeDelivery,
 ) -> Result<()> {
@@ -672,7 +669,7 @@ pub(super) async fn persist_pending_marker(
     Ok(())
 }
 
-pub(super) async fn clear_pending_marker(
+pub(crate) async fn clear_pending_marker(
     thread: &ThreadHandle,
     pending: &PendingNativeDelivery,
 ) -> Result<bool> {

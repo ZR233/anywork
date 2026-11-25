@@ -260,10 +260,6 @@ pub(crate) struct HistoryStatus {
 /// Reliable admission state owned by the session manager, not by a writer incarnation.
 pub(crate) struct HistoryChannel {
     pub(super) order_index: Arc<RuntimeOrderIndex>,
-    #[cfg(test)]
-    pub(crate) effects_released: tokio::sync::watch::Sender<u64>,
-    #[cfg(test)]
-    pub(crate) terminal_parked: tokio::sync::watch::Sender<u64>,
     pub(super) progress: Mutex<Progress>,
     pub(super) changed: Arc<tokio::sync::Notify>,
     pub(super) step_lock: tokio::sync::Mutex<()>,
@@ -656,10 +652,6 @@ impl HistoryChannel {
         let delivery_bytes = order_index.delivery_counter();
         Self {
             order_index,
-            #[cfg(test)]
-            effects_released: tokio::sync::watch::channel(0).0,
-            #[cfg(test)]
-            terminal_parked: tokio::sync::watch::channel(0).0,
             progress: Mutex::new(Progress::default()),
             changed: Arc::new(tokio::sync::Notify::new()),
             step_lock: tokio::sync::Mutex::new(()),

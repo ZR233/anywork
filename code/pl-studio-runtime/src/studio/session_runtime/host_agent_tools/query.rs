@@ -1,21 +1,19 @@
 //! Native adapters for saved-session queries and task evaluations.
 use super::*;
-use crate::thread_assembler::{
-    SessionRuntime, ThreadAssemblyError,
-    agent_services::{ServiceError, query::*},
-};
+use crate::studio::session_runtime::owner::{ServiceError, query::*};
+use crate::thread_assembler::{SessionRuntime, ThreadAssemblyError};
 use anyhow::Context as _;
 use serde::Serialize;
 #[derive(Debug)]
-pub(in crate::thread_assembler) enum Kind {
+pub(crate) enum Kind {
     Session,
     Evaluate,
 }
 #[derive(Debug)]
-pub(in crate::thread_assembler) struct QueryTool {
-    pub(in crate::thread_assembler) definition: ToolDefinition,
-    pub(in crate::thread_assembler) host: Arc<crate::thread_assembler::agents::AgentHost>,
-    pub(in crate::thread_assembler) kind: Kind,
+pub(crate) struct QueryTool {
+    pub(crate) definition: ToolDefinition,
+    pub(crate) host: Arc<crate::studio::session_runtime::agents::AgentHost>,
+    pub(crate) kind: Kind,
 }
 impl Tool for QueryTool {
     type Input = pl_core::context::OpaquePayload;
@@ -124,9 +122,9 @@ impl QueryTool {
     }
 }
 impl SessionRuntime {
-    pub(in crate::thread_assembler) fn agent_query_tools(
+    pub(crate) fn agent_query_tools(
         &self,
-        host: Arc<crate::thread_assembler::agents::AgentHost>,
+        host: Arc<crate::studio::session_runtime::agents::AgentHost>,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         if self.0.state().agent_services.is_none() {
             return Err(ThreadAssemblyError::Resource {

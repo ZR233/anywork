@@ -21,6 +21,7 @@ pub(crate) mod runtime;
 mod runtime_lock;
 mod runtime_options;
 mod runtime_state;
+pub(crate) mod session_runtime;
 pub(crate) mod startup;
 pub(crate) mod storage;
 mod worktree;

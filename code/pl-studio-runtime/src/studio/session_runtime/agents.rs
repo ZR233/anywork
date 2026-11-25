@@ -20,9 +20,9 @@ use std::sync::{Arc, Weak};
 #[derive(Debug, Clone)]
 pub(crate) struct AgentHost {
     registry: Weak<Registry>,
-    pub(super) identity: crate::AgentThreadIdentity,
+    pub(crate) identity: crate::AgentThreadIdentity,
     resources: AgentHostResources,
-    pub(super) catalog: crate::config::AgentProfileCatalog,
+    pub(crate) catalog: crate::config::AgentProfileCatalog,
     selection: crate::DelegationSettings,
 }
 
@@ -52,7 +52,7 @@ impl AgentHost {
             .collect()
     }
 
-    pub(super) fn validate_instance(&self) -> Result<(), ControlError> {
+    pub(crate) fn validate_instance(&self) -> Result<(), ControlError> {
         let owner = self.owner()?;
         let state = owner.0.state();
         let id = self.identity.thread_id.as_str();
@@ -78,9 +78,7 @@ impl AgentHost {
                 && native.thread.snapshot().lifecycle == ThreadLifecycle::Open =>
             {
                 if crate::studio::agent_close::is_explicitly_closed(&native.thread.snapshot())
-                    .map_err(|source| {
-                        ControlError::service(super::agent_services::ServiceError(source))
-                    })?
+                    .map_err(|source| ControlError::service(super::owner::ServiceError(source)))?
                 {
                     return Err(ControlError::Closed);
                 }
@@ -92,7 +90,7 @@ impl AgentHost {
         Ok(())
     }
 
-    pub(super) fn caller(&self, context: &AgentCallContext) -> Result<String, ControlError> {
+    pub(crate) fn caller(&self, context: &AgentCallContext) -> Result<String, ControlError> {
         self.validate_instance()?;
         if context.caller != self.identity.agent_id || context.cancellation.is_cancelled() {
             return Err(ControlError::Closed);
@@ -113,7 +111,7 @@ impl AgentHost {
         self.validate_instance()
     }
 
-    pub(super) fn target_identity(
+    pub(crate) fn target_identity(
         &self,
         target: &str,
     ) -> Result<crate::AgentThreadIdentity, ControlError> {
@@ -155,7 +153,7 @@ impl AgentHost {
             .ok_or_else(|| ControlError::Missing(thread.into()))
     }
 
-    pub(super) fn owner(&self) -> Result<SessionRuntime, ControlError> {
+    pub(crate) fn owner(&self) -> Result<SessionRuntime, ControlError> {
         self.registry
             .upgrade()
             .map(SessionRuntime)
@@ -235,7 +233,7 @@ fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ControlEr
     Ok(())
 }
 
-pub(super) fn member_open(entry: &crate::session::AgentInstance) -> bool {
+pub(crate) fn member_open(entry: &crate::session::AgentInstance) -> bool {
     match &entry.runtime {
         crate::session::AgentRuntime::Native(native) => {
             native.ready && native.thread.snapshot().lifecycle == ThreadLifecycle::Open
@@ -299,7 +297,7 @@ fn push_preparing_row(
     Ok(())
 }
 
-pub(super) fn agent_row(
+pub(crate) fn agent_row(
     id: &str,
     parent: Option<&str>,
     snapshot: &pl_core::thread::ThreadSnapshot,
@@ -552,9 +550,7 @@ impl AgentHost {
         if let Err(error) = services.store.publish_preparation(&reservation.id).await {
             return Ok(AgentSpawnResult {
                 receipt,
-                message_error: Some(ControlError::service(super::agent_services::ServiceError(
-                    error,
-                ))),
+                message_error: Some(ControlError::service(super::owner::ServiceError(error))),
             });
         }
         // The child is now published and owns its configuration RPCs. Parent/child close must
@@ -564,9 +560,9 @@ impl AgentHost {
             if context.cancellation.is_cancelled() {
                 return Err(ControlError::Closed);
             }
-            let session = resources.session().map_err(|error| {
-                ControlError::service(super::agent_services::ServiceError(error))
-            })?;
+            let session = resources
+                .session()
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
             // Config RPCs remain owned by the session driver. Close must be able to acquire
             // the member operation lock even when the peer never answers a configuration.
             let configuration = configure_acp_child(session, request.acp_config);
@@ -613,9 +609,7 @@ impl AgentHost {
                 .factory
                 .ensure_member_execution_allowed(id)
                 .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?;
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
         }
         Ok(())
     }
@@ -738,9 +732,7 @@ impl AgentHost {
                 owner
                     .freeze_review_target(&caller, target, request.review_feedback)
                     .await
-                    .map_err(|error| {
-                        ControlError::service(super::agent_services::ServiceError(error))
-                    })?,
+                    .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?,
             ),
             None => None,
         };
@@ -889,9 +881,7 @@ impl AgentHost {
         {
             return Ok(AgentSpawnResult {
                 receipt,
-                message_error: Some(ControlError::service(super::agent_services::ServiceError(
-                    error,
-                ))),
+                message_error: Some(ControlError::service(super::owner::ServiceError(error))),
             });
         }
         let message = pl_core::thread::inbox::ThreadMessage {
@@ -941,13 +931,13 @@ impl AgentControlHost for AgentHost {
         let parent_operation = owner.agent_operation(&caller).await;
         self.validate_instance()?;
         let services = owner.0.state().agent_services.clone();
-        if let Some(services) = services {
+        if services.is_some() {
             let admission = owner.clone();
             let caller = caller.clone();
             let admitted_caller = caller.clone();
             let host = self.clone();
-            services
-                .operations
+            owner
+                .review_dispatcher()
                 .run(
                     caller,
                     format!("spawn:{}", context.call_id),
@@ -965,9 +955,7 @@ impl AgentControlHost for AgentHost {
                     },
                 )
                 .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?
         } else {
             Box::pin(self.spawn_owned(owner, context, request, parent_operation)).await
         }
@@ -1006,9 +994,7 @@ impl AgentControlHost for AgentHost {
             services
                 .authorize(caller, &message.target)
                 .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?;
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
         }
         let acp_target = services.as_ref().is_some_and(|services| {
             services
@@ -1029,16 +1015,14 @@ impl AgentControlHost for AgentHost {
             let resources = business
                 .activate_child(&owner, caller, &message.target)
                 .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?;
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
             self.validate_instance()?;
             owner
                 .ensure_agent_admission_open(&message.target)
                 .map_err(ControlError::service)?;
-            let session = resources.session().map_err(|error| {
-                ControlError::service(super::agent_services::ServiceError(error))
-            })?;
+            let session = resources
+                .session()
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
             resources
                 .ensure_input_ready()
                 .map_err(ControlError::service)?;
@@ -1063,9 +1047,7 @@ impl AgentControlHost for AgentHost {
                 services
                     .activate_child(&owner, caller, &message.target)
                     .await
-                    .map_err(|error| {
-                        ControlError::service(super::agent_services::ServiceError(error))
-                    })?;
+                    .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
             }
         }
         let _operation = owner.agent_operation(&message.target).await;
@@ -1206,9 +1188,7 @@ impl AgentControlHost for AgentHost {
                             .map(crate::AgentId::as_str),
                         &snapshot,
                     )
-                    .map_err(|error| {
-                        ControlError::service(super::agent_services::ServiceError(error))
-                    })?,
+                    .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?,
                 );
             }
             rows.into_values().collect::<Vec<_>>()
@@ -1254,9 +1234,7 @@ impl AgentControlHost for AgentHost {
                 services
                     .saved_agents(caller, &loaded)
                     .await
-                    .map_err(|error| {
-                        ControlError::service(super::agent_services::ServiceError(error))
-                    })?,
+                    .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?,
             );
         }
         Ok(rows)
@@ -1291,9 +1269,9 @@ impl AgentControlHost for AgentHost {
                 })
         };
         if let Some(acp) = acp {
-            let session = acp.session().map_err(|error| {
-                ControlError::service(super::agent_services::ServiceError(error))
-            })?;
+            let session = acp
+                .session()
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
             let run = session
                 .snapshot()
                 .await
@@ -1370,9 +1348,8 @@ impl AgentControlHost for AgentHost {
             let root = caller.to_owned();
             let caller = caller.to_owned();
             let target_id = target.to_owned();
-            let outcome = services
-                .operations
-                .clone()
+            let outcome = owner
+                .review_dispatcher()
                 .run(
                     caller.clone(),
                     format!("close:{}:{target}:{}", target.len(), options.force),
@@ -1397,12 +1374,10 @@ impl AgentControlHost for AgentHost {
                     }),
                 )
                 .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?;
+                .map_err(|error| ControlError::service(super::owner::ServiceError(error)))?;
             return Ok(outcome);
         }
-        Err(ControlError::service(super::agent_services::ServiceError(
+        Err(ControlError::service(super::owner::ServiceError(
             anyhow::anyhow!("final child retirement requires the Studio durable resource owner"),
         )))
     }

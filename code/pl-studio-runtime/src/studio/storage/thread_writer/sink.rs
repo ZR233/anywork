@@ -513,8 +513,6 @@ pub(super) async fn step(inner: &Inner) -> Result<Step> {
     progress.stage = None;
     progress.last_progress_at = None;
     progress.refresh_head_stage(Instant::now());
-    #[cfg(test)]
-    let sequence = progress.durable;
     inner.channel.commit_residents(&progress, &index);
     drop(index);
     clear_recovered_fault(&mut progress);
@@ -522,13 +520,6 @@ pub(super) async fn step(inner: &Inner) -> Result<Step> {
     drop(progress);
     inner.channel.release_process_bytes(released_bytes);
     inner.changed.notify_one();
-    #[cfg(test)]
-    {
-        // Publish only after the writer's own local and queued handles were both released.
-        // A terminal producer may still pin them; the history test distinguishes that owner.
-        drop(selected);
-        inner.channel.effects_released.send_replace(sequence);
-    }
     Ok(Step::Progressed)
 }
 

@@ -64,7 +64,7 @@ pub(crate) enum ReviewForwardReason {
 }
 
 use std::sync::Arc;
-pub(super) fn error_chain(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
+pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
     let mut source = Some(error);
     let mut chain = Vec::new();
     while let Some(error) = source {
@@ -324,7 +324,7 @@ impl SessionRuntime {
 
     async fn validate_review_relationship(
         &self,
-        services: &super::agent_services::AgentServices,
+        services: &super::owner::StudioSessionOwner,
         request: &ReviewFeedbackDelivery<'_>,
         target_id: &str,
     ) -> Result<String> {
@@ -555,7 +555,7 @@ impl SessionRuntime {
         }
     }
     /// Caller holds root then target operation gates through publication of the review child.
-    pub(super) async fn freeze_review_target(
+    pub(crate) async fn freeze_review_target(
         &self,
         parent: &str,
         target: &str,

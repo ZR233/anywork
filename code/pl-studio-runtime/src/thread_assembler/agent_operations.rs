@@ -61,19 +61,19 @@ impl Drop for Shared {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct ReviewDispatcher(Arc<Shared>);
+pub(crate) struct ReviewDispatcher(Arc<Shared>);
 
 impl ReviewDispatcher {
-    pub(super) fn begin_deletion(&self, caller: &str) {
+    pub(crate) fn begin_deletion(&self, caller: &str) {
         self.0.jobs().deleting.insert(caller.into());
         self.0.changed.notify_waiters();
     }
 
-    pub(super) fn is_deleting(&self, caller: &str) -> bool {
+    pub(crate) fn is_deleting(&self, caller: &str) -> bool {
         self.0.jobs().deleting.contains(caller)
     }
 
-    pub(super) async fn deletion_requested(&self, caller: &str) {
+    pub(crate) async fn deletion_requested(&self, caller: &str) {
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -84,7 +84,7 @@ impl ReviewDispatcher {
             changed.await;
         }
     }
-    pub(super) fn terminal_blocked(&self, caller: &str, producer: &str) -> bool {
+    pub(crate) fn terminal_blocked(&self, caller: &str, producer: &str) -> bool {
         self.0
             .jobs()
             .background_failure
@@ -93,14 +93,14 @@ impl ReviewDispatcher {
                 key: OperationKey::Review(producer.into()),
             })
     }
-    pub(super) fn resume_terminal(&self, caller: &str, producer: &str) {
+    pub(crate) fn resume_terminal(&self, caller: &str, producer: &str) {
         self.0.jobs().background_failure.remove(&OperationIdentity {
             caller: caller.into(),
             key: OperationKey::Review(producer.into()),
         });
         self.0.changed.notify_waiters();
     }
-    pub(super) fn block_terminal(
+    pub(crate) fn block_terminal(
         &self,
         caller: &str,
         producer: &str,
@@ -137,7 +137,7 @@ impl ReviewDispatcher {
         );
         self.0.changed.notify_waiters();
     }
-    pub(super) fn has_failed_producer(&self, caller: &str) -> bool {
+    pub(crate) fn has_failed_producer(&self, caller: &str) -> bool {
         let jobs = self.0.jobs();
         jobs.background_failure
             .keys()
@@ -148,7 +148,7 @@ impl ReviewDispatcher {
     }
     /// Register a host producer without making the projection wait for its own later effects.
     /// The same JoinSet owns cancellation, panics and shutdown; a failed producer blocks joins.
-    pub(super) async fn start(
+    pub(crate) async fn start(
         &self,
         caller: String,
         producer: String,
@@ -203,7 +203,7 @@ impl ReviewDispatcher {
     }
     /// Register under the same boundary as the final admission check. Dropping a caller's wait
     /// cannot remove the job, its operation permits, or the retained transaction conclusion.
-    pub(super) async fn run<T>(
+    pub(crate) async fn run<T>(
         &self,
         caller: String,
         operation_id: String,
@@ -250,7 +250,7 @@ impl ReviewDispatcher {
             .map_err(anyhow::Error::new)
     }
 
-    pub(super) async fn join_root(&self, root: &str) -> Result<()> {
+    pub(crate) async fn join_root(&self, root: &str) -> Result<()> {
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -304,7 +304,7 @@ impl ReviewDispatcher {
     }
 
     /// No abort: a cancelled shutdown waiter leaves the driver handle in its owner slot.
-    pub(super) async fn close(&self) -> Result<()> {
+    pub(crate) async fn close(&self) -> Result<()> {
         self.0.jobs().closing = true;
         self.0.wake.wake();
         let mut driver = self.0.driver.lock().await;
@@ -372,46 +372,83 @@ async fn drive(owner: Weak<Shared>) {
 }
 
 impl SessionRuntime {
-    pub(super) fn operation_close_purpose(
+    /// One dispatcher per session generation, independent of shared Studio service leases.
+    pub(crate) fn review_dispatcher(&self) -> ReviewDispatcher {
+        self.0.state().dispatch.clone()
+    }
+
+    pub(crate) fn operation_close_purpose(
         &self,
         id: &str,
         requested: super::ClosePurpose,
     ) -> super::ClosePurpose {
-        if requested == super::ClosePurpose::Delete
-            || self
-                .0
-                .state()
-                .agent_services
-                .as_ref()
-                .is_some_and(|services| services.operations.is_deleting(id))
-        {
+        if requested == super::ClosePurpose::Delete || self.review_dispatcher().is_deleting(id) {
             super::ClosePurpose::Delete
         } else {
             super::ClosePurpose::Preserve
         }
     }
-
-    pub(super) fn begin_operation_close(&self, id: &str, purpose: super::ClosePurpose) {
-        if purpose == super::ClosePurpose::Delete
-            && let Some(services) = self.0.state().agent_services.clone()
-        {
-            services.operations.begin_deletion(id);
+    pub(crate) fn begin_operation_close(&self, id: &str, purpose: super::ClosePurpose) {
+        if purpose == super::ClosePurpose::Delete {
+            self.review_dispatcher().begin_deletion(id);
             self.0.changed.notify_waiters();
         }
     }
-    pub(super) async fn join_root_operations(&self, root: &str) -> Result<()> {
-        let services = self.0.state().agent_services.clone();
-        if let Some(services) = services {
-            services.operations.join_root(root).await?;
-        }
-        Ok(())
+    pub(crate) async fn join_root_operations(&self, root: &str) -> Result<()> {
+        self.review_dispatcher().join_root(root).await
     }
+    pub(crate) async fn close_agent_operations(&self) -> Result<()> {
+        self.review_dispatcher().close().await
+    }
+}
 
-    pub(super) async fn close_agent_operations(&self) -> Result<()> {
-        let services = self.0.state().agent_services.clone();
-        if let Some(services) = services {
-            services.operations.close().await?;
-        }
-        Ok(())
+#[cfg(test)]
+mod session_scope_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn closing_session_keeps_another_sessions_dispatcher_and_admitted_job_alive() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let sessions = crate::session::SessionTable::new();
+            let left = sessions
+                .materialize(&crate::SessionId::new("left").unwrap())
+                .unwrap();
+            let right = sessions
+                .materialize(&crate::SessionId::new("right").unwrap())
+                .unwrap();
+            let (entered, started) = oneshot::channel();
+            let (release, resume) = oneshot::channel();
+            let running = {
+                let dispatcher = right.review_dispatcher();
+                tokio::spawn(async move {
+                    dispatcher
+                        .run("right-root".into(), "held".into(), || Ok(()), async move {
+                            entered.send(()).unwrap();
+                            resume.await.context("held operation release")?;
+                            Ok(())
+                        })
+                        .await
+                })
+            };
+            started.await.unwrap();
+            assert!(left.close_session().await.is_empty());
+            assert_eq!(left.phase(), crate::session::SessionPhase::Closed);
+            assert_eq!(right.phase(), crate::session::SessionPhase::Open);
+            assert!(!running.is_finished());
+            let value = right
+                .review_dispatcher()
+                .run("right-root".into(), "next".into(), || Ok(()), async {
+                    Ok(7u8)
+                })
+                .await
+                .unwrap();
+            assert_eq!(value, 7);
+            release.send(()).unwrap();
+            running.await.unwrap().unwrap();
+            assert!(right.close_session().await.is_empty());
+            assert_eq!(right.phase(), crate::session::SessionPhase::Closed);
+        })
+        .await
+        .unwrap();
     }
 }

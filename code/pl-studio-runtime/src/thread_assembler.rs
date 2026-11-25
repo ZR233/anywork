@@ -1,53 +1,49 @@
 //! One assembly and resource-owner registry for root, child and restored Threads.
-mod activation;
-mod admission;
-mod agent_close;
-mod agent_close_recovery;
-mod agent_evaluation;
-mod agent_operations;
-pub(crate) mod agent_review;
-mod agent_services;
-pub(crate) mod agent_wait;
-mod agents;
-mod assembly;
-mod close;
-mod entry_registry;
-pub(crate) mod host_agent_tools;
+pub(crate) mod activation;
+pub(crate) mod agent_operations;
+pub(crate) use crate::studio::session_runtime::agent_review;
+#[cfg(test)]
+pub(crate) use crate::studio::session_runtime::agent_wait;
+pub(crate) use crate::studio::session_runtime::agents;
+pub(crate) use crate::studio::session_runtime::owner as agent_services;
+pub(crate) mod assembly;
+pub(crate) mod close;
+pub(crate) mod entry_registry;
+pub(crate) use crate::studio::session_runtime::host_agent_tools;
 pub(crate) mod host_task_tools;
-pub(crate) mod host_workspace_tools;
+pub(crate) use crate::studio::session_runtime::host_workspace_tools;
 pub(crate) use agents::AgentHost;
 
+pub(crate) use crate::studio::session_runtime::delegation_models;
 #[cfg(test)]
 pub(crate) use agents::archive_tests::spawn_failed_archive_fixture;
-pub(crate) mod delegation_models;
 pub(crate) mod observation;
-mod pending_delivery;
-pub(crate) mod review_delivery;
-pub(crate) mod review_dispatch;
+pub(crate) use crate::studio::session_runtime::review_delivery;
+pub(crate) use crate::studio::session_runtime::review_dispatch;
 pub use activation::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
-mod interaction_key;
-mod interaction_projection;
-mod user_input;
+pub(crate) mod interaction_key;
+pub(crate) mod interaction_projection;
+pub(crate) mod user_input;
 pub use user_input::{UserInteractionError, project_user_input};
-mod interaction_router;
+pub(crate) mod interaction_router;
 pub(crate) use interaction_key::encode as encode_interaction_key;
 pub use interaction_key::{InteractionKeyError, decode_interaction_key};
 pub(crate) use interaction_router::project_pending_child_interactions;
 pub use interaction_router::{StudioInteractionError, project_thread_interaction};
-mod approval;
-mod permission_projection;
-mod plan_confirmation;
+pub(crate) mod approval;
+pub(crate) mod permission_projection;
+pub(crate) mod plan_confirmation;
 pub(crate) use approval::authorize_remote_workspace;
 pub(crate) use approval::{ApprovalHost, StudioApprovalOptions};
 pub(crate) use permission_projection::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 pub use permission_projection::{PermissionProjectionError, project_execution_permission};
 pub(crate) use plan_confirmation::document_identity as plan_confirmation_document_identity;
 pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};
-mod child_resources;
+pub(crate) mod child_resources;
 pub(crate) use child_resources::WorkspaceBindingAdmission;
 pub use child_resources::WorkspacePreparationOwner;
-mod children;
-mod close_storage;
+pub(crate) mod children;
+pub(crate) use crate::studio::session_runtime::close_storage;
 pub(crate) use agent_services::WorkspaceRecoveryPublisher;
 pub(crate) use child_resources::CleanupGate;
 pub(crate) use close_storage::CloseStorage;
@@ -58,13 +54,12 @@ pub(crate) enum ClosePurpose {
     Preserve,
     Delete,
 }
-mod published_resources;
-pub(crate) use published_resources::ArchiveScopeSeal;
-mod report_receiver;
+pub(crate) mod published_resources;
 pub use children::{ChildThreadRequest, StudioChildFactory, StudioChildResources};
-mod mcp;
+pub(crate) use published_resources::ArchiveScopeSeal;
+pub(crate) mod mcp;
 pub(crate) mod media;
-mod tools;
+pub(crate) mod tools;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -275,94 +270,63 @@ pub(crate) enum EntryPurpose {
 }
 
 use crate::session::AgentInstance;
-mod acp;
 
 type ActivationOutcome = Result<ThreadHandle, Arc<ThreadAssemblyError>>;
 #[derive(Debug)]
-struct Preparation {
-    resources: crate::session::PreparedResources,
-    identity: Option<crate::AgentThreadIdentity>,
+pub(crate) struct Preparation {
+    pub(crate) resources: crate::session::PreparedResources,
+    pub(crate) identity: Option<crate::AgentThreadIdentity>,
     /// The factory has stopped; its original preparation still owns settlement until ACK.
-    settlement: Option<WorkspacePreparationOwner>,
-    parent_id: Option<String>,
-    cancellation: tokio_util::sync::CancellationToken,
-    result: Option<tokio::sync::watch::Receiver<Option<ActivationOutcome>>>,
+    pub(crate) settlement: Option<WorkspacePreparationOwner>,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) cancellation: tokio_util::sync::CancellationToken,
+    pub(crate) result: Option<tokio::sync::watch::Receiver<Option<ActivationOutcome>>>,
 }
 
 #[derive(Debug)]
-struct FailedPreparation {
-    resources: crate::session::PreparedResources,
-    identity: Option<crate::AgentThreadIdentity>,
-    settlement: Option<WorkspacePreparationOwner>,
-    gate: tokio::sync::Mutex<()>,
+pub(crate) struct FailedPreparation {
+    pub(crate) resources: crate::session::PreparedResources,
+    pub(crate) identity: Option<crate::AgentThreadIdentity>,
+    pub(crate) settlement: Option<WorkspacePreparationOwner>,
+    pub(crate) gate: tokio::sync::Mutex<()>,
 }
 
 /// One transaction boundary for registration, activation publication and close admission.
 /// Sub-owners never acquire independent locks: a commit spanning them remains atomic.
 #[derive(Debug, Default)]
-struct State {
-    members: EntryRegistry,
-    activation: ActivationCoordinator,
-    close: CloseCoordinator,
-    agent_services: Option<Arc<agent_services::AgentServices>>,
-    observation: Option<observation::AssemblyObservation>,
-    child_factory: Option<children::ChildFactory>,
+pub(crate) struct State {
+    pub(crate) members: EntryRegistry,
+    pub(crate) activation: ActivationCoordinator,
+    pub(crate) close: CloseCoordinator,
+    pub(crate) dispatch: agent_operations::ReviewDispatcher,
+    pub(crate) agent_services: Option<Arc<agent_services::StudioSessionOwner>>,
+    pub(crate) observation: Option<observation::AssemblyObservation>,
+    pub(crate) child_factory: Option<children::ChildFactory>,
 }
 
-use activation::ActivationCoordinator;
-use close::CloseCoordinator;
-use entry_registry::EntryRegistry;
+pub(crate) use activation::ActivationCoordinator;
+pub(crate) use close::CloseCoordinator;
+pub(crate) use entry_registry::EntryRegistry;
 
 pub(crate) type SessionCloseReport = Arc<Vec<(String, Arc<ThreadAssemblyError>)>>;
 
 /// Prepared session installation data. The table checks and commits these slots; it does not run callbacks.
 #[derive(Clone)]
-pub(crate) struct SessionAssignment(AssignmentKind);
+pub(crate) struct SessionAssignment(pub(crate) AssignmentKind);
 
 #[derive(Clone)]
-enum AssignmentKind {
-    Services {
-        services: Arc<agent_services::AgentServices>,
+pub(crate) enum AssignmentKind {
+    Installation {
+        services: Option<Arc<agent_services::StudioSessionOwner>>,
         child_factory: children::ChildFactory,
     },
     Observation(observation::AssemblyObservation),
     WorkspaceRecovery(WorkspaceRecoveryPublisher),
-    #[cfg(test)]
-    Factory(children::ChildFactory),
 }
 
 impl SessionAssignment {
     fn kind(&self) -> &AssignmentKind {
         &self.0
-    }
-
-    pub(crate) fn services(
-        config: crate::config::ConfigRuntime,
-        store: crate::studio::StudioStore,
-        events: crate::studio::ProductEventBus,
-        factory: crate::studio::StudioThreadFactory,
-        performance: crate::studio::ModelPerformanceOwner,
-        recovery: crate::studio::StudioRecoveryRegistry,
-        acp_business: crate::studio::runtime::acp_business::AcpBusinessOwner,
-    ) -> Self {
-        let child_factory = children::ChildFactory::new(children::ConfiguredChildFactory::new(
-            config.clone(),
-            factory.clone(),
-        ));
-        Self(AssignmentKind::Services {
-            services: Arc::new(agent_services::AgentServices {
-                factory,
-                config,
-                store,
-                events,
-                performance,
-                recovery,
-                operations: Default::default(),
-                workspace_recovery: None,
-                acp_business: Some(acp_business),
-            }),
-            child_factory,
-        })
     }
 
     pub(crate) fn workspace_recovery(publisher: WorkspaceRecoveryPublisher) -> Self {
@@ -402,11 +366,13 @@ impl AssignmentGuard<'_> {
 
     pub(crate) fn commit(&mut self, assignment: &SessionAssignment) {
         match assignment.kind() {
-            AssignmentKind::Services {
+            AssignmentKind::Installation {
                 services,
                 child_factory,
             } => {
-                self.state.agent_services = Some(Arc::clone(services));
+                if let Some(services) = services {
+                    self.state.agent_services = Some(Arc::clone(services));
+                }
                 self.state.child_factory = Some(child_factory.clone());
             }
             AssignmentKind::Observation(observation) => {
@@ -421,10 +387,6 @@ impl AssignmentGuard<'_> {
                 // In-flight operations keep the leases they already captured.
                 Arc::make_mut(services).workspace_recovery = Some(publisher.clone());
             }
-            #[cfg(test)]
-            AssignmentKind::Factory(factory) => {
-                self.state.child_factory = Some(factory.clone());
-            }
         }
     }
 
@@ -433,8 +395,9 @@ impl AssignmentGuard<'_> {
             || !self.state.members.entries.is_empty()
             || !self.state.activation.creating.is_empty();
         let rejected = match assignment.kind() {
-            AssignmentKind::Services { .. } => {
-                busy || self.state.agent_services.is_some() || self.state.child_factory.is_some()
+            AssignmentKind::Installation { services, .. } => {
+                busy || (services.is_some() && self.state.agent_services.is_some())
+                    || self.state.child_factory.is_some()
             }
             AssignmentKind::Observation(_) => busy || self.state.observation.is_some(),
             AssignmentKind::WorkspaceRecovery(_) => {
@@ -444,8 +407,6 @@ impl AssignmentGuard<'_> {
                     .as_ref()
                     .is_none_or(|services| services.workspace_recovery.is_some())
             }
-            #[cfg(test)]
-            AssignmentKind::Factory(_) => busy || self.state.child_factory.is_some(),
         };
         rejected.then_some(ThreadAssemblyError::Closed)
     }
@@ -466,7 +427,7 @@ struct CloseLife {
 pub(crate) struct Registry {
     pub(crate) session_id: crate::SessionId,
     state: Mutex<State>,
-    changed: tokio::sync::Notify,
+    pub(crate) changed: tokio::sync::Notify,
     life: Mutex<CloseLife>,
 }
 
@@ -484,7 +445,7 @@ impl Registry {
         }
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+    pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -523,8 +484,8 @@ impl Drop for Registry {
 pub(crate) use crate::session::SessionRuntime;
 
 pub(crate) struct Reservation {
-    registry: Arc<Registry>,
-    id: String,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) id: String,
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
@@ -638,64 +599,6 @@ impl SessionRuntime {
             .is_some_and(|current| Arc::ptr_eq(current, &failed))
         {
             state.activation.failed_preparations.remove(id);
-        }
-        Ok(())
-    }
-
-    async fn close_prepared_resources(
-        &self,
-        id: &str,
-        resources: &crate::session::PreparedResources,
-    ) -> Result<(), ThreadAssemblyError> {
-        let scope = match resources {
-            crate::session::PreparedResources::Native(native) => native,
-            crate::session::PreparedResources::Acp(acp) => {
-                let events = self
-                    .0
-                    .state()
-                    .agent_services
-                    .as_ref()
-                    .map(|services| services.events.clone());
-                let settlement = if let Some(events) = events {
-                    acp.settle_association(&events).await.map_err(|source| {
-                        ThreadAssemblyError::Resource {
-                            operation: "settle successful ACP session association",
-                            source: source.into_boxed_dyn_error(),
-                        }
-                    })
-                } else {
-                    Ok(())
-                };
-                let outcome = acp.close().await;
-                settlement?;
-                return if outcome.local_complete {
-                    Ok(())
-                } else {
-                    Err(ThreadAssemblyError::Unpublished(id.into()))
-                };
-            }
-        };
-        scope
-            .candidates
-            .retry(None)
-            .await
-            .map_err(|source| ThreadAssemblyError::Resource {
-                operation: "close preparation candidates",
-                source: source.into_boxed_dyn_error(),
-            })?;
-        let services = self.0.state().agent_services.clone();
-        if let Some(services) = services {
-            services
-                .factory
-                .close_scope_tools(id, scope)
-                .await
-                .map_err(|source| ThreadAssemblyError::Resource {
-                    operation: "close preparation binding and MCP",
-                    source: source.into_boxed_dyn_error(),
-                })?;
-        }
-        if scope.has_obligations() {
-            return Err(ThreadAssemblyError::Unpublished(id.into()));
         }
         Ok(())
     }
@@ -850,14 +753,15 @@ impl SessionRuntime {
         &self,
         factory: impl StudioChildFactory,
     ) -> Result<(), ThreadAssemblyError> {
-        let mut state = self.0.state();
-        if state.close.closing
-            || !state.members.entries.is_empty()
-            || !state.activation.creating.is_empty()
+        let assignment = SessionAssignment::child_factory(factory);
+        let mut installation = self.lock_assignment();
+        if installation.state.close.closing
+            || !installation.state.members.entries.is_empty()
+            || !installation.state.activation.creating.is_empty()
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        state.child_factory = Some(children::ChildFactory::new(factory));
+        installation.commit(&assignment);
         Ok(())
     }
 
@@ -932,7 +836,7 @@ pub(crate) use tools::{StudioCommandProcesses, WeakCommandProcesses};
 
 #[cfg(test)]
 #[path = "thread_assembler/close_tests.rs"]
-mod close_regression_tests;
+pub(crate) mod close_regression_tests;
 
 #[cfg(test)]
 pub(crate) mod test_support;

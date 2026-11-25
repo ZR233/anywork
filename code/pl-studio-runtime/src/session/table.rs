@@ -251,7 +251,9 @@ mod tests {
     fn rejected_assignment_writes_nothing_and_is_not_registered() {
         let table = SessionTable::new();
         table
-            .push_assignment(SessionAssignment::test_factory())
+            .push_assignment(SessionAssignment::child_factory(
+                crate::thread_assembler::children::TestChildFactory,
+            ))
             .unwrap();
         let first = session_id("session-a");
         let second = session_id("session-b");
@@ -289,7 +291,9 @@ mod tests {
             let table = table.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                table.push_assignment(SessionAssignment::test_factory())
+                table.push_assignment(SessionAssignment::child_factory(
+                    crate::thread_assembler::children::TestChildFactory,
+                ))
             })
         };
         assert!(observation.join().expect("observation thread").is_ok());

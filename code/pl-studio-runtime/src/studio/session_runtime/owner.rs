@@ -1,5 +1,5 @@
 //! Saved agent identities, explicit cold activation and read-only history/Profile queries.
-pub(super) mod query;
+pub(crate) mod query;
 #[cfg(test)]
 use super::host_agent_tools::query::{Kind, QueryTool};
 use super::*;
@@ -22,20 +22,19 @@ pub(crate) type WorkspaceRecoveryPublisher = std::sync::Arc<
 >;
 
 #[derive(Clone)]
-pub(super) struct AgentServices {
-    pub(super) factory: crate::studio::StudioThreadFactory,
-    pub(super) config: crate::config::ConfigRuntime,
-    pub(super) store: crate::studio::StudioStore,
-    pub(super) events: crate::studio::ProductEventBus,
-    pub(super) performance: crate::studio::ModelPerformanceOwner,
-    pub(super) recovery: crate::studio::StudioRecoveryRegistry,
-    pub(super) operations: super::agent_operations::ReviewDispatcher,
-    pub(super) workspace_recovery: Option<WorkspaceRecoveryPublisher>,
-    pub(super) acp_business: Option<crate::studio::runtime::acp_business::AcpBusinessOwner>,
+pub(crate) struct StudioSessionOwner {
+    pub(crate) factory: crate::studio::StudioThreadFactory,
+    pub(crate) config: crate::config::ConfigRuntime,
+    pub(crate) store: crate::studio::StudioStore,
+    pub(crate) events: crate::studio::ProductEventBus,
+    pub(crate) performance: crate::studio::ModelPerformanceOwner,
+    pub(crate) recovery: crate::studio::StudioRecoveryRegistry,
+    pub(crate) workspace_recovery: Option<WorkspaceRecoveryPublisher>,
+    pub(crate) acp_business: Option<crate::studio::runtime::acp_business::AcpBusinessOwner>,
 }
-impl std::fmt::Debug for AgentServices {
+impl std::fmt::Debug for StudioSessionOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AgentServices")
+        f.write_str("StudioSessionOwner")
     }
 }
 #[derive(Serialize)]
@@ -48,14 +47,14 @@ struct Profiles<'a> {
 
 #[derive(Debug, thiserror::Error)]
 #[error("Agent service failed: {0}")]
-pub(super) struct ServiceError(#[source] pub(super) anyhow::Error);
+pub(crate) struct ServiceError(#[source] pub(crate) anyhow::Error);
 
 impl super::agents::AgentHost {
-    pub(super) fn query_services(
+    pub(crate) fn query_services(
         &self,
         context: &pl_tool::collaboration::control::AgentCallContext,
         model: bool,
-    ) -> Result<Arc<AgentServices>, pl_tool::collaboration::control::ControlError> {
+    ) -> Result<Arc<StudioSessionOwner>, pl_tool::collaboration::control::ControlError> {
         use pl_tool::collaboration::control::ControlError;
         self.caller(context)?;
         if self.identity.parent_agent_id.is_some() {
@@ -128,15 +127,15 @@ impl super::agents::AgentHost {
     }
 }
 
-impl AgentServices {
-    pub(super) fn identity(&self, thread: &str) -> Result<crate::AgentThreadIdentity> {
+impl StudioSessionOwner {
+    pub(crate) fn identity(&self, thread: &str) -> Result<crate::AgentThreadIdentity> {
         self.events
             .agent_execution_identity(thread)
             .map(|(identity, _, _)| identity)
             .context("agent directory identity is missing")
     }
 
-    pub(super) fn direct_child(&self, caller: &str, target: &str) -> Result<bool> {
+    pub(crate) fn direct_child(&self, caller: &str, target: &str) -> Result<bool> {
         let caller = self.identity(caller)?;
         let target = self.identity(target)?;
         Ok(caller.session_id == target.session_id
@@ -151,7 +150,7 @@ impl AgentServices {
         }
     }
 
-    pub(super) async fn saved_agents(
+    pub(crate) async fn saved_agents(
         &self,
         caller: &str,
         loaded: &std::collections::BTreeSet<String>,
@@ -189,7 +188,7 @@ impl AgentServices {
         Ok(rows)
     }
 
-    pub(super) async fn activate_child(
+    pub(crate) async fn activate_child(
         &self,
         owner: &SessionRuntime,
         caller: &str,
@@ -240,7 +239,7 @@ impl AgentServices {
         Ok(())
     }
 
-    pub(super) async fn record(&self, id: &str) -> Result<crate::Thread> {
+    pub(crate) async fn record(&self, id: &str) -> Result<crate::Thread> {
         // CatalogStore is the directory owner already loaded in RAM. There is no SQL/file read
         // and no fallback through a second product mirror during unpublished preparation.
         self.store
@@ -249,7 +248,7 @@ impl AgentServices {
             .map(crate::Thread::from)
             .context("agent product association is missing")
     }
-    pub(super) async fn authorize(
+    pub(crate) async fn authorize(
         &self,
         caller: &str,
         target: &str,
@@ -282,6 +281,37 @@ impl AgentServices {
         Ok(path)
     }
 }
+impl crate::thread_assembler::SessionAssignment {
+    pub(crate) fn services(
+        config: crate::config::ConfigRuntime,
+        store: crate::studio::StudioStore,
+        events: crate::studio::ProductEventBus,
+        factory: crate::studio::StudioThreadFactory,
+        performance: crate::studio::ModelPerformanceOwner,
+        recovery: crate::studio::StudioRecoveryRegistry,
+        acp_business: crate::studio::runtime::acp_business::AcpBusinessOwner,
+    ) -> Self {
+        let child_factory = children::ChildFactory::new(children::ConfiguredChildFactory::new(
+            config.clone(),
+            factory.clone(),
+        ));
+        Self(AssignmentKind::Installation {
+            services: Some(Arc::new(StudioSessionOwner {
+                factory,
+                config,
+                store,
+                events,
+                performance,
+                recovery,
+
+                workspace_recovery: None,
+                acp_business: Some(acp_business),
+            })),
+            child_factory,
+        })
+    }
+}
+
 impl SessionRuntime {
     #[cfg(test)]
     pub(crate) fn set_agent_services(
@@ -301,21 +331,21 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        state.agent_services = Some(Arc::new(AgentServices {
+        state.agent_services = Some(Arc::new(StudioSessionOwner {
             factory,
             config,
             store,
             events,
             performance,
             recovery,
-            operations: Default::default(),
+
             workspace_recovery: None,
             acp_business: None,
         }));
         Ok(())
     }
 
-    pub(super) fn agent_profiles_snapshot(
+    pub(crate) fn agent_profiles_snapshot(
         &self,
     ) -> Result<crate::config::AgentProfilesSnapshot, ThreadAssemblyError> {
         let services =

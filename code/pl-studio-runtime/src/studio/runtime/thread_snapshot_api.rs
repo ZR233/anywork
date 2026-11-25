@@ -44,10 +44,11 @@ impl StudioRuntime {
         let thread = self.read_protocol_thread(thread_id).await?;
         // A read-only projection never prepares storage: it reports only an already-complete
         // current document, so a legacy checkpoint stays invisible until explicit activation.
-        let current =
-            crate::studio::thread_factory::recovery::load_current_read_only(&self.store, &thread)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Thread has no saved current"))?;
+        let current = self
+            .store
+            .load_current_read_only(&thread)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Thread has no saved current"))?;
         let state = current.state.to_paused_snapshot();
         self.store
             .thread_persistence()
@@ -107,9 +108,7 @@ impl StudioRuntime {
             );
         }
         let thread = self.read_protocol_thread(thread_id).await?;
-        if let Some(current) =
-            crate::studio::thread_factory::recovery::load_current_read_only(&self.store, &thread)
-                .await?
+        if let Some(current) = self.store.load_current_read_only(&thread).await?
             && let Some(record) = current.state.extensions.get("studio.mode")
             && let Some(saved) = crate::mode::presentation_mode(&record.payload)?
         {

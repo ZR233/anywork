@@ -7,47 +7,47 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::thread_assembler) enum Order {
+pub(crate) enum Order {
     Ascending,
     #[default]
     Descending,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::thread_assembler) enum Detail {
+pub(crate) enum Detail {
     #[default]
     Text,
     Full,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::thread_assembler) struct SessionInput {
-    pub(in crate::thread_assembler) target: String,
+pub(crate) struct SessionInput {
+    pub(crate) target: String,
     #[serde(default)]
-    pub(in crate::thread_assembler) cursor: Option<String>,
+    pub(crate) cursor: Option<String>,
     #[serde(default = "page_size")]
-    pub(in crate::thread_assembler) limit: usize,
+    pub(crate) limit: usize,
     #[serde(default)]
-    pub(in crate::thread_assembler) order: Order,
+    pub(crate) order: Order,
     #[serde(default)]
-    pub(in crate::thread_assembler) detail: Detail,
+    pub(crate) detail: Detail,
 }
-pub(in crate::thread_assembler) fn page_size() -> usize {
+pub(crate) fn page_size() -> usize {
     20
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::thread_assembler) struct Cursor {
-    pub(in crate::thread_assembler) database_id: Option<String>,
-    pub(in crate::thread_assembler) version: u32,
-    pub(in crate::thread_assembler) target: String,
-    pub(in crate::thread_assembler) through: u64,
-    pub(in crate::thread_assembler) order: Order,
-    pub(in crate::thread_assembler) detail: Detail,
-    pub(in crate::thread_assembler) anchor: u64,
+pub(crate) struct Cursor {
+    pub(crate) database_id: Option<String>,
+    pub(crate) version: u32,
+    pub(crate) target: String,
+    pub(crate) through: u64,
+    pub(crate) order: Order,
+    pub(crate) detail: Detail,
+    pub(crate) anchor: u64,
 }
-impl AgentServices {
-    pub(in crate::thread_assembler) async fn session_page(
+impl StudioSessionOwner {
+    pub(crate) async fn session_page(
         &self,
         input: SessionInput,
         path: Vec<crate::AgentId>,
@@ -155,7 +155,7 @@ impl AgentServices {
     }
 }
 /// 由 catalog 目录摘要构造只读 snapshot：仅承载 durable lifecycle，不含 Turn/Task 明细。
-pub(super) fn directory_snapshot(status: crate::ThreadStatus) -> pl_core::thread::ThreadSnapshot {
+pub(crate) fn directory_snapshot(status: crate::ThreadStatus) -> pl_core::thread::ThreadSnapshot {
     use crate::ThreadStatus;
     use pl_core::thread::{ThreadLifecycle, ThreadSnapshot};
     ThreadSnapshot {

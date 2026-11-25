@@ -2,11 +2,11 @@
 use super::*;
 
 #[derive(Debug)]
-pub(super) struct CloseCoordinator {
-    pub(super) operation_gates: BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
-    pub(super) sealed_agents: BTreeMap<String, usize>,
-    pub(super) closing: bool,
-    pub(super) attachment: Arc<dyn close_storage::StorageAttachment>,
+pub(crate) struct CloseCoordinator {
+    pub(crate) operation_gates: BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    pub(crate) sealed_agents: BTreeMap<String, usize>,
+    pub(crate) closing: bool,
+    pub(crate) attachment: Arc<dyn close_storage::StorageAttachment>,
 }
 
 impl Default for CloseCoordinator {
@@ -21,7 +21,7 @@ impl Default for CloseCoordinator {
 }
 
 impl CloseCoordinator {
-    pub(super) fn operation_gate(&mut self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn operation_gate(&mut self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
         if let Some(gate) = self
             .operation_gates
             .get(id)
@@ -139,7 +139,7 @@ impl SessionRuntime {
         }
     }
 
-    pub(super) async fn close_tree_with_purpose(
+    pub(crate) async fn close_tree_with_purpose(
         &self,
         root: &str,
         members: &[crate::studio::store::thread_preparation::PreparationIdentity],
@@ -258,7 +258,7 @@ impl SessionRuntime {
         self.close_for_purpose(id, ClosePurpose::Preserve).await
     }
 
-    pub(super) async fn close_for_purpose(
+    pub(crate) async fn close_for_purpose(
         &self,
         id: &str,
         purpose: ClosePurpose,
@@ -275,7 +275,7 @@ impl SessionRuntime {
     }
 
     /// The caller retains this identity's operation permit, including cold close restoration.
-    pub(super) async fn close_with_permit(
+    pub(crate) async fn close_with_permit(
         &self,
         id: &str,
         operation: tokio::sync::OwnedMutexGuard<()>,
@@ -284,7 +284,7 @@ impl SessionRuntime {
             .await
     }
 
-    pub(super) async fn close_with_permit_for_purpose(
+    pub(crate) async fn close_with_permit_for_purpose(
         &self,
         id: &str,
         operation: tokio::sync::OwnedMutexGuard<()>,
@@ -327,7 +327,7 @@ impl SessionRuntime {
 
     /// Reject invalid targets before revoking delivery; a failed admitted close
     /// keeps this owner unavailable for new work until the original close retries.
-    pub(super) fn admit_thread_close(
+    pub(crate) fn admit_thread_close(
         &self,
         id: &str,
     ) -> Result<Option<(Arc<()>, ThreadHandle)>, ThreadAssemblyError> {
@@ -348,7 +348,7 @@ impl SessionRuntime {
 
     // Internal cleanup already owns its reservation and operation permit. Only
     // external admission cancels or rejects the target's own preparation.
-    pub(super) fn close_entry(
+    pub(crate) fn close_entry(
         state: &mut State,
         id: &str,
     ) -> Result<Option<(Arc<()>, ThreadHandle)>, ThreadAssemblyError> {
@@ -390,7 +390,7 @@ impl SessionRuntime {
         }))
     }
 
-    pub(super) async fn cancel_and_drain_child_preparations(
+    pub(crate) async fn cancel_and_drain_child_preparations(
         &self,
         id: &str,
     ) -> Result<(), ThreadAssemblyError> {
@@ -436,7 +436,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn close_native_core(
+    pub(crate) async fn close_native_core(
         &self,
         id: &str,
         thread: &ThreadHandle,
@@ -465,7 +465,7 @@ impl SessionRuntime {
         Ok(())
     }
 
-    pub(super) async fn close_thread_for_purpose(
+    pub(crate) async fn close_thread_for_purpose(
         &self,
         id: &str,
         operation: tokio::sync::OwnedMutexGuard<()>,
@@ -564,31 +564,8 @@ impl SessionRuntime {
             return Box::pin(self.close_thread_for_purpose(id, operation, purpose)).await;
         }
         let resources = self.native_resources(&thread)?;
-        let services = self.0.state().agent_services.clone();
-        if let Some(services) = services {
-            services
-                .factory
-                .close_scope_tools(id, &resources)
-                .await
-                .map_err(|source| ThreadAssemblyError::Resource {
-                    operation: "close Native tool binding and MCP",
-                    source: source.into_boxed_dyn_error(),
-                })?;
-        }
-        self.drain_observation_for_purpose(id, purpose).await?;
-        self.join_close_storage_for_purpose(id, purpose).await?;
-        self.close_published_resources(id, &incarnation).await?;
-        let retired = !self
-            .0
-            .state()
-            .activation
-            .unpublished_children
-            .contains_key(id);
-        self.confirm_preparation_close_for_purpose(id, retired, purpose)
+        self.finish_native_retirement(id, &resources, &incarnation, purpose)
             .await?;
-        if resources.has_obligations() {
-            return Err(ThreadAssemblyError::Unpublished(id.into()));
-        }
         let removed = {
             let mut state = self.0.state();
             if state.members.entries.get(id).is_some_and(|entry| {
@@ -686,7 +663,7 @@ impl SessionRuntime {
         completion.await
     }
 
-    pub(super) fn broadcast_close_cancellation(&self) {
+    pub(crate) fn broadcast_close_cancellation(&self) {
         let (preparing, executing, resources) = {
             let mut state = self.0.state();
             state.close.closing = true;
@@ -769,7 +746,7 @@ impl SessionRuntime {
         }
     }
 
-    pub(super) async fn run_close_algorithm(&self) -> Vec<(String, ThreadAssemblyError)> {
+    pub(crate) async fn run_close_algorithm(&self) -> Vec<(String, ThreadAssemblyError)> {
         // 共享准入先封闭，所有准备过程 cancellation 先广播；此处不等待它们排空。
         self.broadcast_close_cancellation();
 
@@ -839,7 +816,7 @@ impl SessionRuntime {
     ///
     /// 根 = 父 entry 不在册，或父 entry 已在 `covered`（其自身 close 不会再等待该子项）。orphan =
     /// 父 entry 不在册，或父 entry 已在 `covered`。这样迟到 owner 也有归属、不被漏关。
-    pub(super) fn select_uncovered_roots(
+    pub(crate) fn select_uncovered_roots(
         &self,
         covered: &BTreeSet<String>,
     ) -> (Vec<String>, Vec<String>) {
@@ -875,7 +852,7 @@ impl SessionRuntime {
     }
 
     /// 把一批根及其可达子树、以及 orphan 子资源标记为已负责，避免后续批次重复 close。
-    pub(super) fn mark_covered(
+    pub(crate) fn mark_covered(
         &self,
         covered: &mut BTreeSet<String>,
         roots: &[String],
@@ -901,7 +878,7 @@ impl SessionRuntime {
     }
 
     /// 并发关闭一批独立森林根与 orphan unpublished，返回累计失败（`join_all` 保序，顺序确定）。
-    pub(super) async fn close_independent_batch(
+    pub(crate) async fn close_independent_batch(
         &self,
         roots: Vec<String>,
         orphan_unpublished: Vec<String>,
@@ -940,7 +917,7 @@ impl SessionRuntime {
     /// 与独立树关闭并发进行，不是前置 barrier；但 close_session 成功返回前必须等到它完成，避免仍在
     /// 清理/持有资源的准备 owner 被误判为已停（否则严格关闭会停 writer / 关库 / 发布 `Stopped`）。
     /// 取消已广播，`closing` 保证不会新增准备 owner，因此集合只会收缩。
-    pub(super) async fn await_all_preparations_drained(&self) {
+    pub(crate) async fn await_all_preparations_drained(&self) {
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -963,14 +940,14 @@ impl SessionRuntime {
     /// 自己的 creating/preparing 子过程。它们彼此独立，因此并发收束；全部就绪后才 `close(id)`。
     /// 只等待自身依赖，绝不等待其他森林/分支。失败累计并保留 owner，返回本子树全部失败（含 id
     /// 自身）。通过 boxed future 递归，避免 async fn 的无限类型。
-    pub(super) fn close_entry_tree<'a>(
+    pub(crate) fn close_entry_tree<'a>(
         &'a self,
         id: String,
     ) -> futures::future::BoxFuture<'a, Vec<(String, ThreadAssemblyError)>> {
         self.close_entry_tree_for_purpose(id, ClosePurpose::Preserve)
     }
 
-    pub(super) fn close_entry_tree_for_purpose<'a>(
+    pub(crate) fn close_entry_tree_for_purpose<'a>(
         &'a self,
         id: String,
         purpose: ClosePurpose,
@@ -978,7 +955,7 @@ impl SessionRuntime {
         self.close_entry_tree_in_scope(id, purpose, None)
     }
 
-    pub(super) fn close_entry_tree_in_scope<'a>(
+    pub(crate) fn close_entry_tree_in_scope<'a>(
         &'a self,
         id: String,
         purpose: ClosePurpose,
@@ -1063,7 +1040,7 @@ impl SessionRuntime {
     /// 节点**子项**的创建准备（`creating` 的 parent/`preparing_children` 的 parent 指向该 id）。
     /// 取消已由 `close_session` 会话内广播；这里只在该节点确有对应准备过程时等待其真实离开注册表，不等待
     /// 任何其他分支或全局集合。`closing`/`entry.native_mut()?.ready =false` 保证等待期间不会产生新的子过程。
-    pub(super) async fn await_own_preparations_drained(&self, id: &str) {
+    pub(crate) async fn await_own_preparations_drained(&self, id: &str) {
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);

@@ -2,7 +2,7 @@
 use super::{
     EntryPurpose, SessionRuntime, ThreadAssemblyError,
     agent_review::{ReviewFeedbackSettlement, review_feedback_receipt_extension_id},
-    agent_services::AgentServices,
+    owner::StudioSessionOwner,
     pending_delivery::PendingNativeDelivery,
 };
 use anyhow::{Context, Result};
@@ -41,7 +41,7 @@ struct ReportReceiverFailure {
 impl SessionRuntime {
     /// A saved receipt does not discharge a cancelled/failed receiver cleanup. Both ACK recovery
     /// and normal activation retry this responsibility; neither may return the receiver as ready.
-    pub(super) async fn finish_report_receiver(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    pub(crate) async fn finish_report_receiver(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let incarnation = self.0.state().members.entries.get(id).and_then(|entry| {
             (entry.native().ok()?.purpose == EntryPurpose::ReportReceiver)
                 .then_some(entry.native().ok()?.incarnation.clone())
@@ -55,7 +55,7 @@ impl SessionRuntime {
 
     /// Called with the parent's operation permit. This is NOT a final close: do not seal the
     /// identity, traverse children, stop tool bindings, or join the recovery job delivering here.
-    pub(super) async fn release_report_receiver(
+    pub(crate) async fn release_report_receiver(
         &self,
         id: &str,
         incarnation: &Arc<()>,
@@ -97,11 +97,11 @@ impl SessionRuntime {
     }
 }
 
-impl AgentServices {
+impl StudioSessionOwner {
     /// Deliver only the original ID/body and wait for the marker + Current inbox ACK. A normal
     /// or close-storage owner is borrowed; a cold recipient gets a separately identified temporary
     /// purpose in that same Entry registry, never an executable owner or a new permanent seal.
-    pub(super) async fn redeliver_parent_report(
+    pub(crate) async fn redeliver_parent_report(
         &self,
         owner: &SessionRuntime,
         parent: &str,
@@ -131,7 +131,7 @@ impl AgentServices {
         .await
     }
 
-    pub(super) async fn deliver_pending_native(
+    pub(crate) async fn deliver_pending_native(
         &self,
         owner: &SessionRuntime,
         parent: &str,
@@ -141,7 +141,7 @@ impl AgentServices {
             .await
     }
 
-    pub(super) async fn persist_review_delivery(
+    pub(crate) async fn persist_review_delivery(
         &self,
         owner: &SessionRuntime,
         source: &str,
@@ -153,7 +153,7 @@ impl AgentServices {
         Ok(saved)
     }
 
-    pub(super) async fn persist_pending_native_source(
+    pub(crate) async fn persist_pending_native_source(
         &self,
         owner: &SessionRuntime,
         source: &str,
@@ -163,7 +163,7 @@ impl AgentServices {
             .await
     }
 
-    pub(super) async fn clear_pending_native_source(
+    pub(crate) async fn clear_pending_native_source(
         &self,
         owner: &SessionRuntime,
         source: &str,
@@ -173,7 +173,7 @@ impl AgentServices {
             .await
     }
 
-    pub(super) async fn persist_review_feedback_settlement(
+    pub(crate) async fn persist_review_feedback_settlement(
         &self,
         owner: &SessionRuntime,
         source: &str,
@@ -183,7 +183,7 @@ impl AgentServices {
             .await
     }
 
-    pub(super) async fn clear_review_feedback_settlement(
+    pub(crate) async fn clear_review_feedback_settlement(
         &self,
         owner: &SessionRuntime,
         source: &str,
@@ -197,7 +197,7 @@ impl AgentServices {
         .await
     }
 
-    pub(super) async fn clear_review_feedback_receipt(
+    pub(crate) async fn clear_review_feedback_receipt(
         &self,
         owner: &SessionRuntime,
         target: &str,

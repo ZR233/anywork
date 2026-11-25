@@ -1,5 +1,5 @@
 //! Restart resumes only saved explicit child-close jobs, without model/workspace activation.
-use super::{SessionRuntime, agent_services::AgentServices};
+use super::{SessionRuntime, owner::StudioSessionOwner};
 use anyhow::{Context, Result, ensure};
 use pl_tool::collaboration::thread::WorkspaceRelease;
 use std::collections::BTreeMap;
@@ -46,8 +46,8 @@ impl SessionRuntime {
             let owner = self.clone();
             let recovery = services.clone();
             let id = pending.agent_id.clone();
-            let result = services
-                .operations
+            let result = self
+                .review_dispatcher()
                 .run(
                     pending.root_id.clone(),
                     format!("resume-acp-close:{id}"),
@@ -88,8 +88,8 @@ impl SessionRuntime {
             let admission = self.clone();
             let owner = self.clone();
             let recovery = services.clone();
-            if let Err(error) = services
-                .operations
+            if let Err(error) = self
+                .review_dispatcher()
                 .run(
                     root,
                     "resume-close".into(),
@@ -119,7 +119,7 @@ impl SessionRuntime {
     }
 }
 
-impl AgentServices {
+impl StudioSessionOwner {
     /// Restart resumes only saved explicit close jobs; the join/cleanup progress is the same one
     /// an explicit close runs after freezing its intents.
     async fn resume_child_close_tree(

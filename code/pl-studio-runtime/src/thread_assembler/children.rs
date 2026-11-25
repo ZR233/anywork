@@ -283,9 +283,9 @@ impl<T: StudioChildFactory> ErasedFactory for T {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ChildFactory(Arc<dyn ErasedFactory>);
+pub(crate) struct ChildFactory(Arc<dyn ErasedFactory>);
 impl ChildFactory {
-    pub(super) async fn close_published(
+    pub(crate) async fn close_published(
         &self,
         id: &str,
         disposition: WorkspaceRelease,
@@ -293,7 +293,7 @@ impl ChildFactory {
         self.0.close_published(id, disposition).await
     }
 
-    pub(super) async fn discard_unpublished(
+    pub(crate) async fn discard_unpublished(
         &self,
         id: &str,
         usage: Option<&super::WorkspaceUsageLease>,
@@ -301,11 +301,11 @@ impl ChildFactory {
     ) -> Result<(), ThreadAssemblyError> {
         self.0.discard_unpublished(id, usage, disposition).await
     }
-    pub(super) fn new(factory: impl StudioChildFactory) -> Self {
+    pub(crate) fn new(factory: impl StudioChildFactory) -> Self {
         Self(Arc::new(factory))
     }
 
-    pub(super) async fn admit(
+    pub(crate) async fn admit(
         &self,
         profile_id: &str,
         delegation: crate::DelegationSettings,
@@ -319,15 +319,15 @@ impl ChildFactory {
 
 /// Preparation is a product-owned resource before the core Thread exists.
 #[derive(Debug)]
-pub(super) struct PreparingChild {
-    pub(super) parent: String,
-    pub(super) cancellation: tokio_util::sync::CancellationToken,
+pub(crate) struct PreparingChild {
+    pub(crate) parent: String,
+    pub(crate) cancellation: tokio_util::sync::CancellationToken,
 }
 
-pub(super) struct ChildReservation {
+pub(crate) struct ChildReservation {
     registry: Arc<super::Registry>,
-    pub(super) id: String,
-    pub(super) cancellation: tokio_util::sync::CancellationToken,
+    pub(crate) id: String,
+    pub(crate) cancellation: tokio_util::sync::CancellationToken,
 }
 
 impl Drop for ChildReservation {
@@ -376,7 +376,7 @@ impl super::State {
 }
 
 impl super::SessionRuntime {
-    pub(super) fn child_factory(
+    pub(crate) fn child_factory(
         &self,
         context: &pl_tool::collaboration::control::AgentCallContext,
     ) -> Result<ChildFactory, ThreadAssemblyError> {
@@ -384,7 +384,7 @@ impl super::SessionRuntime {
         state.child_admission(context).map(|(_, factory)| factory)
     }
 
-    pub(super) fn reserve_child(
+    pub(crate) fn reserve_child(
         &self,
         context: &pl_tool::collaboration::control::AgentCallContext,
     ) -> Result<(ChildFactory, ChildReservation), ThreadAssemblyError> {
@@ -504,9 +504,10 @@ impl StudioChildFactory for TestChildFactory {
 
 #[cfg(test)]
 impl super::SessionAssignment {
-    pub(crate) fn test_factory() -> Self {
-        Self(super::AssignmentKind::Factory(ChildFactory::new(
-            TestChildFactory,
-        )))
+    pub(crate) fn child_factory(factory: impl StudioChildFactory) -> Self {
+        Self(super::AssignmentKind::Installation {
+            services: None,
+            child_factory: ChildFactory::new(factory),
+        })
     }
 }

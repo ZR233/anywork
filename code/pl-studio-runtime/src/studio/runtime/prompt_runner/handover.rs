@@ -76,12 +76,7 @@ impl StudioRuntime {
                 continue;
             };
             let thread = crate::Thread::from(record);
-            let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
-                &self.store,
-                &thread,
-            )
-            .await?
-            else {
+            let Some(current) = self.store.load_current_read_only(&thread).await? else {
                 continue;
             };
             states.push((child_id, current.state.to_paused_snapshot()));
