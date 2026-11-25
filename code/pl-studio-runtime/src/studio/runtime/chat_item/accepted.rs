@@ -1,11 +1,14 @@
 //! Frozen facts from the original reliable admission. Consumption never changes this shape.
 use super::*;
-use crate::studio::thread_projection::{ContentError, InputView, ProjectionError, input_view};
+use crate::ExecutionItem;
+use crate::studio::thread_projection::{
+    InputProjection, ProjectionError, matches_parent_message, parent_message_shape,
+    project_input_shape,
+};
 use crate::{
     ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
-    MessagePresentation, Thread, ThreadContentLifecycle, ThreadTextChannel,
+    Thread, ThreadContentLifecycle,
 };
-use crate::{ExecutionItem, ExecutionShape};
 use pl_core::{
     context::OpaquePayload,
     thread::{inbox::InboxRecord, input::InputRecord},
@@ -29,27 +32,14 @@ pub(in crate::studio) fn accepted_input_draft(
         .input
         .validate_purpose()
         .map_err(|error| ProjectionError::UserInput(error.to_string()))?;
-    let state = match input_view(record) {
-        Ok(InputView::Content(content)) => {
-            if content.presentation == MessagePresentation::Hidden {
-                return Ok(None);
-            }
-            ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::User,
-                content.text,
-                content.attachments,
-                ThreadContentLifecycle::completed(timestamp),
-            ))
-        }
-        Ok(InputView::ControlNotice { .. }) => return Ok(None),
-        Err(error @ ContentError::Unsupported { .. }) => {
-            ExecutionShape::Raw(ThreadRawItem::stored(
-                vec![original_payload(&record.input.payload)],
-                error.to_string(),
-                timestamp,
-            ))
-        }
-        Err(error) => return Err(ProjectionError::UserInput(error.to_string())),
+    let Some(state) = project_input_shape(
+        record,
+        ThreadContentLifecycle::completed(timestamp),
+        timestamp,
+        InputProjection::Admission,
+    )?
+    else {
+        return Ok(None);
     };
     let item = ExecutionItem::new(
         record.input.id.clone(),
@@ -92,27 +82,15 @@ pub(in crate::studio) fn accepted_inbox_draft(
     validate_admission(thread, accepted_at, database_id)?;
     // Preserve the existing trusted parent route. A source prefix or a role claimed in its body
     // cannot grant public eligibility; other adapters must establish that at their own admission.
-    let Some(parent) = thread.parent_thread_id.as_ref() else {
-        return Ok(None);
-    };
-    if message.source_id != format!("agent:{parent}") {
+    if !matches_parent_message(thread, message) {
         return Ok(None);
     }
     let id = crate::studio::thread_projection::order::message_id(&message.id);
-    let state = if message.payload.format() == "text/plain" && message.payload.version() == 1 {
-        ExecutionShape::Text(ThreadTextItem::new(
-            ThreadTextChannel::ParentAgent,
-            message.payload.content().into(),
-            vec![],
-            ThreadContentLifecycle::completed(timestamp),
-        ))
-    } else {
-        ExecutionShape::Raw(ThreadRawItem::stored(
-            vec![original_payload(&message.payload)],
-            "Opaque accepted parent message",
-            timestamp,
-        ))
-    };
+    let state = parent_message_shape(
+        &message.payload,
+        timestamp,
+        "Opaque accepted parent message",
+    );
     let item = ExecutionItem::new(
         id,
         crate::ItemStamp {
@@ -137,14 +115,6 @@ pub(in crate::studio) fn accepted_inbox_draft(
         database_id,
     )
     .map(Some)
-}
-
-fn original_payload(payload: &OpaquePayload) -> ThreadRawPayload {
-    ThreadRawPayload {
-        format: payload.format().into(),
-        version: payload.version(),
-        content: payload.content().into(),
-    }
 }
 
 fn validate_admission(

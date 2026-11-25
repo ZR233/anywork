@@ -19,6 +19,8 @@ pub mod upgrade;
 mod validate;
 
 #[cfg(test)]
+mod reader_regression_tests;
+#[cfg(test)]
 mod scale;
 
 pub use accounting::HistoryUsageFact;

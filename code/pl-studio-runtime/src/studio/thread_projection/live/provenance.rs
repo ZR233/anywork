@@ -1,13 +1,25 @@
 //! Actual lifecycle folded by the existing projection owner, emitting stateless atomic history events.
-use super::*;
+use super::super::observation_parts::observation_start;
+use super::memory_budget::{RETAINED_ENTRY_OVERHEAD, RetainedBytes};
+use super::placement_window::PlacementWindow;
+use super::preview_cache::{LivePreview, PreviewCache};
+use super::{LIVE_ITEM_WINDOW, ProjectionError, completion_ready, history_millis};
 use crate::history::{
     HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole, PendingBody,
 };
+use crate::studio::runtime::chat_item::static_state;
 use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 use crate::{ExecutionItem, ExecutionShape};
+use crate::{ThreadContentLifecycle, ThreadToolState};
+use pl_core::{
+    chat::ChatDraft,
+    model::ContentBlock,
+    thread::{ThreadEffectBatch, ThreadSnapshot, current::RuntimeEpoch},
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EmittedToolStage {
@@ -19,11 +31,6 @@ pub(super) enum EmittedToolStage {
 
 pub(super) type StagedChanges = (Vec<(ChatFactPosition, HistoryEvent)>, Vec<ChatSourceState>);
 pub(super) type ProvenanceChanges = (Vec<HistoryEvent>, Vec<ChatSourceState>);
-
-fn millis(at: i64) -> Result<i64, ProjectionError> {
-    crate::history::milliseconds_from_seconds(at)
-        .map_err(|error| ProjectionError::History(error.to_string()))
-}
 
 fn position(
     effect: &ThreadEffectBatch,
@@ -75,31 +82,18 @@ fn merge_item_contents(
 ) -> Result<(), ProjectionError> {
     let fields = crate::studio::runtime::chat_item::content_fields(item.state())
         .map_err(|error| ProjectionError::History(error.to_string()))?;
-    for key in fields.keys() {
-        let Some(role) = crate::studio::runtime::chat_item::atom_content_role(key) else {
-            continue;
+    let owner = crate::ContentOwner::Item {
+        item_id: item.id.clone(),
+    };
+    for entry in
+        crate::studio::runtime::chat_item::atom_contents(database_id, &owner, fields.keys())
+    {
+        let crate::ContentTarget::Body { key, .. } = &entry.reference.target else {
+            unreachable!("atom content always references a body");
         };
-        let key = key.as_key();
-        if atom.contents.iter().any(|content| {
-            matches!(
-                &content.reference.target,
-                crate::ContentTarget::Body { key: known, .. } if known == &key
-            )
-        }) {
-            continue;
+        if !atom.contents.iter().any(|content| matches!(&content.reference.target, crate::ContentTarget::Body { key: known, .. } if known == key)) {
+            atom.contents.push(entry);
         }
-        atom.contents.push(crate::ChatAtomContent {
-            role,
-            reference: crate::ContentRef {
-                database_id: database_id.into(),
-                target: crate::ContentTarget::Body {
-                    owner: crate::ContentOwner::Item {
-                        item_id: item.id.clone(),
-                    },
-                    key,
-                },
-            },
-        });
     }
     Ok(())
 }
@@ -111,7 +105,7 @@ fn set_event_atom_columns(
     occurred_at: Option<i64>,
     matched_message_id: Option<&str>,
 ) -> Result<(), ProjectionError> {
-    event.occurred_at = occurred_at.map(millis).transpose()?;
+    event.occurred_at = occurred_at.map(history_millis).transpose()?;
     event.run_id = Some(run.to_string());
     event.turn_id = atom.turn_id.clone();
     event.attempt_id = atom.attempt_id.clone();
@@ -127,6 +121,73 @@ fn set_event_atom_columns(
     event.tool_name = atom.tool.as_ref().map(|tool| tool.name.clone());
     event.source = Some(atom.source.clone());
     Ok(())
+}
+
+#[derive(Copy, Clone)]
+struct HistoryEventStamp {
+    run: RuntimeEpoch,
+    recorded_at: i64,
+}
+
+impl HistoryEventStamp {
+    fn emit_active_state_event(
+        self,
+        id: String,
+        kind: HistoryEventKind,
+        atom: &ChatAtom,
+        occurred_at: Option<i64>,
+        item_type: &str,
+        state: serde_json::Value,
+    ) -> Result<HistoryEvent, ProjectionError> {
+        let mut event = HistoryEvent::new(id, kind, HistoryTimelineRole::Hidden, self.recorded_at);
+        set_event_atom_columns(&mut event, atom, self.run, occurred_at, None)?;
+        crate::studio::runtime::chat_item::build_active_state_event(
+            &mut event, atom, item_type, state,
+        )
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+        Ok(event)
+    }
+
+    fn emit_draft_event(
+        self,
+        atom: &ChatAtom,
+        draft: &ChatDraft,
+        database_id: &str,
+        message_id: Option<&str>,
+        extra_bodies: Vec<PendingBody>,
+    ) -> Result<HistoryEvent, ProjectionError> {
+        let mut event = HistoryEvent::new(
+            draft.item_id.clone(),
+            event_kind_for_draft(atom),
+            draft_timeline_role(atom),
+            self.recorded_at,
+        );
+        set_event_atom_columns(
+            &mut event,
+            atom,
+            self.run,
+            atom.finished_at.or(atom.started_at),
+            message_id,
+        )?;
+        event.original = Some(HistoryOriginalInfo {
+            query_class: draft.query_class.clone(),
+            parent_id: draft
+                .parent_id
+                .as_ref()
+                .map(|parent| parent.as_str().to_owned()),
+            original_kind: atom.kind,
+            tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
+        });
+        crate::studio::runtime::chat_item::build_event_from_draft(
+            &mut event,
+            atom,
+            draft,
+            database_id,
+            extra_bodies,
+        )
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+        Ok(event)
+    }
 }
 
 fn event_kind_for_draft(atom: &ChatAtom) -> HistoryEventKind {
@@ -178,24 +239,76 @@ fn active_item_type(kind: ChatAtomKind) -> &'static str {
     }
 }
 
-impl LiveProjection {
-    /// Execution activation only. Passive conversation opens never create this owner or scan history.
-    pub(in crate::studio) fn restore_current(
-        &mut self,
-        thread: &crate::Thread,
-        state: &ThreadSnapshot,
-    ) -> Result<(), ProjectionError> {
-        if self.provenance_restored {
-            return Err(ProjectionError::History(
-                "current provenance was already restored".into(),
-            ));
-        }
-        let sequence = state.commit_sequence;
-        self.provenance_restored = true;
-        self.observe_current(thread, state, sequence)
+/// The live owners participating in one atomic History effect.
+pub(super) struct ProvenanceWindow<'a> {
+    pub(super) run: RuntimeEpoch,
+    pub(super) placement: &'a mut PlacementWindow,
+    pub(super) previews: &'a mut PreviewCache,
+    pub(super) current_owner_id: Option<&'a str>,
+    pub(super) history_database_id: Option<&'a str>,
+}
+
+#[derive(Default)]
+pub(super) struct ProvenanceLedger {
+    atom_starts: BTreeMap<String, crate::ChatAtom>,
+    emitted_tool_stages: BTreeMap<String, EmittedToolStage>,
+    source_states: BTreeMap<crate::ChatSourceId, crate::ChatSourceState>,
+    pub(super) restored: bool,
+}
+
+impl RetainedBytes for ProvenanceLedger {
+    fn retained_bytes(&self) -> u64 {
+        0_u64
+            .saturating_add(
+                serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                (self.emitted_tool_stages.len() as u64)
+                    .saturating_mul(RETAINED_ENTRY_OVERHEAD)
+                    .saturating_add(
+                        self.emitted_tool_stages
+                            .keys()
+                            .fold(0_u64, |sum, id| sum.saturating_add(id.len() as u64)),
+                    ),
+            )
+            .saturating_add(
+                serde_json::to_vec(&self.source_states.values().collect::<Vec<_>>())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+    }
+}
+
+impl ProvenanceLedger {
+    pub(super) fn has_start(&self, id: &str) -> bool {
+        self.atom_starts.contains_key(id)
     }
 
-    pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {
+    pub(super) fn merge_current_sources(
+        &self,
+        sources: Vec<ChatSourceState>,
+    ) -> Vec<ChatSourceState> {
+        let mut merged = self.source_states.clone();
+        for source in sources {
+            merged.entry(source.source.clone()).or_insert(source);
+        }
+        merged.into_values().collect()
+    }
+
+    pub(super) fn retain(
+        &mut self,
+        state: &ThreadSnapshot,
+        placement: &PlacementWindow,
+        referenced: &BTreeSet<String>,
+    ) {
+        self.emitted_tool_stages.retain(|call_id, _| {
+            let tool_id = super::super::order::tool_id(call_id);
+            placement.has_fact(&tool_id)
+                || referenced.contains(&tool_id)
+                || state.tasks.values().any(|task| task.call_id == *call_id)
+        });
+    }
+
+    pub(super) fn confirm_sources(&mut self, through: u64) {
         self.source_states
             .retain(|_, state| state.ended.is_none_or(|at| at.effect_seq > through));
     }
@@ -231,11 +344,19 @@ impl LiveProjection {
     pub(super) fn begin_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
-        run: RuntimeEpoch,
+        window: ProvenanceWindow<'_>,
     ) -> Result<StagedChanges, ProjectionError> {
+        let ProvenanceWindow {
+            run,
+            placement,
+            previews,
+            current_owner_id,
+            ..
+        } = window;
         let mut staged = Vec::new();
         let mut sources = Vec::new();
-        let recorded_at = millis(effect.committed_at)?;
+        let recorded_at = history_millis(effect.committed_at)?;
+        let events = HistoryEventStamp { run, recorded_at };
         if let Some(turn) = &effect.turn
             && turn_outcome(&turn.state).is_none()
         {
@@ -326,7 +447,9 @@ impl LiveProjection {
             } = event
             {
                 let item_id = super::super::order::compaction_id(id);
-                if self.atom_starts.contains_key(&item_id) || self.identity_is_terminal(&item_id) {
+                if self.atom_starts.contains_key(&item_id)
+                    || placement.identity_is_terminal(&item_id)
+                {
                     continue;
                 }
                 let atom = ChatAtom {
@@ -354,23 +477,17 @@ impl LiveProjection {
                     payload: None,
                 };
                 self.atom_starts.insert(item_id.clone(), atom.clone());
-                let mut history_event = HistoryEvent::new(
+                let history_event = events.emit_active_state_event(
                     format!("entity:{run}:{}:{item_id}", effect.sequence),
                     HistoryEventKind::CompactionStarted,
-                    HistoryTimelineRole::Hidden,
-                    recorded_at,
-                );
-                set_event_atom_columns(&mut history_event, &atom, run, atom.started_at, None)?;
-                crate::studio::runtime::chat_item::build_active_state_event(
-                    &mut history_event,
                     &atom,
+                    atom.started_at,
                     "contextCompaction",
                     serde_json::json!({
                         "status": "running",
                         "operationId": id,
                     }),
-                )
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                )?;
                 staged.push((at, history_event));
             }
         }
@@ -384,10 +501,10 @@ impl LiveProjection {
             .ok_or_else(|| {
                 ProjectionError::UnsupportedOutput("invalid canonical member start".into())
             })?;
-            if self.atom_starts.contains_key(&id) || self.identity_is_terminal(&id) {
+            if self.atom_starts.contains_key(&id) || placement.identity_is_terminal(&id) {
                 continue;
             }
-            let order = self
+            let order = placement
                 .order_index_of()?
                 .reserve_observed(&start.attempt_id, &id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -397,13 +514,13 @@ impl LiveProjection {
                     thread_id: std::borrow::Cow::Owned(effect.thread_id.clone()),
                     turn_id: std::borrow::Cow::Owned(start.turn_id.clone()),
                     ordinal: order,
-                    revision: self.bump_content_revision(&id),
+                    revision: placement.bump_content_revision(&id),
                     created_at: effect.committed_at,
                     updated_at: effect.committed_at,
                 },
                 shape.clone(),
             );
-            self.fact(&item);
+            placement.fact(&item);
             let content = crate::ChatAtomContent {
                 role: crate::studio::runtime::chat_item::atom_content_role(&field).ok_or_else(
                     || {
@@ -413,9 +530,7 @@ impl LiveProjection {
                     },
                 )?,
                 reference: crate::ContentRef {
-                    database_id: self
-                        .current
-                        .owner_id()
+                    database_id: current_owner_id
                         .ok_or_else(|| {
                             ProjectionError::History(
                                 "canonical member start has no runtime owner".into(),
@@ -430,8 +545,8 @@ impl LiveProjection {
                     },
                 },
             };
-            if !self.previews.contains_key(&id) {
-                self.store_preview(
+            if !previews.contains_key(&id) {
+                previews.store_preview(
                     id.clone(),
                     LivePreview {
                         fields: BTreeMap::from([(field, ContentBlock::from_text(""))]),
@@ -467,20 +582,14 @@ impl LiveProjection {
             } else {
                 HistoryEventKind::ItemRecorded
             };
-            let mut history_event = HistoryEvent::new(
+            let history_event = events.emit_active_state_event(
                 format!("entity:{run}:{}:{id}", effect.sequence),
                 kind,
-                HistoryTimelineRole::Hidden,
-                recorded_at,
-            );
-            set_event_atom_columns(&mut history_event, &atom, run, atom.started_at, None)?;
-            crate::studio::runtime::chat_item::build_active_state_event(
-                &mut history_event,
                 &atom,
+                atom.started_at,
                 active_item_type(atom.kind),
                 serde_json::json!({ "status": "running" }),
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            )?;
             staged.push((at, history_event));
         }
         if self.atom_starts.len() > LIVE_ITEM_WINDOW {
@@ -498,20 +607,24 @@ impl LiveProjection {
         items: &[ExecutionItem],
         drafts: &[ChatDraft],
         staged_changes: StagedChanges,
-        run: RuntimeEpoch,
+        window: ProvenanceWindow<'_>,
     ) -> Result<ProvenanceChanges, ProjectionError> {
+        let ProvenanceWindow {
+            run,
+            placement,
+            previews,
+            current_owner_id,
+            history_database_id,
+        } = window;
         let (mut staged, mut sources) = staged_changes;
-        let current_owner_id = self
-            .current
-            .owner_id()
+        let current_owner_id = current_owner_id
             .ok_or_else(|| ProjectionError::History("missing runtime owner identity".into()))?
             .to_owned();
-        let history_database_id = self
-            .database_id
-            .as_deref()
+        let history_database_id = history_database_id
             .ok_or_else(|| ProjectionError::History("missing history database identity".into()))?
             .to_owned();
-        let recorded_at = millis(effect.committed_at)?;
+        let recorded_at = history_millis(effect.committed_at)?;
+        let events = HistoryEventStamp { run, recorded_at };
 
         for (item_index, item) in items.iter().enumerate().filter(|(_, item)| {
             !completion_ready(item)
@@ -547,9 +660,9 @@ impl LiveProjection {
                         matches!(input.state(), crate::ThreadToolUserInputState::Pending)
                     });
                 let backgrounded = task.is_some_and(|task| task.acknowledgement.is_some())
-                    || self.completion_exists(&super::super::order::tool_background_started_id(
-                        call_id,
-                    ))?;
+                    || placement.completion_exists(
+                        &super::super::order::tool_background_started_id(call_id),
+                    )?;
                 let stage = if cancel_requested {
                     EmittedToolStage::CancelRequested
                 } else if waiting {
@@ -559,14 +672,14 @@ impl LiveProjection {
                 } else {
                     EmittedToolStage::Called
                 };
-                if !backgrounded && !self.previews.contains_key(&item.id) {
+                if !backgrounded && !previews.contains_key(&item.id) {
                     let mut fields =
                         crate::studio::runtime::chat_item::content_fields(item.state())
                             .map_err(|error| ProjectionError::History(error.to_string()))?;
                     fields.retain(|key, _| {
                         crate::studio::runtime::chat_item::atom_content_role(key).is_some()
                     });
-                    self.store_preview(
+                    previews.store_preview(
                         item.id.clone(),
                         LivePreview {
                             fields,
@@ -699,20 +812,14 @@ impl LiveProjection {
                     ChatAtomKind::Agent => HistoryEventKind::AgentSpawned,
                     _ => HistoryEventKind::ItemRecorded,
                 };
-                let mut history_event = HistoryEvent::new(
+                let history_event = events.emit_active_state_event(
                     format!("entity:{run}:{}:{}", effect.sequence, atom.id),
                     kind,
-                    HistoryTimelineRole::Hidden,
-                    recorded_at,
-                );
-                set_event_atom_columns(&mut history_event, &atom, run, atom.started_at, None)?;
-                crate::studio::runtime::chat_item::build_active_state_event(
-                    &mut history_event,
                     &atom,
+                    atom.started_at,
                     active_item_type(atom.kind),
                     serde_json::json!({ "status": "running" }),
-                )
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                )?;
                 staged.push((item_pos, history_event));
             }
         }
@@ -788,34 +895,13 @@ impl LiveProjection {
                     },
                     &mut sources,
                 )?;
-                let kind = event_kind_for_draft(&atom);
-                let timeline_role = draft_timeline_role(&atom);
-                let mut history_event =
-                    HistoryEvent::new(draft.item_id.clone(), kind, timeline_role, recorded_at);
-                set_event_atom_columns(
-                    &mut history_event,
-                    &atom,
-                    run,
-                    atom.finished_at.or(atom.started_at),
-                    None,
-                )?;
-                history_event.original = Some(HistoryOriginalInfo {
-                    query_class: draft.query_class.clone(),
-                    parent_id: draft
-                        .parent_id
-                        .as_ref()
-                        .map(|parent| parent.as_str().to_owned()),
-                    original_kind: atom.kind,
-                    tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
-                });
-                crate::studio::runtime::chat_item::build_event_from_draft(
-                    &mut history_event,
+                let history_event = events.emit_draft_event(
                     &atom,
                     draft,
                     &history_database_id,
+                    None,
                     Vec::new(),
-                )
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                )?;
                 staged.push((terminal_position, history_event));
                 continue;
             }
@@ -827,7 +913,7 @@ impl LiveProjection {
                 })?;
             atom.source_order = Some(item.ordinal);
             let old = if atom.delivery == ChatDeliveryKind::BackgroundHandoff {
-                self.release_preview(&atom.id);
+                previews.release_preview(&atom.id);
                 self.atom_starts.get(&atom.id).cloned()
             } else {
                 self.atom_starts.remove(&atom.id)
@@ -949,26 +1035,6 @@ impl LiveProjection {
                     self.emitted_tool_stages.remove(&tool.call_id);
                 }
             }
-            let kind = event_kind_for_draft(&atom);
-            let timeline_role = draft_timeline_role(&atom);
-            let mut history_event =
-                HistoryEvent::new(draft.item_id.clone(), kind, timeline_role, recorded_at);
-            set_event_atom_columns(
-                &mut history_event,
-                &atom,
-                run,
-                atom.finished_at.or(atom.started_at),
-                matched_message_id.as_deref(),
-            )?;
-            history_event.original = Some(HistoryOriginalInfo {
-                query_class: draft.query_class.clone(),
-                parent_id: draft
-                    .parent_id
-                    .as_ref()
-                    .map(|parent| parent.as_str().to_owned()),
-                original_kind: atom.kind,
-                tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
-            });
             let mut extra_bodies = Vec::new();
             if let Some(tool) = &atom.tool
                 && let Some(task) = effect
@@ -989,14 +1055,13 @@ impl LiveProjection {
                     saved.bytes,
                 ));
             }
-            crate::studio::runtime::chat_item::build_event_from_draft(
-                &mut history_event,
+            let history_event = events.emit_draft_event(
                 &atom,
                 draft,
                 &history_database_id,
+                matched_message_id.as_deref(),
                 extra_bodies,
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            )?;
             staged.push((terminal_position, history_event));
         }
 
@@ -1016,26 +1081,20 @@ impl LiveProjection {
             };
             atom.finished_at = Some(effect.committed_at);
             atom.contents.clear();
-            self.release_preview(&id);
+            previews.release_preview(&id);
             let kind = if atom.kind == ChatAtomKind::Reasoning {
                 HistoryEventKind::ReasoningCompleted
             } else {
                 HistoryEventKind::TextCompleted
             };
-            let mut history_event = HistoryEvent::new(
+            let history_event = events.emit_active_state_event(
                 format!("entity:{run}:{}:{}:interrupted", effect.sequence, atom.id),
                 kind,
-                HistoryTimelineRole::Hidden,
-                recorded_at,
-            );
-            set_event_atom_columns(&mut history_event, &atom, run, atom.finished_at, None)?;
-            crate::studio::runtime::chat_item::build_active_state_event(
-                &mut history_event,
                 &atom,
+                atom.finished_at,
                 active_item_type(atom.kind),
                 serde_json::json!({ "status": "cancelled" }),
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            )?;
             staged.push((interrupted_pos, history_event));
         }
 
