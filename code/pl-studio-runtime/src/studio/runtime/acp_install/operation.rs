@@ -27,17 +27,12 @@ use super::registry::{
     AcpInstallInner, BusinessOutcome, Operation, PublishRejection, ResidueHold, begin_stage,
     register_lock_file, take_stage,
 };
-use super::source::{self, RegistryLookup, ResolvedRelease};
+use super::source::{self, RegistryLookup, ReleaseTransport, ResolvedRelease};
 
 /// 资产锁轮询间隔；等待可取消，不删除锁文件。
 const LOCK_POLL: Duration = Duration::from_millis(100);
 /// 关闭时等待当前 supervisor 收束的预算。
 pub(super) const JOIN_BUDGET: Duration = Duration::from_secs(5);
-
-/// 一次操作的启动意图。
-pub(super) struct OperationPlan {
-    pub(super) provider: AcpProvider,
-}
 
 /// supervisor 主体；终态与资源收尾在同一顺序里完成。
 ///
@@ -47,12 +42,12 @@ pub(super) struct OperationPlan {
 pub(super) async fn run(
     inner: Arc<AcpInstallInner>,
     operation: Arc<Operation>,
-    plan: OperationPlan,
+    transport: impl ReleaseTransport,
 ) {
     let provider = operation.provider;
     let generation = operation.generation;
     let operation_id = operation.operation_id.clone();
-    let outcome = execute(&inner, &operation, plan).await;
+    let outcome = execute(&inner, &operation, &transport).await;
     match release_staging(&inner, &operation).await {
         Ok(()) => {
             let (terminal, from_online_registry) = match outcome {
@@ -98,9 +93,9 @@ pub(super) async fn run(
 async fn execute(
     inner: &Arc<AcpInstallInner>,
     operation: &Arc<Operation>,
-    plan: OperationPlan,
+    transport: &dyn ReleaseTransport,
 ) -> Result<(AcpInstalledServer, bool), AcpInstallFailure> {
-    let provider = plan.provider;
+    let provider = operation.provider;
     let generation = operation.generation;
     let operation_id = operation.operation_id.clone();
     let cancel = operation.cancel.clone();
@@ -117,8 +112,7 @@ async fn execute(
     publish_state(AcpInstallState::Resolving {
         operation_id: operation_id.clone(),
     });
-    let policy = inner.policy();
-    let (resolved, from_online_registry) = resolve_release(&context, &policy).await?;
+    let (resolved, from_online_registry) = resolve_release(&context, transport).await?;
     let installation_id = source::installation_id(provider, &resolved);
     // 存储键必须是 `sha256:` + 64 位小写十六进制；不合格身份不参与任何路径拼接。
     // installation id 由本模块的 canonical 摘要产生，正常情况必然合格：该分支是不变量护栏，
@@ -162,7 +156,7 @@ async fn execute(
     }
 
     let (archive_path, total_bytes) =
-        download_archive(&context, &root, &resolved, &storage_key, &policy).await?;
+        download_archive(&context, &root, &resolved, &storage_key, transport).await?;
     let archive_sha256 = verify_archive(&context, &root, &resolved, &archive_path).await?;
     let (staging, receipt) = stage_archive(
         &context,
@@ -191,7 +185,7 @@ async fn execute(
 
 async fn resolve_release(
     context: &StageContext<'_>,
-    policy: &source::SourcePolicy,
+    transport: &dyn ReleaseTransport,
 ) -> Result<(ResolvedRelease, bool), AcpInstallFailure> {
     let StageContext {
         inner,
@@ -199,7 +193,7 @@ async fn resolve_release(
         cancel,
         ..
     } = *context;
-    match source::fetch_latest_from_registry(policy, provider, cancel).await {
+    match source::fetch_latest_from_registry(transport, provider, cancel).await {
         Ok(RegistryLookup::Release(resolved)) => Ok((resolved, true)),
         Ok(RegistryLookup::IncompatibleMajor { version }) => {
             inner.note_update_state(
@@ -209,13 +203,10 @@ async fn resolve_release(
                     latest_version: version,
                 },
             );
-            let fallback =
-                match prepare::best_local_release(&inner.store, policy.clone(), provider, cancel)
-                    .await
-                {
-                    Some(local) => local,
-                    None => source::resolve_bundled(provider)?,
-                };
+            let fallback = match prepare::best_local_release(&inner.store, provider, cancel).await {
+                Some(local) => local,
+                None => source::resolve_bundled(provider)?,
+            };
             Ok((fallback, false))
         }
         Err(error) => Err(error),
@@ -227,7 +218,7 @@ async fn download_archive(
     root: &ManagedRoot,
     resolved: &ResolvedRelease,
     storage_key: &str,
-    policy: &source::SourcePolicy,
+    transport: &dyn ReleaseTransport,
 ) -> Result<(PathBuf, Option<u64>), AcpInstallFailure> {
     let StageContext {
         inner,
@@ -251,8 +242,9 @@ async fn download_archive(
     let archive_path = downloads.join(format!("{storage_key}.zip"));
     validate_download_paths(root, &archive_path)?;
     let sink = download_sink(inner, operation, &resolved.release);
+    let (client, download_url) = source::archive_request(transport, &resolved.release.archive_url)?;
     let client = downlowd::Client::builder()
-        .reqwest_client(policy.archive_client()?)
+        .reqwest_client(client)
         .max_retries(Some(3))
         .build()
         .map_err(|_| {
@@ -262,7 +254,6 @@ async fn download_archive(
                 true,
             )
         })?;
-    let download_url = resolved.release.archive_url.clone();
     let download_path = archive_path.clone();
     let download_cancel = cancel.clone();
     // sidecar 重建闭包：路径与权限核对复用本模块的产品边界（缺失则 0600 新建，随后再核验）。
@@ -280,7 +271,7 @@ async fn download_archive(
     let downloaded = stage_task(context, AcpInstallStage::Download, async move {
         download::download(
             &client,
-            &download_url,
+            download_url.as_str(),
             &download_path,
             sink,
             ensure_sidecar,

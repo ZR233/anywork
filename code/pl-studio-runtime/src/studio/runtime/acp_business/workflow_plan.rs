@@ -11,9 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use crate::mode::{SavedThreadMode, ThreadModeId, ThreadModeManager};
 use crate::plan_tool::AgentSessionPlanRuntimeSnapshot;
 use crate::protocol::AcpWorkflowStateSnapshot;
@@ -66,12 +63,6 @@ pub(crate) struct AcpWorkflowPlanOwner {
     /// Caller cancellation abandons only the wait, not this transaction.
     persist_gate: Arc<AsyncMutex<()>>,
     updates: watch::Sender<Option<AcpWorkflowStateSnapshot>>,
-    #[cfg(test)]
-    persist_pause: Arc<AtomicBool>,
-    #[cfg(test)]
-    persist_entered: Arc<tokio::sync::Notify>,
-    #[cfg(test)]
-    persist_release: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for AcpWorkflowPlanOwner {
@@ -153,12 +144,6 @@ impl AcpWorkflowPlanOwner {
             inner: Arc::new(Mutex::new(AcpWorkflowStateInner { workflow, plan })),
             persist_gate: Arc::new(AsyncMutex::new(())),
             updates,
-            #[cfg(test)]
-            persist_pause: Arc::new(AtomicBool::new(false)),
-            #[cfg(test)]
-            persist_entered: Arc::new(tokio::sync::Notify::new()),
-            #[cfg(test)]
-            persist_release: Arc::new(tokio::sync::Notify::new()),
         });
         if initial_workflow_created {
             owner.persist_workflow().await?;
@@ -517,8 +502,6 @@ impl AcpWorkflowPlanOwner {
         let inner = Arc::clone(&self.inner);
         let updates = self.updates.clone();
         let resources_dir = self.resources_dir.clone();
-        #[cfg(test)]
-        let pause = self.persist_test_pause();
         tokio::spawn(async move {
             let outcome = async {
                 let _gate = gate.lock().await;
@@ -537,11 +520,6 @@ impl AcpWorkflowPlanOwner {
                             snapshot,
                             value,
                         } = *write;
-                        #[cfg(test)]
-                        if let Some(pause) = pause {
-                            pause.entered.notify_one();
-                            pause.release.notified().await;
-                        }
                         let path = resources_dir.join(install.file_name());
                         write_bytes(path, bytes).await?;
                         {
@@ -562,19 +540,6 @@ impl AcpWorkflowPlanOwner {
         });
         rx.await
             .context("ACP persist task ended before reporting a result")?
-    }
-
-    #[cfg(test)]
-    fn persist_test_pause(&self) -> Option<PersistTestPause> {
-        // The flag only selects this test hook. The notify itself is the synchronization edge.
-        if self.persist_pause.swap(false, Ordering::Relaxed) {
-            Some(PersistTestPause {
-                entered: Arc::clone(&self.persist_entered),
-                release: Arc::clone(&self.persist_release),
-            })
-        } else {
-            None
-        }
     }
 }
 
@@ -689,12 +654,6 @@ impl InstalledRecord {
             Self::Plan(plan) => guard.plan = plan,
         }
     }
-}
-
-#[cfg(test)]
-struct PersistTestPause {
-    entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
 }
 
 fn write_workflow<T>(
@@ -1007,25 +966,17 @@ mod tests {
         let before_state = state_id(&workflow_on_disk(dir.path()));
         let mut updates = owner.subscribe();
         updates.borrow_and_update();
-        owner
-            .persist_pause
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        let worker = Arc::clone(&owner);
-        let input = force_to_planning(dir.path());
-        let running = tokio::spawn(async move {
-            worker
-                .workflow_transition(input, operation("cancel-workflow"), "hash-cancel".into())
-                .await
-        });
-        timeout(Duration::from_secs(5), owner.persist_entered.notified())
-            .await
-            .expect("persist task should reach the gate");
-        running.abort();
-        let joined = timeout(Duration::from_secs(5), running)
-            .await
-            .expect("cancelled caller should stop waiting");
-        assert!(joined.expect_err("caller task").is_cancelled());
+        // Hold the same gate that serializes ordinary writes. Polling the call once
+        // schedules the commit and leaves the caller waiting for its receipt.
+        let gate = owner.persist_gate.lock().await;
+        {
+            let mut caller = std::pin::pin!(owner.workflow_transition(
+                force_to_planning(dir.path()),
+                operation("cancel-workflow"),
+                "hash-cancel".into(),
+            ));
+            assert!(futures::poll!(caller.as_mut()).is_pending());
+        }
         assert_eq!(state_id(&workflow_on_disk(dir.path())), before_state);
         assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
         assert_eq!(
@@ -1034,7 +985,7 @@ mod tests {
         );
         assert!(!updates.has_changed().expect("workflow watch"));
 
-        owner.persist_release.notify_one();
+        drop(gate);
         timeout(Duration::from_secs(5), updates.changed())
             .await
             .expect("background commit should notify")?;
