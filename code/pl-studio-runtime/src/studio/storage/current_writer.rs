@@ -1303,11 +1303,13 @@ mod tests {
     async fn stopping_a_current_observer_releases_its_watch_receiver_before_ack() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let writer = CurrentWriter::new(
-            CurrentFile::new(directory.path().into(), "observe".into()),
+            CurrentFile::new(directory.path().into(), "current-test".into()),
             || {},
         );
         let (revisions, receiver) = watch::channel(0);
         let epoch = RuntimeEpoch::new();
+        let current_source = source(Arc::new(AtomicU64::new(1)), Arc::default(), Arc::default());
+        writer.activate(None, epoch, current_source.clone()).await?;
         let cancellation = CancellationToken::new();
         let observer = CurrentObserver::start(
             receiver,
@@ -1318,10 +1320,7 @@ mod tests {
         );
         let mut active = Active {
             epoch,
-            source: CurrentSource::new(
-                |_, _| unreachable!("stopping an observer does not capture current"),
-                |_| unreachable!("stopping an observer does not finish current"),
-            ),
+            source: current_source,
             observer: Some(observer),
             verified_resources: VerifiedResources::new(),
         };
