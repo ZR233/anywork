@@ -65,7 +65,7 @@ pub(super) enum LegacyCredentialCopy {
     Absent,
 }
 
-pub(super) trait CredentialStore: Send + Sync {
+pub(super) trait CredentialStore: BotProtectedCredentialStore {
     /// Dedicated durable transaction aliases; plaintext never enters filesystem journals.
     fn read_transaction(&self, alias: &str) -> Result<Option<String>>;
     fn write_transaction(&self, alias: &str, payload: &str) -> Result<()>;
@@ -92,7 +92,11 @@ pub(super) trait CredentialStore: Send + Sync {
     /// 与 [`Self::copy_legacy_account`] 相同的持久义务：只接受持久服务的成功写入与回读，
     /// 目标已有不同密钥时明确冲突，不使用进程内 lease 制造假成功。
     fn import_inline_secret(&self, account_id: &str, secret: &str) -> Result<LegacyCredentialCopy>;
-    /// 读取 `bot:<id>` 受保护载荷。系统不可访问且无进程 lease 时为 `Unavailable`。
+}
+
+/// Protected I/O shared by the bot capability and the existing credential-store owners.
+pub(super) trait BotProtectedCredentialStore: Send + Sync {
+    /// 只读取 `bot:<id>` 的系统受保护载荷。系统不可访问时为 `Unavailable`。
     fn read_bot_system(
         &self,
         bot_id: &str,
@@ -513,7 +517,9 @@ impl CredentialStore for SystemCredentialStore {
     fn delete_ssh(&self, alias: &str) -> Result<()> {
         self.delete_account("SSH server", alias, &format!("ssh:{alias}"))
     }
+}
 
+impl BotProtectedCredentialStore for SystemCredentialStore {
     fn persist_bot_protected(
         &self,
         bot_id: &str,
@@ -737,18 +743,14 @@ impl CredentialStore for MemoryCredentialStore {
         self.values.lock().unwrap().remove(&format!("ssh:{alias}"));
         Ok(())
     }
+}
 
+impl BotProtectedCredentialStore for MemoryCredentialStore {
     fn persist_bot_protected(
         &self,
         bot_id: &str,
         payload: &str,
     ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError> {
-        #[cfg(test)]
-        if memory_faults::persist_unavailable() {
-            return Err(BotCredentialIoError {
-                kind: BotCredentialIoKind::Unavailable,
-            });
-        }
         self.values
             .lock()
             .unwrap()
@@ -772,12 +774,6 @@ impl CredentialStore for MemoryCredentialStore {
         &self,
         bot_id: &str,
     ) -> std::result::Result<BotProtectedRead, BotCredentialIoError> {
-        #[cfg(test)]
-        if memory_faults::system_unavailable() {
-            return Err(BotCredentialIoError {
-                kind: BotCredentialIoKind::Unavailable,
-            });
-        }
         Ok(self
             .values
             .lock()
@@ -801,12 +797,6 @@ impl CredentialStore for MemoryCredentialStore {
     }
 
     fn recycle_bot_system(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
-        #[cfg(test)]
-        if memory_faults::take_recycle_fail() {
-            return Err(BotCredentialIoError {
-                kind: BotCredentialIoKind::Unavailable,
-            });
-        }
         self.values.lock().unwrap().remove(&bot_account(bot_id));
         Ok(())
     }
@@ -843,55 +833,6 @@ fn credential_error(action: &str, scope: &str, id: &str, error: KeyringError) ->
         id: id.to_owned(),
         source: error,
     }))
-}
-
-#[cfg(test)]
-pub(crate) mod memory_faults {
-    use std::cell::Cell;
-
-    thread_local! {
-        static SYSTEM_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
-        static PERSIST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
-        static RECYCLE_FAILS: Cell<u32> = const { Cell::new(0) };
-    }
-
-    pub fn reset() {
-        set_system_unavailable(false);
-        set_persist_unavailable(false);
-        set_recycle_fails(0);
-    }
-
-    pub fn set_system_unavailable(value: bool) {
-        SYSTEM_UNAVAILABLE.with(|cell| cell.set(value));
-    }
-
-    pub fn set_persist_unavailable(value: bool) {
-        PERSIST_UNAVAILABLE.with(|cell| cell.set(value));
-    }
-
-    pub fn set_recycle_fails(count: u32) {
-        RECYCLE_FAILS.with(|cell| cell.set(count));
-    }
-
-    pub(super) fn system_unavailable() -> bool {
-        SYSTEM_UNAVAILABLE.with(Cell::get)
-    }
-
-    pub(super) fn persist_unavailable() -> bool {
-        PERSIST_UNAVAILABLE.with(Cell::get)
-    }
-
-    pub(super) fn take_recycle_fail() -> bool {
-        RECYCLE_FAILS.with(|cell| {
-            let remaining = cell.get();
-            if remaining == 0 {
-                false
-            } else {
-                cell.set(remaining - 1);
-                true
-            }
-        })
-    }
 }
 
 #[cfg(test)]

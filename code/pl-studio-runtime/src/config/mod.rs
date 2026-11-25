@@ -67,12 +67,14 @@ pub use acp::{AcpLaunch, AcpProvider, AcpServiceDefinition};
 pub use acp_resource::{
     AcpDefinitionEntry, AcpDefinitionError, AcpDefinitionsResource, AcpDefinitionsSnapshot,
 };
+#[cfg(test)]
+pub(crate) use bot_credentials::test_support::{
+    FaultingBotCredentialStore, faulting_bot_capability,
+};
 pub(crate) use bot_credentials::{
     BotCredentialCapability, BotCredentialRef, BotCredentialRefKind, BotProtectedPayload,
     BotSecretVersion, SelectedBotCredential, try_decode_current_payload,
 };
-#[cfg(test)]
-pub(crate) use credential::memory_faults;
 pub(crate) use credential::{
     BotCredentialIoError, BotCredentialIoKind, BotProtectedPersist, BotProtectedRead,
 };

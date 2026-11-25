@@ -3,23 +3,26 @@
 //! 配置基础设施持有系统凭据 backend 与进程 lease；机器人事务/恢复仍由 bot owner 负责。
 
 use super::credential::{
-    BotCredentialIoError, BotCredentialIoKind, BotProtectedPersist, BotProtectedRead,
-    CredentialStore,
+    BotCredentialIoError, BotCredentialIoKind, BotProtectedCredentialStore, BotProtectedPersist,
+    BotProtectedRead,
 };
 use crate::BotCredentialAvailability;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+#[cfg(test)]
+pub(super) mod test_support;
 
 const BOT_PAYLOAD_SCHEMA: u32 = 1;
 const MAX_BOT_VERSIONS: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct BotCredentialCapability {
-    store: Arc<dyn CredentialStore>,
+    store: Arc<dyn BotProtectedCredentialStore>,
 }
 
 impl BotCredentialCapability {
-    pub(super) fn new(store: Arc<dyn CredentialStore>) -> Self {
+    pub(super) fn new(store: Arc<dyn BotProtectedCredentialStore>) -> Self {
         Self { store }
     }
 
@@ -541,13 +544,11 @@ mod tests {
 
     #[test]
     fn system_unavailable_without_matching_lease_is_unavailable() {
-        crate::config::memory_faults::reset();
-        crate::config::memory_faults::set_system_unavailable(true);
-        let store = MemoryCredentialStore::default();
-        store
-            .persist_bot_protected(
+        let (capability, store) = test_support::faulting_bot_capability();
+        capability
+            .persist_system(
                 "bot-a",
-                &encode_bot_payload(&BotProtectedPayload {
+                &BotProtectedPayload {
                     schema_version: BOT_PAYLOAD_SCHEMA,
                     versions: vec![BotSecretVersion {
                         id: "v1".into(),
@@ -555,19 +556,24 @@ mod tests {
                         app_id: "cli_a".into(),
                         secret: "secret-a".into(),
                     }],
-                })
-                .unwrap(),
+                },
             )
             .unwrap();
-        let capability = BotCredentialCapability::new(std::sync::Arc::new(store));
+        store.set_system_unavailable(true);
         let selected = capability
             .inspect_selected("bot-a", "cli_a", Some(&BotCredentialRef::system("v1")))
             .unwrap();
-        crate::config::memory_faults::reset();
         assert_eq!(
             selected.availability,
             BotCredentialAvailability::Unavailable
         );
         assert!(selected.secret.is_none());
+
+        let (independent, _) = test_support::faulting_bot_capability();
+        let absent = independent
+            .inspect_selected("bot-a", "cli_a", Some(&BotCredentialRef::system("v1")))
+            .unwrap();
+        assert_eq!(absent.availability, BotCredentialAvailability::Missing);
+        assert!(absent.secret.is_none());
     }
 }
