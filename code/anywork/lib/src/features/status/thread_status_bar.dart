@@ -17,7 +17,6 @@ import 'package:anywork_client/conversation.dart'
     show CurrentQueryScope, CurrentStateFieldReader, decodeCurrentWorkflowState;
 
 import 'context_usage_readout.dart';
-import 'session_selectors.dart';
 import 'started_items_panel.dart';
 import 'status_bar_item.dart';
 import 'status_view.dart';
@@ -128,11 +127,6 @@ class ThreadStatusBar extends StatelessWidget {
       throw StateError('Native status bar cannot consume an ACP session');
     }
     final route = status.modelRoute;
-    final routeModel = route == null
-        ? null
-        : modelForRoute(status.accounts, route.accountId, route.modelId);
-    final hasEffort =
-        row.isRootRow && (routeModel?.reasoningEfforts.isNotEmpty ?? false);
     final role = row.isChildRow && isRetiredAgentRole(row.role)
         ? context.l10n.agentRoleRetired
         : context.roleLabel(row.role);
@@ -160,28 +154,12 @@ class ThreadStatusBar extends StatelessWidget {
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (showTodo)
-                        IconButton(
-                          key: const ValueKey('todo-open-button'),
-                          tooltip: context.l10n.timelineTodoListFallback,
-                          visualDensity: VisualDensity.compact,
-                          iconSize: 18,
-                          icon: Icon(
-                            todoExpanded
-                                ? Icons.checklist
-                                : Icons.checklist_outlined,
-                            color: todoExpanded
-                                ? context.colors.primary
-                                : context.colors.onSurfaceVariant,
-                          ),
-                          onPressed: onToggleTodo,
+                      if (row.isChildRow) ...[
+                        StatusBarItem(
+                          icon: Icons.account_tree_outlined,
+                          label:
+                              '$role · ${row.title} · ${context.threadStatusLabel(backend.status)}',
                         ),
-                      StatusBarItem(
-                        icon: Icons.account_tree_outlined,
-                        label:
-                            '$role · ${row.title} · ${context.threadStatusLabel(backend.status)}',
-                      ),
-                      if (row.isChildRow)
                         StatusBarItem(
                           icon: Icons.smart_toy_outlined,
                           label:
@@ -189,15 +167,30 @@ class ThreadStatusBar extends StatelessWidget {
                               route?.modelId ??
                               context.l10n.settingsNotAvailable,
                         ),
-                      if (workflowReadout case final workflow?) ...[
+                      ],
+                      ?workflowReadout,
+                      if (showTodo) ...[
                         const SizedBox(width: 4),
-                        workflow,
+                        StatusBarButton(
+                          key: const ValueKey('todo-open-button'),
+                          icon: Icons.checklist_rounded,
+                          iconOnly: true,
+                          label: context.l10n.rightSidebarTabTodo,
+                          tooltip: context.l10n.timelineTodoListFallback,
+                          selected: todoExpanded,
+                          onPressed: onToggleTodo,
+                        ),
                       ],
                       if (showPlanEntry) ...[
-                        const SizedBox(width: 6),
-                        _StatusPlanPill(
-                          expanded: planExpanded,
-                          onTap: onOpenPlan,
+                        const SizedBox(width: 4),
+                        StatusBarButton(
+                          key: StudioDriverKeys.statusPlanEntry,
+                          icon: Icons.description_outlined,
+                          iconOnly: true,
+                          label: context.l10n.rightSidebarTabPlan,
+                          tooltip: context.l10n.statusPlanEntry,
+                          selected: planExpanded,
+                          onPressed: onOpenPlan,
                         ),
                       ],
                     ],
@@ -208,69 +201,14 @@ class ThreadStatusBar extends StatelessWidget {
                     children: [
                       contextReadout,
                       throughputReadout,
+                      const SizedBox(width: 8),
                       startedItemsEntry,
-                      if (hasEffort) _StatusOverflow(effort: route?.effort),
                       ConversationSidebarToggleButton(
                         available: hasSidebarPanels,
                         expanded: sidebarOpen,
                         onPressed: onToggleSidebar,
                       ),
                     ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusPlanPill extends StatelessWidget {
-  const _StatusPlanPill({required this.expanded, this.onTap});
-
-  final bool expanded;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final fgColor = expanded
-        ? context.colors.primary
-        : context.colors.onSurfaceVariant;
-    final bgColor = expanded
-        ? context.colors.primaryContainer.withValues(alpha: 0.45)
-        : Colors.transparent;
-    final borderColor = expanded
-        ? context.colors.primary.withValues(alpha: 0.55)
-        : context.colors.outlineVariant.withValues(alpha: 0.65);
-    return Tooltip(
-      message: context.l10n.statusPlanEntry,
-      child: Material(
-        color: bgColor,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(StudioRadii.sm),
-          side: BorderSide(color: borderColor),
-        ),
-        child: InkWell(
-          key: StudioDriverKeys.statusPlanEntry,
-          borderRadius: BorderRadius.circular(StudioRadii.sm),
-          onTap: onTap,
-          child: SizedBox(
-            height: 26,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.description_outlined, size: 14, color: fgColor),
-                  const SizedBox(width: 5),
-                  Text(
-                    context.l10n.rightSidebarTabPlan,
-                    style: context.text.labelSmall?.copyWith(
-                      color: fgColor,
-                      fontWeight: expanded ? FontWeight.w600 : FontWeight.w500,
-                    ),
                   ),
                 ],
               ),
@@ -514,43 +452,5 @@ class WorkflowStatusReadout extends StatelessWidget {
     terminal: terminal,
     expanded: expanded,
     onTap: onTap,
-  );
-}
-
-class _StatusOverflow extends StatefulWidget {
-  const _StatusOverflow({required this.effort});
-  final String? effort;
-
-  @override
-  State<_StatusOverflow> createState() => _StatusOverflowState();
-}
-
-class _StatusOverflowState extends State<_StatusOverflow> {
-  final _focusNode = FocusNode();
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => MenuAnchor(
-    key: const ValueKey('status-overflow'),
-    childFocusNode: _focusNode,
-    menuChildren: [
-      if (widget.effort case final effort? when effort.trim().isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Text('${context.l10n.statusReasoningEffort}: $effort'),
-        ),
-    ],
-    builder: (context, controller, child) => IconButton(
-      focusNode: _focusNode,
-      tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
-      onPressed: () =>
-          controller.isOpen ? controller.close() : controller.open(),
-      icon: const Icon(Icons.more_horiz, size: 18),
-    ),
   );
 }

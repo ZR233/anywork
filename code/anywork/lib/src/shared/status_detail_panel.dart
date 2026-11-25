@@ -59,6 +59,7 @@ class StatusDetailRow extends StatelessWidget {
   const StatusDetailRow({
     required this.label,
     required this.value,
+    this.labelMaxLines = 2,
     this.valueMaxLines = 2,
     this.valueKey,
     super.key,
@@ -66,7 +67,8 @@ class StatusDetailRow extends StatelessWidget {
 
   final String label;
   final String value;
-  final int valueMaxLines;
+  final int? labelMaxLines;
+  final int? valueMaxLines;
   final Key? valueKey;
 
   @override
@@ -80,7 +82,7 @@ class StatusDetailRow extends StatelessWidget {
             flex: 5,
             child: Text(
               label,
-              maxLines: 2,
+              maxLines: labelMaxLines,
               overflow: TextOverflow.ellipsis,
               style: context.text.bodySmall?.copyWith(
                 color: context.colors.onSurfaceVariant,
