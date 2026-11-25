@@ -5548,15 +5548,20 @@ mod migration_tests {
             .collect();
         assert_eq!(draft_divs.len(), 2);
 
-        let work_anchor = main
-            .entries
-            .iter()
-            .position(|entry| entry.has_folded_after)
-            .ok_or_else(|| HistoryError::NotFound("folded work gap".into()))?;
-        let after_seq = Some(main.entries[work_anchor].event.seq);
-        let before_seq = work_anchor
-            .checked_sub(1)
-            .map(|i| main.entries[i].event.seq);
+        let (after_seq, before_seq) = if let Some(work_anchor) =
+            main.entries.iter().position(|entry| entry.has_folded_after)
+        {
+            (
+                Some(main.entries[work_anchor].event.seq),
+                work_anchor
+                    .checked_sub(1)
+                    .map(|i| main.entries[i].event.seq),
+            )
+        } else if main.has_folded_before_oldest {
+            (None, main.entries.last().map(|entry| entry.event.seq))
+        } else {
+            return Err(HistoryError::NotFound("folded work gap".into()).into());
+        };
         let members = reader
             .work_range_page(after_seq, before_seq, None, None, HistoryDemand::default())
             .await?;
