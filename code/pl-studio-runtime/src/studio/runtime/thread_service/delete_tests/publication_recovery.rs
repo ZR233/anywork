@@ -155,6 +155,8 @@ impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
 #[tokio::test]
 async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        use crate::thread_assembler::ThreadAssemblyError;
+
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let _endpoint = configure(&home).await?;
@@ -193,9 +195,15 @@ async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
             )
             .await
             .expect_err("cold preparation must fail and retain its owner");
+        let ThreadAssemblyError::ActivationFailed(failure) = restore else {
+            anyhow::bail!("unexpected cold activation error: {restore:?}");
+        };
+        let ThreadAssemblyError::Cleanup { cleanup, .. } = failure.as_ref() else {
+            anyhow::bail!("cold activation did not retain a cleanup error: {failure:?}");
+        };
         assert!(
-            format!("{restore:#}").contains("cold restoration MCP watcher failed"),
-            "{restore:#}"
+            format!("{cleanup:?}").contains("cold restoration MCP watcher failed"),
+            "{cleanup:?}"
         );
         assert!(session.observed_thread(&root.id).is_none());
         assert!(session.s2_has_failed_preparation(&root.id));
