@@ -35,6 +35,175 @@ fn lookup_result(item_id: &str, call_id: &str) -> Message {
 }
 
 #[test]
+fn gemini_declares_tagged_union_fields_without_losing_branch_semantics() {
+    let original = json!({"type":"object","$defs":{"Name":{"type":"string","minLength":1}},"oneOf":[
+        {"type":"object","additionalProperties":false,
+            "properties":{"action":{"type":"string","const":"create"},"name":{"$ref":"#/$defs/Name"},"content":{"type":"string"}},
+            "required":["action","name","content"]},
+        {"type":"object","additionalProperties":false,
+            "properties":{"action":{"type":"string","const":"delete"},"name":{"$ref":"#/$defs/Name"}},
+            "required":["action","name"]}
+    ]});
+    let model = bundled_definition().unwrap().models.remove(0);
+    let endpoint = endpoint::gemini_api_endpoint(None);
+    let mut request = CompletionRequest::builder()
+        .messages(vec![message(MessageRole::User, "manage")])
+        .tools(vec![ToolSpec::Function {
+            name: "manage".into(),
+            description: "Manage documents".into(),
+            input_schema: original.clone(),
+            allowed_callers: vec![],
+            output_schema: None,
+        }])
+        .build();
+    for (choice, expected_mode) in [("auto", "VALIDATED"), ("required", "ANY"), ("none", "NONE")] {
+        request.tool_choice = choice.into();
+        let encoded = GEMINI_WIRE_CODEC
+            .encode_http_request(EncodeHttpRequestInput {
+                endpoint: &endpoint,
+                model: &model,
+                request: &request,
+                prompt_cache_key: None,
+                compaction_body: None,
+                is_compaction: false,
+            })
+            .unwrap();
+        assert_eq!(
+            encoded.body["toolConfig"]["functionCallingConfig"]["mode"],
+            expected_mode
+        );
+        let schema = &encoded.body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"];
+        assert_eq!(schema["required"], json!(["action", "name"]));
+        assert_eq!(
+            schema["properties"],
+            json!({"action":{},"name":{},"content":{}})
+        );
+        assert_eq!(schema["oneOf"], original["oneOf"]);
+        assert_eq!(schema["$defs"], original["$defs"]);
+    }
+    let ToolSpec::Function { input_schema, .. } = &request.tools[0] else {
+        panic!("function")
+    };
+    assert_eq!(
+        input_schema, &original,
+        "the frozen author contract must stay unchanged"
+    );
+}
+
+#[test]
+fn gemini_refuses_root_unions_that_cannot_declare_equivalent_named_parameters() {
+    let model = bundled_definition().unwrap().models.remove(0);
+    let endpoint = endpoint::gemini_api_endpoint(None);
+    for schema in [
+        json!({"type":"object","oneOf":[{"type":"object","properties":{"value":{"type":"integer"}},"additionalProperties":true}]}),
+        json!({"type":"object","oneOf":[{"type":"object","properties":{"value":{"type":"integer"}},"additionalProperties":false,"patternProperties":{"^x":{"type":"string"}}}]}),
+        json!({"type":"object","additionalProperties":false,"oneOf":[{"type":"object","properties":{"value":{"type":"integer"}},"additionalProperties":false}]}),
+    ] {
+        let request = CompletionRequest::builder()
+            .messages(vec![message(MessageRole::User, "manage")])
+            .tools(vec![ToolSpec::Function {
+                name: "manage".into(),
+                description: "Manage documents".into(),
+                input_schema: schema,
+                allowed_callers: vec![],
+                output_schema: None,
+            }])
+            .build();
+        let error = GEMINI_WIRE_CODEC
+            .encode_http_request(EncodeHttpRequestInput {
+                endpoint: &endpoint,
+                model: &model,
+                request: &request,
+                prompt_cache_key: None,
+                compaction_body: None,
+                is_compaction: false,
+            })
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("closed object branches"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn google_rpc_stream_failures_preserve_protocol_classification() {
+    use pl_protocol::{ProviderFailureKind, ProviderFailureStage};
+    for (status, code, kind, retryable) in [
+        (
+            "INVALID_ARGUMENT",
+            400,
+            ProviderFailureKind::InvalidRequest,
+            false,
+        ),
+        (
+            "UNAUTHENTICATED",
+            401,
+            ProviderFailureKind::Authentication,
+            false,
+        ),
+        (
+            "PERMISSION_DENIED",
+            403,
+            ProviderFailureKind::Authorization,
+            false,
+        ),
+        (
+            "RESOURCE_EXHAUSTED",
+            429,
+            ProviderFailureKind::Unknown,
+            true,
+        ),
+        ("UNAVAILABLE", 503, ProviderFailureKind::ServiceBusy, true),
+        ("INTERNAL", 13, ProviderFailureKind::ServiceBusy, true),
+        (
+            "FAILED_PRECONDITION",
+            9,
+            ProviderFailureKind::InvalidRequest,
+            false,
+        ),
+        (
+            "OUT_OF_RANGE",
+            11,
+            ProviderFailureKind::InvalidRequest,
+            false,
+        ),
+        (
+            "UNIMPLEMENTED",
+            12,
+            ProviderFailureKind::InvalidRequest,
+            false,
+        ),
+    ] {
+        let mut decoder = GEMINI_WIRE_CODEC
+            .new_stream_decoder(pl_model_wire::protocol::WireApi::GeminiGenerateContent);
+        let frame = json!({"error":{"code":code,"status":status,"message":"provider detail"}});
+        let decoded = decoder
+            .decode_frame(&frame.to_string(), &stream_context("google-request"))
+            .unwrap();
+        let ModelStreamEvent::Failed { failure } = &decoded.events[0] else {
+            panic!("typed Google failure")
+        };
+        assert_eq!(failure.kind, kind, "{status}");
+        assert_eq!(failure.retry.is_retryable(), retryable, "{status}");
+        assert_eq!(failure.code.as_deref(), Some(code.to_string().as_str()));
+        assert_eq!(failure.error_type.as_deref(), Some(status));
+        assert_eq!(failure.context.stage, ProviderFailureStage::Stream);
+        assert_eq!(
+            failure.context.request_id.as_deref(),
+            Some("google-request")
+        );
+        assert_eq!(
+            failure.http_status,
+            (400..=599).contains(&code).then_some(code as u16),
+            "only HTTP-shaped payload codes carry HTTP status"
+        );
+        assert!(decoded.reached_terminal);
+        assert!(decoder.finish().is_empty());
+    }
+}
+
+#[test]
 fn rejects_interrupted_gemini_tool_batches_and_duplicate_ids_in_the_same_batch() {
     let model = bundled_definition().unwrap().models.remove(0);
     let endpoint = endpoint::vertex_endpoint(None);

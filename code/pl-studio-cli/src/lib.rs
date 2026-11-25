@@ -59,7 +59,7 @@ pub enum ExecutionError {
 /// Waiting belongs to Current and does not imply that a terminal History Turn exists.
 #[derive(Debug)]
 pub enum InputObservation {
-    Terminal(Turn),
+    Terminal(Box<Turn>),
     WaitingForInteraction,
 }
 
@@ -616,7 +616,7 @@ async fn wait_for_input(
         Ok((cut, None)) => cut,
         Ok((_, Some(turn))) => {
             history.close().await;
-            return Ok(InputObservation::Terminal(turn));
+            return Ok(InputObservation::Terminal(Box::new(turn)));
         }
         Err(error) => {
             history.close().await;
@@ -643,7 +643,7 @@ async fn wait_for_input(
             let mut cut = initial_cut;
             loop {
                 if let Some(turn) = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await? {
-                    return Ok(InputObservation::Terminal(turn));
+                    return Ok(InputObservation::Terminal(Box::new(turn)));
                 }
                 let view = current.snapshot(demand).await?;
                 if view.projection.logical_status == ThreadStatus::WaitingInteraction {
@@ -871,7 +871,7 @@ mod tests {
         assert!(is_target_terminal(&turn, "accepted"));
         let mut report = ExecutionReport {
             submission: None,
-            observation: Some(InputObservation::Terminal(turn)),
+            observation: Some(InputObservation::Terminal(Box::new(turn))),
             final_text: "answer".into(),
             signal: None,
             error: None,
@@ -944,7 +944,7 @@ mod tests {
         // 1. Sealed trace with incomplete usage/cost keeps exit 0 + Completed.
         let mut report = ExecutionReport {
             submission: None,
-            observation: Some(InputObservation::Terminal(completed_turn)),
+            observation: Some(InputObservation::Terminal(Box::new(completed_turn))),
             final_text: "ok".into(),
             signal: None,
             error: None,

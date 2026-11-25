@@ -13,6 +13,29 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.52.0](https://github.com/ZR233/anywork/compare/v6.51.0...v6.52.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 统一边界事件与连接状态持久化并优化历史库索引及实时内存态 ([#585](https://github.com/ZR233/anywork/issues/585))
+
+### Features
+
+* **studio:** 统计页分页展示并改为手动刷新 ([#595](https://github.com/ZR233/anywork/issues/595)) ([20d39d5](https://github.com/ZR233/anywork/commit/20d39d5a6373045682c2418ca0a8815fb0f61893))
+
+
+### Bug Fixes
+
+* **model:** 修正 Gemini 协议语义、重试计量与请求体积 ([#592](https://github.com/ZR233/anywork/issues/592)) ([5e90f49](https://github.com/ZR233/anywork/commit/5e90f4922f91c86255d3f369bb6b7428108823c7))
+* **studio:** 修复账户与模型菜单供应商图标缺失 ([#594](https://github.com/ZR233/anywork/issues/594)) ([ea8bf60](https://github.com/ZR233/anywork/commit/ea8bf6038b6fd2bf5ca6266bfae3fc834d6189f7))
+* **studio:** 随任务清理工具预览并恢复残留保存态 ([#591](https://github.com/ZR233/anywork/issues/591)) ([3db5e10](https://github.com/ZR233/anywork/commit/3db5e10d03db6a13bcc44b37d37555bcaf80e2c7))
+
+
+### Refactoring
+
+* **studio:** 统一边界事件与连接状态持久化并优化历史库索引及实时内存态 ([#585](https://github.com/ZR233/anywork/issues/585)) ([e802d06](https://github.com/ZR233/anywork/commit/e802d066a128ee696ab3d16914f026864ec80711))
+
 ## [6.51.0](https://github.com/ZR233/anywork/compare/v6.50.0...v6.51.0) (2026-11-25)
 
 

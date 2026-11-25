@@ -264,6 +264,7 @@ impl ThreadHandle {
             pending_model_sub_attempt_settlements: Vec::new(),
             pending_model_member_starts: Vec::new(),
             pending_model_member_content_available: Vec::new(),
+            pending_model_connection_events: Vec::new(),
             resources: None,
             retry_plan: None,
             published,

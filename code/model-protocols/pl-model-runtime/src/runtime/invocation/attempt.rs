@@ -30,16 +30,32 @@ impl StreamAttempt {
     }
 }
 
+pub(super) struct StreamAttemptExecution<'a> {
+    pub trace: Option<CompletionTraceContext>,
+    pub inference_timer: &'a InferenceTimer,
+    pub current: Option<&'a mut crate::runtime::current::CurrentProducer>,
+    pub generation: u32,
+    pub pending_reconnect: Option<(
+        pl_core::model::ModelConnectionFact,
+        std::time::Instant,
+        &'a mut bool,
+    )>,
+}
+
 impl ModelRuntime {
     pub(super) async fn run_stream_attempt(
         &self,
         request: CompletionRequest,
         context: &ModelInvocationContext,
-        trace: Option<CompletionTraceContext>,
-        inference_timer: &InferenceTimer,
-        mut current: Option<&mut crate::runtime::current::CurrentProducer>,
-        generation: u32,
+        execution: StreamAttemptExecution<'_>,
     ) -> StreamAttempt {
+        let StreamAttemptExecution {
+            trace,
+            inference_timer,
+            mut current,
+            generation,
+            pending_reconnect,
+        } = execution;
         if context
             .cancellation
             .as_ref()
@@ -156,6 +172,7 @@ impl ModelRuntime {
                         members: (context.billing_purpose != "compaction")
                             .then(|| context.members.clone())
                             .flatten(),
+                        pending_reconnect,
                         generation: context
                             .progress
                             .as_ref()

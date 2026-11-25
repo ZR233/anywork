@@ -91,7 +91,7 @@ pub(super) async fn compact_context(
         source: Box::new(source),
         accounting: Box::new(accounting.clone()),
         usage_is_terminal: response.usage_is_terminal,
-        timing: response.timing,
+        timing: response.timing.map(Box::new),
         model_observation: model_observation.clone().map(Box::new),
         presentation_items: response.presentation_items,
         partial_progress: Some(Box::new(response.observation.into())),

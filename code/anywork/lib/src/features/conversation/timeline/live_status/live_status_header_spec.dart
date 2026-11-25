@@ -429,9 +429,13 @@ final class LiveStatusHeaderSpec {
 
   factory LiveStatusHeaderSpec.forReconnecting(
     BuildContext context,
-    String? detail,
-  ) {
-    final label = context.l10n.liveStatusConnectionReconnecting;
+    String? detail, {
+    int? attempt,
+    int? maxAttempts,
+  }) {
+    final label = attempt != null && maxAttempts != null
+        ? context.l10n.liveStatusModelReconnecting(attempt, maxAttempts)
+        : context.l10n.liveStatusConnectionReconnecting;
     return LiveStatusHeaderSpec(
       label: label,
       icon: Icons.sync_outlined,
@@ -439,6 +443,7 @@ final class LiveStatusHeaderSpec {
       active: !(MediaQuery.maybeDisableAnimationsOf(context) ?? false),
       tone: StudioTone.warning,
       iconColor: StudioTone.warning.indicator(context),
+      meta: detail,
       tooltip: detail ?? label,
       semanticsLabel: detail ?? label,
     );

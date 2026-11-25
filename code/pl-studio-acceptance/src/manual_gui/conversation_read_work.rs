@@ -19,10 +19,7 @@ use pl_studio_runtime::{
 use pl_studio_runtime::{
     CurrentReader, CurrentWatch, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
-    history::{
-        HISTORY_PROTOCOL_VERSION, HistoryBusinessRowHead, HistoryDemand, HistoryTimelineItem,
-        HistoryTurnState,
-    },
+    history::{HISTORY_PROTOCOL_VERSION, HistoryBusinessRowHead, HistoryDemand, HistoryTurnState},
     mode::ThreadModeId,
 };
 use serde::Serialize;
@@ -560,14 +557,24 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         let mut cut = None;
         let mut cursor = None;
         let mut total = 0usize;
+        let mut newer_direct_seq: Option<u64> = None;
         loop {
             let page = reader
                 .timeline_page(cut.clone(), cursor.clone(), demand)
                 .await?;
-            for item in &page.items {
-                match item {
-                    HistoryTimelineItem::Divider(_) | HistoryTimelineItem::WorkRange(_) => {}
+            for entry in &page.entries {
+                total = total
+                    .checked_add(1)
+                    .context("history Main count overflow")?;
+                if entry.has_folded_after {
+                    let _ = (entry.event.seq, newer_direct_seq);
+                    total = total
+                        .checked_add(1)
+                        .context("history Main count overflow")?;
                 }
+                newer_direct_seq = Some(entry.event.seq);
+            }
+            if page.next.is_none() && page.has_folded_before_oldest {
                 total = total
                     .checked_add(1)
                     .context("history Main count overflow")?;

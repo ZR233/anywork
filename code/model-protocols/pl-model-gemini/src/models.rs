@@ -21,7 +21,7 @@ pub const RECOMMENDED_MODEL: &str = "gemini-4-hydrogen";
 const MAX_INLINE_MEDIA_BYTES: u64 = 15 * 1024 * 1024;
 const NATIVE_CONTEXT_FAMILY: &str = "gemini-generate-content";
 const PRICING_SOURCE: &str = "https://ai.google.dev/gemini-api/docs/pricing";
-const VERIFIED_AT: i64 = 1_795_478_400; // 2026-11-24 UTC
+const VERIFIED_AT: i64 = 1_795_564_800; // 2026-11-25 UTC
 const UNIFIED_CONTEXT_WINDOW: u64 = 1_048_576;
 const STREAMING_MAX_OUTPUT: u64 = 65_536;
 // Matches Google Antigravity's 512K automatic compaction ceiling for Gemini 4 models,
@@ -77,8 +77,8 @@ const MODELS: &[Definition] = &[
         auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
         thinking_levels: LEVEL_STANDARD,
         default_thinking_level: "medium",
-        // Standard Paid Tier rate effective 2026-12-01 (introductory promo $2.00/$10.00/$0.10 runs through 2026-11-30).
-        pricing: TokenPriceTier::flat(4.00, 20.00, Some(0.20), None),
+        // Published introductory rate through 2026-11-30; standard rate starts 2026-12-01.
+        pricing: TokenPriceTier::flat(2.00, 10.00, Some(0.10), None),
     },
     Definition {
         id: "gemini-4-carbon",
@@ -90,8 +90,8 @@ const MODELS: &[Definition] = &[
         auto_compact_token_limit: DEFAULT_AUTO_COMPACT_TOKEN_LIMIT,
         thinking_levels: LEVEL_STANDARD,
         default_thinking_level: "medium",
-        // Standard Paid Tier rate effective 2026-12-01 (introductory promo $2.00/$10.00/$0.10 runs through 2026-11-30).
-        pricing: TokenPriceTier::flat(4.00, 20.00, Some(0.20), None),
+        // Published introductory rate through 2026-11-30; standard rate starts 2026-12-01.
+        pricing: TokenPriceTier::flat(2.00, 10.00, Some(0.10), None),
     },
 ];
 
@@ -157,7 +157,7 @@ fn family() -> ModelFamily {
     ModelFamily {
         capabilities: ModelCapabilities {
             streaming: true,
-            temperature: true,
+            temperature: false,
             reasoning: true,
             web_search: false,
             input: vec![
@@ -279,17 +279,17 @@ mod tests {
                 "gemini-4-argon",
                 &["low", "medium", "high"][..],
                 "medium",
-                4.00,
-                20.00,
-                0.20,
+                2.00,
+                10.00,
+                0.10,
             ),
             (
                 "gemini-4-carbon",
                 &["low", "medium", "high"][..],
                 "medium",
-                4.00,
-                20.00,
-                0.20,
+                2.00,
+                10.00,
+                0.10,
             ),
         ];
 

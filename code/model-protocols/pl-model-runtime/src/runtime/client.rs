@@ -275,7 +275,7 @@ impl RemoteCompaction<'_> {
                     source: Box::new(source),
                     accounting: Box::new(response.accounting.clone()),
                     usage_is_terminal: report.usage_is_terminal,
-                    timing: response.timing,
+                    timing: response.timing.map(Box::new),
                     model_observation: response.model_observation.clone().map(Box::new),
                     presentation_items: Vec::new(),
                     partial_progress: None,

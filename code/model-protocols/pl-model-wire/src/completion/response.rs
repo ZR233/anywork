@@ -71,7 +71,7 @@ pub struct CompletionFailure {
     pub accounting: Box<InferenceAccounting>,
     /// Preserves the latest report's terminal fact even when the request failed.
     pub usage_is_terminal: bool,
-    pub timing: Option<InferenceTiming>,
+    pub timing: Option<Box<InferenceTiming>>,
     pub model_observation: Option<Box<InferenceModelObservation>>,
     /// All provider output items received before this invocation failed.
     pub presentation_items: Vec<CompletionPresentationItem>,

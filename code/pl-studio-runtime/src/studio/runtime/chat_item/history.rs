@@ -156,7 +156,7 @@ pub(in crate::studio) fn build_event_from_draft(
     let manifest = pack_bodies(event, pending, database_id)?;
     let presentation_contract = extract_presentation_contract(&data);
     let single_visibility = if atom.kind == crate::ChatAtomKind::Text
-        && event.timeline_role == HistoryTimelineRole::Divider
+        && event.timeline_role == HistoryTimelineRole::Boundary
     {
         Some(HistorySingleVisibility::Content)
     } else {
@@ -261,6 +261,43 @@ pub(in crate::studio) fn build_active_state_event(
         turn_id: atom.turn_id.clone(),
         captured_at: event.occurred_at,
     };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
+    Ok(())
+}
+
+pub(in crate::studio) fn build_connection_event(
+    event: &mut HistoryEvent,
+    data: serde_json::Value,
+) -> Result<()> {
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "connection".into(),
+        meta: HistoryEventMeta {
+            entity_id: event.event_id.clone(),
+            entity_kind: crate::ChatAtomKind::TurnReceipt,
+            delivery: crate::ChatDeliveryKind::Independent,
+            state: HistoryEntityState::KnownTerminal {
+                outcome: crate::ChatTerminalOutcome::Completed,
+            },
+            started_at: event.occurred_at,
+            finished_at: event.occurred_at,
+            text_channel: None,
+            single_visibility: None,
+            presentation_contract: None,
+            source_order: None,
+            content_present: Some(false),
+            model_recovery: None,
+            wait: None,
+            tool: None,
+        },
+        data,
+        bodies: Vec::new(),
+        source_order: None,
+        turn_id: event.turn_id.clone(),
+        captured_at: None,
+    };
+    event.entity_id = Some(event.event_id.clone());
     event.payload_schema = "anywork.event/1".into();
     event.payload_json = serde_json::to_string(&envelope)?;
     Ok(())

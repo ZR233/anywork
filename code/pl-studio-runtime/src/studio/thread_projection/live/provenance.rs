@@ -59,6 +59,7 @@ fn member_base(effect: &ThreadEffectBatch) -> Result<usize, ProjectionError> {
         effect.inbox.len(),
         effect.context_compactions.len(),
         effect.continuations.len(),
+        effect.model_connection_events.len(),
         effect.model_member_starts.len(),
         effect.model_member_content_available.len(),
     ])
@@ -221,7 +222,7 @@ fn draft_timeline_role(atom: &ChatAtom) -> HistoryTimelineRole {
     } else if atom.kind == ChatAtomKind::Text && atom.content_present == Some(false) {
         HistoryTimelineRole::Hidden
     } else {
-        HistoryTimelineRole::Divider
+        HistoryTimelineRole::Boundary
     }
 }
 
@@ -356,7 +357,6 @@ impl ProvenanceLedger {
         let mut staged = Vec::new();
         let mut sources = Vec::new();
         let recorded_at = history_millis(effect.committed_at)?;
-        let events = HistoryEventStamp { run, recorded_at };
         if let Some(turn) = &effect.turn
             && turn_outcome(&turn.state).is_none()
         {
@@ -478,19 +478,83 @@ impl ProvenanceLedger {
                     payload: None,
                 };
                 self.atom_starts.insert(item_id.clone(), atom.clone());
-                let history_event = events.emit_active_state_event(
-                    format!("entity:{run}:{}:{item_id}", effect.sequence),
-                    HistoryEventKind::CompactionStarted,
-                    &atom,
-                    atom.started_at,
-                    "contextCompaction",
-                    serde_json::json!({
-                        "status": "running",
-                        "operationId": id,
-                    }),
-                )?;
-                staged.push((at, history_event));
             }
+        }
+        let conn_base = slots(&[
+            1,
+            effect.inputs.len(),
+            effect.inbox.len(),
+            effect.context_compactions.len(),
+            effect.continuations.len(),
+        ])?;
+        for (index, conn) in effect.model_connection_events.iter().enumerate() {
+            let at = position(effect, slots(&[conn_base, index])?)?;
+            let kind = match conn.kind {
+                pl_core::model::ModelConnectionEventKind::Disconnected => {
+                    HistoryEventKind::ConnectionDisconnected
+                }
+                pl_core::model::ModelConnectionEventKind::Reconnected => {
+                    HistoryEventKind::ConnectionReconnected
+                }
+            };
+            let mut history_event = HistoryEvent::new(
+                format!(
+                    "conn:model:{run}:{}:{}:{}",
+                    effect.sequence,
+                    index,
+                    conn.kind.as_str()
+                ),
+                kind,
+                HistoryTimelineRole::Boundary,
+                recorded_at,
+            );
+            history_event.occurred_at = Some(history_millis(effect.committed_at)?);
+            history_event.run_id = Some(run.to_string());
+            history_event.turn_id = Some(conn.turn_id.clone());
+            history_event.attempt_id = Some(conn.attempt_id.clone());
+            let mut data = serde_json::Map::new();
+            data.insert(
+                "state".into(),
+                serde_json::Value::String(conn.kind.as_str().to_owned()),
+            );
+            data.insert("scope".into(), serde_json::Value::String("model".into()));
+            data.insert(
+                "transport".into(),
+                serde_json::Value::String(conn.transport.clone()),
+            );
+            if let Some(fallback) = &conn.fallback_transport {
+                data.insert(
+                    "fallbackTransport".into(),
+                    serde_json::Value::String(fallback.clone()),
+                );
+            }
+            data.insert(
+                "attempt".into(),
+                serde_json::Value::Number(serde_json::Number::from(conn.retry)),
+            );
+            data.insert(
+                "maxAttempts".into(),
+                serde_json::Value::Number(serde_json::Number::from(conn.max_retries)),
+            );
+            data.insert(
+                "recoverable".into(),
+                serde_json::Value::Bool(conn.recoverable),
+            );
+            if let Some(reason) = &conn.reason {
+                data.insert("reason".into(), serde_json::Value::String(reason.clone()));
+            }
+            if let Some(duration_ms) = conn.duration_ms {
+                data.insert(
+                    "durationMs".into(),
+                    serde_json::Value::Number(serde_json::Number::from(duration_ms)),
+                );
+            }
+            crate::studio::runtime::chat_item::build_connection_event(
+                &mut history_event,
+                serde_json::Value::Object(data),
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            staged.push((at, history_event));
         }
         for (index, start) in effect.model_member_starts.iter().enumerate() {
             let (id, field, shape) = observation_start(
@@ -577,21 +641,7 @@ impl ProvenanceLedger {
                 started: Some(at),
                 status: ChatActiveStatus::Running,
             };
-            self.atom_starts.insert(id.clone(), atom.clone());
-            let kind = if atom.kind == ChatAtomKind::Reasoning {
-                HistoryEventKind::ReasoningStarted
-            } else {
-                HistoryEventKind::ItemRecorded
-            };
-            let history_event = events.emit_active_state_event(
-                format!("entity:{run}:{}:{id}", effect.sequence),
-                kind,
-                &atom,
-                atom.started_at,
-                active_item_type(atom.kind),
-                serde_json::json!({ "status": "running" }),
-            )?;
-            staged.push((at, history_event));
+            self.atom_starts.insert(id.clone(), atom);
         }
         if self.atom_starts.len() > LIVE_ITEM_WINDOW {
             return Err(ProjectionError::History(
@@ -807,21 +857,7 @@ impl ProvenanceLedger {
                     }
                 }
             } else if first_start {
-                let kind = match atom.kind {
-                    ChatAtomKind::Reasoning => HistoryEventKind::ReasoningStarted,
-                    ChatAtomKind::Compaction => HistoryEventKind::CompactionStarted,
-                    ChatAtomKind::Agent => HistoryEventKind::AgentSpawned,
-                    _ => HistoryEventKind::ItemRecorded,
-                };
-                let history_event = events.emit_active_state_event(
-                    format!("entity:{run}:{}:{}", effect.sequence, atom.id),
-                    kind,
-                    &atom,
-                    atom.started_at,
-                    active_item_type(atom.kind),
-                    serde_json::json!({ "status": "running" }),
-                )?;
-                staged.push((item_pos, history_event));
+                // Non-tool active starts stay strictly in Current RAM via self.atom_starts.
             }
         }
 

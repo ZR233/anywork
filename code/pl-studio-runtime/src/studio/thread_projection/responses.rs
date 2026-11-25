@@ -1286,7 +1286,7 @@ mod recovery_tests {
         let mut event = HistoryEvent::new(
             "cancelled-recovery",
             HistoryEventKind::TextCompleted,
-            HistoryTimelineRole::Divider,
+            HistoryTimelineRole::Boundary,
             2000,
         );
         build_event_from_draft(&mut event, &atom(item), &draft, "database", Vec::new())?;

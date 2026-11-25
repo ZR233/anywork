@@ -296,9 +296,9 @@ async fn require_schema26(db: &impl ConnectionTrait) -> Result<()> {
         ))
         .await?
         .ok_or_else(|| HistoryError::Integrity("history identity is missing".into()))?;
-    if row.try_get::<i64>("", "schema_version")? != 26 {
+    if !matches!(row.try_get::<i64>("", "schema_version")?, 26 | 27) {
         return Err(HistoryError::Integrity(
-            "schema 26 manifest repair requires schema 26".into(),
+            "schema 26 manifest repair requires schema 26 or 27".into(),
         ));
     }
     Ok(())
@@ -582,7 +582,7 @@ mod tests {
         reader.close().await;
 
         let second = super::super::upgrade_history(&path, thread_id, directory.path()).await?;
-        assert_eq!(second.status, super::super::UpgradeStatus::AlreadySchema26);
+        assert_eq!(second.status, super::super::UpgradeStatus::AlreadyCurrent);
         assert!(second.backup.is_none());
         let reader = HistoryStore::open_reader(&path, thread_id, HistoryLimits::default()).await?;
         assert_eq!(
@@ -663,7 +663,7 @@ mod tests {
     #[tokio::test]
     async fn schema26_backup_publish_failure_preserves_crashed_wal() -> Result<()> {
         use super::super::{
-            BACKUP_ROOT_SCHEMA26, SCHEMA26_BACKUP_NAME, UpgradeFiles,
+            BACKUP_ROOT_SCHEMA27, SCHEMA27_BACKUP_NAME, UpgradeFiles,
             migration_tests::move_with_target_conflict, upgrade_history,
             upgrade_history_with_files,
         };
@@ -718,7 +718,7 @@ mod tests {
 
         let files = UpgradeFiles {
             move_owned_path: |source, target| {
-                move_with_target_conflict(source, target, SCHEMA26_BACKUP_NAME)
+                move_with_target_conflict(source, target, SCHEMA27_BACKUP_NAME)
             },
             ..UpgradeFiles::DISK
         };
@@ -729,11 +729,11 @@ mod tests {
             matches!(error, HistoryError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists),
             "{error:#}"
         );
-        let operation = std::fs::read_dir(directory.path().join(BACKUP_ROOT_SCHEMA26))?
+        let operation = std::fs::read_dir(directory.path().join(BACKUP_ROOT_SCHEMA27))?
             .next()
             .unwrap()?
             .path();
-        assert!(!operation.join(SCHEMA26_BACKUP_NAME).exists());
+        assert!(!operation.join(SCHEMA27_BACKUP_NAME).exists());
         let files = std::fs::read_dir(&operation)?.collect::<std::io::Result<Vec<_>>>()?;
         assert_eq!(files.len(), 1);
         let backup = schema::connect(&files[0].path(), true, false).await?;
@@ -789,7 +789,7 @@ mod tests {
     }
 
     async fn schema26_turn_migration_rejects_chunks(corruption: &str) -> Result<()> {
-        use super::super::{BACKUP_ROOT_SCHEMA26, PENDING_REPORT_FILE, upgrade_history};
+        use super::super::{BACKUP_ROOT_SCHEMA27, PENDING_REPORT_FILE, upgrade_history};
         use crate::history::schema;
 
         const THREAD: &str = "schema26-invalid-turn-chunks";
@@ -827,11 +827,11 @@ mod tests {
                 if message.contains("event chunked") && message.contains("chunk layout")),
             "{result:?}"
         );
-        let backups = directory.path().join(BACKUP_ROOT_SCHEMA26);
+        let backups = directory.path().join(BACKUP_ROOT_SCHEMA27);
         assert!(!backups.join(PENDING_REPORT_FILE).exists());
         let operation = std::fs::read_dir(backups)?.next().unwrap()?.path();
         assert!(!operation.join("upgrade-report.json").exists());
-        assert!(operation.join(super::super::SCHEMA26_BACKUP_NAME).is_file());
+        assert!(operation.join(super::super::SCHEMA27_BACKUP_NAME).is_file());
         let db = schema::connect(&path, false, false).await?;
         assert_eq!(revision(&db).await?, 1);
         assert_eq!(payload_json(&db, "chunked").await?, original);
@@ -863,7 +863,7 @@ mod tests {
         insert_event(&db, 5, "malformed", None, &malformed, "anywork.event/1").await?;
         db.close().await?;
 
-        let backups = directory.path().join(super::super::BACKUP_ROOT_SCHEMA26);
+        let backups = directory.path().join(super::super::BACKUP_ROOT_SCHEMA27);
         std::fs::create_dir_all(backups.parent().unwrap())?;
         std::fs::write(&backups, "prevent the backup directory from being created")?;
         let error = super::super::upgrade_history(&path, thread_id, directory.path())
@@ -888,7 +888,7 @@ mod tests {
         assert!(!backups.join(super::super::PENDING_REPORT_FILE).exists());
         let operation = std::fs::read_dir(backups)?.next().unwrap()?.path();
         assert!(!operation.join("upgrade-report.json").exists());
-        let preserved = operation.join(super::super::SCHEMA26_BACKUP_NAME);
+        let preserved = operation.join(super::super::SCHEMA27_BACKUP_NAME);
         let backup = super::super::super::schema::connect(&preserved, true, false).await?;
         assert_eq!(payload_json(&backup, "malformed").await?, malformed);
         backup.close().await?;
@@ -1042,7 +1042,7 @@ mod tests {
             .await?
             .unwrap()
             .try_get("", "schema_version")?;
-        assert_eq!(version, 26);
+        assert_eq!(version, 27);
 
         let rejected = db
             .execute_unprepared("UPDATE history_events SET recorded_at = recorded_at")
@@ -1070,7 +1070,7 @@ mod tests {
 
         let second =
             super::super::upgrade_history(&history_path, "thread-1", directory.path()).await?;
-        assert_eq!(second.status, super::super::UpgradeStatus::AlreadySchema26);
+        assert_eq!(second.status, super::super::UpgradeStatus::AlreadyCurrent);
         Ok(())
     }
 
@@ -1142,7 +1142,7 @@ mod tests {
                 seq.into(),
                 event_id.into(),
                 "usage_recorded".into(),
-                "hidden".into(),
+                0_i64.into(),
                 1_i64.into(),
                 row_scope.map(str::to_owned).into(),
                 row_key.map(str::to_owned).into(),

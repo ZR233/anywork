@@ -9,7 +9,8 @@ use super::{
     provenance::ProvenanceLedger,
 };
 use crate::studio::runtime::chat_item::{BodyKey, TOOL_RESULT_FIELD, static_state};
-use crate::{ExecutionShape, ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
+use crate::{ExecutionShape, ThreadContentLifecycle};
+use crate::{ThreadTextChannel, ThreadTextItem};
 use pl_core::{
     chat::PresentationPart,
     model::{AggregateChannel, ContentBlock, ObservedPartIdentity},

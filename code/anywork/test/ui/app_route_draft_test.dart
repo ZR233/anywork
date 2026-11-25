@@ -738,7 +738,8 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
         if (page != null) {
           return HistoryTimelinePage(
             cut: cut ?? await recording.capture(),
-            items: page.items,
+            entries: page.entries,
+            hasFoldedBeforeOldest: page.hasFoldedBeforeOldest,
             next: page.next,
           );
         }

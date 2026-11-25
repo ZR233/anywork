@@ -95,6 +95,7 @@ abstract final class LiveStatusMachine {
     final primary = _selectPrimaryPhase(
       connectionStatus: inputs.connectionStatus,
       connectionDetail: inputs.connectionDetail,
+      modelRecovery: current?.modelRecovery,
       execution: activeExecution,
       liveWork: liveWork,
       liveResponseAtoms: liveResponseAtoms,
@@ -319,6 +320,7 @@ abstract final class LiveStatusMachine {
   static LiveStatusPrimaryPhase? _selectPrimaryPhase({
     required LiveConnectionStatus connectionStatus,
     required String? connectionDetail,
+    required CurrentModelRecovery? modelRecovery,
     required ConversationActivityView? execution,
     required LiveWorkPhase? liveWork,
     required List<CurrentAtom> liveResponseAtoms,
@@ -329,6 +331,13 @@ abstract final class LiveStatusMachine {
   }) {
     if (connectionStatus == LiveConnectionStatus.reconnecting) {
       return LiveReconnectingPhase(detail: _nonEmpty(connectionDetail));
+    }
+    if (modelRecovery != null) {
+      return LiveReconnectingPhase(
+        detail: _nonEmpty(modelRecovery.reason),
+        attempt: modelRecovery.attempt,
+        maxAttempts: modelRecovery.maxAttempts,
+      );
     }
     final hasResponse =
         liveResponseAtoms.isNotEmpty ||

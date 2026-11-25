@@ -12,6 +12,7 @@ pub(super) struct MemberEffects {
     pub(super) started: Arc<[crate::model::ModelStartedMember]>,
     pub(super) content_available: Vec<crate::model::ModelContentAvailableMember>,
     pub(super) settlements: Arc<[crate::model::ModelSubAttemptSettlement]>,
+    pub(super) connections: Arc<[crate::model::ModelConnectionEvent]>,
 }
 
 pub(super) struct MemberCall {
@@ -127,6 +128,19 @@ impl Owner {
                     old.is_some_and(|old| old.content_available),
                 )
             }
+            MemberFact::Connection(event) => {
+                let old = seen
+                    .connections
+                    .get(&(event.generation, event.kind as u8, event.retry));
+                (
+                    event.turn_id != call.turn_id
+                        || event.attempt_id != call.attempt_id
+                        || event.generation != generation
+                        || event.transport.is_empty(),
+                    old.is_some_and(|(old, _)| old != event),
+                    old.is_some(),
+                )
+            }
         };
         if invalid || conflict || call.error.is_some() {
             let error = call
@@ -143,7 +157,7 @@ impl Owner {
             let beginning = match &member {
                 MemberFact::Started(member) => Some((member.generation, &member.identity)),
                 MemberFact::ContentAvailable(member) => Some((member.generation, &member.identity)),
-                MemberFact::Completed(_) => None,
+                MemberFact::Completed(_) | MemberFact::Connection(_) => None,
             };
             if let Some((generation, identity)) = beginning
                 && let ObservedPartIdentity::Provider(new) = identity
@@ -166,6 +180,7 @@ impl Owner {
             MemberFact::Completed(member) => members.completed = Arc::from([member.clone()]),
             MemberFact::Started(member) => members.started = Arc::from([member.clone()]),
             MemberFact::ContentAvailable(member) => members.content_available.push(member.clone()),
+            MemberFact::Connection(event) => members.connections = Arc::from([event.clone()]),
         };
         let sequence = self.state.commit_sequence.saturating_add(1);
         let effect = ThreadEffectBatch::between(
@@ -224,6 +239,12 @@ impl Owner {
                     old.item_kind = new.item_kind;
                 }
             }
+            MemberFact::Connection(event) => {
+                seen.connections.insert(
+                    (event.generation, event.kind as u8, event.retry),
+                    (event.clone(), charge),
+                );
+            }
         }
         drop(seen);
         let operation = call.attempt_id.clone();
@@ -233,6 +254,7 @@ impl Owner {
             MemberFact::ContentAvailable(member) => {
                 self.pending_model_member_content_available.push(member)
             }
+            MemberFact::Connection(event) => self.pending_model_connection_events.push(event),
         }
         self.claim_output(operation);
         if let Err(error) = self.publish() {

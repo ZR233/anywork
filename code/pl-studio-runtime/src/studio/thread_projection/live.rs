@@ -303,7 +303,7 @@ impl LiveProjection {
                 if let LiveEvent::Turn { turn, .. } = event
                     && turn.id == canonical.id
                 {
-                    *turn = canonical.clone();
+                    **turn = canonical.clone();
                 }
             }
         }

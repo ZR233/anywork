@@ -4,7 +4,7 @@ use pl_studio_runtime::history::{
     EventPayloadEnvelope, HistoryBodyManifestEntry, HistoryBusinessPage, HistoryBusinessRowHead,
     HistoryBusinessRowScope, HistoryCut, HistoryDemand, HistoryEntityState, HistoryEventBodyRef,
     HistoryEventMeta, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
-    HistoryTimelineItem, HistoryTimelinePage, HistoryTurnHead, HistoryTurnState,
+    HistoryTimelineEntry, HistoryTimelinePage, HistoryTurnHead, HistoryTurnState,
     HistoryWorkRangePage, decode_event_envelope,
 };
 use pl_studio_runtime::{
@@ -114,6 +114,7 @@ pub(crate) async fn scan_main(
         let mut cut: Option<HistoryCut> = None;
         let mut cursor = None;
         let mut seen = HashSet::new();
+        let mut newer_direct_seq: Option<u64> = None;
         for page_index in 0..CURSOR_PAGE_LIMIT {
             let page = read
                 .timeline_page(cut.clone(), cursor.clone(), HISTORY_DEMAND)
@@ -121,68 +122,110 @@ pub(crate) async fn scan_main(
             charge_history_page(&page, HISTORY_DEMAND, remaining)?;
             let HistoryTimelinePage {
                 cut: page_cut,
-                items,
+                entries,
+                has_folded_before_oldest,
                 next,
             } = page;
-            for item in items {
+            for entry in entries {
                 rows = rows.checked_add(1).context("Main row count overflow")?;
-                match item {
-                    HistoryTimelineItem::Divider(record) => {
-                        let envelope = decode_event_envelope(&record)?;
-                        if entity_ids.insert(envelope.meta.entity_id.clone()) {
-                            entities.push((record, envelope.meta));
-                        }
-                    }
-                    HistoryTimelineItem::WorkRange(range) => {
-                        let mut group_cut = Some(page_cut.clone());
-                        let mut group_cursor = None;
-                        let mut group_seen = HashSet::new();
-                        for group_index in 0..CURSOR_PAGE_LIMIT {
-                            let group = read
-                                .work_range_page(
-                                    range.after_seq,
-                                    range.before_seq,
-                                    group_cut.clone(),
-                                    group_cursor.clone(),
-                                    HISTORY_DEMAND,
-                                )
-                                .await?;
-                            charge_history_page(&group, HISTORY_DEMAND, remaining)?;
-                            let HistoryWorkRangePage {
-                                cut: next_group_cut,
-                                after_seq,
-                                before_seq,
-                                events,
-                                next,
-                            } = group;
+                let HistoryTimelineEntry {
+                    event: record,
+                    has_folded_after,
+                    tail_folded_ended_at: _,
+                } = entry;
+                let direct_seq = record.seq;
+                let envelope = decode_event_envelope(&record)?;
+                if entity_ids.insert(envelope.meta.entity_id.clone()) {
+                    entities.push((record, envelope.meta));
+                }
+                if has_folded_after {
+                    rows = rows.checked_add(1).context("Main row count overflow")?;
+                    let mut group_cut = Some(page_cut.clone());
+                    let mut group_cursor = None;
+                    let mut group_seen = HashSet::new();
+                    for group_index in 0..CURSOR_PAGE_LIMIT {
+                        let group = read
+                            .work_range_page(
+                                Some(direct_seq),
+                                newer_direct_seq,
+                                group_cut.clone(),
+                                group_cursor.clone(),
+                                HISTORY_DEMAND,
+                            )
+                            .await?;
+                        charge_history_page(&group, HISTORY_DEMAND, remaining)?;
+                        let HistoryWorkRangePage {
+                            cut: next_group_cut,
+                            after_seq,
+                            before_seq,
+                            events,
+                            next,
+                        } = group;
+                        ensure!(
+                            after_seq == Some(direct_seq) && before_seq == newer_direct_seq,
+                            "History work range response belonged to another window"
+                        );
+                        for member in events {
                             ensure!(
-                                after_seq == range.after_seq && before_seq == range.before_seq,
-                                "History work range response belonged to another window"
+                                member.payload_schema == "anywork.event/1",
+                                "History work range work:{direct_seq} returned non-event schema {}",
+                                member.payload_schema
                             );
-                            for member in events {
-                                ensure!(
-                                    member.payload_schema == "anywork.event/1",
-                                    "History work range {} returned non-event schema {}",
-                                    range.range_id,
-                                    member.payload_schema
-                                );
-                                let envelope = decode_event_envelope(&member)?;
-                                if entity_ids.insert(envelope.meta.entity_id.clone()) {
-                                    entities.push((member, envelope.meta));
-                                }
+                            let envelope = decode_event_envelope(&member)?;
+                            if entity_ids.insert(envelope.meta.entity_id.clone()) {
+                                entities.push((member, envelope.meta));
                             }
-                            let Some(next) = next else {
-                                break;
-                            };
-                            ensure!(
-                                group_index + 1 < CURSOR_PAGE_LIMIT
-                                    && group_seen.insert(next.clone()),
-                                "History work range continuation repeated or exceeded its page budget"
-                            );
-                            group_cut = Some(next_group_cut);
-                            group_cursor = Some(next);
+                        }
+                        let Some(next) = next else {
+                            break;
+                        };
+                        ensure!(
+                            group_index + 1 < CURSOR_PAGE_LIMIT && group_seen.insert(next.clone()),
+                            "History work range continuation repeated or exceeded its page budget"
+                        );
+                        group_cut = Some(next_group_cut);
+                        group_cursor = Some(next);
+                    }
+                }
+                newer_direct_seq = Some(direct_seq);
+            }
+            if next.is_none() && has_folded_before_oldest {
+                rows = rows.checked_add(1).context("Main row count overflow")?;
+                let mut group_cut = Some(page_cut.clone());
+                let mut group_cursor = None;
+                let mut group_seen = HashSet::new();
+                for group_index in 0..CURSOR_PAGE_LIMIT {
+                    let group = read
+                        .work_range_page(
+                            None,
+                            newer_direct_seq,
+                            group_cut.clone(),
+                            group_cursor.clone(),
+                            HISTORY_DEMAND,
+                        )
+                        .await?;
+                    charge_history_page(&group, HISTORY_DEMAND, remaining)?;
+                    let HistoryWorkRangePage {
+                        cut: next_group_cut,
+                        events,
+                        next,
+                        ..
+                    } = group;
+                    for member in events {
+                        let envelope = decode_event_envelope(&member)?;
+                        if entity_ids.insert(envelope.meta.entity_id.clone()) {
+                            entities.push((member, envelope.meta));
                         }
                     }
+                    let Some(next) = next else {
+                        break;
+                    };
+                    ensure!(
+                        group_index + 1 < CURSOR_PAGE_LIMIT && group_seen.insert(next.clone()),
+                        "History work range continuation repeated or exceeded its page budget"
+                    );
+                    group_cut = Some(next_group_cut);
+                    group_cursor = Some(next);
                 }
             }
             let Some(next) = next else {

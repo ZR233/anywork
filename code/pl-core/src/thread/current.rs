@@ -3,7 +3,12 @@
 //! These APIs do not select a production persistence backend. The checkpoint path remains
 //! separate until its callers are migrated; no current operation reads or replays history.
 
-use std::{collections::BTreeMap, fmt, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -256,8 +261,6 @@ pub enum CurrentError {
     ClockRange,
     #[error("saved tool preview exceeds its accepted bounds or has duplicate identities")]
     InvalidToolPreview,
-    #[error("tool progress has no owning task: {0}")]
-    OrphanToolPreview(String),
     #[error("active model stream has no complete producer snapshot")]
     MissingStream,
     #[error("current owner has closed")]
@@ -382,26 +385,23 @@ impl ThreadCurrentState {
         epoch: RuntimeEpoch,
     ) -> Result<Self, CurrentError> {
         let mut tasks = state.tasks.clone();
-        let mut ordered = tasks
-            .values()
-            .map(|task| (task.started_sequence, task.id.clone()))
-            .collect::<Vec<_>>();
-        ordered.sort();
-        for (index, (_, id)) in ordered.iter().enumerate() {
-            tasks
-                .get_mut(id)
-                .expect("task selected above")
-                .started_sequence = Some(index as u64 + 1);
-        }
+        let mut ordered = tasks.values_mut().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| {
+            left.started_sequence
+                .cmp(&right.started_sequence)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         let task_start_ordinal = ordered.len() as u64;
+        for (index, task) in ordered.into_iter().enumerate() {
+            task.started_sequence = Some(index as u64 + 1);
+        }
         let mut tool_previews = BTreeMap::new();
-        for (id, progress) in &state.tool_progress {
-            let task = state
-                .tasks
-                .get(id)
-                .ok_or_else(|| CurrentError::OrphanToolPreview(id.clone()))?;
+        for (id, task) in &tasks {
+            let Some(progress) = state.tool_progress.get(id) else {
+                continue;
+            };
             let saved = SavedToolProgress::capture(epoch, progress);
-            saved.restore()?;
+            saved.validate()?;
             tool_previews.insert(task.call_id.clone(), saved);
         }
         let continuation = state.continuation.clone();
@@ -483,7 +483,18 @@ impl ThreadCurrentState {
 
 impl ThreadCurrent {
     pub fn from_json(bytes: &[u8], thread_id: &str) -> Result<Self, CurrentError> {
-        let current: Self = serde_json::from_slice(bytes)?;
+        let mut current: Self = serde_json::from_slice(bytes)?;
+        // Older saves can contain previews after their tasks left Current.
+        let task_calls = current
+            .state
+            .tasks
+            .values()
+            .map(|task| task.call_id.as_str())
+            .collect::<BTreeSet<_>>();
+        current
+            .state
+            .tool_previews
+            .retain(|call_id, _| task_calls.contains(call_id.as_str()));
         current.validate(thread_id)?;
         Ok(current)
     }

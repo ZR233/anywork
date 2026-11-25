@@ -215,7 +215,7 @@ pub(super) fn failure_error_with_report(
         max_retries: report
             .retry
             .map(|_| crate::runtime::transport_policy::MODEL_MAX_RETRIES),
-        timing: failure.timing,
+        timing: failure.timing.as_deref().copied(),
         provider_failure: failure.source.provider_failure_ref().cloned(),
         message: failure.source.to_string(),
         binding,

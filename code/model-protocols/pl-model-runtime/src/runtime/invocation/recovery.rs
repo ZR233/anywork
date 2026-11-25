@@ -118,6 +118,7 @@ impl ModelRuntime {
         let mut http_fallbacks = 0_u64;
         let mut previous: Option<CompletionFailure> = None;
         let mut attachment_repair = None;
+        let mut pending_reconnect: Option<(std::time::Instant, u32, Option<String>)> = None;
         'recovery: loop {
             if cancellation.is_cancelled() {
                 report.stop = Some(ModelRecoveryStopReason::Cancelled);
@@ -189,6 +190,24 @@ impl ModelRuntime {
                     };
                     let inference_timer = InferenceTimer::start();
                     let generation = sent;
+                    let mut reconnected_emitted = false;
+                    let reconnect_arg = pending_reconnect.as_ref().map(|(at, retry, fallback)| {
+                        (
+                            pl_core::model::ModelConnectionFact {
+                                generation,
+                                kind: pl_core::model::ModelConnectionEventKind::Reconnected,
+                                transport: transport.trace_label().to_owned(),
+                                fallback_transport: fallback.clone(),
+                                retry: *retry,
+                                max_retries: MODEL_MAX_RETRIES,
+                                recoverable: true,
+                                reason: None,
+                                duration_ms: None,
+                            },
+                            *at,
+                            &mut reconnected_emitted,
+                        )
+                    });
                     let super::attempt::StreamAttempt {
                         mut result,
                         replay_safe,
@@ -197,12 +216,18 @@ impl ModelRuntime {
                         .run_stream_attempt(
                             request.clone(),
                             &context,
-                            trace,
-                            &inference_timer,
-                            current.as_deref_mut(),
-                            generation,
+                            super::attempt::StreamAttemptExecution {
+                                trace,
+                                inference_timer: &inference_timer,
+                                current: current.as_deref_mut(),
+                                generation,
+                                pending_reconnect: reconnect_arg,
+                            },
                         )
                         .await;
+                    if reconnected_emitted {
+                        pending_reconnect = None;
+                    }
                     if !started {
                         let local = result.expect_err("a transport attempt did not start");
                         report.stop = Some(if local.is_cancelled() {
@@ -248,8 +273,8 @@ impl ModelRuntime {
                         }
                         Err(error) => {
                             context.close_live_usage();
-                            error.timing = timing;
-                            error.accounting = Box::new(accounting);
+                            error.timing = timing.map(Box::new);
+                            *error.accounting = accounting;
                         }
                     }
                     let receipt = self.sub_attempt_receipt(
@@ -286,7 +311,7 @@ impl ModelRuntime {
                                     Box::new(response.accounting),
                                 )
                                 .with_optional_model_observation(response.model_observation);
-                                failure.timing = response.timing;
+                                failure.timing = response.timing.map(Box::new);
                                 failure.usage_is_terminal = response.usage_is_terminal;
                                 failure.presentation_items = response.presentation_items;
                                 failure
@@ -308,6 +333,57 @@ impl ModelRuntime {
             }
             if !replay_safe {
                 report.stop = Some(ModelRecoveryStopReason::SideEffects);
+                if !preparation_failed
+                    && error
+                        .source
+                        .provider_failure_ref()
+                        .is_some_and(|failure| failure.kind == ProviderFailureKind::Transport)
+                {
+                    // A hosted side effect forbids replaying this request, but a broken
+                    // WebSocket still needs a durable boundary and next-turn HTTP fallback.
+                    let mut fallback_transport = None;
+                    if transport == OpenAiTransport::ResponsesWebSocket
+                        && self.supports_http_fallback()
+                    {
+                        let activate = context
+                            .session
+                            .activate_responses_http_fallback(self.connection_fingerprint());
+                        let activated = if let Some(current) = current.as_deref_mut() {
+                            current.wait(activate, None).await
+                        } else {
+                            activate.await
+                        };
+                        if activated {
+                            fallback_transport =
+                                Some(OpenAiTransport::Http.trace_label().to_owned());
+                        }
+                    }
+                    if pending_reconnect.is_none() {
+                        let fact = pl_core::model::ModelConnectionFact {
+                            generation: context.current_generation(),
+                            kind: pl_core::model::ModelConnectionEventKind::Disconnected,
+                            transport: transport.trace_label().to_owned(),
+                            fallback_transport,
+                            retry,
+                            max_retries: MODEL_MAX_RETRIES,
+                            recoverable: false,
+                            reason: Some(error.to_string()),
+                            duration_ms: None,
+                        };
+                        match context.admit_connection(fact, current.as_deref_mut()).await {
+                            Ok(()) | Err(pl_core::model::ModelMemberError::Closed) => {}
+                            Err(pl_core::model::ModelMemberError::Cancelled) => {
+                                error.cancelled = true;
+                                report.stop = Some(ModelRecoveryStopReason::Cancelled);
+                            }
+                            Err(cause) => {
+                                report.stop = Some(ModelRecoveryStopReason::SaveFailed);
+                                error = error
+                                    .with_recovery_error(PureError::LlmError(cause.to_string()));
+                            }
+                        }
+                    }
+                }
                 return Err(preserve_recovery_failure(attachment_repair.take(), error));
             }
             let Some(failure) = error.source.provider_failure_ref() else {
@@ -438,6 +514,45 @@ impl ModelRuntime {
                 }
                 ProviderRecovery::FullContext | ProviderRecovery::None => {}
             }
+            if is_connection_failure && !preparation_failed {
+                let fallback = (recovery == ProviderRecovery::HttpFallback)
+                    .then(|| OpenAiTransport::Http.trace_label().to_owned());
+                if let Some((_, pending_retry, pending_fallback)) = pending_reconnect.as_mut() {
+                    *pending_retry = retry;
+                    if fallback.is_some() {
+                        *pending_fallback = fallback;
+                    }
+                } else {
+                    let fact = pl_core::model::ModelConnectionFact {
+                        generation: context.current_generation(),
+                        kind: pl_core::model::ModelConnectionEventKind::Disconnected,
+                        transport: transport.trace_label().to_owned(),
+                        fallback_transport: fallback.clone(),
+                        retry,
+                        max_retries: MODEL_MAX_RETRIES,
+                        recoverable: true,
+                        reason: Some(error.to_string()),
+                        duration_ms: None,
+                    };
+                    match context.admit_connection(fact, current.as_deref_mut()).await {
+                        Ok(()) => {
+                            pending_reconnect = Some((std::time::Instant::now(), retry, fallback))
+                        }
+                        Err(pl_core::model::ModelMemberError::Cancelled) => {
+                            error.cancelled = true;
+                            report.stop = Some(ModelRecoveryStopReason::Cancelled);
+                            return Err(error);
+                        }
+                        Err(pl_core::model::ModelMemberError::Closed) => {}
+                        Err(cause) => {
+                            report.stop = Some(ModelRecoveryStopReason::SaveFailed);
+                            return Err(
+                                error.with_recovery_error(PureError::LlmError(cause.to_string()))
+                            );
+                        }
+                    }
+                }
+            }
             if let Some(progress) = &context.progress {
                 progress.finish_recovery(ModelRecoveryPhase::Waiting);
             }
@@ -476,7 +591,7 @@ impl ModelRuntime {
             accounting,
             model_observation,
             timing,
-            orchestration,
+            mut orchestration,
         ) = match result {
             Ok(response) => (
                 InferenceAttemptOutcome::Succeeded,
@@ -497,10 +612,11 @@ impl ModelRuntime {
                 Some(error.to_string()),
                 (*error.accounting).clone(),
                 error.model_observation().cloned(),
-                error.timing,
+                error.timing.as_deref().copied(),
                 Default::default(),
             ),
         };
+        orchestration.transport_attempts = 1;
         let stage = provider_failure
             .as_ref()
             .map_or(ProviderFailureStage::Stream, |failure| {

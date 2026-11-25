@@ -1747,14 +1747,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsStatisticsTitle => 'Statistics';
 
   @override
-  String get settingsStatisticsSubtitle =>
-      'Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.';
-
-  @override
-  String get settingsStatisticsSummaryTitle => 'Model performance';
+  String get settingsStatisticsSummaryTitle => 'Model summary';
 
   @override
   String get settingsStatisticsHistoryTitle => 'Call history';
+
+  @override
+  String get statisticsRefresh => 'Refresh';
+
+  @override
+  String get statisticsRefreshing => 'Refreshing';
+
+  @override
+  String get statisticsPreviousPage => 'Previous page';
+
+  @override
+  String get statisticsNextPage => 'Next page';
+
+  @override
+  String statisticsItemRange(int first, int last, int total) {
+    return '$first–$last of $total';
+  }
+
+  @override
+  String statisticsPageNumber(int page, int pages) {
+    return '$page / $pages';
+  }
 
   @override
   String get settingsStatisticsAllModels => 'All models';
@@ -7788,6 +7806,31 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get liveStatusConnectionReconnecting => 'Reconnecting live updates';
+
+  @override
+  String liveStatusModelReconnecting(int attempt, int max) {
+    return 'Model disconnected, retrying ($attempt/$max)';
+  }
+
+  @override
+  String get timelineConnectionModelDisconnected =>
+      'Model connection disconnected';
+
+  @override
+  String get timelineConnectionModelReconnected =>
+      'Model connection reconnected';
+
+  @override
+  String get timelineConnectionSshDisconnected => 'SSH connection disconnected';
+
+  @override
+  String get timelineConnectionSshReconnected => 'SSH connection reconnected';
+
+  @override
+  String get timelineConnectionGenericDisconnected => 'Connection disconnected';
+
+  @override
+  String get timelineConnectionGenericReconnected => 'Connection reconnected';
 
   @override
   String get liveStatusMembersUnavailable => 'Member view unavailable';

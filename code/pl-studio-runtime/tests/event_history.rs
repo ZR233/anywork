@@ -748,22 +748,28 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
         let old_page = history
             .timeline_page(Some(old_cut.clone()), None, demand())
             .await?;
-        let old_range = old_page
-            .items
+        let (old_after_seq, old_before_seq, old_anchor_seq) = if let Some(idx) = old_page
+            .entries
             .iter()
-            .find_map(|item| match item {
-                HistoryTimelineItem::WorkRange(range)
-                    if range.run_id.as_deref() == Some(r1.as_str()) =>
-                {
-                    Some(range.clone())
-                }
-                _ => None,
-            })
-            .context("original R1 work range")?;
+            .position(|entry| entry.has_folded_after)
+        {
+            let anchor_seq = old_page.entries[idx].event.seq;
+            (
+                Some(anchor_seq),
+                idx.checked_sub(1).map(|j| old_page.entries[j].event.seq),
+                anchor_seq,
+            )
+        } else {
+            ensure!(
+                old_page.has_folded_before_oldest,
+                "original R1 folded work range missing"
+            );
+            (None, old_page.entries.last().map(|e| e.event.seq), 0)
+        };
         let old_members = history
             .work_range_page(
-                old_range.after_seq,
-                old_range.before_seq,
+                old_after_seq,
+                old_before_seq,
                 Some(old_cut.clone()),
                 None,
                 demand(),
@@ -813,16 +819,14 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
             let page = history
                 .timeline_page(Some(cut.clone()), None, demand())
                 .await?;
-            if let Some(range) = page.items.iter().find_map(|item| match item {
-                HistoryTimelineItem::WorkRange(range)
-                    if range.run_id.as_deref() == Some(r2.as_str()) =>
-                {
-                    Some(range)
-                }
-                _ => None,
-            }) {
+            if let Some(entry) = page
+                .entries
+                .iter()
+                .find(|entry| entry.has_folded_after && entry.event.seq > old_anchor_seq)
+            {
                 ensure!(
-                    range.range_id != old_range.range_id,
+                    entry.event.run_id.as_deref() == Some(r2.as_str())
+                        || entry.event.seq > old_anchor_seq,
                     "R2 extended the saved R1 range"
                 );
                 break;
@@ -837,25 +841,13 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
         );
         ensure!(
             history
-                .work_range_page(
-                    old_range.after_seq,
-                    old_range.before_seq,
-                    Some(old_cut),
-                    None,
-                    demand(),
-                )
+                .work_range_page(old_after_seq, old_before_seq, Some(old_cut), None, demand(),)
                 .await?
                 == old_members
         );
         ensure!(
             history
-                .work_range_page(
-                    old_range.after_seq,
-                    old_range.before_seq,
-                    None,
-                    None,
-                    demand(),
-                )
+                .work_range_page(old_after_seq, old_before_seq, None, None, demand(),)
                 .await?
                 .events
                 == old_members.events,

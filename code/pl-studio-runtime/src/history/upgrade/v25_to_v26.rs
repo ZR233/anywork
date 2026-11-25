@@ -641,7 +641,7 @@ async fn convert_row(
                 .as_ref()
                 .is_some_and(|key| single_latest_seq.get(key) == Some(&row.seq));
             if is_latest {
-                HistoryTimelineRole::Divider
+                HistoryTimelineRole::Boundary
             } else {
                 HistoryTimelineRole::Hidden
             }
@@ -1318,6 +1318,14 @@ fn index_current_manifest(
     Ok(())
 }
 
+fn v26_timeline_role_str(role: HistoryTimelineRole) -> &'static str {
+    match role {
+        HistoryTimelineRole::Boundary => "divider",
+        HistoryTimelineRole::Work => "work",
+        HistoryTimelineRole::Hidden => "hidden",
+    }
+}
+
 async fn insert_v26_row(db: &impl ConnectionTrait, row: &ConvertedV26Row) -> Result<()> {
     let (source_kind, source_id) = match (&row.source_kind, &row.source_id) {
         (Some(k), Some(id)) => (Some(k.clone()), Some(id.clone())),
@@ -1338,7 +1346,7 @@ async fn insert_v26_row(db: &impl ConnectionTrait, row: &ConvertedV26Row) -> Res
             number(row.seq)?.into(),
             row.event_id.clone().into(),
             row.kind.clone().into(),
-            row.timeline_role.as_str().to_owned().into(),
+            v26_timeline_role_str(row.timeline_role).to_owned().into(),
             row.occurred_at.into(),
             row.recorded_at.into(),
             row.run_id.clone().into(),

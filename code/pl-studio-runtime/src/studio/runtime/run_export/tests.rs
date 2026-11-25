@@ -129,7 +129,7 @@ fn text_original(
     let mut event = HistoryEvent::new(
         event_id,
         HistoryEventKind::TextCompleted,
-        HistoryTimelineRole::Divider,
+        HistoryTimelineRole::Boundary,
         index as i64,
     );
     event.entity_id = Some(entity_id);
@@ -364,7 +364,32 @@ fn aux_effect(
     usage: UsageReport,
     pricing: PricingOutcome,
 ) -> Result<PreparedAccounting> {
-    use pl_model::completion::{InferenceAttemptMetadata, InferenceAttemptOutcome};
+    aux_accounting_effect(
+        thread_id,
+        sequence,
+        inference_id,
+        account_id,
+        model_id,
+        InferenceAccounting {
+            usage,
+            pricing,
+            price_snapshot: None,
+            request_started_at: Some(1_763_000_000_000),
+        },
+        pl_model::completion::InferenceAttemptOutcome::Succeeded,
+    )
+}
+
+fn aux_accounting_effect(
+    thread_id: &str,
+    sequence: u64,
+    inference_id: &str,
+    account_id: &str,
+    model_id: Option<&str>,
+    accounting: InferenceAccounting,
+    outcome: pl_model::completion::InferenceAttemptOutcome,
+) -> Result<PreparedAccounting> {
+    use pl_model::completion::InferenceAttemptMetadata;
     let receipt = pl_model::runtime::ModelSubAttemptReceipt {
         turn_id: None,
         attempt_id: inference_id.into(),
@@ -379,7 +404,7 @@ fn aux_effect(
                 core_attempt_id: inference_id.into(),
                 generation: 0,
                 stage: pl_protocol::ProviderFailureStage::Stream,
-                outcome: InferenceAttemptOutcome::Succeeded,
+                outcome,
                 usage_is_terminal: true,
             }),
             inference_id: pl_model::runtime::model_sub_attempt_id(inference_id, 0),
@@ -391,12 +416,7 @@ fn aux_effect(
             effort: None,
             requested_service_tier: None,
             context_window: None,
-            accounting: InferenceAccounting {
-                usage,
-                pricing,
-                price_snapshot: None,
-                request_started_at: Some(1_763_000_000_000),
-            },
+            accounting,
             prompt_generation: None,
             prompt_cache_policy: None,
             prefix_changed_reason: None,
@@ -425,6 +445,111 @@ fn aux_effect(
     let prepared = PreparedAccounting::prepare(&effect)?;
     assert!(prepared.binding().is_none());
     Ok(prepared)
+}
+
+#[tokio::test]
+async fn retry_billing_preserves_known_consumption_through_export_and_history_reopen() -> Result<()>
+{
+    let paid = |input, output, total, amount| InferenceAccounting {
+        usage: UsageReport {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: total,
+            cache_read_tokens: Some(0),
+            ..Default::default()
+        },
+        pricing: PricingOutcome::Estimated {
+            cost: RuntimeCostAmount {
+                currency: "USD".into(),
+                amount,
+            },
+            cache_savings: None,
+        },
+        ..Default::default()
+    };
+    let receipts = vec![
+        aux_accounting_effect(
+            "retried",
+            1,
+            "failed",
+            "acct",
+            Some("gemini-4-hydrogen"),
+            paid(Some(12), Some(10), Some(22), 0.5),
+            pl_model::completion::InferenceAttemptOutcome::Failed,
+        )?,
+        aux_accounting_effect(
+            "retried",
+            2,
+            "unknown",
+            "acct",
+            Some("gemini-4-hydrogen"),
+            InferenceAccounting::default(),
+            pl_model::completion::InferenceAttemptOutcome::Failed,
+        )?,
+        aux_accounting_effect(
+            "retried",
+            3,
+            "success",
+            "acct",
+            Some("gemini-4-hydrogen"),
+            paid(Some(12), Some(3), Some(15), 0.25),
+            pl_model::completion::InferenceAttemptOutcome::Succeeded,
+        )?,
+    ];
+    assert!(receipts.iter().all(|receipt| receipt.facts.len() == 1));
+    let summary = fold_all(0, &receipts);
+    assert_eq!(summary.totals.prompt_tokens, 24);
+    assert_eq!(summary.totals.completion_tokens, 13);
+    assert_eq!(summary.pricing.estimated_costs[0].amount, 0.75);
+    let built = build_and_reconcile_usage(
+        true,
+        &[ThreadUsageInput {
+            thread_id: "retried",
+            initial_effect_seq: 0,
+            through_effect_seq: 3,
+            summary: &summary,
+            receipts: &receipts,
+        }],
+    );
+    assert!(built.reconciled);
+    assert_eq!(built.export.totals.inference_count, Some(3));
+    assert_eq!(built.export.totals.output_tokens, None);
+    assert_eq!(built.export.known_totals.output_tokens, 13);
+    assert_eq!(built.export.known_totals.total_tokens, 37);
+    assert_eq!(built.export.totals.estimated_cost_usd, None);
+    assert_eq!(built.export.known_totals.estimated_cost_usd, 0.75);
+
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("retries.sqlite");
+    let history = HistoryStore::open(&path, "retried", HistoryLimits::default()).await?;
+    let epoch = pl_core::thread::current::RuntimeEpoch::new();
+    for fact in receipts.iter().flat_map(|receipt| receipt.facts.iter()) {
+        history
+            .record_usage(&crate::history::HistoryUsageFact {
+                event_id: fact.record.inference_id.clone(),
+                settlement: Some(fact.settlement.clone()),
+                runtime_epoch: epoch,
+                turn_id: None,
+                outcome: if fact.status == crate::studio::storage::calls::CallStatus::Failed {
+                    pl_core::usage::UsageOutcome::Failed
+                } else {
+                    pl_core::usage::UsageOutcome::Succeeded
+                },
+                record: fact.record.clone(),
+            })
+            .await?;
+    }
+    history.close().await?;
+    let reopened = HistoryStore::open(&path, "retried", HistoryLimits::default()).await?;
+    let reader = reopened.reader();
+    let totals = reader.accounting(None).await?.unwrap();
+    assert_eq!(totals.inference_count, 3);
+    assert_eq!(totals.total_tokens, 37);
+    assert!(totals.has_incomplete_usage);
+    assert!(totals.has_unpriced_usage);
+    reader.close().await;
+    reopened.close().await?;
+    Ok(())
 }
 
 fn fold_all(initial_seq: u64, receipts: &[PreparedAccounting]) -> UsageSummary {

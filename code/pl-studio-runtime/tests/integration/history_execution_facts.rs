@@ -119,7 +119,7 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
                 ))
                 .await?
                 .context("history identity")?;
-            ensure!(identity.try_get::<i64>("", "schema_version")? == 26);
+            ensure!(identity.try_get::<i64>("", "schema_version")? == 27);
             ensure!(identity.try_get::<String>("", "thread_id")?.as_str() == id.as_str());
             Ok(())
         }

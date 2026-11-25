@@ -26,11 +26,11 @@ COPIED_ASSETS = (
     ("design/assets/readme-agent-evaluation.png", "assets/readme-agent-evaluation.png"),
     ("design/assets/readme-model-evaluations.png", "assets/readme-model-evaluations.png"),
     ("design/assets/readme-workflow-editor.png", "assets/readme-workflow-editor.png"),
-    ("code/anywork/assets/provider-logos/openai.svg", "assets/providers/openai.svg"),
-    ("code/anywork/assets/provider-logos/deepseek.svg", "assets/providers/deepseek.svg"),
-    ("code/anywork/assets/provider-logos/xai.svg", "assets/providers/xai.svg"),
-    ("code/anywork/assets/provider-logos/zhipu.svg", "assets/providers/zhipu.svg"),
-    ("code/anywork/assets/provider-logos/mimo.svg", "assets/providers/mimo.svg"),
+    ("code/anywork/lib/assets/provider-logos/openai.svg", "assets/providers/openai.svg"),
+    ("code/anywork/lib/assets/provider-logos/deepseek.svg", "assets/providers/deepseek.svg"),
+    ("code/anywork/lib/assets/provider-logos/xai.svg", "assets/providers/xai.svg"),
+    ("code/anywork/lib/assets/provider-logos/zhipu.svg", "assets/providers/zhipu.svg"),
+    ("code/anywork/lib/assets/provider-logos/mimo.svg", "assets/providers/mimo.svg"),
 )
 
 ICON_TARGETS = {

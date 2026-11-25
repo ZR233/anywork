@@ -168,8 +168,7 @@ pub fn model_committed_sub_attempt_billing(
     let Some(last) = response.settlements.last() else {
         return Ok(None);
     };
-    let generation =
-        u32::try_from(response.settlements.len() - 1).map_err(|error| invalid(error))?;
+    let generation = u32::try_from(response.settlements.len() - 1).map_err(invalid)?;
     let receipt = model_sub_attempt_receipt(&pl_core::model::ModelSubAttemptSettlement {
         turn_id: Some(attempt.turn_id.clone()),
         attempt_id: attempt.attempt_id.clone(),

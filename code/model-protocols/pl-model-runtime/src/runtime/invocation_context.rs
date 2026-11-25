@@ -247,6 +247,28 @@ impl ModelInvocationContext {
         error.presentation_items.clear();
         Ok(())
     }
+
+    pub(super) async fn admit_connection(
+        &self,
+        fact: pl_core::model::ModelConnectionFact,
+        current: Option<&mut super::current::CurrentProducer>,
+    ) -> std::result::Result<(), pl_core::model::ModelMemberError> {
+        let Some(members) = self.members.as_ref() else {
+            return Ok(());
+        };
+        let admission = members.connection(fact, self.cancellation.as_ref());
+        if let Some(current) = current {
+            current.wait(admission, None).await
+        } else {
+            admission.await
+        }
+    }
+
+    pub(super) fn current_generation(&self) -> u32 {
+        self.progress
+            .as_ref()
+            .map_or(0, |progress| progress.latest().observation().generation)
+    }
 }
 
 impl Default for ModelInvocationContext {

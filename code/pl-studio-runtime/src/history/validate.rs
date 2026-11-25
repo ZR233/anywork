@@ -172,12 +172,6 @@ pub(super) fn query(query: &HistoryEventsQuery) -> Result<()> {
         HistoryEventsQuery::Turn { turn_id } if !turn_id.is_empty() => Ok(()),
         HistoryEventsQuery::Source { .. } => Ok(()),
         HistoryEventsQuery::Call { call_id } if !call_id.is_empty() => Ok(()),
-        HistoryEventsQuery::Message { message_id } if !message_id.is_empty() => Ok(()),
-        HistoryEventsQuery::Attempt { run_id, attempt_id }
-            if !run_id.is_empty() && !attempt_id.is_empty() =>
-        {
-            Ok(())
-        }
         HistoryEventsQuery::Originals { scope } => {
             if scope
                 .parent_id

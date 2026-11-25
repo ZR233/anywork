@@ -3191,16 +3191,10 @@ abstract class AppLocalizations {
   /// **'Statistics'**
   String get settingsStatisticsTitle;
 
-  /// No description provided for @settingsStatisticsSubtitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.'**
-  String get settingsStatisticsSubtitle;
-
   /// No description provided for @settingsStatisticsSummaryTitle.
   ///
   /// In en, this message translates to:
-  /// **'Model performance'**
+  /// **'Model summary'**
   String get settingsStatisticsSummaryTitle;
 
   /// No description provided for @settingsStatisticsHistoryTitle.
@@ -3208,6 +3202,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Call history'**
   String get settingsStatisticsHistoryTitle;
+
+  /// No description provided for @statisticsRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get statisticsRefresh;
+
+  /// No description provided for @statisticsRefreshing.
+  ///
+  /// In en, this message translates to:
+  /// **'Refreshing'**
+  String get statisticsRefreshing;
+
+  /// No description provided for @statisticsPreviousPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Previous page'**
+  String get statisticsPreviousPage;
+
+  /// No description provided for @statisticsNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Next page'**
+  String get statisticsNextPage;
+
+  /// No description provided for @statisticsItemRange.
+  ///
+  /// In en, this message translates to:
+  /// **'{first}–{last} of {total}'**
+  String statisticsItemRange(int first, int last, int total);
+
+  /// No description provided for @statisticsPageNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'{page} / {pages}'**
+  String statisticsPageNumber(int page, int pages);
 
   /// No description provided for @settingsStatisticsAllModels.
   ///
@@ -13814,6 +13844,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Reconnecting live updates'**
   String get liveStatusConnectionReconnecting;
+
+  /// No description provided for @liveStatusModelReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Model disconnected, retrying ({attempt}/{max})'**
+  String liveStatusModelReconnecting(int attempt, int max);
+
+  /// No description provided for @timelineConnectionModelDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Model connection disconnected'**
+  String get timelineConnectionModelDisconnected;
+
+  /// No description provided for @timelineConnectionModelReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Model connection reconnected'**
+  String get timelineConnectionModelReconnected;
+
+  /// No description provided for @timelineConnectionSshDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'SSH connection disconnected'**
+  String get timelineConnectionSshDisconnected;
+
+  /// No description provided for @timelineConnectionSshReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'SSH connection reconnected'**
+  String get timelineConnectionSshReconnected;
+
+  /// No description provided for @timelineConnectionGenericDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection disconnected'**
+  String get timelineConnectionGenericDisconnected;
+
+  /// No description provided for @timelineConnectionGenericReconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection reconnected'**
+  String get timelineConnectionGenericReconnected;
 
   /// No description provided for @liveStatusMembersUnavailable.
   ///

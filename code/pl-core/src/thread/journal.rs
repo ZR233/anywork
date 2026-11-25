@@ -111,6 +111,9 @@ pub struct ThreadEffectBatch {
     pub model_member_content_available: Vec<crate::model::ModelContentAvailableMember>,
     #[serde(default)]
     pub model_sub_attempt_settlements: Arc<[crate::model::ModelSubAttemptSettlement]>,
+    /// Canonical model transport disconnect/reconnect boundary events admitted during the attempt.
+    #[serde(default)]
+    pub model_connection_events: Arc<[crate::model::ModelConnectionEvent]>,
     /// Reliable start/end facts; a replaceable execution-phase snapshot is not their source.
     #[serde(default)]
     pub context_compactions: Arc<[ContextCompactionEvent]>,
@@ -229,6 +232,7 @@ impl ThreadEffectBatch {
             started: model_member_starts,
             content_available: model_member_content_available,
             settlements: model_sub_attempt_settlements,
+            connections: model_connection_events,
         } = members;
         let context = if previous.context == current.context {
             None
@@ -369,6 +373,7 @@ impl ThreadEffectBatch {
             && model_member_starts.is_empty()
             && model_member_content_available.is_empty()
             && model_sub_attempt_settlements.is_empty()
+            && model_connection_events.is_empty()
             && context_compactions.is_empty()
             && continuations.is_empty()
             && turn.is_none()
@@ -403,6 +408,7 @@ impl ThreadEffectBatch {
             model_member_starts,
             model_member_content_available,
             model_sub_attempt_settlements,
+            model_connection_events,
             context_compactions,
             continuations,
             turn,

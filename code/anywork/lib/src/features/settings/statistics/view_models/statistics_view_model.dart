@@ -15,6 +15,9 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   String? _effortFilter;
   String? _serviceTierFilter;
   bool _mismatchesOnly = false;
+  StatisticsSection _section = StatisticsSection.summaries;
+  int _summaryPageIndex = 0;
+  int _historyPageIndex = 0;
   StatisticsSnapshot? _reconciledSnapshot;
   StatisticsSnapshot? _filteredSnapshot;
   String? _filteredModel;
@@ -50,6 +53,7 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   void selectModel(String? filter) {
     if (_modelFilter == filter) return;
     _modelFilter = filter;
+    _historyPageIndex = 0;
     _reconciledSnapshot = null;
     state = _derive(_repository.state);
   }
@@ -57,6 +61,7 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   void selectEffort(String? filter) {
     if (_effortFilter == filter) return;
     _effortFilter = filter;
+    _historyPageIndex = 0;
     _reconciledSnapshot = null;
     state = _derive(_repository.state);
   }
@@ -64,17 +69,36 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   void setMismatchesOnly(bool value) {
     if (_mismatchesOnly == value) return;
     _mismatchesOnly = value;
+    _historyPageIndex = 0;
     state = _derive(_repository.state);
   }
 
   void selectServiceTier(String? filter) {
     if (_serviceTierFilter == filter) return;
     _serviceTierFilter = filter;
+    _historyPageIndex = 0;
     _reconciledSnapshot = null;
     state = _derive(_repository.state);
   }
 
-  void retry() => _repository.retry();
+  void refresh() => _repository.refresh();
+
+  void selectSection(StatisticsSection section) {
+    if (_section == section) return;
+    _section = section;
+    state = _derive(_repository.state);
+  }
+
+  void selectPage(int pageIndex) {
+    final next = pageIndex.clamp(0, state.pageCount - 1);
+    if (next == state.pageIndex) return;
+    if (_section == StatisticsSection.summaries) {
+      _summaryPageIndex = next;
+    } else {
+      _historyPageIndex = next;
+    }
+    state = _derive(_repository.state);
+  }
 
   void _repositoryChanged(StatisticsRepositoryState next) {
     if (!ref.mounted) return;
@@ -160,6 +184,14 @@ class StatisticsViewModel extends _$StatisticsViewModel {
       _filteredServiceTier = _serviceTierFilter;
       _filteredMismatches = _mismatchesOnly;
     }
+    _summaryPageIndex = _summaryPageIndex.clamp(
+      0,
+      StatisticsViewState.pagesFor(snapshot?.summaries.length ?? 0) - 1,
+    );
+    _historyPageIndex = _historyPageIndex.clamp(
+      0,
+      StatisticsViewState.pagesFor(_filteredHistory.length) - 1,
+    );
     return StatisticsViewState(
       repository: repository,
       modelFilter: _modelFilter,
@@ -167,6 +199,9 @@ class StatisticsViewModel extends _$StatisticsViewModel {
       serviceTierFilter: _serviceTierFilter,
       mismatchesOnly: _mismatchesOnly,
       filteredHistory: _filteredHistory,
+      section: _section,
+      summaryPageIndex: _summaryPageIndex,
+      historyPageIndex: _historyPageIndex,
     );
   }
 }

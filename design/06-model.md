@@ -37,7 +37,15 @@
 
 Gemini 的一个模型响应构成一个工具调用批次。工具可并行执行、逆序完成，但提交给模型时，全部结果须按原调用顺序放入紧随其后的一个 `user` Content，并保持名称及可用上游 ID 对应；同名、无 ID 调用仍按原位置配对。下一步依赖工具结果的调用由下一次模型生成决定，各步的原始模型 Parts 分别完整回放，包括首调用签名、空文本尾部签名及未知字段，不能从显示文本重建或合并带签名的 Part。调用就绪不替代整次生成成功，失败、取消或缺失成功终态的响应不进入成功工具派发路径。
 
-当前 Gemini 适配仅接收完整工具参数。普通 SSE 分块与 Vertex 可选的 `streamFunctionCallArguments` 是不同能力；未实现参数增量组装时，开启该模式的请求及带实际 `partialArgs`／参数续片控制的响应必须明确拒绝，不得将缺少完整参数的首片解释为可执行的空参数调用。完整 `args` 对象可携带空 `partialArgs` 或 `willContinue: false` 这些中性值；缺少完整对象时不能以中性控制值冒充完整调用。公开请求构造与历史回放同样遵循调用批次、身份唯一性和完整参数约束。规则依据对应 API 的 [GenerateContent 函数调用](https://aistudio.google.com/docs/function-calling.md?generate-content=true)、[thought signatures](https://aistudio.google.com/docs/thought-signatures.md?generate-content=true) 与 [Vertex 函数调用](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/tools/function-calling)；Interactions API 的结果映射和 SDK 的自动执行策略不改变本契约。
+当前 Gemini 适配仅接收完整工具参数。普通 SSE 分块与 Vertex 可选的 `streamFunctionCallArguments` 是不同能力；未实现参数增量组装时，开启该模式的请求及带实际 `partialArgs`／参数续片控制的响应必须明确拒绝，不得将缺少完整参数的首片解释为可执行的空参数调用。完整 `args` 对象可携带空 `partialArgs` 或 `willContinue: false` 这些中性值；缺少完整对象时不能以中性控制值冒充完整调用。公开请求构造与历史回放同样遵循调用批次、身份唯一性和完整参数约束。规则依据对应 API 的 [GenerateContent 函数调用](https://aistudio.google.com/docs/function-calling?generate-content=true)、[thought signatures](https://aistudio.google.com/docs/thought-signatures?generate-content=true) 与 [Vertex 函数调用](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/tools/function-calling)；Interactions API 的结果映射和 SDK 的自动执行策略不改变本契约。
+
+Gemini 的自动工具选择映射为官方 `VALIDATED` 模式：模型仍可选择自然语言或工具调用，服务端同时约束参数结构；强制调用与禁止调用分别映射为 `ANY`、`NONE`。使用完整 `parametersJsonSchema`，不将 JSON Schema 原样发送到旧 `parameters` 的受限 Schema 接口。仅由封闭对象分支组成且没有根参数表的顶层 `oneOf`／`anyOf`，在出站副本的根 `properties` 中用空 schema 声明各参数名，并补齐共同必填项；实际类型、说明、分支必填项、额外字段限制和引用仍留在原分支，避免重复发送和改变引用作用域。不删除联合校验、不将不同操作的字段全部设为必填，也不改写作者声明。无法保持语义的无根字段联合明确报错。契约见 [FunctionDeclaration](https://googleapis.github.io/js-genai/release_docs/interfaces/types.FunctionDeclaration.html) 与 [函数调用模式](https://aistudio.google.com/docs/function-calling?generate-content=true#function_calling_modes)。
+
+Gemini 工具参数在流解码、公开回放和出站请求中均须为 JSON 对象；不能将非法原文包装成 `raw` 或 `input` 后继续发送。通用历史用 `call_id` 配对原生函数调用和结果，内部 `item_id` 不冒充上游调用 ID；原始 Gemini 回放继续按实际可选 ID 投影。响应仅支持一个索引为零的候选，异常角色、字段结构、同批重复调用 ID、生成媒体和服务端工具 Parts 明确失败，不能静默跳过后提交空答案；同一帧已收到的用量仍保留。
+
+当前 Gemini 是单次输出上限 65,536 的流式绑定，尚未实现 `CONTINUATION` 的原始请求冻结及多跳续接；不接收超出此上限的配置或外部注入的续接令牌，也不把 `CONTINUATION` 视为 `STOP` 或重新生成异常。普通采样选项、结构化输出约束等原生配置仍按当前 API 发送；系统指令的 camelCase／snake_case 拼写都不能绕过统一 `SystemPrompt` 入口。内置 Gemini 4 不声明上游已忽略的温度能力。目录的 `supportedGenerationMethods` 只用于识别生成方法，不能据此覆盖已核实的媒体限制或凭空声明未知模型的图像／文件能力。
+
+嵌在 `exec` 说明中的 Lua 子工具输入与输出 schema 也复用模型层的同一精简投影，删除嵌套生成器元数据和未引用定义，保留参数说明、约束、引用以及 `enum`／`const` 中的原始数据；不另写递归过滤器，不修改作者声明或工具的真实默认行为。
 
 模型生产者拥有完整流合并事实和不透明保存格式：保留已接受的正文、推理、成员关系和阶段、部分工具输入原文、完整调用、原生 replay、已观察用量和来源。部分参数是不可执行的字符串，不解析补全为工具调用。捕获与生产者退出交接遵循 [15](./15-session-storage.md#捕获保存与关闭)；它们不提供跨进程续接，旧流只供暂停展示，新请求使用新的物理会话和累积器。用户继续后采用当前确认的模型和工具配置，通过普通准备流程检查原生上下文的来源隔离及兼容族；必要原生材料不兼容时保留原件并在发送前报错，普通请求也遵循相同规则。
 
@@ -179,10 +187,13 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 - **统一预算与粘性回退**：建连失败、流式传输中断、暂时限流、续接状态失效、已确认过期附件的恢复以及连接模式切换共用预算；内部严禁嵌套重试，网络库自带重试关闭，推理重定向不能隐藏重发。仅连接故障或明确的恢复建议可以触发能力允许的协议切换，流内限流本身不触发 HTTP 回退。WebSocket 连接恢复失败且声明支持 HTTP 时可粘性回退；仅支持 WebSocket 的模型绝不发 HTTP 请求。修复失败不能形成额外无限循环，切换或新 Core 步骤不能重新取得预算。
 - **永久错误与瞬态传输故障判别**：鉴权失败、配置错误、请求参数非法等永久性错误立即返回，不消耗重试预算。HTTP 流式请求首先按本节规则校验响应媒体类型：除上述官方 ChatGPT 会话的缺失响应头适配外，非 `text/event-stream` 的响应即使状态码为 `2xx`，也必须从有界响应体中提取厂商结构化错误并保留业务错误码与消息，未识别的非流式响应直接报告协议不匹配。在响应流建立后，底层字节流读取中断或传输层分块解码失败归类为**瞬态传输故障**（不因底层网络库报错文案含“body decode error”而误判为永久协议错误，亦不依赖英文错误文本匹配）；而完整字节交付后的 JSON 语法错误或模型事件结构错误仍归为永久协议错误。已建立响应流读取失败时，诊断记录保留实际 HTTP 版本、已接收字节数、读取耗时、清洗后的请求标识（至多 128 字节安全字符）及至多 8 层底层错误类别（仅记录已知网络库与系统 I/O 错误分类，不输出原始错误正文、URL 或鉴权头）。
 - **流内上游错误与请求追踪**：Responses 的 `error` 与 `response.failed` 按各自协议位置提取结构化错误；兼容端点返回的 `upstream_error` 作为可恢复的上游服务故障使用同一重试预算，明确的鉴权、权限与请求配置错误优先于通用上游错误码；不根据消息文本分类，也不将其他未知错误一律视为可重试。响应生命周期 `status` 的非数字枚举不得遮蔽独立的 `status_code`。HTTP 响应头中的已校验、脱敏请求标识同时进入传输读错与已解析的流内失败回执；成功的外层 HTTP 状态不代替流内业务错误状态。
+- **协议拥有错误分类**：流解码器直接交付完整的类型化失败，内容归一化与累积器不得再次从厂商错误码推导并覆盖分类。Gemini 的 Google RPC 错误保留协议层已确定的鉴权、权限、非法请求、限流或暂时服务失败及重试语义；例如 `INVALID_ARGUMENT` 是不可重试的非法请求，`RESOURCE_EXHAUSTED`／`UNAVAILABLE` 按供应商结构化原因分类。流内 RPC 的数值码不冒充外层 HTTP 状态，错误码与实际请求标识继续进入原始回执。
+- **生成格式错误**：Gemini 的结构化 `finishReason = MALFORMED_RESPONSE` 表示模型生成了格式异常的响应，归为可重试的协议失败，复用同一冻结输入、退避和重试预算；保留原始错误码与请求标识。[官方结束原因](https://aistudio.google.com/api-reference/generate-content#Resource:Candidate)仅定义该异常，重新生成是本产品在副作用保护下采用的恢复策略。`MALFORMED_FUNCTION_CALL`、安全拦截、输出上限、未知结束原因及客户端 JSON 解码错误不因此变为可重试。 `FINISH_REASON_UNSPECIFIED` 是未使用的默认枚举值，中间帧仍可继续交付后续签名与内容；若流结束仍无有效结束原因，则以协议失败保留该原始值和已观察用量，不能当作成功回放。
 - **安全重放边界与副作用保护**：普通文本、推理思考及尚未交付执行的本地工具参数，在失败尝试的身份、用量和结果已可靠交付后，允许因可重试故障重发同一冻结输入。Usage 表示已知消耗，不单独证明副作用，也不单独禁止重试。托管工具可能已执行、上传结果未知、原生压缩结果条目已经到达或完整终态已经接纳时禁止自动重放。压缩仅收到开始/模型元数据时仍可按同一机制恢复。附件刷新只能失效明确过期的已知引用，不清除 Pending/未知提交；OAuth 一次性提交由认证所有者处理。
 - **观察代次与用量隔离**：透明重试维持逻辑请求与已准备输入，子尝试拥有稳定身份、独立观察代次及累积器（见 [16](./16-core-contracts.md) §16.3）。复用模型 Current 生产者的前序代次捕获，失败片段保留展示；失败的已知用量、完整性和冻结价格先经过原 owner 的可靠交付与保存确认，再开启下一次发送。累计 Usage 帧只更新同次样本，不重复相加；按子尝试身份去重计算实际费用，缺失或部分用量保持未知/部分已知。上下文大小与成功速度使用当前/最终成功子尝试的事实，不使用累计花费 token 或退避时间。取消、保存失败、预算耗尽及修复失败均保留原材料；仅成功子尝试推进模型上下文和本地工具执行。
 - **等待与取消**：收到服务端秒数、HTTP 日期、毫秒字段或有据的结构化提示时固定最早发送时刻；多个最低等待约束合并后不得提前。运行期使用单调时钟，传递、连接修复和回退不重启计时；历史只保存可解释的时间事实。有效长提示不截到 30 秒，也不设任意总等待上限；无法安全表示的超大提示停止而不提前重发。没有有效提示时使用统一有界指数退避与抖动。等待、建连、读流可取消，发送前再次检查取消；取消不丢已观察用量。重启后按现有暂停/继续机制接续，不从历史自动恢复定时器。
 - **上下文恢复与产品事实**：上下文超限必须是类型化原因，Core 只在运行时允许恢复、原预算仍有剩余且压缩确实缩短输入时继续；一次强制压缩恢复不重置原生成预算或副作用保护。压缩调用独立计量并复用同一执行器。进度显示真实原因、次数、等待和停止原因，不把所有错误统称连接中断；失败进度只进入界面与历史，不注入模型上下文，既有工具结果与用户输入不重放。
+连接中断与恢复仍通过可靠成员保存为结构化边界事件，用于切分工作区间；重试等待和具体失败诊断沿原恢复事实交付。 OpenAI 的 `websocket_connection_limit_reached` 按[官方连接寿命说明](https://developers.openai.com/api/docs/guides/error-codes)归为连接故障，保留中断与重连边界；不将普通服务繁忙或限流误记为断线。
 
 ### 请求组装与系统指令分发
 

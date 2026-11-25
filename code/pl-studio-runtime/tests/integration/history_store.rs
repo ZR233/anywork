@@ -42,7 +42,7 @@ fn single(id: &str, run: RuntimeEpoch, database_id: &str, body: &[u8]) -> Histor
     let mut event = HistoryEvent::new(
         id,
         HistoryEventKind::TextCompleted,
-        HistoryTimelineRole::Divider,
+        HistoryTimelineRole::Boundary,
         20,
     );
     let meta = event_meta(id, false);
@@ -157,7 +157,7 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
     let before = reader
         .timeline_page(Some(cut.clone()), None, demand())
         .await?;
-    assert_eq!(before.items.len(), 1);
+    assert_eq!(before.entries.len(), 1);
     let body_page = reader.list_bodies("first".into(), None, demand()).await?;
     let body = body_page
         .entries
@@ -305,18 +305,10 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     let main = reader
         .timeline_page(Some(cut.clone()), None, demand())
         .await?;
-    assert_eq!(main.items.len(), 1);
-    let HistoryTimelineItem::WorkRange(range) = &main.items[0] else {
-        panic!("expected open work range");
-    };
+    assert!(main.entries.is_empty());
+    assert!(main.has_folded_before_oldest);
     let members = reader
-        .work_range_page(
-            range.after_seq,
-            range.before_seq,
-            Some(cut.clone()),
-            None,
-            demand(),
-        )
+        .work_range_page(None, None, Some(cut.clone()), None, demand())
         .await?;
     assert_eq!(members.events.len(), 1);
     let turns = reader.turns_page(Some(cut.clone()), None, demand()).await?;
@@ -367,36 +359,16 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     );
     assert_eq!(
         reader
-            .work_range_page(
-                range.after_seq,
-                range.before_seq,
-                Some(cut.clone()),
-                None,
-                demand(),
-            )
+            .work_range_page(None, None, Some(cut.clone()), None, demand(),)
             .await?,
         members
     );
     assert_eq!(reader.turns_page(Some(cut), None, demand()).await?, turns);
     let latest_main = reader.timeline_page(None, None, demand()).await?;
-    assert_eq!(
-        latest_main.items.len(),
-        main.items.len(),
-        "rollback must not hide Timeline rows"
-    );
-    let HistoryTimelineItem::WorkRange(latest_range) = &latest_main.items[0] else {
-        panic!("expected updated work range");
-    };
-    assert_ne!(latest_range, range);
-    assert_eq!(latest_range.event_count, 2);
+    assert!(latest_main.entries.is_empty());
+    assert!(latest_main.has_folded_before_oldest);
     let latest_members = reader
-        .work_range_page(
-            latest_range.after_seq,
-            latest_range.before_seq,
-            None,
-            None,
-            demand(),
-        )
+        .work_range_page(None, None, None, None, demand())
         .await?;
     assert_eq!(latest_members.events.len(), 2);
     assert_eq!(
@@ -505,7 +477,7 @@ async fn failed_transaction_keeps_accepted_facts_and_corrupt_chunks_are_not_eof(
         reader
             .timeline_page(Some(cut.clone()), None, demand())
             .await?
-            .items
+            .entries
             .len(),
         1
     );
@@ -518,7 +490,7 @@ async fn failed_transaction_keeps_accepted_facts_and_corrupt_chunks_are_not_eof(
         reader
             .timeline_page(Some(cut), None, demand())
             .await?
-            .items
+            .entries
             .len(),
         1
     );
@@ -617,15 +589,13 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_dividers_split_
     store.accept_batch(&[wait_start, separator]).await?;
 
     let page = reader.timeline_page(None, None, demand()).await?;
-    assert_eq!(page.items.len(), 2);
-    assert!(matches!(&page.items[0], HistoryTimelineItem::Divider(d) if d.event_id == "separator"));
-    let HistoryTimelineItem::WorkRange(range) = &page.items[1] else {
-        panic!("expected work range before divider");
-    };
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].event.event_id, "separator");
+    assert!(page.has_folded_before_oldest);
     let work = reader
         .work_range_page(
-            range.after_seq,
-            range.before_seq,
+            None,
+            Some(page.entries[0].event.seq),
             Some(page.cut.clone()),
             None,
             demand(),
@@ -713,10 +683,7 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
             )
             .await?;
         assert!(serde_json::to_vec(&page)?.len() <= budget as usize);
-        ids.extend(page.items.into_iter().map(|item| match item {
-            HistoryTimelineItem::Divider(rec) => rec.event_id,
-            HistoryTimelineItem::WorkRange(range) => range.range_id,
-        }));
+        ids.extend(page.entries.into_iter().map(|entry| entry.event.event_id));
         next = page.next;
         if next.is_none() {
             break;
@@ -891,22 +858,16 @@ async fn atomic_tool_stages_across_divider_keep_call_id_and_work_ranges() -> Res
         store.flush().await?;
 
         let timeline = reader.timeline_page(None, None, demand()).await?;
-        assert_eq!(timeline.items.len(), 3);
-        let HistoryTimelineItem::WorkRange(new_range) = &timeline.items[0] else {
-            panic!("expected new tail work range");
-        };
-        let HistoryTimelineItem::Divider(div) = &timeline.items[1] else {
-            panic!("expected middle divider");
-        };
+        assert_eq!(timeline.entries.len(), 1);
+        let div = &timeline.entries[0].event;
         assert_eq!(div.event_id, "text");
-        let HistoryTimelineItem::WorkRange(old_range) = &timeline.items[2] else {
-            panic!("expected earlier work range");
-        };
+        assert!(timeline.entries[0].has_folded_after);
+        assert!(timeline.has_folded_before_oldest);
 
         let old_work = reader
             .work_range_page(
-                old_range.after_seq,
-                old_range.before_seq,
+                None,
+                Some(div.seq),
                 Some(timeline.cut.clone()),
                 None,
                 demand(),
@@ -917,8 +878,8 @@ async fn atomic_tool_stages_across_divider_keep_call_id_and_work_ranges() -> Res
 
         let new_work = reader
             .work_range_page(
-                new_range.after_seq,
-                new_range.before_seq,
+                Some(div.seq),
+                None,
                 Some(timeline.cut.clone()),
                 None,
                 demand(),
@@ -954,9 +915,9 @@ async fn atomic_tool_stages_across_divider_keep_call_id_and_work_ranges() -> Res
             reader
                 .timeline_page(Some(old_cut), None, demand())
                 .await?
-                .items
+                .entries
                 .len(),
-            2
+            1
         );
         reader.close().await;
         store.close().await?;
@@ -1011,7 +972,7 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
             .reader()
             .timeline_page(None, None, demand())
             .await?
-            .items
+            .entries
             .len(),
         2
     );
@@ -1023,7 +984,7 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
         new_reader
             .timeline_page(None, None, demand())
             .await?
-            .items
+            .entries
             .len(),
         2
     );
@@ -1340,37 +1301,25 @@ async fn schema26_index_derived_timeline_and_work_range_ascending_pagination() -
     store.flush().await?;
 
     let timeline = reader.timeline_page(None, None, demand()).await?;
-    assert_eq!(timeline.items.len(), 5);
-    assert!(matches!(
-        &timeline.items[0],
-        HistoryTimelineItem::WorkRange(r)
-            if r.after_seq == Some(6) && r.before_seq.is_none() && r.first_seq == 7 && r.last_seq == 7 && r.event_count == 1
-    ));
-    assert!(matches!(&timeline.items[1], HistoryTimelineItem::Divider(d) if d.event_id == "d2"));
-    let HistoryTimelineItem::WorkRange(mid) = &timeline.items[2] else {
-        panic!("expected middle work range");
-    };
-    assert_eq!(mid.after_seq, Some(3));
-    assert_eq!(mid.before_seq, Some(6));
-    assert_eq!(mid.first_seq, 4);
-    assert_eq!(mid.last_seq, 5);
-    assert_eq!(mid.event_count, 2);
-    assert!(matches!(&timeline.items[3], HistoryTimelineItem::Divider(d) if d.event_id == "d1"));
-    assert!(matches!(
-        &timeline.items[4],
-        HistoryTimelineItem::WorkRange(r)
-            if r.after_seq.is_none() && r.before_seq == Some(3) && r.first_seq == 1 && r.last_seq == 2 && r.event_count == 2
-    ));
+    assert_eq!(timeline.entries.len(), 2);
+    assert_eq!(timeline.entries[0].event.event_id, "d2");
+    assert!(timeline.entries[0].has_folded_after);
+    assert_eq!(timeline.entries[0].tail_folded_ended_at, Some(50));
+    assert_eq!(timeline.entries[1].event.event_id, "d1");
+    assert!(timeline.entries[1].has_folded_after);
+    assert!(timeline.has_folded_before_oldest);
 
-    // Paginate middle work range with max_rows = 1 -> strictly ascending seq 4 then seq 5
+    // Paginate middle folded gap (d1.seq=3, d2.seq=6) with max_rows = 1 -> seq 4 then seq 5
+    let d1_seq = timeline.entries[1].event.seq;
+    let d2_seq = timeline.entries[0].event.seq;
     let one_row = HistoryDemand {
         max_rows: 1,
         max_bytes: 128 * 1024,
     };
     let page1 = reader
         .work_range_page(
-            mid.after_seq,
-            mid.before_seq,
+            Some(d1_seq),
+            Some(d2_seq),
             Some(timeline.cut.clone()),
             None,
             one_row,
@@ -1381,8 +1330,8 @@ async fn schema26_index_derived_timeline_and_work_range_ascending_pagination() -
     assert_eq!(page1.events[0].seq, 4);
     let page2 = reader
         .work_range_page(
-            mid.after_seq,
-            mid.before_seq,
+            Some(d1_seq),
+            Some(d2_seq),
             Some(timeline.cut),
             page1.next,
             one_row,
@@ -1567,12 +1516,10 @@ async fn schema26_open_kind_and_unknown_payload_schema_round_trip() -> Result<()
     store.flush().await?;
 
     let timeline = reader.timeline_page(None, None, demand()).await?;
-    assert_eq!(timeline.items.len(), 1);
-    let HistoryTimelineItem::WorkRange(range) = &timeline.items[0] else {
-        panic!("expected work range for open kind");
-    };
+    assert!(timeline.entries.is_empty());
+    assert!(timeline.has_folded_before_oldest);
     let work = reader
-        .work_range_page(range.after_seq, range.before_seq, None, None, demand())
+        .work_range_page(None, None, None, None, demand())
         .await?;
     assert_eq!(work.events.len(), 1);
     assert_eq!(

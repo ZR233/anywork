@@ -21,7 +21,7 @@ fn classify(protocol: ProtocolId, status: u16, payload: Value) -> ProviderFailur
         &serde_json::to_vec(&payload).unwrap(),
         &ProviderErrorContext {
             stage: ProviderFailureStage::Request,
-            request_id: Some("policy-matrix-request".into()),
+            request_id: Some("policy-matrix-request"),
             http_status: Some(status),
             observed_at: ErrorObservedAt::now(),
             header_retry: ObservedRetry::Absent,

@@ -112,8 +112,16 @@ impl GoogleError {
                 Some("PERMISSION_DENIED") => (Kind::Authorization, false),
                 Some("RESOURCE_EXHAUSTED") if daily_quota => (Kind::Quota, false),
                 Some("RESOURCE_EXHAUSTED") => (Kind::Unknown, true),
-                Some("INTERNAL" | "UNAVAILABLE") => (Kind::ServiceBusy, true),
+                Some("INTERNAL" | "UNAVAILABLE" | "ABORTED") => (Kind::ServiceBusy, true),
                 Some("DEADLINE_EXCEEDED") => (Kind::Transport, true),
+                Some("INVALID_ARGUMENT")
+                    if self
+                        .message
+                        .as_deref()
+                        .is_some_and(is_context_limit_message) =>
+                {
+                    (Kind::ContextLimit, false)
+                }
                 Some(
                     "INVALID_ARGUMENT"
                     | "FAILED_PRECONDITION"
@@ -209,14 +217,15 @@ impl ProviderErrorPolicy for GeminiErrorPolicy {
             | "IMAGE_PROHIBITED_CONTENT"
             | "IMAGE_RECITATION"
             | "MODEL_ARMOR" => Kind::ContentBlocked,
-            "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL" | "TOO_MANY_TOOL_CALLS" => {
-                Kind::Protocol
-            }
+            "MALFORMED_RESPONSE"
+            | "MALFORMED_FUNCTION_CALL"
+            | "UNEXPECTED_TOOL_CALL"
+            | "TOO_MANY_TOOL_CALLS" => Kind::Protocol,
             _ => Kind::Unknown,
         };
         let mut error = ClassifiedProviderError::new(
             kind,
-            false,
+            reason == "MALFORMED_RESPONSE",
             format!("Gemini generation terminated with finishReason={reason}"),
         );
         error.code = Some(reason.to_owned());
@@ -232,5 +241,87 @@ pub(super) fn google_error_envelope(payload: &Value) -> Option<&Value> {
             .as_array()?
             .iter()
             .find(|entry| entry.get("error").is_some())
+    }
+}
+
+fn is_context_limit_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("token count") && lower.contains("exceeds")
+        || lower.contains("exceeds the maximum number of tokens")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_model_wire::provider_error::ErrorObservedAt;
+
+    fn decode(payload: &Value) -> ClassifiedProviderError {
+        GeminiErrorPolicy
+            .decode_error(ProviderErrorInput {
+                entry: ProviderErrorEntry::HttpResponse,
+                event_name: None,
+                wire_api: None,
+                endpoint: None,
+                http_status: None,
+                payload: Some(payload),
+            })
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn google_retry_info_preserves_fractional_minimum_without_changing_permanent_errors() {
+        for (delay, expected) in [
+            ("3s", Some(3000)),
+            ("1.250s", Some(1250)),
+            ("0.000000001s", Some(1)),
+            ("-1s", None),
+            ("1e3s", None),
+            ("1.0000000001s", None),
+        ] {
+            let parsed = decode(&serde_json::json!({"error":{
+                "code":429,"status":"RESOURCE_EXHAUSTED","details":[{
+                    "@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":delay
+                }]
+            }}));
+            assert!(parsed.retryable);
+            let actual = match parsed.retry_hint.observed(ErrorObservedAt::now()) {
+                pl_model_wire::provider_error::ObservedRetry::At { delay_ms, .. } => Some(delay_ms),
+                pl_model_wire::provider_error::ObservedRetry::Absent => None,
+                other => panic!("unexpected retry hint: {other:?}"),
+            };
+            assert_eq!(actual, expected, "{delay}");
+        }
+        let parsed = decode(&serde_json::json!({"error":{
+            "status":"INVALID_ARGUMENT","details":[{
+                "@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3s"
+            }]
+        }}));
+        assert!(!parsed.retryable);
+    }
+
+    #[test]
+    fn parses_google_rpc_object_and_array_envelopes() {
+        let object = decode(&serde_json::json!({"error":{
+            "code":404,"message":"Publisher model not found","status":"NOT_FOUND"
+        }}));
+        assert_eq!(object.kind, Kind::InvalidRequest);
+        assert!(!object.retryable);
+        let array = decode(&serde_json::json!([{"error":{
+            "code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"
+        }}]));
+        assert_eq!(array.kind, Kind::Unknown);
+        assert!(array.retryable);
+    }
+
+    #[test]
+    fn classifies_context_limit_invalid_argument() {
+        let parsed = decode(&serde_json::json!({"error":{
+            "code":400,
+            "message":"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).",
+            "status":"INVALID_ARGUMENT"
+        }}));
+        assert_eq!(parsed.kind, Kind::ContextLimit);
+        assert!(!parsed.retryable);
     }
 }

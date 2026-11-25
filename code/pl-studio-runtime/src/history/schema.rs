@@ -14,6 +14,7 @@ use super::{HistoryError, Result, db::statement};
 
 pub(super) const MIGRATION_V25: &str = "m20261116_000001_append_only_history";
 pub(super) const MIGRATION_V26: &str = "m20261119_000026_atomic_event_history";
+pub(super) const MIGRATION_V27: &str = "m20261125_000027_boundary_role_and_sparse_indexes";
 
 pub(super) type StageUpgradeReport =
     Box<dyn FnOnce(super::upgrade::ImportCounts) -> Result<()> + Send>;
@@ -27,6 +28,7 @@ fn known_legacy_versions() -> &'static std::collections::BTreeSet<String> {
             .map(|name| (*name).to_owned())
             .collect();
         versions.insert(MIGRATION_V25.to_owned());
+        versions.insert(MIGRATION_V26.to_owned());
         versions
     })
 }
@@ -122,20 +124,20 @@ async fn legacy_versions(db: &DatabaseConnection) -> Result<Vec<String>> {
     Ok(versions)
 }
 
-/// Initializes an empty DB directly into Schema 26.
-struct FreshSchema26Migration {
+/// Initializes an empty DB directly into Schema 27.
+struct FreshSchema27Migration {
     thread_id: String,
     database_id: String,
 }
 
-impl MigrationName for FreshSchema26Migration {
+impl MigrationName for FreshSchema27Migration {
     fn name(&self) -> &str {
-        MIGRATION_V26
+        MIGRATION_V27
     }
 }
 
 #[sea_orm_migration::async_trait::async_trait]
-impl MigrationTrait for FreshSchema26Migration {
+impl MigrationTrait for FreshSchema27Migration {
     fn use_transaction(&self) -> Option<bool> {
         Some(false)
     }
@@ -144,7 +146,7 @@ impl MigrationTrait for FreshSchema26Migration {
         let db = manager.get_connection();
         db.execute_unprepared(include_str!("schema.sql")).await?;
         db.execute_raw(statement(
-            "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,26,?,?)",
+            "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,27,?,?)",
             vec![self.database_id.clone().into(), self.thread_id.clone().into()],
         ))
         .await?;
@@ -247,11 +249,50 @@ impl MigrationTrait for MigrationV26Upgrade {
     }
 }
 
+/// Transforms a Schema 26 database in-place (zero BLOB copy) into Schema 27.
+struct MigrationV27Upgrade {
+    thread_id: String,
+    stage_v26_report: Option<StageV25Report>,
+}
+
+impl MigrationName for MigrationV27Upgrade {
+    fn name(&self) -> &str {
+        MIGRATION_V27
+    }
+}
+
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for MigrationV27Upgrade {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(false)
+    }
+
+    async fn up(&self, manager: &SchemaManager) -> std::result::Result<(), DbErr> {
+        let db = manager.get_connection();
+        let stage_report = match &self.stage_v26_report {
+            Some(slot) => slot
+                .lock()
+                .map_err(|_| DbErr::Migration("pending report stage lock poisoned".into()))?
+                .take(),
+            None => None,
+        };
+        let (_, migrated_rows) = super::upgrade::migrate_v26_to_v27(db, &self.thread_id)
+            .await
+            .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
+        if let Some(stage_report) = stage_report {
+            stage_report(migrated_rows).map_err(|error| {
+                DbErr::Migration(format!("schema 26->27 report staging failed: {error:#}"))
+            })?;
+        }
+        Ok(())
+    }
+}
+
 enum MigratorKind {
     Fresh {
         thread_id: String,
     },
-    V24ToV26 {
+    V24ToV27 {
         thread_id: String,
         legacy_versions: Vec<String>,
         database_id: String,
@@ -259,10 +300,15 @@ enum MigratorKind {
         source_watermark: u64,
         stage_report: Arc<Mutex<Option<StageUpgradeReport>>>,
     },
-    V25ToV26 {
+    V25ToV27 {
         thread_id: String,
         legacy_versions: Vec<String>,
         stage_v25_report: StageV25Report,
+    },
+    V26ToV27 {
+        thread_id: String,
+        legacy_versions: Vec<String>,
+        stage_v26_report: StageV25Report,
     },
 }
 
@@ -270,8 +316,9 @@ impl MigratorKind {
     fn thread_id(&self) -> &str {
         match self {
             Self::Fresh { thread_id }
-            | Self::V24ToV26 { thread_id, .. }
-            | Self::V25ToV26 { thread_id, .. } => thread_id,
+            | Self::V24ToV27 { thread_id, .. }
+            | Self::V25ToV27 { thread_id, .. }
+            | Self::V26ToV27 { thread_id, .. } => thread_id,
         }
     }
 }
@@ -283,11 +330,11 @@ struct Migrator {
 impl MigratorTraitSelf for Migrator {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         match &self.kind {
-            MigratorKind::Fresh { thread_id } => vec![Box::new(FreshSchema26Migration {
+            MigratorKind::Fresh { thread_id } => vec![Box::new(FreshSchema27Migration {
                 thread_id: thread_id.clone(),
                 database_id: uuid::Uuid::new_v4().to_string(),
             })],
-            MigratorKind::V24ToV26 {
+            MigratorKind::V24ToV27 {
                 thread_id,
                 legacy_versions,
                 database_id,
@@ -307,9 +354,13 @@ impl MigratorTraitSelf for Migrator {
                     thread_id: thread_id.clone(),
                     stage_v25_report: None,
                 }));
+                migrations.push(Box::new(MigrationV27Upgrade {
+                    thread_id: thread_id.clone(),
+                    stage_v26_report: None,
+                }));
                 migrations
             }
-            MigratorKind::V25ToV26 {
+            MigratorKind::V25ToV27 {
                 thread_id,
                 legacy_versions,
                 stage_v25_report,
@@ -320,6 +371,29 @@ impl MigratorTraitSelf for Migrator {
                 migrations.push(Box::new(MigrationV26Upgrade {
                     thread_id: thread_id.clone(),
                     stage_v25_report: Some(stage_v25_report.clone()),
+                }));
+                migrations.push(Box::new(MigrationV27Upgrade {
+                    thread_id: thread_id.clone(),
+                    stage_v26_report: None,
+                }));
+                migrations
+            }
+            MigratorKind::V26ToV27 {
+                thread_id,
+                legacy_versions,
+                stage_v26_report,
+            } => {
+                let mut migrations = applied_legacy_placeholders(legacy_versions);
+                if legacy_versions
+                    .iter()
+                    .any(|version| version == MIGRATION_V25)
+                {
+                    migrations.push(Box::new(AlreadyAppliedV25Placeholder));
+                }
+                migrations.push(Box::new(AlreadyAppliedV26Placeholder));
+                migrations.push(Box::new(MigrationV27Upgrade {
+                    thread_id: thread_id.clone(),
+                    stage_v26_report: Some(stage_v26_report.clone()),
                 }));
                 migrations
             }
@@ -338,6 +412,22 @@ impl MigrationTrait for AlreadyAppliedV25Placeholder {
     async fn up(&self, _manager: &SchemaManager) -> std::result::Result<(), DbErr> {
         Err(DbErr::Migration(
             "expected m20261116_000001_append_only_history to already be applied in Schema 25"
+                .into(),
+        ))
+    }
+}
+
+struct AlreadyAppliedV26Placeholder;
+impl MigrationName for AlreadyAppliedV26Placeholder {
+    fn name(&self) -> &str {
+        MIGRATION_V26
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for AlreadyAppliedV26Placeholder {
+    async fn up(&self, _manager: &SchemaManager) -> std::result::Result<(), DbErr> {
+        Err(DbErr::Migration(
+            "expected m20261119_000026_atomic_event_history to already be applied in Schema 26"
                 .into(),
         ))
     }
@@ -417,7 +507,7 @@ pub(super) async fn run_upgrade_v24(
     let stage_report = Arc::new(Mutex::new(Some(stage_report)));
     run_immediate(
         Migrator {
-            kind: MigratorKind::V24ToV26 {
+            kind: MigratorKind::V24ToV27 {
                 thread_id: thread_id.into(),
                 legacy_versions: legacy_versions(db).await?,
                 database_id: database_id.to_owned(),
@@ -440,10 +530,30 @@ pub(super) async fn run_upgrade_v25(
     let stage_v25_report = Arc::new(Mutex::new(Some(stage_v25_report)));
     run_immediate(
         Migrator {
-            kind: MigratorKind::V25ToV26 {
+            kind: MigratorKind::V25ToV27 {
                 thread_id: thread_id.into(),
                 legacy_versions: legacy_versions(db).await?,
                 stage_v25_report,
+            },
+        },
+        db,
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn run_upgrade_v26(
+    db: &DatabaseConnection,
+    thread_id: &str,
+    stage_v26_report: Box<dyn FnOnce(u64) -> Result<()> + Send>,
+) -> Result<()> {
+    let stage_v26_report = Arc::new(Mutex::new(Some(stage_v26_report)));
+    run_immediate(
+        Migrator {
+            kind: MigratorKind::V26ToV27 {
+                thread_id: thread_id.into(),
+                legacy_versions: legacy_versions(db).await?,
+                stage_v26_report,
             },
         },
         db,
@@ -490,7 +600,7 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
         .contains(&name.as_str())
         {
             return Err(HistoryError::Integrity(format!(
-                "unexpected table in schema 26 history: {name}"
+                "unexpected table in schema 27 history: {name}"
             )));
         }
     }
@@ -501,7 +611,7 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
         ))
         .await?
         .ok_or_else(|| HistoryError::Integrity("history identity is missing".into()))?;
-    if row.try_get::<i64>("", "schema_version")? != 26
+    if row.try_get::<i64>("", "schema_version")? != 27
         || row.try_get::<String>("", "thread_id")? != thread_id
     {
         return Err(HistoryError::Integrity(
@@ -520,12 +630,12 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
     let mut found = false;
     for row in &migration {
         let version: String = row.try_get("", "version")?;
-        if version != MIGRATION_V26 && !known_legacy_versions().contains(&version) {
+        if version != MIGRATION_V27 && !known_legacy_versions().contains(&version) {
             return Err(HistoryError::Integrity(format!(
                 "unknown history migration {version}"
             )));
         }
-        if version == MIGRATION_V26 {
+        if version == MIGRATION_V27 {
             found = true;
         }
     }
@@ -553,7 +663,7 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
         (
             "index",
             &[
-                "idx_events_dividers",
+                "idx_events_boundaries",
                 "idx_events_work",
                 "history_one_anchor",
                 "history_row_head",
@@ -562,14 +672,9 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
                 "idx_events_turn",
                 "idx_events_source",
                 "idx_events_call",
-                "idx_events_message",
-                "idx_events_attempt",
-                "idx_events_originals_class",
                 "idx_events_originals_all",
                 "idx_events_originals_parent",
-                "idx_events_originals_parent_class",
                 "idx_events_originals_text",
-                "idx_events_originals_tool",
             ][..],
         ),
     ] {

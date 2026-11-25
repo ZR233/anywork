@@ -2,6 +2,7 @@
 use super::super::current::{ActiveTextPart, ModelPartLocation};
 use super::super::observation_parts::observation_preview;
 use super::ProjectionError;
+use crate::ThreadTextItem;
 use crate::studio::runtime::chat_item::atom_contents;
 use crate::studio::runtime::chat_item::{BodyKey, TOOL_RESULT_FIELD};
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome, ChatToolIdentity, ContentOwner,
     ThreadTextChannel,
 };
-use crate::{ExecutionItem, ExecutionShape, ThreadContentLifecycle, ThreadTextItem};
+use crate::{ExecutionItem, ExecutionShape, ThreadContentLifecycle};
 use pl_core::{model::ContentBlock, thread::ThreadSnapshot};
 use std::collections::BTreeMap;
 

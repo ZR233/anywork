@@ -4,7 +4,7 @@ publish_to: 'none'
 
 # Release Please updates this stable SemVer in its reviewed Release PR.
 # Windows uses these major, minor, and patch components for product and file versions.
-version: 6.51.0 # x-release-please-version
+version: 6.52.0 # x-release-please-version
 
 environment:
   sdk: ^3.14.0
@@ -76,7 +76,9 @@ flutter:
     - assets/branding/anywork-app-icon.png
     - assets/branding/anywork-startup-cat.webp
     - assets/branding/anywork-startup-cat.png
-    - assets/provider-logos/
+    # Use the same package-qualified key in the app and Widget Previewer.
+    # Flutter resolves this package path from lib/.
+    - packages/anywork/assets/provider-logos/
 
 flutter_rust_bridge:
   rust_root: rust/

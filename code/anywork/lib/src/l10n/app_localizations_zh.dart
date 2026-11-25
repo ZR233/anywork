@@ -1650,13 +1650,32 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsStatisticsTitle => '统计';
 
   @override
-  String get settingsStatisticsSubtitle => '按账号和配置模型汇总最近成功调用，并按思考强度与请求速度档位细分。';
+  String get settingsStatisticsSummaryTitle => '模型汇总';
 
   @override
-  String get settingsStatisticsSummaryTitle => '模型性能';
+  String get settingsStatisticsHistoryTitle => '调用记录';
 
   @override
-  String get settingsStatisticsHistoryTitle => '调用历史';
+  String get statisticsRefresh => '刷新';
+
+  @override
+  String get statisticsRefreshing => '刷新中';
+
+  @override
+  String get statisticsPreviousPage => '上一页';
+
+  @override
+  String get statisticsNextPage => '下一页';
+
+  @override
+  String statisticsItemRange(int first, int last, int total) {
+    return '第 $first–$last 条 / 共 $total 条';
+  }
+
+  @override
+  String statisticsPageNumber(int page, int pages) {
+    return '$page / $pages';
+  }
 
   @override
   String get settingsStatisticsAllModels => '全部模型';
@@ -7325,6 +7344,29 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get liveStatusConnectionReconnecting => '正在重连实时同步';
+
+  @override
+  String liveStatusModelReconnecting(int attempt, int max) {
+    return '模型连接断开，正在重连（$attempt/$max）';
+  }
+
+  @override
+  String get timelineConnectionModelDisconnected => '模型连接已断开';
+
+  @override
+  String get timelineConnectionModelReconnected => '模型连接已恢复';
+
+  @override
+  String get timelineConnectionSshDisconnected => 'SSH 连接已断开';
+
+  @override
+  String get timelineConnectionSshReconnected => 'SSH 连接已恢复';
+
+  @override
+  String get timelineConnectionGenericDisconnected => '连接已断开';
+
+  @override
+  String get timelineConnectionGenericReconnected => '连接已恢复';
 
   @override
   String get liveStatusMembersUnavailable => '成员读取尚未就绪';

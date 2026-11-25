@@ -241,12 +241,26 @@ impl StudioThreadFactory {
         thread: crate::Thread,
         context: &'static str,
     ) -> Result<crate::studio::storage::thread_writer::ThreadStorageSink, ThreadAssemblyError> {
-        crate::studio::storage::thread_writer::ThreadStorageSink::new(
+        let thread_id = thread.id.clone();
+        let sink = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             thread,
         )
         .await
-        .map_err(|error| resource_error(context, error))
+        .map_err(|error| resource_error(context, error))?;
+        if let Some(binding) = self.binding_snapshot(&thread_id)
+            && let Some(ssh_alias) = binding.project.ssh_alias
+            && let Ok(history) = self.services.store.history(&thread_id).await
+        {
+            super::ssh_connection_events::spawn_ssh_connection_watcher(
+                self.services.ssh_manager.clone(),
+                ssh_alias,
+                history,
+                binding.lifetime.cancellation.clone(),
+            )
+            .await;
+        }
+        Ok(sink)
     }
 
     pub(super) async fn open_native_export_history(

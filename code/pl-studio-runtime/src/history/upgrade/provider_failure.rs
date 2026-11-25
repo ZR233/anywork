@@ -85,13 +85,12 @@ fn decimal_wait(wait: &mut Value, field: &str) -> Result<bool> {
                 return Ok(true);
             }
         }
-        Value::String(text) => {
+        Value::String(text)
             if text
                 .parse::<u64>()
-                .is_ok_and(|value| value.to_string() == *text)
-            {
-                return Ok(false);
-            }
+                .is_ok_and(|value| value.to_string() == *text) =>
+        {
+            return Ok(false);
         }
         _ => {}
     }

@@ -240,7 +240,7 @@ pub(super) fn bridge_turn_state(value: &TurnState) -> BridgeTurnState {
         TurnState::Failed(state) => BridgeTurnState::Failed {
             started_at: state.started_at(),
             completed_at: state.completed_at(),
-            failure: bridge_turn_failure(state.failure().clone()),
+            failure: Box::new(bridge_turn_failure(state.failure().clone())),
         },
         TurnState::BudgetLimited(state) => BridgeTurnState::BudgetLimited {
             started_at: state.started_at(),

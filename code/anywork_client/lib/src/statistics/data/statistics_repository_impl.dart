@@ -12,11 +12,6 @@ import '../domain/statistics_repository.dart';
 import 'statistics_materializer.dart';
 import '../statistics_ports.dart';
 
-const _maximumReconnectAttempts = 5;
-const _initialReconnectDelay = Duration(milliseconds: 250);
-const _maximumReconnectDelay = Duration(seconds: 5);
-const _stableConnectionWindow = Duration(seconds: 10);
-
 /// The sole statistics reducer for one application graph.
 final class StatisticsRepositoryImpl implements StatisticsRepository {
   StatisticsRepositoryImpl({
@@ -36,11 +31,9 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   int _nextAttemptId = 0;
   int _generation = 0;
   int _visibleDemands = 0;
-  int _reconnectAttempts = 0;
+  bool _readRequested = false;
   bool _closed = false;
   _StatisticsAttempt? _current;
-  Timer? _retryTimer;
-  Timer? _stabilityTimer;
   Future<CloseReport>? _closing;
 
   @override
@@ -65,24 +58,25 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
       );
     }
     _visibleDemands++;
-    if (_visibleDemands == 1) _ensureConnected();
+    if (_visibleDemands == 1) {
+      _readRequested = true;
+      _ensureRead();
+    }
     return _StatisticsVisibilityLease(this);
   }
 
   @override
-  void retry() {
+  void refresh() {
     if (_closed || _visibleDemands == 0) return;
-    _retryTimer?.cancel();
-    _retryTimer = null;
-    _reconnectAttempts = 0;
     final current = _current;
-    if (current == null) {
-      _ensureConnected();
+    // A click during a read or its cleanup belongs to that same read. A failed cleanup may be
+    // retried explicitly, but a replacement cannot start until that exact owner has settled.
+    if (current != null &&
+        (!current.retireRequested || current.retirement != null)) {
       return;
     }
-    if (!current.settled) {
-      _superviseRetirement(current, reconnectWhenSettled: true);
-    }
+    _readRequested = true;
+    _ensureRead();
   }
 
   @override
@@ -92,8 +86,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   Future<CloseReport> _close(ClientCloseBudget? budget) async {
     _closed = true;
     _visibleDemands = 0;
-    _retryTimer?.cancel();
-    _stabilityTimer?.cancel();
+    _readRequested = false;
+    for (final attempt in _attempts.values) {
+      attempt.cancelled = true;
+    }
     _publishConnection(StatisticsConnectionPhase.closing);
 
     // Close every admitted attempt before awaiting any one of them.
@@ -121,11 +117,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     if (_visibleDemands == 0) return;
     _visibleDemands--;
     if (_visibleDemands != 0) return;
-    _retryTimer?.cancel();
-    _retryTimer = null;
-    _stabilityTimer?.cancel();
+    _readRequested = false;
     final current = _current;
     if (current != null && !current.settled) {
+      current.cancelled = true;
       _publishConnection(StatisticsConnectionPhase.closing);
       _superviseRetirement(current);
     } else {
@@ -133,21 +128,22 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     }
   }
 
-  void _ensureConnected() {
-    if (_closed || _visibleDemands == 0) return;
+  void _ensureRead() {
+    if (_closed || _visibleDemands == 0 || !_readRequested) return;
     final current = _current;
     if (current != null && !current.settled) {
       if (current.retireRequested) {
-        _superviseRetirement(current, reconnectWhenSettled: true);
+        _superviseRetirement(current);
+        _publishConnection(StatisticsConnectionPhase.closing);
       }
       return;
     }
-    if (_retryTimer != null) return;
     _startAttempt();
   }
 
   void _startAttempt() {
     if (_closed || _visibleDemands == 0 || _current != null) return;
+    _readRequested = false;
     final attemptId = ++_nextAttemptId;
     final generation = ++_generation;
     final attempt = _StatisticsAttempt(
@@ -177,7 +173,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
         error,
         category: StatisticsFailureCategory.connection,
       );
-      _releaseUnopenedAttempt(attempt, failure);
+      attempt.failure = failure;
+      // Even a failed open belongs to this generation until its registered opening future has
+      // returned. Retirement joins it before a pending visible entry may open the next feed.
+      if (!attempt.retireRequested) _superviseRetirement(attempt);
       return;
     }
 
@@ -185,51 +184,30 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     // generation must retain the exact returned handle for cleanup.
     attempt.connection = connection;
     if (_mustRetire(attempt)) return;
-    try {
-      attempt.pump = _runPump(attempt);
-      unawaited(attempt.pump!.then<void>((_) => _pumpFinished(attempt)));
-    } on Object catch (error) {
-      final failure = StatisticsFailure.fromObject(
-        error,
-        category: StatisticsFailureCategory.connection,
-      );
-      attempt.failure = failure;
-      if (!_mustRetire(attempt)) {
-        _publishConnection(_nextReconnectPhase(), failure: failure);
-      }
-      _superviseRetirement(
-        attempt,
-        reconnectWhenSettled: !_closed && _visibleDemands > 0,
-      );
-    }
+    attempt.pump = _runPump(attempt);
+    unawaited(attempt.pump!.then<void>((_) => _pumpFinished(attempt)));
   }
 
   Future<void> _runPump(_StatisticsAttempt attempt) async {
     final connection = attempt.connection!;
-    var baselineReceived = false;
-    var deliverySequence = 0;
     try {
       await for (final event in connection.events()) {
         if (_mustRetire(attempt)) return;
         switch (event) {
           case StatisticsFeedBaseline(:final publication):
-            if (baselineReceived || publication.deliverySequence != 1) {
+            if (publication.deliverySequence != 1) {
               throw _feedProtocolFailure(
                 'baseline was duplicated or out of order',
               );
             }
-            baselineReceived = true;
-            deliverySequence = publication.deliverySequence;
             await _consumePublication(attempt, publication);
+            // This GUI read owns only the baseline. Cancelling the stream iteration also drops
+            // publications queued while the bounded materialization was in flight.
+            return;
           case StatisticsFeedData(:final publication):
-            if (!baselineReceived ||
-                publication.deliverySequence != deliverySequence + 1) {
-              throw _feedProtocolFailure(
-                'statistics delivery sequence was not contiguous',
-              );
-            }
-            deliverySequence = publication.deliverySequence;
-            await _consumePublication(attempt, publication);
+            throw _feedProtocolFailure(
+              'data arrived before baseline (${publication.deliverySequence})',
+            );
           case StatisticsFeedFailure(:final failure):
             throw failure;
           case StatisticsFeedClosed():
@@ -247,9 +225,6 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
         category: StatisticsFailureCategory.stream,
       );
       attempt.failure = failure;
-      if (!_mustRetire(attempt)) {
-        _publishConnection(_nextReconnectPhase(), failure: failure);
-      }
       return;
     }
     if (!_mustRetire(attempt)) {
@@ -260,7 +235,6 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
         retryable: true,
       );
       attempt.failure = failure;
-      _publishConnection(_nextReconnectPhase(), failure: failure);
     }
   }
 
@@ -269,88 +243,40 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     StatisticsFeedIdentity publication,
   ) async {
     final connection = attempt.connection!;
-    final previous = _state.value.snapshot;
-    final sameOwner =
-        previous?.ownerEpoch == publication.ownerEpoch &&
-        previous?.feedId == publication.feedId;
-    if (sameOwner) {
-      if (publication.publicationRevision < previous!.publicationRevision ||
-          publication.summariesRevision < previous.summariesRevision ||
-          publication.historyRevision < previous.historyRevision) {
-        throw _feedProtocolFailure('publication revision moved backwards');
-      }
-      if ((publication.summariesRevision == previous.summariesRevision &&
-              publication.summaryCount != previous.summaries.length) ||
-          (publication.historyRevision == previous.historyRevision &&
-              publication.historyCount != previous.history.length)) {
-        throw _feedProtocolFailure('material count changed without a revision');
-      }
-    }
-
-    final readSummaries =
-        !sameOwner ||
-        previous!.summariesRevision != publication.summariesRevision;
-    final readHistory =
-        !sameOwner || previous!.historyRevision != publication.historyRevision;
-    StatisticsReadScope? scope;
+    final scope = await connection.openScope(publication);
+    attempt.scope = scope;
+    if (_mustRetire(attempt)) return;
+    // Every entry/refresh reads a complete fresh baseline, even when its revisions happen to
+    // match the last read. Scope ownership stays on the attempt until close really succeeds.
+    final materialized = await StatisticsMaterializer.read(
+      scope: scope,
+      publication: publication,
+      previous: null,
+      readSummaries: true,
+      readHistory: true,
+    );
+    if (_mustRetire(attempt)) return;
     try {
-      List<StatisticsSummary> summaries = previous?.summaries ?? const [];
-      List<StatisticsSample> history = previous?.history ?? const [];
-      if (readSummaries || readHistory) {
-        scope = await connection.openScope(publication);
-        final materialized = await StatisticsMaterializer.read(
-          scope: scope,
-          publication: publication,
-          previous: previous,
-          readSummaries: readSummaries,
-          readHistory: readHistory,
-        );
-        summaries = materialized.summaries;
-        history = materialized.history;
-        if (_mustRetire(attempt)) return;
-        await scope.close();
-        scope = null;
-      }
-
-      if (_mustRetire(attempt)) return;
-      // ACK only after all changed materials have been completely validated and materialized.
-      try {
-        await connection.acknowledge(publication.deliverySequence);
-      } on Object catch (error) {
-        throw StatisticsFailure.fromObject(
-          error,
-          category: StatisticsFailureCategory.acknowledgement,
-        );
-      }
-      if (_mustRetire(attempt)) return;
-
-      final snapshot = StatisticsSnapshot(
-        ownerEpoch: publication.ownerEpoch,
-        feedId: publication.feedId,
-        publicationRevision: publication.publicationRevision,
-        summariesRevision: publication.summariesRevision,
-        historyRevision: publication.historyRevision,
-        summaries: summaries,
-        history: history,
-        statisticsPending: publication.statisticsPending,
-        statisticsGap: publication.statisticsGap,
-        readFailed: publication.readFailed,
+      await connection.acknowledge(publication.deliverySequence);
+    } on Object catch (error) {
+      throw StatisticsFailure.fromObject(
+        error,
+        category: StatisticsFailureCategory.acknowledgement,
       );
-      _state.publish(
-        StatisticsRepositoryState(
-          snapshot: snapshot,
-          connection: const StatisticsConnectionState(
-            phase: StatisticsConnectionPhase.ready,
-          ),
-        ),
-      );
-      _startStabilityTimer(attempt);
-    } finally {
-      final activeScope = scope;
-      if (activeScope != null) {
-        await activeScope.close();
-      }
     }
+    if (_mustRetire(attempt)) return;
+    attempt.snapshot = StatisticsSnapshot(
+      ownerEpoch: publication.ownerEpoch,
+      feedId: publication.feedId,
+      publicationRevision: publication.publicationRevision,
+      summariesRevision: publication.summariesRevision,
+      historyRevision: publication.historyRevision,
+      summaries: materialized.summaries,
+      history: materialized.history,
+      statisticsPending: publication.statisticsPending,
+      statisticsGap: publication.statisticsGap,
+      readFailed: publication.readFailed,
+    );
   }
 
   StatisticsFailure _feedProtocolFailure(String diagnostic) =>
@@ -364,43 +290,24 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
 
   void _pumpFinished(_StatisticsAttempt attempt) {
     if (_mustRetire(attempt)) return;
-    if (attempt.failure == null) {
-      attempt.failure = StatisticsFailure.local(
-        category: StatisticsFailureCategory.closed,
-        code: StudioFailureCode.unavailable,
-        message: 'Statistics feed ended unexpectedly',
-        retryable: true,
-      );
-      _publishConnection(_nextReconnectPhase(), failure: attempt.failure);
-    }
-    _superviseRetirement(attempt, reconnectWhenSettled: true);
+    _superviseRetirement(attempt);
   }
 
-  Future<void> _requestRetirement(
-    _StatisticsAttempt attempt, {
-    bool reconnectWhenSettled = false,
-  }) {
+  Future<void> _requestRetirement(_StatisticsAttempt attempt) {
     if (attempt.settled) return Future<void>.value();
     attempt.retireRequested = true;
-    attempt.reconnectWhenSettled |= reconnectWhenSettled;
     attempt.connection?.requestClose();
     final existing = attempt.retirement;
     if (existing != null) return existing;
-    final task = _retireAttempt(attempt);
+    final task = Future<void>.microtask(() => _retireAttempt(attempt));
     attempt.retirement = task;
     return task;
   }
 
-  void _superviseRetirement(
-    _StatisticsAttempt attempt, {
-    bool reconnectWhenSettled = false,
-  }) {
+  void _superviseRetirement(_StatisticsAttempt attempt) {
     unawaited(
-      _requestRetirement(
-        attempt,
-        reconnectWhenSettled: reconnectWhenSettled,
-      ).catchError((Object error, StackTrace _) {
-        _retainUnresolved(attempt, error);
+      _requestRetirement(attempt).catchError((Object _, StackTrace __) {
+        // _retireAttempt has retained the original owner and published its cleanup failure.
       }),
     );
   }
@@ -413,9 +320,14 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
       final connection = attempt.connection;
       if (connection != null) {
         connection.requestClose();
-        await connection.close();
         final pump = attempt.pump;
         if (pump != null) await pump;
+        final scope = attempt.scope;
+        if (scope != null) {
+          await scope.close();
+          attempt.scope = null;
+        }
+        await connection.close();
       }
       _settleAttempt(attempt);
     } on Object catch (error) {
@@ -425,10 +337,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
       );
       attempt.failure = failure;
       _retainUnresolved(attempt, failure);
+      attempt.retirement = null;
       if (!_closed && _visibleDemands > 0 && identical(_current, attempt)) {
         _publishConnection(StatisticsConnectionPhase.failed, failure: failure);
       }
-      attempt.retirement = null;
       Error.throwWithStackTrace(failure, StackTrace.current);
     }
   }
@@ -446,20 +358,6 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     );
   }
 
-  void _releaseUnopenedAttempt(
-    _StatisticsAttempt attempt,
-    StatisticsFailure failure,
-  ) {
-    attempt.failure = failure;
-    final reopenRequested =
-        !attempt.retireRequested || attempt.reconnectWhenSettled;
-    if (!_closed && _visibleDemands > 0 && reopenRequested) {
-      attempt.reconnectWhenSettled = true;
-      _publishConnection(_nextReconnectPhase(), failure: failure);
-    }
-    _settleAttempt(attempt);
-  }
-
   void _settleAttempt(_StatisticsAttempt attempt) {
     if (attempt.settled) return;
     // This terminal path is reached only after native close/join, or after open failed before a
@@ -467,63 +365,40 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     attempt.settled = true;
     _attempts.remove(attempt.id);
     _unresolved.remove(attempt.resourceId);
-    _stabilityTimer?.cancel();
-    _stabilityTimer = null;
-    if (identical(_current, attempt)) _current = null;
-    if (attempt.reconnectWhenSettled && !_closed && _visibleDemands > 0) {
-      _scheduleReconnect();
-    } else if (!_closed && _visibleDemands == 0) {
+    if (!identical(_current, attempt)) return;
+    _current = null;
+    if (_closed) return;
+    if (_visibleDemands == 0) {
       _publishConnection(StatisticsConnectionPhase.idle);
+    } else if (_readRequested) {
+      _ensureRead();
+    } else if (!attempt.cancelled) {
+      final snapshot = attempt.snapshot;
+      if (attempt.failure != null) {
+        _publishConnection(
+          StatisticsConnectionPhase.failed,
+          failure: attempt.failure,
+        );
+      } else if (snapshot != null) {
+        _state.publish(
+          StatisticsRepositoryState(
+            snapshot: snapshot,
+            connection: const StatisticsConnectionState(
+              phase: StatisticsConnectionPhase.ready,
+            ),
+          ),
+        );
+      }
     }
   }
 
   bool _mustRetire(_StatisticsAttempt attempt) =>
       _closed ||
       _visibleDemands == 0 ||
+      attempt.cancelled ||
       attempt.retireRequested ||
       attempt.generation != _generation ||
       !identical(_current, attempt);
-
-  void _scheduleReconnect() {
-    if (_closed || _visibleDemands == 0 || _retryTimer != null) return;
-    if (_reconnectAttempts >= _maximumReconnectAttempts - 1) {
-      _publishConnection(
-        StatisticsConnectionPhase.failed,
-        failure: _state.value.connection.failure,
-      );
-      return;
-    }
-    final attempt = _reconnectAttempts++;
-    final delay = Duration(
-      milliseconds: (_initialReconnectDelay.inMilliseconds * (1 << attempt))
-          .clamp(0, _maximumReconnectDelay.inMilliseconds),
-    );
-    _publishConnection(
-      _state.value.snapshot == null
-          ? StatisticsConnectionPhase.connecting
-          : StatisticsConnectionPhase.reconnecting,
-      failure: _state.value.connection.failure,
-    );
-    _retryTimer = Timer(delay, () {
-      _retryTimer = null;
-      _ensureConnected();
-    });
-  }
-
-  StatisticsConnectionPhase _nextReconnectPhase() =>
-      _reconnectAttempts >= _maximumReconnectAttempts - 1
-      ? StatisticsConnectionPhase.failed
-      : _state.value.snapshot == null
-      ? StatisticsConnectionPhase.connecting
-      : StatisticsConnectionPhase.reconnecting;
-
-  void _startStabilityTimer(_StatisticsAttempt attempt) {
-    if (_stabilityTimer != null) return;
-    _stabilityTimer = Timer(_stableConnectionWindow, () {
-      _stabilityTimer = null;
-      if (!_mustRetire(attempt)) _reconnectAttempts = 0;
-    });
-  }
 
   void _publishConnection(
     StatisticsConnectionPhase phase, {
@@ -598,12 +473,14 @@ final class _StatisticsAttempt {
   final ClientResourceId resourceId;
   final int generation;
   StatisticsFeedConnection? connection;
+  StatisticsReadScope? scope;
+  StatisticsSnapshot? snapshot;
   Future<void>? opening;
   Future<void>? pump;
   Future<void>? retirement;
   StatisticsFailure? failure;
   bool retireRequested = false;
-  bool reconnectWhenSettled = false;
+  bool cancelled = false;
   bool settled = false;
 }
 

@@ -48,13 +48,13 @@ class _AttachmentTransport extends RecordingDemoTransport {
     );
     reader.onTimeline = (_, _, _) async => HistoryTimelinePage(
       cut: reader.cut,
-      items: [
-        DividerTimelineItem(
-          HistoryEventRecord(
+      entries: [
+        HistoryTimelineEntry(
+          event: HistoryEventRecord(
             seq: 5,
             eventId: 'files-call',
             kind: 'tool_completed',
-            timelineRole: HistoryTimelineRole.divider,
+            timelineRole: HistoryTimelineRole.boundary,
             recordedAt: 5,
             entityId: 'files-call',
             callId: 'files-call',
@@ -100,6 +100,7 @@ class _AttachmentTransport extends RecordingDemoTransport {
               ],
             }),
           ),
+          hasFoldedAfter: false,
         ),
       ],
     );
@@ -141,11 +142,7 @@ final class _FileHistoryReader extends TestHistoryReader {
   Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
-  }) async => (await onTimeline!(
-    cut,
-    null,
-    demand,
-  )).items.whereType<DividerTimelineItem>().single.event;
+  }) async => (await onTimeline!(cut, null, demand)).entries.single.event;
 }
 
 void main() {

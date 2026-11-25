@@ -280,7 +280,7 @@ impl ThreadModel {
                             source: Box::new(source),
                             accounting: Box::new(result.2),
                             usage_is_terminal: report.usage_is_terminal,
-                            timing: result.4,
+                            timing: result.4.map(Box::new),
                             model_observation: result.3.map(Box::new),
                             presentation_items: Vec::new(),
                             partial_progress: None,

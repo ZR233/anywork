@@ -49,6 +49,11 @@ pub(crate) struct StreamCollectContext<'a> {
     pub(crate) on_stream_end: &'a (dyn Fn() + Send + Sync),
     pub(crate) members: Option<pl_core::model::ModelMemberSender>,
     pub(crate) generation: u32,
+    pub(crate) pending_reconnect: Option<(
+        pl_core::model::ModelConnectionFact,
+        std::time::Instant,
+        &'a mut bool,
+    )>,
 }
 
 #[tracing::instrument(
@@ -75,6 +80,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         on_stream_end,
         members,
         generation,
+        mut pending_reconnect,
     } = context;
     let mut accumulator =
         accumulator.unwrap_or_else(|| StreamCompletionAccumulator::new(model_observation));
@@ -179,6 +185,20 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             }
         };
         let admission = async {
+            if let Some((mut fact, disconnected_at, reconnected)) = pending_reconnect.take() {
+                *reconnected = true;
+                if let Some(sender) = members.as_ref() {
+                    fact.duration_ms = Some(
+                        u64::try_from(disconnected_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    );
+                    let admission = sender.connection(fact, cancellation.as_ref());
+                    if let Some(current) = current.as_deref_mut() {
+                        current.wait(admission, Some(&accumulator)).await?;
+                    } else {
+                        admission.await?;
+                    }
+                }
+            }
             for event in accumulator.normalize(event)? {
                 if let Some(observer) = observer {
                     observer.observe(generation, &event);
@@ -416,6 +436,7 @@ mod admission_tests {
                         on_stream_end: &|| {},
                         members: request.members,
                         generation: 0,
+                        pending_reconnect: None,
                     },
                     None,
                     None,

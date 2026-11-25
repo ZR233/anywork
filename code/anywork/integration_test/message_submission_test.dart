@@ -423,9 +423,8 @@ void main() {
       conversations: graph.client.conversations,
       threadId: threadId,
       matches: (rows) {
-        final matches = rows.where((item) {
-          return item is DividerTimelineItem &&
-              item.event.source == InputChatSource(inputId: inputId);
+        final matches = rows.where((entry) {
+          return entry.event.source == InputChatSource(inputId: inputId);
         }).toList();
         if (matches.length > 1) {
           throw StateError(
@@ -437,9 +436,8 @@ void main() {
       description: 'one canonical History input row for $inputId',
     );
     expect(
-      historyRows.where((item) {
-        return item is DividerTimelineItem &&
-            item.event.source == InputChatSource(inputId: inputId);
+      historyRows.where((entry) {
+        return entry.event.source == InputChatSource(inputId: inputId);
       }),
       hasLength(1),
     );

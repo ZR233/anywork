@@ -219,7 +219,7 @@ impl ModelTurnClient {
                 source: Box::new(source),
                 accounting: Box::new(response.accounting),
                 usage_is_terminal: response.usage_is_terminal,
-                timing: response.timing,
+                timing: response.timing.map(Box::new),
                 model_observation: response.model_observation.map(Box::new),
                 presentation_items: response.presentation_items,
                 partial_progress: Some(Box::new(response.observation.into())),

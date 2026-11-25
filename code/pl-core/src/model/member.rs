@@ -75,6 +75,57 @@ pub struct ModelSubAttemptSettlement {
     pub payload: OpaquePayload,
 }
 
+/// Kind of model transport connection boundary observed during an attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelConnectionEventKind {
+    Disconnected,
+    Reconnected,
+}
+
+impl ModelConnectionEventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disconnected => "disconnected",
+            Self::Reconnected => "reconnected",
+        }
+    }
+}
+
+/// Input parameters for admitting a [`ModelConnectionEvent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelConnectionFact {
+    pub generation: u32,
+    pub kind: ModelConnectionEventKind,
+    pub transport: String,
+    pub fallback_transport: Option<String>,
+    pub retry: u32,
+    pub max_retries: u32,
+    pub recoverable: bool,
+    pub reason: Option<String>,
+    pub duration_ms: Option<u64>,
+}
+
+/// Canonical model transport disconnection/reconnection boundary emitted during an attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnectionEvent {
+    pub turn_id: String,
+    pub attempt_id: String,
+    pub generation: u32,
+    pub kind: ModelConnectionEventKind,
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_transport: Option<String>,
+    pub retry: u32,
+    pub max_retries: u32,
+    pub recoverable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum StartedKey {
     Aggregate(AggregateChannel),
@@ -148,6 +199,8 @@ pub(crate) struct AdmittedMembers {
     pub(crate) completed:
         std::collections::BTreeMap<(u32, String), (OpaquePayload, Option<MemberCharge>)>,
     pub(crate) started: std::collections::BTreeMap<(u32, StartedKey), AdmittedPart>,
+    pub(crate) connections:
+        std::collections::BTreeMap<(u32, u8, u32), (ModelConnectionEvent, Option<MemberCharge>)>,
 }
 
 #[derive(Debug)]
@@ -167,12 +220,13 @@ pub(crate) struct AdmittedPart {
 
 impl AdmittedMembers {
     pub(crate) fn is_empty(&self) -> bool {
-        self.completed.is_empty() && self.started.is_empty()
+        self.completed.is_empty() && self.started.is_empty() && self.connections.is_empty()
     }
 
     pub(crate) fn clear(&mut self) {
         self.completed.clear();
         self.started.clear();
+        self.connections.clear();
     }
 }
 
@@ -192,6 +246,7 @@ pub(crate) enum MemberFact {
     Started(ModelStartedMember),
     ContentAvailable(ModelContentAvailableMember),
     Completed(ModelCompletedMember),
+    Connection(ModelConnectionEvent),
 }
 
 #[derive(Debug)]
@@ -499,6 +554,76 @@ impl ModelMemberSender {
         }
         permit.send(ModelMemberAdmission {
             member: MemberFact::Completed(member),
+            reply,
+            charge,
+        });
+        self.receive_admission(generation, admitted).await
+    }
+
+    /// Transfers a canonical model transport disconnect or reconnect boundary to the owner.
+    pub async fn connection(
+        &self,
+        fact: ModelConnectionFact,
+        cancellation: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<(), ModelMemberError> {
+        if fact.transport.is_empty() {
+            return Err(ModelMemberError::InvalidIdentity);
+        }
+        let generation = fact.generation;
+        let permit = self.reserve(generation, cancellation).await?;
+        let event = ModelConnectionEvent {
+            turn_id: self.turn_id.to_string(),
+            attempt_id: self.attempt_id.to_string(),
+            generation,
+            kind: fact.kind,
+            transport: fact.transport,
+            fallback_transport: fact.fallback_transport,
+            retry: fact.retry,
+            max_retries: fact.max_retries,
+            recoverable: fact.recoverable,
+            reason: fact.reason,
+            duration_ms: fact.duration_ms,
+        };
+        let encoded = encoded_member_bytes(&event).map_err(|error| {
+            ModelMemberError::Rejected(Arc::new(ThreadError::Storage(Arc::new(
+                crate::thread::cold::ColdStoreError {
+                    source: Box::new(error),
+                },
+            ))))
+        })?;
+        let metadata = (2 * (self.turn_id.len() + self.attempt_id.len())
+            + std::mem::size_of::<ModelMemberAdmission>()
+            + std::mem::size_of::<ModelConnectionEvent>()
+            + 128) as u64;
+        let key = (generation, event.kind as u8, event.retry);
+        let duplicate = self
+            .registry
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .connections
+            .get(&key)
+            .is_some_and(|(old, _)| old == &event);
+        let bytes = if duplicate {
+            0
+        } else {
+            encoded.saturating_add(metadata)
+        };
+        let charge = self
+            .output
+            .as_ref()
+            .map(|output| {
+                output.retain_member(bytes).map_err(|error| {
+                    ModelMemberError::Rejected(Arc::new(ThreadError::Storage(Arc::new(error))))
+                })
+            })
+            .transpose()?;
+        let (reply, admitted) = oneshot::channel();
+        if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            return Err(ModelMemberError::Cancelled);
+        }
+        permit.send(ModelMemberAdmission {
+            member: MemberFact::Connection(event),
             reply,
             charge,
         });

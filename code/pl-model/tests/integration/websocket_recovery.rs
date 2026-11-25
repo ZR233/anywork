@@ -83,14 +83,25 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
             },
         },
     ] {
-        let mut events = interrupted_text("remote work already started");
-        events.push(json!({"type":"error","error":{"code":"upstream_error","message":"Upstream request failed"}}));
-        let fixture = FixtureServer::start(vec![Step::prompt(
-            Protocol::ResponsesWebSocket,
-            "remote",
-            0,
-            Reply::WebSocket(events),
-        )])
+        let mut actions = interrupted_text("remote work already started")
+            .into_iter()
+            .map(WebSocketAction::Event)
+            .collect::<Vec<_>>();
+        actions.push(WebSocketAction::Disconnect);
+        let fixture = FixtureServer::start(vec![
+            Step::prompt(
+                Protocol::ResponsesWebSocket,
+                "remote",
+                0,
+                Reply::WebSocketScript(actions),
+            ),
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "next turn",
+                1,
+                Reply::Sse(responses_text("next turn works", "next", "recovery-model")),
+            ),
+        ])
         .await
         .unwrap();
         let session = ModelSession::default();
@@ -113,6 +124,11 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
             .complete(input, ModelInvocationContext::in_memory(session.clone()))
             .await
             .unwrap_err();
+        assert_eq!(
+            failure.source.provider_failure_ref().unwrap().kind,
+            pl_protocol::ProviderFailureKind::Transport,
+            "{failure:?}"
+        );
         assert!(
             failure
                 .source
@@ -136,8 +152,16 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
                 .collect::<String>(),
             "remote work already started"
         );
+        let next = runtime
+            .complete(
+                request("next turn"),
+                ModelInvocationContext::in_memory(session.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next.content.as_deref(), Some("next turn works"));
         session.close().await.unwrap();
-        assert_eq!(fixture.finish().await.unwrap().len(), 1);
+        assert_eq!(fixture.finish().await.unwrap().len(), 2);
     }
 }
 
@@ -1435,6 +1459,19 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
         assert_eq!(response.orchestration.transport_attempts, 2);
         assert_eq!(response.observation.generation, 1);
         assert_eq!(response.observation.failed.len(), 1);
+        let connections = effects
+            .iter()
+            .flat_map(|effect| effect.model_connection_events.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(connections.len(), 2, "completed={completed}");
+        assert_eq!(
+            connections[0].kind,
+            pl_core::model::ModelConnectionEventKind::Disconnected
+        );
+        assert_eq!(
+            connections[1].kind,
+            pl_core::model::ModelConnectionEventKind::Reconnected
+        );
         assert_eq!(
             response.observation.failed[0]
                 .parts

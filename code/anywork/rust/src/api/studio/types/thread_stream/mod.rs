@@ -191,7 +191,7 @@ pub enum BridgeTurnState {
     Failed {
         started_at: Option<i64>,
         completed_at: i64,
-        failure: BridgeTurnFailureDto,
+        failure: Box<BridgeTurnFailureDto>,
     },
     BudgetLimited {
         started_at: Option<i64>,

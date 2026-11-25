@@ -209,6 +209,18 @@ impl CurrentOwner {
         let mut projection = CurrentProjection::empty(super::status(state));
         self.project_activity_head(thread, state, sequence, &active, &mut projection);
         let active_turn = super::project_active_turn(&thread.id, state, thread.updated_at)?;
+        projection.model_recovery = state.model_progress.as_ref().and_then(|progress| {
+            let obs = progress.progress.observation();
+            let recovery = obs.recovery?;
+            if recovery.phase != pl_core::model::ModelRecoveryPhase::Retrying {
+                return None;
+            }
+            Some(CurrentModelRecovery {
+                attempt: recovery.retry,
+                max_attempts: recovery.max_retries,
+                reason: obs.failed.last().map(|failed| failed.message.to_string()),
+            })
+        });
         projection.active_turn = active_turn
             .as_ref()
             .and_then(|turn| turn.phase().map(|phase| (turn, phase)))
@@ -1000,13 +1012,11 @@ impl CurrentState {
                 ));
             }
         }
-        for (call_id, progress) in &saved.state.tool_previews {
-            let task = saved
-                .state
-                .tasks
-                .values()
-                .find(|task| &task.call_id == call_id)
-                .ok_or_else(|| anyhow::anyhow!("saved preview has no task"))?;
+        for task in saved.state.tasks.values() {
+            let call_id = &task.call_id;
+            let Some(progress) = saved.state.tool_previews.get(call_id) else {
+                continue;
+            };
             let id = super::order::tool_id(call_id);
             for part in &progress.parts {
                 active.push(ActiveTextPart::new(
@@ -1188,7 +1198,7 @@ mod tests {
         let mut event = HistoryEvent::new(
             "recovery",
             HistoryEventKind::TextCompleted,
-            HistoryTimelineRole::Divider,
+            HistoryTimelineRole::Boundary,
             11_000,
         );
         build_event_from_draft(&mut event, &atom, &draft, "database", Vec::new())?;

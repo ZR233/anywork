@@ -283,8 +283,16 @@ pub(in crate::history) async fn insert_v25_event(
 ) -> Result<()> {
     let (source_kind, source_id) = match &event.header.source {
         Some(source) => {
-            let (kind, id) = source_key(source)?;
-            (Some(kind), Some(id))
+            let kind = match source {
+                HistorySource::ForegroundTurn { .. } => "foreground_turn",
+                HistorySource::Input { .. } => "input",
+                HistorySource::InboxMessage { .. } => "inbox_message",
+                HistorySource::BackgroundResult { .. } => "background_result",
+                HistorySource::Operation { .. } => "operation",
+                HistorySource::Receipt { .. } => "receipt",
+            };
+            let id = source_key(source)?;
+            (Some(kind.to_owned()), Some(id))
         }
         None => (None, None),
     };

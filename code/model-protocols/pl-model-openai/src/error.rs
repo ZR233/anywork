@@ -100,7 +100,8 @@ impl From<OfficialError> for ClassifiedProviderError {
         let (kind, retryable) = if let Some(kind) = error.terminal_kind.or(permanent) {
             (kind, false)
         } else if code == Some("websocket_connection_limit_reached") {
-            (Kind::ServiceBusy, true)
+            // This is the documented connection lifetime limit, not provider overload.
+            (Kind::Transport, true)
         } else if matches!(
             fallback.kind,
             Kind::Authentication | Kind::Authorization | Kind::InvalidRequest

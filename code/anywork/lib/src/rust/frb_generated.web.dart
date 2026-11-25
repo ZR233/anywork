@@ -951,6 +951,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCurrentFrame dco_decode_box_autoadd_bridge_current_frame(dynamic raw);
 
   @protected
+  BridgeCurrentModelRecovery
+  dco_decode_box_autoadd_bridge_current_model_recovery(dynamic raw);
+
+  @protected
   BridgeCurrentPersistenceSnapshot
   dco_decode_box_autoadd_bridge_current_persistence_snapshot(dynamic raw);
 
@@ -1050,11 +1054,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_history_event_body_ref(dynamic raw);
 
   @protected
-  BridgeHistoryEventRecord dco_decode_box_autoadd_bridge_history_event_record(
-    dynamic raw,
-  );
-
-  @protected
   BridgeHistoryEventsQuery dco_decode_box_autoadd_bridge_history_events_query(
     dynamic raw,
   );
@@ -1074,11 +1073,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnHead dco_decode_box_autoadd_bridge_history_turn_head(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeHistoryWorkRange dco_decode_box_autoadd_bridge_history_work_range(
     dynamic raw,
   );
 
@@ -1717,6 +1711,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn dco_decode_box_bridge_turn(dynamic raw);
+
+  @protected
+  BridgeTurnFailureDto dco_decode_box_bridge_turn_failure_dto(dynamic raw);
 
   @protected
   StartNewThreadResponse dco_decode_box_start_new_thread_response(dynamic raw);
@@ -2663,6 +2660,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCurrentFrame dco_decode_bridge_current_frame(dynamic raw);
 
   @protected
+  BridgeCurrentModelRecovery dco_decode_bridge_current_model_recovery(
+    dynamic raw,
+  );
+
+  @protected
   BridgeCurrentPayloadData dco_decode_bridge_current_payload_data(dynamic raw);
 
   @protected
@@ -2857,7 +2859,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryTimelineItem dco_decode_bridge_history_timeline_item(
+  BridgeHistoryTimelineEntry dco_decode_bridge_history_timeline_entry(
     dynamic raw,
   );
 
@@ -2876,9 +2878,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnState dco_decode_bridge_history_turn_state(dynamic raw);
-
-  @protected
-  BridgeHistoryWorkRange dco_decode_bridge_history_work_range(dynamic raw);
 
   @protected
   BridgeHistoryWorkRangePage dco_decode_bridge_history_work_range_page(
@@ -4262,9 +4261,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeHistoryTimelineItem> dco_decode_list_bridge_history_timeline_item(
-    dynamic raw,
-  );
+  List<BridgeHistoryTimelineEntry>
+  dco_decode_list_bridge_history_timeline_entry(dynamic raw);
 
   @protected
   List<BridgeInteractionRequest> dco_decode_list_bridge_interaction_request(
@@ -4768,6 +4766,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeCurrentFrame? dco_decode_opt_box_autoadd_bridge_current_frame(
     dynamic raw,
   );
+
+  @protected
+  BridgeCurrentModelRecovery?
+  dco_decode_opt_box_autoadd_bridge_current_model_recovery(dynamic raw);
 
   @protected
   BridgeCurrentPersistenceSnapshot?
@@ -6129,6 +6131,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCurrentModelRecovery
+  sse_decode_box_autoadd_bridge_current_model_recovery(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeCurrentPersistenceSnapshot
   sse_decode_box_autoadd_bridge_current_persistence_snapshot(
     SseDeserializer deserializer,
@@ -6252,11 +6260,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryEventRecord sse_decode_box_autoadd_bridge_history_event_record(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeHistoryEventsQuery sse_decode_box_autoadd_bridge_history_events_query(
     SseDeserializer deserializer,
   );
@@ -6278,11 +6281,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnHead sse_decode_box_autoadd_bridge_history_turn_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWorkRange sse_decode_box_autoadd_bridge_history_work_range(
     SseDeserializer deserializer,
   );
 
@@ -7113,6 +7111,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeTurn sse_decode_box_bridge_turn(SseDeserializer deserializer);
+
+  @protected
+  BridgeTurnFailureDto sse_decode_box_bridge_turn_failure_dto(
+    SseDeserializer deserializer,
+  );
 
   @protected
   StartNewThreadResponse sse_decode_box_start_new_thread_response(
@@ -8379,6 +8382,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeCurrentModelRecovery sse_decode_bridge_current_model_recovery(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeCurrentPayloadData sse_decode_bridge_current_payload_data(
     SseDeserializer deserializer,
   );
@@ -8633,7 +8641,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryTimelineItem sse_decode_bridge_history_timeline_item(
+  BridgeHistoryTimelineEntry sse_decode_bridge_history_timeline_entry(
     SseDeserializer deserializer,
   );
 
@@ -8654,11 +8662,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeHistoryTurnState sse_decode_bridge_history_turn_state(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWorkRange sse_decode_bridge_history_work_range(
     SseDeserializer deserializer,
   );
 
@@ -10342,9 +10345,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeHistoryTimelineItem> sse_decode_list_bridge_history_timeline_item(
-    SseDeserializer deserializer,
-  );
+  List<BridgeHistoryTimelineEntry>
+  sse_decode_list_bridge_history_timeline_entry(SseDeserializer deserializer);
 
   @protected
   List<BridgeInteractionRequest> sse_decode_list_bridge_interaction_request(
@@ -10958,6 +10960,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeCurrentFrame? sse_decode_opt_box_autoadd_bridge_current_frame(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeCurrentModelRecovery?
+  sse_decode_opt_box_autoadd_bridge_current_model_recovery(
     SseDeserializer deserializer,
   );
 
@@ -12579,6 +12587,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_current_persistence_snapshot(
     BridgeCurrentPersistenceSnapshot self,
     SseSerializer serializer,
@@ -12717,12 +12731,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_history_event_record(
-    BridgeHistoryEventRecord self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_bridge_history_events_query(
     BridgeHistoryEventsQuery self,
     SseSerializer serializer,
@@ -12749,12 +12757,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_history_turn_head(
     BridgeHistoryTurnHead self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_history_work_range(
-    BridgeHistoryWorkRange self,
     SseSerializer serializer,
   );
 
@@ -13669,6 +13671,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_bridge_turn(BridgeTurn self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_bridge_turn_failure_dto(
+    BridgeTurnFailureDto self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_start_new_thread_response(
@@ -15204,6 +15212,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_current_payload_data(
     BridgeCurrentPayloadData self,
     SseSerializer serializer,
@@ -15519,8 +15533,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_history_timeline_item(
-    BridgeHistoryTimelineItem self,
+  void sse_encode_bridge_history_timeline_entry(
+    BridgeHistoryTimelineEntry self,
     SseSerializer serializer,
   );
 
@@ -15545,12 +15559,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_history_turn_state(
     BridgeHistoryTurnState self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_work_range(
-    BridgeHistoryWorkRange self,
     SseSerializer serializer,
   );
 
@@ -17592,8 +17600,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_bridge_history_timeline_item(
-    List<BridgeHistoryTimelineItem> self,
+  void sse_encode_list_bridge_history_timeline_entry(
+    List<BridgeHistoryTimelineEntry> self,
     SseSerializer serializer,
   );
 
@@ -18293,6 +18301,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_current_frame(
     BridgeCurrentFrame? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_current_model_recovery(
+    BridgeCurrentModelRecovery? self,
     SseSerializer serializer,
   );
 

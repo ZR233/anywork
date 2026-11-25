@@ -1,6 +1,6 @@
 # Main configuration
 
-`<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 34`. A missing
+`<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 35`. A missing
 file uses in-memory defaults in interactive hosts; `anywk exec` requires an existing
 file and fails strictly. An invalid existing file is an error. Use Settings
 to create accounts from templates and preserve their provider-specific metadata.
@@ -175,6 +175,21 @@ official Google endpoints use implicit prefix caching:
 - `gemini`: Google Gemini Developer API / AI Studio (`base_url = "https://generativelanguage.googleapis.com/v1beta"`,
   `bearer_token_env = "GEMINI_API_KEY"`, catalog `"gemini"`). Supports paginated `/models`
   online discovery (`pageSize=1000`, `pageToken`).
+
+### Gemini 请求限制
+
+Gemini 当前使用单候选、单次输出最多 65,536 个词元的 HTTP 流式接口。原生正文配置和参数映射中的
+`generationConfig.candidateCount`（或 `generation_config.candidate_count`）只能为 `1`，
+`maxOutputTokens`／`max_output_tokens` 不得超过 `65536`；配置超限时直接报错，不截小后发送。
+尚未实现自动多跳续接，不能在固定正文中设置 `continuationToken`／`continuation_token`。
+系统指令通过统一 `SystemPrompt` 生成，固定正文和参数映射不得注入 `systemInstruction`／`system_instruction`。
+这些限制在实际发送前检查；它们不是新增的 TOML 根字段。
+
+完整绑定采用 `gemini_generate_content` 的 `use_parameters_json_schema = true`。
+不支持将完整 JSON Schema 切换到旧 `parameters` Schema 接口；该选项设为 `false` 会明确报错。
+工具历史中的参数须为 JSON 对象，不对非法参数自动补包或修复。
+内置 Gemini 4 使用上述思考级别，不声明上游已忽略的温度调节能力。在线目录仅报告生成方法时，
+已知模型沿用核实过的媒体限制，未知模型按最低文本绑定处理，不自动开启图片／文件输入。
 
 A compatible Responses model can declare `base.input_modalities = ["text", "file"]`,
 `base.supports_parallel_tool_calls = true`, and `base.web_search_tool_type = "text"`.

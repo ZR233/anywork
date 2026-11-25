@@ -661,9 +661,9 @@ class _NativeHistoryTransport extends TestDemoStudioTransport {
   }) => HistoryTimelinePage(
     cut: cut,
     next: next,
-    items: [
+    entries: [
       for (var seq = newest; seq > newest - count; seq--)
-        DividerTimelineItem(_row(seq)),
+        HistoryTimelineEntry(event: _row(seq), hasFoldedAfter: false),
     ],
   );
 
@@ -677,7 +677,7 @@ class _NativeHistoryTransport extends TestDemoStudioTransport {
       seq: seq,
       eventId: 'event:$id',
       kind: 'input_accepted',
-      timelineRole: HistoryTimelineRole.divider,
+      timelineRole: HistoryTimelineRole.boundary,
       recordedAt: seq * 1000,
       entityId: id,
       rowKey: 'row:$seq',
