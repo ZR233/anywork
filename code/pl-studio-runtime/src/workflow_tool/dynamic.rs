@@ -4,7 +4,6 @@ use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
 use super::state::validate_session_state_size;
-use crate::thread_assembler::ThreadAssemblyError;
 use crate::thread_mode_id::MODE_EXTENSION;
 use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::workflow_tool::WorkflowSessionState;
@@ -18,7 +17,7 @@ use pl_core::{
     },
 };
 use pl_model::completion::ToolCallPolicy;
-use pl_tool::binding::prepare_registration;
+use pl_tool::binding::{BindingError, prepare_registration};
 
 /// Product-owned extension namespace; it is not a core schema or a database table.
 pub const WORKFLOW_EXTENSION: &str = "studio.workflow";
@@ -246,7 +245,7 @@ pub(crate) fn workflow_tool_definitions()
 /// Returns model declaration or registration failures.
 pub(crate) fn workflow_registrations(
     resolve_workflow: ResolveWorkflow,
-) -> Result<Vec<Registration>, ThreadAssemblyError> {
+) -> Result<Vec<Registration>, BindingError> {
     [
         WorkflowOperationKind::Current,
         WorkflowOperationKind::Next,
