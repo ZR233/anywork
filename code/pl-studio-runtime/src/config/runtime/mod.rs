@@ -1,6 +1,8 @@
 mod acp;
 mod catalog;
+mod mcp;
 mod mode_definitions;
+mod profiles;
 pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
 
 use std::sync::{Arc, Mutex, RwLock};
@@ -9,18 +11,11 @@ use crate::studio::unix_seconds;
 use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
-use super::{
-    AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, McpCatalogResource,
-    McpDocumentError, StudioConfig,
-};
+use super::{AgentProfilesResource, ConfigStore, McpCatalogResource, StudioConfig};
+use crate::StudioModelCatalogStatus;
 use crate::mode::ThreadModeDocument;
 use crate::mode::ThreadModeId;
 use crate::mode::ThreadModeManager;
-use crate::{
-    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogSnapshot,
-    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope,
-    StudioModelCatalogStatus, UpdateMcpDocumentRequest,
-};
 use pl_model::config::AccountId;
 use std::collections::BTreeMap;
 
@@ -433,255 +428,6 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())
     }
 
-    /// 从已发布缓存取得启用 Profile 的执行视图；不扫描文件。
-    #[cfg(test)]
-    pub(crate) fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
-        Ok(self
-            .profiles
-            .read()
-            .catalog
-            .executable(crate::DelegationMode::Profile)?)
-    }
-
-    /// 读取已发布的 Agent Profiles 资源快照（完整配置与诊断）；纯缓存读取。
-    pub fn agent_profiles_snapshot(&self) -> ConfigRuntimeResult<AgentProfilesSnapshot> {
-        Ok(self.profiles.read())
-    }
-
-    /// 订阅 Agent Profiles 资源变更唤醒；值为最新 revision。
-    pub fn subscribe_agent_profiles(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.profiles.subscribe()
-    }
-
-    /// 读取指定环境作用域的 MCP 配置目录快照。
-    pub fn mcp_catalog_snapshot(
-        &self,
-        scope: &McpScope,
-    ) -> ConfigRuntimeResult<McpCatalogSnapshot> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        Ok(self
-            .mcp_catalog
-            .read_catalog(self.store.paths(), &snapshot.config.models, scope)?)
-    }
-
-    /// 订阅指定环境作用域的 MCP 配置目录变更唤醒。
-    #[cfg(test)]
-    fn subscribe_mcp_catalog(
-        &self,
-        scope: &McpScope,
-    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, tokio::sync::watch::Receiver<u64>)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        Ok(self
-            .mcp_catalog
-            .subscribe(self.store.paths(), &snapshot.config.models, scope)?)
-    }
-
-    /// 解析指定环境作用域内所有有效 MCP 条目（含启用、禁用、缺前置条件）。
-    #[cfg(test)]
-    fn effective_mcp_servers_for_scope(
-        &self,
-        scope: &McpScope,
-    ) -> ConfigRuntimeResult<BTreeMap<String, super::ScopedEffectiveMcpServer>> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        Ok(self.mcp_catalog.effective_servers_for_scope(
-            self.store.paths(),
-            &snapshot.config.models,
-            scope,
-        )?)
-    }
-
-    /// 解析单个 Thread 在指定环境作用域下需要连接的 MCP servers。
-    #[cfg(test)]
-    fn resolve_thread_mcp_configs(
-        &self,
-        scope: &McpScope,
-        workspace_root: &std::path::Path,
-        host_base_cwd: &std::path::Path,
-        remote_commands: Option<Arc<pl_tool::command::ExecutorCommandBackend>>,
-    ) -> ConfigRuntimeResult<BTreeMap<String, super::ResolvedThreadMcpServer>> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        Ok(self.mcp_catalog.resolve_thread_mcp_configs(
-            self.store.paths(),
-            &snapshot.config.models,
-            scope,
-            workspace_root,
-            host_base_cwd,
-            remote_commands,
-        )?)
-    }
-
-    /// Reads effective servers and their validity under the same configuration command boundary.
-    pub(crate) fn resolve_thread_mcp_snapshot(
-        &self,
-        scope: &McpScope,
-        workspace_root: &std::path::Path,
-        host_base_cwd: &std::path::Path,
-        remote_commands: Option<Arc<pl_tool::command::ExecutorCommandBackend>>,
-    ) -> ConfigRuntimeResult<super::mcp_resource::ResolvedThreadMcpSnapshot> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        if self
-            .mcp_catalog
-            .configuration_authorization(scope)
-            .is_some_and(|(authorization, _)| !authorization.is_active())
-        {
-            // A committed Host change can invalidate inherited scopes without commanding
-            // their runtimes. Resolve that known invalidation before issuing a fresh lease.
-            self.mcp_catalog
-                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
-        }
-        Ok(self.mcp_catalog.resolve_thread_mcp_snapshot(
-            self.store.paths(),
-            &snapshot.config.models,
-            scope,
-            workspace_root,
-            host_base_cwd,
-            remote_commands,
-        )?)
-    }
-
-    /// 读取单个 MCP 配置文件的完整源码与诊断。
-    pub fn read_mcp_document(
-        &self,
-        document: &McpDocumentRef,
-    ) -> std::result::Result<McpDocumentContent, McpDocumentError> {
-        self.mcp_catalog.read_document(self.store.paths(), document)
-    }
-
-    /// 创建单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
-    pub fn create_mcp_document(
-        &self,
-        request: &CreateMcpDocumentRequest,
-    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
-        let _command = self.command_lock.lock().map_err(|_| {
-            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
-        })?;
-        let snapshot = self
-            .read()
-            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
-        self.mcp_catalog
-            .create_document(self.store.paths(), &snapshot.config.models, request)
-    }
-
-    /// 更新单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
-    pub fn update_mcp_document(
-        &self,
-        request: &UpdateMcpDocumentRequest,
-    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
-        let _command = self.command_lock.lock().map_err(|_| {
-            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
-        })?;
-        let snapshot = self
-            .read()
-            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
-        self.mcp_catalog
-            .update_document(self.store.paths(), &snapshot.config.models, request)
-    }
-
-    /// 删除单个 MCP 配置文件，返回提交回执与受影响的作用域列表。
-    pub fn delete_mcp_document(
-        &self,
-        request: &DeleteMcpDocumentRequest,
-    ) -> std::result::Result<(McpDocumentCommitReceipt, Vec<McpScope>), McpDocumentError> {
-        let _command = self.command_lock.lock().map_err(|_| {
-            McpDocumentError::Io("ConfigRuntime command lock is poisoned".to_owned())
-        })?;
-        let snapshot = self
-            .read()
-            .map_err(|error| McpDocumentError::Io(error.to_string()))?;
-        self.mcp_catalog
-            .delete_document(self.store.paths(), &snapshot.config.models, request)
-    }
-
-    /// 重新扫描指定环境作用域的 MCP 配置目录，返回最新快照与受影响的作用域列表。
-    pub fn reload_mcp_catalog(
-        &self,
-        scope: &McpScope,
-    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, Vec<McpScope>)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        Ok(self.mcp_catalog.adopt_scan_with_inheritance(
-            self.store.paths(),
-            &snapshot.config.models,
-            scope,
-        )?)
-    }
-
-    /// Reload only a calling owner's effective scope, including the Host inheritance source.
-    /// Product events may be shared, but this operation does not command other Thread runtimes.
-    pub(crate) fn reload_thread_mcp_catalog(
-        &self,
-        scope: &McpScope,
-    ) -> ConfigRuntimeResult<(McpCatalogSnapshot, Vec<McpCatalogSnapshot>)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let snapshot = self.read()?;
-        let mut changed = Vec::new();
-        if !matches!(scope, McpScope::Host) {
-            let (host, updated) = self.mcp_catalog.adopt_scan(
-                self.store.paths(),
-                &snapshot.config.models,
-                &McpScope::Host,
-            )?;
-            if updated {
-                changed.push(host);
-            }
-        }
-        let (catalog, updated) =
-            self.mcp_catalog
-                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
-        if updated {
-            changed.push(catalog.clone());
-        }
-        Ok((catalog, changed))
-    }
-
-    /// 当模型账号/凭据发生变化时，重新扫描已加载作用域的 MCP 配置目录（更新内置 MCP 前置条件状态）。
-    pub fn refresh_mcp_catalogs_for_models(&self) -> ConfigRuntimeResult<Vec<McpCatalogSnapshot>> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        // Never republish a caller's earlier account/credential snapshot after a newer command.
-        let snapshot = self.read()?;
-        let models = &snapshot.config.models;
-        let changed_scopes = self
-            .mcp_catalog
-            .refresh_all_scopes(self.store.paths(), models, &[]);
-        changed_scopes
-            .into_iter()
-            .map(|scope| {
-                self.mcp_catalog
-                    .read_catalog(self.store.paths(), models, &scope)
-            })
-            .collect::<crate::Result<Vec<_>>>()
-            .map_err(Into::into)
-    }
-
     /// 读取系统凭据库或当前进程租约中的 SSH 主机密码。
     pub fn load_ssh_password(&self, alias: &str) -> Result<Option<String>> {
         self.store.load_ssh_password(alias)
@@ -711,184 +457,6 @@ impl ConfigRuntime {
         record: &pl_model_auth::chatgpt::ChatGptCredentialRecord,
     ) -> Result<pl_model_auth::chatgpt::ChatGptSession> {
         self.store.chatgpt_session(id, record)
-    }
-
-    /// Resolves an enabled Profile and its model from the same snapshot; reads the published cache.
-    ///
-    /// # Errors
-    /// Returns unknown/disabled Profile, configuration or account route errors.
-    #[cfg(test)]
-    fn resolve_agent_profile(&self, profile_id: &str) -> ConfigRuntimeResult<ResolvedAgentProfile> {
-        self.resolve_delegated_profile(profile_id, crate::DelegationMode::Profile, None)
-    }
-
-    /// Resolves role and model together, before allocating workspaces or provider resources.
-    pub(crate) fn resolve_acp_child_profile(
-        &self,
-        profile_id: &str,
-    ) -> ConfigRuntimeResult<(crate::AgentProfile, super::AcpServiceDefinition)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        if profile_id == super::ROOT_AGENT_ROUTE_KEY
-            || crate::agent::definition::is_root_definition_id(profile_id)
-        {
-            return Err(PureError::ConfigError("root Profile cannot be dispatched".into()).into());
-        }
-        let profile = self
-            .profiles
-            .read()
-            .catalog
-            .enabled_for_dispatch()?
-            .profiles
-            .into_iter()
-            .find(|profile| profile.enabled && profile.definition.definition_id == profile_id)
-            .ok_or_else(|| {
-                PureError::ConfigError(format!(
-                    "Agent Profile is missing or disabled: {profile_id}"
-                ))
-            })?;
-        let crate::AgentBinding::Acp(binding) = &profile.binding else {
-            return Err(PureError::ConfigError("ACP Profile binding changed".into()).into());
-        };
-        let definitions = self.read_acp_definitions();
-        let entry = definitions
-            .definitions
-            .get(&binding.account_id)
-            .ok_or_else(|| {
-                PureError::ConfigError(format!("unknown ACP account `{}`", binding.account_id))
-            })?;
-        let definition =
-            self.resolve_acp_definition(&binding.account_id, entry.connection_revision)?;
-        Ok((profile, definition))
-    }
-
-    /// Resolves role and model together, before allocating workspaces or provider resources.
-    pub fn resolve_delegated_profile(
-        &self,
-        profile_id: &str,
-        mode: crate::DelegationMode,
-        selection: Option<crate::NewThreadModelRoute>,
-    ) -> ConfigRuntimeResult<ResolvedAgentProfile> {
-        // Configuration commands also adopt the Profile cache before releasing this lock.
-        // This pure resolution cannot combine a new config with the previous role catalog.
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        if profile_id == super::ROOT_AGENT_ROUTE_KEY {
-            return Err(PureError::ConfigError(
-                "planner is reserved for the main agent; this child role is retired and cannot resume".into(),
-            ).into());
-        }
-        // Root Agent definitions are product built-in roles, not dispatchable child Profiles.
-        if crate::agent::definition::is_root_definition_id(profile_id) {
-            return Err(PureError::ConfigError(format!(
-                "root Agent definition `{profile_id}` cannot be dispatched as a child agent"
-            ))
-            .into());
-        }
-        let snapshot = self.read()?;
-        // Resolve the actual frozen/selected route below rather than replacing its diagnostic
-        // with a generic "missing Profile" from the model-visible availability filter.
-        let catalog = self.profiles.read().catalog.enabled_for_dispatch()?;
-        let mut profile = catalog
-            .profiles
-            .into_iter()
-            .find(|profile| profile.definition.definition_id == profile_id && profile.enabled)
-            .ok_or_else(|| {
-                PureError::ConfigError(format!(
-                    "Agent Profile is missing or disabled: {profile_id}"
-                ))
-            })?;
-        if matches!(&profile.binding, crate::AgentBinding::Acp(_)) {
-            return Err(PureError::ConfigError(
-                "ACP Profile requires ACP business preparation".into(),
-            )
-            .into());
-        }
-        match (mode, selection) {
-            (crate::DelegationMode::Profile, None) => {}
-            (crate::DelegationMode::Profile, Some(_)) => {
-                return Err(PureError::ConfigError(
-                    "fixed Profile delegation forbids modelSelection".into(),
-                )
-                .into());
-            }
-            (crate::DelegationMode::Automatic, None) => {
-                return Err(PureError::ConfigError(
-                    "automatic delegation requires modelSelection".into(),
-                )
-                .into());
-            }
-            (crate::DelegationMode::Automatic, Some(selection)) => {
-                let crate::AgentBinding::Native(native) = &mut profile.binding else {
-                    unreachable!("ACP rejected before Native selection");
-                };
-                native.route = Some(selection);
-                let mut identity = profile.freeze_native()?;
-                identity.content_hash.clear();
-                profile.definition.content_hash = crate::canonical_content_hash(
-                    &serde_json::to_vec(&identity).map_err(PureError::from)?,
-                );
-            }
-        }
-        let route =
-            crate::studio::delegation::resolve_current_child_route(&snapshot.config, &profile)?;
-        Ok(ResolvedAgentProfile {
-            config: snapshot.config,
-            revision: snapshot.revision,
-            definition: profile.definition.clone(),
-            binding: profile.binding.clone(),
-            profile: profile.freeze_native()?,
-            route,
-        })
-    }
-
-    /// 原子创建或替换一个用户 Agent Profile 文件。
-    pub fn save_user_agent_profile(
-        &self,
-        expected_revision: Option<&str>,
-        profile_id: &str,
-        profile: &super::UserAgentProfile,
-    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, bool)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        let actual =
-            super::agent_profile::current_profile_revision(self.store.paths(), profile_id)?;
-        if expected_revision != actual.as_deref() {
-            return Err(ConfigRuntimeError::ProfileConflict(profile_id.into()));
-        }
-        let changed = super::save_user_agent_profile(
-            self.store.paths(),
-            profile_id,
-            profile,
-            &current.config,
-            &current.acp,
-        )?;
-        let next = ConfigRuntimeSnapshot {
-            revision: current.revision.saturating_add(1),
-            updated_at: unix_seconds(),
-            config: current.config,
-            acp: current.acp,
-            canonical_config: current.canonical_config,
-            usage_query_revisions: current.usage_query_revisions,
-        };
-        self.state
-            .write()
-            .map_err(|_| config_runtime_poisoned())?
-            .snapshot = next.clone();
-        // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
-        self.profiles
-            .adopt_scan(self.store.paths(), &next.config, &next.acp);
-        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
-        self.notify_settings_committed(&next);
-        Ok((next, changed))
     }
 
     /// 使用 expected revision 原子保存完整 desired config。
@@ -934,69 +502,33 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let (current, current_catalog) = self.read_with_catalog()?;
+        let before = self.snapshot_for_commit()?;
         if let Some(expected) = expected_revision.into() {
-            ensure_revision(expected, current.revision)?;
+            ensure_revision(expected, before.snapshot.revision)?;
         }
-        let (desired, observations) = {
-            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            if state.closing {
-                return Err(PureError::ConfigError("settings owner is closing".into()).into());
-            }
-            (state.desired.clone(), state.observations.clone())
-        };
-        let mut next_config = edit(&desired, &current.config)?;
+        let mut next_config = edit(&before.desired, &before.snapshot.config)?;
         for account in next_config.models.accounts.values_mut() {
             account.clear_model_catalog_overlay();
         }
         let next_observations = model_catalog::reconcile(
             self.store.paths(),
             &next_config,
-            &observations,
-            current.revision.saturating_add(1),
+            &before.observations,
+            before.snapshot.revision.saturating_add(1),
         )?;
         let effective = effective_runtime_config(&next_config, &next_observations)?;
         effective.validate_declarations()?;
-        validate_changed_selections(&desired, &effective)?;
+        validate_changed_selections(&before.desired, &effective)?;
 
-        // 文件和 credential IO 不持有 state lock；command lock 只负责串行化 Settings 命令。
-        self.store.commit_config(&desired, &next_config, &intents)?;
-        revoke_replaced_chatgpt_sessions(&desired, &next_config);
-
-        let next = ConfigRuntimeSnapshot {
-            revision: current.revision.saturating_add(1),
-            updated_at: unix_seconds(),
-            config: effective.clone(),
-            acp: current.acp.clone(),
-            canonical_config: next_config.clone(),
-            usage_query_revisions: next_usage_query_revisions(&current, &effective),
-        };
-        let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
-            || effective.models.accounts != current.config.models.accounts;
-        let catalog = ModelCatalogRuntimeSnapshot {
-            revision: current_catalog
-                .revision
-                .saturating_add(u64::from(catalog_changed)),
-            updated_at: unix_seconds(),
-            catalogs: statuses(&next_observations),
-        };
-        invalidate_observations(&observations, &next_observations);
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
-        update_account_projection_revisions(&mut state, &next, &catalog);
-        state.observe_native_config(&next.config);
-        state.desired = next_config;
-        state.observations = next_observations;
-        state.snapshot = next.clone();
-        state.catalog = catalog;
-        drop(state);
-        // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        self.profiles
-            .adopt_scan(self.store.paths(), &next.config, &next.acp);
-        self.mcp_catalog
-            .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
-        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
-        self.notify_settings_committed(&next);
-        Ok(next)
+        self.commit_and_publish_snapshot(
+            before,
+            PreparedConfig {
+                desired: next_config,
+                effective,
+                observations: next_observations,
+            },
+            ConfigCommit::Update(intents),
+        )
     }
 
     /// 显式从磁盘重新加载配置；普通 read 永不调用此方法。
@@ -1008,41 +540,95 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let (current, current_catalog) = self.read_with_catalog()?;
-        ensure_revision(expected_revision, current.revision)?;
-        let (previous, observations) = {
-            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            if state.closing {
-                return Err(PureError::ConfigError("settings owner is closing".into()).into());
-            }
-            (state.desired.clone(), state.observations.clone())
-        };
+        let before = self.snapshot_for_commit()?;
+        ensure_revision(expected_revision, before.snapshot.revision)?;
         let desired = self.store.load_or_default()?;
         let next_observations = model_catalog::reconcile(
             self.store.paths(),
             &desired,
-            &observations,
-            current.revision.saturating_add(1),
+            &before.observations,
+            before.snapshot.revision.saturating_add(1),
         )?;
         let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
-        revoke_replaced_chatgpt_sessions(&previous, &desired);
+        self.commit_and_publish_snapshot(
+            before,
+            PreparedConfig {
+                desired,
+                effective: config,
+                observations: next_observations,
+            },
+            ConfigCommit::Reload,
+        )
+    }
+
+    fn snapshot_for_commit(&self) -> ConfigRuntimeResult<ConfigBeforeCommit> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        if state.closing {
+            return Err(PureError::ConfigError("settings owner is closing".into()).into());
+        }
+        Ok(ConfigBeforeCommit {
+            snapshot: state.snapshot.clone(),
+            catalog: state.catalog.clone(),
+            desired: state.desired.clone(),
+            observations: state.observations.clone(),
+        })
+    }
+
+    /// Caller holds the command lock until derived resources and synchronous observers settle.
+    fn commit_and_publish_snapshot(
+        &self,
+        before: ConfigBeforeCommit,
+        prepared: PreparedConfig,
+        commit: ConfigCommit,
+    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
+        let ConfigBeforeCommit {
+            snapshot: current,
+            catalog: current_catalog,
+            desired: previous,
+            observations,
+        } = before;
+        let PreparedConfig {
+            desired,
+            effective: config,
+            observations: next_observations,
+        } = prepared;
+        let catalogs = statuses(&next_observations);
+        let catalog_changed = matches!(&commit, ConfigCommit::Reload)
+            || catalogs != current_catalog.catalogs
+            || config.models.accounts != current.config.models.accounts;
+        // File and credential work completes before runtime state, leases or observers change.
+        let acp = match commit {
+            ConfigCommit::Update(intents) => {
+                self.store.commit_config(&previous, &desired, &intents)?;
+                current.acp.clone()
+            }
+            ConfigCommit::Reload => self.acp.reload(self.store.paths()),
+        };
+        let now = unix_seconds();
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
-            updated_at: unix_seconds(),
-            config: config.clone(),
-            acp: self.acp.reload(self.store.paths()),
-            canonical_config: desired.clone(),
+            updated_at: now,
             usage_query_revisions: next_usage_query_revisions(&current, &config),
+            config,
+            acp,
+            canonical_config: desired.clone(),
         };
         let catalog = ModelCatalogRuntimeSnapshot {
-            revision: current_catalog.revision.saturating_add(1),
-            updated_at: unix_seconds(),
-            catalogs: statuses(&next_observations),
+            revision: current_catalog
+                .revision
+                .saturating_add(u64::from(catalog_changed)),
+            updated_at: if catalog_changed {
+                now
+            } else {
+                current_catalog.updated_at
+            },
+            catalogs,
         };
-        invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        revoke_replaced_chatgpt_sessions(&previous, &desired);
+        invalidate_observations(&observations, &next_observations);
         update_account_projection_revisions(&mut state, &next, &catalog);
         state.observe_native_config(&next.config);
         state.desired = desired;
@@ -1050,15 +636,32 @@ impl ConfigRuntime {
         state.snapshot = next.clone();
         state.catalog = catalog;
         drop(state);
-        // 显式重扫；目录未变化时不提升 revision。
+
         self.profiles
             .adopt_scan(self.store.paths(), &next.config, &next.acp);
         self.mcp_catalog
             .refresh_all_scopes(self.store.paths(), &next.config.models, &[]);
-        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok(next)
     }
+}
+
+struct ConfigBeforeCommit {
+    snapshot: ConfigRuntimeSnapshot,
+    catalog: ModelCatalogRuntimeSnapshot,
+    desired: StudioConfig,
+    observations: BTreeMap<AccountId, Observation>,
+}
+
+struct PreparedConfig {
+    desired: StudioConfig,
+    effective: StudioConfig,
+    observations: BTreeMap<AccountId, Observation>,
+}
+
+enum ConfigCommit {
+    Update(super::credential_commit::CredentialIntents),
+    Reload,
 }
 
 fn revoke_replaced_chatgpt_sessions(previous: &StudioConfig, next: &StudioConfig) {
@@ -1286,6 +889,9 @@ fn config_runtime_poisoned() -> ConfigRuntimeError {
 mod tests {
     use super::*;
     use crate::config::{ConfigPaths, ConfigStore};
+    use crate::{
+        CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, UpdateMcpDocumentRequest,
+    };
 
     #[test]
     fn background_mcp_scan_cannot_regrant_deleted_or_disabled_configuration() {
@@ -1490,6 +1096,84 @@ mod tests {
         let store = ConfigStore::new(ConfigPaths::from_config_dir(directory.path()));
         let runtime = ConfigRuntime::initialize(store).expect("default config initializes");
         (directory, runtime)
+    }
+
+    #[test]
+    fn credential_conflict_and_bad_reload_preserve_published_configuration() -> anyhow::Result<()> {
+        #[derive(Default)]
+        struct CommittedRevisions(Mutex<Vec<u64>>);
+        impl SettingsCommitObserver for CommittedRevisions {
+            fn settings_committed(&self, snapshot: &ConfigRuntimeSnapshot) {
+                self.0.lock().unwrap().push(snapshot.revision);
+            }
+        }
+
+        let (_directory, runtime) = runtime();
+        let before = runtime.read_with_catalog()?;
+        let path = runtime.store.paths().config_file();
+        runtime.store.save(before.0.canonical_config())?;
+        let canonical_bytes = std::fs::read(path)?;
+        let revision = before.0.revision;
+        let native_revision = runtime.native_runtime_revision()?;
+        let observer = Arc::new(CommittedRevisions::default());
+        runtime.install_settings_observer(observer.clone())?;
+        let profiles = runtime.agent_profiles_snapshot()?;
+
+        let account_id = before.0.config.models.accounts.keys().next().unwrap();
+        runtime
+            .store
+            .credentials
+            .save(account_id.as_str(), "external-fixture-key")?;
+        let error = runtime
+            .update_with_credential_intents(
+                revision,
+                super::super::credential_commit::CredentialIntents::for_account(
+                    account_id.as_str(),
+                    &crate::AccountAuthenticationIntent::ApiKey,
+                ),
+                |desired, _| {
+                    let mut candidate = desired.clone();
+                    candidate
+                        .models
+                        .accounts
+                        .get_mut(account_id)
+                        .unwrap()
+                        .bearer_token = Some("candidate-fixture-key".into());
+                    candidate.skills.enabled = !candidate.skills.enabled;
+                    Ok(candidate)
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("credential binding changed"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(path)?, canonical_bytes);
+        assert_eq!(runtime.read_with_catalog()?, before);
+
+        let broken = b"schema_version = [invalid";
+        std::fs::write(path, broken)?;
+        runtime.reload_from_disk(revision).unwrap_err();
+        assert_eq!(std::fs::read(path)?, broken);
+        assert_eq!(runtime.read_with_catalog()?, before);
+        assert_eq!(runtime.native_runtime_revision()?, native_revision);
+        assert_eq!(
+            runtime.agent_profiles_snapshot()?.revision,
+            profiles.revision
+        );
+        assert_eq!(*observer.0.lock().unwrap(), [revision]);
+
+        std::fs::write(path, canonical_bytes)?;
+        let reloaded = runtime.reload_from_disk(revision)?;
+        assert_eq!(reloaded.revision, revision + 1);
+        assert_eq!(
+            reloaded.config.models.accounts[account_id]
+                .bearer_token
+                .as_deref(),
+            Some("external-fixture-key")
+        );
+        assert_eq!(*observer.0.lock().unwrap(), [revision, revision + 1]);
+        Ok(())
     }
 
     #[test]

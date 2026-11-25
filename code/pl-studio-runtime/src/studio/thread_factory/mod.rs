@@ -184,7 +184,7 @@ impl StudioThreadFactory {
                 && lease.is_some_and(|lease| {
                     !lease.is_closed()
                         && Some(lease.workspace_root()) == root
-                        && crate::studio::runtime::lsp_state::execution_endpoint(
+                        && crate::studio::runtime::lsp::execution_endpoint(
                             binding.project.ssh_alias.as_deref(),
                         )
                         .as_str()
