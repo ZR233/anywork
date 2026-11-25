@@ -233,8 +233,7 @@ impl StudioThreadFactory {
         let workspace = ToolWorkspace::new(assigned_workspace(
             &assignment,
             root_thread.session.workspace_mode,
-        ))
-        .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
+        ));
         self.assign_native_workspace(&workspace_usage, &project, workspace.root())
             .await?;
         Ok(PreparedChildWorkspace {

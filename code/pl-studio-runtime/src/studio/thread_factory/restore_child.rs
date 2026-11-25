@@ -264,8 +264,7 @@ impl StudioThreadFactory {
                 route: &route,
                 project: &project,
                 root_thread_id: &thread.root_thread_id,
-                workspace: ToolWorkspace::new(workspace)
-                    .with_lsp_runtime(Some(self.services.lsp_runtime.clone())),
+                workspace: ToolWorkspace::new(workspace),
                 store: resources.clone(),
                 assignment: Some(&assignment),
             })

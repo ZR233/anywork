@@ -255,8 +255,7 @@ impl StudioThreadFactory {
             crate::ThreadWorkspaceMode::Worktree => {
                 AgentWorkspace::worktree(&canonical_project_root, &root)
             }
-        })
-        .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
+        });
         self.assign_native_workspace(&workspace_usage, &project, workspace.root())
             .await?;
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "activation_workspace", elapsed_ms = workspace_started.elapsed().as_millis() as u64, "completed");
