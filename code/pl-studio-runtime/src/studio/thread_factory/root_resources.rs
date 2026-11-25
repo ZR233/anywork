@@ -268,7 +268,7 @@ impl StudioThreadFactory {
         let saved_snapshot = current
             .as_ref()
             .map(|current| current.state.to_paused_snapshot());
-        let bot_owner = crate::studio::model_route::verified_bot_owner(
+        let bot_owner = crate::studio::bot_owner::verified_bot_owner(
             bot.as_ref().map(|bot| bot.id.as_str()),
             saved_snapshot.as_ref(),
         )
@@ -462,11 +462,11 @@ impl StudioThreadFactory {
         if let Some(bot) = &bot
             && !saved
                 .extensions
-                .contains_key(crate::studio::model_route::BOT_OWNER_EXTENSION)
+                .contains_key(crate::studio::bot_owner::BOT_OWNER_EXTENSION)
         {
             initial_extensions.insert(
-                crate::studio::model_route::BOT_OWNER_EXTENSION.into(),
-                crate::studio::model_route::encode_bot_owner(&bot.id)
+                crate::studio::bot_owner::BOT_OWNER_EXTENSION.into(),
+                crate::studio::bot_owner::encode_bot_owner(&bot.id)
                     .map_err(|error| resource_error("freeze bot owner", error))?,
             );
         }

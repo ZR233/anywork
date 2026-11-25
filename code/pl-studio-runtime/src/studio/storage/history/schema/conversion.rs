@@ -82,7 +82,7 @@ pub(super) async fn migrate_context_sources(
     } else {
         ThreadCheckpoint::decode_legacy(&serde_json::to_string(&context_view)?)?
     };
-    crate::compaction::migrate_checkpoint_sources(&mut checkpoint)?;
+    crate::context_preparation::migrate_checkpoint_sources(&mut checkpoint)?;
     for (index, ((mut raw, previous), current)) in originals
         .into_iter()
         .zip(checkpoint.state.context.records.iter())

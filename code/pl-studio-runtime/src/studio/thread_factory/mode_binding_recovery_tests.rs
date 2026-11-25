@@ -142,7 +142,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(same_mode_instruction_records, initial_instruction_records);
-    let saved_binding = crate::compaction::decode_instruction_binding(
+    let saved_binding = crate::context_preparation::decode_instruction_binding(
         &same_mode.extensions["studio.instructions.binding"],
     )?;
     assert!(saved_binding.append_snapshots);
@@ -306,7 +306,7 @@ async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_conte
             text: instructions.trusted_text().into(),
         }]
     );
-    crate::compaction::decode_instruction_binding(
+    crate::context_preparation::decode_instruction_binding(
         &changed.extensions["studio.instructions.binding"],
     )?;
     reopened.close().await?;

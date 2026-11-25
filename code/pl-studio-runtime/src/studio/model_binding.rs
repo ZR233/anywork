@@ -102,13 +102,13 @@ pub(crate) fn configured_model(
     Ok(RuntimeModel::new(
         key,
         ModelFactory::new(model.clone()),
-        crate::compaction::preparer(
+        Some(crate::context_preparation::preparer(
             route,
             model,
             config.runtime.openai_compaction_mode,
             modes,
             &config.models,
-        )?,
+        )),
     ))
 }
 

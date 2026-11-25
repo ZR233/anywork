@@ -271,13 +271,13 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
         Some(checkpoint),
     )?;
     thread
-        .set_context_preparation(crate::compaction::preparer(
+        .set_context_preparation(Some(crate::context_preparation::preparer(
             &route,
             model,
             OpenAiCompactionMode::Local,
             manager,
             &Default::default(),
-        )?)
+        )))
         .await?;
 
     let step = |attempt: &str| StepInput {

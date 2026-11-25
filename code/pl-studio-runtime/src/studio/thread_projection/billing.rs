@@ -52,7 +52,7 @@ pub(in crate::studio) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec
             && record.payload.format() == "pl.studio.compaction"
         {
             // 生产端拥有版本化解码；投影只消费当前语义。
-            let receipt = crate::compaction::decode_receipt(
+            let receipt = crate::context_preparation::decode_receipt(
                 record.payload.version(),
                 record.payload.content(),
             )?;

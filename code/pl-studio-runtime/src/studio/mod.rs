@@ -2,6 +2,7 @@ pub(crate) mod agent_close;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub mod benchmark;
+pub(crate) mod bot_owner;
 pub(crate) mod catalog;
 pub(crate) mod conversation_store;
 pub(crate) mod delegation;

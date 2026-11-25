@@ -94,10 +94,10 @@ impl StudioRuntime {
         let complete = instructions.trusted_text();
         let hash = instructions.trusted_content_hash();
         let same_route = saved_route.is_some_and(|saved| saved.route == route_selector);
-        let binding = crate::compaction::instruction_binding(&route, &instruction_model);
+        let binding = crate::context_preparation::instruction_binding(&route, &instruction_model);
         let binding_record = state.extensions.get("studio.instructions.binding");
         let saved_binding = binding_record
-            .map(crate::compaction::decode_instruction_binding)
+            .map(crate::context_preparation::decode_instruction_binding)
             .transpose()?;
         let binding_matches = saved_binding.as_ref() == Some(&binding);
         let binding_missing = saved_binding.is_none();

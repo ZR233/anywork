@@ -1,16 +1,6 @@
-//! bot owner 归属只接受解码后的正向证明。
-
-use anyhow::Result;
-use pl_core::{
-    context::OpaquePayload,
-    thread::{ThreadSnapshot, extensions::ExtensionRecord},
-};
-
-use super::{
-    AGENT_PROFILE_EXTENSION, BOT_OWNER_EXTENSION, encode_bot_owner, required_saved_profile,
-    saved_profile, verified_bot_owner,
-};
+use super::*;
 use crate::agent::definition::VerifiedAgentIdentity;
+use pl_core::thread::extensions::ExtensionRecord;
 
 /// bot 归属必须解码校验；没有正向证明时不推断普通渠道，而是明确渠道未指定的 legacy-root。
 #[test]
@@ -75,32 +65,5 @@ fn bot_ownership_is_verified_by_decoding_not_by_extension_presence() -> Result<(
         VerifiedAgentIdentity::BotRoot.migrated_identity().id,
         "root:feishu"
     );
-    Ok(())
-}
-
-/// 恢复 child 只消费冻结 Profile：缺失时明确失败，不读当前 catalog，也不改已有事实。
-#[test]
-fn missing_frozen_child_profile_fails_without_writing_anything() -> Result<()> {
-    let mut state = ThreadSnapshot::default();
-    state.extensions.insert(
-        "studio.workspace".into(),
-        ExtensionRecord {
-            revision: 2,
-            payload: OpaquePayload::new("pl.studio.workspace", 1, "\"receipt\"")?,
-        },
-    );
-    let before = serde_json::to_vec(&state)?;
-    assert!(
-        saved_profile(&state)?.is_none(),
-        "该 checkpoint 没有冻结 Profile"
-    );
-    let error =
-        required_saved_profile(&state, "child-missing").expect_err("缺冻结 Profile 必须失败");
-    assert!(
-        error.to_string().contains("has no frozen Agent Profile"),
-        "{error}"
-    );
-    assert_eq!(serde_json::to_vec(&state)?, before);
-    assert!(!state.extensions.contains_key(AGENT_PROFILE_EXTENSION));
     Ok(())
 }

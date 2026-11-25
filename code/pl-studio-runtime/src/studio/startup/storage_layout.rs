@@ -2097,7 +2097,7 @@ mod tests {
                 "studio.bot-owner".into(),
                 ExtensionRecord {
                     revision: 3,
-                    payload: crate::studio::model_route::encode_bot_owner(bot)?,
+                    payload: crate::studio::bot_owner::encode_bot_owner(bot)?,
                 },
             ),
             (

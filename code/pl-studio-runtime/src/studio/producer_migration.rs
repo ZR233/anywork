@@ -1,6 +1,6 @@
 //! Pure producer normalization shared by named history migrations and TOML import.
 use super::thread_projection::AuxiliaryBillingReceipt;
-use crate::compaction::CompactionReceipt;
+use crate::context_preparation::CompactionReceipt;
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -85,7 +85,7 @@ pub(crate) fn compaction_receipt(version: u32, content: &str) -> Result<Compacti
 
 pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
     project_kind(checkpoint)?;
-    crate::compaction::migrate_checkpoint_sources(checkpoint)?;
+    crate::context_preparation::migrate_checkpoint_sources(checkpoint)?;
     for record in checkpoint.state.extensions.values_mut() {
         if let Some(current) = normalize(&record.payload)? {
             record.payload = current;
@@ -131,7 +131,7 @@ pub(crate) fn relocate_bot_checkpoint(
 ) -> Result<()> {
     mapping.require_convertible(&checkpoint.thread_id)?;
     ensure!(
-        crate::studio::model_route::bot_owner(&checkpoint.state)?.as_deref()
+        crate::studio::bot_owner::bot_owner(&checkpoint.state)?.as_deref()
             == Some(mapping.bot_id.as_str()),
         "saved bot owner conflicts with the layout operation"
     );
