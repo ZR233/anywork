@@ -122,9 +122,21 @@ fn schema_one_is_complete_inline_and_excludes_legacy_fences() {
     state
         .tasks
         .insert("task:call".into(), task_record("call", 700));
-    state.tool_progress.insert("task:call".into(), progress);
+    state
+        .tool_progress
+        .insert("task:call".into(), progress.clone());
+    state.tool_progress.insert("task:pruned".into(), progress);
     let mut current = ThreadCurrent::new("thread".into(), epoch);
     current.state = ThreadCurrentState::from_snapshot(&state, epoch).unwrap();
+    assert_eq!(
+        current
+            .state
+            .tool_previews
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["call"]
+    );
     current.model_call = Some(saved_call(
         epoch,
         SavedModelPhase::Streaming {
@@ -1156,6 +1168,251 @@ async fn current_task_start_ordinal_outlives_completed_tasks_and_is_not_an_effec
         1
     );
     restored.close().await.unwrap();
+}
+
+#[derive(Debug)]
+enum PreviewTool {
+    Parent {
+        child_finished: Arc<Notify>,
+        finish_parent: Arc<Notify>,
+    },
+    Child,
+    Background(Arc<Notify>),
+}
+
+impl pl_agent_tool::Tool for PreviewTool {
+    type Input = OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("Preview", "Report tool progress").unwrap()
+            });
+        &DEFINITION
+    }
+
+    async fn execute(
+        &self,
+        _: OpaquePayload,
+        context: Self::Context,
+    ) -> Result<Self::Output, Self::Error> {
+        let tasks = context.tasks.unwrap();
+        let preview = match self {
+            Self::Parent { .. } => "parent progress",
+            Self::Child => "child progress",
+            Self::Background(_) => "background progress",
+        };
+        tasks
+            .report_output(ToolProgressUpdate::append("stdout", preview))
+            .await
+            .map_err(Self::Error::new)?;
+        if let Self::Parent {
+            child_finished,
+            finish_parent,
+        } = self
+        {
+            tasks
+                .call_nested(
+                    "child".into(),
+                    OpaquePayload::text("child arguments"),
+                    CancellationToken::new(),
+                )
+                .await
+                .map_err(Self::Error::new)?;
+            child_finished.notify_one();
+            finish_parent.notified().await;
+        }
+        if let Self::Background(finish) = self {
+            finish.notified().await;
+        }
+        Ok(Self::Output::new(
+            OpaquePayload::text("complete result"),
+            vec![],
+        ))
+    }
+}
+
+#[tokio::test]
+async fn current_releases_completed_tool_previews_with_their_tasks() {
+    use pl_core::tool::opaque::{Registration, RuntimeTool};
+
+    let parent_call = "known-before-commit";
+    let child_finished = Arc::new(Notify::new());
+    let finish_parent = Arc::new(Notify::new());
+    let thread = ThreadHandle::start_current(
+        "tool-previews".into(),
+        Some(DynModelSession::new(CallSession)),
+    )
+    .unwrap();
+    thread
+        .register_tools(vec![
+            Registration::prepare("tool".into(), OpaquePayload::text("parent"))
+                .unwrap()
+                .attach(RuntimeTool::new(PreviewTool::Parent {
+                    child_finished: child_finished.clone(),
+                    finish_parent: finish_parent.clone(),
+                }))
+                .with_nested_calls()
+                .foreground(),
+            Registration::prepare("child".into(), OpaquePayload::text("child"))
+                .unwrap()
+                .attach(RuntimeTool::new(PreviewTool::Child))
+                .nested(false),
+        ])
+        .await
+        .unwrap();
+    thread
+        .step(StepInput {
+            turn_id: "turn".into(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
+            cancellation: CancellationToken::new(),
+        })
+        .await
+        .unwrap();
+    let execution = tokio::spawn({
+        let thread = thread.clone();
+        async move {
+            thread
+                .execute_tool(parent_call.into(), CancellationToken::new())
+                .await
+        }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        child_finished.notified(),
+    )
+    .await
+    .expect("the parent observed the committed child result");
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(current.state.tasks.len(), 1);
+    assert_eq!(
+        current.state.tasks["task:known-before-commit"].status,
+        task::TaskStatus::Running
+    );
+    assert_eq!(
+        current
+            .state
+            .tool_previews
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [parent_call],
+        "the completed child preview must leave Current with its task"
+    );
+    assert_eq!(
+        current.state.tool_previews[parent_call].parts[0].text,
+        "parent progress"
+    );
+    let exports = thread
+        .history_export_page(0, 32.try_into().unwrap())
+        .unwrap();
+    let (export, result) = exports
+        .iter()
+        .find_map(|export| {
+            let result = export.effect.deliveries.iter().find(|delivery| {
+                matches!(&delivery.target, ToolDeliveryTarget::Nested { parent_call_id } if parent_call_id == parent_call)
+            })?;
+            Some((export, result))
+        })
+        .expect("the owner's History export contains the completed child");
+    assert_eq!(result.output.payload().content(), "complete result");
+    assert_eq!(
+        export.state.tool_progress[&format!("task:{}", result.call_id)].parts()[0].text(),
+        "child progress"
+    );
+
+    finish_parent.notify_one();
+    execution.await.unwrap().unwrap();
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(current.state.tasks.is_empty());
+    assert!(current.state.tool_previews.is_empty());
+    thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn current_keeps_preview_until_background_inbox_delivery_is_consumed() {
+    use pl_core::{
+        thread::ToolDispatch,
+        tool::opaque::{Registration, RuntimeTool},
+    };
+
+    let finish = Arc::new(Notify::new());
+    let (model, _) = crate::support::ScriptedModel::new(&["tool"]);
+    let thread =
+        ThreadHandle::start_current("inbox-preview".into(), Some(DynModelSession::new(model)))
+            .unwrap();
+    thread
+        .register_tools(vec![
+            Registration::prepare("tool".into(), OpaquePayload::text("background"))
+                .unwrap()
+                .attach(RuntimeTool::new(PreviewTool::Background(finish.clone()))),
+        ])
+        .await
+        .unwrap();
+    thread
+        .step(StepInput {
+            turn_id: "turn".into(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
+            cancellation: CancellationToken::new(),
+        })
+        .await
+        .unwrap();
+    let ToolDispatch::Running(task) = thread
+        .execute_tool("turn-tool".into(), CancellationToken::new())
+        .await
+        .unwrap()
+    else {
+        panic!("the background tool is waiting to complete");
+    };
+    finish.notify_one();
+    let delivery = thread
+        .wait_task(&task.id, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(delivery.target, ToolDeliveryTarget::Inbox { .. }));
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        current.state.tasks[&task.id].status,
+        task::TaskStatus::Succeeded
+    );
+    assert_eq!(
+        current.state.tool_previews[&task.call_id].parts[0].text,
+        "background progress"
+    );
+
+    thread
+        .step(StepInput {
+            turn_id: "consume".into(),
+            attempt_id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
+            cancellation: CancellationToken::new(),
+        })
+        .await
+        .unwrap();
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(current.state.tasks.is_empty());
+    assert!(
+        current.state.tool_previews.is_empty(),
+        "consuming the inbox delivery retires its preview"
+    );
+    thread.close().await.unwrap();
 }
 
 #[derive(Debug, Clone, Copy)]

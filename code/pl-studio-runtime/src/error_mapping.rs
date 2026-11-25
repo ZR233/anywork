@@ -389,7 +389,6 @@ fn current_error(error: &pl_core::thread::current::CurrentError) -> StudioError 
         | Current::RevisionExhausted
         | Current::ClockRange
         | Current::InvalidToolPreview
-        | Current::OrphanToolPreview(_)
         | Current::MissingStream
         | Current::Context(_)
         | Current::Model(_)

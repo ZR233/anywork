@@ -811,9 +811,11 @@ mod tests {
                 .await?;
             let paths = env.runtime.store.registered_session_paths(&thread.id)?;
             env.runtime.shutdown_runtime().await?;
-            let epoch = RuntimeEpoch::new();
-            let mut current = ThreadCurrent::new(thread.id.clone(), epoch);
-            current.snapshot_revision = 1;
+            let mut current = ThreadCurrent::from_json(
+                &tokio::fs::read(paths.current_file()).await?,
+                &thread.id,
+            )?;
+            let epoch = current.saved_runtime_epoch;
             current.state.start_task(TaskRecord {
                 id: "task:call".into(),
                 parent_call_id: None,
@@ -839,8 +841,14 @@ mod tests {
                     }],
                 },
             );
-            tokio::fs::create_dir_all(paths.root()).await?;
-            tokio::fs::write(paths.current_file(), serde_json::to_vec(&current)?).await?;
+            let mut orphan = current.state.tool_previews["call"].clone();
+            orphan.parts[0].text = "unowned progress".into();
+            current
+                .state
+                .tool_previews
+                .insert("retired-call".into(), orphan);
+            let original = serde_json::to_vec(&current)?;
+            tokio::fs::write(paths.current_file(), &original).await?;
             env.restart().await?;
             let demand = ReadDemand {
                 max_items: 64,
@@ -852,6 +860,18 @@ mod tests {
                 .await?;
             let view = reader.snapshot(demand).await?;
             assert!(!view.projection.execution_present);
+            assert_eq!(
+                view.projection.atoms.len(),
+                1,
+                "only the owned preview is visible"
+            );
+            let route = view
+                .state
+                .model_route
+                .as_ref()
+                .context("saved model route")?;
+            assert_eq!(route.account_id, "root-fixture");
+            assert_eq!(route.model_id, crate::runtime_test_support::MODEL);
             let reference = view
                 .projection
                 .atoms
@@ -869,8 +889,9 @@ mod tests {
             let first = reader.read_body(reference.clone(), range.clone()).await?;
             assert_eq!(first.bytes, b"first observed bytes");
             assert!(first.sealed);
+            assert_eq!(tokio::fs::read(paths.current_file()).await?, original);
 
-            current.snapshot_revision = 2;
+            current.snapshot_revision += 1;
             let progress = current.state.tool_previews.get_mut("call").unwrap();
             progress.version = 2;
             progress.parts[0].version = 2;
@@ -893,6 +914,22 @@ mod tests {
                 b"authoritatively replaced bytes"
             );
             reader.close().await?;
+            let handle = Box::pin(env.runtime.ensure_thread_owner(&thread.id)).await?;
+            let restored = handle.capture_current(CancellationToken::new()).await?;
+            assert_eq!(
+                restored
+                    .state
+                    .tool_previews
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["call"],
+                "activation must retain only task-owned progress"
+            );
+            assert_eq!(
+                restored.state.tool_previews["call"].parts[0].text,
+                "authoritatively replaced bytes"
+            );
             assert!(
                 env.root_provider.recorded().is_empty(),
                 "observing paused data executed a provider request"
