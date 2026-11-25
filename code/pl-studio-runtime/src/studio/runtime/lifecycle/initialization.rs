@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{ConfigRuntime, ConfigStore};
-use crate::studio::runtime_lock::{ResolvedRuntimeOptions, RuntimeLock, RuntimeLockOwner};
+use crate::studio::runtime_lock::{RuntimeLock, RuntimeLockOwner};
+use crate::studio::runtime_options::ResolvedRuntimeOptions;
 use crate::studio::startup::{StartupBackup, input_error};
 use crate::{StudioStartupError, StudioStartupErrorKind, StudioStartupStage, StudioStore};
 

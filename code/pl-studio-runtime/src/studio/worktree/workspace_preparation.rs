@@ -3,6 +3,7 @@ use super::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease, WorktreeLeaseOwner,
     WorktreeLeaseOwnerKind, WorktreeLeaseState,
 };
+use crate::agent::worktree::git_path::{workspace_path_text, workspace_paths_equal};
 use crate::agent::worktree::{
     ExecutorWorktreeBackend, WorktreeBackend, WorktreeCleanupPolicy,
     WorktreeCreateFailureDisposition, WorktreeCreateSpec, WorktreeError, WorktreeHandle,
@@ -99,7 +100,7 @@ pub(in crate::studio) async fn prepare_workspace(
                             } else {
                                 session_root.join(path)
                             };
-                            workspace_path_text(&path, remote)
+                            workspace_path_text(&path, remote).map_err(anyhow::Error::from)
                         })
                         .collect::<Result<Vec<_>>>()
                 })
@@ -757,7 +758,7 @@ async fn prepare_repository_worktree_pool(
 
 pub(in crate::studio) fn resolved_project_root(project: &WorkspaceRecord) -> Result<PathBuf> {
     if project.ssh_alias.is_some() {
-        let value = pl_tool::remote::normalize_remote_absolute_path(project.path.trim())?;
+        let value = workspace_path_text(Path::new(project.path.trim()), true)?;
         if value == "/" {
             return Err(lifecycle_error(format!(
                 "invalid remote project workspace: {}",
@@ -768,28 +769,6 @@ pub(in crate::studio) fn resolved_project_root(project: &WorkspaceRecord) -> Res
     } else {
         pl_tool::workspace::resolve_workspace_root(&PathBuf::from(&project.path))
             .map_err(anyhow::Error::from)
-    }
-}
-
-/// 远端项目的跨端路径文本统一为 POSIX；本地项目保留宿主形态。
-///
-/// 归一化表达本身收敛在 [`pl_tool::remote::normalize_remote_absolute_path`]，这里只负责按
-/// 项目形态选择：远端 lease、会话工作区根与 workspace 打开参数必须以同一 POSIX 结果
-/// 记录，本地项目不得被改写为 POSIX。
-fn workspace_path_text(path: &Path, remote: bool) -> Result<String> {
-    if remote {
-        pl_tool::remote::normalize_remote_absolute_path(&path.to_string_lossy())
-            .map_err(anyhow::Error::from)
-    } else {
-        Ok(path.to_string_lossy().into_owned())
-    }
-}
-
-fn workspace_paths_equal(left: &Path, right: &Path, remote: bool) -> Result<bool> {
-    if remote {
-        Ok(workspace_path_text(left, true)? == workspace_path_text(right, true)?)
-    } else {
-        Ok(left == right)
     }
 }
 

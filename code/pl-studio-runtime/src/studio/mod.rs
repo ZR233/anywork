@@ -18,6 +18,7 @@ mod records;
 mod recovery_registry;
 pub(crate) mod runtime;
 mod runtime_lock;
+mod runtime_options;
 mod runtime_state;
 pub(crate) mod startup;
 pub(crate) mod storage;
@@ -46,7 +47,7 @@ pub use recovery_registry::{
 };
 pub use runtime::StudioProductTopicSubscription;
 pub use runtime::*;
-pub use runtime_lock::{StudioHostKind, StudioRuntimeOptions, StudioStartupPolicy};
+pub use runtime_options::{StudioHostKind, StudioRuntimeOptions, StudioStartupPolicy};
 pub use runtime_state::*;
 pub use startup::{StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery};
 pub(crate) use storage::thread_writer::{HistoryChannel, ThreadStorageBinding};
