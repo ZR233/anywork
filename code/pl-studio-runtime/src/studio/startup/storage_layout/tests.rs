@@ -5,6 +5,7 @@ use crate::studio::store::attachment;
 use sea_orm::sqlx::{Connection, Executor};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use session_layout::WorkspaceManifest;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 const OWNER: &str = "original-workspace";

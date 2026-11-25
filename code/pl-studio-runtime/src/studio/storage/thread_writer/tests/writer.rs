@@ -1,6 +1,5 @@
 use super::storage_fault_tests::{
-    Fixture, live_projection, ready, register_test_thread, test_thread, ticket,
-    visible_input_ticket,
+    Fixture, live_projection, ready, test_thread, ticket, visible_input_ticket,
 };
 use super::*;
 use crate::history::{HistoryDemand, HistoryEventsQuery};
