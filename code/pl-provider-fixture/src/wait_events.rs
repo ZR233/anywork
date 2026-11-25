@@ -36,8 +36,8 @@ pub const MARK_CANCEL_QUERY: &str = "[[wait_cancel_query]]";
 /// Distinctive child report body. The parent Driver and fixture both match it.
 pub const CHILD_REPORT_TEXT: &str = "wait-events-child-report";
 
-pub const SLEEP_FIRST_SLEEP_MS: u64 = 12_000;
-pub const SLEEP_FIRST_EXEC_LINES: usize = 24;
+pub const SLEEP_FIRST_SLEEP_MS: u64 = 3_000;
+pub const SLEEP_FIRST_EXEC_LINES: usize = 6;
 pub const TOOL_FIRST_EXEC_LINES: usize = 11;
 pub const TOOL_FIRST_SLEEP_MS: u64 = 40_000;
 pub const CHILD_PARENT_SLEEP_MS: u64 = 60_000;

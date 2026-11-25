@@ -44,7 +44,7 @@ impl ConnectionLifecycle {
     }
 }
 
-fn retry_delay(attempt: u32) -> Duration {
+pub(super) fn retry_delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.saturating_sub(1).min(5)).min(30))
 }
 

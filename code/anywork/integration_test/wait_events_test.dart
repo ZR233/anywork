@@ -302,7 +302,7 @@ Future<void> _until(
     if (clock.elapsed >= timeout) {
       fail('Timed out waiting for $description');
     }
-    await tester.pump(const Duration(milliseconds: 16));
+    await tester.pump(const Duration(milliseconds: 50));
     expect(tester.takeException(), isNull);
   }
 }

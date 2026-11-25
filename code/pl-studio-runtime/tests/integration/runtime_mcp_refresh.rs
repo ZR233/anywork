@@ -1,0 +1,386 @@
+//! Public model commands, configuration publication and the real MCP peer lifecycle.
+#[expect(
+    dead_code,
+    reason = "reuse the production protocol peer used by pl-tool tests"
+)]
+#[path = "../../../pl-tool/tests/support/mcp_stdio.rs"]
+mod mcp_stdio;
+use crate::support;
+
+use anyhow::{Context, Result, ensure};
+use pl_provider_fixture::{Protocol, Step};
+use pl_studio_runtime::{
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, ThreadMcpLifecycleKind,
+    ThreadWorkspaceMode, UpdateMcpDocumentRequest,
+};
+use pl_studio_runtime::{
+    StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
+};
+use serde_json::json;
+use support::{
+    Environment, completed, program_reply, prompt_step, receipt, submit, text_reply, tool_output,
+    tool_reply,
+};
+
+fn after(steps: &mut Vec<Step>, call: &str, marker: &str, reply: pl_provider_fixture::Reply) {
+    steps.push(Step::tool_output(
+        Protocol::ResponsesHttp,
+        call,
+        marker,
+        steps.len(),
+        reply,
+    ));
+}
+
+fn script() -> Vec<Step> {
+    let mut steps = vec![prompt_step(
+        "empty",
+        0,
+        tool_reply(
+            "discover_tools",
+            "empty-discovery",
+            json!({"query":"refresh_mcp"}),
+        ),
+    )];
+    after(
+        &mut steps,
+        "empty-discovery",
+        "refresh_mcp",
+        program_reply("refresh_mcp", "empty-refresh", json!({})),
+    );
+    after(
+        &mut steps,
+        "empty-refresh",
+        "refreshScheduled",
+        text_reply("empty refreshed", "empty"),
+    );
+    steps.push(prompt_step(
+        "invalid",
+        steps.len(),
+        program_reply(
+            "refresh_mcp",
+            "invalid-refresh",
+            json!({"threadId":"another-thread"}),
+        ),
+    ));
+    after(
+        &mut steps,
+        "invalid-refresh",
+        "unknown field",
+        text_reply("override rejected", "invalid"),
+    );
+    steps.push(prompt_step(
+        "refresh-live",
+        steps.len(),
+        program_reply("refresh_mcp", "live-refresh", json!({})),
+    ));
+    after(
+        &mut steps,
+        "live-refresh",
+        "refreshScheduled",
+        text_reply("live connection refreshed", "refresh-live"),
+    );
+    steps.push(prompt_step(
+        "refresh-disk",
+        steps.len(),
+        program_reply("refresh_mcp", "disk-refresh", json!({})),
+    ));
+    after(
+        &mut steps,
+        "disk-refresh",
+        "refreshScheduled",
+        text_reply("disk refreshed", "refresh-disk"),
+    );
+    steps
+}
+
+async fn state(env: &Environment, id: &str, present: bool, after: u64) -> Result<()> {
+    let mut events = env
+        .runtime
+        .subscribe_product_topic(StudioProductTopic::ThreadMcp {
+            thread_id: id.into(),
+        })
+        .await?;
+    loop {
+        let snapshot = match events.recv().await?.context("MCP topic ended")? {
+            StudioProductFrame::Baseline(baseline) => match baseline.state {
+                StudioProductBaselineState::ThreadMcp(snapshot) => *snapshot,
+                other => anyhow::bail!("unexpected baseline: {other:?}"),
+            },
+            StudioProductFrame::Event(event) => match event.kind {
+                StudioProductEventKind::ThreadMcpStateChanged(snapshot) => snapshot,
+                other => anyhow::bail!("unexpected event: {other:?}"),
+            },
+            StudioProductFrame::Lagged { dropped, .. } => {
+                anyhow::bail!("lost {dropped} MCP events")
+            }
+        };
+        let server = snapshot
+            .servers
+            .iter()
+            .find(|server| server.id == "fixture");
+        if snapshot.generation > after
+            && if present {
+                server.is_some_and(|server| server.lifecycle == ThreadMcpLifecycleKind::Available)
+            } else {
+                server.is_none()
+            }
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn configuration(env: &Environment, tag: &str, enabled: bool) -> Result<String> {
+    Ok(format!(
+        "schema_version = 1\nid = 'fixture'\nkind = 'server'\nenabled = {enabled}\n\
+         transport = 'stdio'\ncommand = 'python3'\nargs = {}\nstartup_timeout_secs = 1\n\
+         tool_timeout_secs = 5\n[env]\nSPECIAL_ENV = '{tag}'\nMCP_NO_RESOURCES = '1'\n\
+         MCP_BINDING_RESULTS = '1'\nMCP_SCHEMA_TAG = '{tag}'\n\
+         MCP_REQUEST_LOG = {}\n",
+        serde_json::to_string(&[
+            "-u".to_owned(),
+            env.repo.join("peer.py").display().to_string()
+        ])?,
+        serde_json::to_string(&env.repo.join("mcp-requests.jsonl").display().to_string())?,
+    ))
+}
+
+#[tokio::test]
+async fn real_thread_refresh_and_config_mutations_publish_state_and_reuse_equal_peer() -> Result<()>
+{
+    let env = Environment::new(script(), Vec::new()).await?;
+    let result = tokio::time::timeout(support::integration_test_deadline()?, async {
+        std::fs::write(env.repo.join("peer.py"), mcp_stdio::STDIO_MCP_SCRIPT)?;
+        let started = env.start(ThreadWorkspaceMode::Local, "empty").await?;
+        let id = &started.thread.id;
+        completed(&env, id, "empty").await?;
+        let empty = receipt(&env.root_provider, "empty-refresh").with_context(|| {
+            format!(
+                "empty refresh receipt: {:?}",
+                tool_output(&env.root_provider, "empty-refresh")
+            )
+        })?;
+        ensure!(empty["scope"]["kind"] == "host" && empty["toolCatalog"] == "refreshScheduled");
+        ensure!(
+            empty["discovery"]["servers"]
+                .as_array()
+                .context("discovery servers")?
+                .is_empty()
+        );
+        submit(&env, id, "invalid").await?;
+        ensure!(tool_output(&env.root_provider, "invalid-refresh")?.contains("unknown field"));
+        ensure!(env.runtime.read_thread_mcp("another-thread").await.is_err());
+
+        let created = env
+            .runtime
+            .create_mcp_document(&CreateMcpDocumentRequest {
+                scope: McpScope::Host,
+                id: "fixture".into(),
+                raw_toml: configuration(&env, "created", true)?,
+            })
+            .await?;
+        state(&env, id, true, 0).await?;
+        submit(&env, id, "refresh-live").await?;
+        let live = receipt(&env.root_provider, "live-refresh").with_context(|| {
+            format!(
+                "live refresh receipt: {:?}",
+                tool_output(&env.root_provider, "live-refresh")
+            )
+        })?;
+        ensure!(
+            live["discovery"]["servers"]
+                .as_array()
+                .context("live discovery")?
+                .iter()
+                .any(|server| server["serverId"] == "fixture"
+                    && server["status"] == "unchanged"
+                    && server["toolCount"] == 1)
+        );
+        let requests = std::fs::read_to_string(env.repo.join("mcp-requests.jsonl"))?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("decode refresh peer request log")?;
+        ensure!(
+            requests
+                .iter()
+                .filter(|request| request["method"] == "tools/list")
+                .count()
+                >= 2,
+            "refresh must issue a fresh tools/list over the existing connection"
+        );
+        let pids = requests
+            .iter()
+            .filter_map(|request| request["pid"].as_u64())
+            .collect::<std::collections::BTreeSet<_>>();
+        ensure!(
+            pids.len() == 1,
+            "refresh restarted an unchanged MCP peer: {pids:?}"
+        );
+        let before_save = env.runtime.read_thread_mcp(id).await?.generation;
+        let saved = env
+            .runtime
+            .update_mcp_document(&UpdateMcpDocumentRequest {
+                document: created.document.context("created document")?,
+                expected_revision: created.revision,
+                raw_toml: configuration(&env, "saved", true)?,
+            })
+            .await?;
+        state(&env, id, true, before_save).await?;
+
+        let document = saved.document.context("saved document")?;
+        let path = env.home.join(&document.relative_path);
+        std::fs::write(&path, configuration(&env, "disabled", false)?)?;
+        submit(&env, id, "refresh-disk").await?;
+        let refreshed = receipt(&env.root_provider, "disk-refresh").with_context(|| {
+            format!(
+                "disk refresh receipt: {:?}",
+                tool_output(&env.root_provider, "disk-refresh")
+            )
+        })?;
+        ensure!(refreshed["catalogRevision"].as_u64() > empty["catalogRevision"].as_u64());
+        ensure!(
+            refreshed["state"]["servers"]
+                .as_array()
+                .context("state servers")?
+                .iter()
+                .all(|server| server["id"] != "fixture")
+        );
+
+        std::fs::write(&path, configuration(&env, "reloaded", true)?)?;
+        env.runtime.reload_mcp_catalog(&McpScope::Host).await?;
+        state(&env, id, true, 0).await?;
+        env.runtime
+            .delete_mcp_document(&DeleteMcpDocumentRequest {
+                expected_revision: env.runtime.read_mcp_document(&document)?.revision,
+                document,
+            })
+            .await?;
+        state(&env, id, false, 0).await?;
+        Ok(())
+    })
+    .await
+    .context("MCP integration watchdog")?;
+    env.finish(result).await
+}
+
+fn reconnect_script() -> Vec<Step> {
+    let mut steps = vec![prompt_step(
+        "empty",
+        0,
+        tool_reply(
+            "discover_tools",
+            "reconnect-discovery",
+            json!({"query":"reconnect_mcp"}),
+        ),
+    )];
+    after(
+        &mut steps,
+        "reconnect-discovery",
+        "reconnect_mcp",
+        text_reply("reconnect available without dynamic servers", "empty"),
+    );
+    for (phase, input, marker) in [
+        ("unknown", json!({"serverId":"unknown"}), "not enabled"),
+        ("disabled", json!({"serverId":"fixture"}), "not enabled"),
+        (
+            "credential",
+            json!({"serverId":"credential"}),
+            "missing credentials",
+        ),
+        (
+            "reconnect",
+            json!({"serverId":"fixture"}),
+            "sessionStateReset",
+        ),
+        (
+            "failed",
+            json!({"serverId":"fixture"}),
+            "remains unavailable",
+        ),
+    ] {
+        steps.push(prompt_step(
+            phase,
+            steps.len(),
+            program_reply("reconnect_mcp", phase, input),
+        ));
+        // Lua waits for the original nested task to settle; no intermediate top-level
+        // receipt is delivered. Keep the same terminal outcome and error checks.
+        after(
+            &mut steps,
+            phase,
+            marker,
+            text_reply("reconnect observed", phase),
+        );
+    }
+    steps
+}
+
+#[tokio::test]
+async fn real_thread_reconnect_validates_target_replaces_session_and_redacts_failed_replacement()
+-> Result<()> {
+    let env = Environment::new(reconnect_script(), Vec::new()).await?;
+    let result = tokio::time::timeout(support::integration_test_deadline()?, async {
+        std::fs::write(env.repo.join("peer.py"), mcp_stdio::STDIO_MCP_SCRIPT)?;
+        let started = env.start(ThreadWorkspaceMode::Local, "empty").await?;
+        let id = &started.thread.id;
+        completed(&env, id, "empty").await?;
+        submit(&env, id, "unknown").await?;
+        let disabled = env.runtime.create_mcp_document(&CreateMcpDocumentRequest {
+            scope: McpScope::Host,
+            id: "fixture".into(),
+            raw_toml: configuration(&env, "created", false)?,
+        }).await?;
+        submit(&env, id, "disabled").await?;
+        env.runtime.create_mcp_document(&CreateMcpDocumentRequest {
+            scope: McpScope::Host,
+            id: "credential".into(),
+            raw_toml: "schema_version = 1\nid = 'credential'\nkind = 'server'\nenabled = true\ntransport = 'streamableHttp'\nurl = 'http://127.0.0.1:1/mcp'\nbearer_token_env_var = 'ANYWORK_TEST_RECONNECT_MISSING_CREDENTIAL_6E894E'\n".into(),
+        }).await?;
+        submit(&env, id, "credential").await?;
+        ensure!(!env.repo.join("mcp-requests.jsonl").exists(),
+            "rejected commands must not launch an MCP process");
+        env.runtime.update_mcp_document(&UpdateMcpDocumentRequest {
+            document: disabled.document.context("disabled document")?,
+            expected_revision: disabled.revision,
+            raw_toml: configuration(&env, "created", true)?,
+        }).await?;
+        state(&env, id, true, 0).await?;
+        let before = env.runtime.read_thread_mcp(id).await?;
+        // Only a newly started process reads the modified peer and advertises this schema.
+        std::fs::write(env.repo.join("peer.py"), mcp_stdio::STDIO_MCP_SCRIPT.replace(
+            "os.environ[\"MCP_SCHEMA_TAG\"]", "'reconnected'",
+        ))?;
+        submit(&env, id, "reconnect").await?;
+        let reply = receipt(&env.root_provider, "reconnect")?;
+        ensure!(reply["serverId"] == "fixture" && reply["sessionStateReset"] == true);
+        ensure!(reply["toolCatalog"] == "refreshScheduled");
+        ensure!(reply["catalogRevision"].as_u64().is_some());
+        ensure!(reply["runtimeGeneration"].as_u64().is_some_and(|generation| generation > 0));
+        ensure!(reply["state"]["generation"].as_u64().is_some_and(|generation| generation > before.generation));
+        let snapshot: pl_studio_runtime::ThreadMcpStateSnapshot = serde_json::from_value(reply["state"].clone())?;
+        ensure!(snapshot.servers.iter().any(|server| server.id == "fixture"
+            && server.lifecycle == ThreadMcpLifecycleKind::Available));
+        let requests: Vec<serde_json::Value> = std::fs::read_to_string(env.repo.join("mcp-requests.jsonl"))?
+            .lines().map(serde_json::from_str).collect::<std::result::Result<_, _>>()?;
+        ensure!(requests.iter().filter(|request| request["method"] == "initialize").count() == 2,
+            "reconnect must initialize exactly one replacement session");
+        // Emit a private transport diagnostic, then wait without answering discovery.
+        // The configured startup deadline, not an arbitrary test sleep, causes failure.
+        std::fs::write(env.repo.join("peer.py"),
+            "import sys\nprint('private-reconnect-secret', file=sys.stderr, flush=True)\nsys.stdin.read()\n")?;
+        submit(&env, id, "failed").await.with_context(|| format!(
+            "failed reconnect actual tool receipt: {:?}", tool_output(&env.root_provider, "failed")))?;
+        let failed = env.root_provider.recorded().last().context("terminal failure request")?.body.to_string();
+        ensure!(tool_output(&env.root_provider, "failed")?.contains("remains unavailable"));
+        ensure!(failed.contains("remains unavailable"));
+        ensure!(!failed.contains("private-reconnect-secret"));
+        let snapshot = env.runtime.read_thread_mcp(id).await?;
+        ensure!(snapshot.servers.iter().any(|server| server.id == "fixture"
+            && server.lifecycle == ThreadMcpLifecycleKind::Unavailable),
+            "failed replacement must not project old readiness: {snapshot:?}");
+        Ok(())
+    }).await.context("MCP reconnect integration watchdog").and_then(std::convert::identity);
+    env.finish(result).await
+}

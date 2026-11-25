@@ -4900,10 +4900,11 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
         "purpose":"user_data", "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
         "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":true}
     });
-    let unavailable = || Reply::HttpError {
+    let unavailable = || Reply::HttpErrorWithRetryAfter {
         status: 503,
         code: "server_error".into(),
         message: "temporary failure".into(),
+        retry_after_ms: 0,
     };
     let mut steps = (0..4)
         .map(|_| Step::exact(Protocol::Files, upload.clone(), unavailable()))
@@ -5076,10 +5077,11 @@ async fn transient_provider_error_retries_one_logical_request_without_double_cou
             Protocol::Chat,
             "retry",
             0,
-            Reply::HttpError {
+            Reply::HttpErrorWithRetryAfter {
                 status: 429,
                 code: "rate_limit_exceeded".into(),
                 message: "try again".into(),
+                retry_after_ms: 0,
             },
         ),
         Step::prompt(

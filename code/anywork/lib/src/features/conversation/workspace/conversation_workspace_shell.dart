@@ -202,15 +202,14 @@ class _ConversationWorkspaceShellState
               final timelineArea = _buildTimelineArea();
               final footerDock = _buildFooterDock(footerMaxHeight);
 
-              if (sidebar == null) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(child: timelineArea),
-                    footerDock,
-                  ],
-                );
-              }
+              final mainColumn = Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: timelineArea),
+                  footerDock,
+                ],
+              );
+              if (sidebar == null) return mainColumn;
 
               if (isKeepFooterExpanded) {
                 return Column(
@@ -234,14 +233,6 @@ class _ConversationWorkspaceShellState
                   ],
                 );
               }
-
-              final mainColumn = Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(child: timelineArea),
-                  footerDock,
-                ],
-              );
 
               if (isCoverAllExpanded) {
                 return Stack(

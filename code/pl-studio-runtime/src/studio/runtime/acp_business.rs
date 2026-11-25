@@ -975,7 +975,7 @@ mod tests {
                 if !pending {
                     return Ok::<_, anyhow::Error>(());
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -1643,7 +1643,7 @@ mod tests {
         let waiter = tokio::spawn(async move { runtime.close_acp_session(target).await });
         timeout(Duration::from_secs(5), async {
             while owner.phase() == crate::session::SessionPhase::Open {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await?;

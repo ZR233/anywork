@@ -17,8 +17,6 @@ import '../view_models/acp_content_view_model.dart';
 import '../view_models/acp_timeline_view_model.dart';
 import '../views/acp_conversation_content_view.dart';
 
-/// Thin Riverpod connector binding [acpTimelineHeaderViewModelProvider] and
-/// per-index [acpTimelineItemViewModelProvider] to [AcpConversationContentView].
 class AcpTimelineConnector extends ConsumerWidget {
   const AcpTimelineConnector({super.key, required this.threadId});
 
@@ -26,34 +24,29 @@ class AcpTimelineConnector extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final header = ref.watch(acpTimelineHeaderViewModelProvider(threadId));
     return AcpConversationContentView(
       threadId: threadId,
-      header: header,
-      outputRevision: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
+      header: ref.watch(acpTimelineHeaderViewModelProvider(threadId)),
+      rows: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
       onInsertSlashCommand: (name) => ref
           .read(anyworkClientProvider)
           .drafts
           .composer(threadId)
           .updateDraft('/$name '),
-      itemBuilder: (context, index) =>
-          _AcpTimelineItemConnector(threadId: threadId, index: index),
+      itemBuilder: (context, row) =>
+          _AcpTimelineItemConnector(threadId: threadId, row: row),
     );
   }
 }
 
 class _AcpTimelineItemConnector extends ConsumerWidget {
-  const _AcpTimelineItemConnector({
-    required this.threadId,
-    required this.index,
-  });
+  const _AcpTimelineItemConnector({required this.threadId, required this.row});
 
   final String threadId;
-  final int index;
+  final AcpTimelineRow row;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final row = ref.watch(acpTimelineItemViewModelProvider(threadId, index));
     final fileScope = FileReadingScope.maybeOf(context);
     bool isSafeLink(String url) => safeExternalWebUrl(url) != null;
     void onOpenLink(String url) => _openSafeExternalLink(context, ref, url);
@@ -71,9 +64,7 @@ class _AcpTimelineItemConnector extends ConsumerWidget {
             ),
           );
     return switch (row) {
-      null => const SizedBox.shrink(),
       AcpTimelineMessageRow(:final item) => AcpTimelineEntryView(
-        key: ValueKey(row.id),
         item: item,
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
@@ -81,7 +72,6 @@ class _AcpTimelineItemConnector extends ConsumerWidget {
         onOpenMarkdownResource: onOpenMarkdownResource,
       ),
       final AcpTimelineProcessRow process => AcpTimelineProcessGroupView(
-        key: ValueKey(process.id),
         row: process,
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,

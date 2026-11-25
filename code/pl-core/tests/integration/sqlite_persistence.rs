@@ -1,0 +1,1516 @@
+use crate::effect_fixture;
+use crate::legacy_usage;
+use crate::support;
+
+#[tokio::test]
+async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_origin() {
+    use pl_core::{context::ContextSource, thread::RuntimeFact};
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("v10.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (mut model, _) = ScriptedModel::new(&[]);
+    model.usage.input_tokens = Some(83);
+    let thread = ThreadHandle::start("v10".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread
+        .update_facts(vec![RuntimeFact {
+            source_id: "plan".into(),
+            content: vec![support::text("approved immutable plan")],
+        }])
+        .await
+        .unwrap();
+    thread.run_turn(turn("historical-task")).await.unwrap();
+    thread.flush().await.unwrap();
+    thread.close().await.unwrap();
+    let checkpoint = store.read_thread_checkpoint("v10").await.unwrap().unwrap();
+    let historical_effect = store
+        .read_thread_effect("v10", checkpoint.history_fence)
+        .await
+        .unwrap()
+        .unwrap();
+    store.shutdown().await.unwrap();
+    let mut legacy = serde_json::to_value(&checkpoint).unwrap();
+    legacy["schemaVersion"] = serde_json::json!(3);
+    legacy_usage::flatten(&mut legacy);
+    legacy["state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("lastAttemptUsageOrigin");
+    for record in legacy["state"]["context"]["records"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if record["source"]["kind"] == "runtimeFact" {
+            record["source"]["kind"] = serde_json::json!("runtime");
+        }
+    }
+    let encoded = serde_json::to_string(&legacy).unwrap();
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+        .await
+        .unwrap();
+    db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite, "UPDATE thread_checkpoints SET schema_version=3,envelope=?,payload_hash='damaged' WHERE thread_id='v10'", vec![encoded.clone().into()])).await.unwrap();
+    effect_fixture::rewrite_effects(&db, |entry| {
+        entry.type_id = "pl.core.thread-commit".into();
+        entry.schema_version = 3;
+    })
+    .await;
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=10")
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+    assert!(
+        migration::migrate_to_current(options.clone())
+            .await
+            .is_err()
+    );
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+        .await
+        .unwrap();
+    let version = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "PRAGMA user_version",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<i64>("", "user_version")
+        .unwrap();
+    assert_eq!(
+        version, 12,
+        "the preceding task-index step committed independently"
+    );
+    assert!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
+        "SELECT version FROM seaql_migrations WHERE version='m20261026_000007_core_checkpoint_v5'"))
+        .await.unwrap().is_none(), "a failed checkpoint conversion cannot publish its completion record");
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT envelope FROM thread_checkpoints WHERE thread_id='v10'",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.try_get::<String>("", "envelope").unwrap(), encoded);
+    db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE thread_checkpoints SET payload_hash=? WHERE thread_id='v10'",
+        vec![pl_core::context::content_hash(encoded.as_bytes()).into()],
+    ))
+    .await
+    .unwrap();
+    db.close().await.unwrap();
+    migration::migrate_to_current(options.clone())
+        .await
+        .unwrap();
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    let restored = reopened
+        .read_thread_checkpoint("v10")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
+    assert_eq!(
+        restored
+            .state
+            .last_attempt_usage
+            .as_ref()
+            .unwrap()
+            .input_tokens,
+        Some(83)
+    );
+    assert!(restored.state.last_attempt_usage_origin.is_none());
+    assert!(matches!(
+        restored.state.context.records[0].source,
+        ContextSource::RuntimeFact { .. }
+    ));
+    assert_eq!(restored.state.runtime_facts, checkpoint.state.runtime_facts);
+    assert_eq!(
+        serde_json::to_value(
+            reopened
+                .read_thread_effect("v10", checkpoint.history_fence)
+                .await
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(historical_effect).unwrap()
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+use std::sync::Arc;
+
+use pl_core::context::OpaquePayload;
+use pl_core::model::{DynModelSession, ModelUsage, ModelUsageBinding};
+use pl_core::persistence::{
+    ResourceAdmissionError, SessionStoreError, SqliteSessionOptions, SqliteSessionStore,
+    ThreadEffectQuery, migration,
+};
+use pl_core::thread::cold::{ColdStore, ColdStoreHandle, ThreadWrite};
+use pl_core::thread::{
+    ThreadCheckpoint, ThreadEffectBatch, ThreadHandle, ThreadSnapshot, TurnOutcome, TurnState,
+};
+
+use support::{ScriptedModel, turn};
+
+#[tokio::test]
+async fn sqlite_thread_usage_matches_hot_snapshot_and_restored_checkpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("usage.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (mut model, _) = ScriptedModel::new(&[]);
+    model.usage = ModelUsage {
+        input_tokens: Some(120),
+        output_tokens: Some(30),
+        cache_read_tokens: Some(20),
+        cache_write_tokens: Some(0),
+        reasoning_tokens: Some(5),
+        total_tokens: Some(150),
+    };
+    model.usage_binding = Some(ModelUsageBinding {
+        route_identity: None,
+        model: "test-model".into(),
+        context_window: Some(1_000),
+        max_context_window: Some(4_000),
+        auto_compact_limit: Some(900),
+    });
+    let thread = ThreadHandle::start("usage-thread".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.run_turn(turn("first")).await.unwrap();
+    thread.run_turn(turn("second")).await.unwrap();
+    thread.flush().await.unwrap();
+    let hot = thread.snapshot().usage_summary;
+    let binding = hot.binding.as_ref().unwrap();
+    assert_eq!(binding.model, "test-model");
+    assert_eq!(binding.context_window, Some(1_000));
+    assert_eq!(binding.max_context_window, Some(4_000));
+    assert_eq!(binding.auto_compact_limit, Some(900));
+    assert_eq!(hot.totals.inference_count, 2);
+    assert_eq!(hot.totals.prompt_tokens, 240);
+    assert_eq!(hot.totals.completion_tokens, 60);
+    assert_eq!(hot.totals.total_tokens, 300);
+    assert_eq!(hot.context.tokens, 150);
+    assert_eq!(hot.cache.input_tokens, 240);
+    assert_eq!(hot.cache.read_tokens, 40);
+    assert_eq!(hot.throughput.completion_tokens, 0);
+    assert_eq!(hot.throughput.response_millis, 0);
+    assert_eq!(hot.applied_sequence, thread.snapshot().commit_sequence);
+    for sequence in 1..=hot.applied_sequence {
+        let effect = store
+            .read_thread_effect("usage-thread", sequence)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut redelivered = hot.clone();
+        store.fold_usage(&mut redelivered, &effect);
+        assert_eq!(redelivered, hot, "committed effect {sequence} redelivery");
+    }
+    let checkpoint = store
+        .read_thread_checkpoint("usage-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(checkpoint.state.usage_summary, hot);
+
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    let restored = reopened
+        .read_thread_checkpoint("usage-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored.state.usage_summary.totals.total_tokens,
+        hot.totals.total_tokens
+    );
+    assert_eq!(
+        restored
+            .state
+            .usage_summary
+            .binding
+            .as_ref()
+            .unwrap()
+            .context_window,
+        binding.context_window
+    );
+    assert_eq!(
+        restored
+            .state
+            .usage_summary
+            .binding
+            .as_ref()
+            .unwrap()
+            .max_context_window,
+        binding.max_context_window
+    );
+    assert_eq!(
+        restored
+            .state
+            .usage_summary
+            .binding
+            .as_ref()
+            .unwrap()
+            .auto_compact_limit,
+        binding.auto_compact_limit
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_partial_and_invalid_usage_keep_context_accounting_honest() {
+    for (case, usage, expected_total) in [
+        (
+            "partial",
+            ModelUsage {
+                input_tokens: Some(70),
+                output_tokens: None,
+                ..Default::default()
+            },
+            0,
+        ),
+        (
+            "overflow",
+            ModelUsage {
+                input_tokens: Some(u64::MAX),
+                output_tokens: Some(1),
+                ..Default::default()
+            },
+            0,
+        ),
+        (
+            "total-only",
+            ModelUsage {
+                total_tokens: Some(80),
+                ..Default::default()
+            },
+            80,
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(SqliteSessionOptions {
+            path: directory.path().join("usage.sqlite"),
+        })
+        .await
+        .unwrap();
+        let (mut model, _) = ScriptedModel::new(&[]);
+        model.usage = usage;
+        let thread = ThreadHandle::start(case.into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread.run_turn(turn(case)).await.unwrap();
+        thread.flush().await.unwrap();
+        let summary = thread.snapshot().usage_summary;
+        assert_eq!(summary.totals.inference_count, 1, "{case}");
+        assert!(summary.has_incomplete_usage(), "{case}");
+        assert_eq!(summary.totals.total_tokens, expected_total, "{case}");
+        assert_eq!(summary.context.tokens, expected_total, "{case}");
+        assert_eq!(
+            store
+                .read_thread_checkpoint(case)
+                .await
+                .unwrap()
+                .unwrap()
+                .state
+                .usage_summary,
+            summary,
+            "{case}"
+        );
+        thread.close().await.unwrap();
+        store.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn sqlite_schema5_usage_upgrade_preserves_facts_and_rolls_back_as_one_transaction() {
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("legacy5.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let mut originals = Vec::new();
+    for id in ["a-good", "z-bad"] {
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread = ThreadHandle::start(id.into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread.run_turn(turn(id)).await.unwrap();
+        thread.flush().await.unwrap();
+        thread.close().await.unwrap();
+        let checkpoint = store.read_thread_checkpoint(id).await.unwrap().unwrap();
+        let mut root = serde_json::to_value(checkpoint).unwrap();
+        root["schemaVersion"] = serde_json::json!(5);
+        // These historical totals deliberately differ from every replayable effect.
+        root["state"]["usageSummary"] = serde_json::json!({
+            "appliedSequence": root["state"]["commitSequence"],
+            "model": "historical-model",
+            "contextWindow": 1000, "maxContextWindow": 4000, "autoCompactLimit": 900,
+            "inferenceCount": 22, "promptTokens": 400, "completionTokens": 100,
+            "cachedPromptTokens": 40, "cacheWriteTokens": 20, "reasoningTokens": 10,
+            "totalTokens": 999, "cacheInputTokens": 350, "cacheReadTokens": 35,
+            "cacheIncomplete": true, "latestContextTokens": 121,
+            "hasIncompleteUsage": id == "a-good", "hasUnpricedUsage": true,
+            "estimatedCosts": [{"currency":"USD","amount":2.5}],
+            "estimatedCacheSavings": [{"currency":"EUR","amount":0.75}],
+            "turnId": "historical-turn", "turnCompletionTokens": 71,
+            "turnResponseMillis": if id == "a-good" { 103 } else { 0 }
+        });
+        originals.push((id, root));
+    }
+    store.shutdown().await.unwrap();
+    let url = format!("sqlite://{}?mode=rw", options.path.display());
+    let db = sea_orm::Database::connect(&url).await.unwrap();
+    for (id, root) in &originals {
+        let envelope = serde_json::to_string(root).unwrap();
+        let hash = if *id == "z-bad" {
+            "corrupted".into()
+        } else {
+            pl_core::context::content_hash(envelope.as_bytes())
+        };
+        db.execute_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "UPDATE thread_checkpoints SET schema_version=5,envelope=?,payload_hash=? WHERE thread_id=?",
+            vec![envelope.into(), hash.into(), (*id).into()],
+        )).await.unwrap();
+    }
+    db.execute_unprepared(
+        "DELETE FROM seaql_migrations WHERE version='m20261026_000009_core_checkpoint_v6'; PRAGMA user_version=13",
+    ).await.unwrap();
+    db.close().await.unwrap();
+
+    assert!(SqliteSessionStore::open(options.clone()).await.is_err());
+    assert!(
+        migration::migrate_to_current(options.clone())
+            .await
+            .is_err()
+    );
+    let db = sea_orm::Database::connect(&url).await.unwrap();
+    // The first row was valid and updated before the second row failed. Its update must roll back.
+    for (id, root) in &originals {
+        let row = db
+            .query_one_raw(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "SELECT schema_version,envelope FROM thread_checkpoints WHERE thread_id=?",
+                vec![(*id).into()],
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.try_get::<i64>("", "schema_version").unwrap(), 5);
+        assert_eq!(
+            row.try_get::<String>("", "envelope").unwrap(),
+            serde_json::to_string(root).unwrap()
+        );
+    }
+    let version = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "PRAGMA user_version",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get_by_index::<i64>(0)
+        .unwrap();
+    assert_eq!(version, 13);
+    let repaired = serde_json::to_string(&originals[1].1).unwrap();
+    db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE thread_checkpoints SET payload_hash=? WHERE thread_id='z-bad'",
+        vec![pl_core::context::content_hash(repaired.as_bytes()).into()],
+    ))
+    .await
+    .unwrap();
+    db.close().await.unwrap();
+
+    migration::migrate_to_current(options.clone())
+        .await
+        .unwrap();
+    // A completed migration is idempotent and a subsequent normal open consumes only schema 6.
+    migration::migrate_to_current(options.clone())
+        .await
+        .unwrap();
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    for (id, mut original) in originals {
+        let restored = reopened.read_thread_checkpoint(id).await.unwrap().unwrap();
+        assert_eq!(restored.schema_version, 6);
+        let summary = &restored.state.usage_summary;
+        assert_eq!(
+            summary.applied_sequence,
+            original["state"]["commitSequence"].as_u64().unwrap()
+        );
+        assert_eq!(summary.binding.as_ref().unwrap().model, "historical-model");
+        assert_eq!(summary.binding.as_ref().unwrap().context_window, Some(1000));
+        assert_eq!(
+            summary.binding.as_ref().unwrap().max_context_window,
+            Some(4000)
+        );
+        assert_eq!(
+            summary.binding.as_ref().unwrap().auto_compact_limit,
+            Some(900)
+        );
+        assert_eq!(summary.binding.as_ref().unwrap().route_identity, None);
+        assert_eq!(
+            summary.totals,
+            pl_core::usage::UsageTotals {
+                inference_count: 22,
+                prompt_tokens: 400,
+                completion_tokens: 100,
+                cached_prompt_tokens: 40,
+                cache_write_tokens: 20,
+                reasoning_tokens: 10,
+                total_tokens: 999,
+            }
+        );
+        assert_eq!(
+            (summary.cache.input_tokens, summary.cache.read_tokens),
+            (350, 35)
+        );
+        assert!(summary.cache.incomplete);
+        assert_eq!(summary.cache.sample_count, 0);
+        assert_eq!(summary.context.tokens, 121);
+        assert!(summary.context.latest_call.is_none());
+        assert!(summary.diagnostics.legacy_unknown);
+        assert_eq!(summary.diagnostics.legacy_incomplete, id == "a-good");
+        assert_eq!(summary.diagnostics.incomplete_calls, 0);
+        assert!(summary.diagnostics.recent_gaps.is_empty());
+        assert!(summary.diagnostics.by_outcome.is_empty());
+        assert!(summary.diagnostics.by_purpose.is_empty());
+        assert!(summary.pricing.incomplete);
+        assert_eq!(summary.pricing.estimated_costs[0].currency, "USD");
+        assert_eq!(summary.pricing.estimated_costs[0].amount, 2.5);
+        assert_eq!(summary.pricing.estimated_cache_savings[0].currency, "EUR");
+        assert_eq!(summary.pricing.estimated_cache_savings[0].amount, 0.75);
+        if id == "a-good" {
+            assert_eq!(summary.throughput.turn_id, "historical-turn");
+            assert_eq!(
+                (
+                    summary.throughput.completion_tokens,
+                    summary.throughput.response_millis
+                ),
+                (71, 103)
+            );
+        } else {
+            assert_eq!(summary.throughput, Default::default());
+        }
+        // Everything other than the version and accounting layout survives, including text and IDs.
+        original["schemaVersion"] = serde_json::json!(6);
+        original["state"]["usageSummary"] = serde_json::to_value(summary).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), original);
+    }
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_attaching_after_a_turn_accounts_retained_effects() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(SqliteSessionOptions {
+        path: directory.path().join("late-attach.sqlite"),
+    })
+    .await
+    .unwrap();
+    let (mut model, _) = ScriptedModel::new(&[]);
+    model.usage = ModelUsage {
+        input_tokens: Some(40),
+        output_tokens: Some(10),
+        cache_read_tokens: Some(0),
+        ..Default::default()
+    };
+    let thread = ThreadHandle::start("late-attach".into(), DynModelSession::new(model)).unwrap();
+    thread.run_turn(turn("first")).await.unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.flush().await.unwrap();
+    let hot = thread.snapshot().usage_summary;
+    assert_eq!(hot.totals.total_tokens, 50);
+    assert_eq!(hot.totals.inference_count, 1);
+    assert_eq!(
+        store
+            .read_thread_checkpoint("late-attach")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            .usage_summary,
+        hot
+    );
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_v8_migration_backfills_checkpoint_usage_from_saved_effects() {
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("old-usage.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (mut model, _) = ScriptedModel::new(&[]);
+    model.usage = ModelUsage {
+        input_tokens: Some(40),
+        output_tokens: Some(10),
+        cache_read_tokens: Some(0),
+        ..Default::default()
+    };
+    let thread = ThreadHandle::start("old-usage".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.run_turn(turn("first")).await.unwrap();
+    thread.flush().await.unwrap();
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+
+    // Recreate the v8 checkpoint written before portable accounting existed, preserving all
+    // effect rows. The migration must recover facts from those rows instead of resetting data.
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+        .await
+        .unwrap();
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT envelope FROM thread_checkpoints WHERE thread_id='old-usage'",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    let envelope: String = row.try_get("", "envelope").unwrap();
+    let mut checkpoint: ThreadCheckpoint = serde_json::from_str(&envelope).unwrap();
+    checkpoint.state.usage_summary = Default::default();
+    let mut legacy = serde_json::to_value(&checkpoint).unwrap();
+    legacy["schemaVersion"] = serde_json::json!(2);
+    legacy["state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("usageSummary");
+    legacy["state"]["attempts"] = serde_json::json!([{
+        "turnId":"legacy-turn", "attemptId":"legacy-attempt", "retryOf":null,
+        "input": {"revision":0,"records":[]}, "tools":[], "outcome":{"kind":"running"}
+    }]);
+    let envelope = serde_json::to_string(&legacy).unwrap();
+    let hash = pl_core::context::content_hash(envelope.as_bytes());
+    db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE thread_checkpoints SET schema_version=2,envelope=?,payload_hash=? WHERE thread_id='old-usage'",
+        vec![envelope.into(), hash.into()],
+    ))
+    .await
+    .unwrap();
+    effect_fixture::rewrite_effects(&db, |entry| {
+        entry.type_id = "pl.core.thread-commit".into();
+        entry.schema_version = 3;
+    })
+    .await;
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=8")
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+
+    migration::migrate_to_current(options.clone())
+        .await
+        .unwrap();
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    let summary = reopened
+        .read_thread_checkpoint("old-usage")
+        .await
+        .unwrap()
+        .unwrap()
+        .state
+        .usage_summary;
+    assert_eq!(summary.totals.total_tokens, 50);
+    assert_eq!(summary.totals.inference_count, 1);
+    assert!(summary.applied_sequence > 0);
+    reopened.shutdown().await.unwrap();
+}
+
+/// Opens the same SQLite file with a second connection so a test can tamper with one row directly.
+///
+/// This bypasses the store's own guards on purpose so the readers below are exercised against
+/// hostile rows. A second connection can also corrupt a row after an existing store has opened.
+async fn tamper(options: &SqliteSessionOptions, sql: &str) {
+    let url = format!("sqlite://{}?mode=rw", options.path.display());
+    let db = sea_orm::Database::connect(url).await.unwrap();
+    sea_orm::ConnectionTrait::execute_unprepared(&db, sql)
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_effect_queries_page_by_sequence_and_keep_threads_isolated() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("thread-history.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    for (thread_id, turns) in [("first", 3), ("second", 1)] {
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread = ThreadHandle::start(thread_id.into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        for index in 0..turns {
+            thread
+                .run_turn(turn(&format!("{thread_id}-{index}")))
+                .await
+                .unwrap();
+        }
+        thread.flush().await.unwrap();
+        thread.close().await.unwrap();
+    }
+    store.shutdown().await.unwrap();
+    let store = SqliteSessionStore::open(options).await.unwrap();
+    let mut cursor = None;
+    let mut sequences = Vec::new();
+    loop {
+        let page = store
+            .query_thread_effects(
+                "first",
+                ThreadEffectQuery {
+                    before_sequence: cursor,
+                    limit: 2,
+                },
+            )
+            .await
+            .unwrap();
+        sequences.extend(page.effects.iter().map(|effect| effect.sequence));
+        match page.next_before_sequence {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert!(sequences.len() > 2);
+    assert!(sequences.windows(2).all(|pair| pair[0] > pair[1]));
+    assert_eq!(
+        sequences.len(),
+        sequences
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    );
+    for sequence in sequences {
+        let effect = store
+            .read_thread_effect("first", sequence)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(effect.thread_id, "first");
+        assert_eq!(effect.sequence, sequence);
+    }
+    assert!(
+        store
+            .read_thread_effect("second", u64::MAX)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .query_thread_effects(
+                "missing",
+                ThreadEffectQuery {
+                    before_sequence: None,
+                    limit: 2,
+                }
+            )
+            .await
+            .unwrap()
+            .effects
+            .is_empty()
+    );
+    assert!(
+        store
+            .query_thread_effects(
+                "first",
+                ThreadEffectQuery {
+                    before_sequence: None,
+                    limit: 0,
+                }
+            )
+            .await
+            .is_err()
+    );
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_a_session_requires_an_exclusive_lease_and_preserves_other_threads() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("session-deletion.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    for id in ["expired", "retained"] {
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread = ThreadHandle::start(id.into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread.run_turn(turn(&format!("{id}-turn"))).await.unwrap();
+        thread.close().await.unwrap();
+    }
+    assert!(
+        SqliteSessionStore::delete_session(options.clone(), "expired")
+            .await
+            .is_err()
+    );
+    store.shutdown().await.unwrap();
+
+    assert!(
+        SqliteSessionStore::delete_session(options.clone(), "expired")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !SqliteSessionStore::delete_session(options.clone(), "expired")
+            .await
+            .unwrap()
+    );
+    let store = SqliteSessionStore::open(options).await.unwrap();
+    assert!(
+        store
+            .read_thread_checkpoint("expired")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .query_thread_effects(
+                "expired",
+                ThreadEffectQuery {
+                    before_sequence: None,
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap()
+            .effects
+            .is_empty()
+    );
+    assert!(
+        store
+            .read_thread_checkpoint("retained")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_effect_writes_reject_mismatched_ownership_atomically() {
+    let store = SqliteSessionStore::open_memory().await.unwrap();
+    let effect = ThreadEffectBatch {
+        thread_id: "other".into(),
+        sequence: 1,
+        ..Default::default()
+    };
+    store
+        .register_resource(
+            "claimed",
+            "thread-commit.00000000000000000001",
+            effect.encode().unwrap(),
+        )
+        .unwrap();
+    assert!(store.flush().await.is_err());
+    assert!(
+        store
+            .read_thread_effect("claimed", 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .query_thread_effects(
+                "claimed",
+                ThreadEffectQuery {
+                    before_sequence: None,
+                    limit: 1
+                }
+            )
+            .await
+            .unwrap()
+            .effects
+            .is_empty()
+    );
+    // 故障批次被保留，shutdown 必须诚实报告尚未落盘，不能声称成功。
+    assert!(store.shutdown().await.is_err());
+}
+
+#[tokio::test]
+async fn sqlite_reopen_preserves_opaque_resource_and_replay_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("history.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let original = OpaquePayload::new("unknown.v3", 3, "  {\"number\":1e2}\n").unwrap();
+    store
+        .register_resource("session", "attachment", original.clone())
+        .unwrap();
+    store.flush().await.unwrap();
+    let first = store.read_entry_history("session", None).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].sequence(), 1);
+    store.shutdown().await.unwrap();
+
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    let replay = reopened.replay_entries("session", None).await.unwrap();
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].id, "pl.resource.attachment");
+    assert_eq!(replay[0].type_id, original.format());
+    assert_eq!(replay[0].schema_version, original.version());
+    assert_eq!(replay[0].payload, original.content());
+    assert!(matches!(
+        reopened.register_resource("session", "attachment", OpaquePayload::text("different")),
+        Err(ResourceAdmissionError::Conflict { .. })
+    ));
+    assert_eq!(
+        reopened.replay_entries("session", Some(1)).await.unwrap(),
+        replay
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_checkpoint_is_durable_with_its_effect_and_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("checkpoint.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread =
+        ThreadHandle::start("checkpoint-thread".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    let completion = thread.run_turn(turn("checkpoint-turn")).await.unwrap();
+    assert_eq!(completion.outcome, TurnOutcome::Completed);
+    thread.flush().await.unwrap();
+    let snapshot = thread.snapshot();
+    assert!(snapshot.persistence.durable_sequence >= snapshot.commit_sequence);
+
+    let history = store
+        .query_thread_effects(
+            "checkpoint-thread",
+            ThreadEffectQuery {
+                before_sequence: None,
+                limit: 32,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        history
+            .effects
+            .iter()
+            .filter_map(|effect| effect.turn.as_ref())
+            .any(|turn| {
+                turn.turn_id == "checkpoint-turn"
+                    && turn.state == TurnState::Finished(TurnOutcome::Completed)
+            })
+    );
+
+    let checkpoint = store
+        .read_thread_checkpoint("checkpoint-thread")
+        .await
+        .unwrap()
+        .expect("a flushed Thread write saves its checkpoint");
+    assert_eq!(checkpoint.thread_id, "checkpoint-thread");
+    assert_eq!(checkpoint.state_revision, checkpoint.state.commit_sequence);
+    assert!(checkpoint.history_fence >= 1);
+    assert!(checkpoint.history_fence <= checkpoint.state_revision);
+    assert!(checkpoint.external_bodies.is_empty());
+    // 同一事务写入：fence 处必须已经有一条已保存的 effect。
+    assert!(
+        store
+            .read_thread_effect("checkpoint-thread", checkpoint.history_fence)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    let recovered = reopened
+        .read_thread_checkpoint("checkpoint-thread")
+        .await
+        .unwrap()
+        .expect("reopen recovers the durable checkpoint");
+    assert_eq!(recovered.thread_id, "checkpoint-thread");
+    // close 本身还会提交生命周期 effect，因此重开时的最新 checkpoint 可前进。
+    assert!(recovered.history_fence >= checkpoint.history_fence);
+    assert!(recovered.state_revision >= checkpoint.state_revision);
+    assert!(
+        reopened
+            .read_thread_effect("checkpoint-thread", recovered.history_fence)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        reopened
+            .read_thread_checkpoint("missing-thread")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (model, _) = ScriptedModel::new(&[]);
+    let resumed = ThreadHandle::resume(
+        "checkpoint-thread".into(),
+        DynModelSession::new(model),
+        Some(recovered.clone()),
+    )
+    .unwrap();
+    let empty_store = SqliteSessionStore::open_memory().await.unwrap();
+    assert!(matches!(
+        resumed
+            .attach_storage(ColdStoreHandle::new(empty_store.clone()))
+            .await,
+        Err(pl_core::thread::ThreadError::StorageRecoveryPending { durable: 0, required })
+            if required == recovered.history_fence
+    ));
+    empty_store.shutdown().await.unwrap();
+    resumed
+        .attach_storage(ColdStoreHandle::new(reopened.clone()))
+        .await
+        .unwrap();
+    // Closed -> Open is a new committed fact. Restoring the old durable fence does not save it.
+    let restored = resumed.snapshot();
+    assert!(restored.commit_sequence > recovered.state_revision);
+    assert_eq!(
+        restored.persistence.admitted_sequence,
+        restored.commit_sequence
+    );
+    assert_eq!(
+        restored.persistence.durable_sequence,
+        recovered.history_fence,
+    );
+    // This first barrier includes real disk IO, just like the pre-recovery flush above.
+    resumed.flush().await.unwrap();
+    assert_eq!(
+        resumed.snapshot().persistence.durable_sequence,
+        restored.commit_sequence
+    );
+    let saved = reopened
+        .read_thread_checkpoint("checkpoint-thread")
+        .await
+        .unwrap()
+        .expect("flush saves the recovery lifecycle change");
+    assert_eq!(saved.state_revision, restored.commit_sequence);
+    assert_eq!(saved.history_fence, restored.commit_sequence);
+    assert_eq!(
+        saved.state.lifecycle,
+        pl_core::thread::ThreadLifecycle::Open
+    );
+    assert!(
+        reopened
+            .read_thread_effect("checkpoint-thread", saved.history_fence)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // Only now is the actual flush target already durable, with no new write to wait for.
+    tokio::time::timeout(std::time::Duration::from_secs(3), resumed.flush())
+        .await
+        .expect("a restored Thread must not wait on already durable history")
+        .unwrap();
+    resumed.close().await.unwrap();
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_checkpoint_rejects_corrupt_content_hash() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("corrupt-hash.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("corrupt-thread".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.run_turn(turn("corrupt-turn")).await.unwrap();
+    thread.flush().await.unwrap();
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+
+    tamper(
+        &options,
+        "UPDATE thread_checkpoints SET payload_hash='sha256:0000000000000000000000000000000000000000000000000000000000000000' WHERE thread_id='corrupt-thread'",
+    )
+    .await;
+
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    assert!(
+        reopened
+            .read_thread_checkpoint("corrupt-thread")
+            .await
+            .is_err()
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_checkpoint_rejects_a_corrupt_fence_effect() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("corrupt-fence.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("fence-thread".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.run_turn(turn("fence-turn")).await.unwrap();
+    thread.close().await.unwrap();
+    let fence = store
+        .read_thread_checkpoint("fence-thread")
+        .await
+        .unwrap()
+        .unwrap()
+        .history_fence;
+    store.shutdown().await.unwrap();
+
+    let reopened = SqliteSessionStore::open(options.clone()).await.unwrap();
+
+    tamper(
+        &options,
+        &format!(
+            "UPDATE session_entries SET payload_hash='invalid' WHERE session_id='fence-thread' AND id='pl.resource.thread-commit.{fence:020}'"
+        ),
+    )
+    .await;
+
+    assert!(
+        reopened
+            .read_thread_checkpoint("fence-thread")
+            .await
+            .is_err()
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_checkpoint_rejects_cross_thread_row() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("cross-thread.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("owner-thread".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.run_turn(turn("cross-turn")).await.unwrap();
+    thread.flush().await.unwrap();
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+
+    // 把 owner 的 checkpoint 行改名为另一个 Thread：信封里的身份仍是 owner。
+    tamper(
+        &options,
+        "UPDATE thread_checkpoints SET thread_id='other-thread' WHERE thread_id='owner-thread'",
+    )
+    .await;
+
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    assert!(
+        reopened
+            .read_thread_checkpoint("owner-thread")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        reopened
+            .read_thread_checkpoint("other-thread")
+            .await
+            .is_err()
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn thread_write_transaction_failure_keeps_the_durable_watermark() {
+    let store = SqliteSessionStore::open_memory().await.unwrap();
+    // 先受理 revision 5，再受理 revision 2；第二份 checkpoint 回退使整批事务失败。
+    let newer = ThreadWrite {
+        effect: Arc::new(ThreadEffectBatch {
+            thread_id: "crashed".into(),
+            sequence: 3,
+            ..Default::default()
+        }),
+        checkpoint: ThreadCheckpoint::capture_transfer(
+            "crashed".into(),
+            3,
+            ThreadSnapshot {
+                commit_sequence: 5,
+                ..Default::default()
+            },
+        ),
+        output_claim: None,
+    };
+    let older = ThreadWrite {
+        effect: Arc::new(ThreadEffectBatch {
+            thread_id: "crashed".into(),
+            sequence: 2,
+            ..Default::default()
+        }),
+        checkpoint: ThreadCheckpoint::capture_transfer(
+            "crashed".into(),
+            2,
+            ThreadSnapshot {
+                commit_sequence: 2,
+                ..Default::default()
+            },
+        ),
+        output_claim: None,
+    };
+    store.admit("crashed", newer).unwrap();
+    store.admit("crashed", older).unwrap();
+    let admitted = store.persistence();
+    assert_eq!(admitted.admitted, 2);
+    assert_eq!(admitted.durable, 0);
+
+    assert!(store.flush().await.is_err());
+    let failed = store.persistence();
+    assert_eq!(
+        failed.durable, 0,
+        "a failed transaction must not advance the durable watermark"
+    );
+    assert!(failed.error.is_some());
+    // 整批回滚：第一批的 effect 与 checkpoint 都没有落盘。
+    assert!(
+        store
+            .read_thread_effect("crashed", 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .read_thread_checkpoint("crashed")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let _ = store.shutdown().await;
+}
+
+#[tokio::test]
+async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("legacy.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("legacy-thread".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread.run_turn(turn("legacy-turn")).await.unwrap();
+    thread.flush().await.unwrap();
+    let original_fence = store
+        .read_thread_checkpoint("legacy-thread")
+        .await
+        .unwrap()
+        .unwrap()
+        .history_fence;
+    thread.close().await.unwrap();
+    assert!(
+        migration::migrate_to_current(options.clone())
+            .await
+            .is_err()
+    );
+    store.shutdown().await.unwrap();
+
+    // 退回 schema 7：删除新表并复位版本，保留已验证的 effect/entry/history 数据。
+    tamper(&options, "DROP TABLE thread_checkpoints").await;
+    tamper(&options, "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=7").await;
+
+    // 迁移前 open 必须拒绝版本 7，而不是静默重建或迁移。
+    assert!(matches!(
+        SqliteSessionStore::open(options.clone()).await,
+        Err(SessionStoreError::UnsupportedSchema { found: 7, .. })
+    ));
+
+    migration::migrate_to_current(options.clone())
+        .await
+        .unwrap();
+    migration::migrate_to_current(options.clone())
+        .await
+        .unwrap();
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    // effect 数据保留；尚无 checkpoint 行的旧 Thread 读取为空。
+    assert!(
+        reopened
+            .read_thread_effect("legacy-thread", original_fence)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        reopened
+            .read_thread_checkpoint("legacy-thread")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_migration_converts_schema_4_with_old_or_current_tables() {
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+
+    for format in [11, 12] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("legacy-envelope.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread =
+            ThreadHandle::start("legacy-envelope".into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread
+            .submit_input_and_run(
+                pl_core::thread::input::ThreadInput {
+                    id: "asked".into(),
+                    purpose: pl_core::thread::input::InputPurpose::Message,
+                    payload: OpaquePayload::text("Please handle this request"),
+                    context: vec![support::text("Please handle this request")],
+                },
+                pl_core::thread::input::InputDriverOptions {
+                    max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                        2.try_into().expect("nonzero limit"),
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !thread
+                .snapshot()
+                .terminal_inputs
+                .iter()
+                .any(|identity| identity.id == "asked")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the turn consumes its input");
+        thread.flush().await.unwrap();
+        thread.close().await.unwrap();
+        store.shutdown().await.unwrap();
+
+        // Rewrite the stored checkpoint into the schema-4 shape: the fields that schema never had are absent.
+        let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+            .await
+            .unwrap();
+        let row = db
+            .query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT envelope FROM thread_checkpoints WHERE thread_id='legacy-envelope'",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope: String = row.try_get("", "envelope").unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        value["schemaVersion"] = serde_json::json!(4);
+        legacy_usage::flatten(&mut value);
+        {
+            let state = value["state"].as_object_mut().expect("state object");
+            state.remove("continuation");
+            state.remove("execution");
+            state.remove("executionSequence");
+            state.remove("requiredDurableSequence");
+            for key in ["inputs", "terminalInputs"] {
+                if let Some(records) = state.get_mut(key).and_then(serde_json::Value::as_array_mut)
+                {
+                    for record in records {
+                        let record = record.as_object_mut().expect("input object");
+                        record.remove("purpose");
+                        record.remove("continuation");
+                    }
+                }
+            }
+        }
+        let envelope = serde_json::to_string(&value).unwrap();
+        let hash = pl_core::context::content_hash(envelope.as_bytes());
+        db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE thread_checkpoints SET schema_version=4,envelope=?,payload_hash=? WHERE thread_id='legacy-envelope'",
+        vec![envelope.into(), hash.into()],
+    ))
+    .await
+    .unwrap();
+        if format == 11 {
+            db.execute_unprepared(
+                "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks",
+            )
+            .await
+            .unwrap();
+        }
+        db.execute_unprepared(&format!(
+            "DROP TABLE seaql_migrations; PRAGMA user_version={format}"
+        ))
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+
+        // The explicit migration converts the envelope, its indexed version and its hash together.
+        migration::migrate_to_current(options.clone())
+            .await
+            .unwrap();
+        let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+            .await
+            .unwrap();
+        let version: i64 = db
+            .query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "PRAGMA user_version",
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get("", "user_version")
+            .unwrap();
+        assert_eq!(version, pl_core::persistence::SESSION_SCHEMA_VERSION);
+        db.close().await.unwrap();
+
+        let reopened = SqliteSessionStore::open(options).await.unwrap();
+        let restored = reopened
+            .read_thread_checkpoint("legacy-envelope")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
+        // Missing fields take their defaults, and no continuation is invented for work that never owed any.
+        assert!(restored.state.continuation.is_none());
+        assert!(restored.state.execution.is_none());
+        assert_eq!(restored.state.execution_sequence, 0);
+        assert!(
+            restored
+                .state
+                .terminal_inputs
+                .iter()
+                .all(|identity| identity.purpose == pl_core::thread::input::InputPurpose::Message)
+        );
+        assert!(
+            !restored.state.terminal_inputs.is_empty(),
+            "the fixture must really carry the consumed input it strips"
+        );
+
+        // The converted checkpoint is a usable restart state, not just readable bytes.
+        let (model, _) = ScriptedModel::new(&[]);
+        let resumed = ThreadHandle::resume(
+            "legacy-envelope".into(),
+            DynModelSession::new(model),
+            Some(restored),
+        )
+        .unwrap();
+        assert!(resumed.snapshot().continuation.is_none());
+        resumed.close().await.unwrap();
+        reopened.shutdown().await.unwrap();
+    }
+}
+
+/// Current pre-framework databases are adopted once; neither a numeric future format nor an
+/// unknown official migration may cause schema/data writes through ordinary or explicit opening.
+#[tokio::test]
+async fn sqlite_adopts_current_database_and_refuses_future_writes() {
+    use sea_orm::{ConnectionTrait, Database};
+    for fault in ["format", "migration", "missing_table", "checkpoint"] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("future.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        store.shutdown().await.unwrap();
+        let url = format!("sqlite://{}?mode=rw", options.path.display());
+        let db = Database::connect(&url).await.unwrap();
+        db.execute_unprepared("DROP TABLE seaql_migrations")
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let adopted = SqliteSessionStore::open(options.clone()).await.unwrap();
+        adopted.shutdown().await.unwrap();
+        let db = Database::connect(&url).await.unwrap();
+        if fault == "format" {
+            db.execute_unprepared("PRAGMA user_version=999")
+                .await
+                .unwrap();
+        } else if fault == "missing_table" {
+            db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE session_entries")
+                .await
+                .unwrap();
+        } else if fault == "checkpoint" {
+            let mut checkpoint =
+                ThreadCheckpoint::capture("future".into(), 0, Default::default()).unwrap();
+            checkpoint.schema_version = 7;
+            let envelope = serde_json::to_string(&checkpoint).unwrap();
+            db.execute_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
+                "INSERT INTO thread_checkpoints(thread_id,schema_version,state_revision,history_fence,envelope,payload_hash) VALUES('future',7,0,0,?,?)",
+                vec![envelope.clone().into(), pl_core::context::content_hash(envelope.as_bytes()).into()])).await.unwrap();
+        } else {
+            db.execute_unprepared(
+                "INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)",
+            )
+            .await
+            .unwrap();
+        }
+        db.close().await.unwrap();
+        let before = tokio::fs::read(&options.path).await.unwrap();
+        assert!(SqliteSessionStore::open(options.clone()).await.is_err());
+        assert!(
+            migration::migrate_to_current(options.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(&options.path).await.unwrap(), before);
+    }
+}

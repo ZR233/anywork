@@ -436,21 +436,9 @@ impl StudioRuntime {
                 }
                 Err(error) => Err(error),
             };
-            if let Err(error) = &result
-                && error.chain().any(|cause| {
-                    let error = cause.downcast_ref::<ThreadError>().or_else(|| {
-                        cause
-                            .downcast_ref::<std::sync::Arc<ThreadError>>()
-                            .map(std::sync::Arc::as_ref)
-                    });
-                    matches!(
-                        error,
-                        Some(ThreadError::StaleRuntimeBundle | ThreadError::ContextConflict { .. })
-                    )
-                })
-            {
-                // A fresher snapshot or source superseded the candidate after preparation.
-                // Its resources remain under the original installation owner's cleanup.
+            if result.as_ref().is_err_and(refresh_was_interrupted) {
+                // Leave interrupted attempts eligible for retry. The original owner retains
+                // responsibility for candidate cleanup.
                 continue;
             }
             if result.is_ok() {
@@ -518,6 +506,24 @@ impl StudioRuntime {
     }
 }
 
+fn refresh_was_interrupted(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let error = cause.downcast_ref::<ThreadError>().or_else(|| {
+            cause
+                .downcast_ref::<std::sync::Arc<ThreadError>>()
+                .map(std::sync::Arc::as_ref)
+        });
+        matches!(
+            error,
+            Some(
+                ThreadError::Cancelled
+                    | ThreadError::StaleRuntimeBundle
+                    | ThreadError::ContextConflict { .. }
+            )
+        )
+    })
+}
+
 fn catalog_fingerprint(
     sources: &CatalogSources,
     snapshot: &pl_core::thread::ThreadSnapshot,
@@ -559,4 +565,54 @@ fn catalog_fingerprint(
         "modelRoute": snapshot.extensions.get(crate::studio::model_route::MODEL_ROUTE_EXTENSION),
         "agentProfile": snapshot.extensions.get(crate::studio::model_route::AGENT_PROFILE_EXTENSION),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread_assembler::ThreadAssemblyError;
+
+    #[test]
+    fn cancelled_or_superseded_catalog_refresh_does_not_settle_the_attempt() {
+        let cases = [
+            (
+                "cancelled preparation",
+                anyhow::Error::new(ThreadAssemblyError::from(ThreadError::Cancelled)),
+                true,
+            ),
+            (
+                "cancelled installation",
+                anyhow::Error::new(std::sync::Arc::new(ThreadError::Cancelled)),
+                true,
+            ),
+            (
+                "superseded candidate",
+                anyhow::Error::new(ThreadError::StaleRuntimeBundle),
+                true,
+            ),
+            (
+                "changed context",
+                anyhow::Error::new(ThreadError::ContextConflict {
+                    expected: 1,
+                    actual: 2,
+                }),
+                true,
+            ),
+            (
+                "invalidated workspace binding",
+                anyhow::Error::new(ThreadAssemblyError::InvalidatedBinding(
+                    "project target disappeared".into(),
+                )),
+                false,
+            ),
+            (
+                "untyped error with the same message",
+                anyhow::anyhow!("request cancelled"),
+                false,
+            ),
+        ];
+        for (name, error, interrupted) in cases {
+            assert_eq!(refresh_was_interrupted(&error), interrupted, "{name}");
+        }
+    }
 }
