@@ -6,94 +6,160 @@ use crate::WorkspaceKind;
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::studio::records::{DirectoryMember, WorkspaceRecord};
+use crate::studio::store::ProjectRow;
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
 use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::ThreadTitleCancellationCause;
 
+/// Path identity used by local and remote project open. Local has no SSH alias.
+pub(in crate::studio::runtime) enum OpenedProject {
+    Local { path: String },
+    Remote { alias: String, path: String },
+}
+
+pub(in crate::studio::runtime) enum FoundProject {
+    Published(WorkspaceRecord),
+    Stored(ProjectRow),
+}
+
 impl StudioRuntime {
-    pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<WorkspaceRecord> {
-        let canonical = dunce::canonicalize(path.as_ref())?;
-        anyhow::ensure!(canonical.is_dir(), "workspace path is not a directory");
-        let path = canonical.as_path();
-        let _guard = self.lifecycle_lock.lock().await;
-        let path_text = path.to_string_lossy().to_string();
+    /// Hot snapshot wins. A miss falls through to the durable path identity, including a closed row.
+    pub(in crate::studio::runtime) async fn find_project_record(
+        &self,
+        path: &str,
+        alias: Option<&str>,
+    ) -> Result<Option<FoundProject>> {
         if let Some(project) = self
             .agent_facility
             .product_events
             .project_snapshot()
             .await
             .into_iter()
-            .find(|project| project.path == path_text && project.ssh_alias.is_none())
+            .find(|project| project.path == path && project.ssh_alias.as_deref() == alias)
         {
-            ensure!(
-                project.kind == WorkspaceKind::Project,
-                "the standalone workspace cannot be opened as a user project"
-            );
-            return Ok(project);
+            return Ok(Some(FoundProject::Published(project)));
         }
-        let name = crate::studio::paths::project_name(path);
+        Ok(self
+            .store
+            .find_project_by_path(path, alias)
+            .await?
+            .map(FoundProject::Stored))
+    }
+
+    /// Publishes an opened project without taking the lifecycle lock. Callers keep that lock.
+    ///
+    /// A published hit returns immediately. Local open rejects a standalone identity; remote open
+    /// keeps its historical kind write of `Project` even when reusing a stored row.
+    pub(in crate::studio::runtime) async fn commit_opened_project(
+        &self,
+        opened: OpenedProject,
+    ) -> Result<WorkspaceRecord> {
         let now = crate::studio::unix_seconds();
-        // 聚合冷加载：按 path 找到既有行或分配新 id，然后内存先行提交目录 delta。
-        let existing = self.store.find_project_by_path(&path_text, None).await?;
-        let (record, delta_record) = match existing {
-            Some(existing) => {
-                ensure!(
-                    existing.kind == WorkspaceKind::Project,
-                    "the standalone workspace cannot be opened as a user project"
-                );
-                let name = existing.name.clone();
-                let delta_record = ProjectDirectoryRecord {
-                    id: existing.id.clone(),
-                    kind: existing.kind,
-                    name: name.clone(),
-                    path: path_text.clone(),
-                    ssh_alias: None,
-                    created_at: existing.created_at,
-                    updated_at: now,
-                    last_opened_at: Some(now),
-                    closed: false,
-                };
-                let public = WorkspaceRecord {
-                    id: existing.id.clone(),
-                    kind: existing.kind,
-                    name,
-                    path: path_text,
-                    ssh_alias: None,
-                    updated_at: now,
-                };
-                (public, delta_record)
+        let (id, kind, name, path, ssh_alias, created_at) = match opened {
+            OpenedProject::Local { path } => match self.find_project_record(&path, None).await? {
+                Some(FoundProject::Published(project)) => {
+                    ensure!(
+                        project.kind == WorkspaceKind::Project,
+                        "the standalone workspace cannot be opened as a user project"
+                    );
+                    return Ok(project);
+                }
+                Some(FoundProject::Stored(existing)) => {
+                    ensure!(
+                        existing.kind == WorkspaceKind::Project,
+                        "the standalone workspace cannot be opened as a user project"
+                    );
+                    (
+                        existing.id,
+                        existing.kind,
+                        existing.name,
+                        path,
+                        None,
+                        existing.created_at,
+                    )
+                }
+                None => (
+                    crate::studio::ids::new_id("project"),
+                    WorkspaceKind::Project,
+                    crate::studio::paths::project_name(Path::new(&path)),
+                    path,
+                    None,
+                    now,
+                ),
+            },
+            OpenedProject::Remote { alias, path } => {
+                match self
+                    .find_project_record(&path, Some(alias.as_str()))
+                    .await?
+                {
+                    Some(FoundProject::Published(project)) => return Ok(project),
+                    Some(FoundProject::Stored(existing)) => (
+                        existing.id,
+                        WorkspaceKind::Project,
+                        existing.name,
+                        path,
+                        Some(alias),
+                        existing.created_at,
+                    ),
+                    None => (
+                        crate::studio::ids::new_id("project"),
+                        WorkspaceKind::Project,
+                        remote_project_name(&path),
+                        path,
+                        Some(alias),
+                        now,
+                    ),
+                }
             }
-            None => {
-                let id = crate::studio::ids::new_id("project");
-                let delta_record = ProjectDirectoryRecord {
-                    id: id.clone(),
-                    kind: WorkspaceKind::Project,
-                    name: name.clone(),
-                    path: path_text.clone(),
-                    ssh_alias: None,
-                    created_at: now,
-                    updated_at: now,
-                    last_opened_at: Some(now),
-                    closed: false,
-                };
-                let public = WorkspaceRecord {
-                    id,
-                    kind: WorkspaceKind::Project,
-                    name,
-                    path: path_text,
-                    ssh_alias: None,
-                    updated_at: now,
-                };
-                (public, delta_record)
-            }
+        };
+        let public = WorkspaceRecord::from_directory_projection(
+            id.clone(),
+            kind,
+            name.clone(),
+            path.clone(),
+            ssh_alias.clone(),
+            now,
+        );
+        let delta = ProjectDirectoryRecord {
+            id: id.clone(),
+            kind,
+            name: name.clone(),
+            path,
+            ssh_alias,
+            created_at,
+            updated_at: now,
+            last_opened_at: Some(now),
+            closed: false,
         };
         self.agent_facility
             .product_events
-            .commit_directory(DirectoryDelta::upsert_project(delta_record))
+            .commit_directory(DirectoryDelta::upsert_project(delta))
             .await?;
-        Ok(record)
+        Ok(public)
+    }
+
+    pub(in crate::studio::runtime) async fn commit_remote_project(
+        &self,
+        alias: &str,
+        path: String,
+    ) -> Result<WorkspaceRecord> {
+        self.commit_opened_project(OpenedProject::Remote {
+            alias: alias.to_string(),
+            path,
+        })
+        .await
+    }
+
+    pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<WorkspaceRecord> {
+        let canonical = dunce::canonicalize(path.as_ref())?;
+        anyhow::ensure!(canonical.is_dir(), "workspace path is not a directory");
+        let _guard = self.lifecycle_lock.lock().await;
+        self.commit_opened_project(OpenedProject::Local {
+            path: canonical.to_string_lossy().into_owned(),
+        })
+        .await
     }
 
     /// Explicitly prepares the shared owner without creating a Thread or a Git repository.
@@ -194,18 +260,7 @@ impl StudioRuntime {
             return Ok(project);
         }
         ensure!(
-            !self
-                .agent_facility
-                .product_events
-                .project_snapshot()
-                .await
-                .iter()
-                .any(|project| project.path == path && project.ssh_alias.is_none())
-                && self
-                    .store
-                    .find_project_by_path(&path, None)
-                    .await?
-                    .is_none(),
+            self.find_project_record(&path, None).await?.is_none(),
             "the standalone directory already belongs to a user project"
         );
         let now = crate::studio::unix_seconds();
@@ -254,6 +309,11 @@ impl StudioRuntime {
             project.kind == WorkspaceKind::Project,
             "the standalone workspace cannot be renamed"
         );
+        let existing = self
+            .store
+            .workspaces()
+            .get(id)
+            .context("Project directory entry not found")?;
         project.name = name.to_string();
         let now = crate::studio::unix_seconds();
         project.updated_at = now;
@@ -265,7 +325,7 @@ impl StudioRuntime {
                 name: project.name.clone(),
                 path: project.path.clone(),
                 ssh_alias: project.ssh_alias.clone(),
-                created_at: now,
+                created_at: existing.created_at,
                 updated_at: now,
                 last_opened_at: Some(now),
                 closed: false,
@@ -296,7 +356,7 @@ impl StudioRuntime {
                     && project.kind == WorkspaceKind::Standalone),
             "the standalone workspace cannot be archived"
         );
-        let threads = self.load_project_archive_scope(workspace_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id)?;
         let has_pending_archive = self
             .store
             .thread_archive(&ArchiveScope::Workspace(workspace_id.into()))
@@ -365,9 +425,7 @@ impl StudioRuntime {
             .flat_map(|(_, scope)| scope.thread_ids())
             .collect::<Vec<_>>();
         admitted_ids.extend(threads.iter().map(|thread| thread.agent.thread_id.clone()));
-        admitted_ids.sort();
-        admitted_ids.dedup();
-        let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
+        let mut pipeline = super::settlement::TreeSettlementPipeline::pin(self, admitted_ids);
         let frozen = self
             .freeze_thread_archive(
                 ArchiveScope::Workspace(workspace_id.into()),
@@ -375,33 +433,22 @@ impl StudioRuntime {
                 &admitted,
             )
             .await?;
-        admitted_ids.extend(frozen.thread_ids());
+        pipeline.extend_ids(frozen.thread_ids());
         for (_, scope) in &scopes {
             scope.cancel_preparations();
         }
-        admitted_ids.sort();
-        admitted_ids.dedup();
-        let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
-        for id in &admitted_ids {
-            self.title_tasks
-                .cancel(id, ThreadTitleCancellationCause::ProjectArchive)
-                .await;
-        }
-        tokio::time::timeout(self.archive_settle_timeout(), async {
-            for (session, scope) in &scopes {
-                session.drain_archive_preparations(scope).await?;
-            }
-            Ok::<(), crate::thread_assembler::ThreadAssemblyError>(())
-        })
-        .await
-        .context("project archive preparations did not join")??;
-        let threads = self.load_project_archive_scope(workspace_id).await?;
-        ensure!(
-            threads
-                .iter()
-                .all(|thread| admitted_ids.contains(&thread.agent.thread_id)),
-            "project archive member has no frozen preparation responsibility"
-        );
+        pipeline.quiesce(self).await?;
+        pipeline
+            .cancel_titles(self, ThreadTitleCancellationCause::ProjectArchive)
+            .await;
+        pipeline
+            .join_scopes(&scopes, "project archive preparations did not join")
+            .await?;
+        let threads = self.load_project_archive_scope(workspace_id)?;
+        pipeline.ensure_frozen(
+            threads.iter().map(|thread| thread.agent.thread_id.as_str()),
+            "project archive member has no frozen preparation responsibility",
+        )?;
         let thread_ids = threads
             .iter()
             .map(|thread| thread.agent.thread_id.clone())
@@ -433,13 +480,9 @@ impl StudioRuntime {
                 .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
                 .await;
         }
-        if archive.phase == ArchivePhase::Sealed {
-            self.retire_archived_thread_tree(&thread_ids).await?;
-            self.retire_private_archive_members(&mut archive).await?;
-        }
         // Reuse Saved/Cleaned ACKs without creating a new cold writer or rebuilding cleaned temp.
-        self.archive_save_confirmed(&mut archive).await?;
-        self.clean_archive_temps(&mut archive).await?;
+        self.finish_sealed_archive(&mut archive, &thread_ids)
+            .await?;
         self.agent_facility
             .product_events
             .commit_directory(DirectoryDelta {
@@ -479,10 +522,19 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
+    fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
         let threads = self.store.directory_members_for_project(workspace_id)?;
         Ok(threads)
     }
+}
+
+fn remote_project_name(path: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("remote-workspace")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -507,12 +559,12 @@ mod standalone_tests {
     async fn archive_private_preparation_failed_retirement_survives_restart_and_preserves_delivery()
     -> Result<()> {
         use crate::studio::{
-            agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
             storage_fault_test_support::close_factory,
             store::{
                 thread_archive::{ArchivePhase, ArchiveScope},
                 thread_preparation::{PreparationBinding, PreparationIdentity},
             },
+            worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         };
         use sea_orm::ConnectionTrait;
         let temp = tempfile::tempdir()?;
@@ -1190,12 +1242,7 @@ mod standalone_tests {
                 .await
                 .is_err()
         );
-        assert!(
-            runtime
-                .find_owned_thread("occupied-thread")
-                .await?
-                .is_none()
-        );
+        assert!(runtime.find_owned_thread("occupied-thread")?.is_none());
         assert_eq!(
             tokio::fs::read(collision.join("unknown")).await?,
             b"keep unknown leftovers"
@@ -1210,11 +1257,10 @@ mod standalone_tests {
 
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let restored = runtime
-            .find_owned_thread(&first.id)
-            .await?
+            .find_owned_thread(&first.id)?
             .context("cold Thread")?;
         assert_eq!(restored.workspace_path, first.workspace_path);
-        runtime.register_new_thread(restored).await?;
+        runtime.ensure_thread_owner(&restored.id).await?;
         assert_eq!(
             runtime
                 .store
@@ -2406,7 +2452,6 @@ mod standalone_tests {
         use super::*;
         use crate::{
             studio::{
-                agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
                 storage_fault_test_support::{ThreadStorageSink, close_factory},
                 store::{
                     thread_archive::{ArchivePhase, ArchiveScope},
@@ -2415,6 +2460,7 @@ mod standalone_tests {
                         PreparationSave, ThreadPreparationRecord,
                     },
                 },
+                worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
             },
             thread_assembler::{
                 ChildThreadRequest, StudioChildFactory, StudioChildResources, StudioThreadSpec,
@@ -3428,12 +3474,12 @@ mod standalone_tests {
         //! Real lifecycle deletion, independent of UI/FRB and without external model requests.
         use super::*;
         use crate::studio::{
-            agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
             storage_fault_test_support::{ThreadStorageSink, spawn_live_projection_for_thread},
             store::{
                 directory::DirectoryDelta, thread_delete::DeletePhase,
                 thread_preparation::PreparationIdentity,
             },
+            worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         };
         use pl_core::thread::ThreadHandle;
         use pl_tool::workspace::SessionFiles;
@@ -3908,15 +3954,17 @@ mod standalone_tests {
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
                 let project = runtime.open_project(&workspace).await?;
                 let (delta, session, agent) = DirectoryDelta::register_session(
-                    "delete-cold".into(),
-                    &project.id,
-                    "cold",
-                    crate::mode::ThreadModeId::auto(),
-                    crate::ThreadWorkspaceMode::Local,
-                    dunce::canonicalize(&workspace)?
-                        .to_string_lossy()
-                        .into_owned(),
-                    crate::config::ROOT_AGENT_ROUTE_KEY,
+                    crate::studio::store::directory::SessionDirectoryUpsert {
+                        session_id: "delete-cold".into(),
+                        workspace_id: &project.id,
+                        title: "cold",
+                        mode: crate::mode::ThreadModeId::auto(),
+                        workspace_mode: crate::ThreadWorkspaceMode::Local,
+                        workspace_path: dunce::canonicalize(&workspace)?
+                            .to_string_lossy()
+                            .into_owned(),
+                        role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                    },
                 );
                 runtime
                     .agent_facility
@@ -4524,10 +4572,10 @@ mod standalone_tests {
                     ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
                 },
                 studio::{
-                    agent_host::worktree_lease::{
+                    store::thread_archive::{ArchivePhase, ArchiveScope},
+                    worktree::worktree_lease::{
                         WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
                     },
-                    store::thread_archive::{ArchivePhase, ArchiveScope},
                 },
             };
             for root_owned in [true, false] {
@@ -4622,13 +4670,15 @@ mod standalone_tests {
                     .await?;
                 let root = if root_owned {
                     let (delta, session, agent) = DirectoryDelta::register_session(
-                        "owned-root".into(),
-                        &project.id,
-                        "owned",
-                        crate::mode::ThreadModeId::auto(),
-                        crate::ThreadWorkspaceMode::Worktree,
-                        identity.root.clone(),
-                        crate::config::ROOT_AGENT_ROUTE_KEY,
+                        crate::studio::store::directory::SessionDirectoryUpsert {
+                            session_id: "owned-root".into(),
+                            workspace_id: &project.id,
+                            title: "owned",
+                            mode: crate::mode::ThreadModeId::auto(),
+                            workspace_mode: crate::ThreadWorkspaceMode::Worktree,
+                            workspace_path: identity.root.clone(),
+                            role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                        },
                     );
                     runtime
                         .agent_facility
@@ -4644,7 +4694,7 @@ mod standalone_tests {
                                 .map(|agent| agent.thread_id)
                         })?,
                     );
-                    runtime.register_new_thread(root.clone()).await?;
+                    runtime.ensure_thread_owner(&root.id).await?;
                     root
                 } else {
                     let root = runtime
@@ -4835,10 +4885,10 @@ mod standalone_tests {
                     ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
                 },
                 studio::{
-                    agent_host::worktree_lease::{
+                    store::thread_archive::ArchiveScope,
+                    worktree::worktree_lease::{
                         WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
                     },
-                    store::thread_archive::ArchiveScope,
                 },
             };
             for root_owned in [true, false] {
@@ -4933,13 +4983,15 @@ mod standalone_tests {
                     .await?;
                 let root = if root_owned {
                     let (delta, session, agent) = DirectoryDelta::register_session(
-                        "owned-root".into(),
-                        &project.id,
-                        "owned",
-                        crate::mode::ThreadModeId::auto(),
-                        crate::ThreadWorkspaceMode::Worktree,
-                        identity.root.clone(),
-                        crate::config::ROOT_AGENT_ROUTE_KEY,
+                        crate::studio::store::directory::SessionDirectoryUpsert {
+                            session_id: "owned-root".into(),
+                            workspace_id: &project.id,
+                            title: "owned",
+                            mode: crate::mode::ThreadModeId::auto(),
+                            workspace_mode: crate::ThreadWorkspaceMode::Worktree,
+                            workspace_path: identity.root.clone(),
+                            role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                        },
                     );
                     runtime
                         .agent_facility
@@ -4955,7 +5007,7 @@ mod standalone_tests {
                                 .map(|agent| agent.thread_id)
                         })?,
                     );
-                    runtime.register_new_thread(root.clone()).await?;
+                    runtime.ensure_thread_owner(&root.id).await?;
                     root
                 } else {
                     let root = runtime
@@ -5605,13 +5657,15 @@ mod standalone_tests {
                     let project = runtime.open_project(&workspace).await?;
                     // Publish only directory identity: the original preparation never attached storage.
                     let (delta, session, agent) = DirectoryDelta::register_session(
-                        "private-root".into(),
-                        &project.id,
-                        "root",
-                        crate::mode::ThreadModeId::auto(),
-                        crate::ThreadWorkspaceMode::Local,
-                        workspace.to_string_lossy().into_owned(),
-                        crate::config::ROOT_AGENT_ROUTE_KEY,
+                        crate::studio::store::directory::SessionDirectoryUpsert {
+                            session_id: "private-root".into(),
+                            workspace_id: &project.id,
+                            title: "root",
+                            mode: crate::mode::ThreadModeId::auto(),
+                            workspace_mode: crate::ThreadWorkspaceMode::Local,
+                            workspace_path: workspace.to_string_lossy().into_owned(),
+                            role: crate::config::ROOT_AGENT_ROUTE_KEY,
+                        },
                     );
                     runtime
                         .agent_facility
@@ -6092,7 +6146,7 @@ mod standalone_tests {
                         ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager,
                         WorktreeOwnership,
                     },
-                    studio::agent_host::worktree_lease::{
+                    studio::worktree::worktree_lease::{
                         WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
                     },
                 };

@@ -351,6 +351,16 @@ pub enum WireApi {
     GeminiGenerateContent,
 }
 
+impl WireApi {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::ChatCompletions => "chat_completions",
+            Self::GeminiGenerateContent => "gemini_generate_content",
+        }
+    }
+}
+
 pub use pl_model_types::transport::ConnectionMode;
 
 /// 返回 transport 实现的确定性版本标识，供上层 catalog revision 纳入缓存失效。

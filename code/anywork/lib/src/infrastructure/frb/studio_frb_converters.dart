@@ -540,39 +540,13 @@ AgentExecutionView _agentExecutionFromFrb(frb.BridgeAgentExecution execution) =>
 StudioAgentState _agentStateFromFrb(frb.BridgeAgentState state) {
   return switch (state) {
     frb.BridgeAgentState_Idle() => const IdleStudioAgent(),
-    frb.BridgeAgentState_Queued(:final field0) => QueuedStudioAgent(
-      field0.turnId,
-    ),
     frb.BridgeAgentState_Running(:final field0) => RunningStudioAgent(
-      field0.turnId,
-    ),
-    frb.BridgeAgentState_WaitingTool(:final field0) => WaitingToolStudioAgent(
       field0.turnId,
     ),
     frb.BridgeAgentState_WaitingInteraction(:final field0) =>
       WaitingInteractionStudioAgent(field0.turnId, field0.interactionId),
-    frb.BridgeAgentState_Cancelling(:final field0) => CancellingStudioAgent(
-      field0.turnId,
-    ),
-    frb.BridgeAgentState_Closing(:final field0) => ClosingStudioAgent(
-      turnId: field0.turnId,
-      failure: field0.error == null
-          ? null
-          : AgentStateError(
-              code: field0.error!.code,
-              message: field0.error!.message,
-              retryable: field0.error!.retryable,
-            ),
-    ),
+    frb.BridgeAgentState_Closing() => const ClosingStudioAgent(),
     frb.BridgeAgentState_Closed() => const ClosedStudioAgent(),
-    frb.BridgeAgentState_Faulted(:final field0) => FaultedStudioAgent(
-      failure: AgentStateError(
-        code: field0.error.code,
-        message: field0.error.message,
-        retryable: field0.error.retryable,
-      ),
-      diagnosticTurnId: field0.diagnosticTurnId,
-    ),
   };
 }
 

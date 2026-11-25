@@ -3,15 +3,12 @@ use super::{
     StudioThreadFactory,
     errors::resource_error,
     thread_seed::{self, ThreadInstructionSeed},
-    thread_tools::ThreadToolAssembly,
 };
 use crate::{
     agent::definition::{AgentRootEntry, ResolvedAgentDefinition, VerifiedAgentIdentity},
     instruction::ModeInstructionProfile,
-    resource_store::FileResourceStore,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
 };
-use pl_core::context::{OpaquePayload, ResourceAccess};
 use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::collections::BTreeMap;
 
@@ -114,8 +111,8 @@ impl StudioThreadFactory {
                 .await?
                 .map_err(|error| resource_error("resolve managed bot directory", error))?;
             let planned = canonical_parent.join("workspace");
-            let identity = crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
-                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::Local,
+            let identity = crate::studio::worktree::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::worktree::worktree_lease::WorkspaceEndpoint::Local,
                 planned.to_string_lossy().into_owned(),
             )
             .map_err(Self::workspace_usage_error)?;
@@ -213,6 +210,18 @@ impl StudioThreadFactory {
         &self,
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        super::native_assembly::NativeThreadAssemblyBuilder::root(self, request)
+            .assemble()
+            .await
+    }
+
+    /// Root pipeline. Shared steps are reservation, canonical root resolution, assignment,
+    /// session resources, tool binding, project freeze, persistence, export history, model
+    /// binding, spec composition, worktree confirmation, and enrolled export.
+    pub(super) async fn assemble_native_root(
+        &self,
+        request: ThreadPreparation,
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let ThreadPreparation {
             workspace_owner,
             identity,
@@ -243,10 +252,8 @@ impl StudioThreadFactory {
             .await?;
         let mut project = self.project_record(&thread.workspace_id).await?;
         let workspace_usage = self
-            .reserve_thread_workspace_use(id, id, &project)
-            .await
-            .map_err(Self::workspace_usage_error)?;
-        workspace_owner.retain(&workspace_usage);
+            .reserve_native_workspace(id, id, &project, &workspace_owner)
+            .await?;
         let bot = self
             .services
             .bots
@@ -291,6 +298,8 @@ impl StudioThreadFactory {
             }
             crate::instruction::migrate_saved_representation(&mut state, &saved_identity)
                 .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
+            crate::plan_tool::migrate_saved_plan(&mut state)
+                .map_err(|error| resource_error("migrate saved plan", error))?;
             debug_assert!(
                 state.extensions.contains_key("studio.mode"),
                 "saved Mode migration preserved its identity"
@@ -330,18 +339,14 @@ impl StudioThreadFactory {
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
             .unwrap_or(directory_mode);
+        let catalog = self.services.thread_modes.snapshot();
         let mode = crate::mode::saved_registered_mode(&saved)
             .map_err(|error| resource_error("restore Mode snapshot", error))?
-            .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
+            .or_else(|| catalog.mode(&selected_mode))
             .or_else(|| {
-                matches!(selected_mode.as_str(), "mode.simple" | "mode.task")
-                    .then(|| {
-                        self.services
-                            .thread_modes
-                            .snapshot()
-                            .mode(&crate::mode::ThreadModeId::auto())
-                    })
-                    .flatten()
+                selected_mode
+                    .legacy_builtin_replacement()
+                    .and_then(|replacement| catalog.mode(&replacement))
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(selected_mode.to_string()))?;
         let saved_route = crate::studio::model_route::saved(&saved)
@@ -394,19 +399,11 @@ impl StudioThreadFactory {
         let local_root = bot_root
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from(&thread.workspace_path));
-        let canonical_project_root = tokio::task::spawn_blocking(move || {
-            let project_root = match bot_root {
-                Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
-                    &project_copy,
-                )?,
-            };
-            Ok::<_, anyhow::Error>(project_root)
-        })
-        .await?
-        .map_err(|error| resource_error("resolve root workspace", error))?;
+        let canonical_project_root =
+            Self::resolve_canonical_project_root(project_copy, bot_root, "resolve root workspace")
+                .await?;
         let (root, verified_lease) =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
@@ -423,21 +420,18 @@ impl StudioThreadFactory {
             }
         })
         .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
-        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
-            .await
-            .map_err(Self::workspace_usage_error)?;
+        self.assign_native_workspace(&workspace_usage, &project, workspace.root())
+            .await?;
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "activation_workspace", elapsed_ms = workspace_started.elapsed().as_millis() as u64, "completed");
-        let store = FileResourceStore::new(
-            self.services
-                .store
-                .session_resources_dir_for(&thread.workspace_id, id)
-                .map_err(|error| resource_error("resolve root session resources", error))?,
-        );
+        let store = self.open_session_resources(
+            &thread.workspace_id,
+            id,
+            "resolve root session resources",
+        )?;
         let tools_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", "starting");
         let mut prepared = self
-            .prepare_thread_tools(ThreadToolAssembly {
-                assignment: None,
+            .bind_native_tools(super::native_assembly::NativeToolBinding {
                 workspace_usage: workspace_usage.clone(),
                 thread_id: id,
                 cancellation: &cancellation,
@@ -447,7 +441,7 @@ impl StudioThreadFactory {
                 root_thread_id: &thread.root_thread_id,
                 workspace,
                 store: store.clone(),
-                helper_source: self.services.helper_source.clone(),
+                assignment: None,
             })
             .await?;
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", elapsed_ms = tools_started.elapsed().as_millis() as u64, "completed");
@@ -518,13 +512,11 @@ impl StudioThreadFactory {
 
             initial_extensions.insert(
                 "studio.project".into(),
-                OpaquePayload::new(
-                    "pl.studio.project",
-                    1,
-                    serde_json::to_string(&project)
-                        .map_err(|error| resource_error("encode root project", error))?,
-                )
-                .map_err(|error| resource_error("freeze root project", error))?,
+                Self::encode_frozen_project(
+                    &project,
+                    "encode root project",
+                    "freeze root project",
+                )?,
             );
         }
         // Opening saved history preserves its run, even when the registered graph changed.
@@ -542,66 +534,51 @@ impl StudioThreadFactory {
         }
         let persistence_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", "starting");
-        let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
-            self.services.store.clone(),
-            protocol_thread,
-        )
-        .await
-        .map_err(|error| resource_error("open Thread persistence", error))?;
-        let export_history = self
-            .services
-            .store
-            .history(id)
-            .await
-            .map_err(|error| resource_error("open export history", error))?
-            .reader();
+        let persistence = self
+            .open_native_persistence(protocol_thread, "open Thread persistence")
+            .await?;
+        let export_history = self.open_native_export_history(id).await?;
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", elapsed_ms = persistence_started.elapsed().as_millis() as u64, "completed");
-        let model = model_available
-            .then(|| {
-                crate::studio::model_binding::configured_model(
-                    &route,
-                    &config,
-                    self.services.thread_modes.clone(),
-                    prepared.hosted,
-                )
-            })
-            .transpose()
-            .map_err(|error| resource_error("prepare Native model binding", error))?;
-        let spec = StudioThreadSpec {
-            workspace_usage: Some(workspace_usage),
+        let model = self.bind_native_model(
+            &route,
+            &config,
+            prepared.hosted,
+            if model_available {
+                super::native_assembly::NativeModelAvailability::Bind
+            } else {
+                super::native_assembly::NativeModelAvailability::LeaveUnbound
+            },
+        )?;
+        let spec = Self::compose_native_spec(super::native_assembly::NativeSpecParts {
+            workspace: &prepared.workspace,
             preparation_guard: prepared.binding_guard.take(),
             agent_controls,
-            execution: pl_core::thread::input::InputDriverOptions {
-                max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
-            },
+            max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
             id: id.into(),
             parent_id: None,
             route,
             model,
             current,
             initial_context,
-            initial_runtime_facts: super::session_files::session_files_fact(&prepared.workspace)
-                .into_iter()
-                .collect(),
             initial_extensions,
-            tools: Vec::new(),
-            resources: ResourceAccess::new(store),
-            capacity: Default::default(),
-            history_sink: Some(persistence),
-        };
+            store,
+            workspace_usage: Some(workspace_usage),
+            persistence,
+        });
         if let Some(lease) = verified_lease {
-            self.confirm_worktree_binding(
+            self.confirm_native_worktree(
                 &lease,
                 spec.workspace_usage.as_ref().expect("root preparation use"),
                 &workspace_owner,
+                "confirm root worktree binding",
             )
-            .await
-            .map_err(|error| resource_error("confirm root worktree binding", error))?;
+            .await?;
         }
-        if let Some(exporter) = &self.services.run_export
-            && exporter.is_enrolled_root(&thread.root_thread_id)
-        {
-            Box::pin(exporter.register_member(
+        if let Some(exporter) = self.enrolled_exporter(&thread.root_thread_id) {
+            Self::publish_enrolled_member(
+                exporter,
+                &thread.root_thread_id,
+                id,
                 crate::studio::runtime::run_export::NewMemberRegistration {
                     root_thread_id: thread.root_thread_id.clone(),
                     thread_id: id.into(),
@@ -614,12 +591,9 @@ impl StudioThreadFactory {
                     initial_effect_seq: saved.commit_sequence,
                     history: export_history,
                 },
-            ))
+                prepared.catalog.as_deref(),
+            )
             .await;
-            if let Some(catalog) = prepared.catalog.as_deref() {
-                Box::pin(exporter.record_skills_discovered(&thread.root_thread_id, id, catalog))
-                    .await;
-            }
         }
         Ok(prepared.tools.install(spec))
     }

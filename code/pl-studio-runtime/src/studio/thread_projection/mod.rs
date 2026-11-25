@@ -2,36 +2,31 @@
 mod agent_directory;
 mod item;
 pub(in crate::studio) use agent_directory::{awaiting_scheduling, native_activity};
-pub(crate) use item::{ExecutionItem, ExecutionKind, ExecutionShape};
+pub(crate) use item::{ExecutionItem, ExecutionShape, ItemStamp};
 mod accounting;
 mod billing;
 pub(crate) use accounting::PreparedAccounting;
+pub(in crate::studio) use accounting::merge_runtime_costs;
 pub(crate) use billing::AuxiliaryBillingReceipt;
 pub(in crate::studio) use billing::BillingFact;
-#[cfg(test)]
-pub(in crate::studio) use billing::billing_facts;
 mod activity;
-mod completed_activity;
 pub(in crate::studio) use activity::project_activity;
-pub(in crate::studio) use completed_activity::activity_identity;
 mod completions;
 mod content;
 mod current;
 mod current_page;
-pub(in crate::studio) use current::{CurrentEntryWrite, CurrentPositionIndex};
-pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
-mod current_projection;
 pub(in crate::studio) use content::{ContentError, InputView, input_presentation, input_view};
 pub(in crate::studio) use current::CurrentState;
-pub(in crate::studio) use current_projection::FrozenCurrentProjection;
+pub(in crate::studio) use current::FrozenCurrentProjection;
+pub(in crate::studio) use current::{CurrentEntryWrite, CurrentPositionIndex};
+pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
 pub(in crate::studio) mod live;
-pub(in crate::studio) mod presentation;
+pub(crate) use live::provenance::{hidden, work};
 pub(in crate::studio) use live::{
     LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult,
 };
-pub(crate) use presentation::{hidden, work};
 mod runtime;
 mod usage_projection;
 pub(in crate::studio) use runtime::{
@@ -49,6 +44,8 @@ mod responses;
 pub(in crate::studio) mod tools;
 mod turns;
 mod user_input;
+#[cfg(test)]
+mod user_input_history;
 mod wait;
 pub(in crate::studio) use turns::project_active_turn;
 pub(in crate::studio) use user_input::{
@@ -122,5 +119,3 @@ pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::T
 }
 
 pub(crate) use tool_media::{resource_references, resource_references_for_deliveries};
-
-mod history_facts;

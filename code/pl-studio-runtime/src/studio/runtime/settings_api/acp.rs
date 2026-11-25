@@ -69,8 +69,7 @@ impl StudioRuntime {
             .save_acp_definition(&account, request.expected_document_revision)?;
         let changed = previous != state.acp;
         // 连接身份若变化，旧代次在发布前被撤消；设置快照返回新的 connection revision。
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -92,8 +91,7 @@ impl StudioRuntime {
             .config_runtime
             .delete_acp_definition(&request.account_id, request.expected_document_revision)?;
         let changed = true;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
+        self.run_settings_command(
             request.operation_id,
             &state,
             changed,
@@ -111,18 +109,8 @@ impl StudioRuntime {
     /// 命令只校验配置连接身份与操作准入，随后立即返回受理回执；进展与终态经 `acpAuth` topic
     /// 发布，调用方不会因人工登录而挂起。
     pub fn start_acp_auth(&self, request: StartAcpAuthRequest) -> Result<AcpAuthCommandReply> {
-        Self::validate_operation_id(&request.operation_id)?;
-        let operation_id = request.operation_id.clone();
-        let acceptance = self.acp_accounts.start(request)?;
-        Ok(AcpAuthCommandReply {
-            receipt: self.command_receipt(
-                operation_id,
-                acceptance.changed,
-                vec![self.resource_stamp("acp-auth", acceptance.snapshot.revision)],
-                CommandEffectPoint::Immediate,
-                false,
-            ),
-            snapshot: acceptance.snapshot,
+        self.run_acp_command(request.operation_id.clone(), || {
+            self.acp_accounts.start(request)
         })
     }
 
@@ -134,26 +122,25 @@ impl StudioRuntime {
         &self,
         request: ContinueAcpAuthRequest,
     ) -> Result<AcpAuthCommandReply> {
-        Self::validate_operation_id(&request.operation_id)?;
-        let operation_id = request.operation_id.clone();
-        let acceptance = self.acp_accounts.continue_auth(request)?;
-        Ok(AcpAuthCommandReply {
-            receipt: self.command_receipt(
-                operation_id,
-                acceptance.changed,
-                vec![self.resource_stamp("acp-auth", acceptance.snapshot.revision)],
-                CommandEffectPoint::Immediate,
-                false,
-            ),
-            snapshot: acceptance.snapshot,
+        self.run_acp_command(request.operation_id.clone(), || {
+            self.acp_accounts.continue_auth(request)
         })
     }
 
     /// 取消当前 ACP 认证操作；终态仍由 owner 在资源收尾后发布。
     pub fn cancel_acp_auth(&self, request: CancelAcpAuthRequest) -> Result<AcpAuthCommandReply> {
-        Self::validate_operation_id(&request.operation_id)?;
-        let operation_id = request.operation_id.clone();
-        let acceptance = self.acp_accounts.cancel(request)?;
+        self.run_acp_command(request.operation_id.clone(), || {
+            self.acp_accounts.cancel(request)
+        })
+    }
+
+    fn run_acp_command(
+        &self,
+        operation_id: String,
+        accept: impl FnOnce() -> Result<super::super::acp_accounts::AcpAccountAcceptance>,
+    ) -> Result<AcpAuthCommandReply> {
+        Self::validate_operation_id(&operation_id)?;
+        let acceptance = accept()?;
         Ok(AcpAuthCommandReply {
             receipt: self.command_receipt(
                 operation_id,
@@ -169,7 +156,5 @@ impl StudioRuntime {
 
 /// wire 接入类型到配置类型的穷尽映射；两种表示刻意分离，避免协议类型进入配置文件。
 fn config_provider(provider: crate::AcpProvider) -> ConfigAcpProvider {
-    match provider {
-        crate::AcpProvider::Antigravity => ConfigAcpProvider::Antigravity,
-    }
+    provider.into()
 }

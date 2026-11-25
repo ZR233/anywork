@@ -12,8 +12,9 @@ use crate::{
 };
 use anyhow::Result;
 
+use super::super::acp_ops::{LedgerCheck, RetainedJoin, RetainedTask};
 use super::super::acp_worker::PROCESS_CLEANUP_LIMIT;
-use super::mapping::{acp_error, ensure_operation_id};
+use super::mapping::{acp_error, ensure_operation_id, ledger_rejection};
 use super::operation::{self, OperationPlan};
 use super::registry::{
     AcceptedAction, AcceptedIntent, AcpAccountInner, ConnectionIdentity, Operation,
@@ -21,11 +22,6 @@ use super::registry::{
 use crate::config::{AcpDefinitionsSnapshot, ConfigRuntime, SettingsCommitObserver};
 use crate::studio::{ProductEventBus, StudioStore};
 use pl_remote_helper::Executor;
-
-/// 本 runtime 生命周期内保留的已受理操作身份上限。
-///
-/// 达到上限后拒绝新的 operation ID，绝不淘汰旧 ID 再重放其副作用（见 design/28 §28.2）。
-pub(super) const MAX_ACCEPTED_STARTS: usize = 4096;
 
 /// 认证 owner 本体；`Clone` 只克隆共享句柄，不复制事实。
 #[derive(Clone)]
@@ -37,10 +33,7 @@ pub(crate) struct AcpAccountRuntime {
 ///
 /// 回执（receipt）由 runtime 用同一 `resource_stamp`/`command_receipt` 风格组装，owner 不复制
 /// 第二套回执构造。
-pub(crate) struct AcpAccountAcceptance {
-    pub snapshot: AcpAuthSnapshot,
-    pub changed: bool,
-}
+pub(crate) type AcpAccountAcceptance = super::super::acp_ops::TopicAcceptance<AcpAuthSnapshot>;
 
 impl AcpAccountRuntime {
     pub(crate) fn new(
@@ -224,7 +217,6 @@ impl AcpAccountRuntime {
         }
         for operation in operations {
             operation.cancel.cancel();
-            operation.cleanup_retry.notify_one();
         }
         self.inner.retirement_wake.notify_one();
     }
@@ -244,29 +236,21 @@ impl AcpAccountRuntime {
         let deadline = tokio::time::Instant::now() + PROCESS_CLEANUP_LIMIT;
         let operation_issues =
             futures::future::join_all(operations.into_iter().map(|operation| async move {
-                // Tokio 的异步互斥锁只串行化这一任务的 join。句柄一直留在 owner 内；
-                // 外层关闭取消本 future 或预算到期都只释放借用，不 detach 任务。
-                let completed = tokio::time::timeout_at(deadline, async {
-                    let mut handle = operation.join.lock().await;
-                    let result = match handle.as_mut() {
-                        Some(task) => Some(task.await.is_ok()),
-                        None => None,
-                    };
-                    handle.take();
-                    result
-                })
-                .await;
-                match completed {
-                    Ok(Some(true)) => None,
-                    Ok(Some(false)) => Some(format!(
-                        "ACP auth operation {} ended without a clean join",
-                        operation.operation_id
-                    )),
-                    Ok(None) => Some(format!(
+                // 超时和取消只丢掉这个 waiter。句柄留在 owner 槽里，已观察的 join 错误
+                // 不会在重试时变成“没有句柄”。
+                match operation.join.join_until(deadline).await {
+                    RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) => None,
+                    RetainedJoin::Observed(Err(_)) | RetainedJoin::Settled(Err(_)) => {
+                        Some(format!(
+                            "ACP auth operation {} ended without a clean join",
+                            operation.operation_id
+                        ))
+                    }
+                    RetainedJoin::Absent => Some(format!(
                         "ACP auth operation {} has no join handle",
                         operation.operation_id
                     )),
-                    Err(_) => Some(format!(
+                    RetainedJoin::TimedOut => Some(format!(
                         "ACP auth operation {} did not finish within the shutdown budget",
                         operation.operation_id
                     )),
@@ -277,7 +261,7 @@ impl AcpAccountRuntime {
         let connection_issues = futures::future::join_all(self.connections().into_iter().map(
             |connection| async move {
                 connection
-                    .close()
+                    .close_until(deadline)
                     .await
                     .err()
                     .map(|error| error.to_string())
@@ -397,14 +381,15 @@ impl AcpAccountInner {
                 false,
             ));
         }
-        if let Some(recorded) = registry.accepted.get(&request.operation_id).cloned() {
-            if recorded != intent {
-                return Err(acp_error(
-                    StudioErrorCode::Conflict,
-                    "该 operationId 已绑定另一个 ACP 认证意图",
-                    false,
-                ));
-            }
+        let replay = match registry
+            .accepted
+            .check_or_replay(&request.operation_id, &intent)
+        {
+            Ok(LedgerCheck::Fresh) => None,
+            Ok(LedgerCheck::Replay(recorded)) => Some(recorded),
+            Err(error) => return Err(ledger_rejection(error)),
+        };
+        if let Some(recorded) = replay {
             let Some(slot) = registry.slots.get(&request.account_id) else {
                 return Err(acp_error(
                     StudioErrorCode::NotFound,
@@ -434,12 +419,8 @@ impl AcpAccountInner {
                 changed: false,
             });
         }
-        if !background && registry.accepted.len() >= MAX_ACCEPTED_STARTS {
-            return Err(acp_error(
-                StudioErrorCode::Overloaded,
-                "已受理的 ACP 认证操作身份过多，请重启运行时后重试",
-                true,
-            ));
+        if !background && let Err(error) = registry.accepted.ensure_capacity() {
+            return Err(ledger_rejection(error));
         }
 
         let (connection_revision, busy) = {
@@ -494,8 +475,7 @@ impl AcpAccountInner {
             cancel: tokio_util::sync::CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             authentication,
-            cleanup_retry: tokio::sync::Notify::new(),
-            join: tokio::sync::Mutex::new(None),
+            join: RetainedTask::empty(),
         });
         let initial = super::mapping::initial_state(&request.action, &request.operation_id);
         {
@@ -529,7 +509,8 @@ impl AcpAccountInner {
         if !background {
             registry
                 .accepted
-                .insert(request.operation_id.clone(), intent);
+                .record(request.operation_id.clone(), intent)
+                .expect("ACP auth identity capacity was checked under this lock");
         }
         registry.bump();
         let snapshot = registry.snapshot();
@@ -539,10 +520,7 @@ impl AcpAccountInner {
             plan,
         ));
         // 在持有 registry 锁时记录 join 出口：并发关闭不会看到“有操作但没有句柄”的中间态。
-        *operation
-            .join
-            .try_lock()
-            .expect("new operation is private until registry unlock") = Some(task);
+        operation.join.install(task);
         drop(registry);
         inner.emit(snapshot.clone());
         Ok(AcpAccountAcceptance {
@@ -609,8 +587,7 @@ mod tests {
             cancel: CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             authentication: sender,
-            cleanup_retry: tokio::sync::Notify::new(),
-            join: tokio::sync::Mutex::new(None),
+            join: RetainedTask::empty(),
         }));
         slot.state = AcpAuthState::Checking {
             operation_id: "flow".into(),

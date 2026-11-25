@@ -3,14 +3,17 @@ use pl_tool::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup};
 mod migration;
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, decode_object, load_object, put_object},
+    object::{
+        PersistedStudioObject, checked_bump_revision, decode_object, list_objects, load_object,
+        put_object,
+    },
 };
-use crate::studio::agent_host::worktree_lease::{
+use crate::studio::worktree::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 pub(super) use migration::upgrade_bindings;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{EntityTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,11 +51,7 @@ pub(crate) struct AgentCloseRecord {
 
 impl AgentCloseRecord {
     pub(crate) fn changed(&mut self) -> Result<()> {
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .context("agent close revision exhausted")?;
-        Ok(())
+        checked_bump_revision(&mut self.revision, "agent close")
     }
 
     pub(crate) fn result(&self) -> AgentCloseResult {
@@ -157,7 +156,7 @@ pub(in crate::studio) async fn migrate_bot_roots(
     db: &sea_orm::DatabaseConnection,
     mappings: &mut [crate::studio::startup::storage_layout::bot_roots::BotRootMove],
 ) -> Result<()> {
-    use crate::studio::entity::studio_object;
+    use crate::studio::store::object::studio_object;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set, IntoActiveModel};
     let tx = db.begin().await?;
     for mapping in mappings {
@@ -229,26 +228,12 @@ impl StudioStore {
     }
 
     pub(crate) async fn agent_closes(&self) -> Result<Vec<AgentCloseRecord>> {
-        use crate::studio::entity::studio_object;
-        studio_object::Entity::find()
-            .filter(studio_object::Column::ObjectKind.eq(AgentCloseRecord::OBJECT_KIND))
-            .all(self.database())
-            .await?
-            .into_iter()
-            .map(decode_object::<AgentCloseRecord>)
-            .collect()
+        list_objects(self.database()).await
     }
 
     /// An unpublished old candidate never grants deletion; its source is left untouched.
-    pub(crate) async fn has_legacy_retirement(&self, id: &str) -> Result<bool> {
-        use crate::studio::entity::studio_object::{self, Column};
-        Ok(studio_object::Entity::find()
-            .filter(Column::OwnerKind.eq("thread"))
-            .filter(Column::OwnerId.eq(id))
-            .filter(Column::ObjectKind.eq("agentRetirement"))
-            .one(self.database())
-            .await?
-            .is_some())
+    pub(crate) fn has_legacy_retirement(&self, id: &str) -> bool {
+        self.legacy_retirements.contains(id)
     }
 
     /// The domain job owns this transaction even when its original caller stops waiting.

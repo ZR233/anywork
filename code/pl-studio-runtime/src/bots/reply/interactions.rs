@@ -65,7 +65,7 @@ impl BotRuntime {
             return Step::Wait;
         }
         for local in &locals {
-            let fact = match runtime.bot_interaction_fact(&run.thread_id, local).await {
+            let fact = match runtime.bot_interaction_fact(&run.thread_id, local) {
                 Ok(fact) => fact,
                 Err(error) => {
                     return Step::Done(recoverable(format!(
@@ -196,7 +196,7 @@ impl BotRuntime {
         }
         let mut waiting = false;
         for local in &locals {
-            let pending = match runtime.bot_interaction_fact(&run.thread_id, local).await {
+            let pending = match runtime.bot_interaction_fact(&run.thread_id, local) {
                 Ok(BotInteractionRead::Ready(fact)) => {
                     if fact.kind == BotInteractionKind::UserInput
                         && fact.status != InteractionStatus::Pending

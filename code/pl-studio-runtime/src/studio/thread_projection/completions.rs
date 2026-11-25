@@ -14,12 +14,14 @@ pub(super) fn project_completion(
     let summary = completion_summary(delivery)?;
     Some(ExecutionItem::new(
         order::completion_id(&delivery.call_id),
-        thread_id.into(),
-        turn_id.into(),
-        0,
-        revision,
-        at,
-        at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread_id.into()),
+            turn_id: std::borrow::Cow::Owned(turn_id.into()),
+            ordinal: 0,
+            revision,
+            created_at: at,
+            updated_at: at,
+        },
         ExecutionShape::Text(ThreadTextItem::new(
             ThreadTextChannel::Final,
             summary,

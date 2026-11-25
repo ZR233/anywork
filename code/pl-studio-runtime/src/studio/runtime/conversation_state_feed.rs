@@ -113,7 +113,6 @@ impl StudioRuntime {
         let mut runtime_floor = (0, 0);
         let mut activity = None;
         let mut activity_floor = 0;
-        let cold_terminal = None;
         let mut annotate_route = false;
         let (effect_cut, active_turn, business_refs) = if let Some((
             state_rx,
@@ -205,18 +204,17 @@ impl StudioRuntime {
                         crate::studio::thread_projection::CurrentState::from_saved(&saved)?;
                     model_route = crate::studio::model_route::saved(&snapshot)?
                         .map(|route| route.snapshot(false));
-                    let projected = crate::studio::thread_projection::project_cold_runtime(
-                        thread_id,
-                        &snapshot,
-                        thread.updated_at,
-                        &snapshot.usage_summary,
-                    )?;
-                    let mut resources =
-                        super::thread_observation::state_resources::StateResources::cold(
+                    // Keep the deferred runtime snapshot; the cold body index is not retained here.
+                    let (_, runtime_snapshot) =
+                        super::thread_observation::state_resources::StateResources::project_cold(
                             current.owner_id().into(),
                             saved.snapshot_revision,
-                        );
-                    runtime = Some(resources.runtime(projected)?);
+                            thread_id,
+                            &snapshot,
+                            thread.updated_at,
+                            &snapshot.usage_summary,
+                        )?;
+                    runtime = Some(runtime_snapshot);
                     (
                         saved.snapshot_revision,
                         current.active_turn().cloned(),
@@ -287,11 +285,7 @@ impl StudioRuntime {
         feed.push_frame_update(ThreadSubscriptionUpdate::Snapshot {
             snapshot: Box::new(snapshot),
         })?;
-        if let Some(turn) = cold_terminal {
-            feed.reflect_terminal(turn)?;
-        } else {
-            feed.reflect_retained_turn()?;
-        }
+        feed.reflect_retained_turn()?;
         feed.ready_frames = feed.pending.len();
         Ok(feed)
     }

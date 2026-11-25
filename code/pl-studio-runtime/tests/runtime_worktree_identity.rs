@@ -88,16 +88,47 @@ async fn public_history(
     result
 }
 
+async fn recovery_snapshot(
+    events: &mut pl_studio_runtime::StudioProductTopicSubscription,
+) -> Result<pl_studio_runtime::StudioRecoveryStateSnapshot> {
+    use pl_studio_runtime::{
+        StudioProductBaselineState, StudioProductEventKind, StudioProductFrame,
+    };
+    let frame = events.recv().await?.context("Recovery topic ended")?;
+    match frame {
+        StudioProductFrame::Baseline(baseline) => match baseline.state {
+            StudioProductBaselineState::Recovery(snapshot) => Ok(*snapshot),
+            other => anyhow::bail!("unexpected Recovery baseline: {other:?}"),
+        },
+        StudioProductFrame::Event(event) => match event.kind {
+            StudioProductEventKind::RecoveryStateChanged(snapshot) => Ok(snapshot),
+            other => anyhow::bail!("unexpected Recovery event: {other:?}"),
+        },
+        StudioProductFrame::Lagged { dropped, .. } => {
+            anyhow::bail!("lost {dropped} Recovery events")
+        }
+    }
+}
+
 async fn preview(
     runtime: &pl_studio_runtime::StudioRuntime,
     id: &str,
     inspection: StudioWorktreeInspection,
 ) -> Result<StudioWorktreeRecoveryPreview> {
+    // Subscribe before requesting the scan so the publication cannot be missed.
+    // This task owns the receiver; the runtime still owns the Recovery scan.
+    let mut events = runtime
+        .subscribe_product_topic(pl_studio_runtime::StudioProductTopic::Recovery)
+        .await?;
     let previous_revision = runtime.read_recovery_state().state.revision();
     runtime.retry_recovery().await?;
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let state = runtime.read_recovery_state().state;
+            let state = recovery_snapshot(&mut events).await?.state;
+            ensure!(
+                state.kind() != ObservedResourceKind::Failed,
+                "recovery scan failed: {state:?}"
+            );
             if state.kind() == ObservedResourceKind::Ready && state.revision() > previous_revision {
                 if let Some(preview) = state
                     .value()
@@ -113,16 +144,11 @@ async fn preview(
                 // A startup scan can have observed the owner before this explicit directory
                 // command. Recheck only after that scan publishes its completed result.
                 runtime.retry_recovery().await?;
-            }
-            if state.kind() == ObservedResourceKind::Ready && state.revision() <= previous_revision
+            } else if state.kind() == ObservedResourceKind::Ready
+                && state.revision() <= previous_revision
             {
                 runtime.retry_recovery().await?;
             }
-            ensure!(
-                state.kind() != ObservedResourceKind::Failed,
-                "recovery scan failed: {state:?}"
-            );
-            tokio::task::yield_now().await;
         }
     })
     .await
@@ -130,15 +156,17 @@ async fn preview(
 }
 
 async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()> {
+    let mut events = runtime
+        .subscribe_product_topic(pl_studio_runtime::StudioProductTopic::Recovery)
+        .await?;
     // Finish an older scan before requesting a fresh observation of current facts.
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let state = runtime.read_recovery_state().state;
+            let state = recovery_snapshot(&mut events).await?.state;
             ensure!(state.kind() != ObservedResourceKind::Failed, "{state:?}");
             if state.kind() == ObservedResourceKind::Ready {
                 return Ok::<_, anyhow::Error>(());
             }
-            tokio::task::yield_now().await;
         }
     })
     .await
@@ -147,7 +175,7 @@ async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()
     runtime.retry_recovery().await?;
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let state = runtime.read_recovery_state().state;
+            let state = recovery_snapshot(&mut events).await?.state;
             ensure!(state.kind() != ObservedResourceKind::Failed, "{state:?}");
             if state.kind() == ObservedResourceKind::Ready && state.revision() > before {
                 return Ok(());
@@ -155,7 +183,6 @@ async fn recovery_ready(runtime: &pl_studio_runtime::StudioRuntime) -> Result<()
             if state.kind() == ObservedResourceKind::Ready {
                 runtime.retry_recovery().await?;
             }
-            tokio::task::yield_now().await;
         }
     })
     .await

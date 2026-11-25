@@ -293,11 +293,7 @@ mod real_transport {
                 close.local_complete && !close.sdk_finished && !close.cleanup_timed_out,
                 "{close:?}"
             );
-            ensure!(
-                close.owner_failures.is_empty()
-                    && close.worker_error.is_none()
-                    && close.driver_error.is_none()
-            );
+            ensure!(close.owner_failures.is_empty() && close.driver_error.is_none());
             ensure!(close.unfinished_prompt.is_none() && !close.unfinished_controls);
             ensure!(close.last_completed.as_ref().map(|done| done.run) == Some(bridged_run));
             // Closing a member retains the shared account process; finish verifies its final exit.

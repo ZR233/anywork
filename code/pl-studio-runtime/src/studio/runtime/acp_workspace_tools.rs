@@ -1,9 +1,10 @@
 //! Workspace and skill tools over ordinary authors and the original ACP execution owner.
 use super::acp_host_mcp::{HostBinding, HostHandle, attach_binding, prepare_binding};
-use crate::{studio::thread_factory::PreparedAcpWorkspace, thread_assembler::AgentHost};
+use crate::studio::thread_factory::PreparedAcpWorkspace;
+use crate::tool_json::{JsonToolInput, json_output};
 use anyhow::Result;
 use futures::future::BoxFuture;
-use pl_agent_tool::{Tool, ToolDefinition, typed::decode_json};
+use pl_agent_tool::{Tool, ToolDefinition};
 use pl_core::{
     context::{OpaquePayload, ResourceReader, ResourceReference},
     thread::{
@@ -301,7 +302,6 @@ impl WorkspaceTools {
 
     async fn invoke(
         self: Arc<Self>,
-        host: Arc<AgentHost>,
         context: AgentCallContext,
         name: String,
         input: OpaquePayload,
@@ -315,11 +315,6 @@ impl WorkspaceTools {
         if observer.is_cancelled() {
             return Err(ControlError::Closed);
         }
-        let business_context = AgentCallContext {
-            caller: context.caller,
-            call_id: context.call_id.clone(),
-            cancellation: cancellation.clone(),
-        };
         let owner = self.clone();
         let invocation = WorkspaceInvocation {
             owner_id: self.thread_id.clone(),
@@ -335,9 +330,6 @@ impl WorkspaceTools {
             .tasks
             .start(identity, cancellation, async move {
                 let output = async {
-                    host.authorize_workspace_call(&business_context)
-                        .await
-                        .map_err(ToolError::new)?;
                     let mut invocation = invocation;
                     if policy
                         .authorization
@@ -602,9 +594,7 @@ impl HostWorkspaceSink for McpWorkspaceSink<'_> {
                 let policy = policy.clone();
                 Box::pin(async move {
                     host.authorize_workspace_call(&context).await?;
-                    owner
-                        .invoke(host, context, name, input, policy, handle)
-                        .await
+                    owner.invoke(context, name, input, policy, handle).await
                 })
             },
         );
@@ -673,30 +663,16 @@ impl Tool for WorkspaceTaskTool {
         input: OpaquePayload,
         context: AgentCallContext,
     ) -> Result<ToolOutput, ToolError> {
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(std::io::Error::other(
-                "unsupported task argument encoding",
-            )));
-        }
+        let input = JsonToolInput::new(&input)?;
         let owner = self
             .owner
             .upgrade()
             .ok_or_else(|| ToolError::new(pl_core::thread::ThreadError::Closed))?;
         let value = owner
-            .control(
-                self.operation,
-                decode_json(input.content()).map_err(ToolError::new)?,
-                context.cancellation,
-            )
+            .control(self.operation, input.decode()?, context.cancellation)
             .await
             .map_err(|error| ToolError::new(ControlError::Service(error.into_boxed_dyn_error())))?;
-        let encoded = value.to_string();
-        Ok(ToolOutput::new(
-            OpaquePayload::new("pl.host.tool-task", 1, encoded.clone()).map_err(ToolError::new)?,
-            vec![pl_core::context::ContextContent::Text {
-                text: encoded.into(),
-            }],
-        ))
+        json_output("pl.host.tool-task", &value)
     }
 }
 

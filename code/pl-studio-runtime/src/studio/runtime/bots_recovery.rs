@@ -13,12 +13,8 @@ use super::StudioRuntime;
 use crate::bots::{BotInputRead, BotInteractionFact, BotInteractionKind, BotInteractionRead};
 
 impl StudioRuntime {
-    pub(crate) async fn bot_input_fact(
-        &self,
-        thread_id: &str,
-        input_id: &str,
-    ) -> Result<BotInputRead> {
-        let state = self.bot_current_state(thread_id).await?;
+    pub(crate) fn bot_input_fact(&self, thread_id: &str, input_id: &str) -> Result<BotInputRead> {
+        let state = self.bot_current_state(thread_id)?;
         if let Some(record) = state
             .inputs
             .iter()
@@ -42,12 +38,12 @@ impl StudioRuntime {
         Ok(BotInputRead::Absent)
     }
 
-    pub(crate) async fn bot_interaction_fact(
+    pub(crate) fn bot_interaction_fact(
         &self,
         thread_id: &str,
         local_id: &str,
     ) -> Result<BotInteractionRead> {
-        let state = self.bot_current_state(thread_id).await?;
+        let state = self.bot_current_state(thread_id)?;
         if let Some(record) = state.interactions.get(local_id) {
             return Ok(BotInteractionRead::Ready(interaction_fact(record)));
         }
@@ -57,7 +53,7 @@ impl StudioRuntime {
         Ok(BotInteractionRead::Absent)
     }
 
-    async fn bot_current_state(&self, thread_id: &str) -> Result<pl_core::thread::ThreadSnapshot> {
+    fn bot_current_state(&self, thread_id: &str) -> Result<pl_core::thread::ThreadSnapshot> {
         if let Some(handle) = self
             .session_of(thread_id)
             .and_then(|session| session.thread(thread_id))

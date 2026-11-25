@@ -255,16 +255,16 @@ impl StudioRuntime {
             (Err(storage), Err(config)) => return Err(prefer_environment(storage, config)),
             (Err(error), Ok(_)) => return Err(error),
         };
-        let assembled = Self::assemble(
-            store.clone(),
-            config,
-            resolved.paths.system_skills_dir(),
-            resolved.helper_source.clone(),
-            resolved.host_mcp_source.clone(),
-            resolved.ssh_config.clone(),
-            resolved.skill_search.clone(),
-            resolved.run_export.clone(),
-        )
+        let assembled = Self::assemble(super::builder::RuntimeAssemblyParts {
+            store: store.clone(),
+            config_runtime: config,
+            system_skills_dir: resolved.paths.system_skills_dir(),
+            helper_source: resolved.helper_source.clone(),
+            host_mcp_source: resolved.host_mcp_source.clone(),
+            ssh_config: resolved.ssh_config.clone(),
+            skill_search: resolved.skill_search.clone(),
+            run_export: resolved.run_export.clone(),
+        })
         .await;
         let runtime = match assembled {
             Ok(runtime) => runtime,
@@ -313,7 +313,7 @@ impl StudioRuntime {
             ),
             timed_step(
                 "prepare_resource_ownership",
-                crate::studio::agent_host::worktree_lease::load_leases(&self.store)
+                crate::studio::worktree::worktree_lease::load_leases(&self.store)
             ),
             timed_step("prepare_remote_configuration", self.hydrate_ssh_servers()),
             timed_step("prepare_system_skills", self.skills.refresh_system_skills())
@@ -421,7 +421,7 @@ impl StudioRuntime {
 
     fn start_persistence_observer(
         &self,
-        writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        writer: crate::studio::storage::write_behind::ThreadWriteBehindWriter,
     ) -> impl std::future::Future<Output = ObserverOpenResult> + Send + 'static {
         let bus = self.agent_facility.product_events.clone();
         let threads = self.store.thread_persistence().clone();

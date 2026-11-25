@@ -1162,20 +1162,7 @@ impl BotRuntime {
         self.close_publisher().await?;
         {
             let mut slot = self.inner.recovery.lock().await;
-            if let Some(recovery) = slot.as_mut() {
-                let joined = std::pin::Pin::new(recovery).await;
-                *slot = None;
-                if let Err(error) = joined
-                    && !error.is_cancelled()
-                {
-                    return Err(FeishuError::new(
-                        FeishuErrorKind::Unavailable,
-                        "bot inbound recovery join failed",
-                        true,
-                        None,
-                    ));
-                }
-            }
+            join_inbound_recovery(&mut slot).await?;
         }
         self.drain_replies().await?;
         self.close_operations().await?;
@@ -1631,29 +1618,6 @@ impl BotRuntime {
                         .store
                         .binding_for_chat(&chat_id, bot_id, &workspace_id)
                         .await?;
-                    #[cfg(test)]
-                    {
-                        let pause = {
-                            let mut gate = self
-                                .inner
-                                .deletion_tests
-                                .inbound
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if gate
-                                .as_ref()
-                                .is_some_and(|(target, _, _)| target == &chat_id)
-                            {
-                                gate.take()
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some((_, entered, release)) = pause {
-                            let _ = entered.send(());
-                            let _ = release.await;
-                        }
-                    }
                     self.ensure_reply_admission(&workspace_id, &projection.creation_id)
                         .await?;
                     if let Some(target) = &projection.thread_id {
@@ -1904,20 +1868,7 @@ impl BotRuntime {
         if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return Ok(());
         }
-        if let Some(handle) = slot.as_mut() {
-            let joined = std::pin::Pin::new(handle).await;
-            *slot = None;
-            if let Err(error) = joined
-                && !error.is_cancelled()
-            {
-                return Err(FeishuError::new(
-                    FeishuErrorKind::Unavailable,
-                    "bot inbound recovery join failed",
-                    true,
-                    None,
-                ));
-            }
-        }
+        join_inbound_recovery(&mut slot).await?;
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
             return Err(FeishuError::new(
                 FeishuErrorKind::Unavailable,
@@ -1955,23 +1906,23 @@ impl BotRuntime {
         *slot = Some(handle);
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
             self.inner.reply_cancel.cancel();
-            if let Some(handle) = slot.as_mut() {
-                let joined = std::pin::Pin::new(handle).await;
-                *slot = None;
-                if let Err(error) = joined
-                    && !error.is_cancelled()
-                {
-                    return Err(FeishuError::new(
-                        FeishuErrorKind::Unavailable,
-                        "bot inbound recovery join failed",
-                        true,
-                        None,
-                    ));
-                }
-            }
+            join_inbound_recovery(&mut slot).await?;
         }
         Ok(())
     }
+}
+
+async fn join_inbound_recovery(
+    slot: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), FeishuError> {
+    super::join_owned_task(slot).await.map_err(|_| {
+        FeishuError::new(
+            FeishuErrorKind::Unavailable,
+            "bot inbound recovery join failed",
+            true,
+            None,
+        )
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2932,19 +2883,15 @@ pub(super) mod archive_tests {
             matches!(outcome, InboundWorkOutcome::NeedsAttention { diagnostic }
         if diagnostic.contains("registered reply owner"))
         );
-        assert!(
-            fixture
-                .host
-                .runtime
-                .bot_input_fact(
-                    &bound.creation_id,
-                    &format!(
-                        "bot:{}:{}:{}",
-                        bound.bot_id, bound.chat_id, bound.message_id
-                    ),
-                )
-                .await?
-                .eq(&crate::bots::BotInputRead::Absent)
+        assert_eq!(
+            fixture.host.runtime.bot_input_fact(
+                &bound.creation_id,
+                &format!(
+                    "bot:{}:{}:{}",
+                    bound.bot_id, bound.chat_id, bound.message_id
+                ),
+            )?,
+            crate::bots::BotInputRead::Absent,
         );
         fixture
             .managed

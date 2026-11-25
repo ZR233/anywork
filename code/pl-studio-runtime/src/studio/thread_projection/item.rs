@@ -1,5 +1,4 @@
 //! 仅用于执行投影的局部类型；旧持久 JSON 仅由 schema 的冻结解码器读取。
-use crate::ThreadAttachment;
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
 
@@ -18,95 +17,31 @@ pub(crate) struct ExecutionItem {
     state: ExecutionShape,
 }
 
+/// Identity, order and timestamps shared by one projected execution item.
+///
+/// Text may be borrowed until [`ExecutionItem::new`] copies it into the owned item.
+#[derive(Debug, Clone)]
+pub(crate) struct ItemStamp<'a> {
+    pub(crate) thread_id: std::borrow::Cow<'a, str>,
+    pub(crate) turn_id: std::borrow::Cow<'a, str>,
+    pub(crate) ordinal: u64,
+    pub(crate) revision: u64,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+}
+
 impl ExecutionItem {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        ordinal: u64,
-        revision: u64,
-        created_at: i64,
-        updated_at: i64,
-        state: ExecutionShape,
-    ) -> Self {
+    pub fn new(id: String, stamp: ItemStamp<'_>, state: ExecutionShape) -> Self {
         Self {
             id,
-            thread_id,
-            turn_id,
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            thread_id: stamp.thread_id.into_owned(),
+            turn_id: stamp.turn_id.into_owned(),
+            ordinal: stamp.ordinal,
+            revision: stamp.revision,
+            created_at: stamp.created_at,
+            updated_at: stamp.updated_at,
             state,
         }
-    }
-
-    #[cfg(test)]
-    pub fn completed_user_message(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        text: String,
-        attachments: Vec<ThreadAttachment>,
-        completed_at: i64,
-    ) -> Self {
-        Self::completed_input_message(
-            id,
-            thread_id,
-            turn_id,
-            ThreadTextChannel::User,
-            text,
-            attachments,
-            completed_at,
-        )
-    }
-
-    /// 创建一条来自当前 Thread 直接父代理的终态文本 Item。
-    pub fn completed_parent_agent_message(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        text: String,
-        attachments: Vec<ThreadAttachment>,
-        completed_at: i64,
-    ) -> Self {
-        Self::completed_input_message(
-            id,
-            thread_id,
-            turn_id,
-            ThreadTextChannel::ParentAgent,
-            text,
-            attachments,
-            completed_at,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn completed_input_message(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        channel: ThreadTextChannel,
-        text: String,
-        attachments: Vec<ThreadAttachment>,
-        completed_at: i64,
-    ) -> Self {
-        Self::new(
-            id,
-            thread_id,
-            turn_id,
-            0,
-            0,
-            completed_at,
-            completed_at,
-            ExecutionShape::Text(ThreadTextItem::new(
-                channel,
-                text,
-                attachments,
-                ThreadContentLifecycle::completed(completed_at),
-            )),
-        )
     }
 
     pub fn state(&self) -> &ExecutionShape {
@@ -121,10 +56,6 @@ impl ExecutionItem {
     pub fn with_state(mut self, state: ExecutionShape) -> Self {
         self.state = state;
         self
-    }
-
-    pub fn kind(&self) -> ExecutionKind {
-        self.state.kind()
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -178,21 +109,6 @@ pub(crate) enum ExecutionShape {
 }
 
 impl ExecutionShape {
-    pub fn kind(&self) -> ExecutionKind {
-        match self {
-            Self::Raw(_) => ExecutionKind::Raw,
-            Self::Text(_) => ExecutionKind::Text,
-            Self::Thinking(_) => ExecutionKind::Thinking,
-            Self::Tool(_) => ExecutionKind::Tool,
-            Self::Agent(_) => ExecutionKind::Agent,
-            Self::Turn(_) => ExecutionKind::Turn,
-            Self::Inference(_) => ExecutionKind::Inference,
-            Self::Skill(_) => ExecutionKind::Skill,
-            Self::File(_) => ExecutionKind::File,
-            Self::ContextCompaction(_) => ExecutionKind::ContextCompaction,
-        }
-    }
-
     pub fn is_terminal(&self) -> bool {
         match self {
             Self::Text(value) => value.lifecycle().is_terminal(),
@@ -219,19 +135,4 @@ impl ExecutionShape {
             Self::ContextCompaction(value) => Some(value.compacted_at()),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum ExecutionKind {
-    Raw,
-    Text,
-    Thinking,
-    Tool,
-    Agent,
-    Turn,
-    Inference,
-    Skill,
-    File,
-    ContextCompaction,
 }

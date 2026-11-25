@@ -63,9 +63,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             }
             WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
             WorktreeError::Target { .. } => (StudioErrorCode::Unavailable, true),
-            WorktreeError::GitLaunchFailed { .. }
-            | WorktreeError::GitTimedOut { .. }
-            | WorktreeError::GitExited { .. }
+            WorktreeError::GitExited { .. }
             | WorktreeError::GitStatusUnknown { .. }
             | WorktreeError::Execution { .. }
             | WorktreeError::Download { .. }

@@ -1,7 +1,6 @@
 //! Studio runtime 的 remote helper 来源：桌面随包压缩资源或外部安装。
 
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
@@ -9,8 +8,7 @@ use std::{
 use pl_tool::remote::{RemoteHelperAssets, RemoteHelperTarget, SshError, SshManager};
 use serde::Deserialize;
 
-const BUNDLED_HELPER_ARCHIVE: &str = "pl-remote-helper.zst";
-const BUNDLED_HELPER_METADATA: &str = "pl-remote-helper.metadata.json";
+use crate::executable_assets::{BundleMetadata, load_bundled_archive};
 
 /// Explicit origin of `pl-remote-helper` bytes for one Studio runtime.
 ///
@@ -32,6 +30,39 @@ struct BundledHelperMetadata {
     worker_protocol_version: u32,
     remote_protocol_version: u32,
     sha256: String,
+}
+
+impl BundleMetadata for BundledHelperMetadata {
+    const STEM: &'static str = "pl-remote-helper";
+    const DESCRIPTION: &'static str = "bundled helper";
+
+    fn target(&self) -> &str {
+        &self.target
+    }
+
+    fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    fn validate(&self, path: &Path) -> Result<(), String> {
+        let expected = pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION;
+        if self.worker_protocol_version != expected {
+            return Err(format!(
+                "bundled helper metadata {} declares worker protocol {}, expected {expected}; rebuild the application bundle",
+                path.display(),
+                self.worker_protocol_version,
+            ));
+        }
+        let expected = pl_remote_helper::EXECUTOR_WIRE_VERSION;
+        if self.remote_protocol_version != expected {
+            return Err(format!(
+                "bundled helper metadata {} declares remote protocol {}, expected {expected}; rebuild the application bundle",
+                path.display(),
+                self.remote_protocol_version,
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn ssh_manager(source: &RemoteHelperSource) -> SshManager {
@@ -69,7 +100,8 @@ impl RemoteHelperAssets for BundledHelperAssets {
         if let Some(bytes) = cache.get() {
             return Ok(bytes.clone());
         }
-        let loaded = load_bundled_helper(&self.root, target).map_err(SshError::Protocol)?;
+        let loaded = load_bundled_archive::<BundledHelperMetadata>(&self.root, target.triple())
+            .map_err(SshError::Protocol)?;
         if cache.set(loaded.clone()).is_ok() {
             return Ok(loaded);
         }
@@ -77,63 +109,4 @@ impl RemoteHelperAssets for BundledHelperAssets {
             SshError::Protocol("bundled helper cache initialization failed".to_string())
         })
     }
-}
-
-/// Reads, verifies and decompresses one bundled helper resource.
-///
-/// Errors report the offending resource path and the failed check so callers can
-/// surface an actionable repair message; there is no fallback to `PATH` or the
-/// network in bundled mode.
-fn load_bundled_helper(root: &Path, target: RemoteHelperTarget) -> Result<Arc<[u8]>, String> {
-    load_bundled_target(root, target.triple())
-}
-
-fn load_bundled_target(root: &Path, target: &str) -> Result<Arc<[u8]>, String> {
-    let directory = root.join(target);
-    let archive_path = directory.join(BUNDLED_HELPER_ARCHIVE);
-    let metadata_path = directory.join(BUNDLED_HELPER_METADATA);
-    let archive = fs::read(&archive_path)
-        .map_err(|error| format!("read bundled helper {}: {error}", archive_path.display()))?;
-    let metadata_bytes = fs::read(&metadata_path).map_err(|error| {
-        format!(
-            "read bundled helper metadata {}: {error}",
-            metadata_path.display()
-        )
-    })?;
-    let metadata: BundledHelperMetadata =
-        serde_json::from_slice(&metadata_bytes).map_err(|error| {
-            format!(
-                "parse bundled helper metadata {}: {error}",
-                metadata_path.display()
-            )
-        })?;
-    if metadata.target != target {
-        return Err(format!(
-            "bundled helper metadata {} declares target '{}', expected '{}'",
-            metadata_path.display(),
-            metadata.target,
-            target
-        ));
-    }
-    if metadata.worker_protocol_version
-        != pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION
-    {
-        return Err(format!(
-            "bundled helper metadata {} declares worker protocol {}, expected {}; rebuild the \
-             application bundle",
-            metadata_path.display(),
-            metadata.worker_protocol_version,
-            pl_remote_helper::process_worker_protocol::PROCESS_WORKER_PROTOCOL_VERSION
-        ));
-    }
-    if metadata.remote_protocol_version != pl_remote_helper::EXECUTOR_WIRE_VERSION {
-        return Err(format!(
-            "bundled helper metadata {} declares remote protocol {}, expected {}; rebuild the \
-             application bundle",
-            metadata_path.display(),
-            metadata.remote_protocol_version,
-            pl_remote_helper::EXECUTOR_WIRE_VERSION
-        ));
-    }
-    crate::executable_assets::decompress_verified(&archive_path, &archive, &metadata.sha256)
 }

@@ -934,7 +934,7 @@ impl SessionRuntime {
             // The ACK's cold-recovery state otherwise inflates every observation barrier, even
             // those with no children. Keep it out of the barrier's inline state; it still runs
             // under this same owner and is awaited before joining the original delivery jobs.
-            Box::pin(self.acknowledge_parent_reports(&services.store, &child)).await?;
+            Box::pin(self.acknowledge_parent_reports(&child)).await?;
         }
         self.join_review_delivery(id).await
     }

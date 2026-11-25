@@ -139,13 +139,7 @@ pub(super) async fn run(
         );
         let _ = connection.wait().await;
     }
-    let (mut state, mut usage) = terminal_result(
-        Some(protocol),
-        &operation,
-        &plan.action,
-        strategy,
-        &receiver.borrow(),
-    );
+    let (mut state, mut usage) = terminal_result(protocol, &operation, &plan.action, strategy);
     if connection
         .as_ref()
         .is_ok_and(|connection| connection.is_closing())
@@ -180,14 +174,13 @@ pub(super) async fn run(
 /// `expected_server_version`）：版本不符时这里只会收到类型化失败，因此不再有第二套迟到比较
 /// （design/28 §28.3）。
 fn terminal_result(
-    protocol: Option<Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>>,
+    protocol: Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>,
     operation: &Operation,
     action: &AcpAuthAction,
     strategy: AcpAgentStrategy,
-    last_progress: &pl_acp::auth::AuthProgress,
 ) -> (AcpAuthState, Option<crate::AcpUsageObservation>) {
     match protocol {
-        Some(Ok(pl_acp::auth::AuthOutcome::Verified { server, report })) => {
+        Ok(pl_acp::auth::AuthOutcome::Verified { server, report }) => {
             let checked_at = crate::studio::unix_seconds();
             let state = AcpAuthState::Verified {
                 checked_at,
@@ -204,7 +197,7 @@ fn terminal_result(
                 });
             (state, usage_update)
         }
-        Some(Err(error)) => {
+        Err(error) => {
             let state = if operation.cancel.is_cancelled()
                 && matches!(error.kind(), pl_acp::auth::AuthFailureKind::Cancelled)
             {
@@ -214,22 +207,5 @@ fn terminal_result(
             };
             (state, None)
         }
-        None => (
-            AcpFailure {
-                code: AcpAuthFailureCode::Transport,
-                stage: match last_progress {
-                    pl_acp::auth::AuthProgress::Initializing => AcpAuthStage::Initialize,
-                    pl_acp::auth::AuthProgress::Required { .. }
-                    | pl_acp::auth::AuthProgress::Authenticating { .. } => {
-                        AcpAuthStage::Authenticate
-                    }
-                    pl_acp::auth::AuthProgress::Verifying => AcpAuthStage::Probe,
-                    pl_acp::auth::AuthProgress::Closing => AcpAuthStage::Close,
-                },
-                retryable: true,
-            }
-            .into_state(),
-            None,
-        ),
     }
 }

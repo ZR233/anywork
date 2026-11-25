@@ -55,7 +55,6 @@ pub struct StudioGitBinding<B, P> {
 pub struct StudioWorkspaceTools {
     pub binding: StudioCommandBinding,
     pub store: FileResourceStore,
-    pub helper_source: crate::worker_assets::RemoteHelperSource,
     /// Host-owned transfer scratch for this Thread. Never exposed as model-writable workspace.
     pub host_scratch: std::path::PathBuf,
     pub capabilities: pl_tool::workspace::ToolCapabilityConfig,
@@ -102,6 +101,7 @@ impl StudioThreadTools {
     }
     /// Transfers an explicitly selected catalog, without constructing standard capabilities.
     /// Optional capability builders remain disabled for this restricted catalog.
+    #[cfg(all(test, target_os = "linux"))]
     pub fn selected(store: FileResourceStore, registrations: Vec<Registration>) -> Self {
         Self {
             command_processes: None,
@@ -118,14 +118,6 @@ impl StudioThreadTools {
                 git: false,
             },
         }
-    }
-
-    /// Constructs fresh standard tools for one Thread, using shared storage only for immutable bytes.
-    ///
-    /// # Errors
-    /// Returns declaration encoding or registration failure before publishing a Thread.
-    pub async fn standard(options: StudioWorkspaceTools) -> Result<Self, ThreadAssemblyError> {
-        Self::with_command_processes(options, None).await
     }
 
     pub(crate) async fn with_command_processes(

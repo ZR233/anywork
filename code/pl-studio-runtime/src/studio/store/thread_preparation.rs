@@ -1,11 +1,11 @@
 //! Original private assembly ownership, before catalog publication. Not a second directory.
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, decode_object, load_object, put_object},
+    object::{PersistedStudioObject, checked_bump_revision, list_objects, load_object, put_object},
 };
-use crate::studio::agent_host::worktree_lease::WorkspaceIdentity;
+use crate::studio::worktree::worktree_lease::WorkspaceIdentity;
 use anyhow::{Context, Result, ensure};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::TransactionTrait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +72,47 @@ pub(crate) struct ThreadPreparationRecord {
     pub published: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum PreparationObjectError {
+    #[error("preparation identity mismatch")]
+    Identity,
+    #[error("cyclic preparation identity")]
+    Cycle,
+    #[error("preparation retirement precedes producer ACK")]
+    RetirementAck,
+    #[error("preparation stop precedes save ACK")]
+    SaveAck,
+    #[error("deletion stop ACK is missing")]
+    DeletionAck,
+    #[error("attached obligation cannot be unattached")]
+    Attachment,
+    #[error("missing storage incarnation")]
+    Incarnation,
+    #[error("preparation save does not match its original closed receipt")]
+    ClosedReceipt,
+    #[error("private save has no original storage obligation")]
+    Storage,
+    #[error("temp cleanup precedes original resource retirement")]
+    Cleanup,
+}
+
+impl PreparationObjectError {
+    pub(super) fn reason(&self) -> &'static str {
+        match self {
+            Self::Identity => "preparation_identity",
+            Self::Cycle => "preparation_cycle",
+            Self::RetirementAck => "preparation_retirement_ack",
+            Self::SaveAck => "preparation_save_ack",
+            Self::DeletionAck => "preparation_deletion_ack",
+            Self::Attachment => "preparation_attachment",
+            Self::Incarnation => "preparation_incarnation",
+            Self::ClosedReceipt => "preparation_closed_receipt",
+            Self::Storage => "preparation_storage",
+            Self::Cleanup => "preparation_cleanup",
+        }
+    }
+}
+
 impl PersistedStudioObject for ThreadPreparationRecord {
     type PersistenceDto = Self;
     const OWNER_KIND: &'static str = "thread";
@@ -91,51 +132,51 @@ impl PersistedStudioObject for ThreadPreparationRecord {
             self.identity.thread_id == owner
                 && !self.identity.workspace_id.is_empty()
                 && !self.identity.root_id.is_empty(),
-            "preparation identity mismatch"
+            PreparationObjectError::Identity
         );
         ensure!(
             self.identity.parent_id.as_deref() != Some(owner),
-            "cyclic preparation identity"
+            PreparationObjectError::Cycle
         );
         if let PreparationBinding::Bound { identity } = &self.binding {
             WorkspaceIdentity::canonical(identity.endpoint.clone(), identity.root.clone())?;
         }
         ensure!(
             !self.retired || self.stopped,
-            "preparation retirement precedes producer ACK"
+            PreparationObjectError::RetirementAck
         );
         ensure!(
             !self.stopped || self.save != PreparationSave::Required || self.deletion_stopped,
-            "preparation stop precedes save ACK"
+            PreparationObjectError::SaveAck
         );
         ensure!(
             !self.deletion_stopped || self.stopped,
-            "deletion stop ACK is missing"
+            PreparationObjectError::DeletionAck
         );
         match (&self.storage, self.save) {
             (None, PreparationSave::Unattached) => {}
             (Some(storage), save) => {
                 ensure!(
                     save != PreparationSave::Unattached,
-                    "attached obligation cannot be unattached"
+                    PreparationObjectError::Attachment
                 );
                 ensure!(
                     !storage.incarnation.is_empty(),
-                    "missing storage incarnation"
+                    PreparationObjectError::Incarnation
                 );
                 ensure!(
                     (save == PreparationSave::Confirmed)
                         == storage
                             .closed_receipt
                             .is_some_and(|through| through >= storage.required_through),
-                    "preparation save does not match its original closed receipt"
+                    PreparationObjectError::ClosedReceipt
                 );
             }
-            _ => anyhow::bail!("private save has no original storage obligation"),
+            _ => anyhow::bail!(PreparationObjectError::Storage),
         }
         ensure!(
             self.disposition != PreparationDisposition::TempCleaned || self.retired,
-            "temp cleanup precedes original resource retirement"
+            PreparationObjectError::Cleanup
         );
         Ok(())
     }
@@ -184,15 +225,7 @@ impl StudioStore {
     }
 
     pub(crate) async fn thread_preparations(&self) -> Result<Vec<ThreadPreparationRecord>> {
-        use crate::studio::entity::studio_object;
-        studio_object::Entity::find()
-            .filter(studio_object::Column::OwnerKind.eq(ThreadPreparationRecord::OWNER_KIND))
-            .filter(studio_object::Column::ObjectKind.eq(ThreadPreparationRecord::OBJECT_KIND))
-            .all(self.database())
-            .await?
-            .into_iter()
-            .map(decode_object::<ThreadPreparationRecord>)
-            .collect()
+        list_objects(self.database()).await
     }
 
     pub(crate) async fn begin_thread_preparation(
@@ -268,10 +301,7 @@ impl StudioStore {
             .await?
             .context("private preparation has no durable original owner")?;
         change(&mut value)?;
-        value.revision = value
-            .revision
-            .checked_add(1)
-            .context("preparation revision exhausted")?;
+        checked_bump_revision(&mut value.revision, "preparation")?;
         value.validate_owner(id)?;
         put_object(&transaction, id, &value, crate::studio::unix_seconds()).await?;
         transaction.commit().await?;

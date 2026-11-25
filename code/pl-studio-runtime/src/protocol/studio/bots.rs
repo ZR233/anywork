@@ -364,6 +364,7 @@ impl std::fmt::Debug for SaveBotRequest {
             .field("secret", &self.secret)
             .field("enabled", &self.enabled)
             .field("tools_enabled", &self.tools_enabled)
+            .field("model_route", &self.model_route)
             .finish()
     }
 }

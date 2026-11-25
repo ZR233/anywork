@@ -128,62 +128,60 @@ impl ExecutionPolicy for StudioExecutionPolicy {
         if !may_escape {
             return Err(self.denied("the assigned workspace is confined"));
         }
-        match self.options.mode {
-            PermissionMode::FullAccess => Ok(external_grant()),
-            PermissionMode::RequestApproval => {
-                let prompt = ApprovalPrompt {
-                    name: self.tool_id.clone(),
-                    arguments: input.clone(),
-                    working_directory: assessment.working_directory.clone(),
-                };
-                let payload = OpaquePayload::new(
-                    "pl.studio.tool-approval",
-                    1,
-                    serde_json::to_string(&prompt).map_err(ToolError::new)?,
-                )
-                .map_err(ToolError::new)?;
-                let access = context.tasks.as_ref().ok_or_else(|| {
+        // `FullAccess` returned above; only the two approval modes reach this point.
+        if self.options.mode == PermissionMode::AutoReview {
+            let reviewer = self
+                .options
+                .reviewer
+                .as_ref()
+                .ok_or_else(|| self.denied("automatic reviewer is not configured"))?;
+            let decision = reviewer(ToolReviewRequest {
+                thread_id: context.thread_id.clone(),
+                turn_id: context.turn_id.clone(),
+                task: context.tasks.clone().ok_or_else(|| {
                     ToolError::new(pl_core::thread::ThreadError::TaskAccessDenied)
-                })?;
-                match access
-                    .request_execution_permission(payload, context.cancellation.clone())
-                    .await
-                    .map_err(ToolError::new)?
-                {
-                    pl_core::thread::permissions::PermissionDecision::Allow => Ok(external_grant()),
-                    pl_core::thread::permissions::PermissionDecision::Deny => {
-                        Err(self.denied("denied by user"))
-                    }
-                }
+                })?,
+                tool: ToolApprovalRequest {
+                    id: context.call_id.clone(),
+                    name: self.tool_id.clone(),
+                    arguments: serde_json::Value::String(input.content().to_owned()),
+                    working_directory: assessment.working_directory,
+                    parent_agent_id: Some(context.thread_id.clone()),
+                },
+                permission_mode: self.options.mode,
+                workspace_access: assessment.requested_access,
+                workspace_root: self.options.workspace.root().to_owned(),
+                cancellation_token: Some(context.cancellation.clone()),
+            })
+            .await;
+            match decision {
+                ToolApprovalDecision::Approved => Ok(external_grant()),
+                ToolApprovalDecision::Denied { reason } => Err(self.denied(reason)),
             }
-            PermissionMode::AutoReview => {
-                let reviewer = self
-                    .options
-                    .reviewer
-                    .as_ref()
-                    .ok_or_else(|| self.denied("automatic reviewer is not configured"))?;
-                let decision = reviewer(ToolReviewRequest {
-                    thread_id: context.thread_id.clone(),
-                    turn_id: context.turn_id.clone(),
-                    task: context.tasks.clone().ok_or_else(|| {
-                        ToolError::new(pl_core::thread::ThreadError::TaskAccessDenied)
-                    })?,
-                    tool: ToolApprovalRequest {
-                        id: context.call_id.clone(),
-                        name: self.tool_id.clone(),
-                        arguments: serde_json::Value::String(input.content().to_owned()),
-                        working_directory: assessment.working_directory,
-                        parent_agent_id: Some(context.thread_id.clone()),
-                    },
-                    permission_mode: self.options.mode,
-                    workspace_access: assessment.requested_access,
-                    workspace_root: self.options.workspace.root().to_owned(),
-                    cancellation_token: Some(context.cancellation.clone()),
-                })
-                .await;
-                match decision {
-                    ToolApprovalDecision::Approved => Ok(external_grant()),
-                    ToolApprovalDecision::Denied { reason } => Err(self.denied(reason)),
+        } else {
+            let prompt = ApprovalPrompt {
+                name: self.tool_id.clone(),
+                arguments: input.clone(),
+                working_directory: assessment.working_directory.clone(),
+            };
+            let payload = OpaquePayload::new(
+                "pl.studio.tool-approval",
+                1,
+                serde_json::to_string(&prompt).map_err(ToolError::new)?,
+            )
+            .map_err(ToolError::new)?;
+            let access = context
+                .tasks
+                .as_ref()
+                .ok_or_else(|| ToolError::new(pl_core::thread::ThreadError::TaskAccessDenied))?;
+            match access
+                .request_execution_permission(payload, context.cancellation.clone())
+                .await
+                .map_err(ToolError::new)?
+            {
+                pl_core::thread::permissions::PermissionDecision::Allow => Ok(external_grant()),
+                pl_core::thread::permissions::PermissionDecision::Deny => {
+                    Err(self.denied("denied by user"))
                 }
             }
         }

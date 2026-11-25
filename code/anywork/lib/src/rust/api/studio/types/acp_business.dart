@@ -80,7 +80,6 @@ class BridgeAcpBusinessClose {
   final bool cleanupTimedOut;
   final BridgeAcpBusinessFailure? remoteCloseError;
   final BridgeAcpBusinessFailure? sdkError;
-  final String? workerError;
   final String? driverError;
   final BridgeAcpRunId? unfinishedPrompt;
   final bool unfinishedControls;
@@ -93,7 +92,6 @@ class BridgeAcpBusinessClose {
     required this.cleanupTimedOut,
     this.remoteCloseError,
     this.sdkError,
-    this.workerError,
     this.driverError,
     this.unfinishedPrompt,
     required this.unfinishedControls,
@@ -108,7 +106,6 @@ class BridgeAcpBusinessClose {
       cleanupTimedOut.hashCode ^
       remoteCloseError.hashCode ^
       sdkError.hashCode ^
-      workerError.hashCode ^
       driverError.hashCode ^
       unfinishedPrompt.hashCode ^
       unfinishedControls.hashCode ^
@@ -125,7 +122,6 @@ class BridgeAcpBusinessClose {
           cleanupTimedOut == other.cleanupTimedOut &&
           remoteCloseError == other.remoteCloseError &&
           sdkError == other.sdkError &&
-          workerError == other.workerError &&
           driverError == other.driverError &&
           unfinishedPrompt == other.unfinishedPrompt &&
           unfinishedControls == other.unfinishedControls &&

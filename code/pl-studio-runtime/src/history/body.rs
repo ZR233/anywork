@@ -6,9 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BODY_CHUNK_BYTES, HistoryBody, HistoryBodyManifestEntry, HistoryBodyRole,
-    HistoryBusinessRowHead, HistoryDemand, HistoryError, HistoryEvent, HistoryEventBodyRef,
-    HistoryEventMeta, HistoryEventRecord, HistoryReader, INLINE_BODY_MAX_BYTES,
-    INLINE_EVENT_MAX_BYTES, Result,
+    HistoryBusinessRowHead, HistoryError, HistoryEvent, HistoryEventBodyRef, HistoryEventMeta,
+    HistoryEventRecord, HistoryReader, INLINE_BODY_MAX_BYTES, INLINE_EVENT_MAX_BYTES, Result,
 };
 
 #[derive(Debug, Clone)]
@@ -235,30 +234,7 @@ pub async fn read_event_body_bytes(
             "body entry {body_key} has neither inlineText nor reference"
         )));
     }
-    // Fallback for migrated events carrying standalone bodies in `history_bodies`
-    // (such as `native.tool-task.v1` from Schema 25).
-    let mut cursor = None;
-    let demand = HistoryDemand {
-        max_rows: 128,
-        max_bytes: 256 * 1024,
-    };
-    loop {
-        let page = reader
-            .list_bodies(event.event_id.clone(), cursor, demand)
-            .await?;
-        for entry in page.entries {
-            if entry.body_key == body_key {
-                enforce_max_u64(entry.reference.byte_length, max_bytes)?;
-                return stream_body_reference(reader, &entry.reference)
-                    .await
-                    .map(Some);
-            }
-        }
-        let Some(next) = page.next else {
-            return Ok(None);
-        };
-        cursor = Some(next);
-    }
+    Ok(None)
 }
 
 pub async fn stream_body_reference(

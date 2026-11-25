@@ -1,6 +1,8 @@
 //! Actual lifecycle folded by the existing projection owner, emitting stateless atomic history events.
 use super::*;
-use crate::history::{HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole};
+use crate::history::{
+    HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole, PendingBody,
+};
 use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
@@ -178,7 +180,7 @@ fn active_item_type(kind: ChatAtomKind) -> &'static str {
 
 impl LiveProjection {
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
-    pub(in crate::studio) async fn restore_current(
+    pub(in crate::studio) fn restore_current(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
@@ -391,12 +393,14 @@ impl LiveProjection {
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             let item = ExecutionItem::new(
                 id.clone(),
-                effect.thread_id.clone(),
-                start.turn_id.clone(),
-                order,
-                self.bump_content_revision(&id),
-                effect.committed_at,
-                effect.committed_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(effect.thread_id.clone()),
+                    turn_id: std::borrow::Cow::Owned(start.turn_id.clone()),
+                    ordinal: order,
+                    revision: self.bump_content_revision(&id),
+                    created_at: effect.committed_at,
+                    updated_at: effect.committed_at,
+                },
                 shape.clone(),
             );
             self.fact(&item);
@@ -487,7 +491,7 @@ impl LiveProjection {
         Ok((staged, sources))
     }
 
-    pub(super) async fn complete_provenance(
+    pub(super) fn complete_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
@@ -809,6 +813,7 @@ impl LiveProjection {
                     &atom,
                     draft,
                     &history_database_id,
+                    Vec::new(),
                 )
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
                 staged.push((terminal_position, history_event));
@@ -964,13 +969,7 @@ impl LiveProjection {
                 original_kind: atom.kind,
                 tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
             });
-            crate::studio::runtime::chat_item::build_event_from_draft(
-                &mut history_event,
-                &atom,
-                draft,
-                &history_database_id,
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            let mut extra_bodies = Vec::new();
             if let Some(tool) = &atom.tool
                 && let Some(task) = effect
                     .tasks
@@ -981,11 +980,23 @@ impl LiveProjection {
                     .iter()
                     .find(|delivery| delivery.call_id == tool.call_id)
             {
-                history_event.bodies.push(
-                    crate::studio::storage::tool_task::body(task, delivery)
-                        .map_err(|error| ProjectionError::History(error.to_string()))?,
-                );
+                let saved = crate::studio::storage::tool_task::body(task, delivery)
+                    .map_err(|error| ProjectionError::History(error.to_string()))?;
+                extra_bodies.push(PendingBody::new(
+                    saved.body_key,
+                    saved.role,
+                    saved.media_type,
+                    saved.bytes,
+                ));
             }
+            crate::studio::runtime::chat_item::build_event_from_draft(
+                &mut history_event,
+                &atom,
+                draft,
+                &history_database_id,
+                extra_bodies,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
             staged.push((terminal_position, history_event));
         }
 
@@ -1053,4 +1064,35 @@ impl LiveProjection {
             sources,
         ))
     }
+}
+
+// Independent history visibility classification.
+pub(crate) fn work(atom: &ChatAtom) -> bool {
+    let background_tool = atom.kind == ChatAtomKind::ToolCall
+        && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+        && atom
+            .tool
+            .as_ref()
+            .is_some_and(|tool| tool.name != pl_tool::file_display::TOOL_SHOW_FILES);
+    background_tool
+        || (matches!(
+            atom.kind,
+            ChatAtomKind::Reasoning
+                | ChatAtomKind::ToolCall
+                | ChatAtomKind::FileChange
+                | ChatAtomKind::Skill
+        ) && atom.delivery != ChatDeliveryKind::Independent)
+}
+
+pub(crate) fn hidden(atom: &ChatAtom) -> bool {
+    !matches!(atom.source, ChatSourceId::InboxMessage { .. })
+        && (atom.kind == ChatAtomKind::Inference
+            || (atom.kind == ChatAtomKind::TurnReceipt
+                && matches!(
+                    atom.lifecycle,
+                    ChatAtomLifecycle::Terminal {
+                        outcome: ChatTerminalOutcome::Completed,
+                        ..
+                    }
+                )))
 }

@@ -310,7 +310,6 @@ final class _Phases {
               .toList(),
           'remoteCloseErrorPresent': close.remoteCloseError != null,
           'sdkErrorPresent': close.sdkError != null,
-          'workerErrorPresent': close.workerError != null,
           'driverErrorPresent': close.driverError != null,
         };
         await record('explicit-acp-close-returned');
@@ -327,7 +326,6 @@ final class _Phases {
         // Peer protocol close is capability-dependent; its diagnostic is recorded
         // above and cannot replace or invalidate independently confirmed local cleanup.
         expect(close.sdkError, isNull);
-        expect(close.workerError, isNull);
         expect(close.driverError, isNull);
       });
       await guard('dispose-scene', scene.dispose);

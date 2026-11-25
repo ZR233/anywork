@@ -1016,11 +1016,7 @@ impl StudioRuntime {
             .workflow_plan
             .get()
             .ok_or_else(|| projection::preparation("ACP workflow owner is unavailable"))?;
-        let normalized = if matches!(mode_id.as_str(), "mode.simple" | "mode.task") {
-            crate::mode::ThreadModeId::auto()
-        } else {
-            mode_id
-        };
+        let normalized = mode_id.legacy_builtin_replacement().unwrap_or(mode_id);
         let catalog = self.thread_modes.snapshot();
         let registered = catalog
             .mode(&normalized)
@@ -1167,8 +1163,7 @@ impl StudioRuntime {
             )
         };
         if let Some(lease) = self.agent_facility.worktrees.get(&target.thread_id)
-            && lease.state
-                == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Preserved
+            && lease.state == crate::studio::worktree::worktree_lease::WorktreeLeaseState::Preserved
         {
             self.publish_worktree_recovery(Some("unused ACP draft worktree retained"), &lease)
                 .await;
@@ -1189,12 +1184,6 @@ async fn submit_acp_prompt(
     resources: &AcpResources,
     mut content: Vec<ContentBlock>,
 ) -> Result<sdk::RunId, AcpBusinessFailure> {
-    resources
-        .ensure_input_ready()
-        .map_err(projection::failure)?;
-    if !resources.association_published().await {
-        return Err(projection::failure(sdk::Error::NotReady));
-    }
     if let Some(wp) = resources.workflow_plan.get()
         && let Some(host_state) = wp
             .reconcile_run_for_turn()

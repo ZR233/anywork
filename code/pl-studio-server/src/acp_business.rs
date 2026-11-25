@@ -466,7 +466,6 @@ mod tests {
             cleanup_timed_out: true,
             remote_close_error: None,
             sdk_error: None,
-            worker_error: Some("worker still closing".into()),
             driver_error: None,
             unfinished_prompt: Some(AcpRunId {
                 instance: 9,
@@ -831,9 +830,7 @@ mod tests {
                 "{close:?}"
             );
             ensure!(
-                close.owner_failures.is_empty()
-                    && close.worker_error.is_none()
-                    && close.driver_error.is_none(),
+                close.owner_failures.is_empty() && close.driver_error.is_none(),
                 "{close:?}"
             );
             ensure!(

@@ -10,3 +10,12 @@ pub enum ConnectionMode {
     #[default]
     Http,
 }
+
+impl ConnectionMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WebSocket => "web_socket",
+            Self::Http => "http",
+        }
+    }
+}

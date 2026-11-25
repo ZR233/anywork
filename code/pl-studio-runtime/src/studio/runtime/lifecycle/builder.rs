@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::config::ConfigRuntime;
-use crate::studio::agent_host::ThreadWriteBehindWriter;
 use crate::studio::runtime_lock::RuntimeLockOwner;
+use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
 use crate::studio::{ProductEventBus, StudioRuntimeState, StudioStore};
 use pl_tool::mcp::McpConnector;
 
@@ -15,18 +15,30 @@ use super::super::{
     StudioAgentFacility, StudioExternalRuntimes, StudioUpdateRuntime,
 };
 
+/// Owners and sources required to assemble one [`StudioRuntime`].
+pub(super) struct RuntimeAssemblyParts {
+    pub(super) store: StudioStore,
+    pub(super) config_runtime: ConfigRuntime,
+    pub(super) system_skills_dir: std::path::PathBuf,
+    pub(super) helper_source: crate::worker_assets::RemoteHelperSource,
+    pub(super) host_mcp_source: crate::host_mcp_assets::HostMcpSource,
+    pub(super) ssh_config: Option<crate::SshConfigFile>,
+    pub(super) skill_search: pl_tool::skill::SkillSearchOptions,
+    pub(super) run_export: Option<std::sync::Arc<super::super::run_export::RunExportCoordinator>>,
+}
+
 impl StudioRuntime {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn assemble(
-        store: StudioStore,
-        config_runtime: ConfigRuntime,
-        system_skills_dir: std::path::PathBuf,
-        helper_source: crate::worker_assets::RemoteHelperSource,
-        host_mcp_source: crate::host_mcp_assets::HostMcpSource,
-        ssh_config: Option<crate::SshConfigFile>,
-        skill_search: pl_tool::skill::SkillSearchOptions,
-        run_export: Option<std::sync::Arc<super::super::run_export::RunExportCoordinator>>,
-    ) -> Result<Self> {
+    pub(super) async fn assemble(parts: RuntimeAssemblyParts) -> Result<Self> {
+        let RuntimeAssemblyParts {
+            store,
+            config_runtime,
+            system_skills_dir,
+            helper_source,
+            host_mcp_source,
+            ssh_config,
+            skill_search,
+            run_export,
+        } = parts;
         let local_executor = pl_remote_helper::Executor::local()?;
         let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
@@ -48,7 +60,7 @@ impl StudioRuntime {
         }
         let ssh_manager = std::sync::Arc::new(ssh_manager);
         let worktrees =
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
+            crate::studio::worktree::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let persistence = writer;
         let account_usage = AccountUsageRuntime::new(store.clone(), config_runtime.clone());
         // ACP 认证 owner 只持有身份与操作事实；构造期不启动任何外部程序，只把当前配置的
@@ -98,7 +110,6 @@ impl StudioRuntime {
                 skills: skills.clone(),
                 thread_modes: thread_modes.clone(),
                 ssh_manager: ssh_manager.clone(),
-                helper_source: helper_source.clone(),
                 bots: bots.clone(),
                 run_export: run_export.clone(),
             },
@@ -118,21 +129,15 @@ impl StudioRuntime {
         let service_factory = thread_factory.clone();
         let service_performance = model_performance.clone();
         let service_recovery = recovery.clone();
-        sessions.push_installer(std::sync::Arc::new(move |session| {
-            session.set_agent_services(
-                service_config.clone(),
-                service_store.clone(),
-                service_events.clone(),
-                service_factory.clone(),
-                service_performance.clone(),
-                service_recovery.clone(),
-            )?;
-            session.set_acp_business(acp_business.clone())?;
-            session.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
-                service_config.clone(),
-                service_factory.clone(),
-            ))
-        }))?;
+        sessions.push_assignment(crate::thread_assembler::SessionAssignment::services(
+            service_config,
+            service_store,
+            service_events,
+            service_factory,
+            service_performance,
+            service_recovery,
+            acp_business,
+        ))?;
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 config: config_runtime.clone(),

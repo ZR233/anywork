@@ -273,9 +273,9 @@ fn walk_real_directories(
         Ok(metadata) if metadata.is_dir() && !path_safety::is_link_or_reparse(&metadata) => {}
         Ok(_) => return Err(link_rejected(stage)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_directory(anchor)?;
+            create_directory(anchor, stage)?;
             #[cfg(unix)]
-            apply_directory_mode(anchor)?;
+            apply_directory_mode(anchor, stage)?;
             // Unix 新建目录在写入子资产前复核 0700；Windows 沿用原生 ACL。
             #[cfg(unix)]
             super::permissions::verify(anchor, true, stage)?;
@@ -297,9 +297,9 @@ fn walk_real_directories(
             }
             Ok(_) => return Err(link_rejected(stage)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                create_directory(&current)?;
+                create_directory(&current, stage)?;
                 #[cfg(unix)]
-                apply_directory_mode(&current)?;
+                apply_directory_mode(&current, stage)?;
                 #[cfg(unix)]
                 super::permissions::verify(&current, true, stage)?;
             }
@@ -312,7 +312,7 @@ fn walk_real_directories(
 /// 以显式权限创建目录：Unix 在创建调用上就限制为产品私有权限，不留"先宽后收"的窗口。
 ///
 /// 创建权限仍会被进程 umask 收紧，因此调用方随后必须显式设置最终权限。
-fn create_directory(path: &Path) -> Result<(), AcpInstallFailure> {
+fn create_directory(path: &Path, stage: AcpInstallStage) -> Result<(), AcpInstallFailure> {
     // 只有 Unix 通过 `DirBuilderExt::mode` 在创建调用上限制权限，因此可变绑定只在那里存在。
     #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
@@ -323,17 +323,15 @@ fn create_directory(path: &Path) -> Result<(), AcpInstallFailure> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(DIRECTORY_MODE);
     }
-    builder
-        .create(path)
-        .map_err(|_| io(AcpInstallStage::Extract))
+    builder.create(path).map_err(|_| io(stage))
 }
 
 /// Unix 创建后显式设置目录权限，避免依赖 umask。
 #[cfg(unix)]
-fn apply_directory_mode(path: &Path) -> Result<(), AcpInstallFailure> {
+fn apply_directory_mode(path: &Path, stage: AcpInstallStage) -> Result<(), AcpInstallFailure> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(DIRECTORY_MODE))
-        .map_err(|_| io(AcpInstallStage::Extract))
+        .map_err(|_| io(stage))
 }
 
 /// Unix 专用：同步从锚点到目标父目录的每一层，保证新建目录项逐级 durable。
@@ -411,4 +409,29 @@ fn not_a_directory(stage: AcpInstallStage) -> AcpInstallFailure {
 
 fn link_rejected(stage: AcpInstallStage) -> AcpInstallFailure {
     failure(AcpInstallFailureCode::Io, stage, false)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::apply_directory_mode;
+    use super::{AcpInstallStage, create_directory};
+
+    #[test]
+    fn directory_errors_keep_the_caller_stage() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let blocker = dir.path().join("not-a-directory");
+        std::fs::write(&blocker, b"x").expect("blocker");
+        let created = create_directory(&blocker.join("child"), AcpInstallStage::Close)
+            .expect_err("creating through a file must fail");
+        assert_eq!(created.stage, AcpInstallStage::Close);
+
+        #[cfg(unix)]
+        {
+            let missing = dir.path().join("missing");
+            let mode = apply_directory_mode(&missing, AcpInstallStage::Close)
+                .expect_err("missing directory mode must fail");
+            assert_eq!(mode.stage, AcpInstallStage::Close);
+        }
+    }
 }

@@ -179,14 +179,6 @@ impl StudioPaths {
         self.mcp_dir().join("host")
     }
 
-    /// SSH-scoped MCP single-file directory (`<StudioHome>/mcp/ssh/<sha256(alias)>`).
-    pub fn mcp_ssh_dir(&self, alias: &str) -> Result<PathBuf> {
-        Ok(self
-            .mcp_dir()
-            .join("ssh")
-            .join(storage_key(alias, "SSH server")?))
-    }
-
     /// Independent robot management root under the current data home.
     pub fn bots_dir(&self) -> PathBuf {
         self.data_dir.join(BOTS_DIR_NAME)
@@ -310,6 +302,7 @@ impl SessionPaths {
     }
 
     /// Complete recovery state, independent of the session history database.
+    #[cfg(test)]
     pub fn current_file(&self) -> PathBuf {
         self.root.join(CURRENT_FILE_NAME)
     }
@@ -338,22 +331,28 @@ pub fn storage_key(id: &str, kind: &str) -> Result<String> {
     Ok(hex::encode(Sha256::digest(id.as_bytes())))
 }
 
-pub fn default_db_path() -> Result<PathBuf> {
-    Ok(StudioPaths::resolve(None)?.database())
+pub(crate) fn user_home_dir() -> Result<PathBuf> {
+    dirs::home_dir()
+        .filter(|path| !path.as_os_str().is_empty())
+        .context("could not resolve user home directory")
 }
 
-fn user_home_dir() -> Result<PathBuf> {
-    #[cfg(windows)]
-    const HOME_VARS: &[&str] = &["USERPROFILE", "HOME"];
-    #[cfg(not(windows))]
-    const HOME_VARS: &[&str] = &["HOME", "USERPROFILE"];
+/// Validates the lowercase SHA-256 representation used for canonical storage names.
+pub(crate) fn is_sha256_hex(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
-    HOME_VARS
-        .iter()
-        .filter_map(std::env::var_os)
-        .map(PathBuf::from)
-        .find(|path| !path.as_os_str().is_empty())
-        .context("could not resolve user home directory")
+/// SQLite uses the full database name as the prefix for its WAL and SHM sidecars.
+pub(crate) fn sqlite_family_paths(database: &Path) -> [PathBuf; 3] {
+    let [wal, shm] = ["-wal", "-shm"].map(|suffix| {
+        let mut path = database.as_os_str().to_os_string();
+        path.push(suffix);
+        PathBuf::from(path)
+    });
+    [database.to_path_buf(), wal, shm]
 }
 
 fn validate_studio_home(path: PathBuf, source: &str) -> Result<PathBuf> {

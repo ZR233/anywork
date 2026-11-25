@@ -154,65 +154,11 @@ impl AgentServices {
             }
         }
         drop(root_operation);
-        for (_, id) in &targets {
-            match self.store.agent_close(id).await {
-                Ok(Some(record)) => {
-                    facts.insert(id.clone(), record.result());
-                    if let Some(thread) = owner.observed_thread(id) {
-                        thread.interrupt();
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => failures.push(format!("{id}: close intent read failed: {error:#}")),
-            }
-        }
-        for (_, id) in &targets {
-            match self.store.agent_close(id).await {
-                Ok(None) => continue,
-                Err(error) => {
-                    failures.push(format!("{id}: close intent read failed: {error:#}"));
-                    continue;
-                }
-                Ok(Some(record)) => {
-                    facts.insert(id.clone(), record.result());
-                }
-            }
-            match self
-                .close_saved_child(&owner, records.get(id).context("close record is missing")?)
-                .await
-            {
-                Ok(()) => {
-                    if let Some(fact) = facts.get_mut(id) {
-                        fact.execution_closed = true;
-                    }
-                }
-                Err(error) => {
-                    if let Err(save) = self.factory.record_child_close_error(id, &error).await {
-                        failures.push(format!("{id}: close error save failed: {save:#}"));
-                    }
-                    failures.push(format!("{id}: {error:#}"));
-                }
-            }
-        }
-        // All selected real borrowers are joined before any selected worktree may be removed.
-        for (_, id) in &targets {
-            if !facts.get(id).is_some_and(|fact| fact.execution_closed) {
-                continue;
-            }
-            match self
-                .factory
-                .finish_child_worktree_cleanup(records.get(id).context("close record is missing")?)
-                .await
-            {
-                Ok((result, error)) => {
-                    facts.insert(id.clone(), result);
-                    if let Some(error) = error {
-                        failures.push(format!("{id}: {}", error.message));
-                    }
-                }
-                Err(error) => failures.push(format!("{id}: {error:#}")),
-            }
-        }
+        let ordered = targets
+            .iter()
+            .map(|(_, id)| records.get(id).cloned().context("close record is missing"))
+            .collect::<Result<Vec<_>>>()?;
+        failures.extend(self.join_closed_children(&owner, &ordered).await);
         for (_, id) in &targets {
             match self.store.agent_close(id).await {
                 Ok(Some(record)) => {
@@ -251,6 +197,68 @@ impl AgentServices {
             error: (!failures.is_empty())
                 .then(|| state_error(&anyhow::anyhow!("{}", failures.join("; ")))),
         })
+    }
+
+    /// Shared Native close progress for explicit and recovered intents. Every resident owner is
+    /// interrupted first, each saved child's owners are then joined through `close_saved_child`,
+    /// and only a child whose durable intent is execution-closed proceeds to owned-worktree
+    /// removal. Returns per-child diagnostics; the caller owns admission, sealing and outcome.
+    pub(super) async fn join_closed_children(
+        &self,
+        owner: &SessionRuntime,
+        targets: &[crate::Thread],
+    ) -> Vec<String> {
+        let mut failures = Vec::new();
+        for record in targets {
+            if let Some(thread) = owner.observed_thread(&record.id) {
+                thread.interrupt();
+            }
+        }
+        for record in targets {
+            match self.store.agent_close(&record.id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => continue,
+                Err(error) => {
+                    failures.push(format!(
+                        "{}: close intent read failed: {error:#}",
+                        record.id
+                    ));
+                    continue;
+                }
+            }
+            if let Err(error) = self.close_saved_child(owner, record).await {
+                if let Err(save) = self
+                    .factory
+                    .record_child_close_error(&record.id, &error)
+                    .await
+                {
+                    failures.push(format!("{}: close error save failed: {save:#}", record.id));
+                }
+                failures.push(format!("{}: {error:#}", record.id));
+            }
+        }
+        // All selected real borrowers are joined before any selected worktree may be removed.
+        for record in targets {
+            match self.store.agent_close(&record.id).await {
+                Ok(Some(intent)) if intent.execution_closed => {}
+                Ok(_) => continue,
+                Err(error) => {
+                    failures.push(format!(
+                        "{}: close intent read failed: {error:#}",
+                        record.id
+                    ));
+                    continue;
+                }
+            }
+            match self.factory.finish_child_worktree_cleanup(record).await {
+                Ok((_, Some(error))) => {
+                    failures.push(format!("{}: {}", record.id, error.message));
+                }
+                Err(error) => failures.push(format!("{}: {error:#}", record.id)),
+                Ok((_, None)) => {}
+            }
+        }
+        failures
     }
 
     pub(super) async fn close_saved_child(
@@ -325,9 +333,7 @@ impl AgentServices {
                 && owner.observed_thread(&record.id).is_none()
             {
                 self.factory.project_child_close(record, &state).await?;
-                owner
-                    .acknowledge_parent_reports(&self.store, record)
-                    .await?;
+                owner.acknowledge_parent_reports(record).await?;
                 return self.factory.finish_child_execution(record).await;
             }
             self.install_storage_owner(owner, record, current, EntryPurpose::CloseStorage)?;
@@ -343,9 +349,7 @@ impl AgentServices {
             .project_child_close(record, &thread.snapshot())
             .await;
         owner.close_with_permit(&record.id, operation).await?;
-        owner
-            .acknowledge_parent_reports(&self.store, record)
-            .await?;
+        owner.acknowledge_parent_reports(record).await?;
         projection?;
         self.factory.finish_child_execution(record).await
     }

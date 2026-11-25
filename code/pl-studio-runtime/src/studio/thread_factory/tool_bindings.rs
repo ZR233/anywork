@@ -14,7 +14,7 @@ use pl_tool::workspace::ToolWorkspace;
 #[derive(Clone)]
 pub(crate) struct ToolBinding {
     pub assignment: Option<crate::AgentWorkspaceAssignmentSnapshot>,
-    pub workspace_usage: crate::studio::agent_host::worktree_lease::WeakWorkspaceUsageLease,
+    pub workspace_usage: crate::studio::worktree::worktree_lease::WeakWorkspaceUsageLease,
     pub lifetime: std::sync::Arc<ThreadToolLifetime>,
     pub incarnation: std::sync::Arc<()>,
     pub authorization: pl_core::tool::opaque::ToolAuthorization,
@@ -410,7 +410,6 @@ impl StudioThreadFactory {
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
-                    assignment: binding.assignment.as_ref(),
                     workspace_usage: binding
                         .workspace_usage
                         .upgrade()
@@ -423,7 +422,6 @@ impl StudioThreadFactory {
                     root_thread_id: &thread.root_thread_id,
                     workspace: binding.workspace.clone(),
                     store: resources,
-                    helper_source: self.services.helper_source.clone(),
                 },
                 &binding.lifetime,
                 CatalogPreparation::Refresh {

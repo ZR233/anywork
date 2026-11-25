@@ -111,7 +111,7 @@ impl SessionDirectoryRecord {
         }
     }
 
-    /// 与 `SessionDescriptor::directory_sort_time` 相同的目录排序键。
+    /// 与 [`crate::SessionDirectoryRow::directory_sort_time`] 相同的目录排序键。
     pub(in crate::studio) fn directory_sort_time(&self) -> i64 {
         self.last_user_message_at.unwrap_or(self.created_at)
     }
@@ -314,7 +314,7 @@ pub(in crate::studio) fn thread_projection(
 ///
 /// 供旧测试的 `Thread` 惯用法注册目录行：root `Thread` 产生会话 + 主成员记录，
 /// child 只产生成员记录（其会话事实由同一测试先注册的父行建立）。
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmarks"))]
 pub(in crate::studio) fn directory_facts_from_thread(
     thread: &crate::Thread,
 ) -> (Option<SessionDirectoryRecord>, AgentDirectoryRecord) {
@@ -370,6 +370,26 @@ pub struct WorkspaceRecord {
     pub path: String,
     pub ssh_alias: Option<String>,
     pub updated_at: i64,
+}
+
+impl WorkspaceRecord {
+    pub(in crate::studio) fn from_directory_projection(
+        id: impl Into<String>,
+        kind: crate::WorkspaceKind,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        ssh_alias: Option<String>,
+        updated_at: i64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            path: path.into(),
+            ssh_alias,
+            updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

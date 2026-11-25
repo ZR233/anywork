@@ -5,15 +5,16 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, Reply, Step};
+use pl_studio_runtime::ThreadWorkspaceMode;
 use pl_studio_runtime::{
     StudioLspServerState, StudioLspStateSnapshot, StudioProductBaselineState,
     StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicSubscription,
     StudioThreadLspStateSnapshot,
 };
-use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest, ThreadWorkspaceMode, TurnState};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use support::{Environment, program_reply, prompt_step, receipt, text_reply, tool_reply};
+use support::{completed, submit};
 
 const REPAIR_PATH: &str = ".anywork/lsp/fixture.toml";
 const CATALOG_ATTEMPTS: usize = 16;
@@ -159,40 +160,6 @@ fn script(configuration: &str, shell: bool) -> Vec<Step> {
         text_reply("semantic query works", "queried"),
     );
     steps
-}
-
-async fn submit(env: &Environment, thread: &str, prompt: &str) -> Result<()> {
-    let revision = env
-        .runtime
-        .thread_snapshot(thread)
-        .await?
-        .model_route
-        .context("frozen model route")?
-        .revision;
-    env.runtime
-        .submit_prompt_command(
-            thread.to_owned(),
-            SubmitPromptRequest {
-                input: StudioPromptInput {
-                    input_id: format!("input-{prompt}"),
-                    text: prompt.to_owned(),
-                    attachment_draft_ids: Vec::new(),
-                },
-                expected_model_route_revision: revision,
-            },
-        )
-        .await?;
-    completed(env, thread, prompt).await
-}
-
-async fn completed(env: &Environment, thread: &str, prompt: &str) -> Result<()> {
-    let turn = support::completed_prompt(&env.runtime, thread, prompt).await?;
-    ensure!(
-        matches!(turn.state, TurnState::Completed(_)),
-        "{prompt}: unexpected terminal state {:?}",
-        turn.state
-    );
-    Ok(())
 }
 
 fn has_state(snapshot: &StudioLspStateSnapshot, id: &str, ready: bool) -> bool {

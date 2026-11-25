@@ -55,13 +55,7 @@ pub(crate) fn bridge_agent_directory_entry(
 fn bridge_agent_state(state: AgentState) -> BridgeAgentState {
     match state {
         AgentState::Idle(_) => BridgeAgentState::Idle(BridgeIdleAgent {}),
-        AgentState::Queued(value) => BridgeAgentState::Queued(BridgeQueuedAgent {
-            turn_id: value.turn_id().to_string(),
-        }),
         AgentState::Running(value) => BridgeAgentState::Running(BridgeRunningAgent {
-            turn_id: value.turn_id().to_string(),
-        }),
-        AgentState::WaitingTool(value) => BridgeAgentState::WaitingTool(BridgeWaitingToolAgent {
             turn_id: value.turn_id().to_string(),
         }),
         AgentState::WaitingInteraction(value) => {
@@ -70,18 +64,8 @@ fn bridge_agent_state(state: AgentState) -> BridgeAgentState {
                 interaction_id: value.interaction_id().to_string(),
             })
         }
-        AgentState::Cancelling(value) => BridgeAgentState::Cancelling(BridgeCancellingAgent {
-            turn_id: value.turn_id().to_string(),
-        }),
-        AgentState::Closing(value) => BridgeAgentState::Closing(BridgeClosingAgent {
-            turn_id: value.turn_id().map(ToString::to_string),
-            error: value.error().map(bridge_state_error),
-        }),
+        AgentState::Closing(_) => BridgeAgentState::Closing(BridgeClosingAgent {}),
         AgentState::Closed(_) => BridgeAgentState::Closed(BridgeClosedAgent {}),
-        AgentState::Faulted(value) => BridgeAgentState::Faulted(BridgeFaultedAgent {
-            error: bridge_state_error(value.error()),
-            diagnostic_turn_id: value.turn_id().map(ToString::to_string),
-        }),
     }
 }
 

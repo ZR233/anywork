@@ -97,7 +97,5 @@ fn stale_settings_error() -> anyhow::Error {
 }
 
 fn provider_dto(provider: AcpProvider) -> AcpProviderWire {
-    match provider {
-        AcpProvider::Antigravity => AcpProviderWire::Antigravity,
-    }
+    provider.into()
 }

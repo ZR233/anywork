@@ -193,15 +193,7 @@ pub(super) fn read(
                             let status = catalog.catalogs.get(&id).cloned().ok_or_else(|| {
                                 anyhow::anyhow!("account catalog status is missing")
                             })?;
-                            Ok::<_, anyhow::Error>(StudioAccountModelCatalog {
-                                account_id: account_id.clone(),
-                                effective_models: account
-                                    .effective_catalog(None)?
-                                    .iter()
-                                    .map(pl_model::config::model_descriptor)
-                                    .collect(),
-                                model_catalog: status,
-                            })
+                            super::super::settings_api::account_model_catalog(account_id, account, status)
                         })
                         .transpose()?;
                     Ok(AccountDomainFrame::Models {

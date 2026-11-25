@@ -462,12 +462,11 @@ pub(in super::super) async fn active_members(
         let id: String = row.try_get("", "entry_id")?;
         let position: i64 = row.try_get("", "position")?;
         let entry: Entry = serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
-        let expected =
-            crate::studio::conversation_identity::content_owner_key(&ContentOwner::Current {
-                domain: "collection:members".into(),
-                id: id.clone(),
-                revision: collection.revision,
-            })?;
+        let expected = crate::studio::content_owner_key(&ContentOwner::Current {
+            domain: "collection:members".into(),
+            id: id.clone(),
+            revision: collection.revision,
+        })?;
         ensure!(
             entry.owner == expected.as_str() && entry.key == "entry",
             "legacy member entry owner/revision differs"

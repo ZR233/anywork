@@ -8,8 +8,7 @@ use super::super::{
 use crate::{UserInputAnswer, UserQuestion};
 
 use super::{
-    CancelInteraction, CancelledInteractionState, ExpireInteraction, ExpiredInteractionState,
-    PendingInteractionState, ReopenRecoveredInteraction,
+    CancelInteraction, CancelledInteractionState, ExpiredInteractionState, PendingInteractionState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,12 +88,6 @@ impl UserInputState {
                     value.reason,
                 )))
             }
-            (Self::Pending(_), UserInputCommand::Expire(value)) => Ok(Self::Expired(
-                ExpiredInteractionState::new(value.operation_id, value.expired_at),
-            )),
-            (Self::Cancelled(_), UserInputCommand::ReopenRecovered(value)) => Ok(Self::Pending(
-                PendingInteractionState::new(value.operation_id),
-            )),
             (Self::Resolved(current), UserInputCommand::Resolve(value))
                 if current.matches(&value) =>
             {
@@ -153,16 +146,12 @@ pub struct ResolveUserInput {
 pub(crate) enum UserInputCommand {
     Resolve(ResolveUserInput),
     Cancel(CancelInteraction),
-    Expire(ExpireInteraction),
-    ReopenRecovered(ReopenRecoveredInteraction),
 }
 impl UserInputCommand {
     fn name(&self) -> &'static str {
         match self {
             Self::Resolve(_) => "resolveUserInput",
             Self::Cancel(_) => "cancel",
-            Self::Expire(_) => "expire",
-            Self::ReopenRecovered(_) => "reopenRecovered",
         }
     }
 }

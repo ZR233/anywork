@@ -307,7 +307,7 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, crate::Turn>>,
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
     /// Input admissions and transitions frozen from this effect's original observation cut.
-    pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
+    pub(in crate::studio) retained_resources: Arc<[RetainedResourceFact]>,
     /// Turn ID transitioned to a terminal state by this exact effect (`effect.turn`), if any.
     pub(in crate::studio) terminal_turn_id: Option<String>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
@@ -397,7 +397,7 @@ fn history_sources(sources: &[crate::ChatSourceState]) -> Vec<HistorySourceHead>
 
 fn retained_resources(
     effect: &ThreadEffectBatch,
-) -> Result<Vec<super::history_facts::RetainedResourceFact>, ProjectionError> {
+) -> Result<Vec<RetainedResourceFact>, ProjectionError> {
     let mut facts = BTreeMap::new();
     let mut retain = |call_id: &str,
                       reference: pl_core::context::ResourceReference|
@@ -430,7 +430,7 @@ fn retained_resources(
                 .iter()
                 .find(|task| task.call_id == call_id)
                 .map(|task| task.turn_id.clone());
-            super::history_facts::RetainedResourceFact {
+            RetainedResourceFact {
                 call_id,
                 turn_id,
                 reference,
@@ -799,7 +799,6 @@ fn agent_bytes(agent: &ThreadAgentItem) -> u64 {
     ] {
         bytes = bytes.saturating_add(text.len() as u64);
     }
-    bytes = bytes.saturating_add(optional_bytes(identity.parent_path()));
     match agent.state() {
         ThreadAgentState::Queued(_) | ThreadAgentState::Running(_) => {}
         ThreadAgentState::Succeeded(state) => {
@@ -1213,12 +1212,14 @@ impl Fact {
     fn placeholder(&self, id: &str, thread_id: &str) -> ExecutionItem {
         ExecutionItem::new(
             id.to_owned(),
-            thread_id.to_owned(),
-            self.turn_id.clone(),
-            self.ordinal,
-            self.revision,
-            self.created_at,
-            self.created_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
+                turn_id: std::borrow::Cow::Owned(self.turn_id.clone()),
+                ordinal: self.ordinal,
+                revision: self.revision,
+                created_at: self.created_at,
+                updated_at: self.created_at,
+            },
             ExecutionShape::Raw(ThreadRawItem::stored(
                 Vec::new(),
                 "This item's body is no longer resident in the live window.",
@@ -1230,7 +1231,7 @@ impl Fact {
 
 /// Folds admitted writes into the live product facts and yields the changes each one made.
 mod current;
-mod provenance;
+pub(super) mod provenance;
 
 pub(in crate::studio) struct LiveProjection {
     #[cfg(test)]
@@ -1503,12 +1504,22 @@ impl LiveProjection {
     /// Returns a projection failure when the effect references facts this projection cannot resolve
     /// from memory. The caller reports it, so the durable barrier fails closed with the real reason
     /// instead of writing a timeline with a hole.
-    pub(in crate::studio) async fn prepare(
+    pub(in crate::studio) fn prepare(
         &mut self,
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
+    ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
+        self.prepare_inner(thread, effect, state, deliver)
+    }
+
+    fn prepare_inner(
+        &mut self,
+        thread: &crate::Thread,
+        effect: &ThreadEffectBatch,
+        state: &ThreadSnapshot,
+        emit_feed: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         let run = self
             .run
@@ -1517,7 +1528,7 @@ impl LiveProjection {
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let provenance = self.begin_provenance(effect, run)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
+        let turns = self.prepare_turn_frames(thread, effect, state, emit_feed)?;
         let ProjectedContent {
             items,
             review_delivery,
@@ -1529,10 +1540,9 @@ impl LiveProjection {
                 "injected failure after materialization".into(),
             ));
         }
-        let (history_events, history_sources_raw) = self
-            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
-            .await?;
-        let mut events = deliver.then(Vec::new);
+        let (history_events, history_sources_raw) =
+            self.complete_provenance(effect, state, &items, &completion_drafts, provenance, run)?;
+        let mut events = emit_feed.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
@@ -1582,53 +1592,14 @@ impl LiveProjection {
     ///
     /// # Errors
     /// Same as [`LiveProjection::prepare`].
-    pub(in crate::studio) async fn prepare_committed(
+    pub(in crate::studio) fn prepare_committed(
         &mut self,
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
-        let run = self
-            .run
-            .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
-        self.stage_history_model_previews(thread, state, effect.committed_at)?;
-        self.stage_history_tool_previews(thread, state, effect.committed_at)?;
-        let provenance = self.begin_provenance(effect, run)?;
-        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let ProjectedContent {
-            items,
-            review_delivery,
-            completion_drafts,
-        } = self.project(thread, effect, state)?;
-        let (history_events, history_sources_raw) = self
-            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
-            .await?;
-        self.retire_effect_source(effect)?;
-        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
-        let terminal_turn_id = effect
-            .turn
-            .as_ref()
-            .filter(|record| record.state != pl_core::thread::TurnState::Running)
-            .map(|record| record.turn_id.clone());
-        let prepared = Arc::new(PreparedEffect {
-            sequence: effect.sequence,
-            committed_at: effect.committed_at,
-            run_id: run,
-            accounting,
-            history_events: history_events.into(),
-            history_turns: history_turns.into(),
-            history_turn_details: Arc::new(history_turn_details),
-            history_sources: history_sources(&history_sources_raw).into(),
-            retained_resources: retained_resources(effect)?.into(),
-            terminal_turn_id,
-            parent_report: None,
-            parent_finish: None,
-            terminal_retention: None,
-            review_delivery: review_delivery.into(),
-        });
-        self.mark_completed_drafts(&completion_drafts);
-        self.retain(state);
-        Ok(prepared)
+        self.prepare_inner(thread, effect, state, false)
+            .map(|(_, prepared)| prepared)
     }
 
     fn mark_completed_drafts(&self, drafts: &[ChatDraft]) {
@@ -2096,7 +2067,7 @@ impl LiveProjection {
     /// The pure Current projector reads running model parts, running task invocations and progress,
     /// pending inputs and unconsumed inbox messages. It never consults History placement, archive
     /// completion, or a canonical final, so a History projection failure cannot hold Current behind.
-    pub(in crate::studio) async fn stream(
+    pub(in crate::studio) fn stream(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
@@ -2720,12 +2691,14 @@ impl LiveProjection {
                 id.clone(),
                 ExecutionItem::new(
                     id,
-                    thread_id.to_owned(),
-                    turn_id.to_owned(),
-                    ordinal,
-                    revision,
-                    committed_at,
-                    committed_at,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
+                        turn_id: std::borrow::Cow::Owned(turn_id.to_owned()),
+                        ordinal,
+                        revision,
+                        created_at: committed_at,
+                        updated_at: committed_at,
+                    },
                     state,
                 ),
             ));
@@ -3149,7 +3122,7 @@ impl LiveProjection {
             // delivery, and everything else keeps placement metadata only.
             retained
                 && (!item.state().is_terminal()
-                    || item.kind() == crate::ExecutionKind::Tool
+                    || matches!(item.state(), ExecutionShape::Tool(_))
                     || referenced.contains(id))
         });
         // A Turn that opened more identities than the window is still bounded here: the oldest
@@ -3471,7 +3444,7 @@ mod append_only_history_tests {
         let mut opening = effect(1);
         opening.turn = Some(turn);
         opening.model_member_starts = Arc::from([opening_member]);
-        let (_, prepared_open) = projection.prepare(&thread, &opening, &state, false).await?;
+        let (_, prepared_open) = projection.prepare(&thread, &opening, &state, false)?;
         history.accept_batch(&prepared_open.history_events).await?;
 
         let observed = started("A").identity;
@@ -3480,7 +3453,7 @@ mod append_only_history_tests {
             attempt_id: "stateless-attempt".into(),
             progress: ModelProgress::new(0, vec![part]),
         });
-        projection.stream(&thread, &state).await?;
+        projection.stream(&thread, &state)?;
 
         let mut terminal = effect(2);
         let mut final_text = started("T");
@@ -3535,9 +3508,7 @@ mod append_only_history_tests {
             )?,
         }]);
 
-        let (_, prepared) = projection
-            .prepare(&thread, &terminal, &state, false)
-            .await?;
+        let (_, prepared) = projection.prepare(&thread, &terminal, &state, false)?;
         assert!(
             prepared
                 .history_events
@@ -3614,7 +3585,7 @@ mod append_only_history_tests {
         assert_eq!(text, b"REASONING_BODY");
 
         state.model_progress = None;
-        projection.stream(&thread, &state).await?;
+        projection.stream(&thread, &state)?;
         assert!(projection.current_state().as_ref().is_some_and(|current| {
             current
                 .projection()
@@ -3719,7 +3690,7 @@ mod append_only_history_tests {
             }),
             ..Default::default()
         };
-        let (_, p1) = projection.prepare(&thread, &effect1, &state, false).await?;
+        let (_, p1) = projection.prepare(&thread, &effect1, &state, false)?;
         assert!(p1.history_events.iter().any(|ev| {
             ev.kind == crate::history::HistoryEventKind::ToolCalled
                 && ev.call_id.as_deref() == Some(call_id.as_str())
@@ -3760,7 +3731,7 @@ mod append_only_history_tests {
             }),
             ..Default::default()
         };
-        let (_, p2) = projection.prepare(&thread, &effect2, &state, false).await?;
+        let (_, p2) = projection.prepare(&thread, &effect2, &state, false)?;
         let bg_count = p2
             .history_events
             .iter()
@@ -3777,7 +3748,7 @@ mod append_only_history_tests {
             tasks: Arc::from([task.clone()]),
             ..Default::default()
         };
-        let (_, p3) = projection.prepare(&thread, &effect3, &state, false).await?;
+        let (_, p3) = projection.prepare(&thread, &effect3, &state, false)?;
         assert!(
             p3.history_events.is_empty(),
             "sealed background_started must not repeat"
@@ -3803,7 +3774,7 @@ mod append_only_history_tests {
             tasks: Arc::from([task.clone()]),
             ..Default::default()
         };
-        let (_, p4) = projection.prepare(&thread, &effect4, &state, false).await?;
+        let (_, p4) = projection.prepare(&thread, &effect4, &state, false)?;
         let cancel_ev = p4
             .history_events
             .iter()
@@ -3866,7 +3837,7 @@ mod append_only_history_tests {
             deliveries: Arc::from([delivery]),
             ..Default::default()
         };
-        let (_, p5) = projection.prepare(&thread, &effect5, &state, false).await?;
+        let (_, p5) = projection.prepare(&thread, &effect5, &state, false)?;
         let completed_ev = p5
             .history_events
             .iter()
@@ -4185,8 +4156,8 @@ mod append_only_history_tests {
             tasks: Arc::from([task]),
             ..Default::default()
         };
-        projection.prepare(&thread, &effect, &state, false).await?;
-        projection.stream(&thread, &state).await?;
+        projection.prepare(&thread, &effect, &state, false)?;
+        projection.stream(&thread, &state)?;
         let current = projection.current_state().context("current State")?;
         let tool_id = super::super::order::tool_id(&invocation.call_id);
         let atom = current
@@ -4297,10 +4268,8 @@ mod append_only_history_tests {
                 }]),
                 ..Default::default()
             };
-            projection
-                .prepare(&thread, &start, &active_state, false)
-                .await?;
-            projection.stream(&thread, &active_state).await?;
+            projection.prepare(&thread, &start, &active_state, false)?;
+            projection.stream(&thread, &active_state)?;
             let current = projection.current_state().context("active compaction")?;
             let atom = current
                 .projection()
@@ -4328,10 +4297,8 @@ mod append_only_history_tests {
                 }]),
                 ..Default::default()
             };
-            projection
-                .prepare(&thread, &finish, &finished_state, false)
-                .await?;
-            projection.stream(&thread, &finished_state).await?;
+            projection.prepare(&thread, &finish, &finished_state, false)?;
+            projection.stream(&thread, &finished_state)?;
             let current = projection.current_state().context("settled compaction")?;
             assert!(
                 current
@@ -4387,20 +4354,18 @@ mod append_only_history_tests {
             }]),
             ..Default::default()
         };
-        let (_, _) = projection
-            .prepare(
-                &thread,
-                &ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 1,
-                    committed_at: 100,
-                    turn: Some(state.turns[0].clone()),
-                    ..Default::default()
-                },
-                &state,
-                true,
-            )
-            .await?;
+        let (_, _) = projection.prepare(
+            &thread,
+            &ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 1,
+                committed_at: 100,
+                turn: Some(state.turns[0].clone()),
+                ..Default::default()
+            },
+            &state,
+            true,
+        )?;
 
         // Drive Turn 1 through several phase transitions to inflate its item content revision.
         let phase_invocation = pl_core::model::ModelToolCall {
@@ -4434,20 +4399,18 @@ mod append_only_history_tests {
             } else {
                 state.tasks.clear();
             }
-            let _ = projection
-                .prepare(
-                    &thread,
-                    &ThreadEffectBatch {
-                        thread_id: thread.id.clone(),
-                        sequence: seq,
-                        committed_at: 100 + seq as i64,
-                        tasks: Arc::from([task]),
-                        ..Default::default()
-                    },
-                    &state,
-                    true,
-                )
-                .await?;
+            let _ = projection.prepare(
+                &thread,
+                &ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: seq,
+                    committed_at: 100 + seq as i64,
+                    tasks: Arc::from([task]),
+                    ..Default::default()
+                },
+                &state,
+                true,
+            )?;
         }
 
         let turn1_done = TurnRecord {
@@ -4459,20 +4422,18 @@ mod append_only_history_tests {
         };
         state.commit_sequence = 6;
         state.turns = Arc::from([turn1_done.clone()]);
-        let (_, p_turn1) = projection
-            .prepare(
-                &thread,
-                &ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 6,
-                    committed_at: 106,
-                    turn: Some(turn1_done.clone()),
-                    ..Default::default()
-                },
-                &state,
-                true,
-            )
-            .await?;
+        let (_, p_turn1) = projection.prepare(
+            &thread,
+            &ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 6,
+                committed_at: 106,
+                turn: Some(turn1_done.clone()),
+                ..Default::default()
+            },
+            &state,
+            true,
+        )?;
         let terminal1 =
             super::super::prepared_terminal_turn(&p_turn1).context("turn 1 terminal projection")?;
         assert_eq!(terminal1.id, turn1_id);
@@ -4489,20 +4450,18 @@ mod append_only_history_tests {
         };
         state.commit_sequence = 7;
         state.turns = Arc::from([turn1_done.clone(), turn2_running.clone()]);
-        let _ = projection
-            .prepare(
-                &thread,
-                &ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 7,
-                    committed_at: 107,
-                    turn: Some(turn2_running),
-                    ..Default::default()
-                },
-                &state,
-                true,
-            )
-            .await?;
+        let _ = projection.prepare(
+            &thread,
+            &ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 7,
+                committed_at: 107,
+                turn: Some(turn2_running),
+                ..Default::default()
+            },
+            &state,
+            true,
+        )?;
 
         let turn2_done = TurnRecord {
             turn_id: turn2_id.clone(),
@@ -4513,20 +4472,18 @@ mod append_only_history_tests {
         };
         state.commit_sequence = 8;
         state.turns = Arc::from([turn1_done.clone(), turn2_done.clone()]);
-        let (events2, p_turn2) = projection
-            .prepare(
-                &thread,
-                &ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 8,
-                    committed_at: 108,
-                    turn: Some(turn2_done),
-                    ..Default::default()
-                },
-                &state,
-                true,
-            )
-            .await?;
+        let (events2, p_turn2) = projection.prepare(
+            &thread,
+            &ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 8,
+                committed_at: 108,
+                turn: Some(turn2_done),
+                ..Default::default()
+            },
+            &state,
+            true,
+        )?;
         let terminal2 =
             super::super::prepared_terminal_turn(&p_turn2).context("turn 2 terminal projection")?;
         assert_eq!(terminal2.id, turn2_id);
@@ -4566,20 +4523,18 @@ mod append_only_history_tests {
             started_sequence: Some(2),
         };
         state.commit_sequence = 9;
-        let (_, p_late) = projection
-            .prepare(
-                &thread,
-                &ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 9,
-                    committed_at: 109,
-                    tasks: Arc::from([task_on_turn1]),
-                    ..Default::default()
-                },
-                &state,
-                true,
-            )
-            .await?;
+        let (_, p_late) = projection.prepare(
+            &thread,
+            &ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 9,
+                committed_at: 109,
+                tasks: Arc::from([task_on_turn1]),
+                ..Default::default()
+            },
+            &state,
+            true,
+        )?;
         assert!(
             super::super::prepared_terminal_turn(&p_late).is_none(),
             "effect without a terminal transition in effect.turn must not re-publish an old Turn"
@@ -4589,4 +4544,13 @@ mod append_only_history_tests {
         history.close().await?;
         Ok(())
     }
+}
+
+/// Original ownership proof for a resource actually delivered or repaired in this effect.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RetainedResourceFact {
+    pub call_id: String,
+    pub turn_id: Option<String>,
+    pub reference: pl_core::context::ResourceReference,
 }

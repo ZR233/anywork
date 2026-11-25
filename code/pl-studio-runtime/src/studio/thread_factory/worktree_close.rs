@@ -8,8 +8,8 @@ use crate::{
     },
     studio::{
         agent_close::state_error,
-        agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         store::agent_close::{AgentCloseGitGrant, AgentCloseRecord, OwnedWorktreeBinding},
+        worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     },
 };
 use anyhow::{Context, Result, ensure};
@@ -264,7 +264,7 @@ impl StudioThreadFactory {
     }
 
     async fn settle_closed_worktree(&self, id: &str) -> Result<()> {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        use crate::studio::worktree::worktree_lease::WorktreeLeaseState;
         let mut lease = self
             .services
             .worktrees
@@ -292,29 +292,14 @@ impl StudioThreadFactory {
                 pl_remote_helper::Executor::local()?,
             )),
             WorkspaceEndpoint::Ssh { .. } => {
-                let profile = self
-                    .services
-                    .ssh_manager
-                    .list_servers()
-                    .await
-                    .into_iter()
-                    .find(|entry| {
-                        WorkspaceEndpoint::from_profile(Some(&entry.profile))
-                            == binding.identity.endpoint
-                    })
-                    .context("frozen close SSH endpoint is not configured")?
-                    .profile;
-                let host = self
-                    .services
-                    .ssh_manager
-                    .open_workspace_binding(&profile.alias, root.to_string_lossy().into_owned())
-                    .await?;
-                anyhow::ensure!(
-                    WorkspaceEndpoint::from_profile(Some(&host.profile))
-                        == binding.identity.endpoint
-                        && host.files().canonical_path() == binding.lease.repository_root,
-                    "frozen close endpoint or repository canonical identity changed"
-                );
+                let host = super::ssh_binding::open_frozen_workspace(
+                    &self.services.ssh_manager,
+                    &binding.identity.endpoint,
+                    &root.to_string_lossy(),
+                    "frozen close SSH endpoint is not configured",
+                    "frozen close endpoint or repository canonical identity changed",
+                )
+                .await?;
                 Arc::new(ExecutorWorktreeBackend::new(
                     host.files().executor().clone(),
                 ))
@@ -343,9 +328,7 @@ pub(in crate::studio) fn removal_definitely_refused(
 ) -> bool {
     use crate::agent::worktree::{ExecutionFailure, WorktreeError};
     match error {
-        WorktreeError::GitExited { args, .. } | WorktreeError::GitLaunchFailed { args, .. } => {
-            args.starts_with("worktree remove ")
-        }
+        WorktreeError::GitExited { args, .. } => args.starts_with("worktree remove "),
         WorktreeError::Execution {
             args,
             source:

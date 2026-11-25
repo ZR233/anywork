@@ -14,6 +14,7 @@ pub(in crate::studio) mod directory;
 mod error;
 pub(in crate::studio) mod object;
 mod project;
+pub(in crate::studio) use project::ProjectRow;
 pub(super) mod schema;
 pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
@@ -34,6 +35,10 @@ pub struct StudioStore {
     attachment_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     history_admission: std::sync::Arc<tokio::sync::RwLock<()>>,
     paths: StudioPaths,
+    legacy_retirements: std::sync::Arc<std::collections::BTreeSet<String>>,
+    // Only the in-memory test store owns a temporary home. Drop recycles it after the
+    // database fields above have closed their files.
+    _memory_home: Option<std::sync::Arc<tempfile::TempDir>>,
 }
 
 pub use error::{SessionLayoutMigrationFailed, StudioDatabaseError};
@@ -195,7 +200,8 @@ impl StudioStore {
                 .to_path_buf(),
             thread_id,
         )
-        .with_legacy_calls(self.calls.clone()))
+        .with_legacy_calls(self.calls.clone())
+        .with_persistence(self.thread_persistence.clone()))
     }
 
     pub(crate) fn calls(&self) -> &CallsStore {

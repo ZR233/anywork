@@ -94,12 +94,14 @@ pub(super) fn project(
             let fields = BTreeMap::from([(field.clone(), block.clone())]);
             let item = ExecutionItem::new(
                 id.clone(),
-                thread.id.clone(),
-                attempt.turn_id.clone(),
-                0,
-                part.version().max(1),
-                0,
-                0,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal: 0,
+                    revision: part.version().max(1),
+                    created_at: 0,
+                    updated_at: 0,
+                },
                 shape,
             );
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
@@ -112,7 +114,6 @@ pub(super) fn project(
                 id,
                 field,
                 block,
-                0,
                 atom.text_channel,
                 Some(ModelPartLocation { generation, index }),
             ));
@@ -132,12 +133,14 @@ pub(super) fn project(
             ));
             let item = ExecutionItem::new(
                 id.clone(),
-                thread.id.clone(),
-                attempt.turn_id.clone(),
-                0,
-                1,
-                0,
-                0,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal: 0,
+                    revision: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
                 shape,
             );
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
@@ -150,7 +153,6 @@ pub(super) fn project(
                 id,
                 BodyKey::Body,
                 block,
-                0,
                 Some(ThreadTextChannel::Commentary),
                 None,
             ));
@@ -176,14 +178,13 @@ pub(super) fn project(
                 fields.insert(BodyKey::host(TOOL_RESULT_FIELD), progress.content());
             }
             let id = item.id.clone();
-            let ordinal = item.ordinal;
             let text_channel = None;
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
             atom.started_at = None;
             atom.finished_at = None;
             atom.contents = atom_contents(owner_id, &id, &fields);
             for (field, block) in fields {
-                active.push((id.clone(), field, block, ordinal, text_channel, None));
+                active.push((id.clone(), field, block, text_channel, None));
             }
             atoms.push(atom);
         } else {
@@ -261,12 +262,11 @@ pub(super) fn project(
         let source = atom.source.clone();
         insert_completed_source(&mut sources, source.clone());
         let id = atom.id.clone();
-        let ordinal = item.ordinal;
         let text_channel = atom.text_channel;
         atom.contents = atom_contents(owner_id, &id, &fields);
         atoms.push(atom);
         for (field, block) in std::mem::take(&mut fields) {
-            active.push((id.clone(), field, block, ordinal, text_channel, None));
+            active.push((id.clone(), field, block, text_channel, None));
         }
     }
 
@@ -316,14 +316,7 @@ pub(super) fn project(
             contents: atom_contents(owner_id, &id, &fields),
             payload: None,
         });
-        active.push((
-            id,
-            BodyKey::Body,
-            block,
-            record.sequence,
-            text_channel,
-            None,
-        ));
+        active.push((id, BodyKey::Body, block, text_channel, None));
     }
 
     Ok(CurrentOriginals {
@@ -347,14 +340,16 @@ pub(super) fn task_tool_item(
         ));
     }
     let items = super::super::tools::project_tool_call(
-        &thread.id,
         state,
-        &task.turn_id,
         invocation,
-        task.started_sequence.unwrap_or(0),
-        0,
-        task.revision.max(1),
-        0,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Borrowed(thread.id.as_str()),
+            turn_id: std::borrow::Cow::Borrowed(task.turn_id.as_str()),
+            ordinal: task.started_sequence.unwrap_or(0),
+            created_at: 0,
+            revision: task.revision.max(1),
+            updated_at: 0,
+        },
     )?;
     Ok(items
         .into_iter()

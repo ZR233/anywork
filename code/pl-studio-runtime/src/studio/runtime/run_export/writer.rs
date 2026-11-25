@@ -25,7 +25,6 @@ use super::types::{
     format_utc_rfc3339, validate_export_relative_path,
 };
 use super::usage::{ThreadUsageInput, UsageAccumulator, fold_next_accounting};
-use crate::StudioStore;
 use crate::history::{HistoryCut, HistoryReader};
 use crate::studio::thread_projection::{BillingFact, PreparedAccounting};
 
@@ -237,7 +236,6 @@ pub enum ExportCommand {
     },
     LiveHandoff(Box<LiveHandoff>),
     Finalize {
-        store: Option<StudioStore>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
@@ -329,7 +327,6 @@ struct WriterMemberState {
     history: HistoryReader,
     exported_history_seq: u64,
     last_history_cut: HistoryCut,
-    last_effect_seq: u64,
     admitted_effects: BTreeMap<u64, String>,
     replayed_usage: pl_core::thread::UsageSummary,
     inferences: BTreeMap<String, (u64, String)>,
@@ -419,7 +416,6 @@ impl BoundedExportQueue {
     /// has not exited, so finalize can still flush/report partial state.
     pub async fn enqueue_finalize(
         &self,
-        store: Option<StudioStore>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
@@ -442,7 +438,6 @@ impl BoundedExportQueue {
             }
             guard.queue.push_back(QueuedItem {
                 cmd: ExportCommand::Finalize {
-                    store,
                     agent_ok,
                     flush_ok,
                     pending_after,
@@ -640,14 +635,13 @@ impl WriterWorker {
         while let Some(cmd) = self.queue.pop().await {
             match cmd {
                 ExportCommand::Finalize {
-                    store,
                     agent_ok,
                     flush_ok,
                     pending_after,
                     reply,
                 } => {
                     let outcome = self
-                        .handle_finalize(store, agent_ok, flush_ok, pending_after)
+                        .handle_finalize(agent_ok, flush_ok, pending_after)
                         .await;
                     let _ = reply.send(outcome);
                     break;
@@ -723,7 +717,6 @@ impl WriterWorker {
                         history,
                         exported_history_seq: initial_history_seq,
                         last_history_cut: initial_history_cut.clone(),
-                        last_effect_seq: initial_effect_seq,
                         admitted_effects: BTreeMap::new(),
                         replayed_usage: pl_core::thread::UsageSummary {
                             applied_sequence: initial_effect_seq,
@@ -861,9 +854,6 @@ impl WriterWorker {
             fold_next_accounting(&thread_id, &accounting, &mut member.replayed_usage)?;
             self.usage.record(&accounting);
         }
-        if effect_seq > member.last_effect_seq {
-            member.last_effect_seq = effect_seq;
-        }
 
         for (source, body) in events_to_emit {
             self.write_event(Some(thread_id.clone()), source, body)
@@ -988,7 +978,6 @@ impl WriterWorker {
 
     async fn handle_finalize(
         &mut self,
-        _store: Option<StudioStore>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
@@ -1082,7 +1071,6 @@ impl WriterWorker {
         let mut usage_storage: Vec<(
             String,
             u64,
-            u64,
             pl_core::thread::UsageSummary,
             pl_core::thread::UsageSummary,
         )> = Vec::new();
@@ -1094,7 +1082,6 @@ impl WriterWorker {
                 };
                 usage_storage.push((
                     thread_id.clone(),
-                    snap.initial_effect_seq,
                     through_seq,
                     summary,
                     writer_member.replayed_usage.clone(),
@@ -1102,7 +1089,7 @@ impl WriterWorker {
             }
         }
 
-        for (thread_id, _init_seq, through_seq, summary, replayed) in &usage_storage {
+        for (thread_id, through_seq, summary, replayed) in &usage_storage {
             member_usage_inputs.push(ThreadUsageInput {
                 thread_id,
                 through_effect_seq: *through_seq,

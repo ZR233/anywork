@@ -9,14 +9,13 @@
 //! 边界只接受当前 payload，不再承担历史格式分派。
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result, ensure};
 use version_migrate::{IntoDomain, Versioned};
 
 use crate::studio::ids::unix_seconds;
 use crate::studio::store::StudioStore;
-use crate::studio::toml_store::{self, RevisionedDocument};
+use crate::studio::toml_store::{self, RevisionedDocument, RevisionedTomlStore};
 use crate::toml_schema;
 
 mod history;
@@ -59,28 +58,28 @@ impl RevisionedDocument for SettingsDocument {
 
 #[derive(Clone)]
 pub(in crate::studio) struct SettingsStore {
-    path: PathBuf,
-    inner: Arc<Mutex<SettingsDocument>>,
+    store: RevisionedTomlStore<SettingsDocument>,
 }
 
 impl SettingsStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
-        let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => load_current(&path, &content)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SettingsDocument {
+        let document = toml_store::load_document(
+            path.clone(),
+            || SettingsDocument {
                 revision: 1,
                 entries: Vec::new(),
             },
-            Err(error) => return Err(error.into()),
-        };
+            |path, content| async move { load_current(&path, &content).await },
+        )
+        .await?;
         Ok(Self {
-            path,
-            inner: Arc::new(Mutex::new(document)),
+            store: RevisionedTomlStore::new(path, document),
         })
     }
 
     pub(in crate::studio) fn get(&self, key: &str) -> Option<String> {
-        self.lock()
+        self.store
+            .lock()
             .entries
             .iter()
             .find(|entry| entry.key == key)
@@ -123,47 +122,50 @@ impl SettingsStore {
     /// 只有全新安装的初始化使用，用来在任何 mutation 之前落盘完整空文档；正常运行
     /// 写入都经 [`Self::put`]，历史版本的升级持久化发生在 [`Self::load`] 内。
     pub(in crate::studio) async fn persist_if_absent(&self) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || toml_store::persist_if_absent(&inner, &path)).await?
+        self.store.persist_if_absent().await
     }
 
     async fn mutate(
         &self,
         change: impl FnOnce(&mut SettingsDocument) -> bool + Send + 'static,
     ) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            toml_store::mutate_document(&inner, &path, |document| Ok(change(document)))
-        })
-        .await?
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, SettingsDocument> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        self.store.mutate(|document| Ok(change(document))).await
     }
 }
 
 /// Loads the current document through the typed schema chain, validates business
 /// invariants, and persists exactly once when the source schema was older.
-fn load_current(path: &Path, content: &str) -> Result<SettingsDocument> {
+async fn load_current(path: &Path, content: &str) -> Result<SettingsDocument> {
     let target = toml_schema::integer_version(SettingsDocument::VERSION)?;
     let table = toml_schema::parse(path, content, ENTITY, target)?;
-    migration::preflight(path, &table, target)?;
-    let loaded = toml_schema::load_table::<migration::SettingsV1, SettingsDocument>(
-        path,
-        table,
-        &migration::migrator()?,
-        ENTITY,
-        VERSION_KEY,
-    )?;
+    let loaded = if toml_schema::integer_header(&table, VERSION_KEY) == Some(target) {
+        toml_schema::LoadedDocument {
+            document: toml_schema::decode_current_table(path, table, ENTITY, VERSION_KEY)?,
+            source_version: target,
+            migrated: false,
+        }
+    } else if toml_schema::integer_header(&table, VERSION_KEY) == Some(1) {
+        toml_schema::LoadedDocument {
+            document: migration::migrate_v1(path, table, target)?,
+            source_version: 1,
+            migrated: true,
+        }
+    } else {
+        migration::preflight(path, &table, target)?;
+        toml_schema::load_table::<migration::SettingsV1, SettingsDocument>(
+            path,
+            table,
+            migration::migrator()?,
+            ENTITY,
+            VERSION_KEY,
+        )?
+    };
     validate(path, &loaded.document, loaded.source_version, target)?;
     if loaded.migrated {
         // Schema-only upgrade: the business revision and entry times are preserved and
         // the current document is published atomically. Re-opening it is a pure read.
         let contents = toml_schema::encode(&loaded.document, VERSION_KEY)?;
-        pl_tool::workspace::write_file_atomically(path, contents.as_bytes())?;
+        toml_store::write_file_atomically_async(path.to_path_buf(), contents).await?;
     }
     Ok(loaded.document)
 }
@@ -223,9 +225,10 @@ mod tests {
         toml::from_str(&content).expect("settings file is valid TOML")
     }
 
-    #[test]
-    fn historical_payload_failure_keeps_its_typed_source() {
+    #[tokio::test]
+    async fn historical_payload_failure_keeps_its_typed_source() {
         let error = load_current(Path::new("settings.toml"), &v1_content("invalid json"))
+            .await
             .expect_err("invalid nested JSON must fail before committing");
         assert!(error.is::<toml_schema::DocumentMigrationFailed>());
         assert!(error.chain().any(|cause| cause.is::<serde_json::Error>()));

@@ -5,6 +5,7 @@
 //! SeaORM migration transaction transform the database in one Immediate transaction.
 
 mod input;
+pub(super) mod schema26_manifest;
 mod v25_schema;
 mod v25_to_v26;
 
@@ -189,7 +190,7 @@ pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Re
         }
         SourceFormat::Schema26 => {
             schema::identity(&read, thread_id).await?;
-            false
+            schema26_manifest::repair_needed(&read).await?
         }
     };
     read.close().await?;
@@ -221,8 +222,16 @@ pub async fn upgrade_history(
         && !pending_v25.try_exists()?
     {
         let (database_id, _) = schema::identity(&read, thread_id).await?;
-        read.close().await?;
-        return complete_schema26_entry(&pending_v24, thread_id, database_id, "history.v24.sqlite");
+        return finish_schema26(
+            &history_path,
+            read,
+            &pending_v24,
+            thread_id,
+            database_id,
+            "history.v24.sqlite",
+            false,
+        )
+        .await;
     }
     read.close().await?;
     let _lease = acquire_writer_lease(&history_path).await?;
@@ -231,26 +240,34 @@ pub async fn upgrade_history(
     match format {
         SourceFormat::Schema26 => {
             let (database_id, _) = schema::identity(&read, thread_id).await?;
-            read.close().await?;
             if pending_v25.try_exists()? {
                 if pending_v24.try_exists()? {
+                    read.close().await?;
                     return Err(HistoryError::Conflict(
                         "conflicting v24 and v25 pending upgrade reports exist".into(),
                     ));
                 }
-                return complete_schema26_entry(
+                return finish_schema26(
+                    &history_path,
+                    read,
                     &pending_v25,
                     thread_id,
                     database_id,
                     "history.v25.sqlite",
-                );
+                    true,
+                )
+                .await;
             }
-            return complete_schema26_entry(
+            return finish_schema26(
+                &history_path,
+                read,
                 &pending_v24,
                 thread_id,
                 database_id,
                 "history.v24.sqlite",
-            );
+                true,
+            )
+            .await;
         }
         SourceFormat::Schema25 => {
             let database_id = schema25_identity(&read, thread_id).await?;
@@ -1036,6 +1053,47 @@ fn stage_pending_report(pending_report: &Path, report: &UpgradeReport) -> Result
     }
     let bytes = serde_json::to_vec_pretty(report)?;
     backup_exact_bytes(pending_report, &bytes)
+}
+
+async fn finish_schema26(
+    history_path: &Path,
+    read: DatabaseConnection,
+    pending_report: &Path,
+    thread_id: &str,
+    database_id: String,
+    expected_backup_name: &str,
+    lease_held: bool,
+) -> Result<UpgradeReport> {
+    let needed = match schema26_manifest::repair_needed(&read).await {
+        Ok(needed) => {
+            read.close().await?;
+            needed
+        }
+        Err(error) => {
+            let _ = read.close().await;
+            return Err(error);
+        }
+    };
+    if !needed {
+        return complete_schema26_entry(
+            pending_report,
+            thread_id,
+            database_id,
+            expected_backup_name,
+        );
+    }
+    // upgrade_history may already hold this file lease. try_lock is not reentrant.
+    let _lease = if lease_held {
+        None
+    } else {
+        Some(acquire_writer_lease(history_path).await?)
+    };
+    let writer = schema::connect(history_path, false, false).await?;
+    let repaired = schema26_manifest::repair(&writer).await;
+    let closed = writer.close().await;
+    repaired?;
+    closed?;
+    complete_schema26_entry(pending_report, thread_id, database_id, expected_backup_name)
 }
 
 fn complete_schema26_entry(
@@ -3274,12 +3332,10 @@ async fn import_entity_anchor<C: ConnectionTrait>(
                 "schema 24 frozen observation payload owner differs".into(),
             ));
         }
-        let owner_key = crate::studio::conversation_identity::content_owner_key(
-            &ContentOwner::DisplayObservation {
-                block_id: block_id.clone(),
-                member_key: member_key.clone(),
-            },
-        )
+        let owner_key = crate::studio::content_owner_key(&ContentOwner::DisplayObservation {
+            block_id: block_id.clone(),
+            member_key: member_key.clone(),
+        })
         .map_err(|error| HistoryError::Storage(error.into()))?;
         let mut staged_payload = StagedPayload::from_body(
             connection,
@@ -4098,7 +4154,6 @@ mod migration_tests {
             HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore as CurrentHistoryStore,
         },
         resource_store::FileResourceStore,
-        studio::storage::history::{HistoryStore as V24HistoryStore, persist_completed},
     };
     use pl_core::{
         context::{
@@ -4134,12 +4189,14 @@ mod migration_tests {
     fn text_item(thread_id: &str, id: &str, ordinal: u64, body: &str) -> ExecutionItem {
         ExecutionItem::new(
             id.into(),
-            thread_id.into(),
-            "turn-1".into(),
-            ordinal,
-            1,
-            1,
-            2,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn-1"),
+                ordinal,
+                revision: 1,
+                created_at: 1,
+                updated_at: 2,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 body.into(),
@@ -4165,16 +4222,67 @@ mod migration_tests {
             text_item(thread_id, "original-large", 1, &large_text),
             text_item(thread_id, "original-empty", 2, ""),
         ];
-        let legacy = V24HistoryStore::open(history_path, thread_id).await?;
-        let completions = persist_completed(&legacy, 1, &items).await?;
-        drop(legacy);
+        // The published schema-24 preparer still owns table shape. Completions are
+        // frozen in memory and inserted directly, so this fixture does not open the
+        // retired HistoryStore or run its effect writer.
+        let db = schema::connect(history_path, false, true).await?;
+        let (database_id, _) = crate::studio::storage::history::schema::initialize(&db, thread_id)
+            .await
+            .map_err(HistoryError::Storage)?;
+        let completions = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let draft = crate::studio::runtime::chat_item::completion_draft(
+                    item,
+                    1,
+                    &database_id,
+                    None,
+                )?;
+                let append_seq = u64::try_from(index)
+                    .ok()
+                    .and_then(|offset| offset.checked_add(1))
+                    .ok_or_else(|| {
+                        HistoryError::Integrity("fixture completion sequence overflow".into())
+                    })?;
+                Ok(Arc::new(pl_core::chat::ChatItem::complete(
+                    draft, append_seq,
+                )))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let execution_order = items.iter().map(|item| item.ordinal).max().unwrap_or(0);
+        for completion in &completions {
+            let header = &completion.header;
+            db.execute_raw(statement(
+                "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata) VALUES(?,?,?,?,?,?)",
+                vec![
+                    db::number(header.append_seq)?.into(),
+                    header.item_id.clone().into(),
+                    header.query_class.clone().into(),
+                    header
+                        .parent_id
+                        .as_ref()
+                        .map(|key| key.as_str().to_owned())
+                        .into(),
+                    completion.payload.to_vec().into(),
+                    header.metadata.to_vec().into(),
+                ],
+            ))
+            .await?;
+        }
+        db.execute_raw(statement(
+            "UPDATE history_meta SET applied_write_seq=?,execution_order=MAX(execution_order,?) WHERE id=1",
+            vec![
+                db::number(1)?.into(),
+                db::number(execution_order)?.into(),
+            ],
+        ))
+        .await?;
         if completions.len() != items.len() {
             return Err(HistoryError::Integrity(
                 "legacy fixture completion count differs".into(),
             ));
         }
-
-        let db = schema::connect(history_path, false, false).await?;
         let metadata = db
             .query_one_raw(statement(
                 "SELECT schema_version,database_id,applied_write_seq FROM history_meta WHERE id=1",
@@ -4359,7 +4467,7 @@ mod migration_tests {
             let owner = ContentOwner::Item {
                 item_id: item_id.clone(),
             };
-            let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)
+            let owner_key = crate::studio::content_owner_key(&owner)
                 .map_err(|error| HistoryError::Storage(error.into()))?;
             let manifest = serde_json::to_vec(&serde_json::json!({
                 "byteLength": body.len() as u64,
@@ -4624,9 +4732,8 @@ mod migration_tests {
                 block_id: block_id.into(),
                 member_key: "member-1".into(),
             };
-            let observation_owner_key =
-                crate::studio::conversation_identity::content_owner_key(&observation_owner)
-                    .map_err(|error| HistoryError::Storage(error.into()))?;
+            let observation_owner_key = crate::studio::content_owner_key(&observation_owner)
+                .map_err(|error| HistoryError::Storage(error.into()))?;
             let observation_body = b"frozen body \xF0\x9F\xA6\x80";
             let body_reference = crate::ContentRef {
                 database_id: database_id.clone(),
@@ -4824,6 +4931,99 @@ mod migration_tests {
             .try_get::<i64>("", "count")?;
         db.close().await?;
         Ok(count)
+    }
+
+    async fn upgrade_published_snapshot(version: i64, fail_once: bool) -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "published-snapshot";
+        let record = ContextRecord {
+            id: "saved-user-input".into(),
+            turn_id: None,
+            source: ContextSource::User,
+            content: vec![ContextContent::Text {
+                text: Arc::from("Preserve the saved context"),
+            }],
+            tool_calls: Vec::new(),
+        };
+        let state = ThreadSnapshot {
+            commit_sequence: 1,
+            context: ContextSnapshot {
+                revision: 1,
+                records: vec![record].into(),
+            },
+            ..Default::default()
+        };
+        let checkpoint = ThreadCheckpoint::capture(thread_id.into(), 1, state.clone())
+            .map_err(|error| HistoryError::Storage(error.into()))?;
+        let db = schema::connect(&path, false, true).await?;
+        crate::studio::storage::history::schema::seed_pre24_fixture(&db, version, &checkpoint)
+            .await
+            .map_err(HistoryError::Storage)?;
+        let identity = read_legacy_identity(&db).await?;
+        assert_eq!(identity.version, version);
+        if fail_once {
+            let before = db
+                .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
+                .await?
+                .unwrap()
+                .try_get::<String>("", "payload")?;
+            db.execute_unprepared(
+                "CREATE TRIGGER reject_schema24 BEFORE UPDATE OF schema_version ON history_meta
+                 WHEN NEW.schema_version=24 BEGIN SELECT RAISE(ABORT,'reject schema24'); END;",
+            )
+            .await?;
+            let error = upgrade_history(&path, thread_id, directory.path())
+                .await
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("reject schema24"));
+            assert!(read_legacy_identity(&db).await? == identity);
+            let after = db
+                .query_one_raw(statement("SELECT payload FROM session_checkpoint", vec![]))
+                .await?
+                .unwrap()
+                .try_get::<String>("", "payload")?;
+            assert_eq!(after, before);
+            assert!(!directory.path().join("current.json").exists());
+            db.execute_unprepared("DROP TRIGGER reject_schema24")
+                .await?;
+        }
+        db.close().await?;
+
+        let report = upgrade_history(&path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(report.database_id, identity.database_id);
+        let current = ThreadCurrent::from_json(
+            &tokio::fs::read(directory.path().join("current.json")).await?,
+            thread_id,
+        )
+        .map_err(|error| HistoryError::Storage(error.into()))?;
+        assert_eq!(current.state.context, state.context);
+        assert!(current.state.execution.is_none());
+        let store = CurrentHistoryStore::open(&path, thread_id, HistoryLimits::default()).await?;
+        assert_eq!(store.reader().database_id(), identity.database_id);
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn published_schema_eight_restores_through_schema26() -> Result<()> {
+        upgrade_published_snapshot(8, false).await
+    }
+
+    #[tokio::test]
+    async fn published_schema_seventeen_restores_through_schema26() -> Result<()> {
+        upgrade_published_snapshot(17, false).await
+    }
+
+    #[tokio::test]
+    async fn published_schema_twenty_three_restores_through_schema26() -> Result<()> {
+        upgrade_published_snapshot(23, false).await
+    }
+
+    #[tokio::test]
+    async fn published_schema_twenty_three_rolls_back_before_retry() -> Result<()> {
+        upgrade_published_snapshot(23, true).await
     }
 
     #[tokio::test]

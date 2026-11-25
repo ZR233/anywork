@@ -12,13 +12,14 @@ use crate::{
     AcpAuthAccount, AcpAuthActiveOperation, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState,
     AcpUsageObservation,
 };
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{AcpDefinitionEntry, AcpDefinitionsSnapshot, ConfigRuntime};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
 
 use pl_remote_helper::Executor;
+
+use super::super::acp_ops::{CommandLedger, RetainedTask};
 
 /// 每条接入在认证 owner 中的代次记录。
 pub(super) struct Slot {
@@ -184,10 +185,8 @@ pub(super) struct Operation {
     pub(super) cancel: CancellationToken,
     pub(super) cancel_requested: AtomicBool,
     pub(super) authentication: tokio::sync::mpsc::Sender<pl_acp::auth::AuthCommand>,
-    /// 关闭编排显式重试实际清理错误；不按固定间隔轮询。
-    pub(super) cleanup_retry: tokio::sync::Notify,
     /// supervisor 的真实 join 出口。借用等待，关闭 future 被取消也不会取走句柄。
-    pub(super) join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    pub(super) join: RetainedTask<()>,
 }
 
 impl Operation {
@@ -244,7 +243,7 @@ pub(super) struct Registry {
     /// 已完成退役的最近一次安全关闭失败；不持有历史 owner 或无界错误列表。
     pub(super) retirement_issue: Option<String>,
     /// 已受理操作身份（含已完成）；容量有界、只增不减，重启运行时才重置。
-    pub(super) accepted: BTreeMap<String, AcceptedIntent>,
+    pub(super) accepted: CommandLedger<AcceptedIntent>,
 }
 
 impl Registry {
@@ -287,7 +286,7 @@ pub(super) struct AcpAccountInner {
     pub(super) workers: Executor,
     pub(super) mcp_source: crate::host_mcp_assets::HostMcpSource,
     pub(super) retirement_wake: Arc<tokio::sync::Notify>,
-    pub(super) retirement_join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    pub(super) retirement_join: RetainedTask<()>,
     registry: Mutex<Registry>,
 }
 
@@ -306,7 +305,7 @@ impl AcpAccountInner {
             workers,
             mcp_source,
             retirement_wake: Arc::new(tokio::sync::Notify::new()),
-            retirement_join: tokio::sync::Mutex::new(None),
+            retirement_join: RetainedTask::empty(),
             registry: Mutex::new(Registry::default()),
         }
     }
@@ -606,8 +605,7 @@ mod tests {
             cancel: CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             authentication: tokio::sync::mpsc::channel(1).0,
-            cleanup_retry: tokio::sync::Notify::new(),
-            join: tokio::sync::Mutex::new(None),
+            join: RetainedTask::empty(),
         })
     }
 

@@ -431,7 +431,10 @@ impl BotRuntime {
         }
         let input = tokio::select! {
             _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-            input = Box::pin(watch.during(runtime.bot_input_fact(&run.thread_id, &run.watch_input), None)) => input,
+            input = Box::pin(watch.during(
+                std::future::ready(runtime.bot_input_fact(&run.thread_id, &run.watch_input)),
+                None,
+            )) => input,
         };
         let input = match input {
             (_, Some(error)) => return Step::Done(content_failure(error)),
@@ -611,11 +614,12 @@ impl BotRuntime {
             let Some(projection) = content.projection else {
                 return Step::Wait;
             };
-            let collected = tokio::select! {
-                _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-                collected = std::future::ready(collect_complete_turn_text(projection)) => collected,
-            };
-            match collected {
+            // 收集是同步的：`std::future::ready(..)` 会在轮询取消之前就完成全部工作，
+            // 因此先判定取消，再直接收集。
+            if cancel.is_cancelled() {
+                return Step::Done(InboundWorkOutcome::Interrupted);
+            }
+            match collect_complete_turn_text(projection) {
                 Ok(text) => Some(text),
                 Err(error) => return Step::Done(content_failure(error)),
             }
@@ -848,7 +852,7 @@ impl BotRuntime {
                     .to_string(),
             });
         }
-        match runtime.find_owned_thread(&thread_id).await {
+        match runtime.find_owned_thread(&thread_id) {
             Ok(Some(existing)) if existing.workspace_id != config.workspace_id => {
                 managed
                     .store
@@ -1092,8 +1096,7 @@ mod archive_cancellation_tests {
                 fixture
                     .host
                     .runtime
-                    .bot_input_fact(&run.thread_id, &run.original_input,)
-                    .await?,
+                    .bot_input_fact(&run.thread_id, &run.original_input)?,
                 BotInputRead::Absent,
             );
         }

@@ -8,10 +8,7 @@ use pl_tool::mcp::config::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::mcp::{
-    ZHIPU_READER_MCP_ID, ZHIPU_SEARCH_MCP_ID, ZHIPU_VISION_MCP_ID, ZHIPU_ZREAD_MCP_ID,
-    builtin_mcp_server_ids, is_builtin_mcp_server_id,
-};
+use super::mcp::{ZHIPU_VISION_MCP_ID, builtin_mcp_server_ids, is_builtin_mcp_server_id};
 
 pub const MCP_DOCUMENT_SCHEMA_VERSION: u32 = 1;
 
@@ -135,14 +132,6 @@ impl McpFileV1 {
                 builtin_id: id,
                 cwd,
             },
-        }
-    }
-
-    pub fn new_disabled(id: impl Into<String>) -> Self {
-        Self {
-            schema_version: MCP_DOCUMENT_SCHEMA_VERSION,
-            id: id.into(),
-            spec: McpFileSpecV1::Disabled,
         }
     }
 
@@ -506,16 +495,10 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
-pub const ALL_BUILTIN_IDS: [&str; 4] = [
-    ZHIPU_SEARCH_MCP_ID,
-    ZHIPU_READER_MCP_ID,
-    ZHIPU_ZREAD_MCP_ID,
-    ZHIPU_VISION_MCP_ID,
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::mcp::ZHIPU_SEARCH_MCP_ID;
 
     #[test]
     fn startup_mode_round_trips_for_both_transports_and_defaults_to_auto() {

@@ -105,13 +105,11 @@ pub(crate) fn migrate_mode_snapshot(
         return Ok(());
     }
     let id: ThreadModeId = serde_json::from_str(record.payload.content())?;
-    let registered = modes
-        .snapshot()
-        .mode(&id)
+    let catalog = modes.snapshot();
+    let registered = catalog.mode(&id)
         .or_else(|| {
-            matches!(id.as_str(), "mode.simple" | "mode.task")
-                .then(|| modes.snapshot().mode(&ThreadModeId::auto()))
-                .flatten()
+            id.legacy_builtin_replacement()
+                .and_then(|replacement| catalog.mode(&replacement))
         })
         .ok_or_else(|| {
             PureError::ConfigError(format!(

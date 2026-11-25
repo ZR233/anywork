@@ -23,7 +23,6 @@ use crate::{
     BotPlatform, BotSnapshot, BotsStateSnapshot,
 };
 use std::collections::BTreeMap;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, Notify, Semaphore};
@@ -58,8 +57,6 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) host: std::sync::Mutex<Option<std::sync::Weak<StudioRuntime>>>,
     pub(super) replies: Mutex<super::archive::BotReplyTasks>,
     pub(super) reply_archive_seals: std::sync::Mutex<BTreeMap<String, usize>>,
-    #[cfg(test)]
-    pub(super) deletion_tests: super::archive::DeletionTestHooks,
     pub(crate) reply_slots: Arc<Semaphore>,
     pub(crate) reply_cancel: CancellationToken,
     pub(crate) occupancy: OccupancyTasks,
@@ -126,8 +123,6 @@ impl BotRuntime {
                 host: std::sync::Mutex::new(None),
                 replies: Mutex::new(super::archive::BotReplyTasks::default()),
                 reply_archive_seals: std::sync::Mutex::new(BTreeMap::new()),
-                #[cfg(test)]
-                deletion_tests: Default::default(),
                 reply_slots: Arc::new(Semaphore::new(32)),
                 reply_cancel: CancellationToken::new(),
                 occupancy: OccupancyTasks::new(),
@@ -223,11 +218,7 @@ impl BotRuntime {
         if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return Ok(());
         }
-        if let Some(handle) = slot.as_mut() {
-            let result = join_owned_slot(handle).await;
-            *slot = None;
-            result?;
-        }
+        join_publisher(&mut slot).await?;
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
             return Err(FeishuError::new(
                 FeishuErrorKind::Unavailable,
@@ -256,24 +247,14 @@ impl BotRuntime {
         *slot = Some(handle);
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
             self.inner.publish_notify.notify_one();
-            if let Some(handle) = slot.as_mut() {
-                let result = join_owned_slot(handle).await;
-                *slot = None;
-                return result;
-            }
+            return join_publisher(&mut slot).await;
         }
         Ok(())
     }
 
     pub(crate) async fn close_publisher(&self) -> Result<(), FeishuError> {
         let mut slot = self.inner.publisher.lock().await;
-        if let Some(handle) = slot.as_mut() {
-            let result = join_owned_slot(handle).await;
-            *slot = None;
-            result
-        } else {
-            Ok(())
-        }
+        join_publisher(&mut slot).await
     }
 
     pub async fn snapshot(&self) -> BotsStateSnapshot {
@@ -546,18 +527,13 @@ impl InboundHost for RuntimeInboundHost {
     }
 }
 
-async fn join_owned_slot(handle: &mut JoinHandle<()>) -> Result<(), FeishuError> {
-    let joined = Pin::new(handle).await;
-    match joined {
-        Ok(()) => Ok(()),
-        Err(error) if error.is_cancelled() => Ok(()),
-        // 取消类终态已在上一个分支按职责视为正常收回；这里只剩异常终止。
-        // 只给安全分类：不把原始 panic 载荷写进诊断。
-        Err(_) => Err(FeishuError::new(
+async fn join_publisher(slot: &mut Option<JoinHandle<()>>) -> Result<(), FeishuError> {
+    super::join_owned_task(slot).await.map_err(|_| {
+        FeishuError::new(
             FeishuErrorKind::Unavailable,
             "bot background task terminated abnormally",
             true,
             None,
-        )),
-    }
+        )
+    })
 }

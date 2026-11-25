@@ -8,12 +8,6 @@ impl WorktreeError {
             Self::MissingHead => "工作区没有有效的 HEAD commit；请先完成初始 commit 后重试".into(),
             // Identity messages are produced only from fixed application vocabulary, never stderr.
             Self::IdentityMismatch(reason) => format!("worktree identity: {reason}"),
-            Self::GitLaunchFailed { args, message } => format!(
-                "git {}: launch failed; {}",
-                git_operation(args),
-                safe_command_cause(message)
-            ),
-            Self::GitTimedOut { args } => format!("git {}: timed out", git_operation(args)),
             Self::GitExited {
                 args,
                 exit_code,
@@ -147,10 +141,12 @@ pub(super) fn git_operation(args: &str) -> &'static str {
         (Some("worktree"), Some("add")) => "worktree add",
         (Some("rev-parse"), Some("--git-common-dir")) => "rev-parse --git-common-dir",
         (Some("rev-parse"), Some("--abbrev-ref")) => "rev-parse --abbrev-ref HEAD",
+        (Some("rev-parse"), Some("--verify")) => "rev-parse --verify --quiet HEAD^{commit}",
+        (Some("rev-parse"), Some("--absolute-git-dir")) => "rev-parse --absolute-git-dir",
         (Some("rev-parse"), Some("HEAD")) => "rev-parse HEAD",
         (Some("rev-parse"), Some("--show-toplevel")) => "rev-parse --show-toplevel",
+        (Some("merge-base"), Some("--is-ancestor")) => "merge-base --is-ancestor",
         (Some("status"), _) => "status --porcelain=v1 --untracked-files=all --ignored=matching",
-        (Some("branch"), _) => "branch",
         _ => "inspection",
     }
 }
@@ -163,5 +159,30 @@ pub(super) fn file_cause(error: &pl_tool::workspace_file::WorkspaceFileError) ->
             format!("removal unconfirmed: {}", execution_error(source))
         }
         WorkspaceFileError::Policy(_) => "workspace path policy rejected".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::git_operation;
+
+    #[test]
+    fn classifies_current_rev_parse_and_merge_base_forms() {
+        assert_eq!(
+            git_operation("rev-parse --verify --quiet HEAD^{commit}"),
+            "rev-parse --verify --quiet HEAD^{commit}"
+        );
+        assert_eq!(
+            git_operation("rev-parse --absolute-git-dir"),
+            "rev-parse --absolute-git-dir"
+        );
+        assert_eq!(
+            git_operation("merge-base --is-ancestor a b"),
+            "merge-base --is-ancestor"
+        );
+        assert_eq!(
+            git_operation("rev-parse --show-toplevel"),
+            "rev-parse --show-toplevel"
+        );
     }
 }

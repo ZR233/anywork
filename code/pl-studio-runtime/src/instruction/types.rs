@@ -34,20 +34,10 @@ pub struct InstructionAssemblyRequest<'a> {
     /// 远程工作区的路径只存在于远程主机，不能再次交给本地文件系统读取；
     /// 宿主若已完成读取，应通过此字段传入 canonical 文档集合。
     pub workspace_documents: Option<&'a WorkspaceInstructions>,
-    pub workspace_instructions: Option<&'a str>,
-    pub subagent_constraint: Option<&'a str>,
     pub delegation_preference: Option<&'a str>,
-    pub skill_suggestions: Option<SkillSuggestionRequest<'a>>,
     /// Runtime facts for the command execution target. When absent, the local
     /// resolver is used; no login-shell environment variable is consulted.
     pub execution_environment: Option<&'a ExecutionEnvironment>,
-}
-
-/// Turn-local task text used to suggest Skill summaries without loading them.
-#[derive(Debug, Clone, Copy)]
-pub struct SkillSuggestionRequest<'a> {
-    pub query: &'a str,
-    pub excluded_names: &'a [String],
 }
 
 /// 产品层为一次 Turn 提供的 Mode 执行方式指令。

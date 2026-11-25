@@ -170,6 +170,26 @@ impl StateResources {
         }
     }
 
+    /// Cold current projection shared by the reader and the state feed.
+    ///
+    /// The resources keep deferred body bytes. Callers that only need the runtime snapshot
+    /// drop the resources after taking the second value.
+    pub fn project_cold(
+        owner_id: String,
+        revision: u64,
+        thread_id: &str,
+        state: &pl_core::thread::ThreadSnapshot,
+        updated_at: i64,
+        summary: &pl_core::thread::UsageSummary,
+    ) -> Result<(Self, ThreadRuntimeSnapshot)> {
+        let projected = crate::studio::thread_projection::project_cold_runtime(
+            thread_id, state, updated_at, summary,
+        )?;
+        let mut resources = Self::cold(owner_id, revision);
+        let runtime = resources.runtime(projected)?;
+        Ok((resources, runtime))
+    }
+
     fn generation(&self, version: u64) -> String {
         match self.cold_revision {
             Some(revision) => format!("cold:{revision}:{version}"),

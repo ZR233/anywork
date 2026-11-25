@@ -20,11 +20,11 @@ pub struct FeishuHttp {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenApiEnvelope<T> {
-    code: i64,
+pub(super) struct OpenApiEnvelope<T> {
+    pub(super) code: i64,
     #[serde(default)]
-    msg: Option<String>,
-    data: Option<T>,
+    pub(super) msg: Option<String>,
+    pub(super) data: Option<T>,
 }
 
 #[derive(Debug)]
@@ -250,17 +250,7 @@ impl FeishuHttp {
         url: Url,
         form: &[(&str, &str)],
     ) -> Result<FormResponse<T>, FeishuError> {
-        let encoded = url::form_urlencoded::Serializer::new(String::new())
-            .extend_pairs(form.iter().copied())
-            .finish();
-        let response = self
-            .client
-            .request(Method::POST, url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(encoded)
-            .send()
-            .await
-            .map_err(transport)?;
+        let response = self.post_form_raw(url, form).await?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
         if !(status.is_success() || status.as_u16() == 400) {
@@ -268,6 +258,49 @@ impl FeishuHttp {
         }
         let body = parse_json(&bytes, status)?;
         Ok(FormResponse { status, body })
+    }
+
+    async fn post_form_raw(
+        &self,
+        url: Url,
+        form: &[(&str, &str)],
+    ) -> Result<reqwest::Response, FeishuError> {
+        let encoded = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(form.iter().copied())
+            .finish();
+        self.client
+            .request(Method::POST, url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(encoded)
+            .send()
+            .await
+            .map_err(transport)
+    }
+
+    pub(super) async fn open_envelope<T: DeserializeOwned, B: Serialize>(
+        &self,
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+        query: &[(&str, &str)],
+        body: Option<&B>,
+    ) -> Result<Option<T>, FeishuError> {
+        let envelope: OpenApiEnvelope<T> =
+            self.open_typed(method, path, token, query, body).await?;
+        require_open_success(envelope.code, envelope.msg.as_deref())?;
+        Ok(envelope.data)
+    }
+
+    pub(super) async fn open_unit<B: Serialize>(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        body: &B,
+    ) -> Result<(), FeishuError> {
+        self.open_envelope::<serde::de::IgnoredAny, B>(method, path, Some(token), &[], Some(body))
+            .await?;
+        Ok(())
     }
 
     pub async fn open_json<T: DeserializeOwned, B: Serialize>(
@@ -310,18 +343,7 @@ impl FeishuHttp {
             .map_err(transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
-        if !status.is_success() {
-            #[derive(Deserialize)]
-            struct Failure {
-                code: i64,
-            }
-            if let Ok(failure) = serde_json::from_slice::<Failure>(&bytes)
-                && failure.code != 0
-            {
-                return Err(classify_open_api(failure.code, None));
-            }
-            return Err(classify_http_status(status));
-        }
+        require_open_http_success(status, &bytes)?;
         open_data(parse_json(&bytes, status)?)
     }
 
@@ -358,18 +380,7 @@ impl FeishuHttp {
         let response = request.send().await.map_err(transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
-        if !status.is_success() {
-            #[derive(Deserialize)]
-            struct Failure {
-                code: i64,
-            }
-            if let Ok(failure) = serde_json::from_slice::<Failure>(&bytes)
-                && failure.code != 0
-            {
-                return Err(classify_open_api(failure.code, None));
-            }
-            return Err(classify_http_status(status));
-        }
+        require_open_http_success(status, &bytes)?;
         parse_json(&bytes, status)
     }
 
@@ -406,21 +417,16 @@ impl FeishuHttp {
                     None,
                 )
             })?;
-        let encoded = url::form_urlencoded::Serializer::new(String::new())
-            .extend_pairs([
-                ("grant_type", "client_credentials"),
-                ("client_id", app_id),
-                ("client_secret", app_secret),
-            ])
-            .finish();
         let response = self
-            .client
-            .request(Method::POST, url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(encoded)
-            .send()
-            .await
-            .map_err(transport)?;
+            .post_form_raw(
+                url,
+                &[
+                    ("grant_type", "client_credentials"),
+                    ("client_id", app_id),
+                    ("client_secret", app_secret),
+                ],
+            )
+            .await?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
         // OAuth business failures use HTTP 400/500. Decode before classifying so
@@ -575,9 +581,7 @@ pub(crate) fn classify_open_api(code: i64, msg: Option<&str>) -> FeishuError {
 }
 
 fn open_data<T>(envelope: OpenApiEnvelope<T>) -> Result<T, FeishuError> {
-    if envelope.code != 0 {
-        return Err(classify_open_api(envelope.code, envelope.msg.as_deref()));
-    }
+    require_open_success(envelope.code, envelope.msg.as_deref())?;
     envelope.data.ok_or_else(|| {
         FeishuError::new(
             FeishuErrorKind::Protocol,
@@ -588,7 +592,31 @@ fn open_data<T>(envelope: OpenApiEnvelope<T>) -> Result<T, FeishuError> {
     })
 }
 
-fn parse_json<T: DeserializeOwned>(
+pub(super) fn require_open_success(code: i64, message: Option<&str>) -> Result<(), FeishuError> {
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(classify_open_api(code, message))
+    }
+}
+
+fn require_open_http_success(status: reqwest::StatusCode, bytes: &[u8]) -> Result<(), FeishuError> {
+    if status.is_success() {
+        return Ok(());
+    }
+    #[derive(Deserialize)]
+    struct Failure {
+        code: i64,
+    }
+    if let Ok(failure) = serde_json::from_slice::<Failure>(bytes)
+        && failure.code != 0
+    {
+        return Err(classify_open_api(failure.code, None));
+    }
+    Err(classify_http_status(status))
+}
+
+pub(super) fn parse_json<T: DeserializeOwned>(
     bytes: &[u8],
     status: reqwest::StatusCode,
 ) -> Result<T, FeishuError> {
@@ -1115,7 +1143,6 @@ mod resource_tests {
                 .host
                 .runtime
                 .bot_input_fact(&inbound.creation_id, &input_id)
-                .await
                 .context("post-quiesce read of the original stable bot input")?,
             BotInputRead::Absent,
             "the safe pre-core cancellation boundary did not submit a new input",

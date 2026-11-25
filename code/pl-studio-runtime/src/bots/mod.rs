@@ -22,11 +22,27 @@ mod send;
 mod storage;
 mod workspace;
 
+pub(crate) use archive::BotArchiveGuard;
 pub(crate) use config::load_config;
 pub(crate) use config::validate_bot_id;
 pub(crate) use host::StudioBotSessionHost;
 pub(crate) use owner::BotRuntime;
 pub(crate) use protocol::error::FeishuError;
+
+/// Borrow the handle while waiting so cancellation of the waiter leaves it in the owner's slot.
+async fn join_owned_task(
+    slot: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), tokio::task::JoinError> {
+    let Some(handle) = slot.as_mut() else {
+        return Ok(());
+    };
+    let joined = handle.await;
+    *slot = None;
+    match joined {
+        Err(error) if error.is_cancelled() => Ok(()),
+        result => result,
+    }
+}
 
 /// 当前 owner 的有界输入身份；缺失不证明从未受理。
 #[derive(Debug, Clone, PartialEq, Eq)]

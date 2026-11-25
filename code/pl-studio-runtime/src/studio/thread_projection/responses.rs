@@ -15,6 +15,17 @@ use pl_model::completion::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Identity and ordering shared by one model attempt projection.
+#[derive(Clone, Copy)]
+pub(super) struct AttemptStamp<'a> {
+    pub(super) thread_id: &'a str,
+    pub(super) attempt: &'a pl_core::thread::journal::AttemptUpdate,
+    pub(super) ordinal: u64,
+    pub(super) created_at: i64,
+    pub(super) revision: u64,
+    pub(super) updated_at: i64,
+}
+
 /// Terminal streaming identities an attempt actually started.
 ///
 /// Aggregate preview identities are probed even for itemized responses so an earlier preview can
@@ -144,29 +155,33 @@ pub(super) fn finalize_missing_presentation(
         };
         items.push(ExecutionItem::new(
             id.clone(),
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            previous.ordinal,
-            revision,
-            previous.created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal: previous.ordinal,
+                revision,
+                created_at: previous.created_at,
+                updated_at,
+            },
             state,
         ));
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn project_attempt(
-    thread_id: &str,
     snapshot: &ThreadSnapshot,
-    attempt: &pl_core::thread::journal::AttemptUpdate,
-    ordinal: u64,
-    created_at: i64,
-    revision: u64,
-    updated_at: i64,
+    stamp: AttemptStamp<'_>,
     finalize: &BTreeSet<String>,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
+    let AttemptStamp {
+        thread_id,
+        attempt,
+        ordinal,
+        created_at,
+        revision,
+        updated_at,
+    } = stamp;
     let mut items = vec![inference_item(
         thread_id, attempt, created_at, updated_at, revision,
     )?];
@@ -214,12 +229,14 @@ pub(super) fn project_attempt(
         }
         items.push(ExecutionItem::new(
             super::order::response_id(&attempt.attempt_id, "text"),
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal,
+                revision,
+                created_at,
+                updated_at,
+            },
             ExecutionShape::Raw(crate::ThreadRawItem::stored(payloads, notice, updated_at)),
         ));
         return Ok(items);
@@ -287,15 +304,7 @@ pub(super) fn project_attempt(
             ThreadTextChannel::Commentary,
         ),
     };
-    items.extend(project_recovery(
-        thread_id,
-        attempt,
-        ordinal,
-        created_at,
-        revision,
-        updated_at,
-        &response.observation,
-    )?);
+    items.extend(project_recovery(stamp, &response.observation)?);
     let text_id =
         super::order::observation_id(&attempt.attempt_id, response.observation.generation, "text");
     let reasoning_id = super::order::observation_id(
@@ -327,12 +336,14 @@ pub(super) fn project_attempt(
         if terminates_live_channels && finalize.contains(&reasoning_id) {
             items.push(ExecutionItem::new(
                 reasoning_id.clone(),
-                thread_id.into(),
-                attempt.turn_id.clone(),
-                ordinal,
-                revision,
-                created_at,
-                updated_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal,
+                    revision,
+                    created_at,
+                    updated_at,
+                },
                 ExecutionShape::Thinking(ThreadThinkingItem::new(
                     Vec::new(),
                     Vec::new(),
@@ -343,12 +354,14 @@ pub(super) fn project_attempt(
         if terminates_live_channels && finalize.contains(&text_id) {
             items.push(ExecutionItem::new(
                 text_id.clone(),
-                thread_id.into(),
-                attempt.turn_id.clone(),
-                ordinal,
-                revision,
-                created_at,
-                updated_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal,
+                    revision,
+                    created_at,
+                    updated_at,
+                },
                 ExecutionShape::Text(ThreadTextItem::new(
                     ThreadTextChannel::Commentary,
                     String::new(),
@@ -380,12 +393,14 @@ pub(super) fn project_attempt(
     if let Some(reasoning) = response.reasoning.filter(|text| !text.is_empty()) {
         items.push(ExecutionItem::new(
             reasoning_id.clone(),
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal,
+                revision,
+                created_at,
+                updated_at,
+            },
             ExecutionShape::Thinking(ThreadThinkingItem::new(
                 Vec::new(),
                 vec![reasoning],
@@ -395,12 +410,14 @@ pub(super) fn project_attempt(
     } else if terminates_live_channels && finalize.contains(&reasoning_id) {
         items.push(ExecutionItem::new(
             reasoning_id.clone(),
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal,
+                revision,
+                created_at,
+                updated_at,
+            },
             ExecutionShape::Thinking(ThreadThinkingItem::new(
                 Vec::new(),
                 Vec::new(),
@@ -411,12 +428,14 @@ pub(super) fn project_attempt(
     if !response.text.is_empty() {
         items.push(ExecutionItem::new(
             text_id.clone(),
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal,
+                revision,
+                created_at,
+                updated_at,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 channel,
                 response.text,
@@ -427,12 +446,14 @@ pub(super) fn project_attempt(
     } else if terminates_live_channels && finalize.contains(&text_id) {
         items.push(ExecutionItem::new(
             text_id,
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal,
+                revision,
+                created_at,
+                updated_at,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 channel,
                 String::new(),
@@ -580,12 +601,14 @@ fn project_presentation_items(
             };
             projected.push(ExecutionItem::new(
                 id,
-                thread_id.into(),
-                turn_id.into(),
-                ordinal,
-                revision,
-                created_at,
-                updated_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                    turn_id: std::borrow::Cow::Owned(turn_id.into()),
+                    ordinal,
+                    revision,
+                    created_at,
+                    updated_at,
+                },
                 state,
             ));
         }
@@ -632,16 +655,18 @@ pub(super) fn recovery_notices(
     notices
 }
 
-#[allow(clippy::too_many_arguments)]
 fn project_recovery(
-    thread_id: &str,
-    attempt: &pl_core::thread::journal::AttemptUpdate,
-    ordinal: u64,
-    created_at: i64,
-    revision: u64,
-    updated_at: i64,
+    stamp: AttemptStamp<'_>,
     observation: &pl_core::model::ModelObservation,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
+    let AttemptStamp {
+        thread_id,
+        attempt,
+        ordinal,
+        created_at,
+        revision,
+        updated_at,
+    } = stamp;
     let mut items = Vec::new();
     for failed in &observation.failed {
         let lifecycle = ThreadContentLifecycle::failed(updated_at, failed.message.to_string());
@@ -691,12 +716,14 @@ fn project_recovery(
             };
             items.push(ExecutionItem::new(
                 id,
-                thread_id.into(),
-                attempt.turn_id.clone(),
-                ordinal,
-                revision,
-                created_at,
-                updated_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                    turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                    ordinal,
+                    revision,
+                    created_at,
+                    updated_at,
+                },
                 state,
             ));
         }
@@ -704,12 +731,14 @@ fn project_recovery(
     for (id, message) in recovery_notices(&attempt.attempt_id, observation) {
         items.push(ExecutionItem::new(
             id,
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+                ordinal,
+                revision,
+                created_at,
+                updated_at,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Commentary,
                 message,
@@ -777,12 +806,14 @@ fn inference_item(
     };
     Ok(ExecutionItem::new(
         super::order::response_id(&attempt.attempt_id, "inference"),
-        thread_id.into(),
-        attempt.turn_id.clone(),
-        0,
-        revision,
-        created_at,
-        updated_at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread_id.into()),
+            turn_id: std::borrow::Cow::Owned(attempt.turn_id.clone()),
+            ordinal: 0,
+            revision,
+            created_at,
+            updated_at,
+        },
         ExecutionShape::Inference(ThreadInferenceItem::new(
             attempt.attempt_id.clone(),
             model,

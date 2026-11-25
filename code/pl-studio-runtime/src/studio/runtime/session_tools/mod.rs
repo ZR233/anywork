@@ -238,7 +238,7 @@ impl SessionTool {
                     "revision feedback is required"
                 );
                 ensure!(
-                    args.feedback.len() <= crate::plan_tool::MAX_FEEDBACK_BYTES,
+                    args.feedback.len() <= pl_tool_plan::MAX_FEEDBACK_BYTES,
                     "revision feedback is too long"
                 );
                 runtime
@@ -560,7 +560,7 @@ impl StudioRuntime {
             duplicate,
         };
         if matches!(
-            self.bot_input_fact(&args.session_id, &input_id).await?,
+            self.bot_input_fact(&args.session_id, &input_id)?,
             crate::bots::BotInputRead::Ready { .. }
         ) {
             return output(&receipt(true));

@@ -234,7 +234,7 @@ fn deferred_target(payload: &OpaquePayload, index: usize) -> Result<DeferredWork
 struct DisplayFileBinding {
     files: ExecutorWorkspaceFileBackend,
     cancel: CancellationToken,
-    _usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
+    _usage: crate::studio::worktree::worktree_lease::WorkspaceUsageLease,
 }
 
 impl DisplayFileBinding {

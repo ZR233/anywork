@@ -24,10 +24,10 @@ use tokio::time::Instant;
 
 use crate::history::HistoryStore;
 use crate::studio::StudioStore;
-use crate::studio::storage::calls::is_retryable_write;
 use crate::studio::storage::coordinator::{
     PendingSequenceRange, ThreadPersistenceMetrics, ThreadPersistenceReport,
 };
+use crate::studio::storage::sqlite_util::is_retryable_write;
 use crate::studio::thread_projection::PreparedEffect;
 
 mod batch;
@@ -755,12 +755,14 @@ impl RuntimeOrderIndex {
         let stamp = entry.stamp.as_ref()?;
         Some(crate::ExecutionItem::new(
             id.to_owned(),
-            thread_id.to_owned(),
-            stamp.turn_id.clone(),
-            entry.ordinal,
-            stamp.revision,
-            stamp.created_at,
-            stamp.updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
+                turn_id: std::borrow::Cow::Owned(stamp.turn_id.clone()),
+                ordinal: entry.ordinal,
+                revision: stamp.revision,
+                created_at: stamp.created_at,
+                updated_at: stamp.updated_at,
+            },
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(
                 Vec::new(),
                 "Pending execution body belongs to its prepared batch.",
@@ -2496,7 +2498,6 @@ impl ThreadStorageSink {
         // A preceding incarnation may still be finishing one write. Observe its committed
         // watermark and seed this incarnation while holding the channel's single-writer lease.
         let writer_lease = channel.step_lock.lock().await;
-        let durable = 0;
         let (history_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
         let inner = Arc::new(Inner {
             store,
@@ -2513,8 +2514,7 @@ impl ThreadStorageSink {
         // Registration alone cannot discharge a predecessor's obligations: this report proves
         // which retained facts are adopted and which have already become durable.
         {
-            let mut progress = lock_progress(&inner);
-            progress.durable = progress.durable.max(durable);
+            let progress = lock_progress(&inner);
             report(&inner, &progress);
         }
         publish_accounting(&inner, &history).await;
@@ -3202,7 +3202,6 @@ impl ThreadStorageSink {
         }
         if thread_id != self.0.thread.id
             || write.effect.thread_id != thread_id
-            || write.effect.thread_id != thread_id
             || write.effect.sequence == 0
         {
             // A contract failure is terminal for this sink and never a transient conflict: publish it
@@ -3598,11 +3597,11 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) struct CloseFactoryFixture {
         pub(crate) factory: crate::studio::StudioThreadFactory,
-        pub(in crate::studio) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        pub(in crate::studio) writer: crate::studio::storage::write_behind::ThreadWriteBehindWriter,
         pub(crate) config: crate::config::ConfigRuntime,
         pub(crate) events: crate::studio::ProductEventBus,
         store: StudioStore,
-        worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+        worktrees: crate::studio::worktree::worktree_lease::WorktreeLeaseOwner,
     }
 
     impl CloseFactoryFixture {
@@ -3611,7 +3610,7 @@ pub(crate) mod storage_fault_tests {
             id: &str,
             root: &std::path::Path,
         ) -> Result<crate::thread_assembler::WorkspacePreparationOwner> {
-            use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
+            use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
             let usage = self
                 .worktrees
                 .reserve_workspace(id, WorkspaceEndpoint::Local)?;
@@ -3662,7 +3661,8 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) fn close_factory(store: &StudioStore) -> Result<CloseFactoryFixture> {
         use crate::studio::thread_factory::{StudioThreadFactory, StudioThreadServices};
-        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let writer =
+            crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
         let events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
         let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
             crate::config::ConfigPaths::from_config_dir(
@@ -3673,7 +3673,7 @@ pub(crate) mod storage_fault_tests {
         let bots =
             crate::bots::BotRuntime::new(store.paths().clone(), config.clone(), events.clone())?;
         let worktrees =
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
+            crate::studio::worktree::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
         let factory = StudioThreadFactory::new(StudioThreadServices {
             store: store.clone(),
             worktrees: worktrees.clone(),
@@ -3691,7 +3691,6 @@ pub(crate) mod storage_fault_tests {
             ),
             thread_modes: config.thread_mode_manager(),
             ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
-            helper_source: source,
             bots,
             run_export: None,
         });
@@ -3749,10 +3748,7 @@ pub(crate) mod storage_fault_tests {
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         continue;
                     }
-                    match projection
-                        .prepare_committed(&thread, &write.effect, &write.state)
-                        .await
-                    {
+                    match projection.prepare_committed(&thread, &write.effect, &write.state) {
                         Ok(prepared) => {
                             if let Err(error) = channel.accept_prepared(Some(&write), prepared) {
                                 failed.insert(sequence);
@@ -3852,9 +3848,7 @@ pub(crate) mod storage_fault_tests {
             RuntimeEpoch::new(),
             store.history(&thread.id).await?.database_id().to_owned(),
         )?;
-        let prepared = projection
-            .prepare_committed(thread, &terminal.effect, &terminal.state)
-            .await?;
+        let prepared = projection.prepare_committed(thread, &terminal.effect, &terminal.state)?;
         let mut handed = (*prepared).clone();
         handed.parent_report = Some(Arc::new(message));
         let handed = Arc::new(handed);
@@ -3941,10 +3935,11 @@ mod writer_tests {
         async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
             let id = self.sink.0.thread.id.clone();
             self.sink.admit(&id, write.clone())?;
-            let prepared = self
-                .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
-                .await?;
+            let prepared = self.projection.prepare_committed(
+                &self.sink.0.thread,
+                &write.effect,
+                &write.state,
+            )?;
             ensure!(
                 self.sink.0.channel.prepare(prepared.clone()),
                 "handoff refused"
@@ -4226,10 +4221,11 @@ mod writer_tests {
         fixture
             .sink
             .admit(&fixture.sink.0.thread.id, write.clone())?;
-        let prepared = fixture
-            .projection
-            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
-            .await?;
+        let prepared = fixture.projection.prepare_committed(
+            &fixture.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
         let mut rejected = (*prepared).clone();
         let mut events = rejected.history_events.to_vec();
         let first = events.first_mut().context("input completion")?;
@@ -4305,14 +4301,16 @@ mod writer_tests {
     async fn reprojecting_an_unchanged_effect_keeps_semantics_before_admission() -> Result<()> {
         let mut fixture = Fixture::new("stable-payload").await?;
         let write = visible_input_ticket("stable-payload", 9, "stable-input")?;
-        let first = fixture
-            .projection
-            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
-            .await?;
-        let second = fixture
-            .projection
-            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
-            .await?;
+        let first = fixture.projection.prepare_committed(
+            &fixture.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
+        let second = fixture.projection.prepare_committed(
+            &fixture.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
         assert_eq!(first.history_events.len(), second.history_events.len());
         for (first, second) in first
             .history_events
@@ -4545,9 +4543,8 @@ mod writer_tests {
         let mut projection = live_projection(&reopened).await?;
         let next = ticket(id, 1);
         reopened.admit(id, next.clone())?;
-        let prepared = projection
-            .prepare_committed(&reopened.0.thread, &next.effect, &next.state)
-            .await?;
+        let prepared =
+            projection.prepare_committed(&reopened.0.thread, &next.effect, &next.state)?;
         reopened.0.channel.prepare(prepared);
         reopened.0.channel.await_handoff_durable(id, 1).await?;
         let page = store
@@ -4663,10 +4660,11 @@ mod batch_window_tests {
         async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
             let id = self.sink.0.thread.id.clone();
             self.sink.admit(&id, write.clone())?;
-            let prepared = self
-                .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
-                .await?;
+            let prepared = self.projection.prepare_committed(
+                &self.sink.0.thread,
+                &write.effect,
+                &write.state,
+            )?;
             ensure!(
                 self.sink.0.channel.prepare(prepared.clone()),
                 "handoff refused"
@@ -4888,9 +4886,8 @@ mod watchdog_tests {
             let write = lock_progress(&sink.0).effects[(sequence - 1) as usize]
                 .write
                 .clone();
-            let prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.state)
-                .await?;
+            let prepared =
+                projection.prepare_committed(&sink.0.thread, &write.effect, &write.state)?;
             if sequence == 1 {
                 deferred_head = Some(prepared);
                 continue;
@@ -4924,9 +4921,7 @@ mod watchdog_tests {
         let explicit = channel.subscribe().borrow().clone();
         channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW * 2);
         assert_eq!(*channel.subscribe().borrow(), explicit);
-        let prepared = projection
-            .prepare_committed(&sink.0.thread, &fifth.effect, &fifth.state)
-            .await?;
+        let prepared = projection.prepare_committed(&sink.0.thread, &fifth.effect, &fifth.state)?;
         assert!(channel.prepare(prepared));
         drop(lease);
         store
@@ -5047,12 +5042,14 @@ mod execution_index_tests {
         );
         let item = crate::ExecutionItem::new(
             "completed".into(),
-            "thread".into(),
-            "turn".into(),
-            order,
-            9,
-            10,
-            20,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: order,
+                revision: 9,
+                created_at: 10,
+                updated_at: 20,
+            },
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         index.materialize_execution_batch([ExecutionMaterialization::from_item(&item)], 7)?;
@@ -5104,12 +5101,14 @@ mod execution_index_tests {
         let retained = index.retained_bytes();
         let large = crate::ExecutionItem::new(
             "observed".into(),
-            "thread".into(),
-            "turn".into(),
-            first,
-            9,
-            10,
-            20,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: first,
+                revision: 9,
+                created_at: 10,
+                updated_at: 20,
+            },
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         process.store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);

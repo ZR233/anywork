@@ -189,7 +189,8 @@ impl AgentProfileCatalog {
         self.profiles.push(profile);
     }
 
-    pub fn discover(
+    #[cfg(test)]
+    fn discover(
         paths: &ConfigPaths,
         config: &StudioConfig,
         acp: &super::AcpDefinitionsSnapshot,

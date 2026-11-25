@@ -274,23 +274,3 @@ pub struct CurrentCollectionPage {
     pub entries: Vec<CurrentCollectionEntry>,
     pub continuation: Option<String>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ActivityIdentity {
-    ModelPart { atom_id: String },
-    ForegroundTool { call_id: String },
-    BackgroundTool { call_id: String },
-    Other { domain: String, id: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivityEntry {
-    pub identity: ActivityIdentity,
-    pub atom: crate::ChatAtom,
-}

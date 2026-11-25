@@ -21,14 +21,36 @@ pub(super) async fn initialize(db: &DatabaseConnection) -> anyhow::Result<()> {
     preflight(db).await.map_err(|error| {
         crate::studio::startup::migration_error("bot ledger", "preflight", error)
     })?;
+    // 先快照待执行步骤；失败迁移不会被记录，但迁移后重读可能因连接状态失败。
+    let pending_before = pending_migration_names(db).await.ok();
     if let Err(error) = Migrator::up(db, None).await {
+        // 每条迁移与其记录在同一事务内提交：失败后仍在待执行列表首位的
+        // 就是真实失败步骤，先前已成功的迁移不再出现在其中。
+        let pending = pending_migration_names(db)
+            .await
+            .ok()
+            .filter(|names| !names.is_empty())
+            .or(pending_before);
+        let step = pending
+            .as_deref()
+            .and_then(<[String]>::first)
+            .map(String::as_str)
+            .unwrap_or("up");
         return Err(crate::studio::startup::migration_error(
             "bot ledger",
-            "m20261026_000001_bot_ledger_schema",
+            step,
             error,
         ));
     }
     Ok(())
+}
+
+async fn pending_migration_names(db: &DatabaseConnection) -> anyhow::Result<Vec<String>> {
+    Ok(Migrator::get_pending_migrations_read_only(db)
+        .await?
+        .iter()
+        .map(|migration| migration.name().to_string())
+        .collect())
 }
 
 async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
@@ -80,15 +102,8 @@ async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
             "bot ledger schema is missing; existing data preserved"
         );
     }
-    for row in db
-        .query_all_raw(statement("PRAGMA quick_check", vec![]))
-        .await?
-    {
-        anyhow::ensure!(
-            row.try_get_by_index::<String>(0)? == "ok",
-            "bot ledger integrity check failed"
-        );
-    }
+    crate::studio::storage::sqlite_util::preflight_sqlite(db, "bot ledger integrity check failed")
+        .await?;
     if Migrator::get_pending_migrations_read_only(db)
         .await?
         .is_empty()

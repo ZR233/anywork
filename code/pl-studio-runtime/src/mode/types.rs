@@ -35,6 +35,10 @@ impl ThreadModeId {
         Self(Self::AUTO.to_string())
     }
 
+    pub(crate) fn legacy_builtin_replacement(&self) -> Option<Self> {
+        matches!(self.as_str(), "mode.simple" | "mode.task").then(Self::auto)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

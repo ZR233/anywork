@@ -4,11 +4,11 @@
 //! content blobs (`events.jsonl` + `contents/<sha256>.bin`), idempotent accounting handoffs with
 //! bounded backpressure, and atomic `result.json` / `runSealed` closure after persistence flush.
 
-pub mod manifest;
-pub mod reader;
-pub mod types;
-pub mod usage;
-pub mod writer;
+mod manifest;
+mod reader;
+mod types;
+mod usage;
+mod writer;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -26,14 +26,13 @@ pub use manifest::{
     write_run_manifest,
 };
 pub use types::{
-    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
-    EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3, ExecutionErrorStage,
-    ExecutionErrorV3, ExecutionLifecycleExportV3, ExecutionOutcome, ExportSchemaV3, ExportedBlobV3,
-    ExportedContentV3, ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION,
-    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV3, RunExportOptions, RunExportReport,
-    RunInvocationV3, RunManifestV3, SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3,
-    TimingReportV3, TraceSummaryV3, UsageCoverage, UsageExportV3, UsageKnownTotalsV3,
-    UsageMetricKey, UsageTotalsV3, format_utc_rfc3339,
+    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3, EventBodyV3,
+    EventSourceV3, EventV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3,
+    ExecutionOutcome, ExportSchemaV3, ExportedBlobV3, ExportedContentV3,
+    ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION, ResultOutcome,
+    ResultV3, RunExportOptions, RunExportReport, RunInvocationV3, RunManifestV3, SealedMemberCutV3,
+    SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3, UsageCoverage,
+    UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3, format_utc_rfc3339,
 };
 use writer::{
     BoundedExportQueue, ExportCommand, FinalizeWriterOutcome, MemberFinalCut, MemberSnapshot,
@@ -41,7 +40,6 @@ use writer::{
     spawn_writer_task,
 };
 
-use crate::StudioStore;
 use crate::history::{HistoryCut, HistoryEvent, HistoryReader};
 use crate::studio::thread_projection::CurrentState;
 use crate::studio::thread_projection::PreparedAccounting;
@@ -196,9 +194,7 @@ impl RunExporter {
         if let Some(report) = self.inner.cached_report() {
             return report;
         }
-        self.inner
-            .finalize_internal(None, false, false, None, None)
-            .await
+        self.inner.finalize_internal(false, false, None, None).await
     }
 
     /// Atomically writes `result.json` into `<output-dir>/result.json`.
@@ -657,13 +653,12 @@ impl RunExportCoordinator {
     /// Runs inside `shutdown.rs::write_chain` after `flush_persistence` and before `store.close()`.
     pub async fn finalize_during_shutdown(
         &self,
-        store: StudioStore,
         deadline: Option<tokio::time::Instant>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
     ) -> RunExportReport {
-        self.finalize_internal(Some(store), agent_ok, flush_ok, pending_after, deadline)
+        self.finalize_internal(agent_ok, flush_ok, pending_after, deadline)
             .await
     }
 
@@ -687,7 +682,6 @@ impl RunExportCoordinator {
 
     async fn finalize_internal(
         &self,
-        store: Option<StudioStore>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
@@ -700,7 +694,7 @@ impl RunExportCoordinator {
         let finalize_start = Instant::now();
         let outcome = match self
             .queue
-            .enqueue_finalize(store, agent_ok, flush_ok, pending_after)
+            .enqueue_finalize(agent_ok, flush_ok, pending_after)
             .await
         {
             Ok(rx) => await_finalize_with_budget(&self.queue, rx, deadline).await,

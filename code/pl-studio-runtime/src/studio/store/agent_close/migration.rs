@@ -1,11 +1,10 @@
 //! Only the named product migration reads schema-1 close records and their branch-bound lease.
 use super::{AgentCloseGitGrant, AgentCloseRecord, OwnedWorktreeBinding};
 use crate::studio::{
-    agent_host::worktree_lease::{
+    store::object::{PersistedStudioObject, decode_object, studio_object},
+    worktree::worktree_lease::{
         WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
     },
-    entity::studio_object,
-    store::object::{PersistedStudioObject, decode_object},
 };
 use anyhow::{Result, ensure};
 use pl_core::context::content_hash;

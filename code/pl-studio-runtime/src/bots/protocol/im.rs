@@ -179,9 +179,7 @@ impl FeishuIm {
             .open_typed(Method::GET, BOT_INFO_PATH, Some(token), &[], None::<&()>)
             .await?;
         let code = parsed.code;
-        if code != 0 {
-            return Err(super::http::classify_open_api(code, parsed.msg.as_deref()));
-        }
+        super::http::require_open_success(code, parsed.msg.as_deref())?;
         parsed
             .bot
             .and_then(|bot| bot.open_id)
@@ -296,7 +294,12 @@ impl FeishuIm {
             ));
         }
         let body = markdown_body(chat_id, text, uuid);
-        if markdown_request_bytes(chat_id, text, uuid) > super::TEXT_SEGMENT_LIMIT_BYTES {
+        // 与 `send_card` 一致：对将要发送的同一份 body 只构建并序列化一次。
+        if serde_json::to_vec(&body)
+            .expect("IM request strings serialize")
+            .len()
+            > super::TEXT_SEGMENT_LIMIT_BYTES
+        {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
                 "serialized Markdown message exceeds 30000 UTF-8 bytes",

@@ -1,17 +1,16 @@
 //! Durable responsibility for disposable files; canonical archive facts remain in the catalog.
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, ensure};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use super::thread_preparation::{PreparationBinding, PreparationIdentity, PreparationSave};
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, decode_object, load_object, put_object},
+    object::{PersistedStudioObject, checked_bump_revision, list_objects, load_object, put_object},
 };
-use crate::studio::agent_host::worktree_lease::WorkspaceIdentity;
-use crate::studio::agent_host::worktree_lease::WorktreeLease;
+use crate::studio::worktree::worktree_lease::WorkspaceIdentity;
+use crate::studio::worktree::worktree_lease::WorktreeLease;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,11 +110,7 @@ impl ThreadArchiveOperation {
             .collect()
     }
     pub(in crate::studio) fn changed(&mut self) -> Result<()> {
-        self.revision = self
-            .revision
-            .checked_add(1)
-            .context("archive revision exhausted")?;
-        Ok(())
+        checked_bump_revision(&mut self.revision, "archive")
     }
 }
 
@@ -251,14 +246,6 @@ impl StudioStore {
     }
 
     pub(in crate::studio) async fn thread_archives(&self) -> Result<Vec<ThreadArchiveOperation>> {
-        use crate::studio::entity::studio_object;
-        studio_object::Entity::find()
-            .filter(studio_object::Column::OwnerKind.eq(ThreadArchiveOperation::OWNER_KIND))
-            .filter(studio_object::Column::ObjectKind.eq(ThreadArchiveOperation::OBJECT_KIND))
-            .all(self.database())
-            .await?
-            .into_iter()
-            .map(decode_object::<ThreadArchiveOperation>)
-            .collect()
+        list_objects(self.database()).await
     }
 }

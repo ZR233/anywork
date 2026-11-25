@@ -31,7 +31,6 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct AcpCloseOutcome {
     pub(crate) exit: Option<Exit>,
     pub(crate) local_complete: bool,
-    pub(crate) worker_error: Option<String>,
     pub(crate) driver_error: Option<String>,
 }
 
@@ -43,7 +42,6 @@ struct Owned {
     exit: Option<Exit>,
     account: Option<Arc<AccountConnection>>,
     usage: Option<WorkspaceUsageLease>,
-    worker_error: Option<String>,
     driver_error: Option<String>,
     association: Option<Association>,
     title_join: Option<JoinHandle<()>>,
@@ -124,7 +122,6 @@ impl AcpResources {
                 exit: None,
                 account: None,
                 usage: None,
-                worker_error: None,
                 driver_error: None,
                 association: None,
                 title_join: None,
@@ -616,7 +613,6 @@ impl AcpResources {
         AcpCloseOutcome {
             exit: owned.exit.clone(),
             local_complete: !self.has_obligations(),
-            worker_error: owned.worker_error.clone(),
             driver_error: owned.driver_error.clone(),
         }
     }
@@ -782,7 +778,6 @@ impl AcpResources {
         let outcome = AcpCloseOutcome {
             exit: owned.exit.clone(),
             local_complete,
-            worker_error: owned.worker_error.clone(),
             driver_error: owned.driver_error.clone(),
         };
         drop(owned);

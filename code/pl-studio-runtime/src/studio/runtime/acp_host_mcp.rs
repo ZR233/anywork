@@ -799,25 +799,14 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
         input: pl_core::context::OpaquePayload,
         context: AgentCallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        use pl_core::{
-            context::{ContextContent, OpaquePayload},
-            tool::{ToolOutput, opaque::ToolError},
-        };
+        use crate::tool_json::{JsonToolInput, json_output};
+        use pl_core::tool::opaque::ToolError;
         use pl_tool_plan::PlanHost;
 
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "unsupported input payload {} v{}",
-                    input.format(),
-                    input.version()
-                ),
-            )));
-        }
+        let input = JsonToolInput::new(&input)?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -829,20 +818,17 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
         };
         let value = match self.kind {
             AcpPlanToolKind::Current => {
-                let _: pl_tool_plan::PlanEmptyArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: pl_tool_plan::PlanEmptyArgs = input.decode()?;
                 serde_json::to_value(self.owner.current(plan_ctx).await.map_err(ToolError::new)?)
                     .map_err(ToolError::new)?
             }
             AcpPlanToolKind::Next => {
-                let _: pl_tool_plan::PlanEmptyArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: pl_tool_plan::PlanEmptyArgs = input.decode()?;
                 serde_json::to_value(self.owner.next(plan_ctx).await.map_err(ToolError::new)?)
                     .map_err(ToolError::new)?
             }
             AcpPlanToolKind::History => {
-                let args: pl_tool_plan::PlanHistoryArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: pl_tool_plan::PlanHistoryArgs = input.decode()?;
                 serde_json::to_value(
                     self.owner
                         .history(args, plan_ctx)
@@ -852,8 +838,7 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                 .map_err(ToolError::new)?
             }
             AcpPlanToolKind::Transition => {
-                let args: pl_tool_plan::PlanTransitionArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: pl_tool_plan::PlanTransitionArgs = input.decode()?;
                 let outcome = self
                     .owner
                     .transition(args, plan_ctx)
@@ -875,13 +860,7 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                 val
             }
         };
-        let text = serde_json::to_string(&value).map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        ))
+        json_output("application/json", &value)
     }
 }
 
@@ -906,90 +885,67 @@ impl pl_agent_tool::Tool for AcpWorkflowBindingTool {
         input: pl_core::context::OpaquePayload,
         context: AgentCallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
+        use crate::tool_json::{JsonToolInput, json_output};
         use crate::workflow_tool::{
             WorkflowOperationKind,
             machine::{EmptyInput, RestartInput, TransitionInput, WorkflowOperation},
         };
-        use pl_core::{
-            context::{ContextContent, OpaquePayload},
-            tool::{ToolOutput, opaque::ToolError},
-        };
+        use pl_core::tool::opaque::ToolError;
 
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "unsupported input payload {} v{}",
-                    input.format(),
-                    input.version()
-                ),
-            )));
-        }
-        let arg_hash = pl_core::context::content_hash(input.content().as_bytes());
+        let input = JsonToolInput::new(&input)?;
+        let arg_hash = input.argument_hash();
         let op = WorkflowOperation {
             turn_id: context.call_id.clone(),
             call_id: context.call_id,
         };
         let value = match self.kind {
             WorkflowOperationKind::Current => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_current_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Next => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_next_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Graph => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_graph_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::History => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_history_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Transition => {
-                let args: TransitionInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: TransitionInput = input.decode()?;
                 self.owner
                     .workflow_transition(args, op, arg_hash)
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Restart => {
-                let args: RestartInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: RestartInput = input.decode()?;
                 self.owner
                     .workflow_restart(args, op, arg_hash)
                     .await
                     .map_err(ToolError::new)?
             }
         };
-        let text = serde_json::to_string(&value).map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        ))
+        json_output("application/json", &value)
     }
 }
 
@@ -2392,321 +2348,47 @@ mod tests {
             let reject = json!({"optionId":"deny", "kind":"reject_once", "name":"Deny"});
             let standard = || vec![always.clone(), reject.clone(), once.clone()];
             let agy_name = "mcp_anywork_anywork_list_agents";
-            let valid_meta = || {
-                json!({
-                    "mcp": {"server": "anywork", "tool": "anywork_list_agents"},
-                    "is_mcp_tool_call": true,
-                })
-            };
-            let mut cases = Vec::new();
-            let mut add = |name: &'static str,
-                           pre_updates: Vec<Value>,
-                           tool_call: Value,
-                           options: Vec<Value>,
-                           auto_allowed: bool| {
-                cases.push(PermissionCase {
-                    name,
-                    pre_updates,
-                    tool_call,
-                    options,
-                    auto_allowed,
-                });
-            };
-
-            add(
-                "1.5.2 omitted name with _meta.mcp",
-                Vec::new(),
-                build_tool_call(
-                    "1.5.2 omitted name with _meta.mcp",
-                    "anywork_anywork_exec_command",
-                    None,
-                    Some(valid_meta()),
-                ),
-                standard(),
-                true,
-            );
-            add(
-                "1.5.2 explicit null name with _meta.mcp",
-                Vec::new(),
-                json!({
-                    "toolCallId": "1.5.2 explicit null name with _meta.mcp",
-                    "title": "anywork_anywork_exec_command",
-                    "name": Value::Null,
-                    "_meta": {"mcp": {"server": "anywork", "tool": "anywork_list_agents"}},
-                }),
-                standard(),
-                true,
-            );
-            for (label, tool_name) in [
-                ("Antigravity tool mcp_anywork_", agy_name),
-                (
-                    "Claude tool mcp__anywork__",
-                    "mcp__anywork__anywork_list_agents",
-                ),
-                (
-                    "colon separator mcp:anywork:",
-                    "mcp:anywork:anywork_list_agents",
-                ),
-                (
-                    "slash separator mcp/anywork/",
-                    "mcp/anywork/anywork_list_agents",
-                ),
-                (
-                    "dot separator mcp.anywork.",
-                    "mcp.anywork.anywork_list_agents",
-                ),
-                (
-                    "hyphen separator mcp-anywork-",
-                    "mcp-anywork-anywork_list_agents",
-                ),
-                ("server prefix anywork_", "anywork_anywork_list_agents"),
-            ] {
-                add(
-                    label,
-                    Vec::new(),
-                    build_tool_call(label, agy_name, Some(tool_name), None),
-                    standard(),
-                    true,
-                );
-            }
-            add(
-                "ACP delta preUpdates tool_call name then omitted name",
-                vec![json!({
-                    "sessionUpdate": "tool_call",
-                    "toolCallId": "ACP delta preUpdates tool_call name then omitted name",
-                    "title": "List",
-                    "name": agy_name,
-                })],
-                build_tool_call(
-                    "ACP delta preUpdates tool_call name then omitted name",
-                    "List",
-                    None,
-                    None,
-                ),
-                standard(),
-                true,
-            );
-            add(
-                "consistent name and _meta.mcp",
-                Vec::new(),
-                build_tool_call(
-                    "consistent name and _meta.mcp",
-                    agy_name,
-                    Some(agy_name),
-                    Some(valid_meta()),
-                ),
-                standard(),
-                true,
-            );
-            add(
-                "is_mcp_tool_call true without mcp object and valid name",
-                Vec::new(),
-                build_tool_call(
-                    "is_mcp_tool_call true without mcp object and valid name",
-                    agy_name,
-                    Some(agy_name),
-                    Some(json!({"is_mcp_tool_call": true})),
-                ),
-                standard(),
-                true,
-            );
-            add(
-                "title only mcp_anywork",
-                Vec::new(),
-                build_tool_call("title only mcp_anywork", agy_name, None, None),
-                standard(),
-                false,
-            );
-            add(
-                "title only spoofed 1.5.2 title",
-                Vec::new(),
-                build_tool_call(
-                    "title only spoofed 1.5.2 title",
-                    "anywork_anywork_exec_command",
-                    None,
-                    None,
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "title shell substring attack",
-                Vec::new(),
-                build_tool_call(
-                    "title shell substring attack",
-                    "rm -rf code/anywork_client",
-                    None,
-                    None,
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "bare name",
-                Vec::new(),
-                build_tool_call("bare name", agy_name, Some("anywork_list_agents"), None),
-                standard(),
-                false,
-            );
-            add(
-                "trailing suffix",
-                Vec::new(),
-                build_tool_call(
-                    "trailing suffix",
-                    agy_name,
-                    Some("mcp_anywork_anywork_list_agents_extra"),
-                    None,
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "other server in name",
-                Vec::new(),
-                build_tool_call(
-                    "other server in name",
-                    agy_name,
-                    Some("mcp_other_anywork_list_agents"),
-                    None,
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "other server in _meta",
-                Vec::new(),
-                build_tool_call(
-                    "other server in _meta",
-                    agy_name,
-                    None,
-                    Some(json!({
-                        "mcp": {"server": "other", "tool": "anywork_list_agents"},
-                        "is_mcp_tool_call": true,
-                    })),
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "unknown tool in name",
-                Vec::new(),
-                build_tool_call(
-                    "unknown tool in name",
-                    agy_name,
-                    Some("mcp_anywork_anywork_unknown"),
-                    None,
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "unknown tool in _meta",
-                Vec::new(),
-                build_tool_call(
-                    "unknown tool in _meta",
-                    agy_name,
-                    None,
-                    Some(json!({
-                        "mcp": {"server": "anywork", "tool": "anywork_unknown"},
-                        "is_mcp_tool_call": true,
-                    })),
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "is_mcp_tool_call false with valid name",
-                Vec::new(),
-                build_tool_call(
-                    "is_mcp_tool_call false with valid name",
-                    agy_name,
-                    Some(agy_name),
-                    Some(json!({
-                        "mcp": {"server": "anywork", "tool": "anywork_list_agents"},
-                        "is_mcp_tool_call": false,
-                    })),
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "name and _meta.mcp tool mismatch",
-                Vec::new(),
-                build_tool_call(
-                    "name and _meta.mcp tool mismatch",
-                    agy_name,
-                    Some(agy_name),
-                    Some(json!({
-                        "mcp": {"server": "anywork", "tool": "anywork_wait_agent"},
-                        "is_mcp_tool_call": true,
-                    })),
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "disallowed name with valid _meta",
-                Vec::new(),
-                build_tool_call(
-                    "disallowed name with valid _meta",
-                    agy_name,
-                    Some("bash"),
-                    Some(valid_meta()),
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "preUpdates overridden to disallowed tool",
-                vec![
-                    json!({
-                        "sessionUpdate": "tool_call",
-                        "toolCallId": "preUpdates overridden to disallowed tool",
-                        "title": "List",
-                        "name": agy_name,
-                    }),
-                    json!({
-                        "sessionUpdate": "tool_call_update",
-                        "toolCallId": "preUpdates overridden to disallowed tool",
-                        "name": "bash",
-                    }),
-                ],
-                build_tool_call(
-                    "preUpdates overridden to disallowed tool",
-                    "List",
-                    None,
-                    None,
-                ),
-                standard(),
-                false,
-            );
-            add(
-                "only durable allow",
-                Vec::new(),
-                build_tool_call("only durable allow", agy_name, Some(agy_name), None),
-                vec![always],
-                false,
-            );
-            add(
-                "duplicate option id",
-                Vec::new(),
-                build_tool_call("duplicate option id", agy_name, Some(agy_name), None),
-                vec![
-                    once.clone(),
-                    json!({"optionId":"this-call", "kind":"reject_once", "name":"Deny"}),
-                ],
-                false,
-            );
-            add(
-                "multiple one-time options",
-                Vec::new(),
-                build_tool_call("multiple one-time options", agy_name, Some(agy_name), None),
-                vec![
-                    once,
-                    json!({"optionId":"other", "kind":"allow_once", "name":"Other"}),
-                ],
-                false,
-            );
+            let cases = vec![
+                PermissionCase {
+                    name: "eligible host tool auto-allows once",
+                    pre_updates: Vec::new(),
+                    tool_call: build_tool_call(
+                        "eligible host tool auto-allows once",
+                        agy_name,
+                        Some(agy_name),
+                        None,
+                    ),
+                    options: standard(),
+                    auto_allowed: true,
+                },
+                PermissionCase {
+                    name: "title is not a tool identity",
+                    pre_updates: Vec::new(),
+                    tool_call: build_tool_call(
+                        "title is not a tool identity",
+                        "anywork_anywork_exec_command",
+                        None,
+                        None,
+                    ),
+                    options: standard(),
+                    auto_allowed: false,
+                },
+                PermissionCase {
+                    name: "duplicate allow option is not automatic",
+                    pre_updates: Vec::new(),
+                    tool_call: build_tool_call(
+                        "duplicate allow option is not automatic",
+                        agy_name,
+                        Some(agy_name),
+                        None,
+                    ),
+                    options: vec![
+                        once.clone(),
+                        json!({"optionId":"this-call", "kind":"reject_once", "name":"Deny"}),
+                    ],
+                    auto_allowed: false,
+                },
+            ];
 
             for PermissionCase {
                 name: case,
@@ -3381,6 +3063,189 @@ mod tests {
 }
 
 #[cfg(test)]
+mod host_mcp_match {
+    use std::collections::BTreeMap;
+
+    use pl_acp::session::PermissionToolCall;
+    use pl_agent_tool::ToolDefinition;
+
+    use super::{HostBinding, inspect_host_mcp_meta, matches_host_mcp_tool_call, schema};
+
+    fn catalog() -> BTreeMap<String, HostBinding> {
+        let mut tools = BTreeMap::new();
+        for name in ["list_agents", "wait_agent", "exec_command"] {
+            let definition = ToolDefinition::text(name, "match catalog").expect("tool name");
+            let projection = pl_studio_mcp::ToolProjection::prepare(
+                &definition,
+                pl_studio_mcp::JsonInput::Object,
+                false,
+            )
+            .expect("tool projection");
+            let declaration = projection.declaration().clone();
+            let id = declaration.tool_id.clone();
+            tools.insert(
+                id,
+                HostBinding {
+                    declaration,
+                    projection,
+                    invoke: Box::new(|_, _, _| {
+                        Box::pin(async { unreachable!("matcher catalog is not invoked") })
+                    }),
+                    close: Box::new(|| Box::pin(async { Ok(()) })),
+                    closed: tokio::sync::Mutex::new(false),
+                },
+            );
+        }
+        tools
+    }
+
+    fn meta(value: serde_json::Value) -> schema::Meta {
+        let mut meta = schema::Meta::new();
+        for (key, item) in value.as_object().expect("meta object").clone() {
+            meta.insert(key, item);
+        }
+        meta
+    }
+
+    #[test]
+    fn matches_only_structural_host_tool_identity() {
+        let tools = catalog();
+        let listed = meta(serde_json::json!({
+            "mcp": {"server": "anywork", "tool": "anywork_list_agents"},
+            "is_mcp_tool_call": true,
+        }));
+        let waiting = meta(serde_json::json!({
+            "mcp": {"server": "anywork", "tool": "anywork_wait_agent"},
+            "is_mcp_tool_call": true,
+        }));
+        let flag_only = meta(serde_json::json!({"is_mcp_tool_call": true}));
+        let other_server = meta(serde_json::json!({
+            "mcp": {"server": "other", "tool": "anywork_list_agents"},
+            "is_mcp_tool_call": true,
+        }));
+        let unknown_tool = meta(serde_json::json!({
+            "mcp": {"server": "anywork", "tool": "anywork_unknown"},
+            "is_mcp_tool_call": true,
+        }));
+        let rejected_flag = meta(serde_json::json!({
+            "mcp": {"server": "anywork", "tool": "anywork_list_agents"},
+            "is_mcp_tool_call": false,
+        }));
+        let cases = [
+            (None, Some(&listed), true, "omitted name with host meta"),
+            (
+                Some("mcp_anywork_anywork_list_agents"),
+                None,
+                true,
+                "antigravity separator",
+            ),
+            (
+                Some("mcp__anywork__anywork_list_agents"),
+                None,
+                true,
+                "claude separator",
+            ),
+            (
+                Some("mcp:anywork:anywork_list_agents"),
+                None,
+                true,
+                "colon separator",
+            ),
+            (
+                Some("mcp/anywork/anywork_list_agents"),
+                None,
+                true,
+                "slash separator",
+            ),
+            (
+                Some("mcp.anywork.anywork_list_agents"),
+                None,
+                true,
+                "dot separator",
+            ),
+            (
+                Some("mcp-anywork-anywork_list_agents"),
+                None,
+                true,
+                "hyphen separator",
+            ),
+            (
+                Some("anywork_anywork_list_agents"),
+                None,
+                true,
+                "server prefix",
+            ),
+            (
+                Some("mcp_anywork_anywork_list_agents"),
+                Some(&listed),
+                true,
+                "consistent name and meta",
+            ),
+            (
+                Some("mcp_anywork_anywork_list_agents"),
+                Some(&flag_only),
+                true,
+                "true flag without mcp object",
+            ),
+            (None, None, false, "absent identity"),
+            (Some("anywork_list_agents"), None, false, "bare tool name"),
+            (
+                Some("mcp_anywork_anywork_list_agents_extra"),
+                None,
+                false,
+                "trailing suffix",
+            ),
+            (
+                Some("mcp_other_anywork_list_agents"),
+                None,
+                false,
+                "other server in name",
+            ),
+            (None, Some(&other_server), false, "other server in meta"),
+            (
+                Some("mcp_anywork_anywork_unknown"),
+                None,
+                false,
+                "unknown tool in name",
+            ),
+            (None, Some(&unknown_tool), false, "unknown tool in meta"),
+            (
+                Some("mcp_anywork_anywork_list_agents"),
+                Some(&rejected_flag),
+                false,
+                "false mcp flag rejects a valid name",
+            ),
+            (
+                Some("mcp_anywork_anywork_list_agents"),
+                Some(&waiting),
+                false,
+                "name and meta tool mismatch",
+            ),
+            (
+                Some("bash"),
+                Some(&listed),
+                false,
+                "disallowed name with valid meta",
+            ),
+        ];
+        for (name, meta, expected, label) in cases {
+            assert_eq!(
+                matches_host_mcp_tool_call(PermissionToolCall { name, meta }, &tools),
+                expected,
+                "{label}"
+            );
+        }
+        assert!(
+            matches!(
+                inspect_host_mcp_meta(&listed, &tools),
+                super::MetaMcpMatch::Matched("anywork_list_agents")
+            ),
+            "meta match must return the catalog tool, not the display title"
+        );
+    }
+}
+
+#[cfg(test)]
 mod future_sizes {
     use super::*;
     use crate::thread_assembler::agent_wait::WaitAgentRequest;
@@ -3388,24 +3253,19 @@ mod future_sizes {
     use rmcp::{RoleServer, ServerHandler, model::CallToolRequestParams, service::RequestContext};
 
     fn bounded<Input, F: std::future::Future + std::marker::Send>(
-        name: &str,
         _: impl FnOnce(Input) -> F,
     ) -> usize {
-        let bytes = std::mem::size_of::<F>();
-        eprintln!("{name}: {bytes} bytes");
-        bytes
+        std::mem::size_of::<F>()
     }
 
     #[test]
     fn host_mcp_handler_future_sizes() {
         bounded(
-            "Host MCP domain dispatch",
             |(handler, value, context): (&'static Handler, Value, AgentCallContext)| {
                 handler.invoke_domain("anywork_wait_agent", value, context)
             },
         );
         let request = bounded(
-            "Host MCP tool request",
             |(handler, request, context): (
                 &'static HostMcpService<Handler>,
                 CallToolRequestParams,
@@ -3413,29 +3273,20 @@ mod future_sizes {
             )| handler.call_tool(request, context),
         );
         bounded(
-            "Host spawn",
             |(host, context, request): (&'static AgentHost, AgentCallContext, AgentSpawn)| {
                 host.spawn(context, request)
             },
         );
+        bounded(|(host, context): (&'static AgentHost, AgentCallContext)| host.list(context));
+        bounded(|(host, context): (&'static AgentHost, AgentCallContext)| {
+            host.close(context, "child", AgentCloseOptions::default())
+        });
         bounded(
-            "Host list",
-            |(host, context): (&'static AgentHost, AgentCallContext)| host.list(context),
-        );
-        bounded(
-            "Host close",
-            |(host, context): (&'static AgentHost, AgentCallContext)| {
-                host.close(context, "child", AgentCloseOptions::default())
-            },
-        );
-        bounded(
-            "Host wait",
             |(host, context, request): (&'static AgentHost, AgentCallContext, WaitAgentRequest)| {
                 host.wait_agent(context, request)
             },
         );
         bounded(
-            "Host models",
             |(host, context, request): (
                 &'static AgentHost,
                 AgentCallContext,
@@ -3443,7 +3294,6 @@ mod future_sizes {
             )| host.list_delegation_models(context, request),
         );
         bounded(
-            "Host model",
             |(host, context, request): (
                 &'static AgentHost,
                 AgentCallContext,

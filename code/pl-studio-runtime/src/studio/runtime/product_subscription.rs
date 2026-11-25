@@ -120,13 +120,7 @@ impl StudioRuntime {
                 let catalog =
                     super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
                 StudioProductBaselineState::ModelCatalog(Box::new(
-                    crate::StudioModelCatalogStateSnapshot {
-                        state: crate::ObservedResource::ready(
-                            catalog.revision,
-                            catalog.updated_at,
-                            catalog,
-                        ),
-                    },
+                    super::settings_api::model_catalog_state(catalog),
                 ))
             }
             StudioProductTopic::Recovery => {
@@ -226,7 +220,8 @@ mod tests {
     async fn topic_fixture() -> Result<(tempfile::TempDir, ProductEventBus)> {
         let temp = tempfile::tempdir()?;
         let store = crate::StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let writer =
+            crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store, writer);
         events.initialize_directories().await?;
         Ok((temp, events))
@@ -352,13 +347,15 @@ mod tests {
         .await?;
         let project = runtime.open_project(&workspace).await?;
         let (root_delta, root_session, _) = DirectoryDelta::register_session(
-            "interaction-root".into(),
-            &project.id,
-            "root",
-            crate::mode::ThreadModeId::auto(),
-            crate::ThreadWorkspaceMode::Local,
-            workspace.to_string_lossy().into_owned(),
-            crate::config::ROOT_AGENT_ROUTE_KEY,
+            crate::studio::store::directory::SessionDirectoryUpsert {
+                session_id: "interaction-root".into(),
+                workspace_id: &project.id,
+                title: "root",
+                mode: crate::mode::ThreadModeId::auto(),
+                workspace_mode: crate::ThreadWorkspaceMode::Local,
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                role: crate::config::ROOT_AGENT_ROUTE_KEY,
+            },
         );
         runtime
             .agent_facility

@@ -1,8 +1,5 @@
 //! Frozen storage codec for the published pre-run-index migrations.
 use super::legacy_timeline_types::*;
-struct PreparedTimelineItem {
-    item: TimelineItem,
-}
 use super::*;
 #[path = "legacy_timeline_store/complete.rs"]
 pub(in crate::studio) mod complete;
@@ -16,54 +13,6 @@ use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
     ContentRef, ContentTarget, PayloadData,
 };
-
-#[cfg(test)]
-pub(in crate::studio::storage::history) async fn archived_page(
-    db: &impl ConnectionTrait,
-) -> Result<Vec<(u64, ChatEntry)>> {
-    db.query_all_raw(statement(
-        "SELECT position,metadata FROM completion_boundary_archive_timeline_items
-         WHERE location='history' ORDER BY position DESC",
-        vec![],
-    ))
-    .await?
-    .into_iter()
-    .map(|row| {
-        Ok((
-            u64::try_from(row.try_get::<i64>("", "position")?)?,
-            ChatEntry::Item(Box::new(serde_json::from_slice(
-                &row.try_get::<Vec<u8>>("", "metadata")?,
-            )?)),
-        ))
-    })
-    .collect()
-}
-
-#[cfg(test)]
-pub(in crate::studio::storage::history) async fn archived_generation(
-    db: &impl ConnectionTrait,
-) -> Result<String> {
-    db.query_one_raw(statement(
-        "SELECT projection_generation FROM completion_boundary_archive_projection_state WHERE singleton_id=1",
-        vec![],
-    )).await?.context("archived generation missing")?.try_get("","projection_generation").map_err(Into::into)
-}
-
-#[cfg(test)]
-pub(in crate::studio::storage::history) async fn append_fixture(
-    db: &impl ConnectionTrait,
-    item: &pl_core::chat::ChatItem,
-) -> Result<()> {
-    let h = &item.header;
-    db.execute_raw(statement(
-        "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata) VALUES(?,?,?,?,?,?)",
-        vec![integer(h.append_seq)?.into(),h.item_id.clone().into(),h.query_class.clone().into(),
-            h.parent_id.as_ref().map(|key|key.as_str().to_owned()).into(),
-            item.payload.to_vec().into(),h.metadata.to_vec().into()],
-    )).await?;
-    crate::studio::storage::history::conversation::write_contents(db, &h.item_id, &item.contents)
-        .await
-}
 
 #[derive(Debug, thiserror::Error)]
 #[error("timeline derived row is inconsistent; original history preserved")]
@@ -187,18 +136,6 @@ pub(in super::super) async fn read_state(
         Ok(state)
     })
     .transpose()
-}
-#[cfg(test)]
-pub(in crate::studio) async fn generation(db: &impl ConnectionTrait) -> Result<String> {
-    let row = db.query_one_raw(statement("SELECT projection_version,projection_generation FROM timeline_projection_state WHERE singleton_id=1", vec![])).await?.ok_or(ProjectionFault)?;
-    let version = u32::try_from(row.try_get::<i64>("", "projection_version")?)
-        .map_err(|_| ProjectionFault)?;
-    let generation: String = row.try_get("", "projection_generation")?;
-    ensure!(
-        version == TIMELINE_PROJECTION_VERSION && !generation.is_empty(),
-        ProjectionFault
-    );
-    Ok(generation)
 }
 pub(in crate::studio) fn deferred_item(database: &str, item: &TimelineItem) -> TimelineItem {
     let mut value = item.clone();
@@ -356,15 +293,9 @@ async fn save_changes(
     db: &impl ConnectionTrait,
     database: &str,
     update: &TimelineUpdate,
-    committed: &[PreparedTimelineItem],
+    committed: &[TimelineItem],
     effect: u64,
-    facts: bool,
 ) -> Result<()> {
-    if facts {
-        for atom in update.facts() {
-            save_fact(db, atom, effect).await?;
-        }
-    }
     for member in update.members() {
         let bytes = serde_json::to_vec(&member.atom)?;
         // Validate admission and the canonical terminal in the same write.
@@ -407,7 +338,7 @@ async fn save_changes(
     // An old tail update precedes newly committed visible separators. Otherwise
     // its SQL tail qualification would incorrectly see a later item.
     for item in update.updates() {
-        if !committed.iter().any(|entry| entry.item.id == item.id) {
+        if !committed.iter().any(|entry| entry.id == item.id) {
             update_background_tail(db, item).await?;
         }
     }
@@ -415,8 +346,8 @@ async fn save_changes(
         let item = update
             .updates()
             .iter()
-            .find(|item| item.id == entry.item.id)
-            .unwrap_or(&entry.item);
+            .find(|item| item.id == entry.id)
+            .unwrap_or(entry);
         save_item(db, database, item, effect).await?;
     }
     Ok(())
@@ -598,7 +529,7 @@ async fn rebuild_thinking_summary(
             anyhow::bail!("reasoning summary is not a body reference");
         };
         let key = pl_core::chat::ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+            owner: crate::studio::content_owner_key(owner)?,
             key: key.clone(),
         };
         let row = db
@@ -772,119 +703,7 @@ async fn drain_rebuild(
     effect: u64,
 ) -> Result<()> {
     projection.commit_ready()?;
-    let committed: Vec<_> = projection
-        .take_committed()
-        .into_iter()
-        .map(|item| PreparedTimelineItem { item })
-        .collect();
+    let committed = projection.take_committed();
     let update = projection.take_changes();
-    save_changes(db, database, &update, &committed, effect, false).await
-}
-
-/// Descending lightweight item/member metadata. No aggregate, member scan or payload read on Main.
-#[cfg(test)]
-pub(in crate::studio) async fn page_rows(
-    db: &impl ConnectionTrait,
-    scope: &ChatScope,
-    before: Option<u64>,
-    ceiling: u64,
-    effect_cut: u64,
-    limit: usize,
-    active_heads: &[ChatAtom],
-) -> Result<Vec<(u64, ChatEntry)>> {
-    let (sql, values) = match scope {
-        ChatScope::Main => (
-            "SELECT position AS ordering,item_id,kind,projection_version,metadata FROM timeline_items WHERE position<? AND position<? AND commit_seq<=? ORDER BY position DESC LIMIT ?",
-            vec![
-                integer(before.unwrap_or(ceiling))?.into(),
-                integer(ceiling)?.into(),
-                integer(effect_cut)?.into(),
-                i64::try_from(limit)?.into(),
-            ],
-        ),
-        ChatScope::GroupMembers { reference } => (
-            "WITH page AS (
-               SELECT member_order AS ordering,member_id,metadata,updated_effect,payload_bytes
-               FROM timeline_item_members WHERE item_id=? AND member_order<? AND member_order<?
-                 AND admitted_effect<=? ORDER BY member_order DESC LIMIT ?)
-             SELECT m.*,COALESCE(t.metadata,s.metadata,l.metadata) AS canonical
-             FROM page m
-             LEFT JOIN conversation_atom_facts t ON t.atom_id=m.member_id AND t.phase='terminal' AND t.effect_seq<=?
-             LEFT JOIN conversation_atom_facts s ON s.atom_id=m.member_id AND s.phase='start' AND s.effect_seq<=?
-             LEFT JOIN conversation_atom_facts l ON l.atom_id=m.member_id AND l.phase='legacyAdmission' AND l.effect_seq<=?
-             ORDER BY m.ordering DESC",
-            vec![
-                reference.item_id.clone().into(),
-                integer(before.unwrap_or(ceiling))?.into(),
-                integer(ceiling)?.into(),
-                integer(effect_cut)?.into(),
-                i64::try_from(limit)?.into(),
-                integer(effect_cut)?.into(),
-                integer(effect_cut)?.into(),
-                integer(effect_cut)?.into(),
-            ],
-        ),
-    };
-    let mut result = Vec::new();
-    for row in db.query_all_raw(statement(sql, values)).await? {
-        let bytes: Vec<u8> = row.try_get("", "metadata")?;
-        let entry = if matches!(scope, ChatScope::Main) {
-            let item: TimelineItem = serde_json::from_slice(&bytes)?;
-            ensure!(
-                item.id == row.try_get::<String>("", "item_id")?
-                    && item.kind.as_str() == row.try_get::<String>("", "kind")?
-                    && item.position == Some(u64::try_from(row.try_get::<i64>("", "ordering")?)?)
-                    && item.admission_closed
-                    && row.try_get::<i64>("", "projection_version")?
-                        == i64::from(TIMELINE_PROJECTION_VERSION),
-                ProjectionFault
-            );
-            ChatEntry::Item(Box::new(item))
-        } else {
-            let mut atom: ChatAtom = serde_json::from_slice(&bytes)?;
-            let canonical: ChatAtom = serde_json::from_slice(
-                &row.try_get::<Option<Vec<u8>>>("", "canonical")?
-                    .context("member has no source fact at the captured cut")?,
-            )?;
-            ensure!(
-                atom.id == canonical.id && atom.source == canonical.source,
-                ProjectionFault
-            );
-            if matches!(canonical.lifecycle, ChatAtomLifecycle::Terminal { .. }) {
-                atom = canonical;
-            } else if let Some(captured) = active_heads.iter().find(|head| head.id == atom.id) {
-                ensure!(
-                    captured.source == atom.source
-                        && matches!(captured.lifecycle, ChatAtomLifecycle::Active { .. }),
-                    ProjectionFault
-                );
-                atom = captured.clone();
-            } else {
-                ensure!(
-                    u64::try_from(row.try_get::<i64>("", "updated_effect")?)? <= effect_cut,
-                    pl_core::chat::ChatError::StaleContent
-                );
-            }
-            if let Some(id) = &atom.completion_item_id {
-                atom.payload = Some(PayloadData::Deferred {
-                    reference: ContentRef {
-                        database_id: match scope {
-                            ChatScope::GroupMembers { reference } => reference.database_id.clone(),
-                            _ => unreachable!(),
-                        },
-                        target: ContentTarget::ItemPayload {
-                            item_id: id.clone(),
-                        },
-                    },
-                    byte_length: u64::try_from(
-                        row.try_get::<Option<i64>>("", "payload_bytes")?
-                            .context("member completion length missing")?,
-                    )?,
-                });
-            }
-            ChatEntry::Atom(Box::new(atom))
-        };
-        result.push((u64::try_from(row.try_get::<i64>("", "ordering")?)?, entry));
-    }
-    Ok(result)
+    save_changes(db, database, &update, &committed, effect).await
 }

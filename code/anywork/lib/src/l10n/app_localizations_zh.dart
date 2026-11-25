@@ -5080,16 +5080,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpFailureCodeCancelled => '已取消';
 
   @override
-  String get acpFailureCodeStaleOperation => '操作已被取代';
-
-  @override
   String get acpFailureCodeConfigChanged => '配置已变更';
 
   @override
   String get acpFailureCodeCleanup => '清理失败';
-
-  @override
-  String get acpFailureCodeInternal => '内部错误';
 
   @override
   String get acpFailureStageProcess => '进程启动阶段';

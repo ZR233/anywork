@@ -62,12 +62,7 @@ impl EndpointPolicy {
         }
         let host = url.host_str().ok_or_else(rejected_origin)?;
         if let Some(fixture) = &self.fixture {
-            let default_http_port = url.scheme() == "http" && url.port().is_none();
-            if url.scheme() != "http"
-                || host != fixture.host
-                || url.port() != Some(fixture.port)
-                || default_http_port
-            {
+            if url.scheme() != "http" || host != fixture.host || url.port() != Some(fixture.port) {
                 return Err(rejected_origin());
             }
             return Ok(url);

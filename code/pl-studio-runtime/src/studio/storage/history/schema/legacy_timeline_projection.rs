@@ -112,9 +112,7 @@ pub(in crate::studio) struct MemberChange {
     pub atom: ChatAtom,
     pub payload_bytes: Option<u64>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::studio) struct TimelineUpdate {
-    facts: Vec<ChatAtom>,
     members: Vec<MemberChange>,
     updates: Vec<TimelineItem>,
     current: Vec<TimelineItem>,
@@ -123,9 +121,6 @@ pub(in crate::studio) struct TimelineUpdate {
     generation: String,
 }
 impl TimelineUpdate {
-    pub fn facts(&self) -> &[ChatAtom] {
-        &self.facts
-    }
     pub fn members(&self) -> &[MemberChange] {
         &self.members
     }
@@ -143,19 +138,6 @@ impl TimelineUpdate {
     }
     pub fn generation(&self) -> &str {
         &self.generation
-    }
-}
-impl Default for TimelineUpdate {
-    fn default() -> Self {
-        Self {
-            facts: Vec::new(),
-            members: Vec::new(),
-            updates: Vec::new(),
-            current: Vec::new(),
-            recovery: br#"{"items":[],"active":{}}"#.to_vec(),
-            next_position: 0,
-            generation: String::new(),
-        }
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,7 +231,6 @@ pub(in crate::studio) struct TimelineProjection {
     background_tail: Option<BackgroundTail>,
     updates: Vec<TimelineItem>,
     changes: Vec<MemberChange>,
-    facts: Vec<ChatAtom>,
 }
 /// One bounded, already-retained effect's canonical inputs. The same six-part
 /// key is used by the durable fact/source merge; every input is a commit point.
@@ -321,7 +302,6 @@ impl TimelineProjection {
             background_tail: None,
             updates: Vec::new(),
             changes: Vec::new(),
-            facts: Vec::new(),
         }
     }
     pub(in crate::studio) fn published_classification(&mut self) {
@@ -529,15 +509,6 @@ impl TimelineProjection {
         }
         self.admit(atom.clone(), sequence, None, thinking_summary)
     }
-    #[cfg(test)]
-    pub(in crate::studio) fn complete(
-        &mut self,
-        atom: ChatAtom,
-        sequence: u64,
-        payload: Option<PayloadData>,
-    ) -> Result<(), ProjectionError> {
-        self.admit(atom, Some(sequence), payload, None)
-    }
     /// Formal legacy normalization: a frozen source ordinal proves structural
     /// admission, not a historical start event. The stored input remains the
     /// original terminal metadata; no fabricated start/time is saved as a fact.
@@ -629,7 +600,6 @@ impl TimelineProjection {
         if atom.kind == ChatAtomKind::TurnReceipt
             && outcome(&atom) == Some(ChatTerminalOutcome::Completed)
         {
-            self.facts.push(lightweight(&atom));
             self.end_source(&atom.source);
             return Ok(());
         }
@@ -640,7 +610,6 @@ impl TimelineProjection {
         {
             // Result sources may have a frozen start in old canonical history.
             // Only the actual final result participates in the Main tail run.
-            self.facts.push(lightweight(&atom));
             return Ok(());
         }
         if self.group_background_results
@@ -817,7 +786,6 @@ impl TimelineProjection {
             item.empty = atom.content_present == Some(false);
             item.item.admission_closed = terminal;
         }
-        self.facts.push(lightweight(&atom));
         if item.item.kind == TimelineItemKind::WorkGroup {
             self.changes.push(MemberChange {
                 item_id: item.item.id.clone(),
@@ -856,7 +824,6 @@ impl TimelineProjection {
             atom: lightweight(&atom),
             payload_bytes,
         });
-        self.facts.push(lightweight(&atom));
         // Within one undrained effect, publish the latest header only once.
         if let Some(item) = self
             .committed
@@ -1047,7 +1014,6 @@ impl TimelineProjection {
     /// Its caller writes the final complete head in the same migration transaction.
     pub(in crate::studio) fn take_changes(&mut self) -> TimelineUpdate {
         TimelineUpdate {
-            facts: std::mem::take(&mut self.facts),
             members: std::mem::take(&mut self.changes),
             updates: std::mem::take(&mut self.updates),
             current: Vec::new(),
@@ -1055,62 +1021,5 @@ impl TimelineProjection {
             next_position: self.next_position,
             generation: self.generation.clone(),
         }
-    }
-}
-
-#[cfg(test)]
-mod published_tests {
-    use super::*;
-
-    #[test]
-    fn published_timeline_phase_keeps_its_original_unknown_work_rule() {
-        let source = ChatSourceId::ForegroundTurn {
-            turn_id: "turn".into(),
-        };
-        let mut projection = TimelineProjection::new("db".into(), "published".into(), 0);
-        projection.published_classification();
-        for (order, id, kind) in [
-            (1, "old-unknown", ChatAtomKind::Unknown),
-            (2, "work", ChatAtomKind::Reasoning),
-        ] {
-            let atom = ChatAtom {
-                id: id.into(),
-                completion_item_id: Some(id.into()),
-                completion_seq: Some(order),
-                source: source.clone(),
-                source_state: None,
-                source_order: Some(order),
-                kind,
-                delivery: ChatDeliveryKind::Foreground,
-                lifecycle: ChatAtomLifecycle::Terminal {
-                    started: Some(ChatFactPosition {
-                        effect_seq: order,
-                        suborder: 0,
-                    }),
-                    ended: Some(ChatFactPosition {
-                        effect_seq: order,
-                        suborder: 1,
-                    }),
-                    outcome: ChatTerminalOutcome::Completed,
-                },
-                turn_id: Some("turn".into()),
-                attempt_id: None,
-                tool: None,
-                wait: None,
-                text_channel: None,
-                started_at: Some(order as i64),
-                finished_at: Some(order as i64),
-                content_present: Some(true),
-                contents: vec![],
-                payload: None,
-            };
-            projection.complete(atom, order, None).unwrap();
-        }
-        projection.end_source(&source);
-        projection.commit_ready().unwrap();
-        let items = projection.take_committed();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].kind, TimelineItemKind::WorkGroup);
-        assert_eq!(items[0].summary.as_ref().unwrap().member_count, 2);
     }
 }

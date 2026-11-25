@@ -45,9 +45,10 @@ impl StateStore {
         // rather than following the caller's original alias again after activation.
         self.directory = writer.directory().to_owned();
         self.current = Some(CurrentRegistration {
-            coordinator,
+            coordinator: coordinator.clone(),
             writer: writer.clone(),
         });
+        self.coordinator = Some(coordinator);
         // Store the registration before await. Cancellation or failed admission leaves a handle
         // with which the caller can resume or explicitly close/join the registered writer.
         writer.activate(previous_epoch, epoch, source).await

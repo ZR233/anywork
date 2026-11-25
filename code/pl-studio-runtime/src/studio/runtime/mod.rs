@@ -21,11 +21,13 @@ mod acp_detection;
 pub(crate) mod acp_host_mcp;
 mod acp_install;
 mod acp_launch;
+mod acp_ops;
 mod acp_workspace_tools;
 pub use acp_business::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
 mod acp_worker;
 mod attachment_drafts;
 mod background_task;
+mod task_registry;
 
 mod bots_api;
 mod bots_recovery;
@@ -51,6 +53,7 @@ mod model_refresh;
 mod observation_lifecycle;
 mod product_subscription;
 mod prompt_runner;
+mod pull_observation;
 pub(crate) mod rejected_tools;
 mod residency;
 pub(in crate::studio) mod run_export;
@@ -69,16 +72,14 @@ mod tool_refresh;
 pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
 pub use product_subscription::StudioProductTopicSubscription;
 pub use run_export::{
-    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
-    EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3, ExecutionErrorStage,
-    ExecutionErrorV3, ExecutionLifecycleExportV3, ExecutionOutcome, ExportSchemaV3, ExportedBlobV3,
-    ExportedContentV3, ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION,
-    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV3, RunExportOptions, RunExportReport,
-    RunExporter, RunInvocationV3, RunManifestV3, SealedMemberCutV3, SkillSearchManifestV3,
-    ThreadUsageExportV3, TimingReportV3, TraceSummaryV3, UsageCoverage, UsageExportV3,
-    UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
-    format_utc_rfc3339 as format_export_utc_rfc3339,
-    prepare_output_dir as prepare_export_output_dir, sha256_hex as export_sha256_hex,
+    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3, EventBodyV3,
+    EventSourceV3, EventV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3,
+    ExecutionOutcome, ExportSchemaV3, ExportedBlobV3, ExportedContentV3,
+    ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION, ResultOutcome,
+    ResultV3, RunExportOptions, RunExportReport, RunExporter, RunInvocationV3, RunManifestV3,
+    SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3,
+    UsageCoverage, UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
+    format_utc_rfc3339 as format_export_utc_rfc3339, sha256_hex as export_sha256_hex,
     validate_output_dir_preflight as validate_export_output_dir_preflight,
 };
 pub(crate) mod thread_observation;
@@ -94,7 +95,10 @@ pub use skill_catalog::{SkillSearchResult, SkillsStateSnapshot};
 pub use ssh::{SshPasswordUpdate, SshServerRuntimeEntry};
 use thread_title::ThreadTitleTasks;
 pub(crate) use updater::StudioUpdateRuntime;
-pub use updater::*;
+pub use updater::{
+    StudioReadyUpdate, StudioUpdateActivity, StudioUpdatePreparationResult,
+    StudioUpdateStateSnapshot,
+};
 
 /// Studio UI 提交 prompt 的请求。
 ///
@@ -275,11 +279,11 @@ struct StudioExternalRuntimes {
 
 #[derive(Clone)]
 struct StudioAgentFacility {
-    worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    worktrees: crate::studio::worktree::worktree_lease::WorktreeLeaseOwner,
     product_events: ProductEventBus,
     /// agent framework 的 write-behind writer 句柄；framework 被 take 后关机仍能排空。
     persistence: std::sync::Arc<
-        tokio::sync::Mutex<Option<crate::studio::agent_host::ThreadWriteBehindWriter>>,
+        tokio::sync::Mutex<Option<crate::studio::storage::write_behind::ThreadWriteBehindWriter>>,
     >,
     run_export: Option<std::sync::Arc<run_export::RunExportCoordinator>>,
 }
@@ -300,11 +304,6 @@ impl StudioRuntime {
     /// Opens a native latest-value statistics feed from this runtime's existing statistics owner.
     pub fn open_statistics_feed(&self) -> pl_studio_statistics::StatisticsFeed {
         self.model_performance.subscribe_statistics()
-    }
-
-    /// 归档前结束会话树活动工作的有界等待上界。
-    fn archive_settle_timeout(&self) -> std::time::Duration {
-        ARCHIVE_TREE_SETTLE_TIMEOUT
     }
 
     /// 读取配置 owner 已发布的 Agent Profiles 资源快照。

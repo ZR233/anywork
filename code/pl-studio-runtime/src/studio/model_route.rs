@@ -328,6 +328,10 @@ fn decode_route_payload(
     }
     serde_json::from_str(payload.content()).with_context(|| format!("decode saved {label}"))
 }
+
+#[cfg(test)]
+#[path = "model_route_bot_owner_tests.rs"]
+mod bot_owner_tests;
 fn decode_profile_payload(
     payload: &OpaquePayload,
     expected_format: &str,

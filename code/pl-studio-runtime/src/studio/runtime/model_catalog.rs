@@ -4,11 +4,11 @@ use super::StudioRuntime;
 use crate::config::AccountId;
 use crate::{SyncAccountModelsReply, SyncAccountModelsRequest};
 use anyhow::{Result, anyhow};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
-};
+use std::sync::{Arc, Mutex, PoisonError};
 use tokio_util::sync::CancellationToken;
+
+use super::acp_ops::{RetainedTask, retained_output};
+use super::task_registry::RetainedTaskRegistry;
 
 #[derive(Clone, Default)]
 pub(super) struct ModelCatalogTasks(Arc<Mutex<Tasks>>);
@@ -16,51 +16,24 @@ pub(super) struct ModelCatalogTasks(Arc<Mutex<Tasks>>);
 #[derive(Default)]
 struct Tasks {
     started: bool,
-    closing: bool,
-    next_id: u64,
-    active: BTreeMap<AccountId, u64>,
-    // Never removed merely because a waiter was cancelled or a newer generation was admitted.
-    retained: BTreeMap<u64, Arc<ProbeTask>>,
-    close: Option<Arc<ProbeTask>>,
+    probes: RetainedTaskRegistry<AccountId, CatalogPayload, Result<()>>,
+    close: Option<Arc<RetainedTask<Result<()>>>>,
 }
 
-struct ProbeTask {
+#[derive(Clone)]
+struct CatalogPayload {
     account: Option<AccountId>,
     operation_id: String,
     generation: u64,
-    cancel: CancellationToken,
-    join: tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
-    outcome: Mutex<Option<Result<(), String>>>,
 }
 
-impl ProbeTask {
-    fn finished(&self) -> bool {
-        self.join
-            .try_lock()
-            .is_ok_and(|slot| slot.as_ref().is_none_or(|task| task.is_finished()))
-    }
-
-    /// Borrow the registered handle. Dropping a close waiter cannot drop the owned task/commit.
-    async fn wait(&self) -> Result<()> {
-        let mut slot = self.join.lock().await;
-        if let Some(task) = slot.as_mut() {
-            let outcome = match task.await {
-                Ok(result) => result.map_err(|error| format!("{error:#}")),
-                Err(error) => Err(format!("model catalog task failed: {error}")),
-            };
-            slot.take();
-            *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
-        }
-        match self
-            .outcome
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            Some(Err(error)) => Err(anyhow!("{error}")),
-            _ => Ok(()),
-        }
-    }
+async fn wait_probe(task: &RetainedTask<Result<()>>) -> Result<()> {
+    retained_output(
+        task.join().await,
+        |result| result.map_err(|error| format!("{error:#}")),
+        |error| format!("model catalog task failed: {error}"),
+    )
+    .map_err(|error| anyhow!(error))
 }
 
 impl StudioRuntime {
@@ -71,7 +44,7 @@ impl StudioRuntime {
                 .0
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if tasks.started || tasks.closing {
+            if tasks.started || tasks.probes.is_closing() {
                 return Ok(());
             }
             tasks.started = true;
@@ -104,34 +77,37 @@ impl StudioRuntime {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             tasks
-                .retained
-                .iter()
-                .filter(|(_, task)| task.finished())
-                .map(|(key, task)| (*key, Arc::clone(task)))
+                .probes
+                .finished_ids()
+                .into_iter()
+                .filter_map(|key| {
+                    let payload = tasks.probes.payload(key)?.clone();
+                    let task = tasks.probes.task(key)?;
+                    Some((key, payload, task))
+                })
                 .collect::<Vec<_>>()
         };
-        for (key, task) in retired {
-            let outcome = task.wait().await;
+        for (key, payload, task) in retired {
+            let outcome = wait_probe(&task).await;
             if outcome.is_err()
-                && let Some(account) = &task.account
+                && let Some(account) = &payload.account
             {
                 self.config_runtime
-                    .fail_model_catalog_task(account.clone(), task.generation)?;
+                    .fail_model_catalog_task(account.clone(), payload.generation)?;
             }
             let mut tasks = self
                 .model_catalog_tasks
                 .0
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            tasks.retained.remove(&key);
-            tasks.active.retain(|_, active| *active != key);
+            tasks.probes.remove(key);
         }
         let mut tasks = self
             .model_catalog_tasks
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if tasks.closing {
+        if tasks.probes.is_closing() {
             return Err(crate::StudioError::new(
                 crate::StudioErrorCode::RuntimeStopped,
                 "Model catalog owner is closing",
@@ -141,12 +117,8 @@ impl StudioRuntime {
         }
         // Re-read only after taking the same admission gate used by shutdown and replacement.
         let generation = self.config_runtime.model_catalog_generation(&id)?;
-        if let Some(existing) = tasks
-            .active
-            .get(&id)
-            .and_then(|key| tasks.retained.get(key))
-        {
-            if existing.generation == generation && !existing.finished() {
+        if let Some(existing) = tasks.probes.get(&id) {
+            if existing.generation == generation && !existing.task.finished() {
                 return Ok(SyncAccountModelsReply {
                     operation_id: existing.operation_id.clone(),
                     account_id: id.to_string(),
@@ -156,11 +128,10 @@ impl StudioRuntime {
             }
             existing.cancel.cancel();
         }
-        tasks.next_id = tasks
-            .next_id
-            .checked_add(1)
+        let key = tasks
+            .probes
+            .allocate_id()
             .ok_or_else(|| anyhow!("catalog task identity exhausted"))?;
-        let key = tasks.next_id;
         let runtime = self.clone();
         let account = id.clone();
         let cancel = CancellationToken::new();
@@ -183,18 +154,17 @@ impl StudioRuntime {
             }
             outcome
         });
-        tasks.retained.insert(
+        tasks.probes.retain(
             key,
-            Arc::new(ProbeTask {
+            id.clone(),
+            CatalogPayload {
                 account: Some(id.clone()),
                 operation_id: request.operation_id.clone(),
                 generation,
-                cancel,
-                join: tokio::sync::Mutex::new(Some(handle)),
-                outcome: Mutex::new(None),
-            }),
+            },
+            cancel,
+            handle,
         );
-        tasks.active.insert(id.clone(), key);
         Ok(SyncAccountModelsReply {
             operation_id: request.operation_id,
             account_id: id.to_string(),
@@ -238,38 +208,25 @@ impl StudioRuntime {
                 .0
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            tasks.closing = true;
-            for task in tasks.retained.values() {
-                task.cancel.cancel();
-            }
+            let probes = tasks.probes.begin_close();
             if tasks.close.is_none() {
                 let owner = self.config_runtime.clone();
                 // Register the closing commit before releasing admission; no local detached handle.
                 let handle = tokio::task::spawn_blocking(move || {
                     owner.close_model_catalogs().map_err(Into::into)
                 });
-                tasks.close = Some(Arc::new(ProbeTask {
-                    account: None,
-                    operation_id: "close".into(),
-                    generation: 0,
-                    cancel: CancellationToken::new(),
-                    join: tokio::sync::Mutex::new(Some(handle)),
-                    outcome: Mutex::new(None),
-                }));
+                tasks.close = Some(Arc::new(RetainedTask::running(handle)));
             }
-            (
-                tasks.close.as_ref().cloned(),
-                tasks.retained.values().cloned().collect::<Vec<_>>(),
-            )
+            (tasks.close.as_ref().cloned(), probes)
         };
         let mut failure = None;
         if let Some(close) = close
-            && let Err(error) = close.wait().await
+            && let Err(error) = wait_probe(&close).await
         {
             failure = Some(error);
         }
         for task in probes {
-            if let Err(error) = task.wait().await {
+            if let Err(error) = wait_probe(&task).await {
                 failure.get_or_insert(error);
             }
         }
@@ -281,8 +238,7 @@ impl StudioRuntime {
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        tasks.active.clear();
-        tasks.retained.clear();
+        tasks.probes.clear();
         Ok(())
     }
 }

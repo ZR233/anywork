@@ -62,7 +62,90 @@ impl std::fmt::Debug for AssemblyObservation {
         f.write_str("AssemblyObservation")
     }
 }
+impl AssemblyObservation {
+    pub(super) fn from_callbacks(
+        observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)
+        + Send
+        + Sync
+        + 'static,
+        drain: impl Fn(
+            String,
+            ClosePurpose,
+        ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        current_turn: Option<Arc<CurrentTurnLookup>>,
+        before_close: impl Fn(
+            String,
+            ThreadHandle,
+            ClosePurpose,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        synchronize: impl Fn(
+            String,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self(
+            Arc::new(observe),
+            Arc::new(drain),
+            current_turn,
+            Arc::new(before_close),
+            Arc::new(synchronize),
+        )
+    }
+}
+impl super::SessionAssignment {
+    pub(crate) fn observation(
+        observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)
+        + Send
+        + Sync
+        + 'static,
+        drain: impl Fn(
+            String,
+            ClosePurpose,
+        ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        current_turn: Option<Arc<CurrentTurnLookup>>,
+        before_close: impl Fn(
+            String,
+            ThreadHandle,
+            ClosePurpose,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        synchronize: impl Fn(
+            String,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self(super::AssignmentKind::Observation(
+            AssemblyObservation::from_callbacks(
+                observe,
+                drain,
+                current_turn,
+                before_close,
+                synchronize,
+            ),
+        ))
+    }
+}
 impl SessionRuntime {
+    #[cfg(test)]
     pub(crate) fn observe_assembly(
         &self,
         observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)
@@ -102,12 +185,12 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        state.observation = Some(AssemblyObservation(
-            Arc::new(observe),
-            Arc::new(drain),
+        state.observation = Some(AssemblyObservation::from_callbacks(
+            observe,
+            drain,
             current_turn,
-            Arc::new(before_close),
-            Arc::new(synchronize),
+            before_close,
+            synchronize,
         ));
         Ok(())
     }
@@ -189,7 +272,6 @@ impl SessionRuntime {
     /// terminal operation. History rows that have no marker are not inferred as owed deliveries.
     pub(crate) async fn acknowledge_parent_reports(
         &self,
-        _store: &crate::studio::StudioStore,
         child: &crate::Thread,
     ) -> Result<ParentReportAcknowledgement, ThreadAssemblyError> {
         if let Some(parent) = child.parent_thread_id.as_deref()
@@ -1514,10 +1596,7 @@ mod storage_fault_tests {
                     vec![("child".into(), WorkspaceRelease::Preserve)]
                 );
                 assert_eq!(
-                    fixture
-                        .owner
-                        .acknowledge_parent_reports(&store, &child)
-                        .await?,
+                    fixture.owner.acknowledge_parent_reports(&child).await?,
                     ParentReportAcknowledgement::Absent
                 );
                 let SavedMessageIdentity {
@@ -1609,7 +1688,7 @@ mod storage_fault_tests {
             assert_eq!(
                 fixture
                     .owner
-                    .acknowledge_parent_reports(store, &saved.child)
+                    .acknowledge_parent_reports(&saved.child)
                     .await?,
                 ParentReportAcknowledgement::Absent
             );

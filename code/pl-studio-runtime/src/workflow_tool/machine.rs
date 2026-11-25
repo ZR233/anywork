@@ -3,17 +3,18 @@ use std::sync::Arc;
 
 use crate::PureError;
 use crate::workflow_tool::{
-    WorkflowAllowedTransition, WorkflowSessionState, WorkflowStateBrief, WorkflowTransitionError,
-    WorkflowTransitionRecord,
+    WorkflowAllowedTransition, WorkflowDefinition, WorkflowRunArchive, WorkflowRunLifecycle,
+    WorkflowSessionState, WorkflowState, WorkflowStateBrief, WorkflowTransition,
+    WorkflowTransitionError, WorkflowTransitionRecord,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mode::RegisteredThreadMode;
 use crate::mode::new_run;
 use crate::mode::state::{
     archive_run, commit_operation_receipt, lifecycle_for_state, operation_receipt, trim_history,
 };
+use crate::mode::{RegisteredThreadMode, ThreadModeId};
 
 pub(super) const MAX_REASON_BYTES: usize = 2 * 1024;
 pub(super) const MAX_SUMMARY_BYTES: usize = 8 * 1024;
@@ -24,6 +25,69 @@ pub(super) const MAX_EVIDENCE_ITEM_BYTES: usize = 2 * 1024;
 pub(crate) struct WorkflowOperation {
     pub turn_id: String,
     pub call_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowQuery<'a> {
+    revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode_id: Option<&'a ThreadModeId>,
+    #[serde(flatten)]
+    body: WorkflowQueryBody<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+enum WorkflowQueryBody<'a> {
+    Inactive {
+        current_run: Option<()>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        all_states: Option<Vec<WorkflowStateBrief>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        allowed_transitions: Option<&'a [WorkflowAllowedTransition]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        transitions: Option<&'a [WorkflowTransition]>,
+    },
+    Current {
+        run_id: &'a str,
+        lineage_id: &'a str,
+        graph_revision: u64,
+        graph_hash: &'a str,
+        lifecycle: WorkflowRunLifecycle,
+        current_state_id: &'a str,
+        current_state: Option<&'a WorkflowState>,
+        allowed_transitions: Vec<WorkflowAllowedTransition>,
+        all_states: Vec<WorkflowStateBrief>,
+        updated_at: i64,
+    },
+    Next {
+        run_id: &'a str,
+        current_state_id: &'a str,
+        transitions: Vec<&'a WorkflowTransition>,
+        allowed_transitions: Vec<WorkflowAllowedTransition>,
+        all_states: Vec<WorkflowStateBrief>,
+    },
+    Graph {
+        graph_revision: u64,
+        graph_hash: &'a str,
+        definition: &'a WorkflowDefinition,
+    },
+    History {
+        run_id: &'a str,
+        history: &'a [WorkflowTransitionRecord],
+        archived_transition_count: u64,
+        archived_transition_digest: &'a str,
+        archived_runs: &'a [WorkflowRunArchive],
+        archived_run_count: u64,
+        archived_run_digest: &'a str,
+    },
+}
+
+impl WorkflowQuery<'_> {
+    fn into_json(self) -> serde_json::Value {
+        serde_json::to_value(self).expect("workflow query contains only serializable product facts")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,84 +143,114 @@ impl WorkflowMachine {
 
     pub fn current_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
         let all_states = self.all_states_brief();
-        let Some(run) = &state.current_run else {
-            return serde_json::json!({
-                "modeId": self.mode.descriptor().id,
-                "revision": state.revision,
-                "currentRun": null,
-                "allowedTransitions": [],
-                "allStates": all_states,
-            });
+        let (mode_id, body) = match &state.current_run {
+            None => (
+                &self.mode.descriptor().id,
+                WorkflowQueryBody::Inactive {
+                    current_run: None,
+                    all_states: Some(all_states),
+                    allowed_transitions: Some(&[]),
+                    transitions: None,
+                },
+            ),
+            Some(run) => (
+                &run.mode_id,
+                WorkflowQueryBody::Current {
+                    run_id: &run.run_id,
+                    lineage_id: &run.lineage_id,
+                    graph_revision: run.graph_revision,
+                    graph_hash: &run.graph_hash,
+                    lifecycle: run.lifecycle,
+                    current_state_id: &run.current_state_id,
+                    current_state: self.graph().state(&run.current_state_id),
+                    allowed_transitions: self.allowed_transitions_for_state(&run.current_state_id),
+                    all_states,
+                    updated_at: run.updated_at,
+                },
+            ),
         };
-        let current = self.graph().state(&run.current_state_id);
-        let allowed_transitions = self.allowed_transitions_for_state(&run.current_state_id);
-        serde_json::json!({
-            "modeId": run.mode_id,
-            "runId": run.run_id,
-            "lineageId": run.lineage_id,
-            "revision": state.revision,
-            "graphRevision": run.graph_revision,
-            "graphHash": run.graph_hash,
-            "lifecycle": run.lifecycle,
-            "currentStateId": run.current_state_id,
-            "currentState": current,
-            "allowedTransitions": allowed_transitions,
-            "allStates": all_states,
-            "updatedAt": run.updated_at,
-        })
+        WorkflowQuery {
+            revision: state.revision,
+            mode_id: Some(mode_id),
+            body,
+        }
+        .into_json()
     }
 
     pub fn next_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
         let all_states = self.all_states_brief();
-        let Some(run) = &state.current_run else {
-            return serde_json::json!({
-                "modeId": self.mode.descriptor().id,
-                "revision": state.revision,
-                "currentRun": null,
-                "transitions": [],
-                "allowedTransitions": [],
-                "allStates": all_states,
-            });
+        let (mode_id, body) = match &state.current_run {
+            None => (
+                &self.mode.descriptor().id,
+                WorkflowQueryBody::Inactive {
+                    current_run: None,
+                    all_states: Some(all_states),
+                    allowed_transitions: Some(&[]),
+                    transitions: Some(&[]),
+                },
+            ),
+            Some(run) => (
+                &run.mode_id,
+                WorkflowQueryBody::Next {
+                    run_id: &run.run_id,
+                    current_state_id: &run.current_state_id,
+                    transitions: self.graph().outgoing(&run.current_state_id),
+                    allowed_transitions: self.allowed_transitions_for_state(&run.current_state_id),
+                    all_states,
+                },
+            ),
         };
-        let allowed = self.allowed_transitions_for_state(&run.current_state_id);
-        serde_json::json!({
-            "modeId": run.mode_id,
-            "runId": run.run_id,
-            "revision": state.revision,
-            "currentStateId": run.current_state_id,
-            "transitions": self.graph().outgoing(&run.current_state_id),
-            "allowedTransitions": allowed,
-            "allStates": all_states,
-        })
+        WorkflowQuery {
+            revision: state.revision,
+            mode_id: Some(mode_id),
+            body,
+        }
+        .into_json()
     }
 
     pub fn graph_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
-        serde_json::json!({
-            "modeId": self.mode.descriptor().id,
-            "revision": state.revision,
-            "graphRevision": self.mode.graph_revision(),
-            "graphHash": self.graph().graph_hash(),
-            "definition": self.graph().definition(),
-        })
+        WorkflowQuery {
+            revision: state.revision,
+            mode_id: Some(&self.mode.descriptor().id),
+            body: WorkflowQueryBody::Graph {
+                graph_revision: self.mode.graph_revision(),
+                graph_hash: self.graph().graph_hash(),
+                definition: self.graph().definition(),
+            },
+        }
+        .into_json()
     }
 
     pub fn history_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
-        state.current_run.as_ref().map_or_else(
-            || serde_json::json!({ "revision": state.revision, "currentRun": null }),
-            |run| {
-                serde_json::json!({
-                    "modeId": run.mode_id,
-                    "runId": run.run_id,
-                    "revision": state.revision,
-                    "history": run.history_tail,
-                    "archivedTransitionCount": run.archived_transition_count,
-                    "archivedTransitionDigest": run.archived_transition_digest,
-                    "archivedRuns": state.archived_runs,
-                    "archivedRunCount": state.archived_run_count,
-                    "archivedRunDigest": state.archived_run_digest,
-                })
-            },
-        )
+        let (mode_id, body) = match &state.current_run {
+            None => (
+                None,
+                WorkflowQueryBody::Inactive {
+                    current_run: None,
+                    all_states: None,
+                    allowed_transitions: None,
+                    transitions: None,
+                },
+            ),
+            Some(run) => (
+                Some(&run.mode_id),
+                WorkflowQueryBody::History {
+                    run_id: &run.run_id,
+                    history: &run.history_tail,
+                    archived_transition_count: run.archived_transition_count,
+                    archived_transition_digest: &run.archived_transition_digest,
+                    archived_runs: &state.archived_runs,
+                    archived_run_count: state.archived_run_count,
+                    archived_run_digest: &state.archived_run_digest,
+                },
+            ),
+        };
+        WorkflowQuery {
+            revision: state.revision,
+            mode_id,
+            body,
+        }
+        .into_json()
     }
 
     pub fn apply_transition(
@@ -478,16 +572,15 @@ impl RestartInput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkflowMutationResponse {
-    pub accepted: bool,
-    pub code: &'static str,
-    #[serde(default)]
-    pub forced: bool,
-    pub operation_revision: u64,
-    pub snapshot: serde_json::Value,
+    pub(crate) accepted: bool,
+    pub(crate) code: &'static str,
+    pub(crate) forced: bool,
+    pub(crate) operation_revision: u64,
+    pub(crate) snapshot: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub recovery_action: Option<String>,
+    pub(crate) recovery_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<WorkflowTransitionError>,
+    pub(crate) error: Option<WorkflowTransitionError>,
 }
 
 struct WorkflowCas<'a> {
@@ -591,18 +684,65 @@ fn operation_id(identity: &WorkflowOperation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mode::ThreadModeManager;
-    use crate::studio::thread::register_builtins;
-    use crate::workflow_tool::WorkflowRunLifecycle;
+    use crate::mode::{RegisteredThreadMode, ThreadModeDefinition, ThreadModeId, new_run};
+    use crate::workflow_tool::{
+        WorkflowDefinition, WorkflowRunLifecycle, WorkflowSessionState, WorkflowState,
+        WorkflowStateKind, WorkflowTransition,
+    };
 
-    fn auto_machine() -> WorkflowMachine {
-        let manager = ThreadModeManager::default();
-        let catalog = register_builtins(&manager).expect("builtin auto mode");
-        let mode = catalog
-            .mode(&crate::mode::ThreadModeId::auto())
-            .expect("mode.auto registered")
-            .clone();
-        let compiled = mode.workflow().expect("mode.auto has workflow");
+    fn fixture_machine() -> WorkflowMachine {
+        let mode = RegisteredThreadMode::from_definition(
+            ThreadModeDefinition {
+                id: ThreadModeId::new("mode.fixture").expect("fixture mode id"),
+                display_name: "Fixture".into(),
+                description: "three-state transition fixture".into(),
+                order: 0,
+                prompt: "exercise transitions".into(),
+                workflow: Some(WorkflowDefinition {
+                    title: "Fixture".into(),
+                    goal: "exercise the machine without mode.auto".into(),
+                    initial_state_id: "intake".into(),
+                    states: vec![
+                        WorkflowState {
+                            id: "intake".into(),
+                            title: "Intake".into(),
+                            instructions: "start".into(),
+                            completion_criteria: vec!["started".into()],
+                            kind: WorkflowStateKind::Atomic,
+                        },
+                        WorkflowState {
+                            id: "review".into(),
+                            title: "Review".into(),
+                            instructions: "review".into(),
+                            completion_criteria: vec!["reviewed".into()],
+                            kind: WorkflowStateKind::Atomic,
+                        },
+                        WorkflowState {
+                            id: "done".into(),
+                            title: "Done".into(),
+                            instructions: String::new(),
+                            completion_criteria: vec![],
+                            kind: WorkflowStateKind::Final,
+                        },
+                    ],
+                    transitions: vec![
+                        WorkflowTransition {
+                            source_state_id: "intake".into(),
+                            target_state_id: "review".into(),
+                            guard: "review is ready".into(),
+                        },
+                        WorkflowTransition {
+                            source_state_id: "review".into(),
+                            target_state_id: "done".into(),
+                            guard: "review is complete".into(),
+                        },
+                    ],
+                }),
+            },
+            1,
+        )
+        .expect("synthetic graph compiles");
+        let compiled = mode.workflow().expect("fixture graph");
         let run = new_run(&mode, compiled, None, "test-seed", 100);
         let state = WorkflowSessionState {
             revision: 1,
@@ -625,7 +765,7 @@ mod tests {
 
     #[test]
     fn non_forced_unknown_target_and_disallowed_transition_return_rich_hints() {
-        let mut machine = auto_machine();
+        let mut machine = fixture_machine();
         let state = machine.state();
         let run = state.current_run.as_ref().unwrap();
         let err_unknown = machine
@@ -633,7 +773,7 @@ mod tests {
                 TransitionInput {
                     expected_run_id: run.run_id.clone(),
                     expected_revision: state.revision,
-                    expected_state_id: "triage".into(),
+                    expected_state_id: "intake".into(),
                     target_state_id: "nonexistent".into(),
                     force: false,
                     completion: completion("invalid target"),
@@ -648,8 +788,9 @@ mod tests {
         assert!(!err_unknown.accepted);
         assert_eq!(err_unknown.code, "unknownTargetState");
         let error = err_unknown.error.expect("structured error");
-        assert!(error.all_states.iter().any(|s| s.id == "simple"));
-        assert!(error.all_states.iter().any(|s| s.id == "planning"));
+        assert!(error.all_states.iter().any(|s| s.id == "intake"));
+        assert!(error.all_states.iter().any(|s| s.id == "review"));
+        assert!(error.all_states.iter().any(|s| s.id == "done"));
         assert!(!error.allowed_transitions.is_empty());
 
         let err_disallowed = machine
@@ -657,8 +798,8 @@ mod tests {
                 TransitionInput {
                     expected_run_id: run.run_id.clone(),
                     expected_revision: state.revision,
-                    expected_state_id: "triage".into(),
-                    target_state_id: "completed".into(),
+                    expected_state_id: "intake".into(),
+                    target_state_id: "done".into(),
                     force: false,
                     completion: completion("skip directly"),
                 },
@@ -679,37 +820,28 @@ mod tests {
                 .contains("force=true")
         );
         let error = err_disallowed.error.expect("structured error");
-        assert_eq!(error.current_state_id.as_deref(), Some("triage"));
-        assert_eq!(
-            error.attempted_target_state_id.as_deref(),
-            Some("completed")
-        );
+        assert_eq!(error.current_state_id.as_deref(), Some("intake"));
+        assert_eq!(error.attempted_target_state_id.as_deref(), Some("done"));
         assert!(
             error
                 .allowed_transitions
                 .iter()
-                .any(|edge| edge.target_state_id == "simple" && !edge.guard.is_empty())
-        );
-        assert!(
-            error
-                .allowed_transitions
-                .iter()
-                .any(|edge| edge.target_state_id == "planning" && !edge.guard.is_empty())
+                .any(|edge| edge.target_state_id == "review" && !edge.guard.is_empty())
         );
     }
 
     #[test]
     fn forced_transition_jumps_anywhere_including_out_of_final_state() {
-        let mut machine = auto_machine();
+        let mut machine = fixture_machine();
         let run_id = machine.state().current_run.unwrap().run_id;
-        // Forced jump directly from `triage` to terminal `completed`.
+        // Forced jump directly from `intake` to terminal `done`.
         let jump_final = machine
             .apply_transition(
                 TransitionInput {
                     expected_run_id: run_id.clone(),
                     expected_revision: 1,
-                    expected_state_id: "triage".into(),
-                    target_state_id: "completed".into(),
+                    expected_state_id: "intake".into(),
+                    target_state_id: "done".into(),
                     force: true,
                     completion: completion("force complete"),
                 },
@@ -727,14 +859,14 @@ mod tests {
             WorkflowRunLifecycle::Terminal
         );
 
-        // Forced jump out of terminal `completed` back into `planning`.
+        // Forced jump out of terminal `done` back into `review`.
         let jump_back = machine
             .apply_transition(
                 TransitionInput {
                     expected_run_id: run_id,
                     expected_revision: machine.state().revision,
-                    expected_state_id: "completed".into(),
-                    target_state_id: "planning".into(),
+                    expected_state_id: "done".into(),
+                    target_state_id: "review".into(),
                     force: true,
                     completion: completion("reopen into planning"),
                 },
@@ -748,7 +880,7 @@ mod tests {
         assert!(jump_back.accepted);
         assert!(jump_back.forced);
         let run = machine.state().current_run.unwrap();
-        assert_eq!(run.current_state_id, "planning");
+        assert_eq!(run.current_state_id, "review");
         assert_eq!(run.lifecycle, WorkflowRunLifecycle::Active);
         assert!(run.history_tail.iter().all(|rec| rec.forced));
     }

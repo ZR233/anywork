@@ -245,14 +245,6 @@ impl ThreadContextCompactionItem {
         }
     }
 
-    pub fn before_tokens(&self) -> Option<u64> {
-        self.before_tokens
-    }
-
-    pub fn after_tokens(&self) -> Option<u64> {
-        self.after_tokens
-    }
-
     pub fn compacted_at(&self) -> i64 {
         self.compacted_at
     }

@@ -462,7 +462,6 @@ pub struct BridgeAcpBusinessClose {
     pub cleanup_timed_out: bool,
     pub remote_close_error: Option<BridgeAcpBusinessFailure>,
     pub sdk_error: Option<BridgeAcpBusinessFailure>,
-    pub worker_error: Option<String>,
     pub driver_error: Option<String>,
     pub unfinished_prompt: Option<BridgeAcpRunId>,
     pub unfinished_controls: bool,

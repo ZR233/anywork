@@ -47,13 +47,19 @@ where
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct SnapshotV2 {
-    pub(super) state: ResourceV2<SnapshotDataV2>,
+    state: ResourceV2<SnapshotDataV2>,
+}
+
+impl SnapshotV2 {
+    pub(super) fn revision_and_updated_at(&self) -> (u64, i64) {
+        (self.state.revision(), self.state.updated_at())
+    }
 }
 
 /// Mirror of the historical `AccountUsageStateData` wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct SnapshotDataV2 {
+struct SnapshotDataV2 {
     pub(super) config_fingerprint: String,
     pub(super) usages: Vec<UsageRecordV2>,
 }
@@ -61,7 +67,7 @@ pub(super) struct SnapshotDataV2 {
 /// Mirror of the historical `AccountUsageRecord` wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct UsageRecordV2 {
+struct UsageRecordV2 {
     pub(super) account_id: String,
     pub(super) revision: u64,
     pub(super) updated_at: i64,
@@ -72,7 +78,7 @@ pub(super) struct UsageRecordV2 {
 /// Mirror of the historical `AccountUsageState` wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub(super) enum UsageStateV2 {
+enum UsageStateV2 {
     Unsupported(UnsupportedUsageV2),
     MissingCredential(MissingCredentialUsageV2),
     Ready(ReadyUsageV2),
@@ -81,43 +87,43 @@ pub(super) enum UsageStateV2 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct UnsupportedUsageV2;
+struct UnsupportedUsageV2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct MissingCredentialUsageV2 {
+struct MissingCredentialUsageV2 {
     pub(super) message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ReadyUsageV2 {
+struct ReadyUsageV2 {
     pub(super) data: UsageDataV2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct FailedUsageV2 {
+struct FailedUsageV2 {
     pub(super) error: StateErrorV2,
 }
 
 /// Mirror of the historical `AccountUsageData` wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub(super) enum UsageDataV2 {
+enum UsageDataV2 {
     DeepSeekBalance(BalanceUsageV2),
     ZhipuCodingPlan(CodingPlanUsageV2),
 }
 
 /// Historical DeepSeek usage wire; field names stayed snake_case, keep them so.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct BalanceUsageV2 {
+struct BalanceUsageV2 {
     pub(super) is_available: bool,
     pub(super) balances: Vec<BalanceInfoV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct BalanceInfoV2 {
+struct BalanceInfoV2 {
     pub(super) currency: String,
     pub(super) total_balance: String,
     pub(super) granted_balance: String,
@@ -126,13 +132,13 @@ pub(super) struct BalanceInfoV2 {
 
 /// Historical Zhipu coding-plan wire; snake_case field names, default enum tagging.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct CodingPlanUsageV2 {
+struct CodingPlanUsageV2 {
     pub(super) level: Option<String>,
     pub(super) limits: Vec<QuotaLimitV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct QuotaLimitV2 {
+struct QuotaLimitV2 {
     pub(super) window: QuotaWindowV2,
     pub(super) percentage: f64,
     pub(super) current_value: Option<f64>,
@@ -144,7 +150,7 @@ pub(super) struct QuotaLimitV2 {
 
 /// Externally tagged, exactly like the historical `ZhipuQuotaWindow`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum QuotaWindowV2 {
+enum QuotaWindowV2 {
     FiveHour,
     Weekly,
     McpMonthly,
@@ -152,7 +158,7 @@ pub(super) enum QuotaWindowV2 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct ToolUsageDetailV2 {
+struct ToolUsageDetailV2 {
     pub(super) name: String,
     pub(super) current_value: Option<f64>,
     pub(super) total: Option<f64>,
@@ -162,7 +168,7 @@ pub(super) struct ToolUsageDetailV2 {
 /// Mirror of the historical `ObservedResource<T>` wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub(super) enum ResourceV2<T> {
+enum ResourceV2<T> {
     Uninitialized(UninitializedV2),
     Loading(LoadingV2),
     Ready(ReadyV2<T>),
@@ -175,14 +181,14 @@ pub(super) enum ResourceV2<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct UninitializedV2 {
+struct UninitializedV2 {
     pub(super) revision: u64,
     pub(super) updated_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct LoadingV2 {
+struct LoadingV2 {
     pub(super) revision: u64,
     pub(super) operation: StateOperationV2,
     pub(super) operation_id: String,
@@ -191,7 +197,7 @@ pub(super) struct LoadingV2 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ReadyV2<T> {
+struct ReadyV2<T> {
     pub(super) revision: u64,
     pub(super) updated_at: i64,
     pub(super) last_checked_at: Option<i64>,
@@ -200,7 +206,7 @@ pub(super) struct ReadyV2<T> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct RefreshingV2<T> {
+struct RefreshingV2<T> {
     pub(super) revision: u64,
     pub(super) operation: StateOperationV2,
     pub(super) operation_id: String,
@@ -211,7 +217,7 @@ pub(super) struct RefreshingV2<T> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct StaleV2<T> {
+struct StaleV2<T> {
     pub(super) revision: u64,
     pub(super) stale_at: i64,
     pub(super) last_checked_at: Option<i64>,
@@ -220,7 +226,7 @@ pub(super) struct StaleV2<T> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DegradedV2<T> {
+struct DegradedV2<T> {
     pub(super) revision: u64,
     pub(super) failed_at: i64,
     pub(super) last_checked_at: Option<i64>,
@@ -231,7 +237,7 @@ pub(super) struct DegradedV2<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct FailedV2 {
+struct FailedV2 {
     pub(super) revision: u64,
     pub(super) failed_at: i64,
     pub(super) operation: StateOperationV2,
@@ -240,7 +246,7 @@ pub(super) struct FailedV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct StoppedV2 {
+struct StoppedV2 {
     pub(super) revision: u64,
     pub(super) stopped_at: i64,
 }
@@ -248,7 +254,7 @@ pub(super) struct StoppedV2 {
 /// Mirror of the historical `StateOperation` wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum StateOperationV2 {
+enum StateOperationV2 {
     Initialize,
     Activate,
     Reload,
@@ -264,7 +270,7 @@ pub(super) enum StateOperationV2 {
 /// Mirror of the historical `StateError` wire (camelCase, no unknown-field denial).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct StateErrorV2 {
+struct StateErrorV2 {
     pub(super) code: String,
     pub(super) message: String,
     pub(super) retryable: bool,
@@ -311,14 +317,14 @@ pub(super) struct CacheV3 {
     pub(super) format_version: u32,
     pub(super) revision: u64,
     pub(super) updated_at: i64,
-    pub(super) accounts: Vec<BindingV3>,
+    accounts: Vec<BindingV3>,
     #[serde(default)]
     pub(super) legacy_unbound: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct BindingV3 {
+struct BindingV3 {
     pub(super) query_identity: String,
     pub(super) observation: ObservationV3,
 }
@@ -326,7 +332,7 @@ pub(super) struct BindingV3 {
 /// Mirror of the historical `AccountUsageObservation` wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ObservationV3 {
+struct ObservationV3 {
     pub(super) account_id: String,
     pub(super) query_revision: u64,
     pub(super) revision: u64,
@@ -339,7 +345,7 @@ pub(super) struct ObservationV3 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum PhaseV3 {
+enum PhaseV3 {
     Unchecked,
     Querying,
     Succeeded,
@@ -350,14 +356,14 @@ pub(super) enum PhaseV3 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct FailureV3 {
+struct FailureV3 {
     pub(super) code: FailureCodeV3,
     pub(super) retryable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum FailureCodeV3 {
+enum FailureCodeV3 {
     Configuration,
     Query,
     Cancelled,
@@ -366,7 +372,7 @@ pub(super) enum FailureCodeV3 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct SuccessV3 {
+struct SuccessV3 {
     pub(super) checked_at: i64,
     pub(super) value: ValueV3,
 }
@@ -378,7 +384,7 @@ pub(super) struct SuccessV3 {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub(super) enum ValueV3 {
+enum ValueV3 {
     Balance {
         available: bool,
         balances: Vec<MoneyBalanceV3>,
@@ -391,7 +397,7 @@ pub(super) enum ValueV3 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct MoneyBalanceV3 {
+struct MoneyBalanceV3 {
     pub(super) currency: String,
     pub(super) total: String,
     pub(super) granted: String,
@@ -400,7 +406,7 @@ pub(super) struct MoneyBalanceV3 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct QuotaV3 {
+struct QuotaV3 {
     pub(super) window: QuotaWindowV3,
     pub(super) percentage: f64,
     pub(super) used: Option<f64>,
@@ -413,7 +419,7 @@ pub(super) struct QuotaV3 {
 /// Adjacently tagged, exactly like the historical `AccountQuotaWindow`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-pub(super) enum QuotaWindowV3 {
+enum QuotaWindowV3 {
     FiveHour,
     Weekly,
     McpMonthly,
@@ -422,7 +428,7 @@ pub(super) enum QuotaWindowV3 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct QuotaDetailV3 {
+struct QuotaDetailV3 {
     pub(super) name: String,
     pub(super) used: Option<f64>,
     pub(super) total: Option<f64>,

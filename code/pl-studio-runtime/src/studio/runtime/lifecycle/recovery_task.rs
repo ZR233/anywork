@@ -67,7 +67,7 @@ impl StudioRuntime {
                     issues.retain(|issue| issue.worktree.as_ref().is_none_or(|preview| {
                         runtime.agent_facility.worktrees.get(&preview.owner_thread_id)
                             .is_some_and(|lease| lease.revision == preview.lease_revision
-                                && (lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned
+                                && (lease.state != crate::studio::worktree::worktree_lease::WorktreeLeaseState::Cleaned
                                     || !runtime.agent_facility.worktrees.is_durable(&lease)))
                     }));
                     runtime.recovery.replace(issues);

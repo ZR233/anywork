@@ -12,7 +12,7 @@ use super::{SkillCatalogRuntime, SkillSearchResult, SkillsStateSnapshot};
 
 impl SkillCatalogRuntime {
     /// 只读缓存；不存在时返回 authoritative empty，不访问文件系统。
-    pub async fn read(&self, workspace_id: &str) -> SkillsStateSnapshot {
+    pub(in crate::studio::runtime) async fn read(&self, workspace_id: &str) -> SkillsStateSnapshot {
         self.states
             .read()
             .await
@@ -22,7 +22,7 @@ impl SkillCatalogRuntime {
     }
 
     /// Searches the last published catalog without performing discovery.
-    pub async fn search(
+    pub(in crate::studio::runtime) async fn search(
         &self,
         workspace_id: &str,
         query: &str,

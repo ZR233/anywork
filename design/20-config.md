@@ -8,7 +8,7 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 
 `anywork` 使用独立的产品身份，默认仅访问 `~/.anywork` 数据根目录，操作系统凭据服务名固定为 `anywork`，产品环境变量前缀为 `ANYWORK_`。显式指定的数据根目录遵循命令行参数与环境变量优先级。
 
-主配置文件固定为 `~/.anywork/config.toml`（Windows 下为 `%USERPROFILE%\.anywork\config.toml`）。会话、产品数据库与调试日志的数据布局由 [存储契约](./17-studio-storage.md) 统一定义。用户自定义智能体模板单独保存于 `~/.anywork/agents/*.toml`。配置结构版本号以代码常量为准。
+主配置默认位于用户主目录的 `.anywork/config.toml`。Windows 使用系统用户配置文件目录，Linux 与 macOS 优先使用非空 `HOME`，否则查询系统用户主目录。会话、产品数据库与调试日志的数据布局由 [存储契约](./17-studio-storage.md) 统一定义。用户自定义智能体模板单独保存于 `~/.anywork/agents/*.toml`。配置结构版本号以代码常量为准。
 
 非交互式命令行必须显式提供 Studio home，固定采用 `Strict` 启动与 environment-only 凭据策略：已有主配置缺失或无效时失败，不自动默认初始化或备份重置；未完成启动恢复仅只读报告。配置加载器在迁移接续前核对必需主配置，接续后再次读取，不允许文件消失后转入默认分支。需要系统凭据或旧密钥迁移的输入不以临时内存确认成功。下文默认初始化、系统凭据优先及交互恢复描述适用于既有交互宿主；命令行完整契约见 [29.3](./29-cli-harbor.md#293-严格启动与凭据)。
 
@@ -27,6 +27,8 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 
 配置版本转换继续使用 TOML/Serde 与系统凭据服务：类型转换仅承担配置领域语义，多文件和凭据关联的联合提交继续遵循上述可恢复操作契约。SQLite 的结构与数据迁移统一由 SeaORM 官方迁移系统管理（见 [17.11](./17-studio-storage.md#1711-上下文来源与版本升级)），不将配置文件迁入数据库，也不以 SQL 事务代替跨文件、系统凭据的恢复协议。
 
+启动时校验版本键并直接解码当前主配置和用户 Profile。Settings、Catalog、附件清单和会话布局各自采用同样的当前版本读取方式。升级入口复用已构建的迁移链。配置迁移准备阶段共享同一次主文档解析的结果，用于目标配置与旧资源提取。
+
 历史配置版本迁移链摘要如下：
 - **版本 `18 → 19 → 20`**：`18 → 19` 从 `disabled_system_agents` 移除 `planner` 并保留五条模型路由；`19 → 20` 将旧 `planner` 路由复制为 `mode.simple` 与 `mode.task` 的默认路由，从 `models.routes` 中删除 `planner`，并保留四个系统子智能体路由、账号及凭据关联。
 - **版本 `20 → 21`**：将 `models.providers.<id>.capabilities.web_search.standalone = "deep_seek_anthropic_messages"` 改写为 `"deep_seek_tools_api"`，并按版本默认值补齐 `[deepseek_web_search]` 的 `fetch_enabled`。
@@ -38,7 +40,7 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 - **版本 `28 → 29`**：移除旧 `skills.user_dir`，保留其余技能设置、账号认证身份及凭据关联；旧技能内容原样保留，不复制或覆盖标准用户技能目录。
 - **版本 `29 → 30`**：允许已验证的 Codex workspace 和套餐元数据；已有 API、SIWC 账号、资源、凭据关联和模型选择保持原样，不自动转换或重新登录。新字段只随用户完成并保存的授权写入。
 - **版本 `30 → 31`**：将旧版 `config.toml` 中的 `[mcp.servers.<id>]` 与 `[mcp.builtin_servers.<id>]` 拆分迁移为 `<StudioHome>/mcp/host/<server-key>.toml` 独立单文件配置（各自携带 `schema_version = 1` 与 `kind = "server" | "builtin"`，`server-key` 为稳定服务 ID 的 SHA-256），同时从 `config.toml` 移除 `[mcp]` 配置段与退役字段 `[runtime].active_mcp_servers`，保持其余账号、凭据关联、路由及技能设置不变。迁移前完整备份原文件，中断后可安全恢复；正常读写仅消费单文件 MCP 目录，不双读 `config.toml` 中的旧 `[mcp]` 段。
-- **版本 `34 → 35`**：将内建工作模式路由从 `mode.simple` 与 `mode.task` 收敛为唯一的 `mode.auto`（优先继承原 `mode.simple` 路由，缺失时回退原 `mode.task` 路由），移除旧双模式路由键。
+- **版本 `34 → 35`**：将内建工作模式路由从 `mode.simple` 与 `mode.task` 收敛为唯一的 `mode.auto`（优先继承原 `mode.task` 路由，缺失时回退原 `mode.simple` 路由），移除旧双模式路由键。
 
 设置所有者在写锁内将普通字段和列表单项更新应用到最新配置。整份设置替换或重载校验设置版本，独立文档校验自身版本。提交成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 

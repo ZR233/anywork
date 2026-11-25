@@ -299,11 +299,11 @@ impl BotStateStore {
             // 由调用方在下一等待前按真实字段计权。
             tx.commit().await.map_err(storage)?;
             // 身份行必须与派生 key 及本请求逐列一致：不从请求补或覆盖持久身份。
-            let stored_identity = strict_text(&row, "identity")?;
-            let stored_bot = strict_text(&row, "bot_id")?;
-            let stored_message = strict_text(&row, "message_id")?;
-            let stored_chat = strict_text(&row, "chat_id")?;
-            let stored_hash = strict_text(&row, "content_hash")?;
+            let stored_identity = stored_text(&row, "identity")?;
+            let stored_bot = stored_text(&row, "bot_id")?;
+            let stored_message = stored_text(&row, "message_id")?;
+            let stored_chat = stored_text(&row, "chat_id")?;
+            let stored_hash = stored_text(&row, "content_hash")?;
             if stored_identity != identity
                 || stored_bot != inbound.bot_id
                 || stored_message != inbound.message_id
@@ -321,11 +321,11 @@ impl BotStateStore {
                 // 身份行存在但工作行缺失：绑定/归属字段无从证明，不能借本次事件回填。
                 return Err(work_needs_recovery());
             };
-            let work_identity = strict_text(&work, "identity")?;
-            let work_bot = strict_text(&work, "bot_id")?;
-            let work_chat = strict_text(&work, "chat_id")?;
-            let work_message = strict_text(&work, "message_id")?;
-            let work_hash = strict_text(&work, "content_hash")?;
+            let work_identity = stored_text(&work, "identity")?;
+            let work_bot = stored_text(&work, "bot_id")?;
+            let work_chat = stored_text(&work, "chat_id")?;
+            let work_message = stored_text(&work, "message_id")?;
+            let work_hash = stored_text(&work, "content_hash")?;
             if work_identity != identity
                 || work_bot != inbound.bot_id
                 || work_chat != inbound.chat_id
@@ -349,16 +349,16 @@ impl BotStateStore {
                 chat_id: work_chat,
                 content_hash: work_hash,
                 // 路由、绑定与 fencing 判据只接受持久值本身；空串是合法业务值。
-                text: strict_text(&work, "text")?,
-                attachments: serde_json::from_str(&strict_text(&work, "attachments")?)
+                text: stored_text(&work, "text")?,
+                attachments: serde_json::from_str(&stored_text(&work, "attachments")?)
                     .map_err(|_| work_needs_recovery())?,
-                open_id: strict_text(&work, "open_id")?,
-                chat_kind: strict_text(&work, "chat_kind")?,
-                app_id: strict_text(&work, "app_id")?,
-                workspace_id: strict_text(&work, "workspace_id")?,
-                creation_id: strict_text(&work, "creation_id")?,
+                open_id: stored_text(&work, "open_id")?,
+                chat_kind: stored_text(&work, "chat_kind")?,
+                app_id: stored_text(&work, "app_id")?,
+                workspace_id: stored_text(&work, "workspace_id")?,
+                creation_id: stored_text(&work, "creation_id")?,
                 binding_revision: strict_watermark(&work, "binding_revision")?,
-                watch_input: strict_text(&work, "watch_input")?,
+                watch_input: stored_text(&work, "watch_input")?,
             }));
         }
         let pending = tx
@@ -456,11 +456,11 @@ impl BotStateStore {
         };
         // 行身份必须与派生 key 及调用键逐列一致；content_hash 同样严格解码，
         // 不把损坏或缺失默认成空串后继续认领。
-        let stored_identity = strict_text(&row, "identity")?;
-        let stored_bot = strict_text(&row, "bot_id")?;
-        let stored_chat = strict_text(&row, "chat_id")?;
-        let stored_message = strict_text(&row, "message_id")?;
-        let _content_hash = strict_text(&row, "content_hash")?;
+        let stored_identity = stored_text(&row, "identity")?;
+        let stored_bot = stored_text(&row, "bot_id")?;
+        let stored_chat = stored_text(&row, "chat_id")?;
+        let stored_message = stored_text(&row, "message_id")?;
+        let _content_hash = stored_text(&row, "content_hash")?;
         if stored_identity != identity
             || stored_bot != bot_id
             || stored_chat != chat_id
@@ -542,25 +542,14 @@ impl BotStateStore {
         message_id: &str,
         worker_id: &str,
     ) -> Result<ClaimLease, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
         let db = self.db().await?;
         let now = unix_seconds();
+        let fence = InboundClaimFence::new(bot_id, chat_id, message_id, worker_id, now);
         let renewed = db
-            .execute_raw(statement(
+            .execute_raw(fence.statement(
                 "UPDATE inbound_work
-                 SET claimed_at=?, updated_at=?
-                 WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                   AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                vec![
-                    now.into(),
-                    now.into(),
-                    identity.into(),
-                    bot_id.to_string().into(),
-                    chat_id.to_string().into(),
-                    message_id.to_string().into(),
-                    worker_id.to_string().into(),
-                    now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS).into(),
-                ],
+                 SET claimed_at=?, updated_at=?",
+                vec![now.into(), now.into()],
             ))
             .await
             .map_err(storage)?;
@@ -580,26 +569,14 @@ impl BotStateStore {
         worker_id: &str,
         watch_input: &str,
     ) -> Result<MarkOutcome, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
         let db = self.db().await?;
         let now = unix_seconds();
-        let lease_cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
+        let fence = InboundClaimFence::new(bot_id, chat_id, message_id, worker_id, now);
         let updated = db
-            .execute_raw(statement(
+            .execute_raw(fence.statement(
                 "UPDATE inbound_work
-                 SET watch_input=?, updated_at=?
-                 WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                   AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                vec![
-                    watch_input.to_string().into(),
-                    now.into(),
-                    identity.into(),
-                    bot_id.to_string().into(),
-                    chat_id.to_string().into(),
-                    message_id.to_string().into(),
-                    worker_id.to_string().into(),
-                    lease_cutoff.into(),
-                ],
+                 SET watch_input=?, updated_at=?",
+                vec![watch_input.to_string().into(), now.into()],
             ))
             .await
             .map_err(storage)?;
@@ -623,28 +600,17 @@ impl BotStateStore {
         worker_id: &str,
         finish: WorkFinish<'_>,
     ) -> Result<MarkOutcome, FeishuError> {
-        let identity = inbound_identity(bot_id, chat_id, message_id);
         let db = self.db().await?;
         let now = unix_seconds();
-        let lease_cutoff = now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS);
+        let fence = InboundClaimFence::new(bot_id, chat_id, message_id, worker_id, now);
         match finish {
             WorkFinish::Completed => {
                 let updated = db
-                    .execute_raw(statement(
+                    .execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='completed', diagnostic='', claimed_by='', claimed_at=0,
-                             attempt_count=0, next_attempt_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
+                             attempt_count=0, next_attempt_at=0, updated_at=?",
+                        vec![now.into()],
                     ))
                     .await
                     .map_err(storage)?;
@@ -652,22 +618,12 @@ impl BotStateStore {
             }
             WorkFinish::Interrupted => {
                 let updated = db
-                    .execute_raw(statement(
+                    .execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='pending',
                              diagnostic='runtime stopped before a local terminal fact',
-                             claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
+                             claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?",
+                        vec![now.into()],
                     ))
                     .await
                     .map_err(storage)?;
@@ -675,20 +631,12 @@ impl BotStateStore {
             }
             WorkFinish::NeedsAttention(diagnostic) => {
                 let updated = db
-                    .execute_raw(statement(
+                    .execute_raw(fence.statement(
                         "UPDATE inbound_work
-                         SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                         SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?",
                         vec![
                             diagnostic.to_string().into(),
                             now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
                         ],
                     ))
                     .await
@@ -698,19 +646,9 @@ impl BotStateStore {
             WorkFinish::Retryable(diagnostic) => {
                 let tx = db.begin().await.map_err(storage)?;
                 let row = tx
-                    .query_one_raw(statement(
-                        "SELECT attempt_count FROM inbound_work
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
-                        vec![
-                            identity.clone().into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
-                        ],
-                    ))
+                    .query_one_raw(
+                        fence.statement("SELECT attempt_count FROM inbound_work", vec![]),
+                    )
                     .await
                     .map_err(storage)?;
                 let attempt_count = match row {
@@ -722,47 +660,31 @@ impl BotStateStore {
                 };
                 let next_count = attempt_count.saturating_add(1);
                 let updated = if next_count >= INBOUND_RETRY_BUDGET {
-                    tx.execute_raw(statement(
+                    tx.execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='needs_attention',
                              diagnostic=?,
-                             claimed_by='', claimed_at=0, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                             claimed_by='', claimed_at=0, updated_at=?",
                         vec![
                             format!(
                                 "recovery budget exhausted after {INBOUND_RETRY_BUDGET} failures: {diagnostic}"
                             )
                             .into(),
                             now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
                         ],
                     ))
                     .await
                     .map_err(storage)?
                 } else {
-                    tx.execute_raw(statement(
+                    tx.execute_raw(fence.statement(
                         "UPDATE inbound_work
                          SET status='failed', diagnostic=?, claimed_by='', claimed_at=0,
-                             attempt_count=?, next_attempt_at=?, updated_at=?
-                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
-                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                             attempt_count=?, next_attempt_at=?, updated_at=?",
                         vec![
                             diagnostic.to_string().into(),
                             next_count.into(),
                             now.saturating_add(retry_backoff_seconds(next_count)).into(),
                             now.into(),
-                            identity.into(),
-                            bot_id.to_string().into(),
-                            chat_id.to_string().into(),
-                            message_id.to_string().into(),
-                            worker_id.to_string().into(),
-                            lease_cutoff.into(),
                         ],
                     ))
                     .await
@@ -806,10 +728,10 @@ impl BotStateStore {
         rows.into_iter()
             .map(|row| {
                 // 派生 key 与列值必须自洽：坏 key 不能先被当成可恢复工作再变 Missing。
-                let identity: String = strict_text(&row, "identity")?;
-                let row_bot: String = strict_text(&row, "bot_id")?;
-                let row_chat: String = strict_text(&row, "chat_id")?;
-                let row_message: String = strict_text(&row, "message_id")?;
+                let identity: String = stored_text(&row, "identity")?;
+                let row_bot: String = stored_text(&row, "bot_id")?;
+                let row_chat: String = stored_text(&row, "chat_id")?;
+                let row_message: String = stored_text(&row, "message_id")?;
                 if row_bot != bot_id
                     || identity != inbound_identity(&row_bot, &row_chat, &row_message)
                 {
@@ -821,16 +743,16 @@ impl BotStateStore {
                     message_id: row_message,
                     content_hash: stored_text(&row, "content_hash")?,
                     text: stored_text(&row, "text")?,
-                    attachments: serde_json::from_str(&strict_text(&row, "attachments")?)
+                    attachments: serde_json::from_str(&stored_text(&row, "attachments")?)
                         .map_err(|_| work_needs_recovery())?,
                     open_id: stored_text(&row, "open_id")?,
                     chat_kind: stored_text(&row, "chat_kind")?,
                     // 绑定/路由/fencing 判据只接受持久值；空串（如尚无续接输入）是合法值。
-                    app_id: strict_text(&row, "app_id")?,
-                    workspace_id: strict_text(&row, "workspace_id")?,
-                    creation_id: strict_text(&row, "creation_id")?,
+                    app_id: stored_text(&row, "app_id")?,
+                    workspace_id: stored_text(&row, "workspace_id")?,
+                    creation_id: stored_text(&row, "creation_id")?,
                     binding_revision: strict_watermark(&row, "binding_revision")?,
-                    watch_input: strict_text(&row, "watch_input")?,
+                    watch_input: stored_text(&row, "watch_input")?,
                 })
             })
             .collect()
@@ -894,12 +816,12 @@ impl BotStateStore {
         // 等待保留，随后只由调用方按真实长度计权。
         tx.commit().await.map_err(storage)?;
         // 路由与创建身份只接受持久值：解码失败不得默认成 bound/空创建。
-        let stored_chat = strict_text(&row, "chat_id")?;
-        let status = strict_text(&row, "status")?;
-        let thread_id = strict_text(&row, "thread_id")?;
-        let stored_creation = strict_text(&row, "creation_id")?;
-        let stored_project = strict_text(&row, "workspace_id")?;
-        let diagnostic = strict_text(&row, "diagnostic")?;
+        let stored_chat = stored_text(&row, "chat_id")?;
+        let status = stored_text(&row, "status")?;
+        let thread_id = stored_text(&row, "thread_id")?;
+        let stored_creation = stored_text(&row, "creation_id")?;
+        let stored_project = stored_text(&row, "workspace_id")?;
+        let diagnostic = stored_text(&row, "diagnostic")?;
         // 水位同样严格解码：坏行不能继续被当成可用绑定。
         let _revision = strict_watermark(&row, "revision")?;
         let _generation = strict_watermark(&row, "generation")?;
@@ -957,10 +879,10 @@ impl BotStateStore {
             .map_err(storage)?;
         let (revision, generation) = if let Some(row) = existing {
             // 路由、创建身份与项目归属只接受持久值：解码失败不得默认成 bound 或空创建。
-            let status = strict_text(&row, "status")?;
-            let bound = strict_text(&row, "thread_id")?;
-            let stored_creation = strict_text(&row, "creation_id")?;
-            let stored_project = strict_text(&row, "workspace_id")?;
+            let status = stored_text(&row, "status")?;
+            let bound = stored_text(&row, "thread_id")?;
+            let stored_creation = stored_text(&row, "creation_id")?;
+            let stored_project = stored_text(&row, "workspace_id")?;
             // 水位只接受无损解码：缺列或损坏不得回退到 1 覆盖既有水位。
             let revision = strict_watermark(&row, "revision")?;
             let generation = strict_watermark(&row, "generation")?;
@@ -1071,14 +993,14 @@ impl BotStateStore {
             Some(row) => {
                 // 只接受与查询键一致的持久行；状态分类先于归属判定，
                 // 迁移保留的 needs_attention 缺创建/项目是合法事实，不用当前请求补齐。
-                let stored_chat: String = strict_text(&row, "chat_id")?;
+                let stored_chat: String = stored_text(&row, "chat_id")?;
                 if stored_chat != chat_id {
                     return Err(corrupt_binding());
                 }
-                let stored_status: String = strict_text(&row, "status")?;
-                let stored_project: String = strict_text(&row, "workspace_id")?;
-                let stored_creation: String = strict_text(&row, "creation_id")?;
-                let thread_id = empty_to_none(strict_text(&row, "thread_id")?)
+                let stored_status: String = stored_text(&row, "status")?;
+                let stored_project: String = stored_text(&row, "workspace_id")?;
+                let stored_creation: String = stored_text(&row, "creation_id")?;
+                let thread_id = empty_to_none(stored_text(&row, "thread_id")?)
                     .filter(|value| value != "pending");
                 let revision = strict_watermark(&row, "revision")?;
                 // 已选水位两列都严格解码，不静默忽略 generation。
@@ -1111,7 +1033,7 @@ impl BotStateStore {
                     thread_id,
                     revision,
                     status: stored_status,
-                    diagnostic: empty_to_none(strict_text(&row, "diagnostic")?),
+                    diagnostic: empty_to_none(stored_text(&row, "diagnostic")?),
                 }
             }
             None => BindingProjection {
@@ -1226,10 +1148,10 @@ impl BotStateStore {
             tx.commit().await.map_err(storage)?;
             return Err(binding_needs_recovery());
         };
-        let status = strict_text(&row, "status")?;
-        let thread_id = strict_text(&row, "thread_id")?;
-        let creation_id = strict_text(&row, "creation_id")?;
-        let stored_project = strict_text(&row, "workspace_id")?;
+        let status = stored_text(&row, "status")?;
+        let thread_id = stored_text(&row, "thread_id")?;
+        let creation_id = stored_text(&row, "creation_id")?;
+        let stored_project = stored_text(&row, "workspace_id")?;
         let revision = strict_watermark(&row, "revision")?;
         let claimed = status == "creating"
             && thread_id.is_empty()
@@ -1266,18 +1188,18 @@ impl BotStateStore {
             .map_err(storage)?;
         row.map(|row| {
             // 操作身份与冻结 revision 是接续判据：损坏必须显式失败，不能默认化。
-            let stored_operation: String = strict_text(&row, "operation_id")?;
+            let stored_operation: String = stored_text(&row, "operation_id")?;
             if stored_operation != operation_id {
                 return Err(corrupt_binding());
             }
             Ok(BindingOperation {
                 operation_id: stored_operation,
-                bot_id: strict_text(&row, "bot_id")?,
-                chat_id: strict_text(&row, "chat_id")?,
-                content_hash: strict_text(&row, "content_hash")?,
+                bot_id: stored_text(&row, "bot_id")?,
+                chat_id: stored_text(&row, "chat_id")?,
+                content_hash: stored_text(&row, "content_hash")?,
                 expected_revision: strict_watermark(&row, "expected_revision")?,
-                creation_id: strict_text(&row, "creation_id")?,
-                thread_id: empty_to_none(strict_text(&row, "thread_id")?),
+                creation_id: stored_text(&row, "creation_id")?,
+                thread_id: empty_to_none(stored_text(&row, "thread_id")?),
             })
         })
         .transpose()
@@ -1562,12 +1484,26 @@ impl BotStateStore {
         conflict_or_existing(record, existing).map(Some)
     }
 
+    /// 身份核对与 upsert 必须共享同一事务快照，否则两次调用之间可能被另一写者
+    /// 插入或覆盖（TOCTOU）。WAL 下若快照已被其他写者推进，升级为写会以
+    /// `SQLITE_BUSY_SNAPSHOT` 失败而不是基于过期读取静默覆盖；busy_timeout 只
+    /// 覆盖真实的锁等待。编码在事务外完成，事务内只保留一次读取与一次写入。
     pub async fn save_send(&self, record: &SendRecord) -> Result<(), FeishuError> {
-        if let Some(existing) = self.load_send(&record.operation_id).await? {
-            conflict_or_existing(record, existing)?;
-        }
+        let segment_facts = encode_segment_facts(&record.segments)?;
         let db = self.db().await?;
-        db.execute_raw(statement(
+        let tx = db.begin().await.map_err(storage)?;
+        if let Some(row) = tx
+            .query_one_raw(statement(
+                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts
+                 FROM send_operations WHERE operation_id=?",
+                vec![record.operation_id.clone().into()],
+            ))
+            .await
+            .map_err(storage)?
+        {
+            conflict_or_existing(record, send_record_from_row(row)?)?;
+        }
+        tx.execute_raw(statement(
             "INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, updated_at)
              VALUES(?,?,?,?,?,?,?,?)
              ON CONFLICT(operation_id) DO UPDATE SET
@@ -1582,13 +1518,44 @@ impl BotStateStore {
                 record.content_hash.clone().into(),
                 record.status.as_str().to_string().into(),
                 record.platform_message_ids.join(",").into(),
-                encode_segment_facts(&record.segments)?.into(),
+                segment_facts.into(),
                 unix_seconds().into(),
             ],
         ))
         .await
         .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
+    }
+}
+
+struct InboundClaimFence {
+    values: [Value; 6],
+}
+
+impl InboundClaimFence {
+    fn new(bot_id: &str, chat_id: &str, message_id: &str, worker_id: &str, now: i64) -> Self {
+        Self {
+            values: [
+                inbound_identity(bot_id, chat_id, message_id).into(),
+                bot_id.to_owned().into(),
+                chat_id.to_owned().into(),
+                message_id.to_owned().into(),
+                worker_id.to_owned().into(),
+                now.saturating_sub(INBOUND_CLAIM_TTL_SECONDS).into(),
+            ],
+        }
+    }
+
+    fn statement(&self, sql: &str, mut values: Vec<Value>) -> Statement {
+        values.extend_from_slice(&self.values);
+        statement(
+            &format!(
+                "{sql} WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=? \
+                 AND claimed_by=? AND status='claimed' AND claimed_at>?"
+            ),
+            values,
+        )
     }
 }
 
@@ -1759,11 +1726,6 @@ fn storage(error: impl std::fmt::Display) -> FeishuError {
 
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
-}
-
-/// 绑定记录的关键身份与水位只接受无损解码：损坏或回退默认值会让归属与合并水位失真。
-fn strict_text(row: &QueryResult, column: &str) -> Result<String, FeishuError> {
-    stored_text(row, column)
 }
 
 fn strict_watermark(row: &QueryResult, column: &str) -> Result<u64, FeishuError> {
@@ -2091,13 +2053,23 @@ mod tests {
         probe.close().await?;
 
         let failed_ownership = BotStateStore::new(path.clone());
+        let ownership_failure = failed_ownership
+            .list_due_inbound("legacy")
+            .await
+            .expect_err("ownership migration must roll back")
+            .to_string();
         assert!(
-            failed_ownership
-                .list_due_inbound("legacy")
-                .await
-                .expect_err("ownership migration must roll back")
-                .to_string()
-                .contains("injected ownership migration failure")
+            ownership_failure.contains("injected ownership migration failure"),
+            "{ownership_failure}"
+        );
+        // 失败步骤来自迁移后的真实待执行列表，而非硬编码的首条迁移名。
+        assert!(
+            ownership_failure.contains("m20261030_000002_bot_workspace_ownership"),
+            "{ownership_failure}"
+        );
+        assert!(
+            !ownership_failure.contains("m20261026_000001_bot_ledger_schema"),
+            "{ownership_failure}"
         );
         let probe = Database::connect(
             sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
@@ -2519,6 +2491,62 @@ mod tests {
         state.confirmed_sequence = state.sequence;
         state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Confirmed;
     }
+
+    fn text_record(operation_id: &str, content_hash: &str, status: SendRecordStatus) -> SendRecord {
+        SendRecord {
+            operation_id: operation_id.into(),
+            bot_id: "bot".into(),
+            chat_id: "chat".into(),
+            content_hash: content_hash.into(),
+            status,
+            platform_message_ids: Vec::new(),
+            segments: Vec::new(),
+            facts_complete: true,
+        }
+    }
+
+    /// 身份核对与 upsert 共用一个事务：同一 operationId 的不同正文被拒绝且账本保持原样，
+    /// 同一身份的进度则覆盖写入。
+    #[tokio::test]
+    async fn save_send_keeps_identity_verification_and_upsert_in_one_transaction()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = BotStateStore::new(directory.path().join("ledger.sqlite"));
+        store
+            .save_send(&text_record(
+                "operation",
+                "hash-a",
+                SendRecordStatus::Unknown,
+            ))
+            .await?;
+        let mut progress = text_record("operation", "hash-a", SendRecordStatus::Succeeded);
+        progress.platform_message_ids.push("message".into());
+        store.save_send(&progress).await?;
+        let stored = store
+            .load_send("operation")
+            .await?
+            .expect("the progress is persisted");
+        assert_eq!(stored.status, SendRecordStatus::Succeeded);
+        assert_eq!(stored.platform_message_ids, ["message"]);
+
+        let conflict = store
+            .save_send(&text_record(
+                "operation",
+                "hash-b",
+                SendRecordStatus::Rejected,
+            ))
+            .await
+            .expect_err("a different body under the same operationId is a conflict");
+        assert_eq!(conflict.kind(), FeishuErrorKind::Conflict);
+        let stored = store
+            .load_send("operation")
+            .await?
+            .expect("the rejected save leaves the record in place");
+        assert_eq!(stored.content_hash, "hash-a");
+        assert_eq!(stored.status, SendRecordStatus::Succeeded);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn ledger_adopts_current_file_and_refuses_future_writes() -> anyhow::Result<()> {
         for fault in ["format", "migration", "missing_table"] {

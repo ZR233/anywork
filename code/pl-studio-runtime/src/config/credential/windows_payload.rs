@@ -236,4 +236,47 @@ mod tests {
         write_payload(root.path(), account, "replacement").unwrap();
         assert_eq!(read_payload(root.path(), account).unwrap(), "replacement");
     }
+
+    /// Bot 材料与账号凭据走同一条溢出保护路径：超出 Credential Manager 上限时
+    /// keyring 只保留标记，读取回到原文，回收同时清理 sidecar。
+    #[test]
+    fn bot_credentials_share_the_dpapi_overflow_path_with_accounts() {
+        use super::super::{BotProtectedPersist, BotProtectedRead, SystemCredentialStore};
+        let bot_id = format!("dpapi-bot-test-{}", uuid::Uuid::new_v4());
+        let account = super::super::bot_account(&bot_id);
+        let store = SystemCredentialStore::default();
+        struct Cleanup<'a>(&'a SystemCredentialStore, &'a str);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = self.0.recycle_bot_payload(self.1);
+            }
+        }
+        let _cleanup = Cleanup(&store, &bot_id);
+        assert!(matches!(
+            store.read_bot_payload(&bot_id).unwrap(),
+            BotProtectedRead::Missing
+        ));
+        let payload = format!("{{\"secret\":\"{}\"}}", "bot-private-测试".repeat(2048));
+        assert_eq!(
+            store.persist_bot_payload(&bot_id, &payload).unwrap(),
+            BotProtectedPersist::Stored
+        );
+        let entry = Entry::new(super::super::CREDENTIAL_SERVICE, &account).unwrap();
+        assert_eq!(
+            entry.get_password().unwrap(),
+            MARKER,
+            "oversized bot material must not be written to the Credential Manager"
+        );
+        let reopened = SystemCredentialStore::default();
+        assert!(matches!(
+            reopened.read_bot_payload(&bot_id).unwrap(),
+            BotProtectedRead::System(actual) if actual == payload
+        ));
+        reopened.recycle_bot_payload(&bot_id).unwrap();
+        assert!(matches!(
+            reopened.read_bot_payload(&bot_id).unwrap(),
+            BotProtectedRead::Missing
+        ));
+        assert!(!path(&directory().unwrap(), &account).exists());
+    }
 }

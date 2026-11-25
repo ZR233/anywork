@@ -253,10 +253,39 @@ pub struct AccountModelAutoCompactUpdate {
     pub limit: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "action", deny_unknown_fields)]
 pub enum AccountSecretUpdate {
     Preserve,
     Replace { value: String },
     Clear,
+}
+
+impl std::fmt::Debug for AccountSecretUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Preserve => formatter.write_str("Preserve"),
+            Self::Replace { .. } => formatter
+                .debug_struct("Replace")
+                .field("value", &"<redacted>")
+                .finish(),
+            Self::Clear => formatter.write_str("Clear"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AccountSecretUpdate;
+
+    #[test]
+    fn replacement_secret_is_redacted_in_debug_output() {
+        let replacement = AccountSecretUpdate::Replace {
+            value: "fixture-secret".into(),
+        };
+        assert_eq!(
+            format!("{replacement:?}"),
+            "Replace { value: \"<redacted>\" }"
+        );
+    }
 }

@@ -2,11 +2,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
 use super::acp::{AcpServiceDefinition, validate_acp_account_id};
+use super::fs_util::{
+    DirectoryError, DocumentReadError, RevisionedState, WatchedResource, ensure_regular_dir,
+    read_regular_file,
+};
 use super::{ConfigPaths, document_revision};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,42 +79,46 @@ impl AcpDefinitionsSnapshot {
     }
 }
 
+#[derive(Clone)]
 struct State {
     snapshot: AcpDefinitionsSnapshot,
     // Kept after deletion: re-adding an id cannot revive a previously admitted revision.
     next_connection_revision: u64,
 }
 
+impl RevisionedState for State {
+    fn revision(&self) -> u64 {
+        self.snapshot.revision
+    }
+
+    fn revision_mut(&mut self) -> &mut u64 {
+        &mut self.snapshot.revision
+    }
+}
+
 #[derive(Clone)]
 pub struct AcpDefinitionsResource {
-    state: Arc<Mutex<State>>,
-    updates: Arc<watch::Sender<u64>>,
+    resource: WatchedResource<State>,
 }
 
 impl AcpDefinitionsResource {
     pub(crate) fn new(paths: &ConfigPaths) -> Self {
-        let (updates, _) = watch::channel(0);
         let resource = Self {
-            state: Arc::new(Mutex::new(State {
+            resource: WatchedResource::new(State {
                 snapshot: AcpDefinitionsSnapshot::default(),
                 next_connection_revision: 0,
-            })),
-            updates: Arc::new(updates),
+            }),
         };
         resource.reload(paths);
         resource
     }
 
     pub fn read(&self) -> AcpDefinitionsSnapshot {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .snapshot
-            .clone()
+        self.resource.read().snapshot
     }
 
     pub fn subscribe(&self) -> watch::Receiver<u64> {
-        self.updates.subscribe()
+        self.resource.subscribe()
     }
 
     pub fn resolve(
@@ -127,33 +134,32 @@ impl AcpDefinitionsResource {
     }
 
     fn adopt_snapshot(&self, mut scanned: AcpDefinitionsSnapshot) -> AcpDefinitionsSnapshot {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (id, entry) in &mut scanned.definitions {
-            if let Some(previous) = state.snapshot.definitions.get(id)
-                && previous.definition.same_connection(&entry.definition)
-            {
-                entry.connection_revision = previous.connection_revision;
-            } else {
-                state.next_connection_revision = state
-                    .next_connection_revision
-                    .checked_add(1)
-                    .expect("ACP connection revision exhausted");
-                entry.connection_revision = state.next_connection_revision;
-            }
-        }
-        scanned.revision = state.snapshot.revision;
-        if scanned != state.snapshot || scanned.revision == 0 {
-            scanned.revision = scanned
-                .revision
-                .checked_add(1)
-                .expect("ACP resource revision exhausted");
-            state.snapshot = scanned;
-            self.updates.send_replace(state.snapshot.revision);
-        }
-        state.snapshot.clone()
+        self.resource
+            .publish(|state| {
+                for (id, entry) in &mut scanned.definitions {
+                    if let Some(previous) = state.snapshot.definitions.get(id)
+                        && previous.definition.same_connection(&entry.definition)
+                    {
+                        entry.connection_revision = previous.connection_revision;
+                    } else {
+                        state.next_connection_revision = state
+                            .next_connection_revision
+                            .checked_add(1)
+                            .expect("ACP connection revision exhausted");
+                        entry.connection_revision = state.next_connection_revision;
+                    }
+                }
+                // The first publication always advances so revision 0 never
+                // describes a real directory.
+                scanned.revision = state.snapshot.revision;
+                let changed = scanned != state.snapshot || scanned.revision == 0;
+                if changed {
+                    state.snapshot = scanned;
+                }
+                changed
+            })
+            .0
+            .snapshot
     }
 
     pub(crate) fn save(
@@ -228,29 +234,36 @@ impl AcpDefinitionsResource {
     }
 }
 
+/// Commands never write through a symlinked or non-directory `acp/`.
 fn ensure_regular_directory(path: &Path) -> Result<(), AcpDefinitionError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
-        Ok(_) => Err(AcpDefinitionError::Invalid(
-            "ACP directory must be a regular directory".into(),
-        )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+    ensure_regular_dir(path)
+        .map(|_| ())
+        .map_err(|error| match error {
+            DirectoryError::Io(error) => AcpDefinitionError::from(error),
+            DirectoryError::Symlink | DirectoryError::NotDirectory => {
+                AcpDefinitionError::Invalid("ACP directory must be a regular directory".into())
+            }
+        })
+}
+
+/// A refused document shape is one command-level contract; IO causes keep
+/// their typed OS source.
+fn read_error(error: DocumentReadError) -> AcpDefinitionError {
+    match error {
+        DocumentReadError::NotFound(error) | DocumentReadError::Io(error) => error.into(),
+        DocumentReadError::Symlink
+        | DocumentReadError::NotRegularFile
+        | DocumentReadError::TooLarge { .. } => {
+            AcpDefinitionError::Invalid("ACP document must be a regular file".into())
+        }
     }
 }
 
 fn check_revision(path: &Path, id: &str, expected: Option<u64>) -> Result<(), AcpDefinitionError> {
-    let actual = match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Some(
-            document_revision(&format!("acp/{id}.toml"), &fs::read(path)?),
-        ),
-        Ok(_) => {
-            return Err(AcpDefinitionError::Invalid(
-                "ACP document must be a regular file".into(),
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
+    let actual = match read_regular_file(path) {
+        Ok(bytes) => Some(document_revision(&format!("acp/{id}.toml"), &bytes)),
+        Err(DocumentReadError::NotFound(_)) => None,
+        Err(error) => return Err(read_error(error)),
     };
     if actual != expected {
         return Err(AcpDefinitionError::StaleDocument);
@@ -297,18 +310,12 @@ pub(crate) fn scan(paths: &ConfigPaths) -> AcpDefinitionsSnapshot {
             continue;
         }
         let id = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
-        let parsed = (|| {
+        let parsed = (|| -> Result<_, AcpDefinitionError> {
             let id = id
                 .as_deref()
                 .ok_or_else(|| AcpDefinitionError::Invalid("non-UTF-8 ACP filename".into()))?;
             validate_acp_account_id(id).map_err(|e| AcpDefinitionError::Invalid(e.to_string()))?;
-            let metadata = fs::symlink_metadata(&path)?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                return Err(AcpDefinitionError::Invalid(
-                    "ACP document must be a regular file".into(),
-                ));
-            }
-            let bytes = fs::read(&path)?;
+            let bytes = read_regular_file(&path).map_err(read_error)?;
             let content = std::str::from_utf8(&bytes)
                 .map_err(|_| AcpDefinitionError::Invalid("ACP document is not UTF-8".into()))?;
             if let Ok(raw) = toml::from_str::<toml::Value>(content)

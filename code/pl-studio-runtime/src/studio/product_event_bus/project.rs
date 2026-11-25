@@ -49,6 +49,7 @@ impl ProductEventBus {
         self.project_snapshot.lock().await.clone()
     }
 
+    #[cfg(test)]
     pub(super) async fn apply_project_delta(
         &self,
         upserted: &[crate::WorkspaceRecord],
@@ -106,7 +107,8 @@ impl ProductEventBus {
     }
 
     /// 把调用方已经提交的 Project 事实直接应用到内存目录。
-    pub async fn apply_project_entry(
+    #[cfg(test)]
+    pub(crate) async fn apply_project_entry(
         &self,
         project: crate::WorkspaceRecord,
     ) -> Result<StudioProductEventEnvelope> {

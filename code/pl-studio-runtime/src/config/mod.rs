@@ -6,32 +6,33 @@
 pub mod acp;
 pub mod acp_resource;
 mod agent_profile;
-mod instruction;
-mod profiles_resource;
-pub use instruction::{DEFAULT_PROJECT_DOC_MAX_BYTES, InstructionsConfig};
 mod bot_credentials;
 mod chatgpt;
 mod credential;
 pub(crate) mod credential_commit;
 mod document_migration;
-mod execution;
+mod fs_util;
 pub mod mcp;
 pub mod mcp_document;
 pub mod mcp_resource;
-pub use execution::RuntimeConfig;
+pub use fs_util::document_revision;
 pub(crate) mod model_catalog;
+mod profiles_resource;
 mod runtime;
 mod schema_migration;
 mod store;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::approval::PermissionMode;
 use crate::mode::ThreadModeId;
 use crate::{PureError, Result};
 use pl_tool::search::WebSearchConfig;
+use pl_tool::workspace::ToolCapabilityConfig;
 
 use pl_tool::skill::SkillsConfig;
 
+use pl_model::completion::OpenAiCompactionMode;
 use pl_model::config::{AccountConfig, AgentModelConfig};
 use serde::{Deserialize, Serialize};
 
@@ -45,14 +46,13 @@ pub(crate) use agent_profile::{
 };
 pub use mcp::{build_builtin_effective_config, builtin_mcp_server_ids, is_builtin_mcp_server_id};
 pub use mcp_document::{
-    ALL_BUILTIN_IDS, MCP_DOCUMENT_SCHEMA_VERSION, McpFileSpecV1, McpFileV1,
-    validate_server_config_strict,
+    MCP_DOCUMENT_SCHEMA_VERSION, McpFileSpecV1, McpFileV1, validate_server_config_strict,
 };
 pub use mcp_resource::{
     McpCatalogResource, McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer,
-    ScopedMcpScan, canonical_document_ref, canonical_mcp_filename, document_revision,
+    ScopedMcpScan, canonical_document_ref, canonical_mcp_filename,
     ensure_default_host_builtins_if_fresh, resolve_document_path,
-    resolve_scoped_servers_for_thread, resolve_stdio_cwd, scan_scope_catalog, scope_dir,
+    resolve_scoped_servers_for_thread, resolve_stdio_cwd, scan_scope_catalog,
 };
 pub use pl_tool::mcp::config::EffectiveMcpServerConfig;
 pub use pl_tool::mcp::config::McpServerConfig as StudioMcpServerEntry;
@@ -268,4 +268,72 @@ impl StudioConfig {
             .or_else(|| self.mode_model_routes.get(&ThreadModeId::auto()))
             .ok_or_else(|| PureError::ConfigError("missing model route for mode.auto".to_string()))
     }
+}
+
+/// Persisted Studio execution policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeConfig {
+    #[serde(default, skip_serializing_if = "PermissionMode::is_default")]
+    pub permission_mode: PermissionMode,
+    #[serde(default, skip_serializing_if = "ToolCapabilityConfig::is_default")]
+    pub tool_capabilities: ToolCapabilityConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "OpenAiCompactionMode::is_default")]
+    pub openai_compaction_mode: OpenAiCompactionMode,
+}
+
+impl RuntimeConfig {
+    pub fn is_empty(&self) -> bool {
+        self.permission_mode.is_default()
+            && self.tool_capabilities.is_default()
+            && self.active_skills.is_empty()
+            && self.openai_compaction_mode.is_default()
+    }
+
+    /// 本版本产品策略固定完全访问：Studio GUI 不再暴露权限模式选择，执行路径恒用 `full-access`。
+    ///
+    /// 保留 `permission_mode` 字段与三值语义以便将来恢复；这里只归一化 effective 运行时配置，
+    /// 不改写持久化的 desired/canonical 配置。
+    pub fn enforce_fixed_permission_mode(&mut self) {
+        self.permission_mode = PermissionMode::FullAccess;
+    }
+}
+
+pub const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 65_536;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstructionsConfig {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_override: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub developer: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub user: String,
+    #[serde(default = "default_project_doc_max_bytes")]
+    pub project_doc_max_bytes: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_doc_fallback_filenames: Vec<String>,
+}
+
+impl Default for InstructionsConfig {
+    fn default() -> Self {
+        Self {
+            base_override: String::new(),
+            developer: String::new(),
+            user: String::new(),
+            project_doc_max_bytes: DEFAULT_PROJECT_DOC_MAX_BYTES,
+            project_doc_fallback_filenames: Vec::new(),
+        }
+    }
+}
+
+impl InstructionsConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+fn default_project_doc_max_bytes() -> usize {
+    DEFAULT_PROJECT_DOC_MAX_BYTES
 }

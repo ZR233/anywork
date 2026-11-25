@@ -237,7 +237,7 @@ impl StudioRuntime {
             .map_err(control_error)?;
         drop(agent_operation);
         drop(lifecycle_guard);
-        self.residency.touch(&thread_id).await;
+        self.residency.touch(&thread_id);
         Ok(self.continue_response(thread_id, operation))
     }
 

@@ -14,7 +14,7 @@ Studio 的普通桌面根智能体（`root`）、外部机器人根智能体、�
 ### 成员身份、定义快照与后端绑定
 
 会话成员的产品身份与配置按三类事实拆分，各自有唯一 owner（基础身份标识 `SessionId`/`AgentId`/`ThreadId` 定义见 `pl-protocol`，目录与成员描述定义见 `pl-studio-runtime`，目录持久化见 [17.1](./17-studio-storage.md#171-数据布局)）：
-- **成员描述（`AgentDescriptor`）**：`agent_id`、所属 `session_id`、`parent_agent_id`（主成员为 `None`）、默认 `thread_id`、成员定义 ID、显示标题、backend 类别与工作区引用。root/child 表达成员关系，Native/ACP 表达执行方式，两者正交；不得用 `AcpRootThread`、`AcpChildSession` 等交叉类型复制业务逻辑。首版一名成员对应一个默认 Thread。
+- **成员事实**：`agent_id`、所属 `session_id`、`parent_agent_id`（主成员为 `None`）、默认 `thread_id`、成员定义 ID、显示标题、执行后端与工作区引用。成员关系和 Native/ACP 执行方式分别建模，执行逻辑由对应后端复用。首版一名成员对应一个默认 Thread。
 - **定义快照（`AgentDefinitionSnapshot`）**：可复用定义的不可变快照——定义 ID、显示名、描述、用途、来源与修订/内容身份；不混入模型配置与运行状态，也不拥有线程、连接或任务。修改可复用定义只影响后续新实例。
 - **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`）；当前 Profile 的指令正文位于 Native 分支，执行历史继续按既有格式冻结。`AcpAgentConfig` 只引用既有 ACP 账号 ID，不持久化连接修订，也不包含 Native model/effort/system-instruction 占位值。连接修订只用于运行期准入，活动实例冻结实际定义；目录只保存实际后端值及对端会话引用，存储见 [17](./17-studio-storage.md#171-数据布局)。ACP 独立业务会话不自动开放 ACP Profile：混合父子派发须等结果与关闭链完成后进入生产准入，此前仍在资源准备前明确拒绝，不提供空实现或假成功。
 - **当前配置与历史分界**：配置 owner 发布 `AgentProfile { definition, binding, system, enabled, workspace_mode }`；Profile schema 2 把原 Native 路由与指令完整移入 binding，schema 3 移除 ACP 持久连接修订并保留账号引用。当前配置、设置与派发消费者读取这份描述，不把所有后端强制解析成 Native。仅在 Native 实例创建期通过 `freeze_native` 生成原 `AgentProfileSnapshot` 历史载荷；恢复消费保存的冻结值，不跟随当前定义变化。

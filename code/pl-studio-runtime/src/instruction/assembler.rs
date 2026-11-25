@@ -93,15 +93,6 @@ impl InstructionAssembler {
                 }
             }
         }
-        if let Some(constraint) = request.subagent_constraint {
-            snapshot.push_developer(
-                InstructionSource::new(
-                    InstructionSourceKind::SubagentConstraint,
-                    "subagent dispatch constraint",
-                ),
-                constraint,
-            );
-        }
 
         if let Some(config) = config_instructions {
             snapshot.push_user(
@@ -115,27 +106,6 @@ impl InstructionAssembler {
                 config,
                 request.workspace_documents,
             )?;
-        } else if let Some(instructions) = request.workspace_instructions {
-            snapshot.push_user(
-                InstructionSource::new(InstructionSourceKind::WorkspaceFallback, "workspace"),
-                instructions,
-            );
-        }
-        if let (Some(catalog), Some(suggestions)) =
-            (request.skill_catalog, request.skill_suggestions)
-            && let Some(prompt) = pl_tool::skill::build_skill_suggestions_from_catalog(
-                catalog,
-                suggestions.query,
-                suggestions.excluded_names,
-            )
-        {
-            snapshot.push_user(
-                InstructionSource::new(
-                    InstructionSourceKind::SkillSuggestions,
-                    "skill suggestions",
-                ),
-                &prompt,
-            );
         }
 
         Ok(snapshot)

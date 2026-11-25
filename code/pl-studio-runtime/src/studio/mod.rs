@@ -1,13 +1,10 @@
 pub(crate) mod agent_close;
-mod agent_host;
 #[cfg(feature = "benchmarks")]
 #[doc(hidden)]
 pub mod benchmark;
 pub(crate) mod catalog;
-pub(crate) mod conversation_identity;
 pub(crate) mod conversation_store;
 pub(crate) mod delegation;
-pub(crate) mod entity;
 mod ids;
 mod instance;
 pub(crate) mod model_binding;
@@ -24,17 +21,16 @@ mod runtime_lock;
 mod runtime_state;
 pub(crate) mod startup;
 pub(crate) mod storage;
+mod worktree;
 
 pub(crate) mod store;
-mod store_support;
 pub(crate) mod thread;
 pub(crate) mod thread_factory;
 pub(crate) mod thread_projection;
 mod toml_store;
 pub(crate) mod workspace_receipt;
 
-pub use agent_host::worktree_lease::WorkspaceUsageLease;
-pub(crate) use ids::{new_id, unix_seconds};
+pub(crate) use ids::{content_owner_key, new_id, unix_seconds};
 pub use instance::{StudioInstance, StudioInstanceLease};
 pub(crate) use paths::StudioPaths;
 pub use persistence::*;
@@ -43,6 +39,11 @@ pub use product_event_bus::{
 };
 pub use records::{AttachmentRecord, ThreadKind, ThreadRecord, ThreadVisibility, WorkspaceRecord};
 pub use recovery_registry::StudioRecoveryRegistry;
+pub use recovery_registry::{
+    StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
+    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
+};
 pub use runtime::StudioProductTopicSubscription;
 pub use runtime::*;
 pub use runtime_lock::{StudioHostKind, StudioRuntimeOptions, StudioStartupPolicy};
@@ -50,6 +51,7 @@ pub use runtime_state::*;
 pub use startup::{StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery};
 pub(crate) use storage::thread_writer::{HistoryChannel, ThreadStorageBinding};
 pub use store::{StudioDatabaseError, StudioStore};
+pub use worktree::worktree_lease::WorkspaceUsageLease;
 
 pub(crate) use thread_factory::StudioThreadFactory;
 

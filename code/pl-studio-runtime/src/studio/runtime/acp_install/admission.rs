@@ -5,7 +5,7 @@
 //! 监督任务被单独观测：JoinError（panic）会清槽并发布可观察失败，不会让 busy 永久悬挂
 //! （见 design/28 §28.6）。
 
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallSnapshot, AcpInstallStage, AcpInstallState,
@@ -15,6 +15,7 @@ use crate::{
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
+use super::super::acp_ops::{LedgerCheck, LedgerError, RetainedJoin, RetainedTask};
 use super::mapping::{command_error, ensure_operation_id, failure, failure_command_error};
 use super::operation::{self, JOIN_BUDGET, OperationPlan};
 use super::prepare;
@@ -24,9 +25,6 @@ use super::registry::{
 };
 use super::source;
 
-/// 本 runtime 生命周期内保留的命令身份上限（start 与 cancel 共用）。
-pub(super) const MAX_ACCEPTED_COMMANDS: usize = 4096;
-
 /// 安装 owner 本体；`Clone` 只克隆共享句柄，不复制事实。
 #[derive(Clone)]
 pub(crate) struct AcpInstallRuntime {
@@ -34,10 +32,7 @@ pub(crate) struct AcpInstallRuntime {
 }
 
 /// 安装命令的受理结果：canonical 快照与是否改变了领域事实。
-pub(crate) struct AcpInstallAcceptance {
-    pub snapshot: AcpInstallSnapshot,
-    pub changed: bool,
-}
+pub(crate) type AcpInstallAcceptance = super::super::acp_ops::TopicAcceptance<AcpInstallSnapshot>;
 
 impl AcpInstallRuntime {
     pub(crate) fn new(
@@ -77,14 +72,7 @@ impl AcpInstallRuntime {
                 false,
             ));
         }
-        if let Some(recorded) = registry.commands.get(&request.operation_id) {
-            if recorded != &intent {
-                return Err(command_error(
-                    StudioErrorCode::Conflict,
-                    "该 operationId 已绑定另一条 ACP 准备命令",
-                    false,
-                ));
-            }
+        if command_is_replay(&registry.commands, &request.operation_id, &intent)? {
             // 同一意图重试：返回当前 canonical 快照，不再产生任何副作用。
             let snapshot = registry.snapshot();
             drop(registry);
@@ -92,13 +80,6 @@ impl AcpInstallRuntime {
                 snapshot,
                 changed: false,
             });
-        }
-        if registry.commands.len() >= MAX_ACCEPTED_COMMANDS {
-            return Err(command_error(
-                StudioErrorCode::Overloaded,
-                "已受理的 ACP 准备命令身份过多，请重启运行时后重试",
-                true,
-            ));
         }
         // 上一次操作的资源保管尚未收束时不受理新操作：owner 仍持有真实 Operation，准入占用保持，
         // 关闭阶段会用同一份责任再试。这条检查先于普通 Busy，给出与实际原因一致的提示。
@@ -131,7 +112,7 @@ impl AcpInstallRuntime {
             target: target.to_string(),
             generation,
             cancel: CancellationToken::new(),
-            join: std::sync::Mutex::new(None),
+            join: RetainedTask::empty(),
             supervisor_joined: std::sync::atomic::AtomicBool::new(false),
             resources: std::sync::Mutex::new(super::registry::OperationResources::default()),
         });
@@ -144,9 +125,7 @@ impl AcpInstallRuntime {
         };
         slot.operation = Some(Arc::clone(&operation));
         slot.busy = true;
-        registry
-            .commands
-            .insert(request.operation_id.clone(), intent);
+        record_command(&mut registry.commands, request.operation_id.clone(), intent);
         registry.bump();
         let snapshot = registry.snapshot();
         let inner = Arc::clone(&self.inner);
@@ -158,10 +137,7 @@ impl AcpInstallRuntime {
             },
         ));
         // 在持有 registry 锁时记录 join 出口：并发关闭不会看到"有操作但没有句柄"的中间态。
-        *operation
-            .join
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(task);
+        operation.join.install(task);
         drop(registry);
         inner.emit(snapshot.clone());
         Ok(AcpInstallAcceptance {
@@ -181,14 +157,7 @@ impl AcpInstallRuntime {
             target_operation_id: request.target_operation_id.clone(),
         };
         let mut registry = self.inner.lock();
-        if let Some(recorded) = registry.commands.get(&request.operation_id) {
-            if recorded != &intent {
-                return Err(command_error(
-                    StudioErrorCode::Conflict,
-                    "该 operationId 已绑定另一条 ACP 准备命令",
-                    false,
-                ));
-            }
+        if command_is_replay(&registry.commands, &request.operation_id, &intent)? {
             // 同一取消命令重放（含操作已完成）：返回当前 canonical 快照，不产生副作用。
             let snapshot = registry.snapshot();
             drop(registry);
@@ -196,13 +165,6 @@ impl AcpInstallRuntime {
                 snapshot,
                 changed: false,
             });
-        }
-        if registry.commands.len() >= MAX_ACCEPTED_COMMANDS {
-            return Err(command_error(
-                StudioErrorCode::Overloaded,
-                "已受理的 ACP 准备命令身份过多，请重启运行时后重试",
-                true,
-            ));
         }
         let Some(slot) = registry.slots.get(&request.provider) else {
             return Err(no_active_operation());
@@ -264,9 +226,7 @@ impl AcpInstallRuntime {
                 operation_id: request.target_operation_id.clone(),
             };
         }
-        registry
-            .commands
-            .insert(request.operation_id.clone(), intent);
+        record_command(&mut registry.commands, request.operation_id.clone(), intent);
         registry.bump();
         let snapshot = registry.snapshot();
         drop(registry);
@@ -289,10 +249,7 @@ impl AcpInstallRuntime {
             }
             if let Some(existing) = registry.check_tasks.get(&provider)
                 && !existing.cancel.is_cancelled()
-                && existing
-                    .join
-                    .as_ref()
-                    .is_some_and(|join| !join.is_finished())
+                && !existing.join.finished()
                 && (existing.allow_remote || !allow_remote)
             {
                 return;
@@ -321,14 +278,7 @@ impl AcpInstallRuntime {
                 false,
             ));
         }
-        if let Some(recorded) = registry.commands.get(&request.operation_id) {
-            if recorded != &intent {
-                return Err(command_error(
-                    StudioErrorCode::Conflict,
-                    "该 operationId 已绑定另一条 ACP 准备命令",
-                    false,
-                ));
-            }
+        if command_is_replay(&registry.commands, &request.operation_id, &intent)? {
             let snapshot = registry.snapshot();
             drop(registry);
             return Ok(AcpInstallAcceptance {
@@ -336,16 +286,7 @@ impl AcpInstallRuntime {
                 changed: false,
             });
         }
-        if registry.commands.len() >= MAX_ACCEPTED_COMMANDS {
-            return Err(command_error(
-                StudioErrorCode::Overloaded,
-                "已受理的 ACP 准备命令身份过多，请重启运行时后重试",
-                true,
-            ));
-        }
-        registry
-            .commands
-            .insert(request.operation_id.clone(), intent);
+        record_command(&mut registry.commands, request.operation_id.clone(), intent);
 
         let already_checking_remote =
             registry
@@ -354,10 +295,7 @@ impl AcpInstallRuntime {
                 .is_some_and(|existing| {
                     existing.allow_remote
                         && !existing.cancel.is_cancelled()
-                        && existing
-                            .join
-                            .as_ref()
-                            .is_some_and(|join| !join.is_finished())
+                        && !existing.join.finished()
                 });
         if already_checking_remote {
             let snapshot = registry.snapshot();
@@ -414,28 +352,20 @@ impl AcpInstallRuntime {
     /// 取消并等待所有在途操作与版本检查收束；超时保留 join 句柄，绝不伪报已回收。
     pub(crate) async fn cancel_and_join(&self) -> Result<()> {
         self.signal_cancel();
+        let deadline = tokio::time::Instant::now() + JOIN_BUDGET;
         let mut issues: Vec<String> = Vec::new();
-        let check_tasks: Vec<(AcpProvider, u64, tokio::task::JoinHandle<()>)> = {
-            let mut registry = self.inner.lock();
+        let check_tasks: Vec<(AcpProvider, u64, Arc<RetainedTask<()>>)> = {
+            let registry = self.inner.lock();
             registry
                 .check_tasks
-                .iter_mut()
-                .filter_map(|(provider, task)| {
-                    task.join
-                        .take()
-                        .map(|handle| (*provider, task.generation, handle))
-                })
+                .iter()
+                .map(|(provider, task)| (*provider, task.generation, Arc::clone(&task.join)))
                 .collect()
         };
-        for (provider, generation, mut handle) in check_tasks {
-            let deadline = tokio::time::sleep(JOIN_BUDGET);
-            tokio::pin!(deadline);
-            let joined = tokio::select! {
-                result = &mut handle => Some(result),
-                _ = &mut deadline => None,
-            };
-            match joined {
-                Some(Ok(())) => {
+        for (provider, generation, join) in check_tasks {
+            // 超时只丢掉这个 waiter。句柄留在原 CheckTask 里，已观察的 JoinError 不会变成没有句柄。
+            match join.join_until(deadline).await {
+                RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) => {
                     let mut registry = self.inner.lock();
                     if registry
                         .check_tasks
@@ -445,7 +375,7 @@ impl AcpInstallRuntime {
                         registry.check_tasks.remove(&provider);
                     }
                 }
-                Some(Err(_)) => {
+                RetainedJoin::Observed(Err(_)) | RetainedJoin::Settled(Err(_)) => {
                     let mut registry = self.inner.lock();
                     if registry
                         .check_tasks
@@ -459,13 +389,10 @@ impl AcpInstallRuntime {
                         provider.as_str()
                     ));
                 }
-                None => {
-                    let mut registry = self.inner.lock();
-                    if let Some(task) = registry.check_tasks.get_mut(&provider)
-                        && task.generation == generation
-                    {
-                        task.join = Some(handle);
-                    }
+                RetainedJoin::Absent => {
+                    // 从未安装句柄才是 Absent。超时和 JoinError 不会落到这里。
+                }
+                RetainedJoin::TimedOut => {
                     issues.push(format!(
                         "ACP update check task for {} did not finish within the shutdown budget",
                         provider.as_str()
@@ -486,50 +413,18 @@ impl AcpInstallRuntime {
             std::collections::BTreeSet::new();
         for operation in operations {
             let provider = operation.provider;
-            let Some(mut lease) = JoinLease::take(&operation) else {
-                // 句柄不在 owner 手里：只有**确实 joined 过**（由关闭 owner 置位）才算正常结束；
-                // 否则是状态未知，fail-closed 并跳过本轮残留收束，保留责任给下一轮。
-                if operation.supervisor_joined() {
-                    // 句柄已 joined，但该 operation 仍挂在活动 slot 上：说明业务终态/清理责任
-                    // 尚未在这一轮之外被确认（可能是并发关闭正在收尾）。存在资源保管则交给残留
-                    // 阶段；否则如实报非 Clean，绝不因为"joined"就判整个关闭完成。
-                    if self.inner.has_residue(provider) {
-                        continue;
-                    }
-                    skip_residue.insert(provider);
-                    issues.push(format!(
-                        "ACP install supervisor {} is joined but its closure is not confirmed",
-                        operation.operation_id
-                    ));
-                    continue;
-                }
-                skip_residue.insert(provider);
-                issues.push(format!(
-                    "ACP install supervisor {} is neither joined nor confirmed finished",
-                    operation.operation_id
-                ));
-                continue;
-            };
-            let deadline = tokio::time::sleep(JOIN_BUDGET);
-            tokio::pin!(deadline);
-            let joined = tokio::select! {
-                result = &mut lease.handle_mut() => Some(result),
-                _ = &mut deadline => None,
-            };
-            match joined {
-                Some(Ok(())) => {
-                    // 真实 await 到终态：这里才允许发布 joined 事实；随后释放句柄归属。
+            match operation.join.join_until(deadline).await {
+                RetainedJoin::Observed(Ok(())) => {
+                    // 真实 await 到终态：这里才允许发布 joined 事实；槽已在观察后清空。
                     operation.mark_supervisor_joined();
-                    lease.disarm();
                     self.inner.remove_retired(&operation.operation_id);
                 }
-                Some(Err(error)) => {
+                RetainedJoin::Observed(Err(error)) => {
                     // JoinError 是句柄终态，但"业务终态 + 资源收束"都还没确认。这里**不做** cleanup
                     // await：先把清理责任与业务 typed 失败一起登记为残留（同一 owner 提交），随后
                     // 由下面的统一残留阶段收束。这样并发关闭或预算取消都不会看到"joined 但既无
-                    // residue、也无 cleanup"的缝。
+                    // residue、也无 cleanup"的缝。终态已先记住再清槽，不能在清槽前用 `?`。
                     operation.mark_supervisor_joined();
-                    lease.disarm();
                     if self.inner.has_residue(provider) {
                         // 已有资源保管：由残留阶段在当前预算内再试。
                         continue;
@@ -555,8 +450,43 @@ impl AcpInstallRuntime {
                         },
                     );
                 }
-                None => {
-                    // 预算内未收束：租约 drop 把句柄放回 owner；本轮不做该 provider 的残留收束与
+                RetainedJoin::Settled(_) => {
+                    // 上一轮已经观察到终态并清槽。这不是没有句柄，也不能再轮询同一 JoinHandle。
+                    operation.mark_supervisor_joined();
+                    if self.inner.has_residue(provider) {
+                        continue;
+                    }
+                    skip_residue.insert(provider);
+                    issues.push(format!(
+                        "ACP install supervisor {} is joined but its closure is not confirmed",
+                        operation.operation_id
+                    ));
+                }
+                RetainedJoin::Absent => {
+                    // 句柄不在 owner 手里：只有**确实 joined 过**（由关闭 owner 置位）才算正常结束；
+                    // 否则是状态未知，fail-closed 并跳过本轮残留收束，保留责任给下一轮。
+                    if operation.supervisor_joined() {
+                        // 句柄已 joined，但该 operation 仍挂在活动 slot 上：说明业务终态/清理责任
+                        // 尚未在这一轮之外被确认（可能是并发关闭正在收尾）。存在资源保管则交给残留
+                        // 阶段；否则如实报非 Clean，绝不因为"joined"就判整个关闭完成。
+                        if self.inner.has_residue(provider) {
+                            continue;
+                        }
+                        skip_residue.insert(provider);
+                        issues.push(format!(
+                            "ACP install supervisor {} is joined but its closure is not confirmed",
+                            operation.operation_id
+                        ));
+                        continue;
+                    }
+                    skip_residue.insert(provider);
+                    issues.push(format!(
+                        "ACP install supervisor {} is neither joined nor confirmed finished",
+                        operation.operation_id
+                    ));
+                }
+                RetainedJoin::TimedOut => {
+                    // 预算内未收束：句柄仍在 owner 槽里；本轮不做该 provider 的残留收束与
                     // 终态释放，责任留给下一轮。
                     skip_residue.insert(provider);
                     issues.push(format!(
@@ -570,39 +500,35 @@ impl AcpInstallRuntime {
         // 业务终态早已发布，因此这一步只确认 task 收束，不再改业务状态。
         for operation in self.inner.retired_operations() {
             let operation_id = operation.operation_id.clone();
-            let Some(mut lease) = JoinLease::take(&operation) else {
-                if operation.supervisor_joined() {
-                    self.inner.remove_retired(&operation_id);
-                    continue;
-                }
-                issues.push(format!(
-                    "ACP install retired supervisor {operation_id} is neither joined nor confirmed finished"
-                ));
-                continue;
-            };
-            let deadline = tokio::time::sleep(JOIN_BUDGET);
-            tokio::pin!(deadline);
-            let joined = tokio::select! {
-                result = &mut lease.handle_mut() => Some(result),
-                _ = &mut deadline => None,
-            };
-            match joined {
-                Some(Ok(())) => {
+            match operation.join.join_until(deadline).await {
+                RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) => {
                     operation.mark_supervisor_joined();
-                    lease.disarm();
                     self.inner.remove_retired(&operation_id);
                 }
-                Some(Err(_)) => {
+                RetainedJoin::Observed(Err(_)) => {
                     // 终态已发布但 task 异常结束：不吞，如实报告非 Clean。
                     operation.mark_supervisor_joined();
-                    lease.disarm();
                     self.inner.remove_retired(&operation_id);
                     issues.push(format!(
                         "ACP install retired supervisor {operation_id} terminated without a clean join"
                     ));
                 }
-                None => {
-                    // 租约 drop 把句柄放回 owner，登记保留到下一次关闭。
+                RetainedJoin::Settled(Err(_)) => {
+                    // 上一轮已观察并清槽。重试不再把 JoinError 说成没有句柄，也不重复报同一终态。
+                    operation.mark_supervisor_joined();
+                    self.inner.remove_retired(&operation_id);
+                }
+                RetainedJoin::Absent => {
+                    if operation.supervisor_joined() {
+                        self.inner.remove_retired(&operation_id);
+                        continue;
+                    }
+                    issues.push(format!(
+                        "ACP install retired supervisor {operation_id} is neither joined nor confirmed finished"
+                    ));
+                }
+                RetainedJoin::TimedOut => {
+                    // 句柄留在退休登记里，下一次关闭继续等同一个 owner。
                     issues.push(format!(
                         "ACP install retired supervisor {operation_id} did not finish within the shutdown budget"
                     ));
@@ -676,9 +602,9 @@ fn spawn_check_task(
     provider: AcpProvider,
     allow_remote: bool,
 ) -> Option<AcpInstallSnapshot> {
-    let previous = registry.check_tasks.remove(&provider).and_then(|mut old| {
+    let previous = registry.check_tasks.remove(&provider).map(|old| {
         old.cancel.cancel();
-        old.join.take()
+        old.join
     });
     let generation = registry.mint_generation();
     let cancel = CancellationToken::new();
@@ -701,7 +627,7 @@ fn spawn_check_task(
     let task_cancel = cancel.clone();
     let handle = tokio::spawn(async move {
         if let Some(prev) = previous {
-            let _ = prev.await;
+            let _ = prev.join().await;
         }
         if task_cancel.is_cancelled() {
             return;
@@ -727,7 +653,7 @@ fn spawn_check_task(
             generation,
             allow_remote,
             cancel,
-            join: Some(handle),
+            join: Arc::new(RetainedTask::running(handle)),
         },
     );
     snapshot
@@ -792,44 +718,38 @@ async fn cleanup_resources(
     operation::release_staging(inner, operation).await
 }
 
-/// 关闭等待用的 join 租约：`drop` 时把句柄放回 owner，绝不 detach。
-struct JoinLease {
-    operation: Arc<Operation>,
-    handle: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl JoinLease {
-    fn take(operation: &Arc<Operation>) -> Option<Self> {
-        let handle = operation
-            .join
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()?;
-        Some(Self {
-            operation: Arc::clone(operation),
-            handle: Some(handle),
-        })
-    }
-
-    fn handle_mut(&mut self) -> &mut tokio::task::JoinHandle<()> {
-        self.handle
-            .as_mut()
-            .expect("join lease holds a handle until disarm")
-    }
-
-    fn disarm(&mut self) {
-        self.handle = None;
-    }
-}
-
-impl Drop for JoinLease {
-    fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            *self
-                .operation
-                .join
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(handle);
+/// 先核对身份，再核对容量。领域错误仍留在调用方的原位置，重放不占用新容量。
+fn command_is_replay(
+    commands: &super::super::acp_ops::CommandLedger<CommandIntent>,
+    operation_id: &str,
+    intent: &CommandIntent,
+) -> Result<bool> {
+    match commands
+        .check_or_replay(operation_id, intent)
+        .map_err(command_ledger_error)?
+    {
+        LedgerCheck::Replay(_) => Ok(true),
+        LedgerCheck::Fresh => {
+            commands.ensure_capacity().map_err(command_ledger_error)?;
+            Ok(false)
         }
     }
+}
+
+fn record_command(
+    commands: &mut super::super::acp_ops::CommandLedger<CommandIntent>,
+    operation_id: String,
+    intent: CommandIntent,
+) {
+    commands
+        .record(operation_id, intent)
+        .expect("ACP install identity capacity was checked under this lock");
+}
+
+fn command_ledger_error(error: LedgerError) -> anyhow::Error {
+    super::super::acp_ops::ledger_error(
+        error,
+        "该 operationId 已绑定另一条 ACP 准备命令",
+        "已受理的 ACP 准备命令身份过多，请重启运行时后重试",
+    )
 }

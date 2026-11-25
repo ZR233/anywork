@@ -227,13 +227,11 @@ impl SystemCredentialStore {
     fn load_account(&self, scope: &str, id: &str, account: &str) -> Result<Option<String>> {
         match protected_get(&entry_for_account(scope, id, account)?, account) {
             Ok(secret) => Ok(Some(secret)),
-            Err(KeyringError::NoEntry) => Ok(self
-                .fallback_lease
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(account)
-                .cloned()),
-            Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => Ok(self
+            Err(
+                KeyringError::NoEntry
+                | KeyringError::PlatformFailure(_)
+                | KeyringError::NoStorageAccess(_),
+            ) => Ok(self
                 .fallback_lease
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -244,31 +242,10 @@ impl SystemCredentialStore {
     }
 
     fn save_account(&self, scope: &str, id: &str, account: &str, secret: &str) -> Result<()> {
-        self.save_account_with_status(scope, id, account, secret)
-            .map(|_| ())
-    }
-
-    fn save_account_with_status(
-        &self,
-        scope: &str,
-        id: &str,
-        account: &str,
-        secret: &str,
-    ) -> Result<bool> {
         match protected_set(&entry_for_account(scope, id, account)?, account, secret) {
-            Ok(()) => {
-                self.fallback_lease
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(account.to_string(), secret.to_string());
-                Ok(true)
-            }
-            Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => {
-                self.fallback_lease
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(account.to_string(), secret.to_string());
-                Ok(false)
+            Ok(()) | Err(KeyringError::PlatformFailure(_) | KeyringError::NoStorageAccess(_)) => {
+                self.lease_account(account, secret);
+                Ok(())
             }
             Err(error) => Err(credential_error("write", scope, id, error)),
         }
@@ -303,7 +280,9 @@ impl SystemCredentialStore {
     ) -> std::result::Result<BotProtectedRead, BotCredentialIoError> {
         let account = bot_account(bot_id);
         let entry = bot_entry(&account)?;
-        match entry.get_password() {
+        // 与账号凭据共用受保护载荷路径：Windows 上超出 Credential Manager 上限的
+        // 机器人材料经 DPAPI 落盘，keyring 只保留标记；损坏的载荷是 Invalid 而非 Missing。
+        match protected_get(&entry, &account) {
             Ok(secret) => Ok(BotProtectedRead::System(secret)),
             Err(KeyringError::NoEntry) => Ok(BotProtectedRead::Missing),
             Err(error) => Err(classify_bot_keyring(error)),
@@ -317,8 +296,8 @@ impl SystemCredentialStore {
     ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError> {
         let account = bot_account(bot_id);
         let entry = bot_entry(&account)?;
-        match entry.set_password(payload) {
-            Ok(()) => match entry.get_password() {
+        match protected_set(&entry, &account, payload) {
+            Ok(()) => match protected_get(&entry, &account) {
                 Ok(actual) if actual == payload => Ok(BotProtectedPersist::Stored),
                 Ok(_) => Err(BotCredentialIoError {
                     kind: BotCredentialIoKind::Invalid,
@@ -337,7 +316,7 @@ impl SystemCredentialStore {
     fn recycle_bot_payload(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
         let account = bot_account(bot_id);
         let entry = bot_entry(&account)?;
-        match entry.delete_credential() {
+        match protected_delete(&entry, &account) {
             Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
             Err(error) => Err(classify_bot_keyring(error)),
         }

@@ -231,7 +231,7 @@ async fn prepare_inner(paths: &StudioPaths) -> Result<()> {
         // Every raw family copy has completed before this may open or checkpoint SQLite.
         let store = StudioStore::prepare_layout_database(database).await?;
         let relocated = async {
-            crate::studio::agent_host::worktree_lease::migrate_bot_identities(
+            crate::studio::worktree::worktree_lease::migrate_bot_identities(
                 store.database(),
                 &mut journal.bot_roots,
             )
@@ -490,10 +490,13 @@ async fn build(
         }
         if let Some(source) = candidates.first() {
             if name == "studio.sqlite" {
-                for suffix in ["", "-wal", "-shm"] {
-                    let member = sqlite_member(source, suffix);
+                use crate::studio::paths::sqlite_family_paths;
+                for (member, destination) in sqlite_family_paths(source)
+                    .into_iter()
+                    .zip(sqlite_family_paths(&target))
+                {
                     if member.try_exists()? {
-                        copy_tree(paths.home(), &member, &sqlite_member(&target, suffix)).await?;
+                        copy_tree(paths.home(), &member, &destination).await?;
                     }
                 }
             } else {
@@ -789,7 +792,7 @@ async fn merge_resources(
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("non UTF-8 resource identity"))?;
             ensure!(
-                is_hash(&name) && entry.file_type().await?.is_file(),
+                crate::studio::paths::is_sha256_hex(&name) && entry.file_type().await?.is_file(),
                 "invalid v2 reliable resource"
             );
             let reference = store
@@ -814,7 +817,7 @@ async fn merge_resources(
             ensure!(
                 record.thread_id == target.thread_id()
                     && ids.insert(record.id.clone())
-                    && is_hash(&record.content_sha256),
+                    && crate::studio::paths::is_sha256_hex(&record.content_sha256),
                 "invalid attachment identity"
             );
             let stored = Path::new(&record.blob_relative_path);
@@ -855,28 +858,14 @@ fn original_path(paths: &StudioPaths, source: &Path) -> Result<PathBuf> {
     components.next().context("missing backup operation")?;
     Ok(paths.home().join(components.as_path()))
 }
-fn is_hash(name: &str) -> bool {
-    name.len() == 64
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn validate_family(database: &Path) -> Result<()> {
     if !database.try_exists()? {
-        for suffix in ["-wal", "-shm"] {
-            let mut path = database.as_os_str().to_os_string();
-            path.push(suffix);
-            ensure!(!PathBuf::from(path).try_exists()?, "orphan SQLite sidecar");
+        let [_, wal, shm] = crate::studio::paths::sqlite_family_paths(database);
+        for path in [wal, shm] {
+            ensure!(!path.try_exists()?, "orphan SQLite sidecar");
         }
     }
     Ok(())
-}
-
-fn sqlite_member(database: &Path, suffix: &str) -> PathBuf {
-    let mut path = database.as_os_str().to_os_string();
-    path.push(suffix);
-    PathBuf::from(path)
 }
 
 // Frozen original session-project-layout journal. It is consumed, never rewritten in the backup.
@@ -2351,7 +2340,8 @@ mod tests {
 
     async fn bot_workspace_completion(paths: &StudioPaths, thread: &str) -> Result<bool> {
         let store = StudioStore::prepare_database(&paths.database()).await?;
-        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let writer =
+            crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
         let events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
         let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
             crate::config::ConfigPaths::from_config_dir(paths.home()),

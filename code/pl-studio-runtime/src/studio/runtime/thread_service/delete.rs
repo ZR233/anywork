@@ -6,14 +6,15 @@ use pl_tool::workspace::{SessionFiles, SessionTempBackend, path_safety};
 use tracing::Instrument;
 
 use super::super::{DeleteThreadCommandReply, StudioDeleteThreadResult, StudioRuntime};
+use super::threads::{next_project_root, sort_project_roots};
 use crate::studio::{
-    agent_host::worktree_lease::WorkspaceEndpoint,
     store::{
         directory::DirectoryDelta,
         thread_archive::{ArchiveScope, ThreadArchiveOperation},
         thread_delete::{DeleteMember, DeletePhase, ThreadDeleteOperation},
         thread_preparation::{PreparationBinding, PreparationIdentity},
     },
+    worktree::worktree_lease::WorkspaceEndpoint,
 };
 
 impl StudioRuntime {
@@ -125,43 +126,37 @@ impl StudioRuntime {
             operation
         };
         let ids = operation.thread_ids.clone();
-        let _pins = self.residency.pin_many(ids.iter().cloned());
+        let mut pipeline = super::settlement::TreeSettlementPipeline::pin(self, ids.clone());
         if let Some((session, scope)) = &runtime_scope {
-            session.prepare_deletion(&ids);
+            session.prepare_deletion(pipeline.ids());
             scope.cancel_preparations();
         }
-        let _bots = self.bots.quiesce_archive_threads(&ids).await?;
+        pipeline.quiesce(self).await?;
         if operation.phase == DeletePhase::Sealed {
             let (session, scope) = runtime_scope
                 .as_ref()
                 .context("sealed deletion lost its original runtime responsibility")?;
-            for id in &ids {
-                self.title_tasks
-                    .cancel(
-                        id,
-                        super::super::thread_title::ThreadTitleCancellationCause::ThreadArchive,
-                    )
-                    .await;
-            }
-            tokio::time::timeout(
-                self.archive_settle_timeout(),
-                session.drain_archive_preparations(scope),
-            )
-            .await
-            .context("delete preparations did not join")??;
+            pipeline
+                .cancel_titles(
+                    self,
+                    super::super::thread_title::ThreadTitleCancellationCause::ThreadArchive,
+                )
+                .await;
+            pipeline
+                .join_scope(session, scope, "delete preparations did not join")
+                .await?;
             let tree = self.store.read_directory_tree(&root_id).await?;
-            ensure!(
-                tree.iter()
-                    .all(|thread| ids.contains(&thread.agent.thread_id)),
-                "delete scope gained an unfrozen member"
-            );
+            pipeline.ensure_frozen(
+                tree.iter().map(|thread| thread.agent.thread_id.as_str()),
+                "delete scope gained an unfrozen member",
+            )?;
             let archive = self
                 .freeze_thread_removal(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
                 .await?;
-            ensure!(
-                archive.thread_ids().iter().all(|id| ids.contains(id)),
-                "delete preparation escaped its frozen scope"
-            );
+            pipeline.ensure_frozen(
+                archive.thread_ids().iter().map(String::as_str),
+                "delete preparation escaped its frozen scope",
+            )?;
             // A preparation can bind only after the first durable deletion scope. Freeze that
             // original assignment after joining it, before any disposable or permanent removal.
             for member in delete_members(&archive) {
@@ -205,7 +200,7 @@ impl StudioRuntime {
             )
             .await?;
             for id in &ids {
-                self.residency.remove(id).await;
+                self.residency.remove(id);
             }
             // Git owns worktree removal. Dedicated execution and host roots are removed below
             // as a whole; archive temp migration/cleanup would only traverse them twice.
@@ -377,24 +372,16 @@ impl StudioRuntime {
             operation.changed()?;
             self.store.save_thread_delete(&operation).await?;
         }
-        let next_root = {
-            let mut roots = self
-                .store
-                .directory_members_for_project(&workspace_id)?
-                .into_iter()
-                .filter(|member| member.agent.is_root_agent() && !member.session.archived)
-                .map(|member| member.row())
-                .collect::<Vec<_>>();
-            roots.retain(|thread| !ids.contains(&thread.thread_id));
-            roots.sort_by(|left, right| {
-                right
-                    .last_user_message_at
-                    .unwrap_or(right.created_at)
-                    .cmp(&left.last_user_message_at.unwrap_or(left.created_at))
-                    .then_with(|| right.session_id.cmp(&left.session_id))
-            });
-            roots.into_iter().next()
-        };
+        let mut roots = self.active_project_roots(&workspace_id).await?;
+        roots.retain(|row| row.thread_id == root_id || !ids.contains(&row.thread_id));
+        if !roots.iter().any(|row| row.thread_id == root_id)
+            && let Some(root) = root.as_ref().filter(|root| !root.session.archived)
+        {
+            // The durable deletion can remove the anchor before directory publication.
+            roots.push(root.row());
+        }
+        sort_project_roots(&mut roots);
+        let next_root = next_project_root(&roots, &root_id);
         let committed = self
             .agent_facility
             .product_events
@@ -485,7 +472,7 @@ impl StudioRuntime {
         operation: &mut ThreadDeleteOperation,
         index: usize,
         remote_hosts: &mut Vec<(
-            crate::studio::agent_host::worktree_lease::WorkspaceIdentity,
+            crate::studio::worktree::worktree_lease::WorkspaceIdentity,
             pl_tool::remote::SshWorkspaceBinding,
         )>,
     ) -> Result<()> {

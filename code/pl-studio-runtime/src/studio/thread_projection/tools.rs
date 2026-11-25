@@ -10,16 +10,10 @@ use pl_core::thread::{
     ThreadSnapshot, ToolDelivery, ToolOutcome, permissions::PermissionState, task::TaskStatus,
 };
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::studio) fn project_tool_call(
-    thread_id: &str,
     snapshot: &ThreadSnapshot,
-    turn_id: &str,
     call: &pl_core::model::ModelToolCall,
-    ordinal: u64,
-    created_at: i64,
-    revision: u64,
-    updated_at: i64,
+    stamp: crate::ItemStamp<'_>,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let id = call.call_id.as_str();
     let invocation = ThreadToolInvocation::new(
@@ -33,9 +27,7 @@ pub(in crate::studio) fn project_tool_call(
             .as_ref()
             .map(|contract| contract.as_str().to_owned()),
     );
-    project_invocation(
-        thread_id, snapshot, turn_id, invocation, ordinal, created_at, revision, updated_at,
-    )
+    project_invocation(snapshot, invocation, stamp)
 }
 
 pub(super) fn project_saved_tool_call(
@@ -54,14 +46,16 @@ pub(super) fn project_saved_tool_call(
         return Err(ProjectionError::DuplicateCall(id.into()));
     }
     project_invocation(
-        thread_id,
         snapshot,
-        &saved.turn_id,
         invocation,
-        saved.ordinal,
-        saved.created_at,
-        revision,
-        updated_at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Borrowed(thread_id),
+            turn_id: std::borrow::Cow::Borrowed(saved.turn_id.as_str()),
+            ordinal: saved.ordinal,
+            created_at: saved.created_at,
+            revision,
+            updated_at,
+        },
     )
 }
 
@@ -110,12 +104,14 @@ pub(in crate::studio) fn project_repaired_tool_call(
     };
     Ok(vec![ExecutionItem::new(
         saved.id.clone(),
-        saved.thread_id.clone(),
-        saved.turn_id.clone(),
-        saved.ordinal,
-        saved.revision,
-        saved.created_at,
-        updated_at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(saved.thread_id.clone()),
+            turn_id: std::borrow::Cow::Owned(saved.turn_id.clone()),
+            ordinal: saved.ordinal,
+            revision: saved.revision,
+            created_at: saved.created_at,
+            updated_at,
+        },
         ExecutionShape::Tool(
             ThreadToolItem::new(tool.invocation().clone(), state)
                 .with_user_input(tool.user_input().cloned())
@@ -144,17 +140,17 @@ fn supplement_output(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn project_invocation(
-    thread_id: &str,
     snapshot: &ThreadSnapshot,
-    turn_id: &str,
     mut invocation: ThreadToolInvocation,
-    ordinal: u64,
-    created_at: i64,
-    revision: u64,
-    updated_at: i64,
+    stamp: crate::ItemStamp<'_>,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
+    let thread_id = stamp.thread_id.as_ref();
+    let turn_id = stamp.turn_id.as_ref();
+    let ordinal = stamp.ordinal;
+    let created_at = stamp.created_at;
+    let revision = stamp.revision;
+    let updated_at = stamp.updated_at;
     let mut items = Vec::new();
     let id = invocation.tool_call_id().to_owned();
     let task = snapshot
@@ -228,12 +224,14 @@ fn project_invocation(
         activation.activated_at = updated_at;
         items.push(ExecutionItem::new(
             super::order::skill_id(&id),
-            thread_id.into(),
-            turn_id.into(),
-            revision,
-            revision,
-            updated_at,
-            updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Owned(turn_id.into()),
+                ordinal: revision,
+                revision,
+                created_at: updated_at,
+                updated_at,
+            },
             ExecutionShape::Skill(crate::ThreadSkillItem::new(activation)),
         ));
     }
@@ -248,12 +246,14 @@ fn project_invocation(
     );
     items.push(ExecutionItem::new(
         super::order::tool_id(&id),
-        thread_id.into(),
-        turn_id.into(),
-        ordinal,
-        revision,
-        created_at,
-        updated_at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread_id.into()),
+            turn_id: std::borrow::Cow::Owned(turn_id.into()),
+            ordinal,
+            revision,
+            created_at,
+            updated_at,
+        },
         ExecutionShape::Tool(ThreadToolItem::new(invocation, state).with_wait(wait)),
     ));
     Ok(items)
@@ -452,7 +452,18 @@ mod interaction_current_tests {
                 },
             ]
             .into();
-            let items = project_tool_call("thread", &snapshot, "turn", &call, 1, 1, 1, 1)?;
+            let items = project_tool_call(
+                &snapshot,
+                &call,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    created_at: 1,
+                    revision: 1,
+                    updated_at: 1,
+                },
+            )?;
             let tool = items[0].tool().context("projected interaction tool")?;
             assert_eq!(
                 tool.terminal_output().map(|output| output.result()),

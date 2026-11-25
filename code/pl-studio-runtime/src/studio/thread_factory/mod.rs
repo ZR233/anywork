@@ -10,9 +10,11 @@ mod close_child;
 mod errors;
 mod execution_admission;
 mod execution_cleanup;
+mod lsp_binding;
 pub(crate) mod mcp;
 mod mcp_reconnect_tool;
 mod mcp_refresh_tool;
+mod native_assembly;
 pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
@@ -21,11 +23,14 @@ pub(in crate::studio) use worktree_close::removal_definitely_refused as worktree
 
 mod root_resources;
 mod session_files;
+mod ssh_binding;
 mod thread_seed;
 mod thread_tools;
 pub(crate) mod tool_bindings;
 mod workspace_validation;
 pub(crate) use workspace_validation::{ReviewWorkspaceCheck, ReviewWorkspaceError};
+#[cfg(test)]
+mod mode_binding_recovery_tests;
 mod workspace_usage;
 
 use crate::studio::{ProductEventBus, StudioStore};
@@ -42,7 +47,7 @@ pub(crate) struct LspProjectionBinding<'a> {
 #[derive(Clone)]
 pub(in crate::studio) struct StudioThreadServices {
     pub store: StudioStore,
-    pub worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    pub worktrees: crate::studio::worktree::worktree_lease::WorktreeLeaseOwner,
     pub recovery: crate::studio::StudioRecoveryRegistry,
     pub product_events: ProductEventBus,
     pub config_runtime: crate::config::ConfigRuntime,
@@ -52,7 +57,6 @@ pub(in crate::studio) struct StudioThreadServices {
     pub skills: crate::studio::runtime::SkillCatalogRuntime,
     pub thread_modes: crate::mode::ThreadModeManager,
     pub ssh_manager: Arc<pl_tool::remote::SshManager>,
-    pub helper_source: crate::worker_assets::RemoteHelperSource,
     pub bots: crate::bots::BotRuntime,
     pub run_export: Option<Arc<crate::studio::runtime::run_export::RunExportCoordinator>>,
 }
@@ -382,9 +386,9 @@ mod review_archive_tests {
     //! Archive admission while a real factory binding is in flight.
     use crate::studio::{
         StudioStore,
-        agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
         storage_fault_test_support::close_factory,
         store::directory::{DirectoryDelta, ProjectDirectoryRecord},
+        worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     };
     use crate::thread_assembler::{
         SessionRuntime, StudioActivationFactory, StudioThreadSpec, ThreadActivation,
@@ -443,7 +447,7 @@ mod review_archive_tests {
     async fn check_sealed_factory_binding() -> anyhow::Result<()> {
         use crate::{
             agent::worktree::{WorktreeManager, WorktreeOwnership},
-            studio::agent_host::worktree_lease::{
+            studio::worktree::worktree_lease::{
                 WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
             },
         };
@@ -539,7 +543,7 @@ mod review_archive_tests {
         );
         assert_eq!(factory.services.worktrees.get("root"), Some(lease.clone()));
         assert_eq!(
-            crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            crate::studio::worktree::worktree_lease::load_leases(&store).await?,
             vec![lease]
         );
         assert!(owner.thread("root").is_none(), "no owner may be published");

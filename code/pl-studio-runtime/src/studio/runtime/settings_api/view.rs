@@ -11,7 +11,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use pl_model::model::ModelDefinition;
-use pl_model::protocol::{ConnectionMode, WireApi};
+use pl_model::protocol::ConnectionMode;
 
 use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
 use pl_model::config::{AccountCapabilitySelection, AccountModelCatalogConfig};
@@ -52,15 +52,7 @@ pub(crate) fn model_catalog_snapshot(
                     cache_warning: None,
                 },
             };
-            Ok(StudioAccountModelCatalog {
-                account_id: id.to_string(),
-                effective_models: account
-                    .effective_catalog(None)?
-                    .iter()
-                    .map(pl_model::config::model_descriptor)
-                    .collect(),
-                model_catalog: status,
-            })
+            account_model_catalog(id.as_str(), account, status)
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(ModelCatalogSnapshot {
@@ -68,6 +60,30 @@ pub(crate) fn model_catalog_snapshot(
         updated_at: catalog.updated_at,
         accounts,
     })
+}
+
+pub(crate) fn account_model_catalog(
+    account_id: &str,
+    account: &pl_model::config::AccountConfig,
+    model_catalog: crate::StudioModelCatalogStatus,
+) -> Result<StudioAccountModelCatalog> {
+    Ok(StudioAccountModelCatalog {
+        account_id: account_id.to_owned(),
+        effective_models: account
+            .effective_catalog(None)?
+            .iter()
+            .map(pl_model::config::model_descriptor)
+            .collect(),
+        model_catalog,
+    })
+}
+
+pub(crate) fn model_catalog_state(
+    catalog: ModelCatalogSnapshot,
+) -> crate::StudioModelCatalogStateSnapshot {
+    crate::StudioModelCatalogStateSnapshot {
+        state: crate::ObservedResource::ready(catalog.revision, catalog.updated_at, catalog),
+    }
 }
 
 pub(crate) fn settings_state_response(
@@ -183,12 +199,7 @@ fn custom_model_settings(model: &ModelDefinition) -> StudioCustomModelSettings {
         display_name: model.base.display_name.clone(),
         reasoning_efforts: model.supported_efforts(),
         base_instructions: model.base.model_messages.instructions_template.clone(),
-        wire_api: match model.extra.binding.transport.protocol {
-            WireApi::Responses => "responses",
-            WireApi::ChatCompletions => "chat_completions",
-            WireApi::GeminiGenerateContent => "gemini_generate_content",
-        }
-        .to_string(),
+        wire_api: model.extra.binding.transport.protocol.label().into(),
         supported_connection_modes: model
             .extra
             .binding
@@ -196,13 +207,16 @@ fn custom_model_settings(model: &ModelDefinition) -> StudioCustomModelSettings {
             .supported_connection_modes
             .iter()
             .copied()
-            .map(connection_mode_label)
+            .map(ConnectionMode::label)
             .map(str::to_string)
             .collect(),
-        default_connection_mode: connection_mode_label(
-            model.extra.binding.transport.default_connection_mode,
-        )
-        .to_string(),
+        default_connection_mode: model
+            .extra
+            .binding
+            .transport
+            .default_connection_mode
+            .label()
+            .into(),
     }
 }
 
@@ -292,13 +306,6 @@ fn web_search_mode_label(mode: WebSearchMode) -> &'static str {
     }
 }
 
-fn connection_mode_label(mode: ConnectionMode) -> &'static str {
-    match mode {
-        ConnectionMode::WebSocket => "web_socket",
-        ConnectionMode::Http => "http",
-    }
-}
-
 /// Projects only this account; list and usage observations never expand every model.
 pub(crate) fn account_settings(
     state: &ConfigRuntimeSnapshot,
@@ -373,7 +380,7 @@ pub(crate) fn account_settings(
             .iter()
             .map(|(model_id, mode)| StudioModelConnectionSettings {
                 model_id: model_id.clone(),
-                connection_mode: connection_mode_label(*mode).to_string(),
+                connection_mode: mode.label().to_string(),
             })
             .collect(),
         model_auto_compact_limits: account

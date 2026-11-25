@@ -25,8 +25,8 @@ use crate::{
 };
 
 use super::StudioStore;
-use super::agent_host::ThreadWriteBehindWriter;
 use super::ids::unix_seconds;
+use super::storage::write_behind::ThreadWriteBehindWriter;
 pub(in crate::studio) use thread_directory::NativeAgentObservation;
 pub(crate) use thread_directory::ThreadMetadataSignal;
 pub(crate) use topics::ProductTopicSignal;
@@ -137,14 +137,7 @@ impl ProductEventBus {
         let project_entries = store.workspaces().entries();
         let query_projects = project_entries
             .iter()
-            .map(|entry| crate::WorkspaceRecord {
-                id: entry.id.clone(),
-                kind: entry.kind,
-                name: entry.name.clone(),
-                path: entry.path.clone(),
-                ssh_alias: entry.ssh_alias.clone(),
-                updated_at: entry.updated_at,
-            })
+            .map(|entry| entry.project())
             .collect::<Vec<_>>();
         let projects = query_projects
             .iter()

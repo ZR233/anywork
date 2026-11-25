@@ -9,6 +9,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use super::super::acp_ops::{RetainedJoin, RetainedTask};
+
 use super::admission::AcpAccountRuntime;
 use super::mapping::AcpFailure;
 use super::mapping::{prepare_failure, prepare_probe_dir};
@@ -38,7 +40,7 @@ pub(crate) struct AccountConnection {
     // Even after a member closes, the official process can retain its helper image.
     mcp_source: crate::host_mcp_assets::HostMcpSource,
     frontend: tokio::sync::Mutex<Frontend>,
-    join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    join: RetainedTask<()>,
     pub(super) settled: AtomicBool,
     pub(super) supervisor_finished: AtomicBool,
     pub(super) failure: Mutex<Option<AcpFailure>>,
@@ -222,17 +224,28 @@ impl AccountConnection {
 
     /// Borrow the original join; cancelling a waiter never detaches its supervisor.
     pub(super) async fn wait(&self) -> Result<()> {
-        let mut join = self.join.lock().await;
-        let joining = join.is_some();
-        if let Some(task) = join.as_mut() {
-            if let Err(error) = task.await {
-                *self.issue.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Some(error.to_string());
-            }
-            join.take();
+        self.observe_join(self.join.join().await)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) async fn close(&self) -> Result<()> {
+        self.close_until(self.cleanup.deadline()).await
+    }
+
+    /// Cancel and join through one shared deadline. Timeout drops only this waiter.
+    pub(super) async fn close_until(&self, deadline: tokio::time::Instant) -> Result<()> {
+        self.signal_cancel();
+        match self.join.join_until(deadline).await {
+            RetainedJoin::TimedOut => Err(anyhow::anyhow!("ACP account cleanup remains pending")),
+            joined => self.observe_join(joined),
         }
-        drop(join);
-        if joining {
+    }
+
+    fn observe_join(&self, joined: RetainedJoin<()>) -> Result<()> {
+        if let RetainedJoin::Observed(Err(error)) = &joined {
+            *self.issue.lock().unwrap_or_else(PoisonError::into_inner) = Some(error.to_string());
+        }
+        if matches!(joined, RetainedJoin::Observed(_)) {
             self.retirement_wake.notify_one();
         }
         if let Some(issue) = self
@@ -243,14 +256,10 @@ impl AccountConnection {
         {
             anyhow::bail!(issue);
         }
+        if let RetainedJoin::Settled(Err(error)) = joined {
+            anyhow::bail!(error);
+        }
         Ok(())
-    }
-
-    pub(super) async fn close(&self) -> Result<()> {
-        self.signal_cancel();
-        tokio::time::timeout_at(self.cleanup.deadline(), self.wait())
-            .await
-            .map_err(|_| anyhow::anyhow!("ACP account cleanup remains pending"))?
     }
 }
 
@@ -373,7 +382,7 @@ impl AcpAccountRuntime {
                     members: Mutex::new(Vec::new()),
                     mcp_source: inner.mcp_source.clone(),
                     frontend: tokio::sync::Mutex::new(Frontend::default()),
-                    join: tokio::sync::Mutex::new(None),
+                    join: RetainedTask::empty(),
                     settled: AtomicBool::new(false),
                     supervisor_finished: AtomicBool::new(false),
                     failure: Mutex::new(None),
@@ -413,7 +422,7 @@ impl AcpAccountRuntime {
                         std::panic::resume_unwind(panic);
                     }
                 });
-                *connection.join.try_lock().expect("private join") = Some(task);
+                connection.join.install(task);
                 inner.retirement_wake.notify_one();
                 Ok((connection, emit_snapshot))
             })??;
@@ -719,10 +728,10 @@ fn spawn_failure(error: AcpSpawnError) -> AcpFailure {
             stage: AcpAuthStage::Process,
             retryable: false,
         },
-        AcpSpawnError::Startup { step, source } => {
+        AcpSpawnError::Startup { source } => {
             // 原始原因只作内部诊断：日志只记录安全步骤与有界长度，绝不记录或透出任意文本。
             tracing::warn!(
-                step = step.label(),
+                step = "process",
                 source_bytes = source.len(),
                 "ACP 连接启动失败"
             );
@@ -819,7 +828,7 @@ mod tests {
     async fn marker(path: &std::path::Path) {
         tokio::time::timeout(Duration::from_secs(15), async {
             while !path.exists() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -833,7 +842,7 @@ mod tests {
                 {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -1106,9 +1115,9 @@ mod tests {
             members: Mutex::new(Vec::new()),
             mcp_source: crate::HostMcpSource::External,
             frontend: tokio::sync::Mutex::new(Frontend::default()),
-            join: tokio::sync::Mutex::new(Some(tokio::spawn(async move {
+            join: RetainedTask::running(tokio::spawn(async move {
                 let _ = blocked.await;
-            }))),
+            })),
             // Deliberately announce cleanup before task return: only awaiting the original
             // JoinHandle, never these flags alone, is proof that it is safe to deregister.
             settled: AtomicBool::new(true),
@@ -1134,22 +1143,14 @@ mod tests {
             let waiting = account.clone();
             let waiter = tokio::spawn(async move { waiting.wait().await });
             tokio::time::timeout(Duration::from_secs(5), async {
-                while account.join.try_lock().is_ok() {
+                while !account.join.join_wait_in_progress() {
                     tokio::task::yield_now().await;
                 }
             })
             .await?;
             waiter.abort();
             assert!(waiter.await.unwrap_err().is_cancelled());
-            assert!(
-                !account
-                    .join
-                    .lock()
-                    .await
-                    .as_ref()
-                    .expect("original join retained")
-                    .is_finished()
-            );
+            assert_eq!(account.join.running_handle_retained(), Some(true));
             fixture
                 .runtime
                 .acp_accounts
@@ -1164,7 +1165,7 @@ mod tests {
                 .retirement_wake
                 .notify_one();
             tokio::time::timeout(Duration::from_secs(5), async {
-                while account.join.try_lock().is_ok() {
+                while !account.join.join_wait_in_progress() {
                     tokio::task::yield_now().await;
                 }
             })
@@ -1240,9 +1241,8 @@ mod tests {
                 .acp_accounts
                 .inner
                 .retirement_join
-                .lock()
+                .slot_is_empty()
                 .await
-                .is_none()
         );
         Ok(())
     }

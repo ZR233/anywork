@@ -55,29 +55,16 @@ fn migrator() -> Result<&'static Migrator> {
 pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument<CatalogDocument>> {
     let target = current_version()?;
     let value = toml_schema::parse(path, content, ENTITY, target)?;
-    if value.get(SCHEMA_KEY).and_then(toml::Value::as_integer) == Some(6) {
-        let mut legacy = value.clone();
-        legacy.remove(SCHEMA_KEY);
-        let legacy: CatalogV6 = legacy.try_into().map_err(|error| {
-            toml_schema::migration_error(path, ENTITY, Some(6), target, "decode", error)
-        })?;
-        if legacy
-            .agents
-            .iter()
-            .any(|agent| matches!(agent.binding, FrozenAgentBinding::Acp { .. }))
-        {
-            return Err(toml_schema::migration_error(
-                path,
-                ENTITY,
-                Some(6),
-                target,
-                "validate",
-                anyhow::anyhow!(
-                    "legacy ACP member has no real remote session reference; original catalog must be retained"
-                ),
-            ));
-        }
+    let source = toml_schema::integer_header(&value, SCHEMA_KEY);
+    if source == Some(6) {
+        return load_v6_once(path, value, target);
     }
+    if source == Some(target) {
+        let current: CatalogV8 =
+            toml_schema::decode_current_table(path, value, ENTITY, SCHEMA_KEY)?;
+        return finish_loaded(path, current, target, target, false);
+    }
+    let historical = (source == Some(5)).then(|| value.clone());
     let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV8>(
         path,
         value,
@@ -85,16 +72,61 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
         ENTITY,
         SCHEMA_KEY,
     )?;
-    if loaded.source_version == 5 {
-        validate_v5_inheritance(path, content).map_err(|error| {
+    if let Some(historical) = historical {
+        validate_v5_inheritance(&historical).map_err(|error| {
             toml_schema::migration_error(path, ENTITY, Some(5), target, "validate", error)
         })?;
     }
-    let document = CatalogDocument::try_from(loaded.document).map_err(|error| {
+    finish_loaded(
+        path,
+        loaded.document,
+        loaded.source_version,
+        target,
+        loaded.migrated,
+    )
+}
+
+fn load_v6_once(
+    path: &Path,
+    mut value: toml::Table,
+    target: u32,
+) -> Result<LoadedDocument<CatalogDocument>> {
+    value.remove(SCHEMA_KEY);
+    let legacy: CatalogV6 = value.try_into().map_err(|error| {
+        toml_schema::migration_error(path, ENTITY, Some(6), target, "decode", error)
+    })?;
+    if legacy
+        .agents
+        .iter()
+        .any(|agent| matches!(agent.binding, FrozenAgentBinding::Acp { .. }))
+    {
+        return Err(toml_schema::migration_error(
+            path,
+            ENTITY,
+            Some(6),
+            target,
+            "validate",
+            anyhow::anyhow!(
+                "legacy ACP member has no real remote session reference; original catalog must be retained"
+            ),
+        ));
+    }
+    let current = MigratesTo::<CatalogV8>::migrate(MigratesTo::<CatalogV7>::migrate(legacy));
+    finish_loaded(path, current, 6, target, true)
+}
+
+fn finish_loaded(
+    path: &Path,
+    document: CatalogV8,
+    source_version: u32,
+    target: u32,
+    migrated: bool,
+) -> Result<LoadedDocument<CatalogDocument>> {
+    let document = CatalogDocument::try_from(document).map_err(|error| {
         toml_schema::migration_error(
             path,
             ENTITY,
-            Some(loaded.source_version),
+            Some(source_version),
             target,
             "construct",
             error,
@@ -104,7 +136,7 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
         toml_schema::migration_error(
             path,
             ENTITY,
-            Some(loaded.source_version),
+            Some(source_version),
             target,
             "validate",
             error,
@@ -112,15 +144,15 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
     })?;
     Ok(LoadedDocument {
         document,
-        source_version: loaded.source_version,
-        migrated: loaded.migrated,
+        source_version,
+        migrated,
     })
 }
 
 /// V6 drops inherited copies. Old root-only mode changes left legitimate stale child modes;
 /// the root owns the session mode, while the remaining ownership facts must still agree.
-fn validate_v5_inheritance(path: &Path, content: &str) -> Result<()> {
-    let mut value = toml_schema::parse(path, content, ENTITY, 6)?;
+fn validate_v5_inheritance(value: &toml::Table) -> Result<()> {
+    let mut value = value.clone();
     value.remove(SCHEMA_KEY);
     let document: CatalogV5 = value.try_into()?;
     for child in &document.entries {
@@ -278,14 +310,14 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "1.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogDocumentV1 {
+struct CatalogDocumentV1 {
     revision: u64,
     entries: Vec<CatalogEntryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV1 {
+struct CatalogEntryV1 {
     id: String,
     project_id: String,
     title: String,
@@ -306,14 +338,14 @@ pub(super) struct CatalogEntryV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "2.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogDocumentV2 {
+struct CatalogDocumentV2 {
     revision: u64,
     entries: Vec<CatalogEntryV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV2 {
+struct CatalogEntryV2 {
     id: String,
     project_id: String,
     title: String,
@@ -336,14 +368,14 @@ pub(super) struct CatalogEntryV2 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "3.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogDocumentV3 {
+struct CatalogDocumentV3 {
     revision: u64,
     entries: Vec<CatalogEntryV3>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV3 {
+struct CatalogEntryV3 {
     id: String,
     project_id: String,
     title: String,
@@ -370,14 +402,14 @@ pub(super) struct CatalogEntryV3 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "4.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV4 {
+struct CatalogV4 {
     revision: u64,
     entries: Vec<CatalogEntryV4>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV4 {
+struct CatalogEntryV4 {
     explicitly_closed: bool,
     id: String,
     project_id: String,
@@ -405,13 +437,13 @@ pub(super) struct CatalogEntryV4 {
 #[derive(Debug, Serialize, Deserialize, Versioned)]
 #[versioned(version = "5.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV5 {
+struct CatalogV5 {
     revision: u64,
     entries: Vec<CatalogEntryV5>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV5 {
+struct CatalogEntryV5 {
     explicitly_closed: bool,
     id: String,
     workspace_id: String,
@@ -439,7 +471,7 @@ pub(super) struct CatalogEntryV5 {
 /// V6 会话目录事实记录（冻结 wire 形状）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogSessionV6 {
+struct CatalogSessionV6 {
     session_id: String,
     root_agent_id: String,
     workspace_id: String,
@@ -459,7 +491,7 @@ pub(super) struct CatalogSessionV6 {
 /// V6 成员事实记录（冻结 wire 形状）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogAgentV6 {
+struct CatalogAgentV6 {
     agent_id: String,
     session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -479,7 +511,7 @@ pub(super) struct CatalogAgentV6 {
 /// internally-tagged 形状保持一致，但字段固定在迁移边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub(super) enum FrozenAgentBinding {
+enum FrozenAgentBinding {
     Native {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         route: Option<FrozenModelRoute>,
@@ -493,7 +525,7 @@ pub(super) enum FrozenAgentBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "6.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV6 {
+struct CatalogV6 {
     revision: u64,
     sessions: Vec<CatalogSessionV6>,
     agents: Vec<CatalogAgentV6>,
@@ -502,7 +534,7 @@ pub(super) struct CatalogV6 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "7.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV7 {
+struct CatalogV7 {
     revision: u64,
     sessions: Vec<CatalogSessionV7>,
     agents: Vec<CatalogAgentV7>,
@@ -697,7 +729,7 @@ impl MigratesTo<CatalogV7> for CatalogV6 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FrozenModeId(String);
+struct FrozenModeId(String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -737,7 +769,7 @@ enum FrozenDelegationPreference {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct FrozenModelRoute {
+struct FrozenModelRoute {
     account_id: String,
     model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

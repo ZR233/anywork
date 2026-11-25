@@ -173,11 +173,8 @@ pub(super) async fn read_history(
     rows.iter()
         .map(|row| {
             let purpose: Option<String> = row.try_get("", "purpose")?;
-            let requested_service_tier = row
-                .try_get::<Option<String>>("", "requested_service_tier")?
-                .or_else(|| {
-                    (purpose.as_deref() == Some(ACP_TEXT_ESTIMATE)).then(|| "notApplicable".into())
-                });
+            let requested_service_tier =
+                row.try_get::<Option<String>>("", "requested_service_tier")?;
             let optional = |name| -> Result<Option<u64>> {
                 row.try_get::<Option<i64>>("", name)?
                     .map(u64::try_from)

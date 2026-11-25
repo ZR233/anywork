@@ -1,7 +1,7 @@
 //! Thin typed adapter for the official CardKit JSON 2.0 entity API.
 
 use super::error::{FeishuError, FeishuErrorKind};
-use super::http::{FeishuHttp, classify_open_api};
+use super::http::FeishuHttp;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
@@ -47,12 +47,6 @@ struct Markdown<'a> {
 struct CreateBody {
     r#type: &'static str,
     data: String,
-}
-
-#[derive(Deserialize)]
-struct Response<T> {
-    code: i64,
-    data: Option<T>,
 }
 
 #[derive(Deserialize)]
@@ -130,9 +124,9 @@ impl FeishuCardKit {
             r#type: "card_json",
             data: card_json(text, true, "Generating")?,
         };
-        let response: Response<Created> = self
+        let data: Option<Created> = self
             .http
-            .open_typed(
+            .open_envelope(
                 Method::POST,
                 "/open-apis/cardkit/v1/cards",
                 Some(token),
@@ -141,12 +135,7 @@ impl FeishuCardKit {
             )
             .await
             .map_err(card_error)?;
-        if response.code != 0 {
-            return Err(card_error(classify_open_api(response.code, None)));
-        }
-        response
-            .data
-            .map(|data| data.card_id)
+        data.map(|data| data.card_id)
             .filter(|id| !id.trim().is_empty() && id.len() <= 256)
             .ok_or_else(|| {
                 FeishuError::new(
@@ -214,15 +203,10 @@ impl FeishuCardKit {
         token: &str,
         body: &B,
     ) -> Result<(), FeishuError> {
-        let response: Response<serde::de::IgnoredAny> = self
-            .http
-            .open_typed(method, path, Some(token), &[], Some(body))
+        self.http
+            .open_unit(method, path, token, body)
             .await
-            .map_err(card_error)?;
-        if response.code != 0 {
-            return Err(card_error(classify_open_api(response.code, None)));
-        }
-        Ok(())
+            .map_err(card_error)
     }
 
     fn path(&self, card_id: &str, suffix: &[&str]) -> String {

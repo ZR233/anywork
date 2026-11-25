@@ -71,16 +71,9 @@ List<StudioAgentView> _layoutAgents({bool selectedWaiting = false}) => [
     awaitingScheduling: true,
   ),
   _layoutAgent(
-    threadId: 'thread-faulted',
-    task: 'Faulted member keeps the diagnostic discoverable without changing row identity',
-    state: const FaultedStudioAgent(
-      failure: AgentStateError(
-        code: 'failed',
-        message: 'The synthetic member failed',
-        retryable: false,
-      ),
-      diagnosticTurnId: 'faulted-turn',
-    ),
+    threadId: 'thread-closing',
+    task: 'Closing member keeps its row identity during cleanup',
+    state: const ClosingStudioAgent(),
   ),
   _layoutAgent(
     threadId: 'thread-running',
@@ -309,7 +302,7 @@ void main() {
 
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('shows agent state, actions, and diagnostics in the layout', (
+  testWidgets('shows agent states and stop actions in the layout', (
     tester,
   ) async {
     final graph = await _layoutGraph(tester);
@@ -324,13 +317,19 @@ void main() {
     expect(find.text('Executor · Model not recorded'), findsWidgets);
     expect(find.byIcon(Icons.stop_circle_outlined), findsNWidgets(2));
     expect(find.text('Waiting'), findsOneWidget);
-    expect(find.text('Failed'), findsOneWidget);
+    final closingRow = find.byKey(StudioDriverKeys.agentRow('thread-closing'));
+    expect(
+      find.descendant(of: closingRow, matching: find.text('Closing')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.agentStop('thread-closing')),
+      findsNothing,
+    );
     expect(
       find.byTooltip('Stopped, waiting for the main agent to schedule'),
       findsOneWidget,
     );
-    expect(find.byTooltip('The synthetic member failed'), findsOneWidget);
-    expect(find.text('The synthetic member failed'), findsNothing);
     await _closeLayoutGraph(tester, graph);
   }, timeout: const Timeout(Duration(seconds: 30)));
 
@@ -413,13 +412,6 @@ void main() {
       final transitions =
           <({String name, String label, List<StudioAgentView> agents})>[
             (
-              name: 'approval',
-              label: 'Approval',
-              agents: _agentsWithSelectedState(
-                state: const WaitingToolStudioAgent('selected-turn'),
-              ),
-            ),
-            (
               name: 'input',
               label: 'Input',
               agents: _agentsWithSelectedState(
@@ -433,7 +425,7 @@ void main() {
               name: 'cancelling',
               label: 'Stopping',
               agents: _agentsWithSelectedState(
-                state: const CancellingStudioAgent('selected-turn'),
+                state: const RunningStudioAgent('selected-turn'),
                 execution: const AgentExecutionView(
                   id: 'selected-execution',
                   phase: AgentExecutionPhase.stopping,
@@ -456,17 +448,10 @@ void main() {
               agents: _agentsWithSelectedState(state: const IdleStudioAgent()),
             ),
             (
-              name: 'faulted',
-              label: 'Failed',
+              name: 'closing',
+              label: 'Closing',
               agents: _agentsWithSelectedState(
-                state: const FaultedStudioAgent(
-                  failure: AgentStateError(
-                    code: 'selected-failed',
-                    message: 'The selected synthetic member failed',
-                    retryable: false,
-                  ),
-                  diagnosticTurnId: 'selected-turn',
-                ),
+                state: const ClosingStudioAgent(),
               ),
             ),
             (

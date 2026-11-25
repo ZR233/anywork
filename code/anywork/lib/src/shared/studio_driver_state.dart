@@ -1011,11 +1011,6 @@ abstract final class StudioDriverState {
                       NativeStudioAgentActivity(:final state) => state.label,
                       AcpStudioAgentActivity() => null,
                     },
-                    'error': switch (agent.activity) {
-                      NativeStudioAgentActivity(:final state) =>
-                        state.errorMessage,
-                      AcpStudioAgentActivity() => null,
-                    },
                   },
               ],
               'historyAttachments': [

@@ -178,9 +178,6 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     BuildContext context,
     List<StudioAgentView> agents,
   ) {
-    if (agents.any((agent) => _nativeState(agent) is FaultedStudioAgent)) {
-      return context.colors.error;
-    }
     if (agents.any(_hasPendingInteraction)) {
       return context.statusColors.warning;
     }
@@ -194,9 +191,6 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   }
 
   Color _statusColor(BuildContext context, StudioAgentView agent) {
-    if (_nativeState(agent) is FaultedStudioAgent) {
-      return context.colors.error;
-    }
     if (_hasPendingInteraction(agent)) {
       return context.statusColors.warning;
     }
@@ -389,7 +383,6 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       threadId: agent.threadId,
     ).firstOrNull;
     final nativeState = _nativeState(agent);
-    final error = nativeState?.errorMessage;
     final summary = row?.title.trim().isNotEmpty == true
         ? row!.title
         : agent.task.trim().isNotEmpty
@@ -445,8 +438,8 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
         ? context.l10n.agentStopFailed(_stopFailureText(context, stopFailure))
         : unconfirmed
         ? context.l10n.composerBlockerUnknown
-        : stopNote ?? error ?? defaultStatus;
-    final status = stopFailure != null || error != null
+        : stopNote ?? defaultStatus;
+    final status = stopFailure != null
         ? context.l10n.agentListStatusFailed
         : unconfirmed
         ? context.l10n.agentListStatusUnknown
@@ -455,11 +448,8 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
             AgentListStopAction.stoppedWaitingScheduling =>
               context.l10n.agentListStatusWaiting,
             _ => switch (nativeState) {
-              WaitingToolStudioAgent() => context.l10n.agentListStatusApproval,
               WaitingInteractionStudioAgent() =>
                 context.l10n.agentListStatusInput,
-              CancellingStudioAgent() => context.l10n.agentStopping,
-              FaultedStudioAgent() => context.l10n.agentListStatusFailed,
               _ => defaultStatus,
             },
           };
@@ -715,12 +705,8 @@ AgentExecutionView? _nativeExecution(StudioAgentView agent) =>
 
 ThreadStatusView _agentThreadStatus(StudioAgentState state) => switch (state) {
   IdleStudioAgent() => ThreadStatusView.idle,
-  QueuedStudioAgent() => ThreadStatusView.queued,
   RunningStudioAgent() => ThreadStatusView.running,
-  WaitingToolStudioAgent() => ThreadStatusView.waitingTool,
   WaitingInteractionStudioAgent() => ThreadStatusView.waitingInteraction,
-  CancellingStudioAgent() => ThreadStatusView.cancelling,
   ClosingStudioAgent() => ThreadStatusView.closing,
   ClosedStudioAgent() => ThreadStatusView.closed,
-  FaultedStudioAgent() => ThreadStatusView.faulted,
 };

@@ -108,6 +108,51 @@ pub async fn completed_prompt(
     terminal(runtime, id, Some(&format!("input-{prompt}"))).await
 }
 
+pub async fn submit(env: &Environment, id: &str, prompt: &str) -> Result<()> {
+    let turn = submit_turn(env, id, prompt).await?;
+    ensure_completed(prompt, &turn)?;
+    Ok(())
+}
+
+pub async fn completed(env: &Environment, id: &str, prompt: &str) -> Result<()> {
+    let turn = completed_prompt(&env.runtime, id, prompt).await?;
+    ensure_completed(prompt, &turn)?;
+    Ok(())
+}
+
+async fn submit_turn(env: &Environment, id: &str, prompt: &str) -> Result<pl_studio_runtime::Turn> {
+    let revision = env
+        .runtime
+        .thread_snapshot(id)
+        .await?
+        .model_route
+        .context("frozen model route")?
+        .revision;
+    env.runtime
+        .submit_prompt_command(
+            id.to_owned(),
+            pl_studio_runtime::SubmitPromptRequest {
+                input: StudioPromptInput {
+                    input_id: format!("input-{prompt}"),
+                    text: prompt.to_owned(),
+                    attachment_draft_ids: Vec::new(),
+                },
+                expected_model_route_revision: revision,
+            },
+        )
+        .await?;
+    completed_prompt(&env.runtime, id, prompt).await
+}
+
+fn ensure_completed(prompt: &str, turn: &pl_studio_runtime::Turn) -> Result<()> {
+    ensure!(
+        matches!(turn.state, pl_studio_runtime::TurnState::Completed(_)),
+        "{prompt}: unexpected terminal state {:?}",
+        turn.state
+    );
+    Ok(())
+}
+
 pub fn current_demand() -> ReadDemand {
     ReadDemand {
         max_items: 64,

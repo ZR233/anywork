@@ -75,19 +75,7 @@ pub(super) fn gap(gap: sdk::Gap) -> AcpObservationGap {
     }
 }
 pub(super) fn methods(methods: Vec<pl_acp::auth::AuthMethod>) -> Vec<AcpAuthMethod> {
-    methods
-        .into_iter()
-        .map(|method| AcpAuthMethod {
-            id: method.id,
-            name: method.name,
-            description: method.description,
-            kind: match method.kind {
-                pl_acp::auth::AuthMethodKind::Agent => AcpAuthMethodKind::Agent,
-                pl_acp::auth::AuthMethodKind::Terminal => AcpAuthMethodKind::Terminal,
-                pl_acp::auth::AuthMethodKind::Unsupported => AcpAuthMethodKind::Unsupported,
-            },
-        })
-        .collect()
+    super::super::acp_ops::map_auth_methods(methods)
 }
 
 pub(super) fn server_info(info: sdk::schema::Implementation) -> AcpServerInfoSnapshot {
@@ -280,7 +268,6 @@ pub(super) fn close(outcome: super::AcpCloseOutcome) -> AcpBusinessClose {
             .as_ref()
             .and_then(|exit| exit.sdk_error.clone())
             .map(|error| failure(sdk::Error::Rpc(error))),
-        worker_error: outcome.worker_error,
         driver_error: outcome.driver_error,
         unfinished_prompt: exit
             .as_ref()

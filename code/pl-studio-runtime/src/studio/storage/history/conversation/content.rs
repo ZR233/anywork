@@ -2,8 +2,6 @@ use super::*;
 use pl_core::chat::{
     ChatContent, ChatContentKey, ChatContents, ChatError, ContentData, ContentDescriptor,
 };
-#[cfg(test)]
-use pl_core::chat::{ContentManifestPage, ContentManifestRequest};
 use serde::{Deserialize, Serialize};
 
 pub(in crate::studio::storage::history) const CHUNK_BYTES: usize = 64 * 1024;
@@ -41,23 +39,6 @@ pub(in crate::studio::storage::history) fn manifest(bytes: &[u8]) -> Result<Mani
     let manifest: Manifest = serde_json::from_slice(bytes)?;
     integer(manifest.byte_length)?;
     Ok(manifest)
-}
-
-#[cfg(test)]
-pub(in super::super) async fn write_contents(
-    db: &impl ConnectionTrait,
-    id: &str,
-    contents: &ChatContents,
-) -> Result<()> {
-    let owner = ChatKey::new("item", id)?;
-    for (key, content) in contents {
-        ensure!(
-            key.owner == owner && *key == content.descriptor.key && !key.key.is_empty(),
-            "completion content manifest has a foreign or inconsistent owner"
-        );
-        write_content(db, content, true).await?;
-    }
-    Ok(())
 }
 
 pub(in super::super) async fn validate_content(
@@ -113,8 +94,6 @@ pub(in super::super) async fn validate_content(
         for row in rows {
             let start = u64::try_from(row.try_get::<i64>("", "byte_offset")?)?;
             let bytes: Vec<u8> = row.try_get("", "data")?;
-            #[cfg(test)]
-            save_work_tests::materialized(bytes.len());
             ensure!(
                 start == offset && !bytes.is_empty() && bytes.len() <= CHUNK_BYTES,
                 "durable content has a chunk gap, overlap or invalid size"
@@ -187,40 +166,9 @@ async fn write_chunks(
             vec![h.key.owner.as_str().into(), h.key.key.clone().into(), integer(offset)?.into(),
                 bytes.as_bytes().to_vec().into()],
         )).await?;
-        #[cfg(test)]
-        save_work_tests::written(bytes.as_bytes().len());
         offset += bytes.as_bytes().len() as u64;
     }
     Ok(())
-}
-
-/// Decode only the generic key container. Encoding is always delegated to the one product mapper.
-#[cfg(test)]
-pub(in crate::studio::storage::history) fn current_owner(
-    key: &ChatKey,
-) -> Result<Option<crate::ContentOwner>> {
-    let (length, rest) = key
-        .as_str()
-        .split_once(':')
-        .context("invalid content owner key")?;
-    let length: usize = length.parse()?;
-    let (domain, id) = rest
-        .split_at_checked(length)
-        .context("invalid content owner domain")?;
-    if domain != "current" {
-        return Ok(None);
-    }
-    let (domain, id, revision): (String, String, u64) = serde_json::from_str(id)?;
-    let owner = crate::ContentOwner::Current {
-        domain,
-        id,
-        revision,
-    };
-    ensure!(
-        crate::studio::conversation_identity::content_owner_key(&owner)? == *key,
-        "noncanonical current content owner"
-    );
-    Ok(Some(owner))
 }
 
 pub(in crate::studio::storage::history) async fn read_body_bytes(
@@ -343,138 +291,4 @@ pub(in super::super) async fn read_contents(
         );
     }
     Ok(contents)
-}
-
-#[cfg(test)]
-pub(in super::super) async fn list_contents(
-    db: &impl ConnectionTrait,
-    request: &ContentManifestRequest,
-    budget: &dyn ChatBudget,
-) -> Result<ContentManifestPage> {
-    request.demand.validate()?;
-    let owner = ChatKey::new("item", &request.item_id)?;
-    if let Some(after) = &request.after {
-        ensure!(
-            after.owner == owner,
-            "manifest continuation has a foreign owner"
-        );
-    }
-    ensure!(
-        db.query_one_raw(statement(
-            "SELECT 1 FROM conversation_items WHERE item_id=?",
-            vec![request.item_id.clone().into()],
-        ))
-        .await?
-        .is_some(),
-        pl_core::chat::ChatError::NotFound(request.item_id.clone())
-    );
-    let mut sql = String::from(
-        "SELECT content_key,payload FROM conversation_contents WHERE owner_key=?
-            AND json_type(payload,'$.sealed') IS NOT 'false'",
-    );
-    let mut values = vec![owner.as_str().into()];
-    if let Some(after) = &request.after {
-        sql.push_str(" AND content_key>?");
-        values.push(after.key.clone().into());
-    }
-    sql.push_str(" ORDER BY content_key LIMIT ?");
-    values.push(integer(request.demand.max_items)?.into());
-    let rows = db.query_all_raw(statement(&sql, values)).await?;
-    let mut exhausted = rows.len() < request.demand.max_items;
-    let mut bytes = request.demand.max_bytes;
-    let mut entries = Vec::new();
-    for row in rows {
-        let entry = descriptor(
-            owner.as_str(),
-            row.try_get("", "content_key")?,
-            &row.try_get::<Vec<u8>>("", "payload")?,
-        )?;
-        let cost = budget.manifest_bytes(&entry);
-        if cost > bytes {
-            exhausted = false;
-            break;
-        }
-        bytes -= cost;
-        entries.push(entry);
-    }
-    ensure!(
-        exhausted || !entries.is_empty(),
-        pl_core::chat::ChatError::InvalidDemand("manifest entry cannot fit demand".into())
-    );
-    let next = if exhausted {
-        None
-    } else {
-        entries.last().map(|entry| entry.key.clone())
-    };
-    Ok(ContentManifestPage { entries, next })
-}
-
-#[cfg(test)]
-mod save_work_tests {
-    //! Counters at the actual chunk read/write sites. They retain no body material.
-    use super::*;
-    use std::cell::RefCell;
-
-    #[derive(Default, Clone)]
-    struct BodyWork {
-        materialized_old_rows: u64,
-        materialized_old_bytes: u64,
-        written_chunk_rows: u64,
-        written_chunk_bytes: u64,
-    }
-    thread_local! {
-        static WORK: RefCell<Option<BodyWork>> = const { RefCell::new(None) };
-    }
-    pub(super) fn materialized(bytes: usize) {
-        WORK.with_borrow_mut(|work| {
-            if let Some(work) = work {
-                work.materialized_old_rows += 1;
-                work.materialized_old_bytes += bytes as u64;
-            }
-        });
-    }
-    pub(super) fn written(bytes: usize) {
-        WORK.with_borrow_mut(|work| {
-            if let Some(work) = work {
-                work.written_chunk_rows += 1;
-                work.written_chunk_bytes += bytes as u64;
-            }
-        });
-    }
-
-    #[tokio::test]
-    async fn complete_body_is_written_once_and_replay_verifies_every_byte() -> Result<()> {
-        let (_dir, db) = super::super::tests::fixture().await?;
-        let bytes: Arc<[u8]> = Arc::from(vec![b'x'; CHUNK_BYTES * 2 + 37]);
-        let content = ChatContent {
-            descriptor: ContentDescriptor {
-                key: ChatContentKey {
-                    owner: ChatKey::new("item", "whole")?,
-                    key: "body".into(),
-                },
-                byte_length: bytes.len() as u64,
-                generation: 1,
-                media_type: Some("text/plain".into()),
-            },
-            data: ContentData::Bytes(bytes.clone()),
-        };
-        WORK.set(Some(BodyWork::default()));
-        write_content(&db, &content, true).await?;
-        let initial = WORK.take().unwrap();
-        assert_eq!(initial.written_chunk_bytes, bytes.len() as u64);
-        assert_eq!(initial.written_chunk_rows, 3);
-        assert_eq!(initial.materialized_old_bytes, 0);
-        WORK.set(Some(BodyWork::default()));
-        write_content(&db, &content, true).await?;
-        let replay = WORK.take().unwrap();
-        assert_eq!(replay.written_chunk_bytes, 0);
-        assert_eq!(replay.materialized_old_rows, 3);
-        assert_eq!(replay.materialized_old_bytes, bytes.len() as u64);
-        db.execute_raw(statement(
-        "UPDATE conversation_content_chunks SET data=? WHERE owner_key=? AND content_key='body' AND byte_offset=0",
-        vec![vec![b'y'; CHUNK_BYTES].into(), content.descriptor.key.owner.as_str().into()],
-    )).await?;
-        assert!(write_content(&db, &content, true).await.is_err());
-        Ok(())
-    }
 }

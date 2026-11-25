@@ -3,7 +3,9 @@
 use crate::{ExecutionItem, ExecutionShape};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{ThreadRawItem, ThreadTurnItem};
+use crate::{
+    ThreadContentLifecycle, ThreadRawItem, ThreadTextChannel, ThreadTextItem, ThreadTurnItem,
+};
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch, ThreadSnapshot, input::InputChange};
 
 use super::{ProjectionError, order};
@@ -147,16 +149,12 @@ pub(in crate::studio) fn project_effect_items(
                 .unwrap_or_default();
             let payload = &record.message.payload;
             let state = if payload.format() == "text/plain" && payload.version() == 1 {
-                ExecutionItem::completed_parent_agent_message(
-                    id.clone(),
-                    thread.id.clone(),
-                    turn_id.clone(),
+                ExecutionShape::Text(ThreadTextItem::new(
+                    ThreadTextChannel::ParentAgent,
                     payload.content().into(),
                     Vec::new(),
-                    created_at,
-                )
-                .state()
-                .clone()
+                    ThreadContentLifecycle::completed(created_at),
+                ))
             } else {
                 ExecutionShape::Raw(ThreadRawItem::stored(
                     vec![super::raw_payload(payload)],
@@ -166,12 +164,14 @@ pub(in crate::studio) fn project_effect_items(
             };
             items.push(ExecutionItem::new(
                 id,
-                thread.id.clone(),
-                turn_id,
-                ordinal,
-                effect.sequence,
-                created_at,
-                effect.committed_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(turn_id),
+                    ordinal,
+                    revision: effect.sequence,
+                    created_at,
+                    updated_at: effect.committed_at,
+                },
                 state,
             ));
         }
@@ -201,13 +201,15 @@ pub(in crate::studio) fn project_effect_items(
             |id| existing.contains_key(id) || reserved.contains_key(id),
         );
         let mut projected = super::responses::project_attempt(
-            &thread.id,
             state,
-            current,
-            ordinal,
-            created_at,
-            effect.sequence,
-            effect.committed_at,
+            super::responses::AttemptStamp {
+                thread_id: thread.id.as_str(),
+                attempt: current,
+                ordinal,
+                created_at,
+                revision: effect.sequence,
+                updated_at: effect.committed_at,
+            },
             &finalize,
         )?;
         super::responses::finalize_missing_presentation(
@@ -334,14 +336,16 @@ pub(in crate::studio) fn project_effect_items(
             (
                 turn_id,
                 super::tools::project_tool_call(
-                    &thread.id,
                     state,
-                    turn_id,
                     call,
-                    ordinal,
-                    created_at,
-                    effect.sequence,
-                    effect.committed_at,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Borrowed(thread.id.as_str()),
+                        turn_id: std::borrow::Cow::Borrowed(turn_id),
+                        ordinal,
+                        created_at,
+                        revision: effect.sequence,
+                        updated_at: effect.committed_at,
+                    },
                 )?,
             )
         } else if let Some(saved) = existing.get(&tool_id).filter(|item| item.tool().is_some()) {
@@ -427,12 +431,14 @@ pub(in crate::studio) fn project_effect_items(
             let (ordinal, created_at) = stamp(existing, reserved, &item_id, effect.committed_at);
             items.push(ExecutionItem::new(
                 item_id,
-                thread.id.clone(),
-                String::new(),
-                ordinal,
-                effect.sequence,
-                created_at,
-                effect.committed_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                    turn_id: std::borrow::Cow::Owned(String::new()),
+                    ordinal,
+                    revision: effect.sequence,
+                    created_at,
+                    updated_at: effect.committed_at,
+                },
                 ExecutionShape::ContextCompaction(crate::ThreadContextCompactionItem::new(
                     None,
                     None,
@@ -474,12 +480,14 @@ pub(in crate::studio) fn project_effect_items(
         )?;
         items.push(ExecutionItem::new(
             id,
-            thread.id.clone(),
-            turn.id.clone(),
-            ordinal,
-            turn.revision,
-            created_at,
-            turn.updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+                turn_id: std::borrow::Cow::Owned(turn.id.clone()),
+                ordinal,
+                revision: turn.revision,
+                created_at,
+                updated_at: turn.updated_at,
+            },
             ExecutionShape::Turn(ThreadTurnItem::new(turn.state).with_input_id(turn.input_id)),
         ));
     }

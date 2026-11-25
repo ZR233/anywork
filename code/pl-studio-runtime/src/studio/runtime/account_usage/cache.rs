@@ -362,6 +362,37 @@ mod tests {
                 "expected the typed payload error, got: {error:#}"
             );
         }
+        let (id, account, revision) = environment();
+        let accounts = BTreeMap::from([(id.clone(), account.clone())]);
+        let duplicate = AccountUsageSettingPayload {
+            revision: 1,
+            updated_at: 2,
+            accounts: vec![
+                AccountUsageSettingBinding {
+                    query_identity: query_identity(&id, &account),
+                    observation: observation(id.as_str(), AccountUsagePhase::Succeeded),
+                },
+                AccountUsageSettingBinding {
+                    query_identity: query_identity(&id, &account),
+                    observation: observation(id.as_str(), AccountUsagePhase::Succeeded),
+                },
+            ],
+            legacy_unbound: None,
+        };
+        let error = match load(
+            &serde_json::to_string(&duplicate).unwrap(),
+            &accounts,
+            |probe| (probe.as_str() == id.as_str()).then_some(revision),
+        ) {
+            Ok(_) => panic!("duplicate account identity must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error.chain().any(|cause| cause
+                .to_string()
+                .contains("duplicate account usage cache identity")),
+            "{error:#}"
+        );
     }
 
     #[test]

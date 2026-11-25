@@ -67,67 +67,6 @@ pub(super) async fn replace(
             }
             return Ok(false);
         }
-    } else if identity.is_some() {
-        #[cfg(feature = "benchmarks")]
-        if let Some(observation) = observation {
-            observation.increment(observation::Metric::SummaryRevisionSql);
-        }
-        // schema7 retained the absolute rows but not a hash. Compare those real facts at
-        // this one migration boundary; do not silently accept a conflicting equal revision.
-        let rows = tx
-            .query_all_raw(statement(
-                "SELECT * FROM call_usage_summary WHERE thread_id=?",
-                vec![projection.thread_id.clone().into()],
-            ))
-            .await?;
-        let current = rows
-            .iter()
-            .map(|row| row.try_get::<i64>("", "revision"))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .into_iter()
-            .max();
-        if let Some(current) = current
-            && revision <= current
-        {
-            if revision == current {
-                let mut stored = std::collections::BTreeMap::new();
-                for row in rows {
-                    ensure!(
-                        row.try_get::<String>("", "root_thread_id")? == projection.root_thread_id
-                            && row.try_get::<i64>("", "has_unpriced_usage")?
-                                == i64::from(projection.has_unpriced_usage),
-                        "conflicting call summary revision"
-                    );
-                    stored.insert(
-                        (
-                            row.try_get::<String>("", "purpose")?,
-                            row.try_get::<String>("", "cost_currency")?,
-                        ),
-                        row.try_get::<f64>("", "amount")?,
-                    );
-                }
-                let mut expected = std::collections::BTreeMap::new();
-                if projection.purpose_costs.is_empty() {
-                    expected.insert((String::new(), String::new()), 0.0);
-                }
-                for purpose in &projection.purpose_costs {
-                    let key = purpose.purpose.clone().unwrap_or_default();
-                    if purpose.estimated_costs.is_empty() {
-                        expected.insert((key, String::new()), 0.0);
-                    } else {
-                        for cost in &purpose.estimated_costs {
-                            expected.insert((key.clone(), cost.currency.clone()), cost.amount);
-                        }
-                    }
-                }
-                ensure!(stored == expected, "conflicting call summary revision");
-            }
-            #[cfg(feature = "benchmarks")]
-            if let Some(observation) = observation {
-                observation.increment(observation::Metric::SummarySkipped);
-            }
-            return Ok(false);
-        }
     }
     #[cfg(feature = "benchmarks")]
     if let Some(observation) = observation {

@@ -53,12 +53,14 @@ pub(in crate::studio) fn accepted_input_draft(
     };
     let item = ExecutionItem::new(
         record.input.id.clone(),
-        thread.id.clone(),
-        String::new(),
-        record.ordinal,
-        record.accepted_sequence,
-        timestamp,
-        timestamp,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+            turn_id: std::borrow::Cow::Owned(String::new()),
+            ordinal: record.ordinal,
+            revision: record.accepted_sequence,
+            created_at: timestamp,
+            updated_at: timestamp,
+        },
         state,
     );
     freeze_accepted(
@@ -113,12 +115,14 @@ pub(in crate::studio) fn accepted_inbox_draft(
     };
     let item = ExecutionItem::new(
         id,
-        thread.id.clone(),
-        String::new(),
-        record.sequence,
-        accepted_at.effect_seq,
-        timestamp,
-        timestamp,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread.id.clone()),
+            turn_id: std::borrow::Cow::Owned(String::new()),
+            ordinal: record.sequence,
+            revision: accepted_at.effect_seq,
+            created_at: timestamp,
+            updated_at: timestamp,
+        },
         state,
     );
     freeze_accepted(
@@ -168,15 +172,6 @@ fn freeze_accepted(
     timestamp: i64,
     database_id: &str,
 ) -> Result<ChatDraft, ProjectionError> {
-    if item.thread_id.is_empty()
-        || database_id.is_empty()
-        || accepted_at.effect_seq == 0
-        || accepted_at.effect_seq > i64::MAX as u64
-    {
-        return Err(ProjectionError::History(
-            "accepted content has no reliable admission".into(),
-        ));
-    }
     let mut descriptor = serde_json::to_value(
         descriptor::item_descriptor(item)
             .map_err(|error| ProjectionError::History(error.to_string()))?,
@@ -276,7 +271,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let content = &first.contents[&ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+            owner: crate::studio::content_owner_key(&ContentOwner::Item {
                 item_id: first.item_id.clone(),
             })?,
             key,
@@ -346,7 +341,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let content = &draft.contents[&ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+            owner: crate::studio::content_owner_key(&ContentOwner::Item {
                 item_id: draft.item_id.clone(),
             })?,
             key,

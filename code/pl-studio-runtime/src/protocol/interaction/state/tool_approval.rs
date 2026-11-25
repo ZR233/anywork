@@ -5,8 +5,7 @@ use super::super::{
     ToolApprovalResolutionPayload,
 };
 use super::{
-    CancelInteraction, CancelledInteractionState, ExpireInteraction, ExpiredInteractionState,
-    PendingInteractionState,
+    CancelInteraction, CancelledInteractionState, ExpiredInteractionState, PendingInteractionState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,9 +92,6 @@ impl ToolApprovalState {
                     value.reason,
                 )))
             }
-            (Self::Pending(_), ToolApprovalCommand::Expire(value)) => Ok(Self::Expired(
-                ExpiredInteractionState::new(value.operation_id, value.expired_at),
-            )),
             (Self::Resolved(current), ToolApprovalCommand::Resolve(value))
                 if current.matches(&value) =>
             {
@@ -159,14 +155,12 @@ pub struct ResolveToolApproval {
 pub(crate) enum ToolApprovalCommand {
     Resolve(ResolveToolApproval),
     Cancel(CancelInteraction),
-    Expire(ExpireInteraction),
 }
 impl ToolApprovalCommand {
     fn name(&self) -> &'static str {
         match self {
             Self::Resolve(_) => "resolveToolApproval",
             Self::Cancel(_) => "cancel",
-            Self::Expire(_) => "expire",
         }
     }
 }

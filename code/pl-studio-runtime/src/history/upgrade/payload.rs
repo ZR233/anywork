@@ -736,7 +736,7 @@ async fn content_reader(
         .body(match reference.target.clone() {
             ContentTarget::ItemPayload { item_id } => V24Body::Payload { item_id },
             ContentTarget::Body { owner, key } => {
-                let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)
+                let owner_key = crate::studio::content_owner_key(&owner)
                     .map_err(|error| HistoryError::Storage(error.into()))?;
                 V24Body::Content {
                     owner_key: owner_key.as_str().to_owned(),
@@ -754,7 +754,7 @@ async fn content_media_type(
     let ContentTarget::Body { owner, key } = target else {
         return Ok(None);
     };
-    let owner_key = crate::studio::conversation_identity::content_owner_key(owner)
+    let owner_key = crate::studio::content_owner_key(owner)
         .map_err(|error| HistoryError::Storage(error.into()))?;
     let row = source
         .query_one(

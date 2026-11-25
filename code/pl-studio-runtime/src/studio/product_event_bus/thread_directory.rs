@@ -28,6 +28,7 @@ use crate::{
 };
 
 use super::ProductEventBus;
+use super::topics::{TopicLease, TopicMap};
 
 const THREAD_DIRECTORY_RESOURCE_KEY: &str = "thread-directory";
 
@@ -80,7 +81,7 @@ pub(super) struct ThreadDirectoryIndex {
     explicitly_closed: HashSet<String>,
     deleted: HashSet<String>,
     deleted_sessions: HashSet<String>,
-    metadata_signals: HashMap<String, watch::Sender<()>>,
+    metadata_signals: TopicMap<watch::Sender<()>, String>,
     /// Only Native runtime facts. Membership and common metadata remain in `sessions`.
     native_activity: HashMap<String, NativeAgentProjection>,
     observation_generation: u64,
@@ -119,7 +120,7 @@ fn cold_native_activity(agent: &AgentDirectoryRecord) -> StudioAgentActivity {
 pub(crate) struct ThreadMetadataSignal {
     receiver: Option<watch::Receiver<()>>,
     index: Weak<Mutex<ThreadDirectoryIndex>>,
-    thread_id: String,
+    registration: TopicLease<String>,
 }
 
 impl ThreadMetadataSignal {
@@ -134,13 +135,7 @@ impl Drop for ThreadMetadataSignal {
         self.receiver.take();
         if let Some(index) = self.index.upgrade() {
             let mut index = index.lock().expect("thread index lock poisoned");
-            if index
-                .metadata_signals
-                .get(&self.thread_id)
-                .is_some_and(|sender| sender.receiver_count() == 0)
-            {
-                index.metadata_signals.remove(&self.thread_id);
-            }
+            index.metadata_signals.reclaim(&self.registration);
         }
     }
 }
@@ -158,7 +153,7 @@ impl ThreadDirectoryIndex {
             explicitly_closed: HashSet::new(),
             deleted: HashSet::new(),
             deleted_sessions: HashSet::new(),
-            metadata_signals: HashMap::new(),
+            metadata_signals: TopicMap::default(),
             native_activity: HashMap::new(),
             observation_generation: 0,
         };
@@ -192,7 +187,7 @@ impl ThreadDirectoryIndex {
         let mut changed_members = Vec::new();
         if let Some(previous) = self.sessions.get_mut(&session.session_id) {
             for agent in previous.agents.values() {
-                if self.metadata_signals.contains_key(&agent.thread_id)
+                if self.metadata_signals.contains(&agent.thread_id)
                     && row_projection(&previous.session, agent) != row_projection(&session, agent)
                 {
                     changed_members.push(agent.thread_id.clone());
@@ -211,7 +206,7 @@ impl ThreadDirectoryIndex {
         }
         self.order.insert(key);
         for id in changed_members {
-            self.metadata_signals[&id].send_replace(());
+            self.metadata_signals.wake(&id);
         }
     }
 
@@ -234,7 +229,7 @@ impl ThreadDirectoryIndex {
             self.native_activity.remove(&agent.agent_id);
         }
         let entry = self.sessions.get_mut(&agent.session_id)?;
-        let changed = self.metadata_signals.contains_key(&agent.thread_id)
+        let changed = self.metadata_signals.contains(&agent.thread_id)
             && entry
                 .agent_by_thread(&agent.thread_id)
                 .map(|previous| row_projection(&entry.session, previous))
@@ -242,7 +237,7 @@ impl ThreadDirectoryIndex {
         let thread_id = agent.thread_id.clone();
         entry.insert_agent(agent);
         if changed {
-            self.metadata_signals[&thread_id].send_replace(());
+            self.metadata_signals.wake(&thread_id);
         }
         Some(())
     }
@@ -255,9 +250,7 @@ impl ThreadDirectoryIndex {
             && let Some(agent) = entry.agents.remove(agent_id)
         {
             entry.agents_by_thread.remove(&agent.thread_id);
-            if let Some(signal) = self.metadata_signals.get(&agent.thread_id) {
-                signal.send_replace(());
-            }
+            self.metadata_signals.wake(&agent.thread_id);
         }
         self.explicitly_closed.remove(agent_id);
         self.native_activity.remove(agent_id);
@@ -272,9 +265,7 @@ impl ThreadDirectoryIndex {
                         agent.session_id.clone(),
                     ));
                     for member in entry.agents.values() {
-                        if let Some(signal) = self.metadata_signals.get(&member.thread_id) {
-                            signal.send_replace(());
-                        }
+                        self.metadata_signals.wake(&member.thread_id);
                         self.explicitly_closed.remove(&member.agent_id);
                         self.native_activity.remove(&member.agent_id);
                         self.deleted.insert(member.thread_id.clone());
@@ -795,28 +786,31 @@ impl ProductEventBus {
             .thread_index
             .lock()
             .expect("thread index lock poisoned");
-        let receiver = index
-            .metadata_signals
-            .entry(thread_id.to_owned())
-            .or_insert_with(|| watch::channel(()).0)
-            .subscribe();
+        let (receiver, registration) = index.metadata_signals.subscribe(thread_id.to_owned());
         ThreadMetadataSignal {
             receiver: Some(receiver),
             index: Arc::downgrade(&self.thread_index),
-            thread_id: thread_id.to_owned(),
+            registration,
         }
+    }
+
+    /// Publishes one metadata wake. Idle registrations are reclaimed here, matching topic notify.
+    #[cfg(test)]
+    pub(crate) fn notify_thread_metadata_for_test(&self, thread_id: &str) {
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        index.metadata_signals.wake(thread_id);
     }
 
     #[cfg(test)]
     pub(crate) fn metadata_signal_count(&self) -> usize {
-        self.thread_index.lock().unwrap().metadata_signals.len()
-    }
-
-    pub(in crate::studio) async fn record_attachments(
-        &self,
-        records: Vec<crate::studio::AttachmentRecord>,
-    ) -> Result<()> {
-        self.store.record_attachments(records).await
+        self.thread_index
+            .lock()
+            .expect("thread index lock poisoned")
+            .metadata_signals
+            .len()
     }
 
     pub async fn read_thread_directory(&self) -> Result<StudioThreadDirectoryState> {
@@ -996,7 +990,8 @@ impl ProductEventBus {
     }
 
     /// 应用一次目录增量并发布 `ThreadDirectoryChanged` 事件（纯内存维护）。
-    pub async fn apply_thread_delta(
+    #[cfg(test)]
+    pub(crate) async fn apply_thread_delta(
         &self,
         upserted: Vec<SessionDirectoryRow>,
         removed: Vec<String>,
@@ -1004,6 +999,7 @@ impl ProductEventBus {
         Ok(self.publish_thread_delta(upserted, removed, Vec::new()))
     }
 
+    #[cfg(test)]
     fn publish_thread_delta(
         &self,
         upserted: Vec<SessionDirectoryRow>,
@@ -1017,6 +1013,7 @@ impl ProductEventBus {
         self.publish_thread_delta_locked(&mut index, upserted, removed, archived)
     }
 
+    #[cfg(test)]
     fn publish_thread_delta_locked(
         &self,
         index: &mut ThreadDirectoryIndex,
@@ -1056,6 +1053,7 @@ impl ProductEventBus {
     }
 
     /// 把行投影拆回会话/成员事实写入索引。
+    #[cfg(test)]
     fn index_insert_row(index: &mut ThreadDirectoryIndex, row: SessionDirectoryRow) {
         if index.deleted.contains(&row.thread_id)
             || index.deleted_sessions.contains(&row.session_id)
@@ -1129,6 +1127,7 @@ impl ProductEventBus {
         index.insert_agent(agent);
     }
 
+    #[cfg(test)]
     fn apply_explicit_close_row(index: &ThreadDirectoryIndex, row: &mut SessionDirectoryRow) {
         if index.explicitly_closed.contains(&row.agent_id)
             && let crate::AgentBackend::Native { status, .. } = &mut row.backend
@@ -1600,9 +1599,13 @@ impl ProductEventBus {
                 ..Default::default()
             });
             let ticket = self.writer.admitted_ticket();
+            let before_agents = index.agent_directory_entries();
+            Self::apply_explicit_close_agent(&index, &mut agent);
             let row = row_projection(&session, &agent);
-            let event =
-                self.publish_thread_delta_locked(&mut index, vec![row], Vec::new(), Vec::new());
+            index.insert_session(session);
+            index.insert_agent(agent);
+            self.publish_agent_directory_locked(&index, before_agents);
+            let event = self.emit_thread_delta_locked(&index, vec![row], Vec::new());
             (ticket, event)
         };
         self.writer.flush_through(ticket).await?;
@@ -1702,14 +1705,7 @@ impl ProductEventBus {
         let project_upserts = delta
             .project_upserts
             .iter()
-            .map(|project| crate::WorkspaceRecord {
-                id: project.id.clone(),
-                kind: project.kind,
-                name: project.name.clone(),
-                path: project.path.clone(),
-                ssh_alias: project.ssh_alias.clone(),
-                updated_at: project.updated_at,
-            })
+            .map(crate::WorkspaceRecord::from)
             .collect::<Vec<_>>();
         let project_changed = !project_upserts.is_empty() || !delta.project_removals.is_empty();
         let mut envelope = {
@@ -2026,8 +2022,8 @@ impl ThreadDirectoryIndex {
 pub(super) mod tests {
     use super::*;
     use crate::studio::StudioStore;
-    use crate::studio::agent_host::ThreadWriteBehindWriter;
     use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord, row_projection};
+    use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
     use crate::studio::store::directory::ProjectDirectoryRecord;
     use std::sync::Mutex;
     use tokio::sync::oneshot;
@@ -2178,14 +2174,7 @@ pub(super) mod tests {
     }
 
     pub(super) fn workspace(project: &ProjectDirectoryRecord) -> crate::WorkspaceRecord {
-        crate::WorkspaceRecord {
-            id: project.id.clone(),
-            kind: project.kind,
-            name: project.name.clone(),
-            path: project.path.clone(),
-            ssh_alias: project.ssh_alias.clone(),
-            updated_at: project.updated_at,
-        }
+        crate::WorkspaceRecord::from(project)
     }
 
     pub(super) fn query(
@@ -3232,25 +3221,6 @@ pub(super) mod tests {
             events.writer.shutdown().await?;
             Ok(())
         }
-
-        #[tokio::test]
-        async fn legacy_page_matches_the_owner_snapshot_without_concurrency() -> Result<()> {
-            let rows = vec![row("newer", "p1", 20), row("older", "p1", 10)];
-            let (_temp, events) =
-                fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
-
-            let owner = events.read_thread_directory().await?;
-            let page = events.read_thread_directory_page(None, 10).await?;
-            assert_eq!(page.state.revision(), owner.state.revision());
-            assert_eq!(page.state.updated_at(), owner.state.updated_at());
-            assert_eq!(
-                page.state.value().unwrap().rows,
-                owner.state.value().unwrap().rows
-            );
-
-            events.writer.shutdown().await?;
-            Ok(())
-        }
     }
 
     mod contention {
@@ -4046,6 +4016,42 @@ pub(super) mod tests {
                 error.downcast_ref::<StudioError>().unwrap().code,
                 StudioErrorCode::InvalidArgument
             );
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        /// Old Drop sits between receiver release and registry cleanup. A later generation of the
+        /// same thread must survive that Drop even when its own receiver count is already zero.
+        #[tokio::test]
+        async fn delayed_metadata_drop_cannot_reclaim_a_new_generation_in_aba_order() -> Result<()>
+        {
+            let (_temp, events) = fixture(vec![], vec![]).await?;
+            let mut old = events.subscribe_thread_metadata("thread-a");
+            let old_generation = old.registration.generation();
+            drop(old.receiver.take());
+            events.notify_thread_metadata_for_test("thread-a");
+            assert_eq!(events.metadata_signal_count(), 0);
+            let unrelated = events.subscribe_thread_metadata("thread-b");
+            let mut replacement = events.subscribe_thread_metadata("thread-a");
+            assert!(unrelated.registration.generation() > old_generation);
+            assert!(replacement.registration.generation() > unrelated.registration.generation());
+            events.notify_thread_metadata_for_test("thread-a");
+            assert!(
+                replacement
+                    .receiver
+                    .as_mut()
+                    .expect("replacement receiver")
+                    .has_changed()
+                    .expect("replacement sender")
+            );
+            // The new receiver can itself be dropping. Count == 0 alone must not let the old Drop
+            // remove its entry: only the matching generation owns that cleanup.
+            drop(replacement.receiver.take());
+            drop(old);
+            assert_eq!(events.metadata_signal_count(), 2);
+            drop(replacement);
+            drop(unrelated);
+            assert_eq!(events.metadata_signal_count(), 0);
             events.writer.shutdown().await?;
             Ok(())
         }

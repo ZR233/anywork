@@ -653,7 +653,6 @@ AcpBusinessCloseView acpCloseFromFrb(b.BridgeAcpBusinessClose v) =>
           ? null
           : acpFailureFromFrb(v.remoteCloseError!),
       sdkError: v.sdkError == null ? null : acpFailureFromFrb(v.sdkError!),
-      workerError: v.workerError,
       driverError: v.driverError,
       unfinishedPrompt: v.unfinishedPrompt == null
           ? null

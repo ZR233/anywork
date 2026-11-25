@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UnpricedReason,
-    UsageReport,
+    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 use pl_core::thread::{ThreadEffectBatch, UsageSummary};
+use pl_model::model::UnpricedReason;
 use sha2::{Digest, Sha256};
 
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};
@@ -790,7 +790,7 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
     };
     coordinator.record_thread_final_cut(cut);
     let report = coordinator
-        .finalize_internal(None, true, true, Some(0), None)
+        .finalize_internal(true, true, Some(0), None)
         .await;
     assert!(report.trace_complete, "{:?}", report.failure);
     assert!(report.trace.sealed);
@@ -849,7 +849,7 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
     coord2.close_admission_on_producer_timeout();
     assert!(!tokio::time::timeout(Duration::from_secs(2), blocked).await?);
     let report2 = coord2
-        .finalize_internal(None, false, false, Some(1), Some(deadline))
+        .finalize_internal(false, false, Some(1), Some(deadline))
         .await;
     assert!(!report2.trace_complete);
     assert!(!report2.trace.sealed);
@@ -1028,9 +1028,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         aborted: false,
         error: None,
     });
-    let ok_report = coord
-        .finalize_internal(None, true, true, Some(0), None)
-        .await;
+    let ok_report = coord.finalize_internal(true, true, Some(0), None).await;
     assert!(ok_report.trace_complete, "{:?}", ok_report.failure);
     let usage = ok_report.usage.as_ref().expect("usage present");
     assert_eq!(usage.totals.inference_count, Some(1));
@@ -1135,7 +1133,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     )
     .await;
     assert!(exp_conflict.cancellation().is_cancelled());
-    let bad_report = c2.finalize_internal(None, true, true, Some(0), None).await;
+    let bad_report = c2.finalize_internal(true, true, Some(0), None).await;
     assert!(!bad_report.trace_complete);
     assert!(!bad_report.trace.sealed);
     assert_eq!(
@@ -1231,7 +1229,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
             error: None,
         });
         let report = coordinator
-            .finalize_internal(None, true, true, Some(0), None)
+            .finalize_internal(true, true, Some(0), None)
             .await;
         assert!(!report.trace_complete);
         assert!(!report.trace.sealed);
@@ -1460,9 +1458,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
     // The retained HistoryReader is the only export source here; no live Current owner exists.
     drop(history);
     let expected_hash = hex::encode(Sha256::digest(huge_text.as_bytes()));
-    let report = coord
-        .finalize_internal(None, true, true, Some(0), None)
-        .await;
+    let report = coord.finalize_internal(true, true, Some(0), None).await;
     assert!(report.trace_complete, "{:?}", report.failure);
     let out_dir = exporter.output_dir().to_path_buf();
     let exported: Vec<EventV3> = std::fs::read_to_string(out_dir.join("events.jsonl"))?

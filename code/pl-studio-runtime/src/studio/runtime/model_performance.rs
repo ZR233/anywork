@@ -249,12 +249,6 @@ impl PersistedStudioObject for ModelPerformanceState {
     }
 }
 
-#[derive(Clone, Copy)]
-enum BillingRetention {
-    Turn,
-    Internal,
-}
-
 impl ModelPerformanceOwner {
     pub(in crate::studio) fn new(
         store: StudioStore,
@@ -562,7 +556,7 @@ impl ModelPerformanceOwner {
             thread_id,
             billing,
             status,
-            BillingRetention::Turn,
+            CallRetention::Turn,
         )
     }
 
@@ -578,7 +572,7 @@ impl ModelPerformanceOwner {
             thread_id,
             billing,
             status,
-            BillingRetention::Internal,
+            CallRetention::Internal,
         )
     }
 
@@ -588,7 +582,7 @@ impl ModelPerformanceOwner {
         thread_id: &str,
         billing: &InferenceBillingRecord,
         status: CallStatus,
-        retention: BillingRetention,
+        retention: CallRetention,
     ) -> Result<(), PureError> {
         if root_thread_id.trim().is_empty() || thread_id.trim().is_empty() {
             return Err(PureError::MemoryError(
@@ -625,7 +619,7 @@ impl ModelPerformanceOwner {
                 thread_id,
                 billing,
                 status,
-                call_retention(retention),
+                retention,
             )
             .map_err(|error| {
                 tracing::warn!(%error, inference_id = billing.inference_id, "billing statistics dropped");
@@ -1107,29 +1101,16 @@ fn billing_fingerprint(
     thread: &str,
     billing: &InferenceBillingRecord,
     status: CallStatus,
-    retention: BillingRetention,
+    retention: CallRetention,
 ) -> Result<String, PureError> {
-    let bytes = serde_json::to_vec(&(
-        root,
-        thread,
-        billing,
-        status.as_str(),
-        call_retention(retention).as_str(),
-    ))?;
+    let bytes = serde_json::to_vec(&(root, thread, billing, status.as_str(), retention.as_str()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
-}
-
-fn call_retention(retention: BillingRetention) -> CallRetention {
-    match retention {
-        BillingRetention::Turn => CallRetention::Turn,
-        BillingRetention::Internal => CallRetention::Internal,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
 
     fn summary_row(account: &str, model: &str, effort: Option<&str>) -> PerformanceSummaryRow {
         PerformanceSummaryRow {

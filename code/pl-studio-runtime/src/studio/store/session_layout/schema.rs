@@ -2,6 +2,7 @@
 use super::{SessionManifest, WorkspaceManifest};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
 const KEY: &str = "schemaVersion";
@@ -93,7 +94,11 @@ impl IntoDomain<SessionV2> for SessionV2 {
         self
     }
 }
-fn workspace_migrator() -> Result<Migrator> {
+fn workspace_migrator() -> Result<&'static Migrator> {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    if let Some(migrator) = MIGRATOR.get() {
+        return Ok(migrator);
+    }
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -104,9 +109,13 @@ fn workspace_migrator() -> Result<Migrator> {
                 .into::<WorkspaceV2>(),
         )
         .map_err(|error| crate::toml_schema::chain_error("workspace-manifest", error))?;
-    Ok(migrator)
+    Ok(MIGRATOR.get_or_init(|| migrator))
 }
-fn session_migrator() -> Result<Migrator> {
+fn session_migrator() -> Result<&'static Migrator> {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    if let Some(migrator) = MIGRATOR.get() {
+        return Ok(migrator);
+    }
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -117,20 +126,13 @@ fn session_migrator() -> Result<Migrator> {
                 .into::<SessionV2>(),
         )
         .map_err(|error| crate::toml_schema::chain_error("session-manifest", error))?;
-    Ok(migrator)
+    Ok(MIGRATOR.get_or_init(|| migrator))
 }
 pub(crate) fn decode_v2_workspace(
     path: &std::path::Path,
     content: &str,
 ) -> Result<WorkspaceManifest> {
-    let doc = crate::toml_schema::load::<ProjectManifestV1, WorkspaceV2>(
-        path,
-        content,
-        &workspace_migrator()?,
-        "workspace-manifest",
-        KEY,
-    )?
-    .document;
+    let doc = decode_workspace(path, content)?;
     Ok(WorkspaceManifest {
         schema_version: 2,
         workspace_id: doc.workspace_id,
@@ -140,14 +142,7 @@ pub(crate) fn decode_v2_workspace(
     })
 }
 pub(crate) fn decode_v2_session(path: &std::path::Path, content: &str) -> Result<SessionManifest> {
-    let doc = crate::toml_schema::load::<SessionManifestV1, SessionV2>(
-        path,
-        content,
-        &session_migrator()?,
-        "session-manifest",
-        KEY,
-    )?
-    .document;
+    let doc = decode_session(path, content)?;
     Ok(SessionManifest {
         schema_version: 2,
         workspace_id: doc.workspace_id,
@@ -158,6 +153,40 @@ pub(crate) fn decode_v2_session(path: &std::path::Path, content: &str) -> Result
         workspace_path: doc.workspace_path,
         created_at: doc.created_at,
     })
+}
+fn decode_workspace(path: &std::path::Path, content: &str) -> Result<WorkspaceV2> {
+    let target = crate::toml_schema::integer_version(WorkspaceV2::VERSION)?;
+    let table = crate::toml_schema::parse(path, content, "workspace-manifest", target)?;
+    if crate::toml_schema::integer_header(&table, KEY) == Some(target) {
+        return crate::toml_schema::decode_current_table(path, table, "workspace-manifest", KEY);
+    }
+    Ok(
+        crate::toml_schema::load_table::<ProjectManifestV1, WorkspaceV2>(
+            path,
+            table,
+            workspace_migrator()?,
+            "workspace-manifest",
+            KEY,
+        )?
+        .document,
+    )
+}
+fn decode_session(path: &std::path::Path, content: &str) -> Result<SessionV2> {
+    let target = crate::toml_schema::integer_version(SessionV2::VERSION)?;
+    let table = crate::toml_schema::parse(path, content, "session-manifest", target)?;
+    if crate::toml_schema::integer_header(&table, KEY) == Some(target) {
+        return crate::toml_schema::decode_current_table(path, table, "session-manifest", KEY);
+    }
+    Ok(
+        crate::toml_schema::load_table::<SessionManifestV1, SessionV2>(
+            path,
+            table,
+            session_migrator()?,
+            "session-manifest",
+            KEY,
+        )?
+        .document,
+    )
 }
 pub(super) fn encode_workspace(document: &WorkspaceManifest) -> Result<String> {
     crate::toml_schema::encode(

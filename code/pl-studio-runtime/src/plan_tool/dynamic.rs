@@ -1,19 +1,15 @@
 //! Studio adapter bridging the standalone `pl-tool-plan` tool family onto `CallContext`.
 
-use super::types::{
-    AgentSessionPlanState, LegacyAgentSessionPlanState, Plan, PlanActor, PlanHistoryArgs,
-    PlanHistoryResponse, PlanNextResponse, PlanSnapshot, PlanState, PlanTransitionArgs,
-    PlanTransitionCommand, PlanTransitionOutcome,
-};
+use super::types::{AgentSessionPlanState, LegacyAgentSessionPlanState};
 use crate::plan_tool::state::AgentSessionPlanOptions;
 use crate::thread_assembler::ThreadAssemblyError;
+use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
 use pl_agent_tool::typed::TypedTool;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::OpaquePayload,
     model::ToolPresentationContract,
-    thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, ToolError},
@@ -21,11 +17,16 @@ use pl_core::{
 };
 use pl_model::completion::ToolCallPolicy;
 use pl_tool::binding::prepare_registration;
-use pl_tool_plan::{PlanCurrentTool, PlanHistoryTool, PlanHost, PlanNextTool, PlanTransitionTool};
+use pl_tool_plan::{
+    Plan, PlanActor, PlanCurrentTool, PlanHistoryArgs, PlanHistoryResponse, PlanHistoryTool,
+    PlanHost, PlanNextResponse, PlanNextTool, PlanSnapshot, PlanTransitionArgs,
+    PlanTransitionCommand, PlanTransitionOutcome, PlanTransitionTool,
+};
 use std::sync::{Arc, Mutex};
 
 pub const PLAN_EXTENSION: &str = "studio.plan";
 const FORMAT: &str = "pl.studio.plan";
+const PLAN_PAYLOAD_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 enum PlanPayloadError {
@@ -43,25 +44,72 @@ pub fn encode_plan_state(state: &AgentSessionPlanState) -> Result<OpaquePayload,
     crate::plan_tool::state::validate_session_state_size(state).map_err(ToolError::new)?;
     OpaquePayload::new(
         FORMAT,
-        1,
+        PLAN_PAYLOAD_VERSION,
         serde_json::to_string(state).map_err(ToolError::new)?,
     )
     .map_err(ToolError::new)
 }
 
-/// Decodes either the current `pl-tool-plan` envelope or pre-unification v1 `studio.plan` JSON.
+/// Decodes the current `pl.studio.plan` payload.
+///
+/// Version 1, including the pre-unification shape, is accepted only by [`migrate_plan_payload`].
 ///
 /// # Errors
-/// Rejects unknown payload formats, corrupt plan state, and excessive content.
+/// Rejects unknown payload formats, obsolete versions, corrupt plan state, and excessive content.
 pub fn decode_plan_state(payload: &OpaquePayload) -> Result<AgentSessionPlanState, ToolError> {
-    if payload.format() != FORMAT || payload.version() != 1 {
+    if payload.format() != FORMAT || payload.version() != PLAN_PAYLOAD_VERSION {
         return Err(ToolError::new(PlanPayloadError::Unsupported {
             format: payload.format().into(),
             version: payload.version(),
         }));
     }
-    let state: AgentSessionPlanState = if let Ok(value) =
-        serde_json::from_str::<serde_json::Value>(payload.content())
+    let state = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    crate::plan_tool::state::validate_session_state_size(&state).map_err(ToolError::new)?;
+    Ok(state)
+}
+
+/// Upgrades a saved version-1 plan payload at the recovery migration boundary.
+///
+/// Current payloads are returned unchanged. A version-1 payload is re-encoded as version 2;
+/// the pre-unification shape is converted only here.
+///
+/// # Errors
+/// Rejects an unsupported plan version or a payload that cannot be converted.
+pub fn migrate_plan_payload(payload: &OpaquePayload) -> anyhow::Result<Option<OpaquePayload>> {
+    if payload.format() != FORMAT {
+        return Ok(None);
+    }
+    if payload.version() == PLAN_PAYLOAD_VERSION {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        payload.version() == 1,
+        "unsupported plan payload {} version {}",
+        payload.format(),
+        payload.version()
+    );
+    let state = decode_saved_v1(payload).map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(Some(
+        encode_plan_state(&state).map_err(|error| anyhow::anyhow!("{error}"))?,
+    ))
+}
+
+/// Rewrites a saved `studio.plan` extension in place. Missing plans are left absent.
+///
+/// # Errors
+/// Rejects an unsupported plan version or a payload that cannot be converted.
+pub fn migrate_saved_plan(state: &mut pl_core::thread::ThreadSnapshot) -> anyhow::Result<()> {
+    let Some(record) = state.extensions.get_mut(PLAN_EXTENSION) else {
+        return Ok(());
+    };
+    if let Some(current) = migrate_plan_payload(&record.payload)? {
+        record.payload = current;
+    }
+    Ok(())
+}
+
+fn decode_saved_v1(payload: &OpaquePayload) -> Result<AgentSessionPlanState, ToolError> {
+    let state = if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload.content())
         && value.get("plan").is_none()
         && (value.get("state").is_some()
             || value.get("revision").is_some()
@@ -220,8 +268,6 @@ impl PlanHost for StudioPlanHost {
                 );
             }
             guard.next = next_state;
-        } else if outcome.snapshot.state != PlanState::AwaitingConfirmation {
-            guard.next.pending_interaction_id = None;
         }
         Ok(outcome)
     }
@@ -277,14 +323,8 @@ where
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(PlanPayloadError::Unsupported {
-                format: input.format().into(),
-                version: input.version(),
-            }));
-        }
-        let args: T::Args =
-            pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+        let input = JsonToolInput::new(&input)?;
+        let args: T::Args = input.decode()?;
         let saved = context.extensions.get(PLAN_EXTENSION);
         let expected_extension_revision = saved.map(|record| record.revision);
         let previous = match saved {
@@ -295,7 +335,7 @@ where
             "{}/{}/{}",
             context.thread_id, context.turn_id, context.call_id
         );
-        let argument_hash = pl_core::context::content_hash(input.content().as_bytes());
+        let argument_hash = input.argument_hash();
         let interaction_id = context.interaction_id();
         let now_secs = crate::studio::unix_seconds();
 
@@ -313,22 +353,17 @@ where
             .tool
             .execute(args, StudioPlanCallContext(Arc::clone(&shared)))
             .await?;
-        let text = serde_json::to_string(&result).map_err(ToolError::new)?;
-        let mut output = ToolOutput::new(
-            OpaquePayload::new("pl.studio.plan-result", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        );
+        let mut output = json_output("pl.studio.plan-result", &result)?;
         let mut guard = shared
             .lock()
             .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
         if guard.next != previous {
-            output = output.with_extension_mutations(vec![ExtensionMutation::Put {
-                id: PLAN_EXTENSION.into(),
-                expected_revision: expected_extension_revision,
-                payload: encode_plan_state(&guard.next)?,
-            }]);
+            output = put_extension(
+                output,
+                PLAN_EXTENSION,
+                expected_extension_revision,
+                encode_plan_state(&guard.next)?,
+            );
         }
         if let Some(prompt) = guard.interaction.take() {
             output = output.with_interaction(prompt);
@@ -476,5 +511,49 @@ mod argument_tests {
             );
         }
         tool.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::super::types::PlanState;
+    use super::*;
+    use pl_core::context::OpaquePayload;
+
+    #[test]
+    fn version_one_legacy_shape_migrates_once_and_hot_decode_rejects_it() {
+        let hash = pl_core::context::content_hash(b"keep");
+        let saved = OpaquePayload::new(
+            FORMAT,
+            1,
+            serde_json::json!({
+                "revision": 4,
+                "state": "approved",
+                "document": {"version": 2, "markdown": "keep", "contentHash": hash},
+                "updatedAt": 9
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(decode_plan_state(&saved).is_err());
+        let current = migrate_plan_payload(&saved).unwrap().unwrap();
+        assert_eq!(current.version(), PLAN_PAYLOAD_VERSION);
+        let state = decode_plan_state(&current).unwrap();
+        assert_eq!(state.plan.revision, 4);
+        assert_eq!(state.plan.state, PlanState::Approved);
+        assert_eq!(state.plan.updated_at_ms, 9_000);
+        let document = state.plan.document.unwrap();
+        assert_eq!(document.revision, 2);
+        assert_eq!(document.content, "keep");
+        assert_eq!(document.hash, hash);
+        assert!(migrate_plan_payload(&current).unwrap().is_none());
+    }
+
+    #[test]
+    fn version_one_current_shape_is_rewrapped_without_changing_fields() {
+        let state = AgentSessionPlanState::with_document(PlanState::Drafting, 3, "body", 1_000);
+        let saved = OpaquePayload::new(FORMAT, 1, serde_json::to_string(&state).unwrap()).unwrap();
+        let current = migrate_plan_payload(&saved).unwrap().unwrap();
+        assert_eq!(decode_plan_state(&current).unwrap(), state);
     }
 }

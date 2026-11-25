@@ -17,7 +17,6 @@ macro_rules! metrics {
 }
 
 metrics! {
-    JsonlReadOpen => "jsonl_read_open",
     JsonlSegmentOpen => "jsonl_segment_open",
     JsonlFlush => "jsonl_flush",
     JsonlSync => "jsonl_sync_data",
@@ -34,14 +33,10 @@ metrics! {
     PerformanceTrimSql => "sql_performance_trim",
     PerformanceSummarySql => "sql_performance_summary_read",
     BatchCommit => "calls_batch_commit",
-    AccountingRead => "checkpoint_accounting_read",
     EffectEncode => "effect_encode",
     BillingEncode => "billing_encode",
     LogRecordEncode => "log_record_encode",
-    ReceiptExtraction => "receipt_extraction",
     MaterializedRefresh => "materialized_refresh",
-    ReadLockAcquire => "log_read_lock_acquire",
-    ReadLockWaitNanos => "log_read_lock_wait_ns",
     WriteLockAcquire => "log_write_lock_acquire",
     WriteLockWaitNanos => "log_write_lock_wait_ns",
     QueueDequeued => "queue_dequeued_mutations",
@@ -99,14 +94,10 @@ impl Observation {
         self.counters[metric as usize].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn lock_acquired(&self, read: bool, elapsed: Duration) {
-        let (count, nanos) = if read {
-            (Metric::ReadLockAcquire, Metric::ReadLockWaitNanos)
-        } else {
-            (Metric::WriteLockAcquire, Metric::WriteLockWaitNanos)
-        };
-        self.increment(count);
-        self.counters[nanos as usize].fetch_add(
+    /// Only the batch writer log lock is measured; read paths never wait on it.
+    pub(crate) fn write_lock_acquired(&self, elapsed: Duration) {
+        self.increment(Metric::WriteLockAcquire);
+        self.counters[Metric::WriteLockWaitNanos as usize].fetch_add(
             u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
             Ordering::Relaxed,
         );

@@ -2,22 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use pl_tool_plan::{
-    MAX_FEEDBACK_BYTES, MAX_PLAN_BYTES, PLAN_CURRENT_TOOL, PLAN_HISTORY_TOOL, PLAN_NEXT_TOOL,
-    PLAN_TRANSITION_TOOL, Plan, PlanActor, PlanDocument, PlanErrorCode, PlanHistoryArgs,
-    PlanHistoryResponse, PlanNextResponse, PlanOperationReceipt, PlanRecord, PlanSnapshot,
-    PlanState, PlanTransitionArgs, PlanTransitionCommand, PlanTransitionError,
-    PlanTransitionOutcome, PlanTransitionRecord, PlanTransitionRule, content_hash,
-};
+pub(crate) use pl_tool_plan::PlanActor;
+pub use pl_tool_plan::{Plan, PlanDocument, PlanRecord, PlanSnapshot, PlanState};
 
-pub const TOOL_PLAN_CURRENT: &str = PLAN_CURRENT_TOOL;
-pub const TOOL_PLAN_NEXT: &str = PLAN_NEXT_TOOL;
-pub const TOOL_PLAN_HISTORY: &str = PLAN_HISTORY_TOOL;
+use pl_tool_plan::{PLAN_TRANSITION_TOOL, PlanOperationReceipt, PlanTransitionRecord};
+
 pub const TOOL_PLAN_TRANSITION: &str = PLAN_TRANSITION_TOOL;
 /// Retained only for decoding historical timeline items/events created before unification.
 pub const TOOL_PLAN_SUBMIT: &str = "plan_submit";
-/// Retained only for decoding historical timeline items/events created before unification.
-pub const TOOL_PLAN_RESTART: &str = "plan_restart";
 
 /// OpenAPI / Studio protocol alias for [`PlanState`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -28,17 +20,6 @@ pub enum AgentSessionPlanPhase {
     AwaitingConfirmation,
     RevisionRequested,
     Approved,
-}
-
-impl AgentSessionPlanPhase {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Drafting => "drafting",
-            Self::AwaitingConfirmation => "awaitingConfirmation",
-            Self::RevisionRequested => "revisionRequested",
-            Self::Approved => "approved",
-        }
-    }
 }
 
 impl From<PlanState> for AgentSessionPlanPhase {
@@ -86,15 +67,7 @@ impl From<&PlanDocument> for AgentSessionPlanDocument {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentSessionPlanResultCode {
-    Transitioned,
-    Approved,
-    RevisionRequested,
-    AlreadyApplied,
     InvalidState,
-    StaleRevision,
-    OperationIdentityConflict,
-    InvalidInteraction,
-    InvalidResolution,
 }
 
 /// Canonical per-agent Plan hot state persisted inside `studio.plan` extension.
@@ -117,6 +90,7 @@ impl AgentSessionPlanState {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn with_document(
         state: PlanState,
         revision: u64,
@@ -124,7 +98,7 @@ impl AgentSessionPlanState {
         updated_at_ms: i64,
     ) -> Self {
         let content = content.into();
-        let hash = content_hash(content.as_bytes());
+        let hash = pl_tool_plan::content_hash(content.as_bytes());
         Self {
             plan: PlanRecord {
                 state,
@@ -200,7 +174,7 @@ impl From<&PlanSnapshot> for AgentSessionPlanRuntimeSnapshot {
     }
 }
 
-/// Legacy pre-unification persisted `studio.plan` JSON shape supported on read paths.
+/// Pre-unification `studio.plan` JSON. Decoded only while migrating a version-1 payload.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LegacyAgentSessionPlanState {

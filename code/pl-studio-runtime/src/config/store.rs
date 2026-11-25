@@ -1,4 +1,3 @@
-use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -38,7 +37,9 @@ impl std::fmt::Debug for ConfigStore {
 
 impl ConfigPaths {
     pub fn for_current_user() -> Result<Self> {
-        Ok(Self::from_home(user_home_dir()?))
+        let home = crate::studio::paths::user_home_dir()
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        Ok(Self::from_home(home))
     }
 
     pub fn from_home(home: impl Into<PathBuf>) -> Self {
@@ -435,10 +436,6 @@ impl ConfigStore {
 }
 
 pub(super) fn parse_current_config(content: &str) -> Result<StudioConfig> {
-    parse_config(content)
-}
-
-fn parse_config(content: &str) -> Result<StudioConfig> {
     let document =
         super::document_migration::load_current_main(Path::new(STUDIO_CONFIG_FILE_NAME), content)
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
@@ -523,17 +520,6 @@ fn clear_inline_credentials(config: &mut StudioConfig) {
     for account in config.models.accounts.values_mut() {
         account.bearer_token = None;
     }
-}
-
-fn user_home_dir() -> Result<PathBuf> {
-    const HOME_VARS: &[&str] = &["HOME", "USERPROFILE"];
-
-    HOME_VARS
-        .iter()
-        .filter_map(env::var_os)
-        .map(PathBuf::from)
-        .find(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| PureError::ConfigError("could not resolve user home directory".to_string()))
 }
 
 #[cfg(test)]

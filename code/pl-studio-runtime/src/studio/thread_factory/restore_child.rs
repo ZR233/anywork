@@ -4,19 +4,31 @@
 //! missing directory is a broken site and fails with a typed `Workspace` error that the activation
 //! path publishes as a Recovery diagnosis. Ordinary activation never recreates the saved site.
 use super::workspace_validation::{same_workspace_path, verify_worktree_declarations};
-use super::{StudioThreadFactory, errors::resource_error, thread_tools::ThreadToolAssembly};
+use super::{StudioThreadFactory, errors::resource_error};
 use crate::{
     agent::definition::VerifiedAgentIdentity,
-    resource_store::FileResourceStore,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
 };
-use pl_core::context::{OpaquePayload, ResourceAccess};
+use pl_core::context::OpaquePayload;
 use pl_model::config::AgentRoleId;
 use pl_tool::workspace::ToolWorkspace;
 use std::{collections::BTreeMap, path::PathBuf};
 
 impl StudioThreadFactory {
     pub(super) async fn prepare_restored_child(
+        &self,
+        request: ThreadPreparation,
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        super::native_assembly::NativeThreadAssemblyBuilder::restored_child(self, request)
+            .assemble()
+            .await
+    }
+
+    /// Restored-child pipeline. Shared steps are reservation, canonical root resolution,
+    /// assignment, session resources, tool binding, persistence, model binding, spec
+    /// composition, and worktree confirmation. Cancellation after tools is `Closed`, not
+    /// the new-child `Cancelled` result, and this path does not enroll a new export member.
+    pub(super) async fn assemble_native_restored_child(
         &self,
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
@@ -68,10 +80,13 @@ impl StudioThreadFactory {
         }
         let mut project = self.project_record(&thread.workspace_id).await?;
         let workspace_usage = self
-            .reserve_thread_workspace_use(id, &thread.root_thread_id, &project)
-            .await
-            .map_err(Self::workspace_usage_error)?;
-        request.workspace_owner.retain(&workspace_usage);
+            .reserve_native_workspace(
+                id,
+                &thread.root_thread_id,
+                &project,
+                &request.workspace_owner,
+            )
+            .await?;
         let bot_root = self
             .bind_bot_project(
                 id,
@@ -114,6 +129,8 @@ impl StudioThreadFactory {
         let mut migrated = current.state.to_paused_snapshot();
         crate::instruction::migrate_saved_representation(&mut migrated, &saved_identity)
             .map_err(|error| resource_error("migrate saved child instructions", error))?;
+        crate::plan_tool::migrate_saved_plan(&mut migrated)
+            .map_err(|error| resource_error("migrate saved child plan", error))?;
         current.state.extensions = migrated.extensions;
         current.state.extension_sequence = migrated.extension_sequence;
         let restored = current.state.to_paused_snapshot();
@@ -160,18 +177,14 @@ impl StudioThreadFactory {
             .clone()
             .unwrap_or_else(|| PathBuf::from(&root_thread.session.workspace_path));
         let project_copy = project.clone();
-        let root = tokio::task::spawn_blocking(move || {
-            Ok::<_, anyhow::Error>(match bot_root {
-                Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
-                    &project_copy,
-                )?,
-            })
-        })
-        .await?
-        .map_err(|error| resource_error("resolve restored session workspace", error))?;
+        let root = Self::resolve_canonical_project_root(
+            project_copy,
+            bot_root,
+            "resolve restored session workspace",
+        )
+        .await?;
         let session_root =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
@@ -234,21 +247,16 @@ impl StudioThreadFactory {
             ));
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
-        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
-            .await
-            .map_err(Self::workspace_usage_error)?;
+        self.assign_native_workspace(&workspace_usage, &project, workspace.root())
+            .await?;
 
-        let resources = FileResourceStore::new(
-            self.services
-                .store
-                .session_resources_dir_for(&thread.workspace_id, id)
-                .map_err(|error| {
-                    resource_error("resolve restored child session resources", error)
-                })?,
-        );
+        let resources = self.open_session_resources(
+            &thread.workspace_id,
+            id,
+            "resolve restored child session resources",
+        )?;
         let mut prepared = self
-            .prepare_thread_tools(ThreadToolAssembly {
-                assignment: Some(&assignment),
+            .bind_native_tools(super::native_assembly::NativeToolBinding {
                 workspace_usage: workspace_usage.clone(),
                 thread_id: id,
                 cancellation: &request.cancellation,
@@ -259,7 +267,7 @@ impl StudioThreadFactory {
                 workspace: ToolWorkspace::new(workspace)
                     .with_lsp_runtime(Some(self.services.lsp_runtime.clone())),
                 store: resources.clone(),
-                helper_source: self.services.helper_source.clone(),
+                assignment: Some(&assignment),
             })
             .await?;
 
@@ -275,46 +283,36 @@ impl StudioThreadFactory {
         if request.cancellation.is_cancelled() {
             return Err(ThreadAssemblyError::Closed);
         }
-        let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
-            self.services.store.clone(),
-            protocol_thread,
-        )
-        .await
-        .map_err(|error| resource_error("open restored child persistence", error))?;
+        let persistence = self
+            .open_native_persistence(protocol_thread, "open restored child persistence")
+            .await?;
         let initial_extensions = BTreeMap::new();
-        let model = model_available
-            .then(|| {
-                crate::studio::model_binding::configured_model(
-                    &route,
-                    &config,
-                    self.services.thread_modes.clone(),
-                    prepared.hosted,
-                )
-            })
-            .transpose()
-            .map_err(|error| resource_error("prepare Native model binding", error))?;
-        let spec = StudioThreadSpec {
-            workspace_usage: Some(workspace_usage),
+        let model = self.bind_native_model(
+            &route,
+            &config,
+            prepared.hosted,
+            if model_available {
+                super::native_assembly::NativeModelAvailability::Bind
+            } else {
+                super::native_assembly::NativeModelAvailability::LeaveUnbound
+            },
+        )?;
+        let spec = Self::compose_native_spec(super::native_assembly::NativeSpecParts {
+            workspace: &prepared.workspace,
             preparation_guard: prepared.binding_guard.take(),
             agent_controls: Vec::new(),
-            execution: pl_core::thread::input::InputDriverOptions {
-                max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
-            },
+            max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
             id: id.to_owned(),
             parent_id: thread.parent_thread_id,
             route,
             model,
             current: Some(current),
             initial_context: Vec::new(),
-            initial_runtime_facts: super::session_files::session_files_fact(&prepared.workspace)
-                .into_iter()
-                .collect(),
             initial_extensions,
-            tools: Vec::new(),
-            resources: ResourceAccess::new(resources),
-            capacity: Default::default(),
-            history_sink: Some(persistence),
-        };
+            store: resources,
+            workspace_usage: Some(workspace_usage),
+            persistence,
+        });
         Self::configure_review_finish(&mut prepared.tools, id, &profile, &assignment)?;
         if let Some(check) = review_check {
             check
@@ -323,15 +321,15 @@ impl StudioThreadFactory {
                 .map_err(|error| resource_error("recheck restored review workspace", error))?;
         }
         if let Some(lease) = verified_lease {
-            self.confirm_worktree_binding(
+            self.confirm_native_worktree(
                 &lease,
                 spec.workspace_usage
                     .as_ref()
                     .expect("child preparation use"),
                 &request.workspace_owner,
+                "confirm restored child worktree binding",
             )
-            .await
-            .map_err(|error| resource_error("confirm restored child worktree binding", error))?;
+            .await?;
         }
         Ok(prepared.tools.install(spec))
     }
@@ -342,7 +340,7 @@ impl StudioThreadFactory {
         receipt: &crate::AgentWorktreeSnapshot,
         thread: &crate::studio::ThreadRecord,
         project: &crate::studio::WorkspaceRecord,
-    ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease, ThreadAssemblyError> {
+    ) -> Result<crate::studio::worktree::worktree_lease::WorktreeLease, ThreadAssemblyError> {
         let child_id = &thread.id;
         let missing = |reason: &str| ThreadAssemblyError::Workspace {
             thread_id: child_id.clone(),
@@ -360,8 +358,8 @@ impl StudioThreadFactory {
         // underneath the owner.
         if matches!(
             lease.state,
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseState::CleanupRequested
-                | crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned
+            crate::studio::worktree::worktree_lease::WorktreeLeaseState::CleanupRequested
+                | crate::studio::worktree::worktree_lease::WorktreeLeaseState::Cleaned
         ) {
             return Err(missing(
                 "the saved child worktree is cleaned or cleanup is in progress",
@@ -375,7 +373,7 @@ impl StudioThreadFactory {
         verify_worktree_declarations(&lease, receipt, thread, project, &repository_root).map_err(
             |error| resource_error("validate restored child worktree declarations", error),
         )?;
-        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+        let manager = crate::studio::worktree::workspace_preparation::manager_from_lease(
             &self.services.store,
             &self.services.ssh_manager,
             &lease,
@@ -402,9 +400,9 @@ impl StudioThreadFactory {
         project: &crate::studio::WorkspaceRecord,
     ) -> Result<(PathBuf, crate::agent::worktree::WorktreeManager), ThreadAssemblyError> {
         let project_root =
-            crate::studio::agent_host::workspace_preparation::resolved_project_root(project)
+            crate::studio::worktree::workspace_preparation::resolved_project_root(project)
                 .map_err(|error| resource_error("resolve restored child project root", error))?;
-        crate::studio::agent_host::workspace_preparation::repository_manager(
+        crate::studio::worktree::workspace_preparation::repository_manager(
             &self.services.ssh_manager,
             project.ssh_alias.as_deref(),
             &project_root,

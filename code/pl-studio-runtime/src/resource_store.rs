@@ -82,33 +82,6 @@ impl FileResourceStore {
         tokio::task::spawn_blocking(move || retain(&root, &source, media_type, None)).await?
     }
 
-    /// Retains a completed command capture under the command-archive ceiling.
-    ///
-    /// It shares the exact streaming copy and idempotent content-addressed identity of
-    /// [`Self::retain_file`], but bounds the copy at [`MAX_COMMAND_ARCHIVE_BYTES`] so a runaway capture
-    /// cannot fill the disk. The limit is scoped to this command path only: it never narrows the
-    /// generic resource/attachment semantics.
-    ///
-    /// # Errors
-    /// Returns [`ResourceStoreError::TooLarge`] for a capture past the ceiling and the same IO,
-    /// integrity and metadata failures as [`Self::retain_file`].
-    pub async fn retain_command_capture(
-        &self,
-        source: &Path,
-    ) -> Result<ResourceReference, ResourceStoreError> {
-        let source = source.to_owned();
-        let root = self.root.clone();
-        tokio::task::spawn_blocking(move || {
-            retain(
-                &root,
-                &source,
-                "application/octet-stream".to_owned(),
-                Some(MAX_COMMAND_ARCHIVE_BYTES),
-            )
-        })
-        .await?
-    }
-
     /// Retains exact in-memory bytes with the same immutable identity and durability as file captures.
     ///
     /// # Errors
@@ -655,10 +628,11 @@ mod tests {
         let oversized = vec![0_u8; MAX_COMMAND_ARCHIVE_BYTES as usize + 1];
         std::fs::write(&source, &oversized).expect("the oversized capture is written");
 
-        let error = store
-            .retain_command_capture(&source)
-            .await
-            .expect_err("a command capture past the ceiling is a typed refusal");
+        let error = retain_command_capture_file(
+            root.path(),
+            std::fs::File::open(&source).expect("the oversized capture opens"),
+        )
+        .expect_err("a command capture past the ceiling is a typed refusal");
         assert!(matches!(
             error,
             ResourceStoreError::TooLarge { limit } if limit == MAX_COMMAND_ARCHIVE_BYTES
@@ -670,30 +644,6 @@ mod tests {
             .retain_file(&source, "application/octet-stream")
             .await
             .expect("a generic resource is not bounded by the command archive ceiling");
-    }
-
-    /// A repeated command-archive retry re-saves the same bytes under the same identity.
-    #[tokio::test]
-    async fn repeating_the_command_archive_retry_is_idempotent() {
-        let root = tempfile::tempdir().expect("an isolated retention root");
-        let store = FileResourceStore::new(root.path().to_path_buf());
-        let source = root.path().join("capture.bin");
-        let accepted = b"accepted capture fragment".to_vec();
-        std::fs::write(&source, &accepted).expect("the capture fragment is written");
-
-        let first = store
-            .retain_command_capture(&source)
-            .await
-            .expect("the first archive stores the fragment");
-        let retry = store
-            .retain_command_capture(&source)
-            .await
-            .expect("a repeated retry stores the same fragment");
-        assert_eq!(
-            first, retry,
-            "a repeated retry produces the same content-addressed reference, not a duplicate"
-        );
-        assert_eq!(retry.byte_len(), accepted.len() as u64);
     }
 
     /// A local disk failure is the typed storage fact core latches; a policy refusal is not.

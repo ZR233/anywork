@@ -7,7 +7,8 @@ impl ConfigRuntime {
         self.acp.read()
     }
 
-    pub fn subscribe_acp_definitions(&self) -> tokio::sync::watch::Receiver<u64> {
+    #[cfg(test)]
+    pub(in crate::config) fn subscribe_acp_definitions(&self) -> tokio::sync::watch::Receiver<u64> {
         self.acp.subscribe()
     }
 

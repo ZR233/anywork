@@ -1,8 +1,7 @@
 //! Effect-local product current and its read owners. No completed-history mirror lives here.
 
-use super::FrozenCurrentProjection;
 use crate::studio::{
-    conversation_identity::content_owner_key,
+    content_owner_key,
     runtime::chat_item::{BodyKey, TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD},
 };
 use crate::*;
@@ -29,7 +28,6 @@ pub(super) type ActiveText = (
     String,
     BodyKey,
     Arc<ContentBlock>,
-    u64,
     Option<ThreadTextChannel>,
     Option<ModelPartLocation>,
 );
@@ -66,20 +64,53 @@ pub(in crate::studio) type CurrentPositionIndex =
     BTreeMap<(String, i64, String), Arc<CurrentEntryWrite>>;
 
 #[derive(Debug)]
+pub(in crate::studio) struct FrozenCurrentProjection {
+    projection: CurrentProjection,
+    json_bytes: OnceLock<u64>,
+}
+
+impl FrozenCurrentProjection {
+    pub fn new(projection: CurrentProjection) -> Arc<Self> {
+        Arc::new(Self {
+            projection,
+            json_bytes: OnceLock::new(),
+        })
+    }
+
+    pub fn projection(&self) -> &CurrentProjection {
+        &self.projection
+    }
+
+    /// Exact compact JSON length, without any retained-memory accounting fees.
+    /// A failed measurement cannot fit any bounded publication frame.
+    pub fn json_bytes(&self) -> u64 {
+        *self.json_bytes.get_or_init(|| {
+            serde_json::to_vec(&self.projection).map_or(u64::MAX, |bytes| {
+                u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+            })
+        })
+    }
+
+    /// Every holder still pays the original complete JSON charge. Sharing only
+    /// avoids re-encoding; it does not discount another owner's responsibility.
+    pub fn retained_bytes(&self) -> u64 {
+        self.json_bytes()
+            .saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
+            // Conservatively reserve a strong handle and both allocation counters.
+            .saturating_add(3 * std::mem::size_of::<usize>() as u64)
+    }
+}
+
+#[derive(Debug)]
 pub(in crate::studio) struct CurrentState {
     projection: Arc<FrozenCurrentProjection>,
     revision: u64,
     owner_id: String,
-    activity_entries: Arc<[ActivityEntry]>,
-    /// Bounded real source facts from this owner cut, including not-yet-saved ends.
-    source_states: Arc<[ChatSourceState]>,
     contents: Arc<BTreeMap<ChatContentKey, Arc<CurrentContent>>>,
     references: Arc<BTreeMap<CurrentContentRef, Arc<CurrentContent>>>,
     entries: Arc<BTreeMap<(String, String), Arc<CurrentEntryWrite>>>,
     by_position: Arc<CurrentPositionIndex>,
     active_turn: Option<Turn>,
-    /// State baseline from this exact owner cut, independent of current collection reads.
-    interactions: Arc<[InteractionRequest]>,
     business_bytes: u64,
     metadata_bytes: OnceLock<u64>,
 }
@@ -154,9 +185,13 @@ impl CurrentOwner {
             .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?
             .clone();
         let active = active.into_iter().collect::<Vec<_>>();
-        let activity = self
-            .activity
-            .observe_admitted(&thread.id, state, &self.atoms, &active);
+        let activity = self.activity.observe_admitted(
+            &thread.id,
+            state,
+            &self.atoms,
+            &active,
+            crate::studio::ids::unix_seconds(),
+        );
         let mut projection = CurrentProjection::empty(super::status(state));
         projection.sources = self
             .sources
@@ -217,7 +252,7 @@ impl CurrentOwner {
         let mut contents = BTreeMap::new();
         let mut entries = BTreeMap::new();
         let mut next_position = self.next_position;
-        for (id, position, block, _ordinal, text_channel, _model_part) in active {
+        for (id, position, block, text_channel, _model_part) in active {
             let key = position.as_key();
             let owner = ContentOwner::Item {
                 item_id: id.clone(),
@@ -285,7 +320,6 @@ impl CurrentOwner {
             .state
             .as_ref()
             .filter(|_| self.interaction_revision == Some(state.interaction_collection_revision));
-        let mut interactions = Vec::new();
         if cached_business.is_none() {
             for id in state.permissions.keys().chain(state.interactions.keys()) {
                 if let Some(interaction) =
@@ -310,7 +344,6 @@ impl CurrentOwner {
                         payload: Arc::from(serde_json::to_vec(&interaction)?),
                     };
                     entries.insert((entry.collection.clone(), entry.entry_id.clone()), entry);
-                    interactions.push(interaction);
                 }
             }
         }
@@ -369,12 +402,11 @@ impl CurrentOwner {
                 self.cold_revision.is_some(),
             )?,
         });
-        let (mut entries, mut by_position, interactions, mut business_bytes) =
+        let (mut entries, mut by_position, mut business_bytes) =
             if let Some(previous) = cached_business {
                 (
                     previous.entries.clone(),
                     previous.by_position.clone(),
-                    previous.interactions.clone(),
                     previous.business_bytes,
                 )
             } else {
@@ -406,88 +438,14 @@ impl CurrentOwner {
                         )
                     })
                     .collect();
-                let business_bytes = entries
-                    .values()
-                    .fold(0u64, |bytes, entry| {
-                        bytes
-                            .saturating_add(entry.payload.len() as u64)
-                            .saturating_add(entry.entry_id.len() as u64)
-                            .saturating_add(128)
-                    })
-                    .saturating_add(interactions.iter().fold(0u64, |bytes, interaction| {
-                        bytes
-                            .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
-                            .saturating_add(super::live::interaction_request_bytes(interaction))
-                    }))
-                    .saturating_add(if interactions.is_empty() {
-                        0
-                    } else {
-                        2 * std::mem::size_of::<usize>() as u64
-                    });
-                (
-                    Arc::new(entries),
-                    Arc::new(by_position),
-                    Arc::from(interactions),
-                    business_bytes,
-                )
+                let business_bytes = entries.values().fold(0u64, |bytes, entry| {
+                    bytes
+                        .saturating_add(entry.payload.len() as u64)
+                        .saturating_add(entry.entry_id.len() as u64)
+                        .saturating_add(128)
+                });
+                (Arc::new(entries), Arc::new(by_position), business_bytes)
             };
-        let mut activity_entries = self
-            .atoms
-            .iter()
-            .filter(|atom| matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }))
-            .filter_map(|atom| {
-                super::activity_identity(atom).map(|identity| ActivityEntry {
-                    identity,
-                    atom: atom.clone(),
-                })
-            })
-            .collect::<Vec<_>>();
-        // A background-started receipt ends the foreground obligation, not the
-        // task. Its actual scheduler identity remains independently active.
-        for task in state.tasks.values().filter(|task| {
-            task.status == pl_core::thread::task::TaskStatus::Running
-                && task.acknowledgement.is_some()
-        }) {
-            let call_id = task.call_id.clone();
-            activity_entries.retain(|entry| {
-                !matches!(&entry.identity,
-                ActivityIdentity::ForegroundTool { call_id: foreground } if foreground == &call_id)
-            });
-            activity_entries.push(ActivityEntry {
-                identity: ActivityIdentity::BackgroundTool {
-                    call_id: call_id.clone(),
-                },
-                atom: ChatAtom {
-                    id: super::order::tool_id(&call_id),
-                    completion_item_id: None,
-                    completion_seq: None,
-                    source: ChatSourceId::ForegroundTurn {
-                        turn_id: task.turn_id.clone(),
-                    },
-                    source_state: None,
-                    source_order: task.started_sequence,
-                    kind: ChatAtomKind::ToolCall,
-                    delivery: ChatDeliveryKind::Independent,
-                    lifecycle: ChatAtomLifecycle::Active {
-                        started: None,
-                        status: ChatActiveStatus::Running,
-                    },
-                    turn_id: Some(task.turn_id.clone()),
-                    attempt_id: None,
-                    tool: Some(ChatToolIdentity {
-                        call_id,
-                        name: task.tool_id.clone(),
-                    }),
-                    wait: None,
-                    text_channel: None,
-                    started_at: None,
-                    finished_at: None,
-                    content_present: None,
-                    contents: Vec::new(),
-                    payload: None,
-                },
-            });
-        }
         let references = contents
             .values()
             .map(|content| (content.reference.clone(), content.clone()))
@@ -611,37 +569,22 @@ impl CurrentOwner {
                 reference.collection == "atoms" || reference.collection == "sources"
             })
         {
-            business_bytes = entries
-                .values()
-                .fold(0u64, |bytes, entry| {
-                    bytes
-                        .saturating_add(entry.payload.len() as u64)
-                        .saturating_add(entry.entry_id.len() as u64)
-                        .saturating_add(128)
-                })
-                .saturating_add(interactions.iter().fold(0u64, |bytes, interaction| {
-                    bytes
-                        .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
-                        .saturating_add(super::live::interaction_request_bytes(interaction))
-                }))
-                .saturating_add(if interactions.is_empty() {
-                    0
-                } else {
-                    2 * std::mem::size_of::<usize>() as u64
-                });
+            business_bytes = entries.values().fold(0u64, |bytes, entry| {
+                bytes
+                    .saturating_add(entry.payload.len() as u64)
+                    .saturating_add(entry.entry_id.len() as u64)
+                    .saturating_add(128)
+            });
         }
         let snapshot = Arc::new(CurrentState {
             revision: sequence,
             owner_id: owner_id.clone(),
             references: Arc::new(references),
             projection: FrozenCurrentProjection::new(projection),
-            activity_entries: activity_entries.into(),
-            source_states: self.sources.clone(),
             contents: Arc::new(contents),
             entries,
             by_position,
             active_turn,
-            interactions,
             business_bytes,
             metadata_bytes: OnceLock::new(),
         });
@@ -885,12 +828,14 @@ impl CurrentState {
                 };
                 let item = crate::ExecutionItem::new(
                     id.clone(),
-                    saved.thread_id.clone(),
-                    call.source_turn_id.clone(),
-                    0,
-                    0,
-                    0,
-                    0,
+                    crate::ItemStamp {
+                        thread_id: std::borrow::Cow::Owned(saved.thread_id.clone()),
+                        turn_id: std::borrow::Cow::Owned(call.source_turn_id.clone()),
+                        ordinal: 0,
+                        revision: 0,
+                        created_at: 0,
+                        updated_at: 0,
+                    },
                     shape,
                 );
                 let mut atom = crate::studio::runtime::chat_item::atom(&item);
@@ -904,7 +849,6 @@ impl CurrentState {
                     id,
                     key,
                     ContentBlock::from_text(&part.text),
-                    0,
                     atom.text_channel,
                     None,
                 ));
@@ -916,7 +860,6 @@ impl CurrentState {
                     id.clone(),
                     BodyKey::host(TOOL_ARGUMENTS_FIELD),
                     ContentBlock::from_text(&input.input),
-                    0,
                     None,
                     None,
                 ));
@@ -942,7 +885,6 @@ impl CurrentState {
                     id.clone(),
                     BodyKey::host(format!("{TOOL_RESULT_FIELD}:{}", part.id)),
                     ContentBlock::from_text(&part.text),
-                    0,
                     None,
                     None,
                 ));
@@ -1012,13 +954,10 @@ impl CurrentState {
             owner_id: state.owner_id.clone(),
             references: state.references.clone(),
             projection,
-            activity_entries: state.activity_entries.clone(),
-            source_states: state.source_states.clone(),
             contents: state.contents.clone(),
             entries: state.entries.clone(),
             by_position: state.by_position.clone(),
             active_turn: state.active_turn.clone(),
-            interactions: state.interactions.clone(),
             business_bytes: state.business_bytes,
             metadata_bytes: OnceLock::new(),
         })
@@ -1032,14 +971,6 @@ impl CurrentState {
             entries
                 .saturating_add(std::mem::size_of::<OnceLock<u64>>() as u64)
                 .saturating_add(self.projection.retained_bytes())
-                .saturating_add(
-                    serde_json::to_vec(self.source_states.as_ref())
-                        .map_or(u64::MAX, |bytes| bytes.len() as u64),
-                )
-                .saturating_add(
-                    serde_json::to_vec(self.activity_entries.as_ref())
-                        .map_or(u64::MAX, |bytes| bytes.len() as u64),
-                )
         })
     }
 }
@@ -1156,14 +1087,7 @@ mod tests {
                 &thread,
                 &state,
                 1,
-                [(
-                    "part".into(),
-                    BodyKey::Body,
-                    block.clone(),
-                    1,
-                    channel,
-                    None,
-                )],
+                [("part".into(), BodyKey::Body, block.clone(), channel, None)],
             )?;
             let preview = &current.projection().previews[0];
             let generation = current
@@ -1211,7 +1135,7 @@ mod tests {
             &thread,
             &state,
             1,
-            [("active".into(), BodyKey::Body, block.clone(), 1, None, None)],
+            [("active".into(), BodyKey::Body, block.clone(), None, None)],
         )?;
         assert!(
             first
@@ -1228,14 +1152,7 @@ mod tests {
             &thread,
             &state,
             1,
-            [(
-                "active".into(),
-                BodyKey::Body,
-                appended.clone(),
-                1,
-                None,
-                None,
-            )],
+            [("active".into(), BodyKey::Body, appended.clone(), None, None)],
         )?;
         let content = next.contents.values().next().unwrap();
         assert!(
@@ -1255,14 +1172,7 @@ mod tests {
             &thread,
             &state,
             2,
-            [(
-                "active".into(),
-                BodyKey::Body,
-                appended.clone(),
-                1,
-                None,
-                None,
-            )],
+            [("active".into(), BodyKey::Body, appended.clone(), None, None)],
         )?;
         assert!(
             frozen.entries.is_empty(),
@@ -1281,7 +1191,6 @@ mod tests {
                 "active".into(),
                 BodyKey::Body,
                 ContentBlock::from_text(&appended.text()),
-                1,
                 None,
                 None,
             )],
@@ -1350,7 +1259,6 @@ mod business_tests {
                 "part".into(),
                 BodyKey::Body,
                 ContentBlock::from_text("token"),
-                1,
                 None,
                 None,
             )],
@@ -1358,13 +1266,11 @@ mod business_tests {
         assert_eq!(progress.business_refs(), references);
         assert!(Arc::ptr_eq(&first.entries, &progress.entries));
         assert!(Arc::ptr_eq(&first.by_position, &progress.by_position));
-        assert!(Arc::ptr_eq(&first.interactions, &progress.interactions));
         assert!(progress.projection().collections.is_empty());
         let new = state(4, "# New plan\n\nRevised steps")?;
         let next = owner.observe(&thread, &new, 11, [])?;
         assert_eq!(next.business_refs().interactions, references.interactions);
         assert!(Arc::ptr_eq(&first.entries, &next.entries));
-        assert!(Arc::ptr_eq(&first.interactions, &next.interactions));
         assert_ne!(next.business_refs().plan, references.plan);
         let old_ref = references.plan.unwrap().document.unwrap();
         assert!(

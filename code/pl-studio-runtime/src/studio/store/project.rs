@@ -9,7 +9,7 @@ use sea_orm::{
 
 use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
 use crate::studio::catalog::CatalogStore;
-use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
+use crate::studio::paths::{SqliteFileMode, StudioPaths, sqlite_family_paths, sqlite_file_options};
 use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
@@ -37,10 +37,6 @@ enum InstallationState {
 }
 
 impl StudioStore {
-    pub async fn default_app() -> Result<Self> {
-        Self::open_database(&default_db_path()?).await
-    }
-
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_database(path.as_ref()).await
     }
@@ -51,9 +47,8 @@ impl StudioStore {
         validate_database(&db).await?;
         let home = tempfile::Builder::new()
             .prefix("anywork-memory-store-")
-            .tempdir()?
-            .keep();
-        let paths = StudioPaths::resolve(Some(home))?;
+            .tempdir()?;
+        let paths = StudioPaths::resolve(Some(home.path().to_path_buf()))?;
         let calls =
             crate::studio::storage::calls::CallsStore::open(&paths.calls_database()).await?;
         // A brand-new in-memory store for tests starts from empty canonical documents and never
@@ -70,6 +65,8 @@ impl StudioStore {
             attachment_lock: Default::default(),
             history_admission: Default::default(),
             paths,
+            legacy_retirements: Default::default(),
+            _memory_home: Some(std::sync::Arc::new(home)),
         };
         Ok(store)
     }
@@ -110,9 +107,6 @@ impl StudioStore {
         };
         if installation == InstallationState::Existing {
             for (path, name) in [
-                (paths.catalog_file(), "catalog.toml"),
-                (paths.settings_file(), "settings.toml"),
-                (paths.workspaces_file(), "workspaces.toml"),
                 (paths.database(), "studio.sqlite"),
                 (paths.calls_database(), "calls/calls.sqlite"),
             ] {
@@ -139,15 +133,19 @@ impl StudioStore {
         .await?;
         let initialization = async {
             migrate(&db).await?;
-            validate_database(&db).await
+            validate_database(&db).await?;
+            super::schema::load_legacy_retirements(&db).await
         }
         .await;
-        if let Err(error) = initialization {
-            return Err(match db.close().await {
-                Ok(()) => error.context("Studio database initialization failed"),
-                Err(cleanup) => crate::studio::startup::cleanup_error(cleanup).context(error),
-            });
-        }
+        let legacy_retirements = match initialization {
+            Ok(ids) => std::sync::Arc::new(ids),
+            Err(error) => {
+                return Err(match db.close().await {
+                    Ok(()) => error.context("Studio database initialization failed"),
+                    Err(cleanup) => crate::studio::startup::cleanup_error(cleanup).context(error),
+                });
+            }
+        };
         // Canonical TOML is the only fact source for directory and settings reads. A missing or
         // corrupt document on an installation that already owns state fails startup instead of
         // being replaced by an empty default; no retired SQLite table is read here.
@@ -185,6 +183,8 @@ impl StudioStore {
             attachment_lock: Default::default(),
             history_admission: Default::default(),
             paths,
+            legacy_retirements,
+            _memory_home: None,
         };
         Ok(store)
     }
@@ -447,7 +447,8 @@ async fn inspect_database(path: &Path) -> Result<()> {
     .await;
     let validation = match version {
         Ok(STUDIO_DATABASE_SCHEMA_VERSION) => validate_database(&database).await,
-        // 上一个大版本的 v2 库可以在打开后原地升级；更早的 dev 版本仍交给启动入口。
+        // 上一个大版本的 v2 库可以在打开后原地升级；其余版本已在 preflight 以
+        // `UnsupportedSchema` 拒绝，这里只保留防御性兜底。
         Ok(0) => Ok(()),
         Ok(version)
             if (UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..STUDIO_DATABASE_SCHEMA_VERSION)
@@ -455,7 +456,6 @@ async fn inspect_database(path: &Path) -> Result<()> {
         {
             Ok(())
         }
-        Ok(19..=21) => Err(StudioDatabaseError::StorageMigrationRequired.into()),
         Ok(found) => Err(StudioDatabaseError::UnsupportedSchema {
             found,
             supported: STUDIO_DATABASE_SCHEMA_VERSION,
@@ -488,26 +488,9 @@ async fn validate_database_version(db: &DatabaseConnection, expected_version: i6
         .into());
     }
 
-    let rows = db
-        .query_all_raw(Statement::from_string(
-            DatabaseBackend::Sqlite,
-            "PRAGMA quick_check".to_string(),
-        ))
-        .await?;
-    let results = rows
-        .into_iter()
-        .map(|row| row.try_get::<String>("", "quick_check"))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    if results.as_slice() != ["ok"] {
-        return Err(StudioDatabaseError::CorruptDatabase {
-            reason: results.join("; "),
-        }
-        .into());
-    }
-
     let actual = schema_fingerprint(db).await?;
     let expected = expected_schema_fingerprint().await?;
-    if actual != expected {
+    if actual != *expected {
         return Err(StudioDatabaseError::CorruptDatabase {
             reason: "incompatible schema fingerprint".into(),
         }
@@ -527,12 +510,22 @@ async fn database_schema_version(db: &impl sea_orm::ConnectionTrait) -> Result<i
     Ok(row.try_get("", "user_version")?)
 }
 
-async fn expected_schema_fingerprint() -> Result<String> {
-    let database = connect_memory().await?;
-    migrate(&database).await?;
-    let fingerprint = schema_fingerprint(&database).await;
-    database.close().await?;
-    fingerprint
+async fn expected_schema_fingerprint() -> Result<&'static String> {
+    static FINGERPRINT: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+    FINGERPRINT
+        .get_or_try_init(|| async {
+            let database = connect_memory().await?;
+            let fingerprint = async {
+                migrate(&database).await?;
+                schema_fingerprint(&database).await
+            }
+            .await;
+            let close = database.close().await;
+            let fingerprint = fingerprint?;
+            close?;
+            Ok(fingerprint)
+        })
+        .await
 }
 
 async fn schema_fingerprint(db: &DatabaseConnection) -> Result<String> {
@@ -593,7 +586,7 @@ async fn resolve_configured_database_path(path: &Path) -> Result<PathBuf> {
 }
 
 async fn database_family_exists(path: &Path) -> Result<bool> {
-    for member in database_family_paths(path) {
+    for member in sqlite_family_paths(path) {
         if tokio::fs::try_exists(member).await? {
             return Ok(true);
         }
@@ -617,20 +610,6 @@ fn validate_database_family_member(path: &Path, expected_parent: &Path) -> Resul
     Ok(())
 }
 
-fn database_family_paths(path: &Path) -> [PathBuf; 3] {
-    [
-        path.to_path_buf(),
-        sidecar_path(path, "-wal"),
-        sidecar_path(path, "-shm"),
-    ]
-}
-
-fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(suffix);
-    PathBuf::from(value)
-}
-
 #[cfg(test)]
 mod major_version_storage_tests {
     use super::*;
@@ -647,7 +626,7 @@ mod major_version_storage_tests {
             } else {
                 paths.database()
             };
-            for member in database_family_paths(&path) {
+            for member in sqlite_family_paths(&path) {
                 if member.exists() {
                     tokio::fs::remove_file(member).await?;
                 }
@@ -659,11 +638,7 @@ mod major_version_storage_tests {
                     .err()
                     .context("missing database must not be recreated")?;
                 assert!(format!("{error:#}").contains("is missing on an existing installation"));
-                assert!(
-                    database_family_paths(&path)
-                        .iter()
-                        .all(|path| !path.exists())
-                );
+                assert!(sqlite_family_paths(&path).iter().all(|path| !path.exists()));
                 assert_eq!(tokio::fs::read(paths.catalog_file()).await?, catalog);
             }
         }

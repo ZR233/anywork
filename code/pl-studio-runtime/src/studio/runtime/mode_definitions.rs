@@ -17,7 +17,7 @@ impl StudioRuntime {
         self.config_runtime.read_thread_mode_definition(mode_id)
     }
 
-    pub async fn save_thread_mode_definition(
+    pub fn save_thread_mode_definition(
         &self,
         operation_id: &str,
         expected_revision: u64,
@@ -30,7 +30,7 @@ impl StudioRuntime {
         self.finish_mode_command(operation_id, outcome)
     }
 
-    pub async fn delete_thread_mode_definition(
+    pub fn delete_thread_mode_definition(
         &self,
         operation_id: &str,
         expected_revision: u64,
@@ -43,7 +43,7 @@ impl StudioRuntime {
         self.finish_mode_command(operation_id, outcome)
     }
 
-    pub async fn reload_thread_mode_definitions(
+    pub fn reload_thread_mode_definitions(
         &self,
         operation_id: &str,
         expected_revision: u64,

@@ -58,12 +58,10 @@ impl StudioStore {
             .collect()
     }
 
-    /// Cleanup includes archived descendants without replaying their journals.
-    pub async fn list_threads_for_archive(
-        &self,
-        root_thread_id: &str,
-    ) -> Result<Vec<ThreadRecord>> {
-        session_tree(self.catalog(), root_thread_id, true)
+    /// Cleanup reads the whole root tree including archived descendants, without replaying
+    /// their journals. The catalog already carries the persisted status summary.
+    pub async fn list_threads_for_root(&self, root_thread_id: &str) -> Result<Vec<ThreadRecord>> {
+        session_tree(self.catalog(), root_thread_id)
             .into_iter()
             .flat_map(|snapshot| {
                 snapshot.agents.into_iter().map(move |agent| {
@@ -76,17 +74,12 @@ impl StudioStore {
             .collect()
     }
 
-    /// Active descendants of one root. The catalog already carries the persisted status summary.
-    pub async fn list_threads_for_root(&self, root_thread_id: &str) -> Result<Vec<ThreadRecord>> {
-        self.list_threads_for_archive(root_thread_id).await
-    }
-
     /// Cold baseline for explicit archive restoration, including archived descendants.
     pub(in crate::studio) async fn read_directory_tree(
         &self,
         root_id: &str,
     ) -> Result<Vec<crate::studio::records::DirectoryMember>> {
-        session_tree(self.catalog(), root_id, true)
+        session_tree(self.catalog(), root_id)
             .into_iter()
             .flat_map(|snapshot| {
                 snapshot.agents.into_iter().map(move |agent| {
@@ -154,11 +147,7 @@ impl StudioStore {
     }
 }
 
-fn session_tree(
-    catalog: &CatalogStore,
-    root_id: &str,
-    include_archived: bool,
-) -> Vec<SessionDirectorySnapshot> {
+fn session_tree(catalog: &CatalogStore, root_id: &str) -> Vec<SessionDirectorySnapshot> {
     let Some(session) = catalog
         .agent_by_thread(root_id)
         .filter(|agent| agent.is_root_agent())
@@ -170,9 +159,6 @@ fn session_tree(
     else {
         return Vec::new();
     };
-    if !include_archived && session.archived {
-        return Vec::new();
-    }
     let agents = catalog.agents_for_session(&session.session_id);
     vec![SessionDirectorySnapshot { session, agents }]
 }

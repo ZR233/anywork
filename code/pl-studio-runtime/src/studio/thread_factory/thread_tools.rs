@@ -12,8 +12,7 @@ use pl_tool::workspace::ToolWorkspace;
 use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
-    pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
-    pub assignment: Option<&'a crate::AgentWorkspaceAssignmentSnapshot>,
+    pub workspace_usage: crate::studio::worktree::worktree_lease::WorkspaceUsageLease,
     pub thread_id: &'a str,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
@@ -22,7 +21,6 @@ pub(super) struct ThreadToolAssembly<'a> {
     pub root_thread_id: &'a str,
     pub workspace: ToolWorkspace,
     pub store: FileResourceStore,
-    pub helper_source: crate::worker_assets::RemoteHelperSource,
 }
 
 pub(super) struct PreparedThreadTools {
@@ -76,12 +74,13 @@ impl StudioThreadFactory {
     pub(super) async fn prepare_thread_tools(
         &self,
         mut assembly: ThreadToolAssembly<'_>,
+        assignment: Option<&crate::AgentWorkspaceAssignmentSnapshot>,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
 
         let binding = super::tool_bindings::ToolBinding {
-            assignment: assembly.assignment.cloned(),
+            assignment: assignment.cloned(),
             workspace_usage: assembly.workspace_usage.downgrade(),
             lifetime: std::sync::Arc::new(super::tool_bindings::ThreadToolLifetime::new(
                 self.lsp_binding_updates(),
@@ -171,7 +170,6 @@ impl StudioThreadFactory {
         preparation: CatalogPreparation,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
-            assignment: _,
             workspace_usage,
             thread_id,
             cancellation,
@@ -181,7 +179,6 @@ impl StudioThreadFactory {
             root_thread_id,
             workspace,
             store,
-            helper_source,
         } = assembly;
         let bot = match &preparation {
             CatalogPreparation::Initial => {
@@ -236,8 +233,8 @@ impl StudioThreadFactory {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
         let identity = match &remote {
-            Some(host) => crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
-                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
+            Some(host) => crate::studio::worktree::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::worktree::worktree_lease::WorkspaceEndpoint::from_profile(Some(
                     &host.profile,
                 )),
                 host.files().canonical_path().into(),
@@ -335,7 +332,6 @@ impl StudioThreadFactory {
             StudioWorkspaceTools {
                 binding,
                 store,
-                helper_source: helper_source.clone(),
                 host_scratch: self
                     .services
                     .store
@@ -463,19 +459,16 @@ impl StudioThreadFactory {
             let root_str = root.to_str().ok_or_else(|| {
                 ThreadAssemblyError::Identity("LSP workspace path is not UTF-8".into())
             })?;
-            let host = pl_lsp::host::ExecutorLspHost::new(executor.clone(), root_str)
+            let host = self
+                .lsp_host_binding(&execution, remote.is_some())
                 .map_err(|error| resource_error("bind LSP executor", error))?;
-            let host: Option<Arc<dyn pl_lsp::host::LspHostBackend>> = Some(Arc::new(host));
-            let defaults = remote
-                .is_none()
-                .then(|| self.services.store.paths().home().join("lsp/host"));
             lsp_lease = if let Some(lease) = previous {
-                if let Err(error) = lease.refresh_configuration(host, defaults).await {
+                if let Err(error) = host.refresh(&lease).await {
                     tracing::warn!(%error, thread_id, "LSP directory refresh failed");
                 }
                 Some(lease)
             } else {
-                match lsp.acquire_workspace(&root, host, defaults).await {
+                match host.acquire(&lsp, &workspace).await {
                     Ok(lease) => Some(lease),
                     Err(error) => {
                         tracing::warn!(%error, thread_id, "LSP directory acquisition failed");

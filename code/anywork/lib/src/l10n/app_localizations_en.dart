@@ -5359,16 +5359,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get acpFailureCodeCancelled => 'Cancelled';
 
   @override
-  String get acpFailureCodeStaleOperation => 'Operation was superseded';
-
-  @override
   String get acpFailureCodeConfigChanged => 'Configuration changed';
 
   @override
   String get acpFailureCodeCleanup => 'Cleanup failed';
-
-  @override
-  String get acpFailureCodeInternal => 'Internal error';
 
   @override
   String get acpFailureStageProcess => 'during process start';

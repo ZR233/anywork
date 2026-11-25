@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use futures::FutureExt;
-use futures::future::BoxFuture;
 use pl_model::config::AccountConfig;
 use pl_model::protocol::ProtocolEndpoint;
 use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -402,12 +400,14 @@ async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageQueryOutco
     }
 }
 
-type AccountUsageQueryFuture = BoxFuture<'static, crate::Result<AccountUsageValue>>;
-
-async fn account_usage_data(
+async fn account_usage_data<Query, QueryFuture>(
     provider: AccountConfig,
-    query: impl FnOnce(ProtocolEndpoint) -> AccountUsageQueryFuture,
-) -> AccountUsageQueryOutcome {
+    query: Query,
+) -> AccountUsageQueryOutcome
+where
+    Query: FnOnce(ProtocolEndpoint) -> QueryFuture,
+    QueryFuture: std::future::Future<Output = crate::Result<AccountUsageValue>>,
+{
     if provider
         .resolved_bearer_token()
         .as_ref()
@@ -436,10 +436,10 @@ async fn account_usage_data(
     }
 }
 
-fn query_deepseek(info: ProtocolEndpoint) -> AccountUsageQueryFuture {
-    async move { query_deepseek_balance(&info).await }.boxed()
+async fn query_deepseek(info: ProtocolEndpoint) -> crate::Result<AccountUsageValue> {
+    query_deepseek_balance(&info).await
 }
 
-fn query_zhipu(info: ProtocolEndpoint) -> AccountUsageQueryFuture {
-    async move { query_zhipu_coding_plan_usage(&info).await }.boxed()
+async fn query_zhipu(info: ProtocolEndpoint) -> crate::Result<AccountUsageValue> {
+    query_zhipu_coding_plan_usage(&info).await
 }

@@ -13,8 +13,6 @@ use anyhow::Result;
 use crate::studio::ids::unix_seconds;
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
 use crate::studio::store::StudioStore;
-use crate::studio::store_support::non_empty_title;
-
 /// 一次目录事实提交。
 ///
 /// 由内存目录 owner（ProductEventBus 侧命令）在更新热集合同一临界区构建；
@@ -28,6 +26,27 @@ pub(in crate::studio) struct DirectoryDelta {
     pub(in crate::studio) thread_deletions: Vec<String>,
     pub(in crate::studio) project_upserts: Vec<ProjectDirectoryRecord>,
     pub(in crate::studio) project_removals: Vec<ProjectRemoval>,
+}
+
+fn non_empty_title(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        "新会话".to_string()
+    } else {
+        title.chars().take(80).collect()
+    }
+}
+
+/// Facts required to register one session and its root member together.
+#[derive(Debug, Clone)]
+pub(in crate::studio) struct SessionDirectoryUpsert<'a> {
+    pub(in crate::studio) session_id: String,
+    pub(in crate::studio) workspace_id: &'a str,
+    pub(in crate::studio) title: &'a str,
+    pub(in crate::studio) mode: ThreadModeId,
+    pub(in crate::studio) workspace_mode: ThreadWorkspaceMode,
+    pub(in crate::studio) workspace_path: String,
+    pub(in crate::studio) role: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -48,16 +67,18 @@ impl DirectoryDelta {
     }
 
     /// 注册一个新会话：会话事实与主成员事实一次提交，Thread ID 原字节保留。
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::studio) fn register_session(
-        session_id: String,
-        workspace_id: &str,
-        title: &str,
-        mode: ThreadModeId,
-        workspace_mode: ThreadWorkspaceMode,
-        workspace_path: String,
-        role: &str,
+        upsert: SessionDirectoryUpsert<'_>,
     ) -> (Self, SessionDirectoryRecord, AgentDirectoryRecord) {
+        let SessionDirectoryUpsert {
+            session_id,
+            workspace_id,
+            title,
+            mode,
+            workspace_mode,
+            workspace_path,
+            role,
+        } = upsert;
         let now = unix_seconds();
         let session = SessionDirectoryRecord {
             session_id: session_id.clone(),
@@ -192,6 +213,19 @@ pub(in crate::studio) struct ProjectDirectoryRecord {
     pub(in crate::studio) updated_at: i64,
     pub(in crate::studio) last_opened_at: Option<i64>,
     pub(in crate::studio) closed: bool,
+}
+
+impl From<&ProjectDirectoryRecord> for crate::studio::records::WorkspaceRecord {
+    fn from(record: &ProjectDirectoryRecord) -> Self {
+        crate::studio::records::WorkspaceRecord::from_directory_projection(
+            record.id.clone(),
+            record.kind,
+            record.name.clone(),
+            record.path.clone(),
+            record.ssh_alias.clone(),
+            record.updated_at,
+        )
+    }
 }
 
 /// 在 writer 已开启的事务中幂等应用一次目录 delta。

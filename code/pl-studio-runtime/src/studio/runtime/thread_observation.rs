@@ -546,7 +546,7 @@ pub(super) struct ObservationServices {
     pub(super) events: ProductEventBus,
     pub(super) performance: ModelPerformanceOwner,
     pub(super) sessions: crate::session::WeakSessionTable,
-    pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    pub(super) writer: crate::studio::storage::write_behind::ThreadWriteBehindWriter,
     pub(super) run_export: Option<std::sync::Arc<super::run_export::RunExportCoordinator>>,
 }
 impl ObservationServices {
@@ -638,35 +638,22 @@ impl ThreadObservations {
     }
 
     pub(super) fn install(&self) -> Result<()> {
-        let observations = Arc::downgrade(&self.0);
         self.0
             .projector
             .sessions
             .upgrade()
             .context("Session table closed")?
-            .push_installer(Arc::new(move |session| {
-                let observations = observations
-                    .upgrade()
-                    .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
-                ThreadObservations(observations)
-                    .install_session(session)
-                    .map_err(
-                        |source| crate::thread_assembler::ThreadAssemblyError::Resource {
-                            operation: "install session observations",
-                            source: source.into_boxed_dyn_error(),
-                        },
-                    )
-            }))?;
+            .push_assignment(self.session_assignment())?;
         Ok(())
     }
 
-    fn install_session(&self, session: &crate::session::SessionRuntime) -> Result<()> {
+    fn session_assignment(&self) -> crate::thread_assembler::SessionAssignment {
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let synchronizing = owner.clone();
         let closing = owner.clone();
         let terminal = owner.clone();
-        session.observe_assembly(
+        crate::thread_assembler::SessionAssignment::observation(
             move |id, thread, resources| {
                 if let Some(owner) = owner.upgrade() {
                     ThreadObservations(owner).observe(id, thread, resources);
@@ -737,8 +724,7 @@ impl ThreadObservations {
                         )
                 })
             },
-        )?;
-        Ok(())
+        )
     }
 
     fn cancel_for_deletion(&self, id: &str) {
@@ -1303,7 +1289,7 @@ impl LiveOwner {
                         )?;
                         // Current starts a new runtime epoch; it must not replay R1 history into
                         // R2's live publication rights. Late facts query HistoryReader by owner.
-                        projection.restore_current(&thread, &snapshot).await?;
+                        projection.restore_current(&thread, &snapshot)?;
                         let baseline = projection.current_state();
                         Ok(RetainedProjection {
                             projection,
@@ -1467,8 +1453,7 @@ impl LiveOwner {
         let projected = self
             .retained
             .projection
-            .prepare(&self.thread, effect, &write.state, true)
-            .await;
+            .prepare(&self.thread, effect, &write.state, true);
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
             Err(error) => {
@@ -1866,11 +1851,10 @@ impl LiveOwner {
         write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
-        let projected = self
-            .retained
-            .projection
-            .prepare_committed(&self.thread, &write.effect, &write.state)
-            .await;
+        let projected =
+            self.retained
+                .projection
+                .prepare_committed(&self.thread, &write.effect, &write.state);
         let prepared = match projected {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -1911,7 +1895,6 @@ impl LiveOwner {
         self.retained
             .projection
             .stream(&self.thread, snapshot)
-            .await
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
         self.observe_runtime(snapshot).await?;
         self.observe_activity(snapshot).await?;

@@ -7,7 +7,7 @@ use crate::{
     },
     studio::{
         ThreadRecord, WorkspaceRecord,
-        agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseState},
+        worktree::worktree_lease::{WorktreeLease, WorktreeLeaseState},
     },
     thread_assembler::ThreadAssemblyError,
 };
@@ -275,7 +275,7 @@ impl StudioThreadFactory {
                         let lease = self.services.worktrees.get(&root.agent.thread_id).ok_or(
                             ReviewWorkspaceError::Invalid("shared root Session lease is missing"),
                         )?;
-                        crate::studio::agent_host::workspace_preparation::validate_root_session_lease(&lease, &project, &root.agent.thread_id)?;
+                        crate::studio::worktree::workspace_preparation::validate_root_session_lease(&lease, &project, &root.agent.thread_id)?;
                         let (repository_root, repository) = self
                             .review_repository_manager(
                                 &project,
@@ -431,16 +431,12 @@ impl StudioThreadFactory {
                 .clone(),
             None => self.services.local_executor.clone(),
         };
-        let backend = |_root: &Path,
-                       _canonical_repository: bool|
-         -> Result<Arc<dyn WorktreeBackend>, ReviewWorkspaceError> {
-            Ok(Arc::new(ExecutorWorktreeBackend::new(executor.clone())))
-        };
-        let resolver = backend(project_root, false)?;
+        let backend: Arc<dyn WorktreeBackend> =
+            Arc::new(ExecutorWorktreeBackend::new(executor.clone()));
+        let resolver = backend.as_ref();
         let repository_root =
-            WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root).await?;
-        let repository =
-            WorktreeManager::new(repository_root.clone(), backend(&repository_root, true)?);
+            WorktreeManager::resolve_repository_root(resolver, project_root).await?;
+        let repository = WorktreeManager::new(repository_root.clone(), backend);
         Ok((repository_root, repository))
     }
 }
@@ -453,7 +449,7 @@ pub(super) fn verify_worktree_declarations(
     project: &WorkspaceRecord,
     repository_root: &Path,
 ) -> Result<(), WorktreeError> {
-    use crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind;
+    use crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind;
     let mismatch = |reason: &str| WorktreeError::IdentityMismatch(reason.into());
     let remote = project.ssh_alias.is_some();
     if lease.owner_kind != WorktreeLeaseOwnerKind::Child || lease.owner_thread_id != owner.id {

@@ -132,11 +132,8 @@ AcpAuthFailureCodeView _acpFailureCodeFromFrb(
     AcpAuthFailureCodeView.resourceLimit,
   frb.BridgeAcpAuthFailureCode.cancelled => AcpAuthFailureCodeView.cancelled,
   frb.BridgeAcpAuthFailureCode.cleanup => AcpAuthFailureCodeView.cleanup,
-  frb.BridgeAcpAuthFailureCode.staleOperation =>
-    AcpAuthFailureCodeView.staleOperation,
   frb.BridgeAcpAuthFailureCode.configChanged =>
     AcpAuthFailureCodeView.configChanged,
-  frb.BridgeAcpAuthFailureCode.internal => AcpAuthFailureCodeView.internal,
 };
 
 AcpAuthStageView _acpStageFromFrb(frb.BridgeAcpAuthStage value) =>

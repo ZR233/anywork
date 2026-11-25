@@ -114,6 +114,8 @@ impl SessionRuntime {
 }
 
 impl AgentServices {
+    /// Restart resumes only saved explicit close jobs; the join/cleanup progress is the same one
+    /// an explicit close runs after freezing its intents.
     async fn resume_child_close_tree(
         &self,
         owner: SessionRuntime,
@@ -126,36 +128,11 @@ impl AgentServices {
         let _seals = owner
             .seal_agent_close(&ids, WorkspaceRelease::Preserve)
             .await?;
-        let mut failures = Vec::new();
-        for (_, thread) in &targets {
-            if let Some(handle) = owner.observed_thread(&thread.id) {
-                handle.interrupt();
-            }
-        }
-        for (_, thread) in &targets {
-            if let Err(error) = self.close_saved_child(&owner, thread).await {
-                self.factory
-                    .record_child_close_error(&thread.id, &error)
-                    .await?;
-                failures.push(format!("{}: {error:#}", thread.id));
-            }
-        }
-        for (_, thread) in &targets {
-            if self
-                .store
-                .agent_close(&thread.id)
-                .await?
-                .is_some_and(|record| record.execution_closed)
-            {
-                match self.factory.finish_child_worktree_cleanup(thread).await {
-                    Ok((_, Some(error))) => {
-                        failures.push(format!("{}: {}", thread.id, error.message))
-                    }
-                    Err(error) => failures.push(format!("{}: {error:#}", thread.id)),
-                    Ok((_, None)) => {}
-                }
-            }
-        }
+        let ordered = targets
+            .into_iter()
+            .map(|(_, thread)| thread)
+            .collect::<Vec<_>>();
+        let failures = self.join_closed_children(&owner, &ordered).await;
         ensure!(failures.is_empty(), "{}", failures.join("; "));
         Ok(())
     }

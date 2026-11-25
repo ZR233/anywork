@@ -2,33 +2,27 @@ use crate::{BotDiagnostic, StudioError, StudioErrorCode};
 
 /// 飞书协议失败。保留安全类别与平台错误码，不携带 secret、正文或票据 URL。
 #[derive(Debug, Clone)]
-pub enum FeishuError {
-    Protocol {
-        kind: FeishuErrorKind,
-        message: String,
-        retryable: bool,
-        platform_code: Option<String>,
-        source: Option<std::sync::Arc<dyn std::error::Error + Send + Sync>>,
-    },
+pub struct FeishuError {
+    kind: FeishuErrorKind,
+    message: String,
+    retryable: bool,
+    platform_code: Option<String>,
+    source: Option<std::sync::Arc<dyn std::error::Error + Send + Sync>>,
 }
 
 impl std::fmt::Display for FeishuError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Protocol { kind, message, .. } => write!(formatter, "{kind:?}: {message}"),
-        }
+        write!(formatter, "{:?}: {}", self.kind, self.message)
     }
 }
 
 impl std::error::Error for FeishuError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            // Return the Arc's pointee, not Arc's own Error implementation (which would
-            // skip the underlying root error when enumerating source()).
-            Self::Protocol { source, .. } => source
-                .as_deref()
-                .map(|source| source as &(dyn std::error::Error + 'static)),
-        }
+        // Return the Arc's pointee, not Arc's own Error implementation (which would
+        // skip the underlying root error when enumerating source()).
+        self.source
+            .as_deref()
+            .map(|source| source as &(dyn std::error::Error + 'static))
     }
 }
 
@@ -53,7 +47,7 @@ impl FeishuError {
         retryable: bool,
         platform_code: Option<String>,
     ) -> Self {
-        Self::Protocol {
+        Self {
             kind,
             message: message.into(),
             retryable,
@@ -64,8 +58,7 @@ impl FeishuError {
 
     /// Retains storage/decoder causes without exposing them through the public diagnostic DTO.
     pub fn with_source(mut self, source: impl Into<anyhow::Error>) -> Self {
-        let Self::Protocol { source: slot, .. } = &mut self;
-        *slot = Some(std::sync::Arc::from(
+        self.source = Some(std::sync::Arc::from(
             source
                 .into()
                 .reallocate_into_boxed_dyn_error_without_backtrace(),
@@ -74,21 +67,15 @@ impl FeishuError {
     }
 
     pub fn retryable(&self) -> bool {
-        match self {
-            Self::Protocol { retryable, .. } => *retryable,
-        }
+        self.retryable
     }
 
     pub fn kind(&self) -> FeishuErrorKind {
-        match self {
-            Self::Protocol { kind, .. } => *kind,
-        }
+        self.kind
     }
 
     pub fn platform_code(&self) -> Option<&str> {
-        match self {
-            Self::Protocol { platform_code, .. } => platform_code.as_deref(),
-        }
+        self.platform_code.as_deref()
     }
 
     /// A side-effecting request without an explicit rejection may already have applied.
@@ -107,27 +94,19 @@ impl FeishuError {
     }
 
     pub fn diagnostic(&self) -> BotDiagnostic {
-        match self {
-            Self::Protocol {
-                kind,
-                message,
-                retryable,
-                platform_code,
-                ..
-            } => BotDiagnostic {
-                code: kind.label().to_string(),
-                message: message.clone(),
-                retryable: *retryable,
-                platform_code: platform_code.clone(),
-                guidance: if *kind == FeishuErrorKind::Permission
-                    && platform_code.as_deref() == Some("21001")
-                {
-                    Some("checkTenantAccessPolicy".to_string())
-                } else if platform_code.as_deref() == Some("300311") {
-                    Some("grantCardkitCardWrite".to_string())
-                } else {
-                    kind.guidance().map(str::to_string)
-                },
+        BotDiagnostic {
+            code: self.kind.label().to_string(),
+            message: self.message.clone(),
+            retryable: self.retryable,
+            platform_code: self.platform_code.clone(),
+            guidance: if self.kind == FeishuErrorKind::Permission
+                && self.platform_code.as_deref() == Some("21001")
+            {
+                Some("checkTenantAccessPolicy".to_string())
+            } else if self.platform_code.as_deref() == Some("300311") {
+                Some("grantCardkitCardWrite".to_string())
+            } else {
+                self.kind.guidance().map(str::to_string)
             },
         }
     }

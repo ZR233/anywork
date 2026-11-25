@@ -1,13 +1,10 @@
 //! Physical child resources assembled from one resolved product configuration snapshot.
 use super::StudioThreadFactory;
 use super::errors::resource_error;
-use crate::resource_store::FileResourceStore;
 use crate::thread_assembler::{
     ChildThreadRequest, StudioChildResources, StudioThreadSpec, ThreadAssemblyError,
 };
-use pl_core::context::{
-    ContextContent, ContextRecord, ContextSource, OpaquePayload, ResourceAccess,
-};
+use pl_core::context::{ContextContent, ContextRecord, ContextSource};
 use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
@@ -19,8 +16,8 @@ pub(in crate::studio) struct PreparedChildWorkspace {
     pub workspace_usage: crate::studio::WorkspaceUsageLease,
     pub assignment: crate::AgentWorkspaceAssignmentSnapshot,
     pub workspace: ToolWorkspace,
-    pub worktree: Option<crate::studio::agent_host::workspace_preparation::PreparedWorktree>,
-    pub _creation: crate::studio::agent_host::worktree_lease::WorktreeCreationGuard,
+    pub worktree: Option<crate::studio::worktree::workspace_preparation::PreparedWorktree>,
+    pub _creation: crate::studio::worktree::worktree_lease::WorktreeCreationGuard,
 }
 
 impl StudioThreadFactory {
@@ -110,10 +107,13 @@ impl StudioThreadFactory {
         self.check_bot_spawn_workspace(request, mode, &root_thread, managed_root.as_deref())
             .await?;
         let workspace_usage = self
-            .reserve_thread_workspace_use(&request.id, &parent.root_thread_id, &project)
-            .await
-            .map_err(Self::workspace_usage_error)?;
-        request.workspace_owner.retain(&workspace_usage);
+            .reserve_native_workspace(
+                &request.id,
+                &parent.root_thread_id,
+                &project,
+                &request.workspace_owner,
+            )
+            .await?;
         let bot_root = self
             .bind_bot_project(
                 &request.id,
@@ -131,14 +131,21 @@ impl StudioThreadFactory {
         } else {
             match bot_root {
                 Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
-                    &project,
-                )
-                .map_err(|error| resource_error("resolve child project root", error))?,
+                None => {
+                    let project = project.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::studio::worktree::workspace_preparation::resolved_project_root(
+                            &project,
+                        )
+                    })
+                    .await
+                    .map_err(|error| resource_error("join child project root resolver", error))?
+                    .map_err(|error| resource_error("resolve child project root", error))?
+                }
             }
         };
         let (session_root, _) =
-            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            crate::studio::worktree::workspace_preparation::root_session_workspace_root(
                 &self.services.store,
                 &self.services.worktrees,
                 &self.services.ssh_manager,
@@ -200,10 +207,10 @@ impl StudioThreadFactory {
         let (assignment, worktree) = if let Some(assignment) = reviewed {
             (assignment, None)
         } else {
-            crate::studio::agent_host::workspace_preparation::prepare_workspace(
+            crate::studio::worktree::workspace_preparation::prepare_workspace(
                 &self.services.worktrees,
                 &self.services.ssh_manager,
-                crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
+                crate::studio::worktree::workspace_preparation::WorkspacePreparation {
                     store: &self.services.store,
                     usage: &workspace_usage,
                     project: &project,
@@ -228,9 +235,8 @@ impl StudioThreadFactory {
             root_thread.session.workspace_mode,
         ))
         .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
-        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
-            .await
-            .map_err(Self::workspace_usage_error)?;
+        self.assign_native_workspace(&workspace_usage, &project, workspace.root())
+            .await?;
         Ok(PreparedChildWorkspace {
             caller_identity,
             child_identity,
@@ -245,8 +251,14 @@ impl StudioThreadFactory {
     }
 }
 
-impl StudioChildResources for StudioThreadFactory {
-    async fn prepare(
+impl StudioThreadFactory {
+    /// New-child pipeline. Workspace preparation still owns reservation, blocking root
+    /// resolution, and assignment because ACP admission uses that same boundary.
+    /// Shared steps after it are session resources, tool binding, project freeze,
+    /// worktree confirmation, persistence, export enrollment, model binding, and spec
+    /// composition. Directory registration stays before persistence so a later failure
+    /// still reaches the unpublished-child cleanup owner.
+    pub(super) async fn assemble_native_new_child(
         &self,
         request: &ChildThreadRequest,
         profile: &crate::config::ResolvedAgentProfile,
@@ -271,15 +283,13 @@ impl StudioChildResources for StudioThreadFactory {
         } = self
             .prepare_child_workspace(request, profile.profile.workspace_mode)
             .await?;
-        let store = FileResourceStore::new(
-            self.services
-                .store
-                .session_resources_dir_for(&parent.session.workspace_id, &request.id)
-                .map_err(|error| resource_error("resolve child session resources", error))?,
-        );
+        let store = self.open_session_resources(
+            &parent.session.workspace_id,
+            &request.id,
+            "resolve child session resources",
+        )?;
         let mut prepared_tools = self
-            .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
-                assignment: Some(&assignment),
+            .bind_native_tools(super::native_assembly::NativeToolBinding {
                 workspace_usage: workspace_usage.clone(),
                 thread_id: &request.id,
                 cancellation: &request.cancellation,
@@ -289,7 +299,7 @@ impl StudioChildResources for StudioThreadFactory {
                 root_thread_id: &parent.root_thread_id,
                 workspace,
                 store: store.clone(),
-                helper_source: self.services.helper_source.clone(),
+                assignment: Some(&assignment),
             })
             .await?;
         check_cancelled(request)?;
@@ -343,13 +353,11 @@ impl StudioChildResources for StudioThreadFactory {
             ("studio.instructions".into(), instruction_sources),
             (
                 "studio.project".into(),
-                OpaquePayload::new(
-                    "pl.studio.project",
-                    1,
-                    serde_json::to_string(&project)
-                        .map_err(|error| resource_error("encode child project binding", error))?,
-                )
-                .map_err(|error| resource_error("freeze child project binding", error))?,
+                Self::encode_frozen_project(
+                    &project,
+                    "encode child project binding",
+                    "freeze child project binding",
+                )?,
             ),
             (
                 crate::studio::workspace_receipt::EXTENSION.into(),
@@ -368,13 +376,13 @@ impl StudioChildResources for StudioThreadFactory {
             ),
         ]);
         if let Some(worktree) = worktree {
-            self.confirm_worktree_binding(
+            self.confirm_native_worktree(
                 &worktree.lease,
                 &workspace_usage,
                 &request.workspace_owner,
+                "activate workspace lease",
             )
-            .await
-            .map_err(|error| resource_error("activate workspace lease", error))?;
+            .await?;
         }
         self.services
             .product_events
@@ -394,23 +402,17 @@ impl StudioChildResources for StudioThreadFactory {
             .thread_snapshot(&request.id)
             .map_err(|error| resource_error("read Native child directory", error))?
             .ok_or_else(|| ThreadAssemblyError::Identity(request.id.clone()))?;
-        let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
-            self.services.store.clone(),
-            persisted_thread.clone(),
-        )
-        .await
-        .map_err(|error| resource_error("open child chat session", error))?;
+        let persistence = self
+            .open_native_persistence(persisted_thread.clone(), "open child chat session")
+            .await?;
         let export_history = self
-            .services
-            .store
-            .history(&persisted_thread.id)
-            .await
-            .map_err(|error| resource_error("open export history", error))?
-            .reader();
-        if let Some(exporter) = &self.services.run_export
-            && exporter.is_enrolled_root(&persisted_thread.root_thread_id)
-        {
-            Box::pin(exporter.register_member(
+            .open_native_export_history(&persisted_thread.id)
+            .await?;
+        if let Some(exporter) = self.enrolled_exporter(&persisted_thread.root_thread_id) {
+            Self::publish_enrolled_member(
+                exporter,
+                &persisted_thread.root_thread_id,
+                &request.id,
                 crate::studio::runtime::run_export::NewMemberRegistration {
                     root_thread_id: persisted_thread.root_thread_id.clone(),
                     thread_id: request.id.clone(),
@@ -423,51 +425,45 @@ impl StudioChildResources for StudioThreadFactory {
                     initial_effect_seq: 0,
                     history: export_history,
                 },
-            ))
-            .await;
-            if let Some(catalog) = prepared_tools.catalog.as_deref() {
-                Box::pin(exporter.record_skills_discovered(
-                    &persisted_thread.root_thread_id,
-                    &request.id,
-                    catalog,
-                ))
-                .await;
-            }
-        }
-        let model = Some({
-            crate::studio::model_binding::configured_model(
-                &profile.route,
-                &profile.config,
-                self.services.thread_modes.clone(),
-                prepared_tools.hosted,
+                prepared_tools.catalog.as_deref(),
             )
-            .map_err(|error| resource_error("prepare Native model binding", error))?
-        });
-        let spec = StudioThreadSpec {
-            workspace_usage: Some(workspace_usage),
+            .await;
+        }
+        let model = self.bind_native_model(
+            &profile.route,
+            &profile.config,
+            prepared_tools.hosted,
+            super::native_assembly::NativeModelAvailability::Bind,
+        )?;
+        let spec = Self::compose_native_spec(super::native_assembly::NativeSpecParts {
+            workspace: &prepared_tools.workspace,
             preparation_guard: prepared_tools.binding_guard.take(),
             agent_controls: Vec::new(),
-            execution: pl_core::thread::input::InputDriverOptions {
-                max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
-            },
+            max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
             id: request.id.clone(),
             parent_id: Some(request.caller.clone()),
             route: profile.route.clone(),
             model,
             current: None,
-            tools: Vec::new(),
             initial_context,
-            initial_runtime_facts: super::session_files::session_files_fact(
-                &prepared_tools.workspace,
-            )
-            .into_iter()
-            .collect(),
             initial_extensions,
-            resources: ResourceAccess::new(store),
-            capacity: Default::default(),
-            history_sink: Some(persistence),
-        };
+            store,
+            workspace_usage: Some(workspace_usage),
+            persistence,
+        });
         Ok(prepared_tools.tools.install(spec))
+    }
+}
+
+impl StudioChildResources for StudioThreadFactory {
+    async fn prepare(
+        &self,
+        request: &ChildThreadRequest,
+        profile: &crate::config::ResolvedAgentProfile,
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        super::native_assembly::NativeThreadAssemblyBuilder::new_child(self, request, profile)
+            .assemble()
+            .await
     }
 
     async fn close_published(
@@ -492,7 +488,7 @@ impl StudioChildResources for StudioThreadFactory {
         };
         // 会话自身 worktree 只由显式 Recovery 清理，不随 Thread 关闭删除。
         if lease.owner_kind
-            != crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child
+            != crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind::Child
         {
             return Ok(());
         }

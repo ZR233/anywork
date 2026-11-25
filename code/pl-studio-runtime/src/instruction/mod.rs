@@ -6,8 +6,9 @@
 
 mod assembler;
 mod migration;
+#[cfg(test)]
+mod saved_representation_tests;
 mod snapshot;
-mod structure;
 mod types;
 
 pub use assembler::InstructionAssembler;

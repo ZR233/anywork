@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use crate::{McpScope, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot};
 use anyhow::Result;
@@ -41,6 +41,76 @@ type McpCloseResult = Result<(), Arc<ThreadAssemblyError>>;
 type McpCloseCompletion =
     futures::future::Shared<futures::future::BoxFuture<'static, McpCloseResult>>;
 
+/// Serializes projection pause/resume with snapshot publication.
+///
+/// The same thread may re-enter from a synchronous emit observer. A nested pause bumps the
+/// revision before the outer publish makes its final check, so the stale snapshot is dropped.
+struct ProjectionPublication {
+    state: Mutex<ProjectionPublicationState>,
+    available: Condvar,
+}
+
+struct ProjectionPublicationState {
+    holder: Option<std::thread::ThreadId>,
+    depth: u32,
+}
+
+struct ProjectionPublicationGuard<'a> {
+    publication: &'a ProjectionPublication,
+}
+
+impl ProjectionPublication {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ProjectionPublicationState {
+                holder: None,
+                depth: 0,
+            }),
+            available: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> ProjectionPublicationGuard<'_> {
+        let thread = std::thread::current().id();
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            match state.holder {
+                Some(holder) if holder == thread => {
+                    state.depth = state.depth.saturating_add(1);
+                    return ProjectionPublicationGuard { publication: self };
+                }
+                Some(_) => {
+                    state = self
+                        .available
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                None => {
+                    state.holder = Some(thread);
+                    state.depth = 1;
+                    return ProjectionPublicationGuard { publication: self };
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ProjectionPublicationGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .publication
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.depth = state.depth.saturating_sub(1);
+        if state.depth == 0 {
+            state.holder = None;
+            drop(state);
+            self.publication.available.notify_one();
+        }
+    }
+}
+
 pub(crate) struct ThreadMcpOwner {
     pub(super) thread_id: String,
     pub(super) lifetime: Arc<ThreadToolLifetime>,
@@ -56,6 +126,9 @@ pub(crate) struct ThreadMcpOwner {
     preparation: Mutex<Option<McpCloseCompletion>>,
     projection_ready: AtomicBool,
     projection_revision: AtomicU64,
+    projection_publication: ProjectionPublication,
+    #[cfg(test)]
+    refresh_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     reconcile_requested: tokio::sync::Notify,
     shutdown: Mutex<Option<McpCloseCompletion>>,
 }
@@ -98,6 +171,9 @@ impl ThreadMcpOwner {
             preparation: Mutex::new(None),
             projection_ready: AtomicBool::new(true),
             projection_revision: AtomicU64::new(0),
+            projection_publication: ProjectionPublication::new(),
+            #[cfg(test)]
+            refresh_probe: Mutex::new(None),
             reconcile_requested: tokio::sync::Notify::new(),
             shutdown: Mutex::new(None),
         })
@@ -250,6 +326,7 @@ impl ThreadMcpOwner {
     }
 
     fn pause_projection(&self) {
+        let _publication = self.projection_publication.lock();
         let _state = self
             .state
             .lock()
@@ -259,11 +336,45 @@ impl ThreadMcpOwner {
     }
 
     fn resume_projection(&self) {
+        let _publication = self.projection_publication.lock();
         let _state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.projection_ready.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn set_refresh_probe(&self, probe: impl Fn() + Send + Sync + 'static) {
+        *self
+            .refresh_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(probe));
+    }
+
+    fn run_refresh_probe(&self) {
+        #[cfg(test)]
+        {
+            let probe = self
+                .refresh_probe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if let Some(probe) = probe {
+                probe();
+            }
+        }
+    }
+
+    fn projection_current(&self, revision: u64) -> bool {
+        revision == self.projection_revision.load(Ordering::Acquire)
+            && self.projection_ready.load(Ordering::Acquire)
+            && !self.lifetime.cancellation.is_cancelled()
+    }
+
+    fn emit_projection(&self, product_events: &ProductEventBus, snapshot: ThreadMcpStateSnapshot) {
+        let _publication = self.projection_publication.lock();
+        product_events.emit_thread_mcp_state(snapshot);
     }
 
     async fn finish_preparation(&self) -> McpCloseResult {
@@ -471,6 +582,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_connecting(&self, server_id: Option<&str>, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let servers = self
             .servers
             .lock()
@@ -509,6 +621,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_shutting_down(&self, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let mut guard = self
             .state
             .lock()
@@ -523,6 +636,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_closed(&self, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let mut guard = self
             .state
             .lock()
@@ -535,6 +649,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_reconnect_failure(&self, server_id: Option<&str>, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let servers = self
             .servers
             .lock()
@@ -590,14 +705,18 @@ impl ThreadMcpOwner {
                 server_state_from_availability(entry, availability, None)
             })
             .collect();
+        let _publication = self.projection_publication.lock();
+        // A synchronous observer can pause before this final check. The captured revision,
+        // not a new load, decides whether the snapshot computed above is still current.
+        self.run_refresh_probe();
+        if !self.projection_current(revision) {
+            return;
+        }
         let mut guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if revision != self.projection_revision.load(Ordering::Acquire)
-            || !self.projection_ready.load(Ordering::Acquire)
-            || self.lifetime.cancellation.is_cancelled()
-        {
+        if !self.projection_current(revision) {
             return;
         }
         // A definition/schema change can keep both tool count and availability unchanged.
@@ -607,15 +726,7 @@ impl ThreadMcpOwner {
             guard.servers = next_servers;
             let snapshot = guard.clone();
             drop(guard);
-            // ProductEventBus only enqueues broadcasts. Serialize that enqueue with
-            // pause_projection, not just the snapshot mutation.
-            let revision = self.projection_revision.load(Ordering::Acquire);
-            if revision == self.projection_revision.load(Ordering::Acquire)
-                && self.projection_ready.load(Ordering::Acquire)
-                && !self.lifetime.cancellation.is_cancelled()
-            {
-                product_events.emit_thread_mcp_state(snapshot);
-            }
+            product_events.emit_thread_mcp_state(snapshot);
         }
     }
 }
@@ -717,9 +828,7 @@ impl StudioThreadFactory {
                     .mcp
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner.clone());
-                self.services
-                    .product_events
-                    .emit_thread_mcp_state(initial_snapshot);
+                owner.emit_projection(&self.services.product_events, initial_snapshot);
 
                 match owner
                     .prepare_required(
@@ -785,9 +894,7 @@ impl StudioThreadFactory {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner) =
                             Some(owner.clone());
-                        self.services
-                            .product_events
-                            .emit_thread_mcp_state(initial_snapshot);
+                        owner.emit_projection(&self.services.product_events, initial_snapshot);
                         owner
                     }
                 };
@@ -1018,7 +1125,6 @@ impl StudioThreadFactory {
         &self,
         owner: &Arc<ThreadMcpOwner>,
         resolved: &ResolvedThreadMcpSnapshot,
-        reset: Option<McpResetScope>,
     ) -> Result<()> {
         self.ensure_mcp_authorization(owner, &resolved.authorization)?;
         owner.pause_projection();
@@ -1033,22 +1139,10 @@ impl StudioThreadFactory {
             .iter()
             .map(|(id, entry)| (id.clone(), entry.server.clone()))
             .collect();
-        let result = if let Some(reset) = reset {
-            let target = match &reset {
-                McpResetScope::Server { server_id } => Some(server_id.as_str()),
-                McpResetScope::All => None,
-            };
-            owner.publish_connecting(target, &self.services.product_events);
-            owner
-                .runtime
-                .reset_authorized(reset, effective, resolved.authorization.clone())
-                .await
-        } else {
-            owner
-                .runtime
-                .reconcile_authorized(effective, resolved.authorization.clone())
-                .await
-        };
+        let result = owner
+            .runtime
+            .reconcile_authorized(effective, resolved.authorization.clone())
+            .await;
         // Check even when the lower layer rejected publication: supersession schedules the
         // existing owner, but never silently retries or turns an old result into success.
         self.ensure_mcp_authorization(owner, &resolved.authorization)?;
@@ -1070,7 +1164,7 @@ impl StudioThreadFactory {
             .map_err(|_| anyhow::anyhow!("failed to read MCP settings revision"))?
             .revision;
         let resolved = self.resolve_mcp_owner_snapshot(owner)?;
-        self.apply_mcp_snapshot(owner, &resolved, None).await?;
+        self.apply_mcp_snapshot(owner, &resolved).await?;
         owner.mark_settings_revision(settings_revision);
         Ok(resolved)
     }
@@ -1216,6 +1310,54 @@ mod refresh_tests {
         );
         *resources.mcp.lock().unwrap() = Some(owner.clone());
         Ok(owner)
+    }
+
+    #[tokio::test]
+    async fn reentrant_pause_discards_the_snapshot_being_published() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let fixture = close_factory(&store)?;
+        let resources = Arc::new(NativeResources::default());
+        let owner = owner(
+            &fixture.factory,
+            &resources,
+            "projection-pause",
+            McpScope::Host,
+            temp.path(),
+        )?;
+        let paused = Arc::new(AtomicBool::new(false));
+        let probe_owner = Arc::clone(&owner);
+        let probe_flag = Arc::clone(&paused);
+        owner.set_refresh_probe(move || {
+            probe_owner.pause_projection();
+            probe_flag.store(true, Ordering::Release);
+        });
+        let mut events = fixture.factory.services.product_events.subscribe_internal();
+        let published = tokio::time::timeout(
+            Duration::from_secs(2),
+            owner.update_snapshot(&fixture.factory.services.product_events, true),
+        )
+        .await;
+        assert!(
+            published.is_ok(),
+            "reentrant pause deadlocked the projection publication gate"
+        );
+        assert!(paused.load(Ordering::Acquire));
+        assert!(!owner.projection_ready.load(Ordering::Acquire));
+        assert!(owner.projection_revision.load(Ordering::Acquire) >= 1);
+        let mut published_stale = false;
+        while let Ok(event) = events.try_recv() {
+            if let crate::StudioProductEventKind::ThreadMcpStateChanged(snapshot) = event.kind
+                && snapshot.thread_id == owner.thread_id
+            {
+                published_stale = true;
+            }
+        }
+        assert!(
+            !published_stale,
+            "a refresh snapshot must not be published after reentrant pause"
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1517,138 +1659,222 @@ mod refresh_tests {
             let mut running_refresh = None;
             let mut thread: Option<ThreadHandle> = None;
             let result = tokio::time::timeout(Duration::from_secs(30), async {
-        let (created, _) = fixture.config.create_mcp_document(&CreateMcpDocumentRequest {
-            scope: McpScope::Host, id: "barrier".into(), raw_toml: raw.clone(),
-        })?;
-        {
-            let _command = owner.command_lock.lock().await;
-            factory.reconcile_mcp_owner(&owner).await?;
-        }
-        // Keep a legitimately captured original lease for the delayed-installation proof.
-        let initial = owner.runtime.acquire_turn_lease().await?;
-        anyhow::ensure!(initial.tools().len() == 1, "actual initial state: {:?}", owner.read_snapshot());
-        let original_authorization = initial.authorization();
-        anyhow::ensure!(original_authorization.is_active());
-        owner.start_watcher(factory.clone());
-        std::fs::write(&flag, "block explicit tools/list")?;
-        running_refresh = Some({
-            let factory = factory.clone();
-            let owner = owner.clone();
-            tokio::spawn(async move {
-                if reconnect {
-                    factory.reconnect_mcp_for_owner(&owner, Some("barrier"), CancellationToken::new())
-                        .await.map(|(revision, _, _)| revision)
-                } else {
-                    factory.refresh_mcp_for_owner(&owner, CancellationToken::new())
-                        .await.map(|receipt| receipt.catalog_revision)
+                let (created, _) =
+                    fixture
+                        .config
+                        .create_mcp_document(&CreateMcpDocumentRequest {
+                            scope: McpScope::Host,
+                            id: "barrier".into(),
+                            raw_toml: raw.clone(),
+                        })?;
+                {
+                    let _command = owner.command_lock.lock().await;
+                    factory.reconcile_mcp_owner(&owner).await?;
                 }
+                // Keep a legitimately captured original lease for the delayed-installation proof.
+                let initial = owner.runtime.acquire_turn_lease().await?;
+                anyhow::ensure!(
+                    initial.tools().len() == 1,
+                    "actual initial state: {:?}",
+                    owner.read_snapshot()
+                );
+                let original_authorization = initial.authorization();
+                anyhow::ensure!(original_authorization.is_active());
+                owner.start_watcher(factory.clone());
+                std::fs::write(&flag, "block explicit tools/list")?;
+                running_refresh = Some({
+                    let factory = factory.clone();
+                    let owner = owner.clone();
+                    tokio::spawn(async move {
+                        if reconnect {
+                            factory
+                                .reconnect_mcp_for_owner(
+                                    &owner,
+                                    Some("barrier"),
+                                    CancellationToken::new(),
+                                )
+                                .await
+                                .map(|(revision, _, _)| revision)
+                        } else {
+                            factory
+                                .refresh_mcp_for_owner(&owner, CancellationToken::new())
+                                .await
+                                .map(|receipt| receipt.catalog_revision)
+                        }
+                    })
+                });
+                let (mut barrier, _) = listener.accept().await?;
+                let mut entered = [0];
+                barrier.read_exact(&mut entered).await?;
+                anyhow::ensure!(entered == [b'1']);
+                let before_discovery = owner.runtime.health_snapshot().await?.generation;
+
+                // Queue directory preparation before the configuration watcher, as in the original
+                // counterexample. A revoked runtime must reject this acquisition, not return empty success.
+                let preparation = async {
+                    let command = owner.command_lock.lock().await;
+                    let lease = owner.runtime.acquire_turn_lease().await;
+                    (command, lease)
+                };
+                tokio::pin!(preparation);
+                anyhow::ensure!(
+                    futures::poll!(&mut preparation).is_pending(),
+                    "directory preparation did not queue behind the refresh"
+                );
+                let document = created.document.clone().unwrap();
+                let (committed, scopes) = if disable {
+                    fixture
+                        .config
+                        .update_mcp_document(&UpdateMcpDocumentRequest {
+                            document: document.clone(),
+                            expected_revision: created.revision,
+                            raw_toml: raw.replace("enabled = true", "enabled = false"),
+                        })?
+                } else {
+                    fixture
+                        .config
+                        .delete_mcp_document(&DeleteMcpDocumentRequest {
+                            document: document.clone(),
+                            expected_revision: created.revision,
+                        })?
+                };
+                // Revocation is synchronous with the actual configuration commit, before notification.
+                anyhow::ensure!(
+                    !original_authorization.is_active(),
+                    "commit did not revoke the captured lease"
+                );
+                factory.reconcile_open_threads_for_scopes(&scopes).await;
+                std::fs::remove_file(&flag)?;
+                barrier.write_all(b"1").await?;
+                drop(barrier);
+                let refresh_result = running_refresh.as_mut().unwrap().await?;
+                running_refresh.take();
+                let (command, late_acquisition) = preparation.await;
+                anyhow::ensure!(
+                    owner.runtime.health_snapshot().await?.generation == before_discovery,
+                    "revoked discovery published a new runtime generation"
+                );
+                anyhow::ensure!(
+                    late_acquisition.is_err(),
+                    "a revoked current generation was exposed as a fresh lease"
+                );
+                drop(command);
+                let superseded = match refresh_result {
+                    Ok(revision) => anyhow::bail!(
+                        "stale MCP command succeeded with catalogRevision={}, current={}",
+                        revision,
+                        committed.snapshot.revision
+                    ),
+                    Err(error) => error,
+                };
+                anyhow::ensure!(
+                    superseded.to_string().contains("superseded"),
+                    "unexpected refresh refusal: {superseded}"
+                );
+
+                // Observe corrective publication through runtime events; no sleep or timer-based polling.
+                let mut updates = owner.runtime.subscribe();
+                loop {
+                    if let Ok(lease) = owner.runtime.acquire_turn_lease().await
+                        && lease.authorization().is_active()
+                        && lease.tools().is_empty()
+                    {
+                        break;
+                    }
+                    updates.recv().await?;
+                }
+                let current = factory
+                    .refresh_mcp_for_owner(&owner, CancellationToken::new())
+                    .await?;
+                anyhow::ensure!(
+                    current.catalog_revision == committed.snapshot.revision,
+                    "stable refresh did not report the new configuration revision"
+                );
+                anyhow::ensure!(
+                    current
+                        .state
+                        .servers
+                        .iter()
+                        .all(|server| server.id != "barrier")
+                        && current
+                            .discovery
+                            .servers
+                            .iter()
+                            .all(|server| server.server_id != "barrier")
+                );
+
+                // Even after current empty publication, the original retained lease cannot be installed.
+                // Use the real Thread registration boundary, not a direct equality comparison alone.
+                let descriptor = initial.tools().first().unwrap().clone();
+                let tool =
+                    ThreadMcpTool::new(initial, &descriptor.exposed_name, Arc::new(NoMedia))?;
+                let prepared = prepare_registration(
+                    &descriptor.exposed_name,
+                    tool.definition(),
+                    ToolCallPolicy::DirectOnly,
+                )?;
+                thread = Some(ThreadHandle::start(
+                    owner.thread_id.clone(),
+                    DynModelSession::new(binding_host::Calls {
+                        calls: [(descriptor.exposed_name.clone(), "{}".into())].into(),
+                        requests: Default::default(),
+                    }),
+                )?);
+                let current_thread = thread.as_ref().unwrap();
+                let registration = current_thread
+                    .register_tools(vec![tool.registration(prepared)])
+                    .await;
+                if registration.is_ok() {
+                    // If registration regresses, actually try the new invocation and retain the
+                    // peer-call assertion below; an authorization comparison alone is insufficient.
+                    current_thread
+                        .reveal_tools(vec![descriptor.exposed_name])
+                        .await?;
+                    let _outcome = current_thread
+                        .run_turn(binding_host::turn("late-call"))
+                        .await;
+                }
+                anyhow::ensure!(
+                    matches!(registration, Err(ThreadError::ToolPermissionRevoked)),
+                    "late registration was not rejected for revoked authority: {registration:?}"
+                );
+
+                // Re-enabling/deleting-and-recreating issues a valid new authority and remains usable.
+                let (restored, scopes) = if disable {
+                    fixture
+                        .config
+                        .update_mcp_document(&UpdateMcpDocumentRequest {
+                            document,
+                            expected_revision: committed.revision,
+                            raw_toml: raw.clone(),
+                        })?
+                } else {
+                    fixture
+                        .config
+                        .create_mcp_document(&CreateMcpDocumentRequest {
+                            scope: McpScope::Host,
+                            id: "barrier".into(),
+                            raw_toml: raw.clone(),
+                        })?
+                };
+                factory.reconcile_open_threads_for_scopes(&scopes).await;
+                let restored_receipt = factory
+                    .refresh_mcp_for_owner(&owner, CancellationToken::new())
+                    .await?;
+                anyhow::ensure!(restored_receipt.catalog_revision == restored.snapshot.revision);
+                let recovered = owner.runtime.acquire_turn_lease().await?;
+                anyhow::ensure!(
+                    recovered.authorization().is_active() && recovered.tools().len() == 1
+                );
+                anyhow::ensure!(
+                    !original_authorization.is_active(),
+                    "restoration revived the old authority"
+                );
+                Ok::<_, anyhow::Error>(())
             })
-        });
-        let (mut barrier, _) = listener.accept().await?;
-        let mut entered = [0];
-        barrier.read_exact(&mut entered).await?;
-        anyhow::ensure!(entered == [b'1']);
-        let before_discovery = owner.runtime.health_snapshot().await?.generation;
-
-        // Queue directory preparation before the configuration watcher, as in the original
-        // counterexample. A revoked runtime must reject this acquisition, not return empty success.
-        let preparation = async {
-            let command = owner.command_lock.lock().await;
-            let lease = owner.runtime.acquire_turn_lease().await;
-            (command, lease)
-        };
-        tokio::pin!(preparation);
-        anyhow::ensure!(futures::poll!(&mut preparation).is_pending(),
-            "directory preparation did not queue behind the refresh");
-        let document = created.document.clone().unwrap();
-        let (committed, scopes) = if disable {
-            fixture.config.update_mcp_document(&UpdateMcpDocumentRequest {
-                document: document.clone(), expected_revision: created.revision,
-                raw_toml: raw.replace("enabled = true", "enabled = false"),
-            })?
-        } else {
-            fixture.config.delete_mcp_document(&DeleteMcpDocumentRequest {
-                document: document.clone(), expected_revision: created.revision,
-            })?
-        };
-        // Revocation is synchronous with the actual configuration commit, before notification.
-        anyhow::ensure!(!original_authorization.is_active(), "commit did not revoke the captured lease");
-        factory.reconcile_open_threads_for_scopes(&scopes).await;
-        std::fs::remove_file(&flag)?;
-        barrier.write_all(b"1").await?;
-        drop(barrier);
-        let refresh_result = running_refresh.as_mut().unwrap().await?;
-        running_refresh.take();
-        let (command, late_acquisition) = preparation.await;
-        anyhow::ensure!(owner.runtime.health_snapshot().await?.generation == before_discovery,
-            "revoked discovery published a new runtime generation");
-        anyhow::ensure!(late_acquisition.is_err(), "a revoked current generation was exposed as a fresh lease");
-        drop(command);
-        let superseded = match refresh_result {
-            Ok(revision) => anyhow::bail!("stale MCP command succeeded with catalogRevision={}, current={}",
-                revision, committed.snapshot.revision),
-            Err(error) => error,
-        };
-        anyhow::ensure!(superseded.to_string().contains("superseded"), "unexpected refresh refusal: {superseded}");
-
-        // Observe corrective publication through runtime events; no sleep or timer-based polling.
-        let mut updates = owner.runtime.subscribe();
-        loop {
-            if let Ok(lease) = owner.runtime.acquire_turn_lease().await
-                && lease.authorization().is_active()
-                && lease.tools().is_empty()
-            {
-                break;
-            }
-            updates.recv().await?;
-        }
-        let current = factory.refresh_mcp_for_owner(&owner, CancellationToken::new()).await?;
-        anyhow::ensure!(current.catalog_revision == committed.snapshot.revision,
-            "stable refresh did not report the new configuration revision");
-        anyhow::ensure!(
-            current.state.servers.iter().all(|server| server.id != "barrier")
-                && current.discovery.servers.iter().all(|server| server.server_id != "barrier")
-        );
-
-        // Even after current empty publication, the original retained lease cannot be installed.
-        // Use the real Thread registration boundary, not a direct equality comparison alone.
-        let descriptor = initial.tools().first().unwrap().clone();
-        let tool = ThreadMcpTool::new(initial, &descriptor.exposed_name, Arc::new(NoMedia))?;
-        let prepared = prepare_registration(&descriptor.exposed_name, tool.definition(), ToolCallPolicy::DirectOnly)?;
-        thread = Some(ThreadHandle::start(owner.thread_id.clone(), DynModelSession::new(binding_host::Calls {
-            calls: [(descriptor.exposed_name.clone(), "{}".into())].into(), requests: Default::default(),
-        }))?);
-        let current_thread = thread.as_ref().unwrap();
-        let registration = current_thread.register_tools( vec![tool.registration(prepared)]).await;
-        if registration.is_ok() {
-            // If registration regresses, actually try the new invocation and retain the
-            // peer-call assertion below; an authorization comparison alone is insufficient.
-            current_thread.reveal_tools(vec![descriptor.exposed_name]).await?;
-            let _outcome = current_thread.run_turn(binding_host::turn("late-call")).await;
-        }
-        anyhow::ensure!(matches!(registration, Err(ThreadError::ToolPermissionRevoked)),
-            "late registration was not rejected for revoked authority: {registration:?}");
-
-        // Re-enabling/deleting-and-recreating issues a valid new authority and remains usable.
-        let (restored, scopes) = if disable {
-            fixture.config.update_mcp_document(&UpdateMcpDocumentRequest {
-                document, expected_revision: committed.revision, raw_toml: raw.clone(),
-            })?
-        } else {
-            fixture.config.create_mcp_document(&CreateMcpDocumentRequest {
-                scope: McpScope::Host, id: "barrier".into(), raw_toml: raw.clone(),
-            })?
-        };
-        factory.reconcile_open_threads_for_scopes(&scopes).await;
-        let restored_receipt = factory.refresh_mcp_for_owner(&owner, CancellationToken::new()).await?;
-        anyhow::ensure!(restored_receipt.catalog_revision == restored.snapshot.revision);
-        let recovered = owner.runtime.acquire_turn_lease().await?;
-        anyhow::ensure!(recovered.authorization().is_active() && recovered.tools().len() == 1);
-        anyhow::ensure!(!original_authorization.is_active(), "restoration revived the old authority");
-        eprintln!("barrier evidence: reconnect={reconnect}, disable={disable}, superseded=true, committedRevision={}, stableReceiptRevision={}, revokedLeaseRejected=true, lateRegistrationRejected=true, restoredRevision={}",
-            committed.snapshot.revision, current.catalog_revision, restored_receipt.catalog_revision);
-        Ok::<_, anyhow::Error>(())
-    }).await.map_err(anyhow::Error::from).and_then(std::convert::identity);
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(std::convert::identity);
 
             // Always join the refresh and close the Thread/runtime, including early refusal, timeout,
             // assertion failure and transport errors. Dropping the body also drops its barrier socket.
@@ -1678,7 +1904,6 @@ mod refresh_tests {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
                 Err(error) => return Err(error.into()),
             };
-            eprintln!("barrier external evidence: disable={disable}, newPeerCalls={calls}");
             anyhow::ensure!(
                 calls == 0,
                 "revoked configuration accepted {calls} new external calls"
@@ -2128,7 +2353,7 @@ mod refresh_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
+    use crate::studio::{StudioStore, storage::write_behind::ThreadWriteBehindWriter};
     use crate::{McpEffectiveSource, McpExecutionLocation};
     use pl_tool::mcp::McpConnector;
     use pl_tool::mcp::config::{
@@ -2187,7 +2412,7 @@ pub(crate) mod tests {
         use super::super::tool_bindings::ToolBinding;
         use crate::StudioProductEventKind;
         use crate::session::session_close_tests::member;
-        use crate::studio::agent_host::worktree_lease::WorkspaceEndpoint;
+        use crate::studio::worktree::worktree_lease::WorkspaceEndpoint;
         use pl_provider_fixture::{FixtureServer, MCP_KEY, MCP_PATH};
 
         let peer = FixtureServer::start(Vec::new()).await?;

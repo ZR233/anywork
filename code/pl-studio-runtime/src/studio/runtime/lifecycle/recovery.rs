@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::agent::worktree::{WorktreeError, WorktreeHandle, WorktreeManager};
-use crate::studio::agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseState};
+use crate::studio::worktree::worktree_lease::{WorktreeLease, WorktreeLeaseState};
 use crate::studio::{
     StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
@@ -421,7 +421,7 @@ impl StudioRuntime {
                 .retained,
             "worktree lease still has retained Thread ownership"
         );
-        let owner = self.find_owned_thread(&lease.owner_thread_id).await?;
+        let owner = self.find_owned_thread(&lease.owner_thread_id)?;
         if let Some(owner) = &owner {
             anyhow::ensure!(
                 lease.workspace_id == owner.workspace_id
@@ -453,9 +453,9 @@ impl StudioRuntime {
             WorktreeError::IdentityMismatch("remote target: project differs from the lease".into())
         );
         let project_root =
-            crate::studio::agent_host::workspace_preparation::resolved_project_root(&project)?;
+            crate::studio::worktree::workspace_preparation::resolved_project_root(&project)?;
         let (repository, manager, endpoint) =
-            crate::studio::agent_host::workspace_preparation::repository_manager(
+            crate::studio::worktree::workspace_preparation::repository_manager(
                 &self.ssh_manager,
                 project.ssh_alias.as_deref(),
                 &project_root,
@@ -466,7 +466,7 @@ impl StudioRuntime {
             WorktreeError::IdentityMismatch("repository: project differs from the lease".into())
         );
         let identity =
-            crate::studio::agent_host::workspace_preparation::cleanup_identity(&self.store, &lease)
+            crate::studio::worktree::workspace_preparation::cleanup_identity(&self.store, &lease)
                 .await?;
         anyhow::ensure!(
             endpoint == identity.endpoint && identity.matches_root(&lease.path),
@@ -474,7 +474,7 @@ impl StudioRuntime {
                 "physical cleanup endpoint differs from the original binding".into()
             )
         );
-        if let Err(error) = crate::studio::agent_host::workspace_preparation::cleanup_workspace(
+        if let Err(error) = crate::studio::worktree::workspace_preparation::cleanup_workspace(
             &self.store,
             &self.agent_facility.worktrees,
             &manager,
@@ -497,7 +497,7 @@ impl StudioRuntime {
     }
 
     async fn worktree_manager(&self, lease: &WorktreeLease) -> Result<WorktreeManager> {
-        crate::studio::agent_host::workspace_preparation::manager_from_lease(
+        crate::studio::worktree::workspace_preparation::manager_from_lease(
             &self.store,
             &self.ssh_manager,
             lease,
@@ -708,9 +708,9 @@ fn normalized_local_path(path: &Path) -> PathBuf {
 }
 
 fn recovery_owner(
-    owner_kind: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind,
+    owner_kind: crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind,
 ) -> StudioRecoveryWorktreeOwner {
-    use crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind;
+    use crate::studio::worktree::worktree_lease::WorktreeLeaseOwnerKind;
     match owner_kind {
         WorktreeLeaseOwnerKind::Session => StudioRecoveryWorktreeOwner::Session,
         WorktreeLeaseOwnerKind::Child => StudioRecoveryWorktreeOwner::Child,

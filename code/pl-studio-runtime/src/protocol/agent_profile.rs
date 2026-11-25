@@ -47,7 +47,7 @@ impl AgentProfile {
     pub fn freeze_native(&self) -> crate::Result<AgentProfileSnapshot> {
         let crate::AgentBinding::Native(native) = &self.binding else {
             return Err(crate::PureError::ConfigError(
-                "ACP execution is not supported before S4".into(),
+                "only Native profiles can be frozen into a Native snapshot".into(),
             ));
         };
         let route = native.route.as_ref().ok_or_else(|| {

@@ -191,6 +191,8 @@ SQLite 分类使用官方主错误码而非诊断文案：具名数据迁移中�
 
 `m20261108_000001_history_source_classification` 等已发布步骤只属于 v24 冻结输入，消费已保存的来源类型证据修正迁移分类；不改变旧正文与旧 Applied 记录。schema 24 到 25 再到 26 的转换统一按 [17.21](#1721-独立当前状态与追加历史的升级边界) 与 [17.22](#1722-schema-25-到-26-原子事件迁移边界) 处理，不再产生 v24 运行期派生代际。
 
+冻结迁移表保留旧 Project Kind、Model Access、Bot Root Relocation 和 Execution Identity 已发布的名称，以识别旧库中的迁移记录。历史内容升级直接转换保存的会话事实。旧 Review Receipt 转换仍调用 Workspace Receipt 的实际转换逻辑，以便保留工作区归属和审查回执。
+
 显式打开单个会话（`Thread`）按以下步骤有序执行：
 
 1. 校验 `catalog.toml` 中的会话身份与父子祖先归属关系；
@@ -370,6 +372,8 @@ Thread 的可靠队列、投影驻留、终态交付材料与执行身份索引�
 
 调用统计数据库（`calls.sqlite`）的表列名、索引与查询投影在版本迁移事务内统一转换为 `account_id`、`account_display_name` 与 `model_id` 语义，原有的调用主键与全部历史费用事实完整保留。缺少配置模型证据的早期历史样本保持为未知（`legacyUnknown`），不使用实际发送模型名（`sentModel`）冒充配置模型。会话级及按用途/币种汇总的累计费用不重新计算、不清空。在线模型目录成功缓存保留同账号、同查询身份的降级回退能力，字段或归一化规则升级仅在显式版本边界转换；磁盘上的旧缓存文件与最后一次成功声明完整保留，严禁通过清空目录缓存或拒绝一切历史缓存的方式来实现术语改名。
 
+产品与调用数据库在以只读方式检查已有文件时各执行一次 `quick_check`。调用库对已应用旧 v8/v10 迁移的文件补齐摘要内容哈希与 ACP 请求服务等级。回填与 `PRAGMA user_version = 1` 在同一事务提交，之后的启动读取修订标记。调用库的格式版本仍由 `calls_meta.schema_version` 持有。
+
 ### v2 到当前布局的唯一迁移边界
 
 布局迁移只识别 `v2/` 与 `studio/v2/`，不读取 v2 之前的共享库、目录或迁移报告。先取得既有实例锁，接续原启动恢复和未完成的 v2 布局操作，再在任何当前数据库、配置缓存或业务写入器发布前完成当前布局准备。不得因源缺失、目标已存在或版本未知而把迁移当作新安装。
@@ -450,6 +454,10 @@ Current 与 History 的读取准入彼此独立。打开历史不要求解码 `c
 | Attachments | 附件元数据到统一可靠资源引用 | `schemaVersion` |
 
 每份文件实例独立携带正整数根版本；具体支持版本与连续节点由对应代码链唯一维护，不在文档复制版本快照。该版本与应用 release、业务 `revision`、`configRevision` 和查询 revision 无关。边界只在内存中将整数 `n` 映射为库要求的 `n.0.0`，路径使用同一个版本键常量。准入下界来自首个正式 DTO，上界来自库路径 latest；每个支持整数都有明确节点。缺失、错误类型、非正数、超界及未来版本在调用库前拒绝；只有 Profile 允许专属无版本历史导入，磁盘显式 0 仍非法。
+
+当前版本由文档 owner 校验版本键后直接解码。旧版本的类型迁移链按文档族缓存，进入升级入口时才构建。产品数据库的预期 schema 指纹也按进程计算一次，首次并发打开共享结果。
+
+`pl.studio.plan` 使用版本 2 的载荷。恢复入口先归一化旧 Plan 历史与状态，当前投影只解码版本 2。旧 `agentRetirement` 的成员身份在产品库启动准备时载入，仍按成员拒绝依赖这类未发布事实的关闭操作。调用 JSONL 的有效记录在重建索引时只解码一次，记录摘要使用原始行字节。
 
 转换只处理 schema：格式升级保留业务 revision，当前版本读取保留原字节且不写盘，旧版成功升级后再次打开不重复提交。保存从当前 DTO 直接序列化为 TOML 并插入整数版本，不经过库的 JSON 保存接口；历史输入仍经库内部 JSON 中转，须验证真实 Serde 往返。旧新字段同值可规范化，异值必须失败；可失败输入验证放在冻结 DTO 的 Serde / `TryFrom`，纯迁移步骤不得吞错或伪造默认值。
 
@@ -754,3 +762,5 @@ schema 25 到 26 的升级同样在会话独占维护阶段完成，不启动模
    - 已挂接 `CanonicalPayload` 的事件读取原轻量 JSON 信封并直接把 `type`、`data` 与正文引用列表提升为 `payload_json`（指向原地保留的 `history_bodies`），未挂接 `CanonicalPayload` 的旧 `KnownActive` 无 payload 行（包括受损会话）依据 `head_json` 合成为合法 `anywork.event/1` `payload_json`，从根源消除旧记录读取失败；
    - `run_*`、`turn_*`、`source_*`、`usage_*`、`background_delivery_recorded` 与 `business_changed` 记为 `timeline_role = 'hidden'`，保留业务 `row_scope`/`row_key`/`is_anchor` 并将其元信息提升到 `payload_json`。
 3. **索引重建与校验提交**：替换旧 `history_events`，创建 `idx_events_dividers`、`idx_events_work`、`idx_events_call` 等全部 schema 26 索引与只追加触发器，更新 `history_store_meta.schema_version = 26` 并登记迁移版本；执行 `PRAGMA foreign_key_check` 确认无悬空引用后提交事务，失败则完整回滚并保留原库与备份。
+
+正文清单在写入或升级时收录账单 `accounting` 和工具任务 `native.tool-task.v1`。已落库的 schema 26 在相同的独占维护入口按 `seq` 分批补齐清单，保留事件、正文引用和块身份。该维护与只追加触发器的恢复在同一个 SQLite `IMMEDIATE` 事务提交。历史库用 `PRAGMA user_version` 记录清单维护修订，`0` 需要首次维护，`1` 已完成。新建和从 schema 25 升级的库直接写入 `1`。正常读取使用清单定位正文。
