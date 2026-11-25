@@ -10,7 +10,6 @@ pub(crate) mod shutdown;
 mod snapshot;
 
 mod thread_activation;
-mod transitions;
 
 #[cfg(test)]
 mod startup_fault_tests {

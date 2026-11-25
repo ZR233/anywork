@@ -5,7 +5,6 @@
 //! expected provisional title is still current.
 
 use std::collections::HashMap;
-use std::future::pending;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,9 +13,10 @@ use pl_model::completion::ReasoningConfig;
 use pl_model::model::ResponsesMaxTokensField;
 use pl_model::runtime::{ModelTurnOptions, ModelTurnRequest};
 
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use super::StudioRuntime;
 
@@ -46,63 +46,8 @@ pub(super) struct ThreadTitleTasks {
 }
 
 struct ThreadTitleTask {
-    cancellation: Option<oneshot::Sender<()>>,
+    cancellation: CancellationToken,
     handle: JoinHandle<()>,
-}
-
-impl ThreadTitleTask {
-    /// Sends the one-shot cancellation exactly once; later calls are no-ops.
-    fn signal(&mut self) {
-        if let Some(sender) = self.cancellation.take() {
-            let _ = sender.send(());
-        }
-    }
-}
-
-pub(super) struct ThreadTitleCancellation {
-    receiver: Option<oneshot::Receiver<()>>,
-}
-
-impl ThreadTitleCancellation {
-    pub(super) async fn cancelled(&mut self) {
-        let outcome = match self.receiver.as_mut() {
-            Some(receiver) => receiver.await,
-            None => return pending::<()>().await,
-        };
-        self.receiver = None;
-        if outcome.is_err() {
-            // Losing a sender is not a lifecycle command. Only an explicit send
-            // from the title-task owner has cancellation semantics.
-            pending::<()>().await;
-        }
-    }
-
-    pub(super) fn is_cancelled(&mut self) -> bool {
-        let Some(receiver) = self.receiver.as_mut() else {
-            return false;
-        };
-        match receiver.try_recv() {
-            Ok(()) => {
-                self.receiver = None;
-                true
-            }
-            Err(oneshot::error::TryRecvError::Empty) => false,
-            Err(oneshot::error::TryRecvError::Closed) => {
-                self.receiver = None;
-                false
-            }
-        }
-    }
-}
-
-pub(super) fn title_cancellation_channel() -> (oneshot::Sender<()>, ThreadTitleCancellation) {
-    let (sender, receiver) = oneshot::channel();
-    (
-        sender,
-        ThreadTitleCancellation {
-            receiver: Some(receiver),
-        },
-    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,11 +72,12 @@ impl ThreadTitleTasks {
             return;
         }
         let task_thread_id = thread_id.clone();
-        let (cancellation, mut task_cancellation) = title_cancellation_channel();
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
         let task = tokio::spawn(async move {
             let result = async {
-                wait_for_initial_turn(&runtime, &task_thread_id, &mut task_cancellation).await?;
-                generate_title(&runtime, &task_thread_id, &prompt, &mut task_cancellation).await
+                wait_for_initial_turn(&runtime, &task_thread_id, &task_cancellation).await?;
+                generate_title(&runtime, &task_thread_id, &prompt, &task_cancellation).await
             }
             .await;
             match result {
@@ -141,7 +87,7 @@ impl ThreadTitleTasks {
                             &task_thread_id,
                             &provisional_title,
                             &title,
-                            &mut task_cancellation,
+                            &task_cancellation,
                         )
                         .await
                     {
@@ -164,7 +110,7 @@ impl ThreadTitleTasks {
         handles.insert(
             thread_id,
             ThreadTitleTask {
-                cancellation: Some(cancellation),
+                cancellation,
                 handle: task,
             },
         );
@@ -172,20 +118,20 @@ impl ThreadTitleTasks {
 
     /// Cancels and waits for one thread's hidden title request.
     pub(super) async fn cancel(&self, thread_id: &str, cause: ThreadTitleCancellationCause) {
-        let Some(mut task) = self.handles.lock().await.remove(thread_id) else {
+        let Some(task) = self.handles.lock().await.remove(thread_id) else {
             return;
         };
         tracing::debug!(thread_id, ?cause, "cancelling automatic Thread title task");
-        task.signal();
+        task.cancellation.cancel();
         let _ = task.handle.await;
     }
 
     /// Broadcasts cancellation to every in-flight title task without waiting.
     pub(super) async fn signal_cancel(&self) {
         match timeout(CANCEL_SIGNAL_LOCK_LIMIT, self.handles.lock()).await {
-            Ok(mut handles) => {
-                for task in handles.values_mut() {
-                    task.signal();
+            Ok(handles) => {
+                for task in handles.values() {
+                    task.cancellation.cancel();
                 }
             }
             Err(_) => {
@@ -197,7 +143,7 @@ impl ThreadTitleTasks {
     }
 
     pub(super) async fn cancel_and_wait(&self) {
-        let mut handles = {
+        let handles = {
             let mut handles = self.handles.lock().await;
             handles.drain().map(|(_, task)| task).collect::<Vec<_>>()
         };
@@ -205,10 +151,10 @@ impl ThreadTitleTasks {
             task_count = handles.len(),
             "cancelling automatic Thread title tasks for runtime shutdown"
         );
-        // Signal every task first (one-shot cancel, no wait), then join them **concurrently**: a
+        // Signal every task first (no wait), then join them **concurrently**: a
         // single stalled title request must not hold up settling the remaining tasks.
-        for task in handles.iter_mut() {
-            task.signal();
+        for task in &handles {
+            task.cancellation.cancel();
         }
         futures::future::join_all(handles.into_iter().map(|task| task.handle)).await;
     }
@@ -217,7 +163,7 @@ impl ThreadTitleTasks {
 async fn wait_for_initial_turn(
     runtime: &StudioRuntime,
     thread_id: &str,
-    cancellation: &mut ThreadTitleCancellation,
+    cancellation: &CancellationToken,
 ) -> Result<()> {
     loop {
         if !runtime.thread_is_busy(thread_id).await? {
@@ -230,8 +176,12 @@ async fn wait_for_initial_turn(
     }
 }
 
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub(super) fn provisional_title(prompt: &str) -> String {
-    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = collapse_whitespace(prompt);
     if normalized.is_empty() {
         return DEFAULT_TITLE.to_string();
     }
@@ -242,7 +192,7 @@ pub(super) fn provisional_title(prompt: &str) -> String {
 }
 
 pub(super) fn manual_title(title: &str) -> Result<String> {
-    let normalized = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = collapse_whitespace(title);
     if normalized.is_empty() {
         bail!("Thread title cannot be empty");
     }
@@ -253,7 +203,7 @@ pub(super) fn manual_title(title: &str) -> Result<String> {
 }
 
 fn bounded_prompt(prompt: &str) -> String {
-    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = collapse_whitespace(prompt);
     if normalized.len() <= TITLE_PROMPT_MAX_BYTES {
         return normalized;
     }
@@ -273,7 +223,7 @@ fn title_user_prompt(prompt: &str) -> Result<String> {
 }
 
 fn truncate_generated_title(raw: &str) -> Result<String> {
-    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = collapse_whitespace(raw);
     if normalized.is_empty() {
         bail!("Explorer title is empty");
     }
@@ -289,7 +239,7 @@ async fn generate_title(
     runtime: &StudioRuntime,
     thread_id: &str,
     prompt: &str,
-    cancellation: &mut ThreadTitleCancellation,
+    cancellation: &CancellationToken,
 ) -> Result<String> {
     let owner = runtime.ensure_thread_owner(thread_id).await?;
     let config = runtime.config_runtime.read()?;
@@ -332,7 +282,7 @@ async fn generate_title(
         .with_parallel_tool_calls(false)
         .with_max_tokens(Some(TITLE_MAX_OUTPUT_TOKENS))
         .with_reasoning(reasoning);
-    let token = tokio_util::sync::CancellationToken::new();
+    let token = cancellation.child_token();
     let inference_id = crate::studio::ids::new_id("title");
     let turn_id = owner
         .snapshot()

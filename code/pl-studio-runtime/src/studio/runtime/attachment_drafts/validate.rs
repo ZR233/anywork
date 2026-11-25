@@ -69,7 +69,14 @@ impl InputPolicy {
     ) -> Result<()> {
         self.validate_source(source.modality, source_kind)?;
         match self {
-            Self::Native(model) => validate_actual_limits(model, source),
+            Self::Native(model) => validate_actual_limits(
+                model,
+                source.modality,
+                source.bytes.len() as u64,
+                source.width,
+                source.height,
+                &source.media_type,
+            ),
             Self::Acp(_) => {
                 ensure!(
                     source.bytes.len() as u64 <= self.max_source_bytes(source.modality),
@@ -145,30 +152,34 @@ fn validate_total_bytes(model: &ModelDefinition, drafts: &[AttachmentDraftObject
     Ok(())
 }
 
-pub(super) fn validate_actual_limits(
+fn validate_actual_limits(
     model: &ModelDefinition,
-    source: &NormalizedSource,
+    modality: StudioAttachmentModality,
+    byte_size: u64,
+    width: Option<u32>,
+    height: Option<u32>,
+    media_type: &str,
 ) -> Result<()> {
     let capability = model
         .extra
         .capabilities
-        .input_capability(model_modality(source.modality))
-        .with_context(|| unsupported_modality(source.modality))?;
+        .input_capability(model_modality(modality))
+        .with_context(|| unsupported_modality(modality))?;
     if let Some(max_bytes) = capability.limits.max_bytes {
         ensure!(
-            source.bytes.len() as u64 <= max_bytes,
+            byte_size <= max_bytes,
             StudioError::invalid_argument("附件大小超过当前模型限制。")
         );
     }
     if let Some(max_width) = capability.limits.max_width {
         ensure!(
-            source.width.is_some_and(|width| width <= max_width),
+            width.is_some_and(|width| width <= max_width),
             StudioError::invalid_argument("附件图片宽度超过当前模型限制。")
         );
     }
     if let Some(max_height) = capability.limits.max_height {
         ensure!(
-            source.height.is_some_and(|height| height <= max_height),
+            height.is_some_and(|height| height <= max_height),
             StudioError::invalid_argument("附件图片高度超过当前模型限制。")
         );
     }
@@ -178,7 +189,7 @@ pub(super) fn validate_actual_limits(
                 .limits
                 .media_types
                 .iter()
-                .any(|media_type| media_type == &source.media_type),
+                .any(|allowed| allowed == media_type),
             StudioError::invalid_argument("当前模型不支持该附件的媒体类型。")
         );
     }
@@ -202,46 +213,14 @@ pub(super) fn validate_draft_batch(
                 DraftSourceKind::Local
             },
         )?;
-        let source = NormalizedSource {
-            modality: draft.modality,
-            media_type: draft.media_type.clone(),
-            bytes: Vec::new(),
-            width: draft.width,
-            height: draft.height,
-        };
-        let capability = model
-            .extra
-            .capabilities
-            .input_capability(model_modality(draft.modality))
-            .with_context(|| unsupported_modality(draft.modality))?;
-        if let Some(max_bytes) = capability.limits.max_bytes {
-            ensure!(
-                draft.byte_size <= max_bytes,
-                StudioError::invalid_argument("附件大小超过当前模型限制。")
-            );
-        }
-        if let Some(max_width) = capability.limits.max_width {
-            ensure!(
-                draft.width.is_some_and(|width| width <= max_width),
-                StudioError::invalid_argument("附件图片宽度超过当前模型限制。")
-            );
-        }
-        if let Some(max_height) = capability.limits.max_height {
-            ensure!(
-                draft.height.is_some_and(|height| height <= max_height),
-                StudioError::invalid_argument("附件图片高度超过当前模型限制。")
-            );
-        }
-        if !capability.limits.media_types.is_empty() {
-            ensure!(
-                capability
-                    .limits
-                    .media_types
-                    .iter()
-                    .any(|media_type| media_type == &source.media_type),
-                StudioError::invalid_argument("当前模型不支持该附件的媒体类型。")
-            );
-        }
+        validate_actual_limits(
+            model,
+            draft.modality,
+            draft.byte_size,
+            draft.width,
+            draft.height,
+            &draft.media_type,
+        )?;
     }
     Ok(())
 }

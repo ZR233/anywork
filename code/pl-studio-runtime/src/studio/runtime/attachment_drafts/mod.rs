@@ -112,11 +112,9 @@ impl StudioRuntime {
             // A completed delivery leaves the resident snapshot. Read pending effects first:
             // once the writer releases an effect from this window, its full delivery is already
             // committed in history. The following history read therefore closes that race.
-            if let Some((_, handle)) = self
-                .sessions
-                .observed_threads()
-                .into_iter()
-                .find(|(id, _)| id == &thread_id)
+            if let Some(handle) = self
+                .session_of(&thread_id)
+                .and_then(|session| session.observed_thread(&thread_id))
             {
                 for effect in handle.effects().await? {
                     deliveries.extend(effect.deliveries.iter().cloned());
