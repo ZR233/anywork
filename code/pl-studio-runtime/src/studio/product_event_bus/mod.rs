@@ -1,7 +1,8 @@
 //! Studio 低频产品状态 owner 与事件通道：类型定义、事件发射与 revision 机械。
 //!
 //! Project 目录基线装载与应用在 `project`，Thread 当前摘要、有序 ID 索引
-//! 与目录事实提交在 `thread_directory`，其余低频状态快照与事件发射在
+//! 与目录事实提交在 `thread_directory` 的 index / agent_directory / commands /
+//! acp_titles 子模块，其余低频状态快照与事件发射在
 //! `snapshots`，topic 通道注册与分发路由在 `topics`。
 
 mod child_interactions;
@@ -52,16 +53,16 @@ pub struct ProductEventBus {
     topics: Arc<std::sync::Mutex<TopicChannels>>,
     sequence: Arc<AtomicU64>,
     revisions: Arc<ProductStateRevisions>,
-    project_snapshot: Arc<Mutex<Vec<crate::WorkspaceRecord>>>,
+    project_snapshot: Arc<std::sync::Mutex<Vec<crate::WorkspaceRecord>>>,
     persistence_snapshot: Arc<std::sync::Mutex<PersistenceStateSnapshot>>,
     persistence_queue: Arc<std::sync::Mutex<PersistenceQueuePublication>>,
     /// 唯一当前目录摘要；锁顺序为 index → child projection / writer / topics。
     /// 不跨 I/O 或 await；持久化批次不反写已提交的较新摘要。
+    /// 其他快照 owner 同样持有自身同步锁直至 revision、载荷及 emit 完成；
+    /// Project 快照锁不与 index 同时持有。所有同步锁统一保留中毒后的 owner。
     thread_index: Arc<std::sync::Mutex<thread_directory::ThreadDirectoryIndex>>,
     /// Serialize durable commands only. Queries and hot writers never acquire this lock.
     directory_commands: Arc<Mutex<()>>,
-    #[cfg(test)]
-    directory_test_pauses: Arc<thread_directory::tests::DirectoryTestPauses>,
     /// 已发布的 Mode catalog revision；按真变才发，避免重复装载空转发布。
     mode_catalog_revision: Arc<std::sync::Mutex<u64>>,
     child_interactions: Arc<std::sync::Mutex<ChildInteractionsProjection>>,
@@ -154,7 +155,7 @@ impl ProductEventBus {
             topics: Arc::new(std::sync::Mutex::new(TopicChannels::default())),
             sequence: Arc::new(AtomicU64::new(0)),
             revisions: Arc::new(ProductStateRevisions::default()),
-            project_snapshot: Arc::new(Mutex::new(projects)),
+            project_snapshot: Arc::new(std::sync::Mutex::new(projects)),
             persistence_snapshot: Arc::new(std::sync::Mutex::new(
                 PersistenceStateSnapshot::default(),
             )),
@@ -163,8 +164,6 @@ impl ProductEventBus {
             )),
             thread_index: Arc::new(std::sync::Mutex::new(thread_index)),
             directory_commands: Arc::new(Mutex::new(())),
-            #[cfg(test)]
-            directory_test_pauses: Arc::default(),
             mode_catalog_revision: Arc::new(std::sync::Mutex::new(0)),
             child_interactions: Arc::new(std::sync::Mutex::new(child_interactions)),
         };
@@ -206,7 +205,7 @@ impl ProductEventBus {
         let _ = self.internal.send(envelope.clone());
         self.topics
             .lock()
-            .expect("product topic channels lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .dispatch(&envelope);
         envelope
     }
