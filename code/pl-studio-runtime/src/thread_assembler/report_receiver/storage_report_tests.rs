@@ -3,7 +3,7 @@ use crate::thread_assembler::*;
 use anyhow::Context as _;
 // Recovery starts with a genuinely cold parent, not a pre-added executable fixture Entry.
 
-use crate::studio::storage_fault_test_support::{close_factory, save_terminal_report};
+use crate::test_support::storage::{close_factory, save_terminal_report};
 use crate::thread_assembler::EntryPurpose;
 use crate::thread_assembler::close_storage::{
     CloseStorage, NativeStorageAttachment, StorageAttachment,
@@ -277,7 +277,7 @@ async fn closing_execution_accepts_only_the_original_storage_report_without_resu
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let saved = save_pending_close(&store).await?;
-        let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
+        let resources = crate::test_support::storage::close_factory(&store)?;
         let fixture = Fixture::new(store.clone())?;
         resources.install(&fixture.owner)?;
         let active = activate_parent(&fixture).await?;

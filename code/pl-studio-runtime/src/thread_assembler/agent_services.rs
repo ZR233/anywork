@@ -336,11 +336,9 @@ impl SessionRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::studio::{
-        StudioStore,
-        storage_fault_test_support::{
-            ThreadStorageSink, close_factory, spawn_live_projection_for_thread,
-        },
+    use crate::studio::StudioStore;
+    use crate::test_support::storage::{
+        ThreadStorageSink, close_factory, spawn_live_projection_for_thread,
     };
     use base64::Engine as _;
     use pl_core::{
@@ -424,7 +422,7 @@ mod tests {
     }
 
     async fn persist_test_thread(store: &StudioStore, thread: &crate::Thread) -> Result<()> {
-        crate::studio::storage_fault_test_support::register_test_thread(store, thread).await
+        crate::test_support::storage::register_test_thread(store, thread).await
     }
 
     struct SavedThenBlocked(Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);

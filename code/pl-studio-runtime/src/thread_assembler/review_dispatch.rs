@@ -987,7 +987,7 @@ impl SessionRuntime {
 mod future_sizes {
     use super::*;
 
-    use crate::thread_assembler::test_support::bounded_future as check;
+    use crate::test_support::bounded_future as check;
 
     #[test]
     fn review_settlement_futures_remain_bounded() {

@@ -1,9 +1,10 @@
 //! Failed spawn disposal, original private resource ownership, and restart.
 
 use super::*;
+use crate::test_support::archive_test_spec;
+use crate::test_support::storage::{ThreadStorageSink, close_factory};
 use crate::{
     studio::{
-        storage_fault_test_support::{ThreadStorageSink, close_factory},
         store::{
             thread_archive::{ArchivePhase, ArchiveScope},
             thread_preparation::{
@@ -15,7 +16,7 @@ use crate::{
     },
     thread_assembler::{
         ChildThreadRequest, StudioChildFactory, StudioChildResources, StudioThreadSpec,
-        ThreadAssemblyError, archive_test_spec, spawn_failed_archive_fixture,
+        ThreadAssemblyError, spawn_failed_archive_fixture,
     },
 };
 use pl_core::thread::{

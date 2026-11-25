@@ -691,7 +691,7 @@ mod archive_scope_tests {
             "root", None,
         ));
         owner
-            .assemble(crate::thread_assembler::archive_test_spec(
+            .assemble(crate::test_support::archive_test_spec(
                 "root".into(),
                 None,
                 temp.path(),

@@ -12,13 +12,13 @@ mod private_preparation;
 async fn archive_private_preparation_failed_retirement_survives_restart_and_preserves_delivery()
 -> Result<()> {
     use crate::studio::{
-        storage_fault_test_support::close_factory,
         store::{
             thread_archive::{ArchivePhase, ArchiveScope},
             thread_preparation::{PreparationBinding, PreparationIdentity},
         },
         worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     };
+    use crate::test_support::storage::close_factory;
     use sea_orm::ConnectionTrait;
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");

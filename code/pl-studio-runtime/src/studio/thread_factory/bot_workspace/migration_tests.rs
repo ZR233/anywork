@@ -1,7 +1,7 @@
 //! Independent bot migration, review admission and saved-workspace invariants.
 
 use super::*;
-use crate::studio::storage_fault_test_support::close_factory;
+use crate::test_support::storage::close_factory;
 use crate::thread_assembler::StudioChildResources;
 use crate::thread_assembler::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
 use anyhow::{Context, Result};

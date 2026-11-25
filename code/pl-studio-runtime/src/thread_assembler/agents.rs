@@ -1554,7 +1554,7 @@ pub(crate) mod archive_tests {
         task::Poll,
     };
 
-    pub(crate) use crate::thread_assembler::test_support::archive_spec as spec;
+    pub(crate) use crate::test_support::archive_test_spec as spec;
 
     #[derive(Debug)]
     struct SpawnFactory {
@@ -1871,12 +1871,9 @@ pub(crate) mod archive_tests {
     #[tokio::test]
     async fn deletion_joins_original_binding_after_queued_attachment_is_sealed_closed()
     -> anyhow::Result<()> {
+        use crate::test_support::storage::{ThreadStorageSink, register_test_thread};
         use crate::{
-            studio::{
-                StudioStore,
-                storage_fault_test_support::{ThreadStorageSink, register_test_thread},
-                store::thread_preparation::PreparationIdentity,
-            },
+            studio::{StudioStore, store::thread_preparation::PreparationIdentity},
             thread_assembler::CloseStorage,
         };
         use futures::FutureExt;
@@ -2019,11 +2016,11 @@ pub(crate) mod archive_tests {
     -> anyhow::Result<()> {
         use crate::studio::{
             StudioStore,
-            storage_fault_test_support::{
-                ThreadStorageSink, close_factory, register_test_thread,
-                spawn_live_projection_for_thread,
-            },
             store::thread_preparation::{PreparationIdentity, PreparationSave},
+        };
+        use crate::test_support::storage::{
+            ThreadStorageSink, close_factory, register_test_thread,
+            spawn_live_projection_for_thread,
         };
         use anyhow::Context;
         let temp = tempfile::tempdir()?;
@@ -2599,7 +2596,8 @@ mod control_tests {
 
     mod publication_commit {
         use super::*;
-        use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use crate::studio::StudioStore;
+        use crate::test_support::storage::close_factory;
         use pl_core::model::{
             DynModelSession, Model, ModelError, ModelFactory, ModelRequest, ModelSession,
             ModelStepOutput, ModelToolCall, PreparedModelCall,
@@ -2641,15 +2639,12 @@ mod control_tests {
                     .to_string();
                 record.parent_thread_id = Some(request.caller.clone());
                 record.workspace_path = self.physical.path.to_string_lossy().into_owned();
-                crate::studio::storage_fault_test_support::register_test_thread(
-                    &self.store,
-                    &record,
-                )
-                .await
-                .map_err(|source| ThreadAssemblyError::Resource {
-                    operation: "commit fixture child directory",
-                    source: source.into_boxed_dyn_error(),
-                })?;
+                crate::test_support::storage::register_test_thread(&self.store, &record)
+                    .await
+                    .map_err(|source| ThreadAssemblyError::Resource {
+                        operation: "commit fixture child directory",
+                        source: source.into_boxed_dyn_error(),
+                    })?;
                 self.physical.prepare(request, ()).await
             }
 
@@ -2726,8 +2721,7 @@ mod control_tests {
             record.workspace_id = "publication-project".into();
             record.root_thread_id = "native-root".into();
             record.workspace_path = dir.path().to_string_lossy().into_owned();
-            crate::studio::storage_fault_test_support::register_test_thread(&store, &record)
-                .await?;
+            crate::test_support::storage::register_test_thread(&store, &record).await?;
             let root = member(&owner, dir.path(), "native-root", "native-root", None).await;
             root.mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
                 id: crate::studio::delegation::EXTENSION.into(),
@@ -2846,7 +2840,7 @@ mod control_tests {
 mod future_sizes {
     use super::*;
 
-    use crate::thread_assembler::test_support::bounded_future as bounded;
+    use crate::test_support::bounded_future as bounded;
 
     #[test]
     fn spawn_handoff_future_remains_bounded() {

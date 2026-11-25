@@ -19,8 +19,6 @@ pub(crate) use agents::AgentHost;
 
 #[cfg(test)]
 pub(crate) use agents::archive_tests::spawn_failed_archive_fixture;
-#[cfg(test)]
-pub(crate) use agents::archive_tests::spec as archive_test_spec;
 pub(crate) mod delegation_models;
 pub(crate) mod observation;
 mod pending_delivery;
@@ -41,6 +39,7 @@ mod permission_projection;
 mod plan_confirmation;
 pub(crate) use approval::authorize_remote_workspace;
 pub(crate) use approval::{ApprovalHost, StudioApprovalOptions};
+pub(crate) use permission_projection::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 pub use permission_projection::{PermissionProjectionError, project_execution_permission};
 pub(crate) use plan_confirmation::document_identity as plan_confirmation_document_identity;
 pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};

@@ -386,10 +386,10 @@ mod review_archive_tests {
     //! Archive admission while a real factory binding is in flight.
     use crate::studio::{
         StudioStore,
-        storage_fault_test_support::close_factory,
         store::directory::{DirectoryDelta, ProjectDirectoryRecord},
         worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
     };
+    use crate::test_support::storage::close_factory;
     use crate::thread_assembler::{
         SessionRuntime, StudioActivationFactory, StudioThreadSpec, ThreadActivation,
         ThreadAssemblyError, ThreadPreparation,

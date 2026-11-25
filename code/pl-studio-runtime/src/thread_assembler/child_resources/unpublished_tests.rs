@@ -48,7 +48,7 @@ async fn cancelled_unpublished_cleanup_keeps_the_real_preparer_until_disposal_jo
     }
     let temp = tempfile::tempdir()?;
     let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-    let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
+    let resources = crate::test_support::storage::close_factory(&store)?;
     let root = temp.path().join("shared-root");
     tokio::fs::create_dir_all(&root).await?;
     let preparation = resources

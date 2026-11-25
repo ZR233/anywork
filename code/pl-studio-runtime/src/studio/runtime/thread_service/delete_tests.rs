@@ -6,13 +6,13 @@ use std::path::Path;
 
 mod publication_recovery;
 use crate::studio::{
-    storage_fault_test_support::{ThreadStorageSink, spawn_live_projection_for_thread},
     store::{
         directory::DirectoryDelta, thread_delete::DeletePhase,
         thread_preparation::PreparationIdentity,
     },
     worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
 };
+use crate::test_support::storage::{ThreadStorageSink, spawn_live_projection_for_thread};
 use pl_core::thread::ThreadHandle;
 use pl_tool::workspace::SessionFiles;
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
@@ -1727,11 +1727,8 @@ mod required {
         let current_file = runtime.store.registered_session_paths(id)?.current_file();
         tokio::fs::create_dir_all(&current_file).await?;
         let projection = spawn_live_projection_for_thread(runtime.store.clone(), id);
-        let mut spec = crate::thread_assembler::archive_test_spec(
-            id.into(),
-            Some(root.id.clone()),
-            &workspace,
-        );
+        let mut spec =
+            crate::test_support::archive_test_spec(id.into(), Some(root.id.clone()), &workspace);
         spec.history_sink = Some(sink);
         spec.initial_extensions.insert(
             "fixture.private-required".into(),

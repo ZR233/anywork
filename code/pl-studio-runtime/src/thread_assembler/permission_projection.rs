@@ -40,22 +40,18 @@ fn require_format(
     super::interaction_projection::require_format(payload, expected).map_err(Into::into)
 }
 
-/// The decision frozen into a permission record, in the one shape this host writes and reads.
-///
-/// Write and read used to disagree: the payload was written as `{"decision": …, "operationId": …}`
-/// while the read side decoded the whole document as the flat resolution, so the projection of a
-/// record that had just been committed failed and answered a committed decision with an error. Both
-/// sides therefore share this type. Rows written before the operation identity existed carry the flat
-/// resolution document instead; they are still valid decisions, are decoded through the legacy branch
-/// and simply record no identity.
+pub(crate) const APPROVAL_RESPONSE_FORMAT: &str = "pl.studio.tool-approval-response";
+
+/// The canonical decision stored with a permission record. Storage normalizes legacy responses
+/// before starting a recovered Thread.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredApprovalDecision {
+pub(crate) struct StoredApprovalDecision {
     /// The decision itself, kept as the shared protocol shape so the transport needs no new DTO.
-    decision: ToolApprovalResolutionPayload,
+    pub(crate) decision: ToolApprovalResolutionPayload,
     /// The operation identity the decision was accepted under; absent on legacy rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    operation_id: Option<String>,
+    pub(crate) operation_id: Option<String>,
 }
 
 impl StoredApprovalDecision {
@@ -65,25 +61,6 @@ impl StoredApprovalDecision {
             decision,
             operation_id: Some(operation_id),
         }
-    }
-
-    /// Decodes the stored payload of one record, accepting the legacy flat document.
-    ///
-    /// The shape is decided by the content, not by a version bump: a nested `decision` object is the
-    /// current shape, anything else is the flat legacy resolution whose only field is `decision`.
-    fn decode(content: &str) -> Result<Self, serde_json::Error> {
-        let value: serde_json::Value = serde_json::from_str(content)?;
-        if value
-            .get("decision")
-            .is_some_and(serde_json::Value::is_object)
-        {
-            return serde_json::from_value(value);
-        }
-        let decision: ToolApprovalResolutionPayload = serde_json::from_value(value)?;
-        Ok(Self {
-            decision,
-            operation_id: None,
-        })
     }
 }
 
@@ -99,7 +76,7 @@ fn approval_response_payload(
     operation_id: String,
 ) -> Result<OpaquePayload, PermissionProjectionError> {
     Ok(OpaquePayload::new(
-        "pl.studio.tool-approval-response",
+        APPROVAL_RESPONSE_FORMAT,
         1,
         serde_json::to_string(&StoredApprovalDecision::freeze(decision, operation_id))?,
     )?)
@@ -156,8 +133,8 @@ pub fn project_execution_permission(
             };
             let reason = match &record.response {
                 Some(payload) => {
-                    require_format(payload, "pl.studio.tool-approval-response")?;
-                    let response = StoredApprovalDecision::decode(payload.content())?;
+                    require_format(payload, APPROVAL_RESPONSE_FORMAT)?;
+                    let response: StoredApprovalDecision = serde_json::from_str(payload.content())?;
                     if response.decision.decision != expected {
                         return Err(PermissionProjectionError::Identity);
                     }

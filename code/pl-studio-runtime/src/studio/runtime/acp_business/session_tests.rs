@@ -1161,13 +1161,13 @@ impl crate::thread_assembler::StudioActivationFactory for ColdNativeLeaf {
         crate::thread_assembler::StudioThreadSpec,
         crate::thread_assembler::ThreadAssemblyError,
     > {
-        let mut spec = crate::thread_assembler::archive_test_spec(
+        let mut spec = crate::test_support::archive_test_spec(
             request.identity.id().into(),
             request.identity.parent_id().map(str::to_owned),
             &self.root,
         );
         spec.workspace_usage = self.usage.lock().unwrap().take();
-        let persistence = crate::studio::storage_fault_test_support::ThreadStorageSink::new(
+        let persistence = crate::test_support::storage::ThreadStorageSink::new(
             self.store.clone(),
             self.thread.clone(),
         )

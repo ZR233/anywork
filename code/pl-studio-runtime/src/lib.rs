@@ -35,6 +35,8 @@ pub use studio::benchmark;
 mod executable_assets;
 mod host_mcp_assets;
 pub(crate) mod session;
+#[cfg(test)]
+mod test_support;
 pub(crate) mod thread_assembler;
 mod worker_assets;
 

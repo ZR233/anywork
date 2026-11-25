@@ -1249,7 +1249,8 @@ mod refresh_tests {
     //! Narrow owner/lifecycle proofs complement the real model/Thread integration test.
     use super::*;
     use crate::session::NativeResources;
-    use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+    use crate::studio::StudioStore;
+    use crate::test_support::storage::close_factory;
     use std::time::Duration;
 
     fn owner(
@@ -1533,7 +1534,8 @@ mod refresh_tests {
         //! Configuration-commit/discovery interleaving with an actual stdio peer and Thread.
         use super::{binding_host, mcp_stdio, owner};
         use crate::session::NativeResources;
-        use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use crate::studio::StudioStore;
+        use crate::test_support::storage::close_factory;
         use crate::{
             CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, UpdateMcpDocumentRequest,
         };
@@ -1891,7 +1893,8 @@ mod refresh_tests {
         //! Physical-owner, cancellation and sibling-isolation proofs for the Studio command.
         use super::{binding_host, mcp_stdio, owner};
         use crate::session::NativeResources;
-        use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use crate::studio::StudioStore;
+        use crate::test_support::storage::close_factory;
         use crate::{CreateMcpDocumentRequest, McpScope};
         use anyhow::Context;
         use pl_core::{
