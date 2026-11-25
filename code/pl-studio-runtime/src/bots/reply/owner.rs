@@ -663,6 +663,7 @@ fn observed_step((step, failure): (Step, Option<FinalError>), cancel: &Cancellat
 mod archive_cancellation_tests {
     use super::super::session::bot_input_id;
     use super::*;
+    use crate::bots::BotInputRead;
     use crate::bots::inbound::InboundAttachment;
     use crate::bots::storage::card::{CardBinding, CardStream};
     use crate::bots::test_support::Fixture;
