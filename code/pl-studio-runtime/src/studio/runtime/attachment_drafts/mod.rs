@@ -125,18 +125,14 @@ impl StudioRuntime {
             let resources = FileResourceStore::new(self.store.session_resources_dir(&thread_id)?);
             // Current and the reliable RAM queue provide still-live deliveries. Historical proof
             // is an exact resource-entity query, never a scan over unrelated tool originals.
-            if crate::studio::thread_projection::resource_references_for_deliveries(
+            if let Some(bytes) = crate::studio::thread_projection::read_persisted_media(
+                &resources,
                 &deliveries,
                 &attachment_id,
-            )?
-            .is_some()
+            )
+            .await?
             {
-                return crate::studio::thread_projection::read_persisted_media(
-                    &resources,
-                    &deliveries,
-                    &attachment_id,
-                )
-                .await;
+                return Ok(bytes);
             }
             let history = self.store.open_history_reader(&thread_id).await?;
             return crate::studio::history_resources::read(&history, &resources, &attachment_id)

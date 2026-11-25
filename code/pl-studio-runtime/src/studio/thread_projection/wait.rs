@@ -4,9 +4,10 @@
 //! parameters leave the field absent so the original tool card remains. A succeeded wait whose
 //! delivered view cannot be decoded also stays untyped. Target names and statuses come from the
 //! resident snapshot or the official wait view; history never scans other items to fill them.
+use super::activity::{bounded_summary, call_arguments, command_line};
 use crate::{
-    ACTIVITY_SUMMARY_LIMIT, ThreadToolState, ThreadWaitIntent, ThreadWaitPresentation,
-    ThreadWaitState, ThreadWaitTarget, ThreadWaitTargetStatus,
+    ThreadToolState, ThreadWaitIntent, ThreadWaitPresentation, ThreadWaitState, ThreadWaitTarget,
+    ThreadWaitTargetStatus,
 };
 use pl_core::thread::{
     ThreadSnapshot,
@@ -75,7 +76,11 @@ fn project_event_wait(
             status,
         ));
     }
-    let wait_state = event_state(state, view.as_ref())?;
+    let success = match state {
+        ThreadToolState::Succeeded(_) if view.as_ref()?.timed_out => ThreadWaitState::TimedOut,
+        _ => ThreadWaitState::Ready,
+    };
+    let wait_state = wait_state(state, success);
     Some(ThreadWaitPresentation::new(
         ThreadWaitIntent::Events {
             targets,
@@ -98,7 +103,7 @@ fn project_timer(arguments: &str, state: &ThreadToolState) -> Option<ThreadWaitP
         ThreadWaitIntent::Timer {
             duration_ms: input.duration_ms,
         },
-        timer_state(state),
+        wait_state(state, ThreadWaitState::Elapsed),
         None,
     ))
 }
@@ -107,30 +112,7 @@ fn decode_wait_view(result: &str) -> Option<WaitTasksView> {
     serde_json::from_str(result).ok()
 }
 
-fn event_state(state: &ThreadToolState, view: Option<&WaitTasksView>) -> Option<ThreadWaitState> {
-    Some(match state {
-        ThreadToolState::Queued(_)
-        | ThreadToolState::Started(_)
-        | ThreadToolState::Streaming(_)
-        | ThreadToolState::AwaitingApproval(_)
-        | ThreadToolState::Approved(_)
-        | ThreadToolState::Running(_)
-        | ThreadToolState::Cancelling(_) => ThreadWaitState::Waiting,
-        ThreadToolState::Succeeded(_) => {
-            let view = view?;
-            if view.timed_out {
-                ThreadWaitState::TimedOut
-            } else {
-                ThreadWaitState::Ready
-            }
-        }
-        ThreadToolState::Failed(_) => ThreadWaitState::Failed,
-        ThreadToolState::Denied(_) | ThreadToolState::Cancelled(_) => ThreadWaitState::Cancelled,
-        ThreadToolState::Interrupted(_) => ThreadWaitState::Interrupted,
-    })
-}
-
-fn timer_state(state: &ThreadToolState) -> ThreadWaitState {
+fn wait_state(state: &ThreadToolState, success: ThreadWaitState) -> ThreadWaitState {
     match state {
         ThreadToolState::Queued(_)
         | ThreadToolState::Started(_)
@@ -139,7 +121,7 @@ fn timer_state(state: &ThreadToolState) -> ThreadWaitState {
         | ThreadToolState::Approved(_)
         | ThreadToolState::Running(_)
         | ThreadToolState::Cancelling(_) => ThreadWaitState::Waiting,
-        ThreadToolState::Succeeded(_) => ThreadWaitState::Elapsed,
+        ThreadToolState::Succeeded(_) => success,
         ThreadToolState::Failed(_) => ThreadWaitState::Failed,
         ThreadToolState::Denied(_) | ThreadToolState::Cancelled(_) => ThreadWaitState::Cancelled,
         ThreadToolState::Interrupted(_) => ThreadWaitState::Interrupted,
@@ -156,30 +138,8 @@ fn find_task<'a>(snapshot: &'a ThreadSnapshot, task_id: &str) -> Option<&'a Task
 }
 
 fn command_summary(snapshot: Option<&ThreadSnapshot>, task: &TaskRecord) -> Option<(String, bool)> {
-    let snapshot = snapshot?;
-    let arguments = snapshot
-        .context
-        .records
-        .iter()
-        .flat_map(|record| &record.tool_calls)
-        .find(|call| call.call_id == task.call_id)
-        .map(|call| call.arguments.content())?;
-    command_line(arguments)
-}
-
-fn command_line(arguments: &str) -> Option<(String, bool)> {
-    let value: serde_json::Value = serde_json::from_str(arguments).ok()?;
-    let command = value.get("command")?.as_str()?.trim();
-    if command.is_empty() {
-        return None;
-    }
-    Some(bounded_summary(command))
-}
-
-fn bounded_summary(text: &str) -> (String, bool) {
-    let mut chars = text.chars();
-    let summary: String = chars.by_ref().take(ACTIVITY_SUMMARY_LIMIT).collect();
-    (summary, chars.next().is_some())
+    let arguments = call_arguments(snapshot?, &task.call_id)?;
+    command_line(arguments, bounded_summary)
 }
 
 fn target_status(status: TaskStatus) -> ThreadWaitTargetStatus {

@@ -3,9 +3,7 @@
 use crate::{ExecutionItem, ExecutionShape};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
-    ThreadContentLifecycle, ThreadRawItem, ThreadTextChannel, ThreadTextItem, ThreadTurnItem,
-};
+use crate::ThreadTurnItem;
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch, ThreadSnapshot, input::InputChange};
 
 use super::{ProjectionError, order};
@@ -122,15 +120,14 @@ pub(in crate::studio) fn project_effect_items(
         }
     }
 
-    if let Some(parent_id) = thread.parent_thread_id.as_deref() {
-        let source_id = format!("agent:{parent_id}");
+    if thread.parent_thread_id.is_some() {
         let consumed_turn = effect
             .attempt
             .as_ref()
             .filter(|_| effect.consumed_messages.is_some())
             .map(|attempt| attempt.turn_id.as_str());
         for record in state.inbox.iter().filter(|record| {
-            record.message.source_id == source_id
+            super::matches_parent_message(thread, &record.message)
                 && (effect
                     .inbox
                     .iter()
@@ -147,21 +144,11 @@ pub(in crate::studio) fn project_effect_items(
                 .filter(|turn| !turn.is_empty())
                 .or_else(|| consumed_turn.map(str::to_owned))
                 .unwrap_or_default();
-            let payload = &record.message.payload;
-            let state = if payload.format() == "text/plain" && payload.version() == 1 {
-                ExecutionShape::Text(ThreadTextItem::new(
-                    ThreadTextChannel::ParentAgent,
-                    payload.content().into(),
-                    Vec::new(),
-                    ThreadContentLifecycle::completed(created_at),
-                ))
-            } else {
-                ExecutionShape::Raw(ThreadRawItem::stored(
-                    vec![super::raw_payload(payload)],
-                    "Unsupported saved parent message encoding",
-                    created_at,
-                ))
-            };
+            let state = super::parent_message_shape(
+                &record.message.payload,
+                created_at,
+                "Unsupported saved parent message encoding",
+            );
             items.push(ExecutionItem::new(
                 id,
                 crate::ItemStamp {

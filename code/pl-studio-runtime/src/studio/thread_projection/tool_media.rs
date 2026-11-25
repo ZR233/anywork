@@ -54,27 +54,6 @@ pub(crate) fn resource_references(
         .collect())
 }
 
-pub(crate) fn resource_references_for_deliveries(
-    deliveries: &[ToolDelivery],
-    id: &str,
-) -> Result<Option<ResourceReference>, ProjectionError> {
-    let mut reference = None;
-    for delivery in deliveries {
-        for value in resource_references(delivery)? {
-            if value.id() == id {
-                if let Some(old) = &reference {
-                    if old != &value {
-                        return Err(rejected("archived resource facts conflict"));
-                    }
-                } else {
-                    reference = Some(value);
-                }
-            }
-        }
-    }
-    Ok(reference)
-}
-
 /// Wraps a rejected persisted-media fact as a projection failure.
 fn rejected(message: &str) -> ProjectionError {
     ProjectionError::ToolMedia(ToolError::new(std::io::Error::other(message.to_owned())))
@@ -201,11 +180,12 @@ pub(crate) fn delivery_attachments(
 ///
 /// # Errors
 /// Rejects a corrupt persisted media projection or a contradictory archived fact for one id.
-pub(crate) fn persisted_reference(
+fn persisted_reference(
     deliveries: &[ToolDelivery],
     attachment_id: &str,
 ) -> Result<Option<ResourceReference>, ProjectionError> {
     let mut resolved: Option<(ResourceReference, AttachmentModality)> = None;
+    let mut modality_conflict = false;
     for delivery in deliveries {
         for media in archived_media(delivery)? {
             if media.reference.id() != attachment_id {
@@ -214,14 +194,18 @@ pub(crate) fn persisted_reference(
             match &resolved {
                 None => resolved = Some((media.reference, media.modality)),
                 Some((reference, modality)) => {
-                    if reference != &media.reference || modality != &media.modality {
-                        return Err(rejected(
-                            "conflicting archived tool media share one attachment id",
-                        ));
+                    if reference != &media.reference {
+                        return Err(rejected("archived resource facts conflict"));
                     }
+                    modality_conflict |= modality != &media.modality;
                 }
             }
         }
+    }
+    if modality_conflict {
+        return Err(rejected(
+            "conflicting archived tool media share one attachment id",
+        ));
     }
     Ok(resolved.map(|(reference, _)| reference))
 }
@@ -232,20 +216,19 @@ pub(crate) fn persisted_reference(
 /// unreferenced, corrupt, or missing resource fails instead of re-reading a workspace path.
 ///
 /// # Errors
-/// Rejects an unreferenced or corrupt projection, and unavailable or integrity-failing bytes.
+/// Returns `None` without resident proof. Rejects corrupt media facts and unavailable or
+/// integrity-failing bytes.
 pub(crate) async fn read_persisted_media(
     store: &FileResourceStore,
     deliveries: &[ToolDelivery],
     attachment_id: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let reference = persisted_reference(deliveries, attachment_id)?.with_context(|| {
-        format!(
-            "attachment {attachment_id} is not referenced by this Thread's persisted tool media"
-        )
-    })?;
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(reference) = persisted_reference(deliveries, attachment_id)? else {
+        return Ok(None);
+    };
     let bytes = store
         .read(reference, CancellationToken::new())
         .await
         .with_context(|| format!("archived tool media {attachment_id} is unavailable"))?;
-    Ok(bytes.to_vec())
+    Ok(Some(bytes.to_vec()))
 }
