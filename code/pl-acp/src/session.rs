@@ -4256,7 +4256,7 @@ mod tests {
         assert_eq!(*changes.borrow(), sequence);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn close_capability_failure_and_shared_budget_report_local_facts() {
         for (capability, failure, hangs) in [
             (false, false, false),

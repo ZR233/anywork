@@ -139,7 +139,7 @@ async fn projection_timeout_keeps_services_and_original_resource_for_strict_retr
     let fixture = PausedProjection::new().await?;
     fixture.runtime.broadcast_cancel().await;
     fixture.runtime.shutdown_agent_framework().await?;
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_millis(20);
     let budget = ShutdownBudget::at_deadline(deadline);
     let report = fixture.runtime.run_shutdown_stages(budget, None).await;
     assert_eq!(budget.deadline(), Some(deadline));

@@ -981,7 +981,7 @@ sys.stderr.flush()
         *fixture.cleanup.pause.lock().unwrap() = Some(pause.clone());
         assert!(
             timeout(
-                Duration::from_millis(80),
+                Duration::from_millis(20),
                 fixture.runtime.acp_detection.close()
             )
             .await

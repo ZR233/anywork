@@ -1,4 +1,5 @@
 use pl_model_wire::completion::ModelTextChannel;
+use pl_model_wire::completion::replay::{gemini_function_call, gemini_function_call_id};
 use pl_model_wire::completion::stream::event::{
     ModelBlockKind, ModelStreamEvent, ToolInputDeltaPayload,
 };
@@ -50,6 +51,28 @@ impl GeminiStreamDecoder {
                 provider_metadata: None,
                 provider: None,
             });
+        }
+    }
+
+    fn fail_invalid_response(
+        &mut self,
+        mut events: Vec<ModelStreamEvent>,
+        request_id: Option<String>,
+        message: &str,
+    ) -> DecodedSseFrame {
+        self.failed = true;
+        self.close_open_text_block(&mut events);
+        events.push(ModelStreamEvent::Failed {
+            request_id,
+            code: Some("invalid_response".into()),
+            http_status: None,
+            retry_after_ms: None,
+            message: message.into(),
+        });
+        DecodedSseFrame {
+            events,
+            usage_capture: None,
+            reached_terminal: true,
         }
     }
 }
@@ -204,70 +227,69 @@ impl WireStreamDecoder for GeminiStreamDecoder {
                         ));
                     }
                 }
-                if let Some(fc) = part.get("functionCall") {
-                    let Some(fc_obj) = fc.as_object() else {
-                        self.failed = true;
-                        self.close_open_text_block(&mut events);
-                        events.push(ModelStreamEvent::Failed {
-                            request_id: request_id.map(redact),
-                            code: Some("invalid_response".into()),
-                            http_status: None,
-                            retry_after_ms: None,
-                            message: "Gemini functionCall part is not a JSON object".into(),
-                        });
-                        return Ok(DecodedSseFrame {
+                let function_call = match gemini_function_call(part) {
+                    Ok(function_call) => function_call,
+                    Err(error) => {
+                        return Ok(self.fail_invalid_response(
                             events,
-                            usage_capture: None,
-                            reached_terminal: true,
-                        });
-                    };
+                            request_id.map(redact),
+                            &error.to_string(),
+                        ));
+                    }
+                };
+                if let Some(fc_obj) = function_call {
                     let Some(name) = fc_obj
                         .get("name")
                         .and_then(Value::as_str)
                         .filter(|s| !s.is_empty())
                     else {
-                        self.failed = true;
-                        self.close_open_text_block(&mut events);
-                        events.push(ModelStreamEvent::Failed {
-                            request_id: request_id.map(redact),
-                            code: Some("invalid_response".into()),
-                            http_status: None,
-                            retry_after_ms: None,
-                            message: "Gemini functionCall part missing name".into(),
-                        });
-                        return Ok(DecodedSseFrame {
+                        return Ok(self.fail_invalid_response(
                             events,
-                            usage_capture: None,
-                            reached_terminal: true,
-                        });
+                            request_id.map(redact),
+                            "Gemini functionCall part missing name",
+                        ));
+                    };
+                    let upstream_id = match gemini_function_call_id(fc_obj) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return Ok(self.fail_invalid_response(
+                                events,
+                                request_id.map(redact),
+                                &error.to_string(),
+                            ));
+                        }
                     };
                     self.close_open_text_block(&mut events);
                     self.next_tool_seq += 1;
                     let stream_id = Some(format!("gemini_tool:{}", self.next_tool_seq));
-                    let item_id = fc_obj
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!("gemini_noid:{}", self.next_tool_seq));
+                    let item_id =
+                        upstream_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
                     let args_json = fc_obj
                         .get("args")
-                        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()))
+                        .map(Value::to_string)
                         .unwrap_or_else(|| "{}".into());
                     let call_id = Some(item_id.clone());
+                    let payload = ToolInputDeltaPayload::FunctionArguments(args_json);
                     events.push(ModelStreamEvent::ToolInputDelta {
                         stream_id: stream_id.clone(),
                         item_id: item_id.clone(),
                         call_id: call_id.clone(),
                         name: Some(name.to_owned()),
-                        payload_delta: ToolInputDeltaPayload::FunctionArguments(args_json.clone()),
+                        payload_delta: payload.clone(),
                     });
                     events.push(ModelStreamEvent::ToolInputCompleted {
+                        stream_id: stream_id.clone(),
+                        item_id: item_id.clone(),
+                        call_id: call_id.clone(),
+                        name: Some(name.to_owned()),
+                        payload: Some(payload.clone()),
+                    });
+                    events.push(ModelStreamEvent::ToolCallReady {
                         stream_id,
                         item_id,
                         call_id,
                         name: Some(name.to_owned()),
-                        payload: Some(ToolInputDeltaPayload::FunctionArguments(args_json)),
+                        payload: Some(payload),
                     });
                 }
             }

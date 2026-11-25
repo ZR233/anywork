@@ -1,11 +1,13 @@
 //! Frozen assistant history, independent of the final-answer presentation.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Map;
 pub use serde_json::Value;
 use std::collections::BTreeSet;
 
 use super::{
     CompletionResponse, Message, MessageContent, MessageRole, ModelContextItem, ToolCallKind,
+    ToolCallRecord,
 };
 use crate::completion::{ResponsesContextItem, ResponsesContextItemKind};
 use pl_protocol::{PureError, Result};
@@ -68,58 +70,22 @@ impl AssistantReplay {
     pub fn semantic_input(&self, response: &CompletionResponse) -> Result<Vec<ModelContextItem>> {
         let mut input = Vec::new();
         let mut text = String::new();
+        let tool_calls: Vec<_> = response
+            .tool_calls
+            .iter()
+            .map(super::ToolCall::history_record)
+            .collect();
         match self {
             Self::Chat { content } => text.clone_from(content),
             Self::Gemini { parts } => {
-                let mut call_index = 0_usize;
+                gemini_replay_tool_calls(parts, tool_calls.iter())?;
                 for part in parts {
-                    let Some(object) = part.as_object() else {
-                        return Err(invalid("gemini replay part must be a JSON object"));
-                    };
-                    if let Some(part_text) = object.get("text").and_then(Value::as_str) {
-                        let is_thought =
-                            object.get("thought").and_then(Value::as_bool) == Some(true);
+                    if let Some(part_text) = part.get("text").and_then(Value::as_str) {
+                        let is_thought = part.get("thought").and_then(Value::as_bool) == Some(true);
                         if !is_thought {
                             text.push_str(part_text);
                         }
                     }
-                    if let Some(fc) = object.get("functionCall") {
-                        let Some(fc_obj) = fc.as_object() else {
-                            return Err(invalid("gemini functionCall must be a JSON object"));
-                        };
-                        let name = fc_obj
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| invalid("gemini functionCall missing name"))?;
-                        let call = response.tool_calls.get(call_index).ok_or_else(|| {
-                            invalid("gemini replay call has no submitted binding")
-                        })?;
-                        call_index += 1;
-                        if call.kind() != ToolCallKind::Function || call.name != name {
-                            return Err(invalid(
-                                "gemini replay call differs from submitted binding",
-                            ));
-                        }
-                        if let Some(id) = fc_obj.get("id").and_then(Value::as_str)
-                            && id != call.call_id
-                        {
-                            return Err(invalid(
-                                "gemini replay call id differs from submitted binding",
-                            ));
-                        }
-                        if let Some(args) = fc_obj.get("args") {
-                            let expected = serde_json::from_str::<Value>(&call.payload_text())
-                                .map_err(|_| invalid("gemini submitted call args are not JSON"))?;
-                            if args != &expected {
-                                return Err(invalid(
-                                    "gemini replay call args differ from submitted binding",
-                                ));
-                            }
-                        }
-                    }
-                }
-                if call_index != response.tool_calls.len() {
-                    return Err(invalid("gemini replay output is missing a submitted call"));
                 }
             }
             Self::Responses { output } => {
@@ -211,18 +177,103 @@ impl AssistantReplay {
             role: MessageRole::Assistant,
             content: MessageContent::text(text),
             reasoning_content: response.reasoning_content.clone(),
-            tool_calls: (!response.tool_calls.is_empty()).then(|| {
-                response
-                    .tool_calls
-                    .iter()
-                    .map(super::ToolCall::history_record)
-                    .collect()
-            }),
+            tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             tool_result: None,
             metadata: Default::default(),
         }));
         Ok(input)
     }
+}
+
+/// Reads a Gemini function call Part in complete argument mode.
+pub fn gemini_function_call(part: &Value) -> Result<Option<&Map<String, Value>>> {
+    let function = match (part.get("functionCall"), part.get("function_call")) {
+        (Some(_), Some(_)) => return Err(invalid("ambiguous gemini functionCall field")),
+        (Some(function), None) | (None, Some(function)) => function,
+        (None, None) => return Ok(None),
+    };
+    let function = function
+        .as_object()
+        .ok_or_else(|| invalid("gemini functionCall must be a JSON object"))?;
+    let has_full_args = function.get("args").is_some_and(Value::is_object);
+    // Neutral control values only describe a complete call when the full args object is present.
+    let invalid_partials = ["partialArgs", "partial_args"]
+        .into_iter()
+        .filter_map(|key| function.get(key))
+        .any(|value| !has_full_args || !value.as_array().is_some_and(Vec::is_empty));
+    let invalid_continuation = ["willContinue", "will_continue"]
+        .into_iter()
+        .filter_map(|key| function.get(key))
+        .any(|value| !has_full_args || value.as_bool() != Some(false));
+    if invalid_partials || invalid_continuation {
+        return Err(invalid(
+            "Gemini streamed function arguments are unsupported",
+        ));
+    }
+    Ok(Some(function))
+}
+
+/// Reads the optional upstream ID from an unmodified Gemini function call.
+pub fn gemini_function_call_id(call: &Map<String, Value>) -> Result<Option<&str>> {
+    match call.get("id") {
+        None => Ok(None),
+        Some(Value::String(id)) => Ok((!id.is_empty()).then_some(id.as_str())),
+        Some(_) => Err(invalid("gemini functionCall id must be a string")),
+    }
+}
+
+fn gemini_replay_tool_calls<'part, 'call>(
+    parts: &'part [Value],
+    mut calls: impl Iterator<Item = &'call ToolCallRecord>,
+) -> Result<Vec<(&'part str, Option<&'part str>)>> {
+    let mut upstream_calls = Vec::new();
+    let mut bound_ids = BTreeSet::new();
+    for part in parts {
+        if !part.is_object() {
+            return Err(invalid("gemini replay part must be a JSON object"));
+        }
+        let Some(function) = gemini_function_call(part)? else {
+            continue;
+        };
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid("gemini functionCall missing name"))?;
+        let call = calls
+            .next()
+            .ok_or_else(|| invalid("gemini replay call has no submitted binding"))?;
+        if call.kind != ToolCallKind::Function || call.name != name {
+            return Err(invalid("gemini replay call differs from submitted binding"));
+        }
+        let id = gemini_function_call_id(function)?;
+        if id.is_some_and(|id| id != call.call_id) {
+            return Err(invalid(
+                "gemini replay call id differs from submitted binding",
+            ));
+        }
+        if !bound_ids.insert(call.call_id.as_str()) {
+            return Err(invalid("duplicate gemini replay call identity"));
+        }
+        let expected = serde_json::from_str::<Value>(
+            &super::request_support::record_arguments_text(&call.arguments),
+        )
+        .map_err(|_| invalid("gemini submitted call args are not JSON"))?;
+        let matches = function.get("args").map_or_else(
+            || expected.as_object().is_some_and(Map::is_empty),
+            |args| args == &expected,
+        );
+        if !matches {
+            return Err(invalid(
+                "gemini replay call args differ from submitted binding",
+            ));
+        }
+        upstream_calls.push((name, id));
+    }
+    if calls.next().is_some() {
+        return Err(invalid("gemini replay output is missing a submitted call"));
+    }
+    Ok(upstream_calls)
 }
 
 /// Consumes only facts present in frames that predate complete replay recording.
@@ -274,4 +325,16 @@ pub struct ReplaySpan {
     /// 出站请求据此判断原生 reasoning 的 `encrypted_content` 是否可能被目标 provider 解释；
     /// 缺失（旧帧或无来源证据）时不改写既有回放语义。
     pub source_isolation: Option<String>,
+}
+
+impl ReplaySpan {
+    /// Returns upstream names and optional IDs in the order of a Gemini replay's tool bindings.
+    pub fn gemini_tool_calls(&self) -> Result<Vec<(&str, Option<&str>)>> {
+        let calls = self
+            .semantic
+            .iter()
+            .filter_map(ModelContextItem::as_message)
+            .flat_map(|message| message.tool_calls.iter().flatten());
+        gemini_replay_tool_calls(&self.output, calls)
+    }
 }

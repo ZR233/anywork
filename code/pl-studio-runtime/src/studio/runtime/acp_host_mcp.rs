@@ -1484,7 +1484,12 @@ mod tests {
             config: &crate::config::StudioConfig,
             binding: PreparedAcpWorkspace,
         ) -> Result<HttpMcp> {
-            let tools = WorkspaceTools::new(self.target.thread_id.clone(), binding, config);
+            let tools = WorkspaceTools::new_with_handoff_timeout(
+                self.target.thread_id.clone(),
+                binding,
+                config,
+                Duration::from_millis(250),
+            );
             let (service, definition) = HostMcp::start_bound(
                 self.host.clone(),
                 self.caller.clone(),

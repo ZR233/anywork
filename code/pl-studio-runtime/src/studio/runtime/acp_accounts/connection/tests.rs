@@ -925,6 +925,9 @@ async fn generic_background_connection_restarts_without_replaying_sessions_or_pr
             !std::path::Path::new(&format!("/proc/{first_pid}")).exists(),
             "old process must be reaped before reconnect is scheduled"
         );
+        tokio::time::pause();
+        tokio::time::advance(crate::studio::runtime::acp_accounts::lifecycle::retry_delay(1)).await;
+        tokio::time::resume();
         wait_account_state(&fixture.runtime, "business-peer", |account| {
             matches!(account.connection, AcpConnectionState::Ready)
                 && matches!(account.state, AcpAuthState::Verified { .. })
@@ -1005,6 +1008,12 @@ async fn generic_background_connection_restarts_without_replaying_sessions_or_pr
             })
             .await;
             assert!(!std::path::Path::new(&format!("/proc/{old_pid}")).exists());
+            tokio::time::pause();
+            tokio::time::advance(
+                crate::studio::runtime::acp_accounts::lifecycle::retry_delay(expected_attempt),
+            )
+            .await;
+            tokio::time::resume();
             wait_account_state(&fixture.runtime, "business-peer", |account| {
                 matches!(account.connection, AcpConnectionState::Ready)
                     && matches!(account.state, AcpAuthState::Verified { .. })

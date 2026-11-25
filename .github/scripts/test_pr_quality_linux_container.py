@@ -32,6 +32,7 @@ class LinuxContainerTest(unittest.TestCase):
         self.environment = dict(os.environ, PATH=f"{binary}{os.pathsep}{os.environ['PATH']}")
         self.environment.pop("CARGO_HOME", None)
         self.environment.pop("PURE_REMOTE_HELPER_PREBUILT_DIR", None)
+        self.environment.pop("ANYWORK_CONTAINER_TMPFS", None)
 
     def run_container(self):
         return subprocess.run(
@@ -64,6 +65,15 @@ class LinuxContainerTest(unittest.TestCase):
         arguments = json.loads(result.stdout)
         self.assertEqual(arguments.count("--mount"), 1)
         self.assertFalse(any(value.startswith("CARGO_HOME=") for value in arguments))
+        self.assertNotIn("--tmpfs", arguments)
+
+    def test_tmpfs_is_mounted_when_requested(self):
+        self.environment["ANYWORK_CONTAINER_TMPFS"] = "1"
+        result = self.run_container()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout)
+        index = arguments.index("--tmpfs")
+        self.assertEqual(arguments[index + 1], "/tmp:rw,exec,nosuid,size=2g")
 
 
 class LinuxBuildHandoffTest(unittest.TestCase):

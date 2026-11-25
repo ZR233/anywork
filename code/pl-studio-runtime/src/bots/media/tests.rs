@@ -274,7 +274,7 @@ async fn registered_media_window(stage: FileStage, lose_claim: bool) -> Result<(
     let quiesce = fixture.bots.quiesce_archive_threads(&targets);
     tokio::pin!(quiesce);
     assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut quiesce)
+        tokio::time::timeout(Duration::from_millis(20), &mut quiesce)
             .await
             .is_err(),
         "quiesce must join the running file operation before reporting stop"
@@ -429,7 +429,7 @@ async fn archive_queued_submit_lost_claim_drains_retention_before_releasing_draf
     let quiesce = fixture.bots.quiesce_archive_threads(&targets);
     tokio::pin!(quiesce);
     assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut quiesce)
+        tokio::time::timeout(Duration::from_millis(20), &mut quiesce)
             .await
             .is_err(),
         "queued submit must drain its already-started resource copy"

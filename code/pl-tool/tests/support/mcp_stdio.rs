@@ -64,6 +64,10 @@ for raw in sys.stdin:
         }
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+        ready_marker = os.environ.get("MCP_READY_MARKER")
+        if ready_marker:
+            with open(ready_marker, "w") as f:
+                f.write("ready")
     elif method == "initialize":
         if hang_initialize:
             time.sleep(60)
@@ -83,6 +87,10 @@ for raw in sys.stdin:
         }
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+        ready_marker = os.environ.get("MCP_READY_MARKER")
+        if ready_marker:
+            with open(ready_marker, "w") as f:
+                f.write("ready")
     elif method == "notifications/initialized":
         continue
     elif method == "tools/list":
@@ -113,6 +121,10 @@ for raw in sys.stdin:
             resp["result"]["tools"] = []
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+        ready_marker = os.environ.get("MCP_READY_MARKER")
+        if ready_marker:
+            with open(ready_marker, "w") as f:
+                f.write("ready")
     elif method == "tools/call":
         if msg.get("params", {}).get("arguments", {}).get("mode") == "late_disconnect":
             release = os.environ["MCP_LATE_DISCONNECT_RELEASE"]
@@ -152,11 +164,19 @@ for raw in sys.stdin:
             resp["result"] = {"content": content, "isError": mode == "error"}
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+        ready_marker = os.environ.get("MCP_READY_MARKER")
+        if ready_marker:
+            with open(ready_marker, "w") as f:
+                f.write("ready")
     elif method in ("resources/list", "resources/templates/list"):
         key = "resources" if method == "resources/list" else "resourceTemplates"
         resp = {"jsonrpc": "2.0", "id": msg_id, "result": {key: []}}
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+        ready_marker = os.environ.get("MCP_READY_MARKER")
+        if ready_marker:
+            with open(ready_marker, "w") as f:
+                f.write("ready")
     elif method == "resources/read":
         if hang_call_ms > 0:
             time.sleep(hang_call_ms / 1000.0)
@@ -173,6 +193,10 @@ for raw in sys.stdin:
         }
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
+        ready_marker = os.environ.get("MCP_READY_MARKER")
+        if ready_marker:
+            with open(ready_marker, "w") as f:
+                f.write("ready")
 
 if term_release_marker:
     # T09 must stay alive after transport EOF until the real SIGTERM handler runs.

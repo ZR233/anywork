@@ -103,6 +103,39 @@ class StudioAnywkHandoffTest(unittest.TestCase):
 
 
 class HandoffTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._class_temp = tempfile.TemporaryDirectory(
+            prefix="pr-handoff-tpl-", dir=os.environ.get("PR_HANDOFF_TEST_SCRATCH")
+        )
+        cls.addClassCleanup(cls._class_temp.cleanup)
+        cls._template = Path(cls._class_temp.name).resolve() / "producer"
+        cls._template.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet", str(cls._template)], check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "-c", "user.name=Handoff Test",
+             "-c", "user.email=handoff@example.invalid",
+             "commit", "--quiet", "--allow-empty", "-m", "fixture"],
+            cwd=cls._template, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        cls._sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=cls._template, text=True
+        ).strip()
+        cls._payloads = {}
+        for index, relative in enumerate(
+            [*TOOL_FILES.values(), *HELPER_FILES.values()]
+        ):
+            path = cls._template / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = b"\x00artifact bytes\xff" + bytes([index])
+            mode = 0o751 if path.name in ("pl-xtask", "pl-remote-helper") else 0o640
+            path.write_bytes(payload)
+            path.chmod(mode)
+            cls._payloads[relative] = (payload, mode)
+
     def setUp(self):
         # Local runs select the Thread's scratch; ordinary CI needs no custom path.
         self.temp = tempfile.TemporaryDirectory(
@@ -111,20 +144,8 @@ class HandoffTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.workspace = self.root / "producer"
-        self.workspace.mkdir()
-        subprocess.run(
-            ["git", "init", "--quiet", str(self.workspace)], check=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        subprocess.run(
-            ["git", "-c", "user.name=Handoff Test",
-             "-c", "user.email=handoff@example.invalid",
-             "commit", "--quiet", "--allow-empty", "-m", "fixture"],
-            cwd=self.workspace, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        self.sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=self.workspace, text=True
-        ).strip()
+        shutil.copytree(self._template, self.workspace)
+        self.sha = self._sha
         self.image = "ghcr.io/example/build@sha256:" + "a" * 64
         self.archive = self.root / "artifact.tar.gz"
         self.destination = self.root / "restored"
@@ -132,17 +153,7 @@ class HandoffTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {"GITHUB_OUTPUT": str(self.output)})
         self.env.start()
         self.addCleanup(self.env.stop)
-        self.payloads = {}
-        for index, relative in enumerate(
-            [*TOOL_FILES.values(), *HELPER_FILES.values()]
-        ):
-            path = self.workspace / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = b"\x00artifact bytes\xff" + bytes([index])
-            mode = 0o751 if path.name in ("pl-xtask", "pl-remote-helper") else 0o640
-            path.write_bytes(payload)
-            path.chmod(mode)
-            self.payloads[relative] = (payload, mode)
+        self.payloads = self._payloads
 
     def cli(self, *args, workspace=None):
         stdout, stderr = io.StringIO(), io.StringIO()
