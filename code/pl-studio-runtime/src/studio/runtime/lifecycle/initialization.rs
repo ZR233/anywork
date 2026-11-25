@@ -713,3 +713,6 @@ mod observer_start_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod startup_fault_tests;
