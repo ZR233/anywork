@@ -118,14 +118,14 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
     }
     let mut visits = vec![Visit::Unseen; parents.len()];
     let mut path = Vec::new();
-    for start in 0..parents.len() {
+    for (start, agent) in document.agents.iter().enumerate() {
         let mut cursor = Some(start);
         while let Some(index) = cursor {
             match visits[index] {
                 Visit::Verified => break,
                 Visit::Active => anyhow::bail!(
                     "Studio catalog member chain from {} is cyclic",
-                    document.agents[start].agent_id
+                    agent.agent_id
                 ),
                 Visit::Unseen => {
                     visits[index] = Visit::Active;

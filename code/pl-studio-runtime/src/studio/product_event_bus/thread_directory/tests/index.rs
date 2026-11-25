@@ -35,7 +35,7 @@ fn reverse_membership_tracks_replacement_migration_rejection_and_root_deletion()
     moved.parent_agent_id = Some(other.agent_id.clone());
     index.insert_agent(moved.clone()).unwrap();
     assert!(index.agent_by_thread("child-thread").is_none());
-    assert!(index.sessions["root"].agents.get("child-agent").is_none());
+    assert!(!index.sessions["root"].agents.contains_key("child-agent"));
     assert_eq!(
         index.directory_facts("moved-thread").unwrap().0.session_id,
         "other"

@@ -27,16 +27,25 @@ pub(super) fn ensure_journal_identity(
     Ok(())
 }
 
+pub(super) struct CredentialChange<'a> {
+    pub previous: &'a BotConfigFile,
+    pub candidate: BotConfigFile,
+    pub secret: BotSecretUpdate,
+}
+
 pub(super) fn prepare_bot_credentials_with_fs(
     fs: &dyn JournalFs,
     dir: &Path,
     expected_bot_id: &str,
     credentials: &BotCredentialCapability,
-    previous: &BotConfigFile,
-    mut candidate: BotConfigFile,
-    secret: BotSecretUpdate,
+    change: CredentialChange<'_>,
     operation_id: &str,
 ) -> Result<CredentialPrepare, FeishuError> {
+    let CredentialChange {
+        previous,
+        mut candidate,
+        secret,
+    } = change;
     // 先核对本次操作与目录归属身份，再触碰 journal、普通配置或系统凭据。
     ensure_config_identity(expected_bot_id, previous)?;
     ensure_config_identity(expected_bot_id, &candidate)?;

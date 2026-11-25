@@ -576,7 +576,7 @@ impl MemberWorkspace<'_> {
                     usage: &usage,
                     session_mode: self.session.workspace_mode,
                     config: &workspace_config,
-                    cancellation: cancellation,
+                    cancellation,
                 })
                 .await
                 .map_err(|error| projection::preparation(&error.to_string()))?;

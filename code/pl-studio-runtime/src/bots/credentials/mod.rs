@@ -10,7 +10,7 @@ use crate::config::{
 };
 use crate::{BotCredentialAvailability, BotCredentialOperation, BotDiagnostic, BotSecretUpdate};
 use commit::{
-    abandon_prepared_credentials_with_fs, commit_prepared_credentials_with_fs,
+    CredentialChange, abandon_prepared_credentials_with_fs, commit_prepared_credentials_with_fs,
     ensure_journal_identity, inspect_decided, missing_secret_error,
     prepare_bot_credentials_with_fs, recover_operation_with_fs,
 };
@@ -322,9 +322,11 @@ pub fn prepare_bot_credentials(
         dir,
         expected_bot_id,
         credentials,
-        previous,
-        candidate,
-        secret,
+        CredentialChange {
+            previous,
+            candidate,
+            secret,
+        },
         operation_id,
     )
 }

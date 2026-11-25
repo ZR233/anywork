@@ -182,10 +182,10 @@ impl ThreadDirectoryIndex {
             let id = other.agent_id.clone();
             self.remove_agent(&id);
         }
-        if let Some(previous) = previous.as_ref() {
-            if previous.session_id != agent.session_id || previous.thread_id != agent.thread_id {
-                self.remove_agent(&previous.agent_id);
-            }
+        if let Some(previous) = previous.as_ref()
+            && (previous.session_id != agent.session_id || previous.thread_id != agent.thread_id)
+        {
+            self.remove_agent(&previous.agent_id);
         }
         if agent.explicitly_closed {
             self.explicitly_closed.insert(agent.agent_id.clone());

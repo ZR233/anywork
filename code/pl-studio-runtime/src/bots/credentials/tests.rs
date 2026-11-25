@@ -53,9 +53,11 @@ fn commit_bot_credentials(
         dir,
         expected_bot_id,
         credentials,
-        previous,
-        candidate,
-        secret,
+        CredentialChange {
+            previous,
+            candidate,
+            secret,
+        },
         operation_id,
     )? {
         CredentialPrepare::Decided(commit) => Ok(*commit),
