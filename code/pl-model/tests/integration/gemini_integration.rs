@@ -3,9 +3,9 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pl_model::{
     completion::{
-        AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest, ContentPart,
-        Message, MessageContent, MessageRole, ReasoningConfig, SystemPrompt, ToolCallKind,
-        ToolResultReceipt, ToolResultRecord, ToolSpec,
+        AssistantReplay, AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest,
+        ContentPart, Message, MessageContent, MessageRole, ReasoningConfig, SystemPrompt,
+        ToolCallKind, ToolResultReceipt, ToolResultRecord, ToolSpec,
     },
     config::{
         AccountConfig, AccountId, AccountModelCatalogConfig, AgentModelConfig, ModelCatalogId,
@@ -22,7 +22,7 @@ use pl_model::{
     },
     runtime::{ModelInvocationContext, new_with_account_id},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -232,66 +232,81 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
     );
 }
 
+async fn serve_gemini_sse(listener: TcpListener, replies: Vec<Vec<Value>>) -> Vec<Value> {
+    let mut captured_bodies = Vec::new();
+    for (step, frames) in replies.into_iter().enumerate() {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut raw = Vec::new();
+        let header_end = loop {
+            raw.push(socket.read_u8().await.unwrap());
+            if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos;
+            }
+        };
+        let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
+        assert!(
+            header_text
+                .to_ascii_lowercase()
+                .contains("x-goog-api-key: gcp-secret")
+        );
+        let content_len: usize = header_text
+            .lines()
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.eq_ignore_ascii_case("content-length")
+                    .then(|| v.trim().parse().ok())
+                    .flatten()
+            })
+            .unwrap();
+        let mut body_bytes = raw[header_end + 4..].to_vec();
+        while body_bytes.len() < content_len {
+            let mut tmp = vec![0u8; content_len - body_bytes.len()];
+            let n = socket.read(&mut tmp).await.unwrap();
+            assert!(n > 0);
+            body_bytes.extend_from_slice(&tmp[..n]);
+        }
+        let json_body = serde_json::from_slice(&body_bytes).unwrap();
+        captured_bodies.push(json_body);
+
+        let sse: String = frames
+            .into_iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect();
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-goog-request-id: goog-req-{step}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+            sse.len()
+        );
+        socket.write_all(resp.as_bytes()).await.unwrap();
+    }
+    captured_bodies
+}
+
 #[tokio::test]
-async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
+async fn runtime_replays_single_gemini_tool_with_empty_id_over_mock_http() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!(
         "http://{}/v1/publishers/google",
         listener.local_addr().unwrap()
     );
-
-    let server = tokio::spawn(async move {
-        let mut captured_bodies = Vec::new();
-        for step in 0..2 {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut raw = Vec::new();
-            let header_end = loop {
-                raw.push(socket.read_u8().await.unwrap());
-                if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-                    break pos;
-                }
-            };
-            let header_text = String::from_utf8_lossy(&raw[..header_end]).to_string();
-            assert!(
-                header_text
-                    .to_ascii_lowercase()
-                    .contains("x-goog-api-key: gcp-secret")
-            );
-            let content_len: usize = header_text
-                .lines()
-                .find_map(|l| {
-                    let (k, v) = l.split_once(':')?;
-                    k.eq_ignore_ascii_case("content-length")
-                        .then(|| v.trim().parse().ok())
-                        .flatten()
-                })
-                .unwrap();
-            let mut body_bytes = raw[header_end + 4..].to_vec();
-            while body_bytes.len() < content_len {
-                let mut tmp = vec![0u8; content_len - body_bytes.len()];
-                let n = socket.read(&mut tmp).await.unwrap();
-                assert!(n > 0);
-                body_bytes.extend_from_slice(&tmp[..n]);
-            }
-            let json_body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-            captured_bodies.push(json_body);
-
-            let sse = if step == 0 {
-                concat!(
-                    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Checking tool\",\"thought\":true}]}}],\"modelVersion\":\"gemini-4-hydrogen\",\"responseId\":\"g-1\"}\n\n",
-                    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"q\":\"hi\"},\"id\":\"call_abc\"},\"thoughtSignature\":\"SIG_XYZ\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":6,\"totalTokenCount\":22}}\n\n"
-                )
-            } else {
-                "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"All done.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":0,\"totalTokenCount\":23}}\n\n"
-            };
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-goog-request-id: goog-req-{step}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
-                sse.len()
-            );
-            socket.write_all(resp.as_bytes()).await.unwrap();
-        }
-        captured_bodies
+    let original_call = json!({
+        "functionCall":{"name":"lookup","args":{"q":"hi"},"id":""},
+        "thoughtSignature":"SIG_XYZ",
     });
+    let server = tokio::spawn(serve_gemini_sse(
+        listener,
+        vec![
+            vec![
+                json!({"candidates":[{"content":{"role":"model","parts":[{"text":"Checking tool","thought":true}]}}],
+                "modelVersion":"gemini-4-hydrogen","responseId":"g-1"}),
+                json!({"candidates":[{"content":{"role":"model","parts":[original_call]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":4,"thoughtsTokenCount":6,"totalTokenCount":22}}),
+            ],
+            vec![
+                json!({"candidates":[{"content":{"role":"model","parts":[{"text":"All done."}]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":3,"thoughtsTokenCount":0,"totalTokenCount":23}}),
+            ],
+        ],
+    ));
 
     let bundled = bundled_model_definition("vertex-ai").unwrap();
     let model = bundled
@@ -363,7 +378,13 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
     let ctx = ModelInvocationContext::default();
     let resp1 = runtime.complete(req.clone(), ctx.clone()).await.unwrap();
     assert_eq!(resp1.tool_calls.len(), 1);
-    assert_eq!(resp1.tool_calls[0].name, "lookup");
+    let call = &resp1.tool_calls[0];
+    assert_eq!(call.name, "lookup");
+    assert!(!call.call_id.is_empty());
+    let Some(AssistantReplay::Gemini { parts }) = resp1.replay.as_ref() else {
+        panic!("expected Gemini replay");
+    };
+    assert_eq!(parts[1], original_call);
     assert_eq!(resp1.accounting.usage.output_tokens, Some(10));
     assert_eq!(resp1.accounting.usage.reasoning_tokens, Some(6));
     assert_eq!(resp1.accounting.usage.cache_read_tokens, Some(0));
@@ -383,15 +404,15 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
                 reasoning_content: None,
                 tool_calls: None,
                 tool_result: Some(ToolResultRecord {
-                    item_id: "call_abc".into(),
-                    call_id: "call_abc".into(),
+                    item_id: call.id.clone(),
+                    call_id: call.call_id.clone(),
                     name: "lookup".into(),
                     kind: ToolCallKind::Function,
                 }),
                 metadata: Default::default(),
             },
             receipt: ToolResultReceipt {
-                call_id: "call_abc".into(),
+                call_id: call.call_id.clone(),
                 tool_name: "lookup".into(),
                 arguments_hash: "h1".into(),
                 result_hash: "h2".into(),
@@ -419,14 +440,229 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
         captured[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"],
         "low"
     );
-    // Second turn must replay thoughtSignature verbatim and send matching functionResponse id
+    assert_eq!(captured[1]["contents"][1]["parts"][1], original_call);
     assert_eq!(
-        captured[1]["contents"][1]["parts"][1]["thoughtSignature"],
-        "SIG_XYZ"
+        captured[1]["contents"][2]["parts"][0],
+        json!({"functionResponse":{"name":"lookup","response":{"result":"found item"}}}),
     );
+}
+
+#[tokio::test]
+async fn runtime_rejects_gemini_error_received_after_stop_with_tool_call() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+    let server = tokio::spawn(serve_gemini_sse(
+        listener,
+        vec![vec![
+            json!({"candidates":[{"content":{"role":"model","parts":[
+                {"functionCall":{"name":"lookup","args":{"q":"ready"},"id":"call-1"}},
+            ]},"finishReason":"STOP"}]}),
+            json!({"error":{"code":400,"status":"INVALID_ARGUMENT","message":"late stream error"}}),
+        ]],
+    ));
+    let mut endpoint = gemini_api_endpoint(Some(base));
+    endpoint.bearer_token = Some("gcp-secret".into());
+    let model = bundled_model_definition("gemini")
+        .unwrap()
+        .models
+        .into_iter()
+        .find(|model| model.base.slug == "gemini-4-hydrogen")
+        .unwrap();
+    let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
+    let request = CompletionRequest::builder().build();
+
+    let error = runtime
+        .complete(request, ModelInvocationContext::default())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("late stream error"), "{error}");
     assert_eq!(
-        captured[1]["contents"][2]["parts"][0]["functionResponse"]["id"],
-        "call_abc"
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn thread_gemini_replays_parallel_results_in_part_order_across_steps() {
+    use pl_core::{
+        context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
+        model::{ModelFactory, ModelRequest, ModelToolDeclaration, ToolCallMode},
+    };
+    use pl_model::runtime::{ThreadModel, model_response_receipt, thread_tool_declaration};
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+    let first = json!({
+        "functionCall":{"name":"lookup","args":{"q":"first"},"id":"provider-1"},
+        "thoughtSignature":"SIG_STEP_1",
+        "future":{"keep":[1,2]},
+    });
+    let second = json!({"functionCall":{"name":"lookup","args":{"q":"second"}}});
+    let third = json!({"functionCall":{"name":"lookup","args":{"q":"third"},"id":""}});
+    let fourth =
+        json!({"functionCall":{"name":"lookup","args":{"q":"fourth"},"id":"gemini_noid:2"}});
+    let tail = json!({"text":"","thoughtSignature":"SIG_TAIL"});
+    let next = json!({
+        "functionCall":{"name":"lookup","args":{"q":"next"},"id":"provider-1"},
+        "thoughtSignature":"SIG_STEP_2",
+    });
+    let server = tokio::spawn(serve_gemini_sse(
+        listener,
+        vec![
+            vec![
+                json!({"candidates":[{"content":{"role":"model","parts":[first,second]}}]}),
+                json!({"candidates":[{"content":{"role":"model","parts":[third,fourth]}}]}),
+                json!({"candidates":[{"content":{"role":"model","parts":[tail]},"finishReason":"STOP"}]}),
+            ],
+            vec![
+                json!({"candidates":[{"content":{"role":"model","parts":[next]},"finishReason":"STOP"}]}),
+            ],
+            vec![
+                json!({"candidates":[{"content":{"role":"model","parts":[{"text":"Verified."}]},"finishReason":"STOP"}]}),
+            ],
+        ],
+    ));
+
+    let mut endpoint = gemini_api_endpoint(Some(base));
+    endpoint.bearer_token = Some("gcp-secret".into());
+    let model = bundled_model_definition("gemini")
+        .unwrap()
+        .models
+        .into_iter()
+        .find(|model| model.base.slug == "gemini-4-hydrogen")
+        .unwrap();
+    let runtime = new_with_account_id("acct-gemini", endpoint, model).unwrap();
+    let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
+        .open_session()
+        .await
+        .unwrap();
+    let lookup = ToolSpec::Function {
+        name: "lookup".into(),
+        description: "Lookup something".into(),
+        input_schema: json!({
+            "type":"object","properties":{"q":{"type":"string"}},"required":["q"],
+        }),
+        allowed_callers: Vec::new(),
+        output_schema: None,
+    };
+    let tools: Arc<[ModelToolDeclaration]> = vec![ModelToolDeclaration {
+        tool_id: "lookup-executor".into(),
+        declaration: thread_tool_declaration(&lookup).unwrap(),
+        presentation_contract: None,
+    }]
+    .into();
+    let mut records = vec![ContextRecord {
+        id: "input".into(),
+        turn_id: Some("turn".into()),
+        source: ContextSource::User,
+        content: vec![ContextContent::Text {
+            text: "Look up the values.".into(),
+        }],
+        tool_calls: Vec::new(),
+    }];
+    let mut internal_ids = std::collections::BTreeSet::new();
+    for (index, (attempt, queries)) in [
+        (
+            "00000000-0000-4000-8000-000000000001",
+            &["first", "second", "third", "fourth"][..],
+        ),
+        ("00000000-0000-4000-8000-000000000002", &["next"][..]),
+        ("00000000-0000-4000-8000-000000000003", &[][..]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = session
+            .prepare(ModelRequest {
+                thread_id: "gemini-thread".into(),
+                turn_id: "turn".into(),
+                attempt_id: attempt.into(),
+                context: ContextSnapshot {
+                    revision: index as u64,
+                    records: records.clone().into(),
+                },
+                tools: tools.clone(),
+                tool_call_mode: ToolCallMode::Parallel,
+                solo_tool_ids: Default::default(),
+                committed_private_context: None,
+                resources: None,
+                cancellation: Default::default(),
+                progress: None,
+                members: None,
+            })
+            .await
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(output.tool_calls.len(), queries.len());
+        let receipt = model_response_receipt(&output).unwrap().unwrap();
+        if queries.is_empty() {
+            assert_eq!(receipt.response.content.as_deref(), Some("Verified."));
+            break;
+        }
+        let mut results = Vec::new();
+        for (binding, query) in output.tool_calls.iter().zip(queries) {
+            assert_eq!(binding.tool_id, "lookup-executor");
+            assert!(binding.rejection.is_none(), "lookup {query} was rejected");
+            assert_eq!(
+                serde_json::from_str::<Value>(binding.arguments.content()).unwrap(),
+                json!({"q":query}),
+            );
+            assert!(internal_ids.insert(binding.call_id.clone()));
+            results.push(ContextRecord {
+                id: format!("{attempt}:{query}"),
+                turn_id: Some("turn".into()),
+                source: ContextSource::ToolResult {
+                    call_id: binding.call_id.clone(),
+                    tool_id: binding.tool_id.clone(),
+                },
+                content: vec![ContextContent::Text {
+                    text: format!("result {query}").into(),
+                }],
+                tool_calls: Vec::new(),
+            });
+        }
+        records.push(ContextRecord {
+            id: format!("{attempt}:output"),
+            turn_id: Some("turn".into()),
+            source: ContextSource::Assistant,
+            content: output.content,
+            tool_calls: output.tool_calls,
+        });
+        records.extend(results.into_iter().rev());
+    }
+
+    let captured = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+    let batch = json!([
+        {"role":"model","parts":[first,second,third,fourth,tail]},
+        {"role":"user","parts":[
+            {"functionResponse":{"name":"lookup","id":"provider-1","response":{"result":"result first"}}},
+            {"functionResponse":{"name":"lookup","response":{"result":"result second"}}},
+            {"functionResponse":{"name":"lookup","response":{"result":"result third"}}},
+            {"functionResponse":{"name":"lookup","id":"gemini_noid:2","response":{"result":"result fourth"}}},
+        ]},
+    ]);
+    let continuation = captured[1]["contents"].as_array().unwrap();
+    assert_eq!(&continuation[1..], batch.as_array().unwrap());
+    let final_request = captured[2]["contents"].as_array().unwrap();
+    assert_eq!(&final_request[..continuation.len()], continuation);
+    assert_eq!(
+        &final_request[continuation.len()..],
+        [
+            json!({"role":"model","parts":[next]}),
+            json!({"role":"user","parts":[
+                {"functionResponse":{"name":"lookup","id":"provider-1","response":{"result":"result next"}}},
+            ]}),
+        ]
     );
 }
 
