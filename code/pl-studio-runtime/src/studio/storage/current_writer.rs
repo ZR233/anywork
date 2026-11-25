@@ -198,8 +198,6 @@ struct Shared {
     close: Notify,
     on_change: Box<dyn Fn() + Send + Sync>,
     on_saved: Box<dyn Fn(&str) + Send + Sync>,
-    #[cfg(test)]
-    observer_tasks: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Shared {
@@ -321,8 +319,6 @@ impl CurrentWriter {
             close: Notify::new(),
             on_change: Box::new(on_change),
             on_saved: Box::new(on_saved),
-            #[cfg(test)]
-            observer_tasks: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
         // This queue holds control requests, never tokens or snapshots. Dirty is a single bit.
         let (commands, receiver) = mpsc::channel(16);
@@ -473,16 +469,6 @@ struct CurrentObserver {
     task: JoinHandle<()>,
 }
 
-#[cfg(test)]
-struct ObserverTask(Arc<std::sync::atomic::AtomicUsize>);
-
-#[cfg(test)]
-impl Drop for ObserverTask {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 impl CurrentObserver {
     fn start(
         mut subscription: watch::Receiver<u64>,
@@ -492,16 +478,7 @@ impl CurrentObserver {
         cancellation: CancellationToken,
     ) -> Self {
         let stopped = cancellation.clone();
-        #[cfg(test)]
-        let guard = {
-            shared
-                .observer_tasks
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            ObserverTask(shared.observer_tasks.clone())
-        };
         let task = tokio::spawn(async move {
-            #[cfg(test)]
-            let _guard = guard;
             loop {
                 tokio::select! {
                     biased;
@@ -1198,7 +1175,6 @@ mod tests {
         assert_eq!(handle.snapshot().lifecycle, ThreadLifecycle::Closed);
         assert!(writer.is_joined());
         assert!(!writer.snapshot().observer_registered);
-        assert_eq!(writer.shared.observer_tasks.load(Ordering::Relaxed), 0);
         let final_current = store.load_current().await?.unwrap();
         assert_eq!(
             saved_stream(&final_current),
@@ -1285,11 +1261,6 @@ mod tests {
                 .await?
         ));
         assert!(previous_observer.is_cancelled());
-        assert_eq!(
-            writer.shared.observer_tasks.load(Ordering::Relaxed),
-            1,
-            "previous task has exited and joined before new admission returns"
-        );
         store.flush_current(new.runtime_epoch()).await?;
         old.patch_runtime_facts(vec![RuntimeFact {
             source_id: "old-fact".into(),
@@ -1313,7 +1284,6 @@ mod tests {
                 crate::thread_assembler::ClosePurpose::Preserve,
             )
             .await?;
-        assert_eq!(writer.shared.observer_tasks.load(Ordering::Relaxed), 0);
         assert!(!store.current_save_state()?.observer_registered);
         assert!(
             writer
@@ -1326,6 +1296,43 @@ mod tests {
                 .is_err()
         );
         old.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stopping_a_current_observer_releases_its_watch_receiver_before_ack() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let writer = CurrentWriter::new(
+            CurrentFile::new(directory.path().into(), "observe".into()),
+            || {},
+        );
+        let (revisions, receiver) = watch::channel(0);
+        let epoch = RuntimeEpoch::new();
+        let cancellation = CancellationToken::new();
+        let observer = CurrentObserver::start(
+            receiver,
+            0,
+            epoch,
+            writer.shared.clone(),
+            cancellation.clone(),
+        );
+        let mut active = Active {
+            epoch,
+            source: CurrentSource::new(
+                |_, _| unreachable!("stopping an observer does not capture current"),
+                |_| unreachable!("stopping an observer does not finish current"),
+            ),
+            observer: Some(observer),
+            verified_resources: VerifiedResources::new(),
+        };
+        assert_eq!(revisions.receiver_count(), 1);
+        active.stop_observer(&writer.shared).await?;
+        assert!(cancellation.is_cancelled());
+        assert_eq!(revisions.receiver_count(), 0);
+        assert!(active.observer.is_none());
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 
