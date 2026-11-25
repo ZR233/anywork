@@ -151,41 +151,6 @@ class StudioIconBadge extends StatelessWidget {
   }
 }
 
-class StudioProgressDots extends StatelessWidget {
-  const StudioProgressDots({
-    required this.activeIndex,
-    this.count = 3,
-    super.key,
-  });
-
-  final int activeIndex;
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var index = 0; index < count; index++)
-          Padding(
-            padding: EdgeInsets.only(right: index == count - 1 ? 0 : 5),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              width: index == activeIndex ? 16 : 6,
-              height: 6,
-              decoration: BoxDecoration(
-                color: index == activeIndex
-                    ? context.statusColors.activeIndicator
-                    : context.colors.outlineVariant,
-                borderRadius: BorderRadius.circular(StudioRadii.pill),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
 /// A supplementary eye-blue marker; the selected surface and label carry state too.
 class StudioSelectionMarker extends StatelessWidget {
   const StudioSelectionMarker({

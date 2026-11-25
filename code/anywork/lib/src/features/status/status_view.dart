@@ -220,11 +220,9 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
           _stateCollectionFields[name] != field) {
         return;
       }
-      final values = switch (page.entries) {
-        final entries => await Future.wait([
-          for (final entry in entries) _stateCollectionValue(scope, entry),
-        ]),
-      };
+      final values = await Future.wait([
+        for (final entry in page.entries) _stateCollectionValue(scope, entry),
+      ]);
       _stateCollections[name] = List.unmodifiable(
         nextPage ? [...?_stateCollections[name], ...values] : values,
       );
@@ -465,23 +463,19 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
     // Closing the popover never cancels Client's command or shared resources.
     _closeRetention ??= ref.keepAlive().close;
     _errors.remove(key);
-    _publishCommands();
+    _refresh();
     try {
       await command();
     } catch (error) {
       _errors[key] = error.toString();
     } finally {
       _pending.remove(key);
-      if (ref.mounted) _publishCommands();
+      if (ref.mounted) _refresh();
       if (_pending.isEmpty) {
         _closeRetention?.call();
         _closeRetention = null;
       }
     }
-  }
-
-  void _publishCommands() {
-    _refresh();
   }
 }
 
@@ -545,14 +539,13 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
         _chromeFromSession,
         equals: _chromeEquals,
       ) ??
-      (isBusy: false, modelRoute: null, workflowRun: null);
+      (isBusy: false, modelRoute: null);
   return StatusBarView(
     row: row,
     accounts: accounts,
     roles: roles ?? const [],
     isBusy: chrome.isBusy,
     modelRoute: chrome.modelRoute,
-    workflowRun: chrome.workflowRun,
   );
 }
 
@@ -588,25 +581,15 @@ StudioThroughputProjection? statusThroughputProjection(
   });
 }
 
-typedef _StatusChrome = ({
-  bool isBusy,
-  ThreadModelRouteView? modelRoute,
-  WorkflowRunView? workflowRun,
-});
+typedef _StatusChrome = ({bool isBusy, ThreadModelRouteView? modelRoute});
 
-_StatusChrome _chromeFromSession(ThreadSessionState session) {
-  final runtime = session.runtime ?? statusEmptyRuntime;
-  return (
-    isBusy: session.activeTurn?.state.isBusy ?? false,
-    modelRoute: session.modelRoute,
-    workflowRun: runtime.workflow?.currentRun,
-  );
-}
+_StatusChrome _chromeFromSession(ThreadSessionState session) => (
+  isBusy: session.activeTurn?.state.isBusy ?? false,
+  modelRoute: session.modelRoute,
+);
 
 bool _chromeEquals(_StatusChrome left, _StatusChrome right) {
-  return left.isBusy == right.isBusy &&
-      left.modelRoute == right.modelRoute &&
-      left.workflowRun == right.workflowRun;
+  return left.isBusy == right.isBusy && left.modelRoute == right.modelRoute;
 }
 
 bool _sameStrings(List<String> left, List<String> right) {

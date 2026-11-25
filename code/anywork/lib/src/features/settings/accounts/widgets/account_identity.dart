@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../../../../shared/account_brand.dart';
+import '../../../../shared/widgets/account_brand.dart';
 import 'account_sections.dart';
 
 /// Shared account identity geometry. Layout, never provider identity inference.

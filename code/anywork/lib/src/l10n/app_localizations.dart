@@ -1193,24 +1193,6 @@ abstract class AppLocalizations {
   /// **'Saving failed; new work is paused while in-flight work winds down.'**
   String get persistenceNewWorkPaused;
 
-  /// No description provided for @persistenceResumeReadyOtherSession.
-  ///
-  /// In en, this message translates to:
-  /// **'Another session “{session}” is saved and waiting to resume.'**
-  String persistenceResumeReadyOtherSession(String session);
-
-  /// No description provided for @persistenceExecutionPausedOtherSession.
-  ///
-  /// In en, this message translates to:
-  /// **'Another session “{session}” failed to save; its execution is paused.'**
-  String persistenceExecutionPausedOtherSession(String session);
-
-  /// No description provided for @persistenceNewWorkPausedOtherSession.
-  ///
-  /// In en, this message translates to:
-  /// **'Another session “{session}” failed to save; its new work is paused while in-flight work winds down.'**
-  String persistenceNewWorkPausedOtherSession(String session);
-
   /// No description provided for @persistenceRetry.
   ///
   /// In en, this message translates to:
@@ -12225,12 +12207,6 @@ abstract class AppLocalizations {
   /// **'Context compaction · {status}'**
   String acpUpdateCompaction(String status);
 
-  /// No description provided for @acpUpdateSessionInfo.
-  ///
-  /// In en, this message translates to:
-  /// **'Session metadata updated'**
-  String get acpUpdateSessionInfo;
-
   /// No description provided for @acpUpdateGeneric.
   ///
   /// In en, this message translates to:
@@ -14738,12 +14714,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Built-in catalog'**
   String get accountsGeminiBadgeBundledCatalog;
-
-  /// No description provided for @accountsGeminiBadgeImplicitCache.
-  ///
-  /// In en, this message translates to:
-  /// **'Implicit caching'**
-  String get accountsGeminiBadgeImplicitCache;
 
   /// No description provided for @accountsGeminiEndpointPresetsLabel.
   ///

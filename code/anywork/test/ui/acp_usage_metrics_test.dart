@@ -400,7 +400,7 @@ void main() {
   );
 
   testWidgets(
-    'same login flow survives navigation, duplicate input, cancellation and deletion',
+    'same login flow survives navigation, duplicate input and cancellation',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1280, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));

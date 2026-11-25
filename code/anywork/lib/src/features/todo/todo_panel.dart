@@ -3,6 +3,30 @@ import 'package:material_ui/material_ui.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../shared/studio_badges.dart';
+
+extension on TimelineTodoListUpdate {
+  int get completedCount =>
+      items.where((item) => item.status == 'completed').length;
+}
+
+class TodoCountBadge extends StatelessWidget {
+  const TodoCountBadge({required this.todo, super.key});
+
+  final TimelineTodoListUpdate todo;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = todo.items.length;
+    final completed = todo.completedCount;
+    return StudioPill(
+      label: '$completed/$total',
+      tone: total > 0 && completed == total
+          ? StudioTone.success
+          : StudioTone.brand,
+    );
+  }
+}
 
 class TodoPanel extends StatelessWidget {
   const TodoPanel({required this.todo, super.key});
@@ -12,11 +36,7 @@ class TodoPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final total = todo.items.length;
-    final completed = todo.items
-        .where((item) => item.status == 'completed')
-        .length;
-    final allDone = total > 0 && completed == total;
-    final progress = total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
+    final completed = todo.completedCount;
 
     return Material(
       key: const ValueKey('todo-side-panel'),
@@ -26,10 +46,10 @@ class TodoPanel extends StatelessWidget {
         children: [
           if (total > 0)
             LinearProgressIndicator(
-              value: progress,
+              value: completed / total,
               minHeight: 2,
               backgroundColor: context.colors.surfaceContainerHigh,
-              color: allDone
+              color: completed == total
                   ? context.statusColors.success
                   : context.colors.primary,
             ),

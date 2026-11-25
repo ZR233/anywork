@@ -564,23 +564,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
               : install.isReady
               ? AcpPresentationPhase.ready
               : AcpPresentationPhase.idle
-        : switch ((_connection, auth)) {
-            (AcpConnectionRetryingState(), _) =>
-              AcpPresentationPhase.reconnecting,
-            (AcpConnectionStartingState(), _) => AcpPresentationPhase.checking,
-            (AcpConnectionStoppingState(), _) => AcpPresentationPhase.closing,
-            (AcpConnectionBlockedState(), _) => AcpPresentationPhase.failed,
-            (_, AcpCheckingState()) => AcpPresentationPhase.checking,
-            (_, AcpRequiredState()) => AcpPresentationPhase.needsLogin,
-            (_, AcpAuthenticatingState()) =>
-              AcpPresentationPhase.authenticating,
-            (_, AcpVerifyingState()) => AcpPresentationPhase.verifying,
-            (_, AcpVerifiedState()) => AcpPresentationPhase.connected,
-            (_, AcpCancellingState()) => AcpPresentationPhase.cancelling,
-            (_, AcpClosingState()) => AcpPresentationPhase.closing,
-            (_, AcpFailedState()) => AcpPresentationPhase.failed,
-            _ => AcpPresentationPhase.idle,
-          };
+        : projectAcpPhase(_connection, auth);
     final account = _account;
     final enabled = account?.enabled ?? true;
     final supportsUsage = _provider != null && enabled;

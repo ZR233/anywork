@@ -12,6 +12,7 @@ import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
+import '../../shared/widgets/studio_menu_button.dart';
 import '../settings/settings_section.dart';
 
 /// One row of a [_QuietSelectorMenu].
@@ -43,11 +44,11 @@ class _QuietMenuItem<T> {
 
 /// Quiet-label menu shared by the mode, workspace and effort selectors.
 ///
-/// Plain Material [MenuAnchor] composition: anchoring, keyboard navigation,
+/// Shared [StudioMenuButton] composition: anchoring, keyboard navigation,
 /// Escape/outside-tap closes and focus handling are framework behavior. This
 /// widget only contributes the borderless [StudioMenuLabel] trigger look and
 /// the selected-row presentation.
-class _QuietSelectorMenu<T> extends StatefulWidget {
+class _QuietSelectorMenu<T> extends StatelessWidget {
   const _QuietSelectorMenu({
     required this.tooltip,
     required this.items,
@@ -86,86 +87,35 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
   /// Invoked instead of opening when [enabled] is false.
   final VoidCallback? onBlockedTap;
 
-  @override
-  State<_QuietSelectorMenu<T>> createState() => _QuietSelectorMenuState<T>();
-}
-
-class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
-  final FocusNode _triggerFocus = FocusNode(
-    debugLabel: 'session-selector-trigger',
-  );
-
-  bool get _canOpen => widget.enabled && widget.items.isNotEmpty;
-
-  @override
-  void dispose() {
-    _triggerFocus.dispose();
-    super.dispose();
-  }
+  bool get _canOpen => enabled && items.isNotEmpty;
 
   @override
   Widget build(BuildContext context) {
-    if (widget.inMenu) {
+    if (inMenu) {
       return Tooltip(
-        message: widget.tooltip,
+        message: tooltip,
         child: SubmenuButton(
           menuChildren: _canOpen
               ? [
-                  for (final item in widget.items) _buildRow(context, item),
-                  ...widget.trailingMenuChildren,
+                  for (final item in items) _buildRow(context, item),
+                  ...trailingMenuChildren,
                 ]
               : const [],
-          child: widget.menuChild,
+          child: menuChild,
         ),
       );
     }
-    return MenuAnchor(
-      // RawMenuAnchor transfers focus here on pointer-open. Without the same
-      // node on the trigger, Escape still reaches the previously focused input.
-      childFocusNode: _triggerFocus,
+    return StudioMenuButton(
+      tooltip: tooltip,
+      enabled: _canOpen,
+      onBlockedTap: onBlockedTap,
       alignmentOffset: const Offset(6, 6),
+      buttonStyle: studioConfigurationButtonStyle(enabled: enabled),
       menuChildren: [
-        for (final item in widget.items) _buildRow(context, item),
-        ...widget.trailingMenuChildren,
+        for (final item in items) _buildRow(context, item),
+        ...trailingMenuChildren,
       ],
-      builder: (context, controller, child) => _buildTrigger(controller),
-    );
-  }
-
-  Widget _buildTrigger(MenuController controller) {
-    return Tooltip(
-      message: widget.tooltip,
-      child: Semantics(
-        button: true,
-        enabled: widget.enabled || widget.onBlockedTap != null,
-        label: widget.tooltip,
-        child: TextButton(
-          focusNode: _triggerFocus,
-          onPressed: _canOpen
-              ? () {
-                  if (controller.isOpen) {
-                    controller.close();
-                  } else {
-                    controller.open();
-                  }
-                }
-              : widget.onBlockedTap,
-          style: TextButton.styleFrom(
-            overlayColor: widget.enabled ? null : Colors.transparent,
-            enabledMouseCursor: widget.enabled
-                ? null
-                : SystemMouseCursors.basic,
-            padding: EdgeInsets.zero,
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(6),
-            ),
-            side: BorderSide.none,
-          ),
-          child: widget.child,
-        ),
-      ),
+      child: child,
     );
   }
 
@@ -176,8 +126,8 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
       // Vertical overflow hands finite width to rows with flexible content,
       // the same axis Material popup menus use.
       overflowAxis: Axis.vertical,
-      onPressed: widget.enabled && item.enabled
-          ? () => widget.onSelected?.call(item.value)
+      onPressed: enabled && item.enabled
+          ? () => onSelected?.call(item.value)
           : null,
       style: selected
           ? ButtonStyle(

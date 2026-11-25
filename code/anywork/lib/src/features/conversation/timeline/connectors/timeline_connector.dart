@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/app_graph.dart';
 import '../../../../domain/models/timeline_commands.dart';
+import '../../../../domain/timeline_file_download.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../composer/composer.dart';
 import '../../../../platform/external_url_launcher.dart';
@@ -355,7 +356,6 @@ class _TimelineConnectorBodyState
         onLink: link,
         isSafeLink: (url) => safeExternalWebUrl(url) != null,
         remoteImageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
-        pendingPlanInteractionId: plan?.interactionId,
         planSummary: plan == null
             ? null
             : Padding(

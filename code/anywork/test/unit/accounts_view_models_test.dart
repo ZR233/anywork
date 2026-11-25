@@ -13,6 +13,7 @@ import 'package:anywork/src/features/settings/accounts/view_models/account_model
 import 'package:anywork/src/features/settings/accounts/view_models/account_details_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/native_account_draft.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/account_operation_observation.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
@@ -1063,6 +1064,92 @@ DelegationModelDetail vmPerformance() => DelegationModelDetail(
 );
 
 void main() {
+  for (final templateId in <String?>[null, 'missing-gemini-template']) {
+    test(
+      'Gemini guidance preserves raw drafts and save eligibility: $templateId',
+      () async {
+        final h = AccountsVmHarness();
+        addTearDown(h.dispose);
+        h.accounts.put(
+          NativeAccountDetails(
+            identity: const NativeAccountIdentity('native'),
+            name: 'Gemini account',
+            authentication: account_domain.AccountAuthenticationMethod.apiKey,
+            protocol: 'gemini',
+            templateId: templateId,
+            baseUrl: AccountGeminiEndpointPreset.vertexGlobal.endpoint,
+            hasBearerToken: true,
+            credentialRequired: true,
+            usageQueryRevision: 1,
+            customModels: const [],
+          ),
+        );
+        final key = editKey();
+        final owner = await h.editor(key);
+        owner.setStrings(
+          const AccountStrings({
+            'required': 'Required',
+            'unknownTemplate': 'Unknown template',
+          }),
+        );
+        final initial = h.editorState(key).native!.geminiConnection!;
+        expect(initial.mode, AccountGeminiGuidanceMode.vertexAi);
+        expect(initial.supportsModelDiscovery, isNull);
+        expect(initial.hasBundledCatalog, isFalse);
+        expect(initial.canSwitchMode, isFalse);
+        const raw =
+            '  https://proxy.example/v1?upstream=aiplatform.googleapis.com  ';
+        owner.changeField(NativeAccountField.endpoint, raw);
+        final state = h.editorState(key);
+        expect(state.native!.endpoint.raw, raw);
+        expect(
+          state.native!.geminiConnection!.endpointKind,
+          AccountGeminiEndpointKind.custom,
+        );
+        expect(state.dirty, isTrue);
+        expect(state.canSave, templateId == null);
+        expect(h.accounts.patches, isEmpty);
+        expect(h.accounts.creates, isEmpty);
+      },
+    );
+  }
+
+  test('ManualModelDraft restricts allowed WireApi and connection modes by account protocol', () {
+    const strings = AccountStrings({'required': 'Required'});
+    const geminiDraft = ManualModelDraft(
+      editorKey: 'g1',
+      id: 'gemini-4-hydrogen',
+      wireApi: AccountWireApi.geminiGenerateContent,
+    );
+    final geminiPresentation = geminiDraft.presentation(
+      strings,
+      null,
+      accountProtocol: 'gemini',
+    );
+    expect(geminiPresentation.allowedWireApis, [
+      AccountWireApi.geminiGenerateContent,
+    ]);
+    expect(geminiPresentation.allowedConnections, [
+      AccountConnection.automatic,
+      AccountConnection.http,
+    ]);
+
+    const openAiDraft = ManualModelDraft(
+      editorKey: 'o1',
+      id: 'gpt-6-astra',
+      wireApi: AccountWireApi.responses,
+    );
+    final openAiPresentation = openAiDraft.presentation(
+      strings,
+      null,
+      accountProtocol: 'openai',
+    );
+    expect(openAiPresentation.allowedWireApis, [
+      AccountWireApi.chatCompletions,
+      AccountWireApi.responses,
+    ]);
+  });
+
   test('OpenAI subscription save requires the current editor login with direct permission', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);

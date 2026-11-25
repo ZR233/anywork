@@ -79,26 +79,14 @@ class AccountBalanceMetrics extends StatelessWidget {
     }
     return _MetricGrid(
       density: density,
-      crossAxisAlignment: compact
-          ? WrapCrossAlignment.end
-          : WrapCrossAlignment.start,
+      crossAxisAlignment: WrapCrossAlignment.end,
       preferredWidths: [
         for (var i = 0; i < metrics.length; i++)
-          if (compact)
-            _textWidth(
-              context,
-              metrics[i].reading,
-              _readingStyle(context, compact, primary: metrics[i].primary),
-            )
-          else
-            math.max(
-              _textWidth(
-                context,
-                metrics[i].reading,
-                _readingStyle(context, compact, primary: metrics[i].primary),
-              ),
-              _textWidth(context, label(i), _metricLabelStyle(context)),
-            ),
+          _textWidth(
+            context,
+            metrics[i].reading,
+            _readingStyle(context, true, primary: metrics[i].primary),
+          ),
       ],
       children: cells,
     );

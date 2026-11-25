@@ -230,7 +230,10 @@ final class ChatItemPresentation {
     }
     final record = (unit.body as SingleDisplayBlock).record;
     if (record.contentSource case FrozenObservation(available: false)) {
-      return _unavailableObservation(unit.id, record);
+      if (record.predecodedPresentation?.compatibility !=
+          ChatItemCompatibility.malformed) {
+        return _unavailableObservation(unit.id, record);
+      }
     }
     final author =
         _inboxAuthor(item) ??

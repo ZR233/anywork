@@ -170,7 +170,6 @@ class _SidebarState extends ConsumerState<_Sidebar> {
         preparing: preparation.isPreparing,
         preparationError: preparation.error,
       ),
-      onQueryChanged: (_) {},
       projectStructureBuilder: (context, projectId, selection, builder) =>
           SidebarProjectConnector(
             key: ValueKey(('sidebar-project-structure', client, projectId)),
@@ -325,12 +324,10 @@ class _SidebarState extends ConsumerState<_Sidebar> {
             required archived,
             required onToggleArchived,
             required onSettings,
-            required touchMode,
           }) => SidebarFooterConnector(
             archived: archived,
             onToggleArchived: onToggleArchived,
             onSettings: onSettings,
-            touchMode: touchMode,
           ),
     );
   }

@@ -44,16 +44,13 @@ class ViewImageToolItem extends StructuredTimelineToolAdapter {
       StudioDriverKeys.viewImageTool(context.item.toolCallId);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineViewImageReading
-        : failed
-        ? l10n.timelineViewImageFailed
-        : l10n.timelineViewImageRead;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineViewImageReading,
+        failed: l10n.timelineViewImageFailed,
+        succeeded: l10n.timelineViewImageRead,
+      );
 
   @override
   String statusTitle(AppLocalizations l10n, TimelineToolPresentation item) =>

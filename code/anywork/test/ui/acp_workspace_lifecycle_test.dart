@@ -388,7 +388,6 @@ void main() {
       for (final option in permissions) {
         expect(find.text(option.name), findsOneWidget);
       }
-      if (index == 0) {}
       final option = permissions[index];
       final button = find.byKey(
         ValueKey(

@@ -40,16 +40,13 @@ class MovePathToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.drive_file_move_outline);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolMoveRunning
-        : failed
-        ? l10n.timelineToolMoveFailed
-        : l10n.timelineToolMoveSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolMoveRunning,
+        failed: l10n.timelineToolMoveFailed,
+        succeeded: l10n.timelineToolMoveSucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) =>

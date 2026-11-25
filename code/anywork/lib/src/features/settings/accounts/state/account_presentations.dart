@@ -647,6 +647,40 @@ abstract class ManualAccountModelPresentation
 }
 
 /// Raw inputs, dirty/validation and save eligibility belong exclusively to VM.
+enum AccountGeminiGuidanceMode { aiStudio, vertexAi }
+
+enum AccountGeminiEndpointKind { official, custom }
+
+enum AccountGeminiEndpointPreset {
+  aiStudio('https://generativelanguage.googleapis.com/v1beta'),
+  vertexGlobal('https://aiplatform.googleapis.com/v1/publishers/google'),
+  vertexUsCentral1(
+    'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
+  ),
+  vertexEuropeWest4(
+    'https://europe-west4-aiplatform.googleapis.com/v1/publishers/google',
+  ),
+  vertexAsiaNortheast1(
+    'https://asia-northeast1-aiplatform.googleapis.com/v1/publishers/google',
+  );
+
+  const AccountGeminiEndpointPreset(this.endpoint);
+  final String endpoint;
+}
+
+@freezed
+abstract class AccountGeminiConnectionPresentation
+    with _$AccountGeminiConnectionPresentation {
+  const factory AccountGeminiConnectionPresentation({
+    required AccountGeminiGuidanceMode mode,
+    required AccountGeminiEndpointKind endpointKind,
+    AccountGeminiEndpointPreset? selectedPreset,
+    @Default(false) bool canSwitchMode,
+    bool? supportsModelDiscovery,
+    @Default(false) bool hasBundledCatalog,
+  }) = _AccountGeminiConnectionPresentation;
+}
+
 @freezed
 abstract class NativeAccountEditorPresentation
     with _$NativeAccountEditorPresentation {
@@ -665,6 +699,7 @@ abstract class NativeAccountEditorPresentation
     ChatGptLoginSnapshot? chatGptLogin,
     ChatGptAccountInfo? savedChatGptAccount,
     required String protocolLabel,
+    AccountGeminiConnectionPresentation? geminiConnection,
     @Default(false) bool canChangeTemplate,
     @Default(false) bool hasStoredCredential,
     @Default(true) bool credentialRequired,

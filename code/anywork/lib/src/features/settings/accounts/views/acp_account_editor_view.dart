@@ -6,7 +6,6 @@ import '../state/account_view_key_values.dart';
 import '../widgets/account_editor_fields.dart';
 import '../widgets/account_sections.dart';
 import '../widgets/acp_account_panel.dart';
-import 'native_account_editor_view.dart' show AccountEditorFooter;
 
 class AcpAccountEditorView extends StatelessWidget {
   const AcpAccountEditorView({
@@ -311,7 +310,6 @@ class AcpAccountEditorView extends StatelessWidget {
         AccountEditorFooter(
           saving: value.saving,
           canSave: value.canSave,
-          saveIsPrimary: true,
           onSave: onSave,
           onCancel: onCancel,
           saveLabel: value.saveAndConnect

@@ -9700,9 +9700,288 @@ $AccountTextPresentationCopyWith<$Res> get maxOutputTokens {
 }
 
 /// @nodoc
+mixin _$AccountGeminiConnectionPresentation {
+
+ AccountGeminiGuidanceMode get mode; AccountGeminiEndpointKind get endpointKind; AccountGeminiEndpointPreset? get selectedPreset; bool get canSwitchMode; bool? get supportsModelDiscovery; bool get hasBundledCatalog;
+/// Create a copy of AccountGeminiConnectionPresentation
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AccountGeminiConnectionPresentationCopyWith<AccountGeminiConnectionPresentation> get copyWith => _$AccountGeminiConnectionPresentationCopyWithImpl<AccountGeminiConnectionPresentation>(this as AccountGeminiConnectionPresentation, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AccountGeminiConnectionPresentation;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountGeminiConnectionPresentation&&(identical(other.mode, _this.mode) || other.mode == _this.mode)&&(identical(other.endpointKind, _this.endpointKind) || other.endpointKind == _this.endpointKind)&&(identical(other.selectedPreset, _this.selectedPreset) || other.selectedPreset == _this.selectedPreset)&&(identical(other.canSwitchMode, _this.canSwitchMode) || other.canSwitchMode == _this.canSwitchMode)&&(identical(other.supportsModelDiscovery, _this.supportsModelDiscovery) || other.supportsModelDiscovery == _this.supportsModelDiscovery)&&(identical(other.hasBundledCatalog, _this.hasBundledCatalog) || other.hasBundledCatalog == _this.hasBundledCatalog));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AccountGeminiConnectionPresentation;
+  return Object.hash(runtimeType,_this.mode,_this.endpointKind,_this.selectedPreset,_this.canSwitchMode,_this.supportsModelDiscovery,_this.hasBundledCatalog);
+}
+
+@override
+String toString() {
+  final _this = this as AccountGeminiConnectionPresentation;
+  return 'AccountGeminiConnectionPresentation(mode: ${_this.mode}, endpointKind: ${_this.endpointKind}, selectedPreset: ${_this.selectedPreset}, canSwitchMode: ${_this.canSwitchMode}, supportsModelDiscovery: ${_this.supportsModelDiscovery}, hasBundledCatalog: ${_this.hasBundledCatalog})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AccountGeminiConnectionPresentationCopyWith<$Res>  {
+  factory $AccountGeminiConnectionPresentationCopyWith(AccountGeminiConnectionPresentation value, $Res Function(AccountGeminiConnectionPresentation) _then) = _$AccountGeminiConnectionPresentationCopyWithImpl;
+@useResult
+$Res call({
+ AccountGeminiGuidanceMode mode, AccountGeminiEndpointKind endpointKind, AccountGeminiEndpointPreset? selectedPreset, bool canSwitchMode, bool? supportsModelDiscovery, bool hasBundledCatalog
+});
+
+
+
+
+}
+/// @nodoc
+class _$AccountGeminiConnectionPresentationCopyWithImpl<$Res>
+    implements $AccountGeminiConnectionPresentationCopyWith<$Res> {
+  _$AccountGeminiConnectionPresentationCopyWithImpl(this._self, this._then);
+
+  final AccountGeminiConnectionPresentation _self;
+  final $Res Function(AccountGeminiConnectionPresentation) _then;
+
+/// Create a copy of AccountGeminiConnectionPresentation
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? mode = null,Object? endpointKind = null,Object? selectedPreset = freezed,Object? canSwitchMode = null,Object? supportsModelDiscovery = freezed,Object? hasBundledCatalog = null,}) {
+  return _then(AccountGeminiConnectionPresentation(
+mode: null == mode ? _self.mode : mode // ignore: cast_nullable_to_non_nullable
+as AccountGeminiGuidanceMode,endpointKind: null == endpointKind ? _self.endpointKind : endpointKind // ignore: cast_nullable_to_non_nullable
+as AccountGeminiEndpointKind,selectedPreset: freezed == selectedPreset ? _self.selectedPreset : selectedPreset // ignore: cast_nullable_to_non_nullable
+as AccountGeminiEndpointPreset?,canSwitchMode: null == canSwitchMode ? _self.canSwitchMode : canSwitchMode // ignore: cast_nullable_to_non_nullable
+as bool,supportsModelDiscovery: freezed == supportsModelDiscovery ? _self.supportsModelDiscovery : supportsModelDiscovery // ignore: cast_nullable_to_non_nullable
+as bool?,hasBundledCatalog: null == hasBundledCatalog ? _self.hasBundledCatalog : hasBundledCatalog // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AccountGeminiConnectionPresentation].
+extension AccountGeminiConnectionPresentationPatterns on AccountGeminiConnectionPresentation {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AccountGeminiConnectionPresentation value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AccountGeminiConnectionPresentation() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AccountGeminiConnectionPresentation value)  $default,){
+final _that = this;
+switch (_that) {
+case _AccountGeminiConnectionPresentation():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AccountGeminiConnectionPresentation value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AccountGeminiConnectionPresentation() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountGeminiGuidanceMode mode,  AccountGeminiEndpointKind endpointKind,  AccountGeminiEndpointPreset? selectedPreset,  bool canSwitchMode,  bool? supportsModelDiscovery,  bool hasBundledCatalog)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AccountGeminiConnectionPresentation() when $default != null:
+return $default(_that.mode,_that.endpointKind,_that.selectedPreset,_that.canSwitchMode,_that.supportsModelDiscovery,_that.hasBundledCatalog);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountGeminiGuidanceMode mode,  AccountGeminiEndpointKind endpointKind,  AccountGeminiEndpointPreset? selectedPreset,  bool canSwitchMode,  bool? supportsModelDiscovery,  bool hasBundledCatalog)  $default,) {final _that = this;
+switch (_that) {
+case _AccountGeminiConnectionPresentation():
+return $default(_that.mode,_that.endpointKind,_that.selectedPreset,_that.canSwitchMode,_that.supportsModelDiscovery,_that.hasBundledCatalog);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountGeminiGuidanceMode mode,  AccountGeminiEndpointKind endpointKind,  AccountGeminiEndpointPreset? selectedPreset,  bool canSwitchMode,  bool? supportsModelDiscovery,  bool hasBundledCatalog)?  $default,) {final _that = this;
+switch (_that) {
+case _AccountGeminiConnectionPresentation() when $default != null:
+return $default(_that.mode,_that.endpointKind,_that.selectedPreset,_that.canSwitchMode,_that.supportsModelDiscovery,_that.hasBundledCatalog);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AccountGeminiConnectionPresentation implements AccountGeminiConnectionPresentation {
+  const _AccountGeminiConnectionPresentation({required this.mode, required this.endpointKind, this.selectedPreset, this.canSwitchMode = false, this.supportsModelDiscovery, this.hasBundledCatalog = false});
+
+
+@override final  AccountGeminiGuidanceMode mode;
+@override final  AccountGeminiEndpointKind endpointKind;
+@override final  AccountGeminiEndpointPreset? selectedPreset;
+@override@JsonKey() final  bool canSwitchMode;
+@override final  bool? supportsModelDiscovery;
+@override@JsonKey() final  bool hasBundledCatalog;
+
+/// Create a copy of AccountGeminiConnectionPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AccountGeminiConnectionPresentationCopyWith<_AccountGeminiConnectionPresentation> get copyWith => __$AccountGeminiConnectionPresentationCopyWithImpl<_AccountGeminiConnectionPresentation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountGeminiConnectionPresentation&&(identical(other.mode, mode) || other.mode == mode)&&(identical(other.endpointKind, endpointKind) || other.endpointKind == endpointKind)&&(identical(other.selectedPreset, selectedPreset) || other.selectedPreset == selectedPreset)&&(identical(other.canSwitchMode, canSwitchMode) || other.canSwitchMode == canSwitchMode)&&(identical(other.supportsModelDiscovery, supportsModelDiscovery) || other.supportsModelDiscovery == supportsModelDiscovery)&&(identical(other.hasBundledCatalog, hasBundledCatalog) || other.hasBundledCatalog == hasBundledCatalog));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,mode,endpointKind,selectedPreset,canSwitchMode,supportsModelDiscovery,hasBundledCatalog);
+}
+
+@override
+String toString() {
+    return 'AccountGeminiConnectionPresentation(mode: $mode, endpointKind: $endpointKind, selectedPreset: $selectedPreset, canSwitchMode: $canSwitchMode, supportsModelDiscovery: $supportsModelDiscovery, hasBundledCatalog: $hasBundledCatalog)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AccountGeminiConnectionPresentationCopyWith<$Res> implements $AccountGeminiConnectionPresentationCopyWith<$Res> {
+  factory _$AccountGeminiConnectionPresentationCopyWith(_AccountGeminiConnectionPresentation value, $Res Function(_AccountGeminiConnectionPresentation) _then) = __$AccountGeminiConnectionPresentationCopyWithImpl;
+@override @useResult
+$Res call({
+ AccountGeminiGuidanceMode mode, AccountGeminiEndpointKind endpointKind, AccountGeminiEndpointPreset? selectedPreset, bool canSwitchMode, bool? supportsModelDiscovery, bool hasBundledCatalog
+});
+
+
+
+
+}
+/// @nodoc
+class __$AccountGeminiConnectionPresentationCopyWithImpl<$Res>
+    implements _$AccountGeminiConnectionPresentationCopyWith<$Res> {
+  __$AccountGeminiConnectionPresentationCopyWithImpl(this._self, this._then);
+
+  final _AccountGeminiConnectionPresentation _self;
+  final $Res Function(_AccountGeminiConnectionPresentation) _then;
+
+/// Create a copy of AccountGeminiConnectionPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? mode = null,Object? endpointKind = null,Object? selectedPreset = freezed,Object? canSwitchMode = null,Object? supportsModelDiscovery = freezed,Object? hasBundledCatalog = null,}) {
+  return _then(_AccountGeminiConnectionPresentation(
+mode: null == mode ? _self.mode : mode // ignore: cast_nullable_to_non_nullable
+as AccountGeminiGuidanceMode,endpointKind: null == endpointKind ? _self.endpointKind : endpointKind // ignore: cast_nullable_to_non_nullable
+as AccountGeminiEndpointKind,selectedPreset: freezed == selectedPreset ? _self.selectedPreset : selectedPreset // ignore: cast_nullable_to_non_nullable
+as AccountGeminiEndpointPreset?,canSwitchMode: null == canSwitchMode ? _self.canSwitchMode : canSwitchMode // ignore: cast_nullable_to_non_nullable
+as bool,supportsModelDiscovery: freezed == supportsModelDiscovery ? _self.supportsModelDiscovery : supportsModelDiscovery // ignore: cast_nullable_to_non_nullable
+as bool?,hasBundledCatalog: null == hasBundledCatalog ? _self.hasBundledCatalog : hasBundledCatalog // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$NativeAccountEditorPresentation {
 
- String get editorId; AccountDisplayKey? get accountKey; AccountTemplateKey get templateKey; List<AccountTemplatePresentation> get templates; AccountTextPresentation get name; AccountTextPresentation get endpoint; AccountTextPresentation get credential; AccountAuthenticationMethod get authentication; bool get isOpenAiTemplate; ChatGptLoginSnapshot? get chatGptLogin; ChatGptAccountInfo? get savedChatGptAccount; String get protocolLabel; bool get canChangeTemplate; bool get hasStoredCredential; bool get credentialRequired; bool get dirty; bool get saving; bool get canSave; bool get canAddModel; bool get setDefaultOnCreate; bool get showSetDefaultOnCreate; List<ManualAccountModelPresentation> get manualModels; List<AccountModelPresentation> get declaredModels; AccountBillingPresentation get billing; String? get error;
+ String get editorId; AccountDisplayKey? get accountKey; AccountTemplateKey get templateKey; List<AccountTemplatePresentation> get templates; AccountTextPresentation get name; AccountTextPresentation get endpoint; AccountTextPresentation get credential; AccountAuthenticationMethod get authentication; bool get isOpenAiTemplate; ChatGptLoginSnapshot? get chatGptLogin; ChatGptAccountInfo? get savedChatGptAccount; String get protocolLabel; AccountGeminiConnectionPresentation? get geminiConnection; bool get canChangeTemplate; bool get hasStoredCredential; bool get credentialRequired; bool get dirty; bool get saving; bool get canSave; bool get canAddModel; bool get setDefaultOnCreate; bool get showSetDefaultOnCreate; List<ManualAccountModelPresentation> get manualModels; List<AccountModelPresentation> get declaredModels; AccountBillingPresentation get billing; String? get error;
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -9714,20 +9993,20 @@ $NativeAccountEditorPresentationCopyWith<NativeAccountEditorPresentation> get co
 @override
 bool operator ==(Object other) {
   final _this = this as NativeAccountEditorPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateKey, _this.templateKey) || other.templateKey == _this.templateKey)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.endpoint, _this.endpoint) || other.endpoint == _this.endpoint)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.authentication, _this.authentication) || other.authentication == _this.authentication)&&(identical(other.isOpenAiTemplate, _this.isOpenAiTemplate) || other.isOpenAiTemplate == _this.isOpenAiTemplate)&&(identical(other.chatGptLogin, _this.chatGptLogin) || other.chatGptLogin == _this.chatGptLogin)&&(identical(other.savedChatGptAccount, _this.savedChatGptAccount) || other.savedChatGptAccount == _this.savedChatGptAccount)&&(identical(other.protocolLabel, _this.protocolLabel) || other.protocolLabel == _this.protocolLabel)&&(identical(other.canChangeTemplate, _this.canChangeTemplate) || other.canChangeTemplate == _this.canChangeTemplate)&&(identical(other.hasStoredCredential, _this.hasStoredCredential) || other.hasStoredCredential == _this.hasStoredCredential)&&(identical(other.credentialRequired, _this.credentialRequired) || other.credentialRequired == _this.credentialRequired)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.canAddModel, _this.canAddModel) || other.canAddModel == _this.canAddModel)&&(identical(other.setDefaultOnCreate, _this.setDefaultOnCreate) || other.setDefaultOnCreate == _this.setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, _this.showSetDefaultOnCreate) || other.showSetDefaultOnCreate == _this.showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _this.manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _this.declaredModels)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is NativeAccountEditorPresentation&&(identical(other.editorId, _this.editorId) || other.editorId == _this.editorId)&&(identical(other.accountKey, _this.accountKey) || other.accountKey == _this.accountKey)&&(identical(other.templateKey, _this.templateKey) || other.templateKey == _this.templateKey)&&const DeepCollectionEquality().equals(other.templates, _this.templates)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.endpoint, _this.endpoint) || other.endpoint == _this.endpoint)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.authentication, _this.authentication) || other.authentication == _this.authentication)&&(identical(other.isOpenAiTemplate, _this.isOpenAiTemplate) || other.isOpenAiTemplate == _this.isOpenAiTemplate)&&(identical(other.chatGptLogin, _this.chatGptLogin) || other.chatGptLogin == _this.chatGptLogin)&&(identical(other.savedChatGptAccount, _this.savedChatGptAccount) || other.savedChatGptAccount == _this.savedChatGptAccount)&&(identical(other.protocolLabel, _this.protocolLabel) || other.protocolLabel == _this.protocolLabel)&&(identical(other.geminiConnection, _this.geminiConnection) || other.geminiConnection == _this.geminiConnection)&&(identical(other.canChangeTemplate, _this.canChangeTemplate) || other.canChangeTemplate == _this.canChangeTemplate)&&(identical(other.hasStoredCredential, _this.hasStoredCredential) || other.hasStoredCredential == _this.hasStoredCredential)&&(identical(other.credentialRequired, _this.credentialRequired) || other.credentialRequired == _this.credentialRequired)&&(identical(other.dirty, _this.dirty) || other.dirty == _this.dirty)&&(identical(other.saving, _this.saving) || other.saving == _this.saving)&&(identical(other.canSave, _this.canSave) || other.canSave == _this.canSave)&&(identical(other.canAddModel, _this.canAddModel) || other.canAddModel == _this.canAddModel)&&(identical(other.setDefaultOnCreate, _this.setDefaultOnCreate) || other.setDefaultOnCreate == _this.setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, _this.showSetDefaultOnCreate) || other.showSetDefaultOnCreate == _this.showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _this.manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _this.declaredModels)&&(identical(other.billing, _this.billing) || other.billing == _this.billing)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as NativeAccountEditorPresentation;
-  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateKey,const DeepCollectionEquality().hash(_this.templates),_this.name,_this.endpoint,_this.credential,_this.authentication,_this.isOpenAiTemplate,_this.chatGptLogin,_this.savedChatGptAccount,_this.protocolLabel,_this.canChangeTemplate,_this.hasStoredCredential,_this.credentialRequired,_this.dirty,_this.saving,_this.canSave,_this.canAddModel,_this.setDefaultOnCreate,_this.showSetDefaultOnCreate,const DeepCollectionEquality().hash(_this.manualModels),const DeepCollectionEquality().hash(_this.declaredModels),_this.billing,_this.error]);
+  return Object.hashAll([runtimeType,_this.editorId,_this.accountKey,_this.templateKey,const DeepCollectionEquality().hash(_this.templates),_this.name,_this.endpoint,_this.credential,_this.authentication,_this.isOpenAiTemplate,_this.chatGptLogin,_this.savedChatGptAccount,_this.protocolLabel,_this.geminiConnection,_this.canChangeTemplate,_this.hasStoredCredential,_this.credentialRequired,_this.dirty,_this.saving,_this.canSave,_this.canAddModel,_this.setDefaultOnCreate,_this.showSetDefaultOnCreate,const DeepCollectionEquality().hash(_this.manualModels),const DeepCollectionEquality().hash(_this.declaredModels),_this.billing,_this.error]);
 }
 
 @override
 String toString() {
   final _this = this as NativeAccountEditorPresentation;
-  return 'NativeAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateKey: ${_this.templateKey}, templates: ${_this.templates}, name: ${_this.name}, endpoint: ${_this.endpoint}, credential: ${_this.credential}, authentication: ${_this.authentication}, isOpenAiTemplate: ${_this.isOpenAiTemplate}, chatGptLogin: ${_this.chatGptLogin}, savedChatGptAccount: ${_this.savedChatGptAccount}, protocolLabel: ${_this.protocolLabel}, canChangeTemplate: ${_this.canChangeTemplate}, hasStoredCredential: ${_this.hasStoredCredential}, credentialRequired: ${_this.credentialRequired}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, canAddModel: ${_this.canAddModel}, setDefaultOnCreate: ${_this.setDefaultOnCreate}, showSetDefaultOnCreate: ${_this.showSetDefaultOnCreate}, manualModels: ${_this.manualModels}, declaredModels: ${_this.declaredModels}, billing: ${_this.billing}, error: ${_this.error})';
+  return 'NativeAccountEditorPresentation(editorId: ${_this.editorId}, accountKey: ${_this.accountKey}, templateKey: ${_this.templateKey}, templates: ${_this.templates}, name: ${_this.name}, endpoint: ${_this.endpoint}, credential: ${_this.credential}, authentication: ${_this.authentication}, isOpenAiTemplate: ${_this.isOpenAiTemplate}, chatGptLogin: ${_this.chatGptLogin}, savedChatGptAccount: ${_this.savedChatGptAccount}, protocolLabel: ${_this.protocolLabel}, geminiConnection: ${_this.geminiConnection}, canChangeTemplate: ${_this.canChangeTemplate}, hasStoredCredential: ${_this.hasStoredCredential}, credentialRequired: ${_this.credentialRequired}, dirty: ${_this.dirty}, saving: ${_this.saving}, canSave: ${_this.canSave}, canAddModel: ${_this.canAddModel}, setDefaultOnCreate: ${_this.setDefaultOnCreate}, showSetDefaultOnCreate: ${_this.showSetDefaultOnCreate}, manualModels: ${_this.manualModels}, declaredModels: ${_this.declaredModels}, billing: ${_this.billing}, error: ${_this.error})';
 }
 
 
@@ -9738,11 +10017,11 @@ abstract mixin class $NativeAccountEditorPresentationCopyWith<$Res>  {
   factory $NativeAccountEditorPresentationCopyWith(NativeAccountEditorPresentation value, $Res Function(NativeAccountEditorPresentation) _then) = _$NativeAccountEditorPresentationCopyWithImpl;
 @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, AccountAuthenticationMethod authentication, bool isOpenAiTemplate, ChatGptLoginSnapshot? chatGptLogin, ChatGptAccountInfo? savedChatGptAccount, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
+ String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, AccountAuthenticationMethod authentication, bool isOpenAiTemplate, ChatGptLoginSnapshot? chatGptLogin, ChatGptAccountInfo? savedChatGptAccount, String protocolLabel, AccountGeminiConnectionPresentation? geminiConnection, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
 });
 
 
-$AccountDisplayKeyCopyWith<$Res>? get accountKey;$AccountTemplateKeyCopyWith<$Res> get templateKey;$AccountTextPresentationCopyWith<$Res> get name;$AccountTextPresentationCopyWith<$Res> get endpoint;$AccountTextPresentationCopyWith<$Res> get credential;$AccountBillingPresentationCopyWith<$Res> get billing;
+$AccountDisplayKeyCopyWith<$Res>? get accountKey;$AccountTemplateKeyCopyWith<$Res> get templateKey;$AccountTextPresentationCopyWith<$Res> get name;$AccountTextPresentationCopyWith<$Res> get endpoint;$AccountTextPresentationCopyWith<$Res> get credential;$AccountGeminiConnectionPresentationCopyWith<$Res>? get geminiConnection;$AccountBillingPresentationCopyWith<$Res> get billing;
 
 }
 /// @nodoc
@@ -9755,7 +10034,7 @@ class _$NativeAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? authentication = null,Object? isOpenAiTemplate = null,Object? chatGptLogin = freezed,Object? savedChatGptAccount = freezed,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? authentication = null,Object? isOpenAiTemplate = null,Object? chatGptLogin = freezed,Object? savedChatGptAccount = freezed,Object? protocolLabel = null,Object? geminiConnection = freezed,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
   return _then(NativeAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -9769,7 +10048,8 @@ as AccountAuthenticationMethod,isOpenAiTemplate: null == isOpenAiTemplate ? _sel
 as bool,chatGptLogin: freezed == chatGptLogin ? _self.chatGptLogin : chatGptLogin // ignore: cast_nullable_to_non_nullable
 as ChatGptLoginSnapshot?,savedChatGptAccount: freezed == savedChatGptAccount ? _self.savedChatGptAccount : savedChatGptAccount // ignore: cast_nullable_to_non_nullable
 as ChatGptAccountInfo?,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
-as String,canChangeTemplate: null == canChangeTemplate ? _self.canChangeTemplate : canChangeTemplate // ignore: cast_nullable_to_non_nullable
+as String,geminiConnection: freezed == geminiConnection ? _self.geminiConnection : geminiConnection // ignore: cast_nullable_to_non_nullable
+as AccountGeminiConnectionPresentation?,canChangeTemplate: null == canChangeTemplate ? _self.canChangeTemplate : canChangeTemplate // ignore: cast_nullable_to_non_nullable
 as bool,hasStoredCredential: null == hasStoredCredential ? _self.hasStoredCredential : hasStoredCredential // ignore: cast_nullable_to_non_nullable
 as bool,credentialRequired: null == credentialRequired ? _self.credentialRequired : credentialRequired // ignore: cast_nullable_to_non_nullable
 as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
@@ -9832,6 +10112,18 @@ $AccountTextPresentationCopyWith<$Res> get credential {
 
   return $AccountTextPresentationCopyWith<$Res>(_self.credential, (value) {
     return _then(_self.copyWith(credential: value));
+  });
+}/// Create a copy of NativeAccountEditorPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountGeminiConnectionPresentationCopyWith<$Res>? get geminiConnection {
+    if (_self.geminiConnection == null) {
+    return null;
+  }
+
+  return $AccountGeminiConnectionPresentationCopyWith<$Res>(_self.geminiConnection!, (value) {
+    return _then(_self.copyWith(geminiConnection: value));
   });
 }/// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -9924,10 +10216,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  AccountGeminiConnectionPresentation? geminiConnection,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.geminiConnection,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   return orElse();
 
 }
@@ -9945,10 +10237,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  AccountGeminiConnectionPresentation? geminiConnection,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation():
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.geminiConnection,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -9965,10 +10257,10 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String editorId,  AccountDisplayKey? accountKey,  AccountTemplateKey templateKey,  List<AccountTemplatePresentation> templates,  AccountTextPresentation name,  AccountTextPresentation endpoint,  AccountTextPresentation credential,  AccountAuthenticationMethod authentication,  bool isOpenAiTemplate,  ChatGptLoginSnapshot? chatGptLogin,  ChatGptAccountInfo? savedChatGptAccount,  String protocolLabel,  AccountGeminiConnectionPresentation? geminiConnection,  bool canChangeTemplate,  bool hasStoredCredential,  bool credentialRequired,  bool dirty,  bool saving,  bool canSave,  bool canAddModel,  bool setDefaultOnCreate,  bool showSetDefaultOnCreate,  List<ManualAccountModelPresentation> manualModels,  List<AccountModelPresentation> declaredModels,  AccountBillingPresentation billing,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _NativeAccountEditorPresentation() when $default != null:
-return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
+return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.templates,_that.name,_that.endpoint,_that.credential,_that.authentication,_that.isOpenAiTemplate,_that.chatGptLogin,_that.savedChatGptAccount,_that.protocolLabel,_that.geminiConnection,_that.canChangeTemplate,_that.hasStoredCredential,_that.credentialRequired,_that.dirty,_that.saving,_that.canSave,_that.canAddModel,_that.setDefaultOnCreate,_that.showSetDefaultOnCreate,_that.manualModels,_that.declaredModels,_that.billing,_that.error);case _:
   return null;
 
 }
@@ -9980,7 +10272,7 @@ return $default(_that.editorId,_that.accountKey,_that.templateKey,_that.template
 
 
 class _NativeAccountEditorPresentation implements NativeAccountEditorPresentation {
-  const _NativeAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateKey,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], required this.name, required this.endpoint, required this.credential, this.authentication = AccountAuthenticationMethod.apiKey, this.isOpenAiTemplate = false, this.chatGptLogin, this.savedChatGptAccount, required this.protocolLabel, this.canChangeTemplate = false, this.hasStoredCredential = false, this.credentialRequired = true, this.dirty = false, this.saving = false, this.canSave = false, this.canAddModel = false, this.setDefaultOnCreate = false, this.showSetDefaultOnCreate = false,  List<ManualAccountModelPresentation> manualModels = const <ManualAccountModelPresentation>[],  List<AccountModelPresentation> declaredModels = const <AccountModelPresentation>[], required this.billing, this.error}): _templates = templates,_manualModels = manualModels,_declaredModels = declaredModels;
+  const _NativeAccountEditorPresentation({required this.editorId, this.accountKey, required this.templateKey,  List<AccountTemplatePresentation> templates = const <AccountTemplatePresentation>[], required this.name, required this.endpoint, required this.credential, this.authentication = AccountAuthenticationMethod.apiKey, this.isOpenAiTemplate = false, this.chatGptLogin, this.savedChatGptAccount, required this.protocolLabel, this.geminiConnection, this.canChangeTemplate = false, this.hasStoredCredential = false, this.credentialRequired = true, this.dirty = false, this.saving = false, this.canSave = false, this.canAddModel = false, this.setDefaultOnCreate = false, this.showSetDefaultOnCreate = false,  List<ManualAccountModelPresentation> manualModels = const <ManualAccountModelPresentation>[],  List<AccountModelPresentation> declaredModels = const <AccountModelPresentation>[], required this.billing, this.error}): _templates = templates,_manualModels = manualModels,_declaredModels = declaredModels;
 
 
 @override final  String editorId;
@@ -10001,6 +10293,7 @@ class _NativeAccountEditorPresentation implements NativeAccountEditorPresentatio
 @override final  ChatGptLoginSnapshot? chatGptLogin;
 @override final  ChatGptAccountInfo? savedChatGptAccount;
 @override final  String protocolLabel;
+@override final  AccountGeminiConnectionPresentation? geminiConnection;
 @override@JsonKey() final  bool canChangeTemplate;
 @override@JsonKey() final  bool hasStoredCredential;
 @override@JsonKey() final  bool credentialRequired;
@@ -10037,18 +10330,18 @@ _$NativeAccountEditorPresentationCopyWith<_NativeAccountEditorPresentation> get 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateKey, templateKey) || other.templateKey == templateKey)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.name, name) || other.name == name)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.authentication, authentication) || other.authentication == authentication)&&(identical(other.isOpenAiTemplate, isOpenAiTemplate) || other.isOpenAiTemplate == isOpenAiTemplate)&&(identical(other.chatGptLogin, chatGptLogin) || other.chatGptLogin == chatGptLogin)&&(identical(other.savedChatGptAccount, savedChatGptAccount) || other.savedChatGptAccount == savedChatGptAccount)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.canChangeTemplate, canChangeTemplate) || other.canChangeTemplate == canChangeTemplate)&&(identical(other.hasStoredCredential, hasStoredCredential) || other.hasStoredCredential == hasStoredCredential)&&(identical(other.credentialRequired, credentialRequired) || other.credentialRequired == credentialRequired)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.canAddModel, canAddModel) || other.canAddModel == canAddModel)&&(identical(other.setDefaultOnCreate, setDefaultOnCreate) || other.setDefaultOnCreate == setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, showSetDefaultOnCreate) || other.showSetDefaultOnCreate == showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _declaredModels)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _NativeAccountEditorPresentation&&(identical(other.editorId, editorId) || other.editorId == editorId)&&(identical(other.accountKey, accountKey) || other.accountKey == accountKey)&&(identical(other.templateKey, templateKey) || other.templateKey == templateKey)&&const DeepCollectionEquality().equals(other.templates, _templates)&&(identical(other.name, name) || other.name == name)&&(identical(other.endpoint, endpoint) || other.endpoint == endpoint)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.authentication, authentication) || other.authentication == authentication)&&(identical(other.isOpenAiTemplate, isOpenAiTemplate) || other.isOpenAiTemplate == isOpenAiTemplate)&&(identical(other.chatGptLogin, chatGptLogin) || other.chatGptLogin == chatGptLogin)&&(identical(other.savedChatGptAccount, savedChatGptAccount) || other.savedChatGptAccount == savedChatGptAccount)&&(identical(other.protocolLabel, protocolLabel) || other.protocolLabel == protocolLabel)&&(identical(other.geminiConnection, geminiConnection) || other.geminiConnection == geminiConnection)&&(identical(other.canChangeTemplate, canChangeTemplate) || other.canChangeTemplate == canChangeTemplate)&&(identical(other.hasStoredCredential, hasStoredCredential) || other.hasStoredCredential == hasStoredCredential)&&(identical(other.credentialRequired, credentialRequired) || other.credentialRequired == credentialRequired)&&(identical(other.dirty, dirty) || other.dirty == dirty)&&(identical(other.saving, saving) || other.saving == saving)&&(identical(other.canSave, canSave) || other.canSave == canSave)&&(identical(other.canAddModel, canAddModel) || other.canAddModel == canAddModel)&&(identical(other.setDefaultOnCreate, setDefaultOnCreate) || other.setDefaultOnCreate == setDefaultOnCreate)&&(identical(other.showSetDefaultOnCreate, showSetDefaultOnCreate) || other.showSetDefaultOnCreate == showSetDefaultOnCreate)&&const DeepCollectionEquality().equals(other.manualModels, _manualModels)&&const DeepCollectionEquality().equals(other.declaredModels, _declaredModels)&&(identical(other.billing, billing) || other.billing == billing)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hashAll([runtimeType,editorId,accountKey,templateKey,const DeepCollectionEquality().hash(_templates),name,endpoint,credential,authentication,isOpenAiTemplate,chatGptLogin,savedChatGptAccount,protocolLabel,canChangeTemplate,hasStoredCredential,credentialRequired,dirty,saving,canSave,canAddModel,setDefaultOnCreate,showSetDefaultOnCreate,const DeepCollectionEquality().hash(_manualModels),const DeepCollectionEquality().hash(_declaredModels),billing,error]);
+    return Object.hashAll([runtimeType,editorId,accountKey,templateKey,const DeepCollectionEquality().hash(_templates),name,endpoint,credential,authentication,isOpenAiTemplate,chatGptLogin,savedChatGptAccount,protocolLabel,geminiConnection,canChangeTemplate,hasStoredCredential,credentialRequired,dirty,saving,canSave,canAddModel,setDefaultOnCreate,showSetDefaultOnCreate,const DeepCollectionEquality().hash(_manualModels),const DeepCollectionEquality().hash(_declaredModels),billing,error]);
 }
 
 @override
 String toString() {
-    return 'NativeAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateKey: $templateKey, templates: $templates, name: $name, endpoint: $endpoint, credential: $credential, authentication: $authentication, isOpenAiTemplate: $isOpenAiTemplate, chatGptLogin: $chatGptLogin, savedChatGptAccount: $savedChatGptAccount, protocolLabel: $protocolLabel, canChangeTemplate: $canChangeTemplate, hasStoredCredential: $hasStoredCredential, credentialRequired: $credentialRequired, dirty: $dirty, saving: $saving, canSave: $canSave, canAddModel: $canAddModel, setDefaultOnCreate: $setDefaultOnCreate, showSetDefaultOnCreate: $showSetDefaultOnCreate, manualModels: $manualModels, declaredModels: $declaredModels, billing: $billing, error: $error)';
+    return 'NativeAccountEditorPresentation(editorId: $editorId, accountKey: $accountKey, templateKey: $templateKey, templates: $templates, name: $name, endpoint: $endpoint, credential: $credential, authentication: $authentication, isOpenAiTemplate: $isOpenAiTemplate, chatGptLogin: $chatGptLogin, savedChatGptAccount: $savedChatGptAccount, protocolLabel: $protocolLabel, geminiConnection: $geminiConnection, canChangeTemplate: $canChangeTemplate, hasStoredCredential: $hasStoredCredential, credentialRequired: $credentialRequired, dirty: $dirty, saving: $saving, canSave: $canSave, canAddModel: $canAddModel, setDefaultOnCreate: $setDefaultOnCreate, showSetDefaultOnCreate: $showSetDefaultOnCreate, manualModels: $manualModels, declaredModels: $declaredModels, billing: $billing, error: $error)';
 }
 
 
@@ -10059,11 +10352,11 @@ abstract mixin class _$NativeAccountEditorPresentationCopyWith<$Res> implements 
   factory _$NativeAccountEditorPresentationCopyWith(_NativeAccountEditorPresentation value, $Res Function(_NativeAccountEditorPresentation) _then) = __$NativeAccountEditorPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, AccountAuthenticationMethod authentication, bool isOpenAiTemplate, ChatGptLoginSnapshot? chatGptLogin, ChatGptAccountInfo? savedChatGptAccount, String protocolLabel, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
+ String editorId, AccountDisplayKey? accountKey, AccountTemplateKey templateKey, List<AccountTemplatePresentation> templates, AccountTextPresentation name, AccountTextPresentation endpoint, AccountTextPresentation credential, AccountAuthenticationMethod authentication, bool isOpenAiTemplate, ChatGptLoginSnapshot? chatGptLogin, ChatGptAccountInfo? savedChatGptAccount, String protocolLabel, AccountGeminiConnectionPresentation? geminiConnection, bool canChangeTemplate, bool hasStoredCredential, bool credentialRequired, bool dirty, bool saving, bool canSave, bool canAddModel, bool setDefaultOnCreate, bool showSetDefaultOnCreate, List<ManualAccountModelPresentation> manualModels, List<AccountModelPresentation> declaredModels, AccountBillingPresentation billing, String? error
 });
 
 
-@override $AccountDisplayKeyCopyWith<$Res>? get accountKey;@override $AccountTemplateKeyCopyWith<$Res> get templateKey;@override $AccountTextPresentationCopyWith<$Res> get name;@override $AccountTextPresentationCopyWith<$Res> get endpoint;@override $AccountTextPresentationCopyWith<$Res> get credential;@override $AccountBillingPresentationCopyWith<$Res> get billing;
+@override $AccountDisplayKeyCopyWith<$Res>? get accountKey;@override $AccountTemplateKeyCopyWith<$Res> get templateKey;@override $AccountTextPresentationCopyWith<$Res> get name;@override $AccountTextPresentationCopyWith<$Res> get endpoint;@override $AccountTextPresentationCopyWith<$Res> get credential;@override $AccountGeminiConnectionPresentationCopyWith<$Res>? get geminiConnection;@override $AccountBillingPresentationCopyWith<$Res> get billing;
 
 }
 /// @nodoc
@@ -10076,7 +10369,7 @@ class __$NativeAccountEditorPresentationCopyWithImpl<$Res>
 
 /// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? authentication = null,Object? isOpenAiTemplate = null,Object? chatGptLogin = freezed,Object? savedChatGptAccount = freezed,Object? protocolLabel = null,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? editorId = null,Object? accountKey = freezed,Object? templateKey = null,Object? templates = null,Object? name = null,Object? endpoint = null,Object? credential = null,Object? authentication = null,Object? isOpenAiTemplate = null,Object? chatGptLogin = freezed,Object? savedChatGptAccount = freezed,Object? protocolLabel = null,Object? geminiConnection = freezed,Object? canChangeTemplate = null,Object? hasStoredCredential = null,Object? credentialRequired = null,Object? dirty = null,Object? saving = null,Object? canSave = null,Object? canAddModel = null,Object? setDefaultOnCreate = null,Object? showSetDefaultOnCreate = null,Object? manualModels = null,Object? declaredModels = null,Object? billing = null,Object? error = freezed,}) {
   return _then(_NativeAccountEditorPresentation(
 editorId: null == editorId ? _self.editorId : editorId // ignore: cast_nullable_to_non_nullable
 as String,accountKey: freezed == accountKey ? _self.accountKey : accountKey // ignore: cast_nullable_to_non_nullable
@@ -10090,7 +10383,8 @@ as AccountAuthenticationMethod,isOpenAiTemplate: null == isOpenAiTemplate ? _sel
 as bool,chatGptLogin: freezed == chatGptLogin ? _self.chatGptLogin : chatGptLogin // ignore: cast_nullable_to_non_nullable
 as ChatGptLoginSnapshot?,savedChatGptAccount: freezed == savedChatGptAccount ? _self.savedChatGptAccount : savedChatGptAccount // ignore: cast_nullable_to_non_nullable
 as ChatGptAccountInfo?,protocolLabel: null == protocolLabel ? _self.protocolLabel : protocolLabel // ignore: cast_nullable_to_non_nullable
-as String,canChangeTemplate: null == canChangeTemplate ? _self.canChangeTemplate : canChangeTemplate // ignore: cast_nullable_to_non_nullable
+as String,geminiConnection: freezed == geminiConnection ? _self.geminiConnection : geminiConnection // ignore: cast_nullable_to_non_nullable
+as AccountGeminiConnectionPresentation?,canChangeTemplate: null == canChangeTemplate ? _self.canChangeTemplate : canChangeTemplate // ignore: cast_nullable_to_non_nullable
 as bool,hasStoredCredential: null == hasStoredCredential ? _self.hasStoredCredential : hasStoredCredential // ignore: cast_nullable_to_non_nullable
 as bool,credentialRequired: null == credentialRequired ? _self.credentialRequired : credentialRequired // ignore: cast_nullable_to_non_nullable
 as bool,dirty: null == dirty ? _self.dirty : dirty // ignore: cast_nullable_to_non_nullable
@@ -10154,6 +10448,18 @@ $AccountTextPresentationCopyWith<$Res> get credential {
 
   return $AccountTextPresentationCopyWith<$Res>(_self.credential, (value) {
     return _then(_self.copyWith(credential: value));
+  });
+}/// Create a copy of NativeAccountEditorPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AccountGeminiConnectionPresentationCopyWith<$Res>? get geminiConnection {
+    if (_self.geminiConnection == null) {
+    return null;
+  }
+
+  return $AccountGeminiConnectionPresentationCopyWith<$Res>(_self.geminiConnection!, (value) {
+    return _then(_self.copyWith(geminiConnection: value));
   });
 }/// Create a copy of NativeAccountEditorPresentation
 /// with the given fields replaced by the non-null parameter values.

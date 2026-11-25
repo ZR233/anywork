@@ -64,7 +64,8 @@ AcpPermissionRequestPresentation _mapPermissionRequest(
 
 @riverpod
 class AcpPermissionViewModel extends _$AcpPermissionViewModel {
-  String? _submittingId;
+  AcpPermissionEventView? _activeRequest;
+  Object? _decision;
   String? _errorMessage;
 
   @override
@@ -76,21 +77,19 @@ class AcpPermissionViewModel extends _$AcpPermissionViewModel {
             ?.pendingPermissions ??
         const <AcpPermissionEventView>[];
     final active = permissions.firstOrNull;
-    if (active == null) {
-      _submittingId = null;
+    if (!identical(active, _activeRequest)) {
+      _activeRequest = active;
+      _decision = null;
       _errorMessage = null;
-      return const AcpPermissionDockViewState();
     }
-    final activeKey = _permissionIdKey(active.id);
-    if (_submittingId != null && _submittingId != activeKey) {
-      _submittingId = null;
-      _errorMessage = null;
+    if (active == null) {
+      return const AcpPermissionDockViewState();
     }
     return AcpPermissionDockViewState(
       pendingCount: permissions.length,
       activeRequest: _mapPermissionRequest(
         active,
-        submitting: _submittingId == activeKey,
+        submitting: _decision != null,
       ),
       errorMessage: _errorMessage,
     );
@@ -105,39 +104,57 @@ class AcpPermissionViewModel extends _$AcpPermissionViewModel {
     String permissionId,
     AcpPermissionOptionId? option,
   ) async {
-    if (_submittingId == permissionId) return;
+    if (!ref.mounted) return;
     final currentState = ref
         .read(acpConversationStateProvider(threadId))
         .asData
         ?.value;
-    final target = currentState?.pendingPermissions
-        .where((item) => _permissionIdKey(item.id) == permissionId)
-        .firstOrNull;
-    if (target == null) return;
+    final target = currentState?.pendingPermissions.firstOrNull;
+    if (target == null || _permissionIdKey(target.id) != permissionId) return;
+    if (identical(target, _activeRequest) && _decision != null) return;
 
-    _submittingId = permissionId;
+    final owner = ref
+        .read(acpConversationOwnerProvider(threadId))
+        .asData
+        ?.value;
+    final decision = Object();
+    _activeRequest = target;
+    _decision = decision;
     _errorMessage = null;
     ref.invalidateSelf();
 
-    final client = ref.read(acpConversationOwnerProvider(threadId)).asData;
-    final owner = client?.value;
+    void finish(String? error) {
+      if (!ref.mounted || !identical(_decision, decision)) return;
+      final currentOwner = ref
+          .read(acpConversationOwnerProvider(threadId))
+          .asData
+          ?.value;
+      if (!identical(currentOwner, owner)) return;
+      final currentRequest = owner != null
+          ? owner.state.pendingPermissions.firstOrNull
+          : ref
+                .read(acpConversationStateProvider(threadId))
+                .asData
+                ?.value
+                .pendingPermissions
+                .firstOrNull;
+      // An old boundary reply still settles its Future, but only the current
+      // request's current action may change this dock's pending/error state.
+      if (!identical(currentRequest, target)) return;
+      _decision = null;
+      _errorMessage = error;
+      ref.invalidateSelf();
+    }
+
     if (owner == null) {
-      _submittingId = null;
-      _errorMessage = 'ACP 会话尚未打开';
-      if (ref.mounted) ref.invalidateSelf();
+      finish('ACP 会话尚未打开');
       return;
     }
     try {
       await owner.answerPermission(target.id, option);
-      if (!ref.mounted) return;
-      _submittingId = null;
-      _errorMessage = null;
-      ref.invalidateSelf();
+      finish(null);
     } catch (error) {
-      if (!ref.mounted) return;
-      _submittingId = null;
-      _errorMessage = formatAcpError(error);
-      ref.invalidateSelf();
+      finish(formatAcpError(error));
     }
   }
 }

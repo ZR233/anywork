@@ -426,11 +426,13 @@ List<AccountSettingsView> _accountsFromCreateCommands(
       for (final limit in account.modelAutoCompactLimits)
         limit.modelId: limit.limit,
     };
+    // 预览态也消费共享模型规则，不维护独立的默认值算法。
     final autoCompactLimits = {
       for (final model in models)
-        model.modelId: _demoAutoCompactLimit(
-          model,
-          override: autoCompactOverrides[model.modelId],
+        model.modelId: AccountModelAutoCompactView(
+          modelId: model.modelId,
+          overrideLimit: autoCompactOverrides[model.modelId],
+          context: model.context,
         ),
     };
     final hasToken = switch (account.secret.action) {
@@ -479,16 +481,4 @@ List<AccountSettingsView> _accountsFromCreateCommands(
       iconKey: template?.iconKey,
     );
   }).toList();
-}
-
-/// 预览态也消费共享模型规则，不维护独立的默认值算法。
-AccountModelAutoCompactView _demoAutoCompactLimit(
-  AccountModelView model, {
-  int? override,
-}) {
-  return AccountModelAutoCompactView(
-    modelId: model.modelId,
-    overrideLimit: override,
-    context: model.context,
-  );
 }

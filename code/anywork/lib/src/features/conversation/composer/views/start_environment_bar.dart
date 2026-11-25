@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_menu_label.dart';
+import '../../../../shared/widgets/studio_menu_button.dart';
 import '../state/composer_view_state.dart';
 import '../view_models/composer_view_model.dart';
 import '../view_models/start_backend_view_model.dart';
@@ -29,7 +30,6 @@ class StartEnvironmentBar extends ConsumerWidget {
     return StartEnvironmentBarView(
       state: state!,
       actions: ref.read(provider.notifier),
-      projectOnly: false,
       enabled: backend.enabled,
       onAddProject: onAddProject,
     );
@@ -42,7 +42,6 @@ class StartEnvironmentBarView extends StatelessWidget {
     required this.actions,
     this.onAddProject,
     this.enabled = true,
-    this.projectOnly = false,
     super.key,
   });
 
@@ -50,7 +49,6 @@ class StartEnvironmentBarView extends StatelessWidget {
   final ComposerViewModel actions;
   final VoidCallback? onAddProject;
   final bool enabled;
-  final bool projectOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -65,7 +63,7 @@ class StartEnvironmentBarView extends StatelessWidget {
       onSelected: actions.selectProject,
     );
     final defaults = state.delegation;
-    if (projectOnly || defaults == null || workspace == null) {
+    if (defaults == null || workspace == null) {
       return Align(alignment: Alignment.centerLeft, child: selector);
     }
     final draft = start.sessionDraft.forProject(workspace.id);
@@ -105,7 +103,6 @@ class _ProjectTargetSelector extends StatefulWidget {
 
 class _ProjectTargetSelectorState extends State<_ProjectTargetSelector> {
   final _search = TextEditingController();
-  final _controller = MenuController();
 
   @override
   void dispose() {
@@ -121,14 +118,23 @@ class _ProjectTargetSelectorState extends State<_ProjectTargetSelector> {
         : '${current.name}${current.sshAlias == null ? '' : ' · SSH ${current.sshAlias}'}';
     final width = (MediaQuery.sizeOf(context).width - 40).clamp(160.0, 380.0);
     final query = _search.text.trim().toLowerCase();
-    return MenuAnchor(
-      controller: _controller,
+    return StudioMenuButton(
+      buttonKey: const ValueKey('start-project-selector'),
+      enabled: widget.enabled,
+      tooltip: widget.enabled
+          ? (current?.path ?? title)
+          : context.l10n.composerEnvironmentLocked,
+      buttonStyle: TextButton.styleFrom(
+        padding: EdgeInsets.zero,
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
       onOpen: () {
         _search.clear();
         setState(() {});
       },
       crossAxisUnconstrained: false,
-      style: MenuStyle(
+      menuStyle: MenuStyle(
         maximumSize: WidgetStatePropertyAll(
           Size(
             width,
@@ -204,26 +210,10 @@ class _ProjectTargetSelectorState extends State<_ProjectTargetSelector> {
           child: Text(context.l10n.composerNewProject),
         ),
       ],
-      builder: (context, controller, child) => Tooltip(
-        message: widget.enabled
-            ? (current?.path ?? title)
-            : context.l10n.composerEnvironmentLocked,
-        child: TextButton(
-          key: const ValueKey('start-project-selector'),
-          onPressed: widget.enabled
-              ? (controller.isOpen ? controller.close : controller.open)
-              : null,
-          style: TextButton.styleFrom(
-            padding: EdgeInsets.zero,
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: StudioMenuLabel(
-            label: title,
-            enabled: widget.enabled,
-            maxWidth: 180,
-          ),
-        ),
+      child: StudioMenuLabel(
+        label: title,
+        enabled: widget.enabled,
+        maxWidth: 180,
       ),
     );
   }

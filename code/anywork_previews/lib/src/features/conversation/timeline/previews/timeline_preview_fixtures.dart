@@ -11,13 +11,11 @@ final class TimelinePreviewRunEntry {
   const TimelinePreviewRunEntry({
     required this.id,
     required this.order,
-    required this.atom,
     required this.memberCount,
   });
 
   final String id;
   final int order;
-  final ChatAtom atom;
   final int memberCount;
 }
 
@@ -547,31 +545,7 @@ abstract final class TimelinePreviewFixtures {
     String id,
     int seq, {
     int count = 1,
-  }) => TimelinePreviewRunEntry(
-    id: id,
-    order: seq,
-    memberCount: count,
-    atom: ChatAtom(
-      id: id,
-      source: groupSource,
-      sourceOrder: null,
-      kind: ChatAtomKind.toolCall,
-      delivery: ChatDeliveryKind.foreground,
-      lifecycle: const TerminalChatAtom(
-        started: null,
-        ended: null,
-        outcome: ChatTerminalOutcome.completed,
-      ),
-      contents: const [],
-      payload: DeferredPayload(
-        reference: ContentRef(
-          databaseId: 'preview',
-          target: ItemPayloadTarget(itemId: id),
-        ),
-        byteLength: 100,
-      ),
-    ),
-  );
+  }) => TimelinePreviewRunEntry(id: id, order: seq, memberCount: count);
   static TimelineDisplayUnit runUnit(TimelinePreviewRunEntry entry) =>
       TimelineDisplayUnit(
         block: DisplayBlock(
@@ -821,11 +795,6 @@ abstract final class TimelinePreviewFixtures {
       },
     },
   });
-
-  static const contentReference = ContentRef(
-    databaseId: 'preview-database',
-    target: ItemPayloadTarget(itemId: 'preview-deferred'),
-  );
 
   static final contentWindow = ContentWindow(
     offset: 0,

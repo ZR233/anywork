@@ -9,11 +9,54 @@ const _lifecycleHelper =
     'code/anywork/lib/src/presentation/providers/use_client_resource.dart';
 const _accountsFeature = 'code/anywork/lib/src/features/settings/accounts/';
 const _acpFeature = 'code/anywork/lib/src/features/conversation/acp/';
+const _sharedWidgets = 'code/anywork/lib/src/shared/widgets/';
 
 void main() {
   // These are parsed Dart programs, not examples of a rule's own regexp or
   // expected diagnostic text. The CLI and these tests use the same AST walk.
   for (final fixture in <({String name, String path, String source, String rule})>[
+    for (final uri in [
+      'package:anywork_client/accounts.dart',
+      'package:flutter_riverpod/flutter_riverpod.dart',
+      'package:nativeapi/nativeapi.dart',
+      'dart:io',
+      '../../presentation/providers/client_provider.dart',
+      '../typed_json.dart',
+    ])
+      (
+        name: 'Shared Widget cannot import owner or unclassified helper: $uri',
+        path: '${_sharedWidgets}fixture.dart',
+        source: "import '$uri' as hidden;",
+        rule: 'UI-02',
+      ),
+    (
+      name: 'Shared Widget cannot hide business in a conditional export',
+      path: '${_sharedWidgets}fixture.dart',
+      source:
+          "export 'safe.dart' if (dart.library.io) "
+          "'package:anywork_client/studio_client.dart';",
+      rule: 'UI-02',
+    ),
+    for (final directive in ["part 'hidden.dart';", "part of '../owner.dart';"])
+      (
+        name: 'Shared Widget cannot bypass its library boundary: $directive',
+        path: '${_sharedWidgets}fixture.dart',
+        source: directive,
+        rule: 'UI-02',
+      ),
+    for (final layer in ['state', 'view_models'])
+      (
+        name: 'Account $layer cannot depend on shared Widgets',
+        path: '$_accountsFeature$layer/fixture.dart',
+        source: "import 'package:anywork/src/shared/widgets/studio_menu_button.dart';",
+        rule: 'UI-02',
+      ),
+    (
+      name: 'Account View cannot import the mixed shared root',
+      path: '${_accountsFeature}views/fixture.dart',
+      source: "import '../../../../shared/typed_json.dart';",
+      rule: 'UI-02',
+    ),
     (
       name: 'Client cannot import Flutter',
       path: _client,
@@ -410,11 +453,21 @@ void useClientResource(dynamic ref, dynamic owner) {
     () {
       for (final fixture in <({String path, String source})>[
         (
+          path: '${_sharedWidgets}fixture.dart',
+          source: '''
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import '../../app/theme/studio_tokens.dart';
+import 'studio_menu_button.dart';
+''',
+        ),
+        (
           path: '${_accountsFeature}views/fixture.dart',
           source: '''
 import 'package:flutter/material.dart';
 import '../state/fixture.dart';
-import '../../../../shared/account_brand.dart';
+import '../../../../shared/widgets/account_brand.dart';
+import 'package:anywork/src/shared/widgets/studio_menu_button.dart' as menus;
 ''',
         ),
         (
@@ -518,6 +571,77 @@ void ignore() {
     final diagnostics = checkClientSource(path: _client, source: 'final = ;');
     expect(diagnostics.map((d) => d.rule), contains('SYNTAX'));
     expect(diagnostics.first.toString(), contains('$_client:1:'));
+  });
+
+  for (final hiddenEdge in [
+    "import 'package:anywork_client/studio_client.dart' as hidden;",
+    "export 'safe.dart' if (dart.library.io) 'package:flutter_riverpod/flutter_riverpod.dart';",
+    "import '../../presentation/providers/client_provider.dart';",
+    "import 'dart:ffi';",
+  ]) {
+    test(
+      'Shared Widget closure checks theme helper dependencies: $hiddenEdge',
+      () {
+        const entry = '${_sharedWidgets}fixture.dart';
+        const theme = 'code/anywork/lib/src/app/theme/tokens.dart';
+        final sources = <String, String>{
+          entry: "import '../../app/theme/tokens.dart';",
+          theme: hiddenEdge,
+          'code/anywork/lib/src/app/theme/safe.dart': '',
+        };
+        final diagnostics = checkPureWidgetImportClosure(
+          entries: [entry],
+          read: (path) => sources[path],
+        );
+        expect(diagnostics, hasLength(1));
+        expect(diagnostics.single.rule, 'UI-02');
+        expect(diagnostics.single.path, theme);
+        expect(diagnostics.single.message, contains(entry));
+      },
+    );
+  }
+
+  test('Shared Widget closure follows parts and fails on missing sources', () {
+    const entry = '${_sharedWidgets}fixture.dart';
+    const theme = 'code/anywork/lib/src/app/theme/tokens.dart';
+    const part = 'code/anywork/lib/src/app/theme/hidden.dart';
+    final sources = <String, String>{
+      entry: "import '../../app/theme/tokens.dart';",
+      theme: "part 'hidden.dart';",
+      part: "part of 'tokens.dart'; class Tint {}",
+    };
+    final diagnostics = checkPureWidgetImportClosure(
+      entries: [entry],
+      read: (path) => sources[path],
+    );
+    expect(diagnostics, isEmpty);
+
+    sources.remove(part);
+    final missing = checkPureWidgetImportClosure(
+      entries: [entry],
+      read: (path) => sources[path],
+    );
+    expect(missing, hasLength(1));
+    expect(missing.single.path, part);
+    expect(missing.single.message, contains('missing'));
+  });
+
+  test('Shared Widget closure permits pure cycles and shared dependencies', () {
+    const first = '${_sharedWidgets}first.dart';
+    const second = '${_sharedWidgets}second.dart';
+    final sources = <String, String>{
+      first: "export 'second.dart'; import 'package:material_ui/material_ui.dart';",
+      second: "export 'first.dart'; import '../../app/theme/tokens.dart';",
+      'code/anywork/lib/src/app/theme/tokens.dart':
+          "import 'package:material_ui/material_ui.dart';",
+    };
+    expect(
+      checkPureWidgetImportClosure(
+        entries: [first, second],
+        read: (path) => sources[path],
+      ),
+      isEmpty,
+    );
   });
 
   test('UI import closure rejects a reachable FRB adapter', () {

@@ -4,60 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../state/tool_presentation.dart';
-import '../tools/items/wait/sleep_tool_item.dart';
-import '../tools/items/wait/wait_tool_item.dart';
-import '../tools/tool_item_view.dart';
 import 'timeline_activity_row.dart';
-
-/// Thin compatibility wrapper delegating `ThreadWaitPresentationView` cards to
-/// the unified [TimelineToolItemView] adapter pipeline.
-class TimelineWaitPanel extends StatelessWidget {
-  const TimelineWaitPanel({
-    required this.presentation,
-    required this.identity,
-    this.initiallyExpanded = false,
-    this.onExpansionChanged,
-    this.staticObservation = false,
-    super.key,
-  });
-
-  final ThreadWaitPresentationView presentation;
-  final String identity;
-  final bool initiallyExpanded;
-  final ValueChanged<bool>? onExpansionChanged;
-  final bool staticObservation;
-
-  @override
-  Widget build(BuildContext context) {
-    final isSleep = presentation.intent is ThreadWaitTimerIntentView;
-    final statusString = switch (presentation.state) {
-      ThreadWaitStateView.waiting => 'waiting',
-      ThreadWaitStateView.failed => 'failed',
-      ThreadWaitStateView.cancelled => 'cancelled',
-      ThreadWaitStateView.interrupted => 'interrupted',
-      _ => 'succeeded',
-    };
-    return TimelineToolItemView(
-      item: TimelineToolPresentation(
-        id: identity,
-        toolCallId: identity,
-        name: isSleep ? 'sleep' : 'wait',
-        presentationContract: isSleep
-            ? SleepToolItem.contractId
-            : WaitToolItem.contractId,
-        statusString: statusString,
-        arguments: '',
-        output: '',
-        frozenObservation: staticObservation,
-        wait: presentation,
-      ),
-      initiallyExpanded: initiallyExpanded,
-      staticObservation: staticObservation,
-      onExpansionChanged: onExpansionChanged,
-    );
-  }
-}
 
 class TimelineWaitDetails extends StatelessWidget {
   const TimelineWaitDetails({

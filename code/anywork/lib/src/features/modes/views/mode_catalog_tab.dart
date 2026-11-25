@@ -17,7 +17,6 @@ import '../../../presentation/providers/mode_catalog_store.dart';
 import '../../settings/settings_scope.dart';
 import '../mode_editor_dialogs.dart';
 import '../mode_editor_support.dart';
-import '../../../app/routing/app_route.dart';
 
 /// 设置页「工作模式」tab：模式目录列表，点击进入全屏工作区。
 ///
@@ -248,10 +247,7 @@ class _ModeCatalogTabState extends ConsumerState<ModeCatalogTab> {
       if (!mounted) return;
       if (!opened) {
         final error = owner.state.error;
-        if (error != null) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(error)));
-        }
+        if (error != null) _showError(error);
         return;
       }
     }

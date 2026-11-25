@@ -1,10 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../../../shared/widgets/studio_menu_button.dart';
 import 'account_sections.dart' show accountActionButtonStyle;
 
-/// Account action anchor. The focus node lives as long as its trigger, not a
-/// build, so Material can return keyboard focus from the menu to the button.
-class AccountMenuButton extends StatefulWidget {
+/// Account action trigger with account-specific labels, icons and styling.
+/// The shared menu owns its focus lifetime and Material interaction.
+class AccountMenuButton extends StatelessWidget {
   const AccountMenuButton({
     required this.tooltip,
     required this.menuChildren,
@@ -18,44 +19,27 @@ class AccountMenuButton extends StatefulWidget {
   final String? label;
 
   @override
-  State<AccountMenuButton> createState() => _AccountMenuButtonState();
-}
-
-class _AccountMenuButtonState extends State<AccountMenuButton> {
-  final FocusNode _focusNode = FocusNode();
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => MenuAnchor(
-    childFocusNode: _focusNode,
-    consumeOutsideTap: true,
-    menuChildren: widget.menuChildren,
-    builder: (context, controller, child) {
-      final onPressed = widget.menuChildren.isEmpty
-          ? null
-          : () => controller.isOpen ? controller.close() : controller.open();
-      return widget.label == null
-          ? IconButton(
-              key: widget.buttonKey,
-              focusNode: _focusNode,
-              tooltip: widget.tooltip,
-              onPressed: onPressed,
-              icon: const Icon(Icons.more_horiz),
-            )
-          : TextButton.icon(
-              style: accountActionButtonStyle(context),
-              key: widget.buttonKey,
-              focusNode: _focusNode,
-              onPressed: onPressed,
-              icon: const Icon(Icons.expand_more, size: 18),
-              iconAlignment: IconAlignment.end,
-              label: Text(widget.label!),
-            );
-    },
-  );
+  Widget build(BuildContext context) => label == null
+      ? StudioMenuButton.icon(
+          buttonKey: buttonKey,
+          tooltip: tooltip,
+          consumeOutsideTap: true,
+          menuChildren: menuChildren,
+          icon: const Icon(Icons.more_horiz),
+        )
+      : StudioMenuButton(
+          buttonKey: buttonKey,
+          tooltip: tooltip,
+          consumeOutsideTap: true,
+          menuChildren: menuChildren,
+          buttonStyle: accountActionButtonStyle(context),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(child: Text(label!)),
+              const SizedBox(width: 8),
+              const Icon(Icons.expand_more, size: 18),
+            ],
+          ),
+        );
 }

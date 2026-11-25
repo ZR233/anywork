@@ -1,8 +1,6 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart' show AnyworkClient;
-import 'package:anywork_client/conversation.dart'
-    show CurrentQueryScope, CurrentStateFieldReader, decodeCurrentTodoState;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
@@ -32,9 +30,9 @@ import '../../platform/vscode_launcher.dart';
 import '../../platform/zed_launcher.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
+import '../../shared/widgets/studio_menu_button.dart';
 import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
-import '../../shared/studio_driver_state.dart';
 import '../settings/settings_common.dart';
 import '../settings/settings_ssh_password_dialog.dart';
 import '../settings/settings_ssh_server_dialog.dart';
@@ -43,9 +41,9 @@ import '../conversation/composer/composer.dart';
 import '../conversation/composer/view_models/conversation_backend_view_model.dart';
 import '../conversation/acp/connectors/acp_workspace_connector.dart';
 import '../conversation/workspace/conversation_workspace.dart';
-import '../status/status_view.dart';
+import '../conversation/timeline/view_models/thread_runtime_fields.dart';
 import '../status/thread_status_bar.dart';
-import '../status/workflow_graph_panel.dart';
+import '../status/connectors/workflow_graph_connectors.dart';
 import '../conversation/timeline/live_status/live_status_bar.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
 import '../conversation/timeline/connectors/timeline_read_demand_viewport.dart';
@@ -141,11 +139,6 @@ class _StudioShellState extends ConsumerState<StudioShell> {
         maximumWidth,
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
   }
 
   @override

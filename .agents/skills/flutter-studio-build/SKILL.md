@@ -97,6 +97,14 @@ FRB 会在生成前以 `frb_expand` 配置展开手写 Rust API。生成输出�
 生成器可能先替换输入再重建 Freezed 等产物；此时并发测试看到的缺失 `part` 文件属于不完整
 生成窗口，不能据此修改生成物或判断业务失败。`verify-client` 只检查 SDK-only Client；应用适配与 UI 闭包由 `verify-gui` 和 `flutter test --no-pub test/ui` 覆盖。接口返修后重新生成受影响产物，再补失败或受影响的消费者证据。
 
+同一 checkout 的多个 `flutter test` 命令会共享 `code/anywork/build/unit_test_assets`，
+必须串行启动；一个命令内的官方测试并发由 Flutter 管理。若出现资源目录删除竞争、shader
+写入失败或 SkSL/runtime-stage 不匹配，先核对原始编译日志和锁定 SDK 的 shader compiler，
+不要通过关闭 InkSparkle、换渲染器或改主题隐藏。部分 SDK 在首次 shader 编译非零后会去掉
+SkSL 重试，写竞争也可能留下无法用于 tester 的缓存。确认这种因果后，等待全部相关测试退出，
+保存失败证据，仅移除日志指出的工具生成 shader 输出，再用原入口串行重建；不要清空无关缓存、
+手改 SDK 或把每次失败都归因于环境。当前 Material UI 和 Flutter 各自的 shader 资产需分别核对。
+
 ## Rust bridge
 
 `pl-studio-bridge` 由 Cargo 预构建；flutter_rust_bridge 负责生成 Dart/Rust 绑定，不负责生成

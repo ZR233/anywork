@@ -9,6 +9,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
+import '../../shared/widgets/studio_menu_button.dart';
 import 'started_items_state.dart';
 import 'status_view.dart';
 
@@ -29,28 +30,23 @@ class StartedItemsEntry extends StatelessWidget {
 
 /// Production menu chrome shared with component previews. The anchor owns
 /// visibility; the panel observes services only while that anchor is open.
-class StartedItemsMenu extends StatefulWidget {
+class StartedItemsMenu extends StatelessWidget {
   const StartedItemsMenu({required this.panelBuilder, super.key});
 
   final WidgetBuilder panelBuilder;
 
   @override
-  State<StartedItemsMenu> createState() => _StartedItemsMenuState();
-}
-
-class _StartedItemsMenuState extends State<StartedItemsMenu> {
-  final _focusNode = FocusNode();
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => MenuAnchor(
-    childFocusNode: _focusNode,
-    style: MenuStyle(
+  Widget build(BuildContext context) => StudioMenuButton.icon(
+    buttonKey: StudioDriverKeys.statusStartedItems,
+    tooltip: context.l10n.statusCapabilitiesTitle,
+    icon: const Icon(Icons.tune_outlined, size: 18),
+    buttonStyle: IconButton.styleFrom(
+      visualDensity: VisualDensity.compact,
+      minimumSize: const Size.square(32),
+      maximumSize: const Size.square(32),
+      padding: EdgeInsets.zero,
+    ),
+    menuStyle: MenuStyle(
       padding: const WidgetStatePropertyAll(EdgeInsets.zero),
       backgroundColor: WidgetStatePropertyAll(
         context.colors.surfaceContainerLowest,
@@ -75,22 +71,11 @@ class _StartedItemsMenuState extends State<StartedItemsMenu> {
           child: SingleChildScrollView(
             primary: false,
             padding: const EdgeInsets.all(12),
-            child: Builder(builder: widget.panelBuilder),
+            child: Builder(builder: panelBuilder),
           ),
         ),
       ),
     ],
-    builder: (context, controller, child) => IconButton(
-      key: StudioDriverKeys.statusStartedItems,
-      focusNode: _focusNode,
-      tooltip: context.l10n.statusCapabilitiesTitle,
-      visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-      padding: EdgeInsets.zero,
-      icon: const Icon(Icons.tune_outlined, size: 18),
-      onPressed: () =>
-          controller.isOpen ? controller.close() : controller.open(),
-    ),
   );
 }
 

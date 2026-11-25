@@ -38,7 +38,7 @@ NewThreadStartEvent _newThreadStartEventFromFrb(
     ),
     failed: (error) => NewThreadStartFailed(
       StudioFailure(
-        code: _studioFailureCode(error.code),
+        code: studioFailureCodeFromBridge(error.code),
         message: error.message,
         retryable: error.retryable,
         correlationId: error.correlationId,

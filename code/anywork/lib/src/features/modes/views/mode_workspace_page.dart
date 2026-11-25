@@ -447,8 +447,7 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
                         onReasonChanged: (value) => ref
                             .read(modeWorkspaceControllerProvider.notifier)
                             .setPreviewReason(value),
-                        onStart: () => _preview(reset: true),
-                        onReset: () => _preview(reset: true),
+                        onRestart: () => _preview(reset: true),
                         onAdvance: (target) => _preview(targetStateId: target),
                       ),
                       ModeWorkspaceSection.flow => _flowSection(
@@ -1002,10 +1001,11 @@ class _ModeWorkspacePageState extends ConsumerState<ModeWorkspacePage>
                     renameWorkflowStageDialog(context, ref, state),
                 onDeleteState: (state) async {
                   if (await confirmRemoveWorkflowStage(
-                    context,
-                    ref,
-                    state.id,
-                  )) {
+                        context,
+                        ref,
+                        state.id,
+                      ) &&
+                      context.mounted) {
                     removeWorkflowStage(ref, state.id);
                   }
                 },

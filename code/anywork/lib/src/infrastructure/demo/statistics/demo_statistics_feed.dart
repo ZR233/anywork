@@ -268,7 +268,7 @@ final class _DemoStatisticsScope implements StatisticsReadScope {
 }
 
 StatisticsSnapshot _demoSnapshot(DateTime now) {
-  final deepseek = StatisticsSummary(
+  final deepseekSummary = StatisticsSummary(
     accountId: 'deepseek-primary',
     accountDisplayName: 'DeepSeek',
     modelId: 'deepseek-flash',
@@ -280,19 +280,6 @@ StatisticsSnapshot _demoSnapshot(DateTime now) {
     tokensPerSecond: 300 * 1000 / 2760,
     averageTtftMillis: 380,
     averageResponseMillis: 1380,
-  );
-  final deepseekSummary = StatisticsSummary(
-    accountId: deepseek.accountId,
-    accountDisplayName: deepseek.accountDisplayName,
-    modelId: deepseek.modelId,
-    sampleCount: deepseek.sampleCount,
-    completionTokens: deepseek.completionTokens,
-    totalTtftMillis: deepseek.totalTtftMillis,
-    ttftSampleCount: deepseek.ttftSampleCount,
-    totalResponseMillis: deepseek.totalResponseMillis,
-    tokensPerSecond: deepseek.tokensPerSecond,
-    averageTtftMillis: deepseek.averageTtftMillis,
-    averageResponseMillis: deepseek.averageResponseMillis,
     effortBreakdowns: const [
       StatisticsEffortSummary(
         effort: 'high',

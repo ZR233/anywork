@@ -7,9 +7,7 @@ final class _DemoHistoryReader implements HistoryReader {
         threadId,
         _history,
         const ChatScope.conversation(),
-      ) {
-    _api._ownedHistoryReaders.add(reader);
-  }
+      );
 
   final DemoStudioTransport _api;
   final String _readerId = newStudioCorrelationId();
@@ -401,14 +399,10 @@ final class _DemoHistoryReader implements HistoryReader {
       if (!waiter.isCompleted) waiter.complete();
     }
     _waiters.clear();
-    reader.requestClose();
   }
 
   @override
-  Future<void> close() async {
-    requestClose();
-    await reader.close();
-  }
+  Future<void> close() async => requestClose();
 
   HistoryEventBodyRef _historyBodyRef(String owner, String key, int length) =>
       HistoryEventBodyRef(
@@ -575,9 +569,7 @@ final class _DemoCurrentReader implements CurrentReader {
         threadId,
         _history,
         const ChatScope.conversation(),
-      ) {
-    _api._ownedHistoryReaders.add(reader);
-  }
+      );
 
   final DemoStudioTransport _api;
   final String _readerId = newStudioCorrelationId();
@@ -1022,7 +1014,6 @@ final class _DemoCurrentReader implements CurrentReader {
     for (final watch in _bodyWatches.toList()) {
       watch.requestClose();
     }
-    reader.requestClose();
   }
 
   @override
@@ -1050,11 +1041,6 @@ final class _DemoCurrentReader implements CurrentReader {
       } catch (failure, stack) {
         remember(failure, stack);
       }
-    }
-    try {
-      await reader.close();
-    } catch (failure, stack) {
-      remember(failure, stack);
     }
     if (error case final failure?) {
       Error.throwWithStackTrace(failure, stackTrace!);
@@ -1117,23 +1103,17 @@ final class _DemoCurrentWatch implements CurrentWatch {
         revision: state.revision,
         baseRevision: state.revision - 1,
         update: switch (update) {
-          ThreadTurnUpdate(:final turn) => ThreadTurnUpdate(turn),
-          ThreadActivityUpdate(:final activity) => ThreadActivityUpdate(
-            activity: activity,
-          ),
-          ThreadInteractionUpdate(:final interaction, :final pending) =>
-            ThreadInteractionUpdate(interaction: interaction, pending: pending),
+          // Only these two kinds are rebuilt from the latest workspace; every
+          // other update is delivered as the typed fact that was already emitted.
           ThreadRuntimeUpdate() => ThreadRuntimeUpdate(
             runtime: state.runtime,
             todo: state.todo,
             modelRoute: state.modelRoute,
           ),
-          ThreadStorageUpdate(:final storage) => ThreadStorageUpdate(
-            storage: storage,
-          ),
           ThreadBusinessRefsUpdate() => ThreadBusinessRefsUpdate(
             references: state.businessRefs,
           ),
+          _ => update,
         },
       ),
     );

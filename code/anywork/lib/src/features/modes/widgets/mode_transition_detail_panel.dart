@@ -146,54 +146,28 @@ class ModeTransitionDetailPanel extends StatelessWidget {
                   ),
                 ),
               ] else ...[
-                DropdownButtonFormField<String>(
+                ModeWorkflowStateField(
                   key: ValueKey<String>(
                     'mode-editor-detail-edge-source-'
                     '${transition.sourceStateId}-${transition.targetStateId}',
                   ),
-                  initialValue:
-                      atomic.any(
-                        (state) => state.id == transition.sourceStateId,
-                      )
-                      ? transition.sourceStateId
-                      : null,
-                  decoration: InputDecoration(
-                    labelText: l10n.modeEditorSourceState,
-                  ),
-                  items: [
-                    for (final state in atomic)
-                      DropdownMenuItem(
-                        value: state.id,
-                        child: Text(state.title),
-                      ),
-                  ],
+                  label: l10n.modeEditorSourceState,
+                  states: atomic,
+                  selectedId: transition.sourceStateId,
                   onChanged: (value) {
                     if (value == null) return;
                     _updateEndpoints(context, source: value);
                   },
                 ),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
+                ModeWorkflowStateField(
                   key: ValueKey<String>(
                     'mode-editor-detail-edge-target-'
                     '${transition.sourceStateId}-${transition.targetStateId}',
                   ),
-                  initialValue:
-                      workflow.states.any(
-                        (state) => state.id == transition.targetStateId,
-                      )
-                      ? transition.targetStateId
-                      : null,
-                  decoration: InputDecoration(
-                    labelText: l10n.modeEditorTargetState,
-                  ),
-                  items: [
-                    for (final state in workflow.states)
-                      DropdownMenuItem(
-                        value: state.id,
-                        child: Text(state.title),
-                      ),
-                  ],
+                  label: l10n.modeEditorTargetState,
+                  states: workflow.states,
+                  selectedId: transition.targetStateId,
                   onChanged: (value) {
                     if (value == null) return;
                     _updateEndpoints(context, target: value);

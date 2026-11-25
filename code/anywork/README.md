@@ -5,6 +5,8 @@ flutter_rust_bridge；Rust bridge 位于 `rust/`，SDK-only Client 位于 `../an
 本页的 Cargo 命令从仓库根执行，Flutter/Dart 包装自动进入 `code/anywork`，不要在 SDK 安装目录运行项目命令。
 独立组件预览位于 `../anywork_previews/`，依赖准备后也支持在该目录直接使用官方 Flutter CLI。
 
+逐模块审读、质量清理与历史遗留处理记录见 [Flutter 质量审查台账](notes/flutter-quality-audit.md)。
+
 ## 按目标选择最轻入口
 
 场景选择、控件发现、热更新、截图核图、错误检查及资源回收见 [无头实验指南](../../.agents/skills/flutter-studio-build/references/experiments.md)；

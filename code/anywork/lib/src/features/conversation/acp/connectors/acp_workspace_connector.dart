@@ -5,7 +5,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_child_readonly_panel.dart';
 import '../../../../shared/studio_chrome.dart';
-import '../../../status/workflow_graph_panel.dart';
+import '../../../status/connectors/workflow_graph_connectors.dart';
 import '../../timeline/connectors/file_reading_panel.dart';
 import '../../timeline/connectors/plan_detail_connector.dart';
 import '../../workspace/conversation_workspace.dart';

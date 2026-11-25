@@ -355,7 +355,6 @@ AgentWorkspaceView? conversationWorkspace(
     loadError: session?.sync.phase == DomainSyncPhase.failed
         ? session?.sync.errorMessage
         : null,
-    todo: session?.workspace?.todo,
     runtime: session?.runtime ?? shellEmptyRuntime,
     modelRoute: session?.modelRoute,
     turn: session?.activeTurn,
@@ -413,13 +412,11 @@ class ShellStorageFact {
     required this.threadId,
     required this.label,
     required this.storage,
-    required this.isSelected,
   });
 
   final String threadId;
   final String label;
   final ThreadStorageStateView storage;
-  final bool isSelected;
 
   @override
   bool operator ==(Object other) =>
@@ -427,11 +424,10 @@ class ShellStorageFact {
       other is ShellStorageFact &&
           threadId == other.threadId &&
           label == other.label &&
-          storage == other.storage &&
-          isSelected == other.isSelected;
+          storage == other.storage;
 
   @override
-  int get hashCode => Object.hash(threadId, label, storage, isSelected);
+  int get hashCode => Object.hash(threadId, label, storage);
 }
 
 @riverpod
@@ -450,7 +446,6 @@ PersistencePanelView persistencePanelView(Ref ref) {
         threadId: selectedId,
         label: title.isEmpty ? selectedId : title,
         storage: storage,
-        isSelected: true,
       );
     }
   }
@@ -502,14 +497,6 @@ ProductTopicConnectionStateView? connectionFromSync(DomainSyncStatus sync) {
     errorMessage: sync.errorMessage,
     retryExhausted: sync.retryExhausted,
   );
-}
-
-StudioThread? threadById(List<StudioThread> threads, String? id) {
-  if (id == null) return null;
-  for (final thread in threads) {
-    if (thread.id == id) return thread;
-  }
-  return null;
 }
 
 StudioProject? projectById(List<StudioProject> projects, String? id) {

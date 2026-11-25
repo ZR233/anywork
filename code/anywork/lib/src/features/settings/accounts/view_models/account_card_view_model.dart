@@ -416,22 +416,7 @@ class AccountCardViewModel extends _$AccountCardViewModel {
         if (projection.queried || projection.busy) acpUsage = projection;
       }
     }
-    final acpPhase = switch ((acpConnection, acpAuth)) {
-      (AcpConnectionRetryingState(), _) => AcpPresentationPhase.reconnecting,
-      (AcpConnectionStartingState(), _) => AcpPresentationPhase.checking,
-      (AcpConnectionStoppingState(), _) => AcpPresentationPhase.closing,
-      (AcpConnectionBlockedState(), _) => AcpPresentationPhase.failed,
-      (_, AcpCheckingState()) => AcpPresentationPhase.checking,
-      (_, AcpRequiredState()) => AcpPresentationPhase.needsLogin,
-      (_, AcpAuthenticatingState()) => AcpPresentationPhase.authenticating,
-      (_, AcpVerifyingState()) => AcpPresentationPhase.verifying,
-      (_, AcpVerifiedState()) => AcpPresentationPhase.connected,
-      (_, AcpCancellingState()) => AcpPresentationPhase.cancelling,
-      (_, AcpClosingState()) => AcpPresentationPhase.closing,
-      (_, AcpCancelledState()) => AcpPresentationPhase.idle,
-      (_, AcpFailedState()) => AcpPresentationPhase.failed,
-      _ => AcpPresentationPhase.idle,
-    };
+    final acpPhase = projectAcpPhase(acpConnection, acpAuth);
     final runningVersion = switch (acpAuth) {
       AcpVerifiedState(:final server) ||
       AcpRequiredState(:final server) => server?.version,
@@ -481,22 +466,11 @@ class AccountCardViewModel extends _$AccountCardViewModel {
             )
           : AccountRowContent.acp(
               status:
-                  _strings[switch ((acpConnection, acpAuth)) {
-                    (AcpConnectionRetryingState(), _) => 'acp.reconnecting',
-                    (AcpConnectionStartingState(), _) => 'acp.checking',
-                    (AcpConnectionStoppingState(), _) => 'acp.closing',
-                    (AcpConnectionBlockedState(), _) => 'acp.failed',
-                    (_, AcpCheckingState()) => 'acp.checking',
-                    (_, AcpRequiredState()) => 'acp.needsLogin',
-                    (_, AcpAuthenticatingState()) => 'acp.authenticating',
-                    (_, AcpVerifyingState()) => 'acp.verifying',
-                    (_, AcpVerifiedState()) => 'acp.connected',
-                    (_, AcpCancellingState()) => 'acp.cancelling',
-                    (_, AcpClosingState()) => 'acp.closing',
-                    (_, AcpCancelledState()) => 'acp.cancelled',
-                    (_, AcpFailedState()) => 'acp.failed',
-                    _ => 'acp',
-                  }],
+                  _strings[acpPhase != AcpPresentationPhase.idle
+                      ? 'acp.${acpPhase.name}'
+                      : acpAuth is AcpCancelledState
+                      ? 'acp.cancelled'
+                      : 'acp'],
               phase: acpPhase,
               isManaged: isManaged,
               sourceLabel: sourceLabel,

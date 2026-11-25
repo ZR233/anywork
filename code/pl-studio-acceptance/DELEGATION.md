@@ -472,20 +472,25 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
 
 ## 控件身份（唯一 key 源与只读观察）
 
-操作者与测试读取 `code/anywork/lib/src/shared/studio_driver_key_values.dart`，不要自行拼接
-账号/模型 key。菜单是否已打开先观察，不重放有副作用的提交。
+会话与委派控件读取 `code/anywork/lib/src/shared/studio_driver_key_values.dart`；账号与模型
+控件读取 `code/anywork/lib/src/features/settings/accounts/state/account_view_key_values.dart`。
+不要自行拼接 key。菜单是否已打开先观察，不重放有副作用的提交。
 
 - `sessionSettings` → `draftDelegationMode` / `draftDelegationPreference` → 对应
   `delegationModeOption('draft', null|mode)` / `delegationPreferenceOption(...)`。
   null 为分别跟随默认，固定模式不可操作偏好但保留草稿值。
 - 全局 `defaultDelegationMode` / `defaultDelegationPreference` 与 `'default'` options；
   工作区使用菜单中的 `sessionWorkspaceMode`，不新增 composer Profile 选择器。
-- `modelEnabled(accountId, modelId)` / `modelDetails(accountId, modelId)` 的身份由
-  KeyValues 内的 `jsonEncode([accountId,modelId])` 唯一构造。详情只显式打开/关闭/
+- `AccountViewKeyValues.modelEnabled(kind, accountId, modelId)` /
+  `modelDetails(kind, accountId, modelId)` 的身份包含账号类型，由
+  `jsonEncode([kind, accountId, modelId])` 构造，Native 使用 `kind = 'native'`。
+  详情只显式打开/关闭/
   reload，不让快照为了采样自动查全目录。
-- `accountBillingKind` / `billingKindOption(null|unknown|metered|subscription|noCharge)` 区分清除
-  override、显式 unknown 与不计费；已有账号编辑器 `account-no-charge` 开启经窄命令设置
-  `noCharge`、关闭清除覆盖，普通连接保存不能覆盖类别。不得把历史关闭估算当不计费。
+- 计费由现役 `AccountBillingControl` 呈现：详情页菜单 `account-billing-menu` 中的
+  `account-billing-automatic` 清除 override，`account-billing-<kind>` 设置明确类别；
+  编辑页使用带“计费类别”标签的官方下拉框。按当前允许项区分自动、显式 unknown 和
+  noCharge，不再使用旧 `account-no-charge` 开关。普通连接保存不能覆盖类别，
+  不得把历史关闭估算当不计费。
 - 现有 `agentSwitcher` / `agentRow` 与 `agentModel(threadId)` 查看真实冻结路由。
 
 `snapshot.delegation` 只读域：defaults、settingsRevision/catalogRevision、

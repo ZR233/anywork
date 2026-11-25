@@ -582,7 +582,7 @@ final class AcpSessionDetailViewModelProvider
 }
 
 String _$acpSessionDetailViewModelHash() =>
-    r'34523e0ddf345e3d63339ed10f82fadb024a2242';
+    r'a8ee4e84d1ee8fe225fb3b0938b030f80fe7fcc8';
 
 final class AcpSessionDetailViewModelFamily extends $Family
     with $FunctionalFamilyOverride<AcpSessionDetailViewState, String> {

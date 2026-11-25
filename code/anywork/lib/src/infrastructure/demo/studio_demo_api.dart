@@ -512,9 +512,6 @@ class DemoStudioTransport extends StudioTransport
   void _stopDemoBusiness() {
     if (_runtimeExiting) return;
     _runtimeExiting = true;
-    for (final reader in _ownedHistoryReaders.toList()) {
-      reader.requestClose();
-    }
     _lspActivityTimer?.cancel();
     _lspActivityTimer = null;
     for (final entry in _acpInstallTimers.entries.toList()) {
@@ -571,22 +568,6 @@ class DemoStudioTransport extends StudioTransport
     final issues = <StudioShutdownIssue>[];
     late final CloseReport resources;
     await Future.wait([
-      () async {
-        try {
-          final remaining = budget.remaining;
-          await _joinDemoConversations().timeout(remaining);
-        } catch (_) {
-          issues.add(
-            const StudioShutdownIssue(
-              stage: 'demo-conversation',
-              code: 'closeFailed',
-              message: 'Demo conversation handles did not close',
-              retryable: true,
-              correlationId: 'demo-conversation-close',
-            ),
-          );
-        }
-      }(),
       () async {
         try {
           final remaining = budget.remaining;
@@ -1099,13 +1080,6 @@ class DemoStudioTransport extends StudioTransport
   int _productEventSequence = 0;
   int _threadDirectoryRevision = 0;
   int _agentProfilesRevision = 0;
-  final Set<_DemoReadSource> _ownedHistoryReaders = {};
-
-  Future<void> _joinDemoConversations() async {
-    await Future.wait([
-      for (final reader in _ownedHistoryReaders.toList()) reader.close(),
-    ]);
-  }
 
   final _shutdownEvents = StreamController<StudioShutdownProgress>.broadcast();
 
@@ -1556,15 +1530,6 @@ class DemoStudioTransport extends StudioTransport
           ? _demoDirectoryCursor(directoryPageSize - 1)
           : null,
       revision: _threadDirectoryRevision,
-    );
-  }
-
-  ThreadDirectoryPage _demoDirectoryPage() {
-    final window = _demoThreadDirectory();
-    return ThreadDirectoryPage(
-      rows: window.rows,
-      nextCursor: window.nextCursor,
-      revision: window.revision,
     );
   }
 
@@ -2229,7 +2194,7 @@ class DemoStudioTransport extends StudioTransport
             '- streaming 中的代码块和表格不要抖动',
         createdAt: userCreatedAt,
       ),
-      _demoItem(
+      _DemoItem(
         id: 'turn-demo:reasoning',
         threadId: thread.id,
         turnId: 'turn-demo',
@@ -2240,7 +2205,7 @@ class DemoStudioTransport extends StudioTransport
           lifecycle: CompletedThreadContentView(agentCreatedAt),
         ),
       ),
-      _demoItem(
+      _DemoItem(
         id: 'turn-demo:tool',
         threadId: thread.id,
         turnId: 'turn-demo',
@@ -4714,7 +4679,7 @@ class DemoStudioTransport extends StudioTransport
       ProjectDirectoryTopic() => ProjectDirectoryBaseline(
         _demoProjectDirectory(),
       ),
-      ThreadDirectoryTopic() => ThreadDirectoryBaseline(_demoDirectoryPage()),
+      ThreadDirectoryTopic() => ThreadDirectoryBaseline(_demoThreadDirectory()),
       AgentDirectoryTopic() => AgentDirectoryBaseline(_demoAgentDirectory()),
       SettingsConfigTopic() => SettingsConfigBaseline(_demoSettingsState()),
       ModelCatalogTopic() => ModelCatalogBaseline(_demoSettingsState()),
@@ -5081,7 +5046,7 @@ class DemoStudioTransport extends StudioTransport
         'The account is folding summary and raw reasoning independently.';
     _upsertChatItem(
       threadId,
-      _demoItem(
+      _DemoItem(
         id: reasoningId,
         threadId: threadId,
         turnId: turnId,
@@ -5145,7 +5110,7 @@ class DemoStudioTransport extends StudioTransport
     ).declareDisplay(commentaryId, [commentaryId], work: false, turnId: turnId);
     _upsertChatItem(
       threadId,
-      _demoItem(
+      _DemoItem(
         id: commentaryId,
         threadId: threadId,
         turnId: turnId,
@@ -5216,7 +5181,7 @@ class DemoStudioTransport extends StudioTransport
     final toolId = '$turnId:tool';
     _upsertChatItem(
       threadId,
-      _demoItem(
+      _DemoItem(
         id: toolId,
         threadId: threadId,
         turnId: turnId,
@@ -5301,7 +5266,7 @@ class DemoStudioTransport extends StudioTransport
     );
     _upsertChatItem(
       threadId,
-      _demoItem(
+      _DemoItem(
         id: finalId,
         threadId: threadId,
         turnId: turnId,
@@ -5998,7 +5963,7 @@ class DemoStudioTransport extends StudioTransport
     // Publication follows the same command's removal of the pending interaction.
     // Do not expose completion with a pre-retirement current snapshot.
     _completeDemoItem(
-      _demoItem(
+      _DemoItem(
         id: 'demo-user-input:${interaction.id}',
         threadId: interaction.threadId,
         turnId: interaction.turnId,
@@ -7167,7 +7132,7 @@ class DemoStudioTransport extends StudioTransport
       });
       // Turn receipts are explicit hidden originals, not GUI display blocks.
       _completeDemoItem(
-        _demoItem(
+        _DemoItem(
           id: 'turn:${turn.turnId.length}:${turn.turnId}',
           threadId: threadId,
           turnId: turn.turnId,
@@ -7365,7 +7330,7 @@ _DemoItem _messageItem({
   required String text,
   required DateTime createdAt,
   List<ThreadAttachmentView> attachments = const [],
-}) => _demoItem(
+}) => _DemoItem(
   id: id,
   threadId: threadId,
   turnId: turnId,
@@ -7550,7 +7515,7 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
         final now = DateTime.now();
         _upsertChatItem(
           threadId,
-          _demoItem(
+          _DemoItem(
             id: '$turnId:connection-retry-$attempt',
             threadId: threadId,
             turnId: turnId,
@@ -7933,5 +7898,3 @@ SkillsStateSnapshot _demoSkillsState(
     ),
   );
 }
-
-/// demo 内的 argv 值比较：顺序与内容都要一致，才可沿用旧连接身份。

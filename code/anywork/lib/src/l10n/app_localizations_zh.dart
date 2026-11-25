@@ -595,21 +595,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get persistenceNewWorkPaused => '保存失败，新工作已暂停，进行中的工作正在收束。';
 
   @override
-  String persistenceResumeReadyOtherSession(String session) {
-    return '另一个会话「$session」已保存，等待继续执行。';
-  }
-
-  @override
-  String persistenceExecutionPausedOtherSession(String session) {
-    return '另一个会话「$session」保存失败，执行已暂停。';
-  }
-
-  @override
-  String persistenceNewWorkPausedOtherSession(String session) {
-    return '另一个会话「$session」保存失败，新工作已暂停，进行中的工作正在收束。';
-  }
-
-  @override
   String get persistenceRetry => '重试保存';
 
   @override
@@ -6504,9 +6489,6 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get acpUpdateSessionInfo => '会话信息已更新';
-
-  @override
   String get acpUpdateGeneric => 'ACP 会话状态已更新';
 
   @override
@@ -7844,9 +7826,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountsGeminiBadgeBundledCatalog => '内置目录';
-
-  @override
-  String get accountsGeminiBadgeImplicitCache => '隐式缓存';
 
   @override
   String get accountsGeminiEndpointPresetsLabel => '端点';

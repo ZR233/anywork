@@ -12,7 +12,6 @@ final class TestStatisticsFeedPort implements StatisticsFeedPort {
 }
 
 final class _TestStatisticsConnection implements StatisticsFeedConnection {
-  final Completer<void> _closed = Completer<void>();
   final StreamController<StatisticsFeedEvent> _events =
       StreamController<StatisticsFeedEvent>();
   bool _first = true;
@@ -68,7 +67,6 @@ final class _TestStatisticsConnection implements StatisticsFeedConnection {
     _closeRequested = true;
     _events.add(const StatisticsFeedClosed());
     unawaited(_events.close());
-    if (!_closed.isCompleted) _closed.complete();
   }
 
   @override

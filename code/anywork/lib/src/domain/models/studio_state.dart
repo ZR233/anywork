@@ -6,9 +6,6 @@ import 'package:anywork_client/studio_client.dart' show AgentDirectoryQueries;
 
 import 'agent_workspace_view.dart';
 
-// Canonical workspace values are replaced by reducers. UI-only anchor/composer
-// changes must not rebuild all row projections; old entries are weakly held.
-
 class _StudioStateUnset {
   const _StudioStateUnset();
 }
@@ -273,8 +270,6 @@ class StudioState {
     return ordered;
   }
 
-  TimelineTodoListUpdate? get selectedTodoList => selectedWorkspace?.todo;
-
   List<PendingInteraction> get pendingInteractions => [
     for (final workspace in workspacesByThread.values)
       ...workspace.interactions,
@@ -315,7 +310,6 @@ class StudioState {
       rootRow: root,
       syncState: selectedWorkspaceUi.syncState,
       loadError: selectedWorkspaceUi.loadError,
-      todo: selectedTodoList,
       runtime: runtime,
       modelRoute: modelRoute,
       turn: turn,

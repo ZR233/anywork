@@ -85,20 +85,6 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
   late final String threadId = history.threadId();
   late final OpenHistory metadata = _openHistoryFromFrb(history.metadata());
 
-  void _checkOpen() {
-    if (stopping) throw _conversationClosedFailure;
-  }
-
-  Future<T> _guardedCall<R, T>(
-    Future<R> Function() call,
-    T Function(R value) map,
-  ) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await call();
-    _checkOpen();
-    return map(value);
-  });
-
   Future<HistoryCut> capture() =>
       _guardedCall(history.capture, _historyCutFromFrb);
 
@@ -285,20 +271,6 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
   late final CurrentView initialView = _currentViewFromFrb(
     current.initialView(),
   );
-
-  void _checkOpen() {
-    if (stopping) throw _conversationClosedFailure;
-  }
-
-  Future<T> _guardedCall<R, T>(
-    Future<R> Function() call,
-    T Function(R value) map,
-  ) => FrbStudioTransport._bridgeCall(() async {
-    _checkOpen();
-    final value = await call();
-    _checkOpen();
-    return map(value);
-  });
 
   Future<CurrentView> snapshot(ReadDemand demand) => _guardedCall(
     () => current.snapshot(demand: _readDemandToFrb(demand)),

@@ -54,7 +54,7 @@ final class StartedItemsViewModelProvider
 }
 
 String _$startedItemsViewModelHash() =>
-    r'feb6bb550f9a24c196747fc1c5b03c6965a999ff';
+    r'3929f74d9b22c6d210a979bcd1b34e2cb261eeff';
 
 /// A display observation only: Client remains the sole owner of topic streams.
 
@@ -175,7 +175,7 @@ final class StatusBarViewProvider
   }
 }
 
-String _$statusBarViewHash() => r'1438595f1bc05edefedc53f46d1ec34ab63b1fed';
+String _$statusBarViewHash() => r'7e8278aa8fbaf13608e69df19b3386f6071b7119';
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
 /// part of this value, so response-timing updates cannot rebuild the chrome.

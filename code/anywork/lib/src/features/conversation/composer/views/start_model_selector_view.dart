@@ -2,7 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../shared/account_brand.dart';
+import '../../../../shared/widgets/account_brand.dart';
 import '../../../../shared/model_route_selector.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../status/session_selectors.dart' show modelOptions;

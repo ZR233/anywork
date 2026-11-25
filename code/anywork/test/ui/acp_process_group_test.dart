@@ -531,7 +531,10 @@ void main() {
       items: const [
         AcpTimelineSessionUpdateItem(
           id: 'u1',
-          update: AcpSessionInfoUpdatePresentation(),
+          update: AcpUsageUpdatePresentation(
+            usedFormatted: '1,200',
+            sizeFormatted: '8,000',
+          ),
         ),
       ],
     );

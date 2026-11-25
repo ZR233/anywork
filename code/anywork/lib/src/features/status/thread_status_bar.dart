@@ -8,19 +8,15 @@ import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
-import '../../presentation/providers/thread_session_store.dart';
-import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../conversation/workspace/conversation_workspace.dart';
+import '../conversation/timeline/view_models/thread_runtime_fields.dart';
 import '../../shared/studio_driver_keys.dart';
-
-import 'package:anywork_client/conversation.dart'
-    show CurrentQueryScope, CurrentStateFieldReader, decodeCurrentWorkflowState;
 
 import 'context_usage_readout.dart';
 import 'started_items_panel.dart';
 import 'status_bar_item.dart';
 import 'status_view.dart';
-import 'workflow_graph_panel.dart';
+import 'views/workflow_graph_panel.dart';
 
 /// The shell supplies identity and UI intentions, never domain lists.
 class ThreadStatusConnector extends ConsumerWidget {
@@ -65,9 +61,8 @@ class ThreadStatusConnector extends ConsumerWidget {
         threadId: threadId,
       ),
       startedItemsEntry: StartedItemsEntry(threadId: threadId),
-      workflowReadout: _DeferredWorkflowReadout(
+      workflowReadout: _WorkflowRuntimeConnector(
         threadId: threadId,
-        inline: status.workflowRun,
         expanded: workflowExpanded,
         onToggle: onToggleWorkflow,
       ),
@@ -269,138 +264,33 @@ class ThreadThroughputReadout extends ConsumerWidget {
   }
 }
 
-class _DeferredWorkflowReadout extends ConsumerStatefulWidget {
-  const _DeferredWorkflowReadout({
+class _WorkflowRuntimeConnector extends ConsumerWidget {
+  const _WorkflowRuntimeConnector({
     required this.threadId,
-    required this.inline,
     this.expanded = false,
     this.onToggle,
   });
 
   final String threadId;
-  final WorkflowRunView? inline;
-  final bool expanded;
-  final VoidCallback? onToggle;
-
-  @override
-  ConsumerState<_DeferredWorkflowReadout> createState() =>
-      _DeferredWorkflowReadoutState();
-}
-
-class _DeferredWorkflowReadoutState
-    extends ConsumerState<_DeferredWorkflowReadout> {
-  CurrentStateField? _field;
-  CurrentQueryScope? _scope;
-  WorkflowRunView? _run;
-  bool _loading = false;
-  int _epoch = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(Future<void>.microtask(_sync));
-  }
-
-  @override
-  void didUpdateWidget(covariant _DeferredWorkflowReadout oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    unawaited(Future<void>.microtask(_sync));
-  }
-
-  void _retire() {
-    _epoch++;
-    final scope = _scope;
-    _scope = null;
-    scope?.retire();
-    if (scope != null) unawaited(scope.close());
-  }
-
-  Future<void> _sync() async {
-    if (!mounted) return;
-    final runtime = ref
-        .read(threadSessionStoreProvider(widget.threadId))
-        .runtime;
-    final field = runtime?.deferredField('workflow');
-    if (field == null) {
-      _retire();
-      _field = null;
-      _run = null;
-      _loading = false;
-      if (mounted) setState(() {});
-      return;
-    }
-    if (_field == field && (_loading || _run != null)) return;
-    _retire();
-    _field = field;
-    _run = null;
-    final lease = ref.read(timelineSessionOwnerProvider).lease(widget.threadId);
-    if (lease == null || lease.isRetired) return;
-    final epoch = ++_epoch;
-    final scope = lease.openCurrentScope(generation: lease.generation);
-    _scope = scope;
-    _loading = true;
-    if (mounted) setState(() {});
-    try {
-      final run = decodeCurrentWorkflowState(await scope.readStateField(field))
-          .currentRun;
-      if (!mounted || epoch != _epoch || field != _field || lease.isRetired) {
-        return;
-      }
-      _run = run;
-    } finally {
-      if (epoch == _epoch) {
-        _loading = false;
-        if (identical(_scope, scope)) _scope = null;
-        scope.retire();
-        unawaited(scope.close());
-      }
-      if (mounted) setState(() {});
-    }
-  }
-
-  @override
-  void dispose() {
-    _retire();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final runtime = ref.watch(
-      threadSessionStoreProvider(widget.threadId)
-          .select((state) => state.runtime),
-    );
-    final field = runtime?.deferredField('workflow');
-    if (field != null && field != _field && !_loading) {
-      unawaited(Future<void>.microtask(_sync));
-    }
-    final run = field == null
-        ? widget.inline
-        : field == _field
-        ? _run
-        : null;
-    return run == null
-        ? const SizedBox.shrink()
-        : _WorkflowRuntimeConnector(
-            run: run,
-            expanded: widget.expanded,
-            onToggle: widget.onToggle,
-          );
-  }
-}
-
-class _WorkflowRuntimeConnector extends ConsumerWidget {
-  const _WorkflowRuntimeConnector({
-    required this.run,
-    this.expanded = false,
-    this.onToggle,
-  });
-  final WorkflowRunView run;
   final bool expanded;
   final VoidCallback? onToggle;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final workflow = ref.watch(threadWorkflowRunProvider(threadId));
+    if (workflow.isLoading) return const SizedBox.shrink();
+    if (workflow.hasError) {
+      return StatusBarButton(
+        key: const ValueKey('workflow-status-pill'),
+        icon: Icons.error_outline,
+        label: context.l10n.rightSidebarTabWorkflow,
+        tooltip: context.l10n.workflowGraphPanelLoadFailed,
+        selected: expanded,
+        onPressed: onToggle,
+      );
+    }
+    final run = workflow.asData?.value?.run;
+    if (run == null) return const SizedBox.shrink();
     final catalog = ref.watch(modeCatalogStoreProvider).value;
     final deleted = catalog == null
         ? run.modeDeleted
@@ -413,7 +303,7 @@ class _WorkflowRuntimeConnector extends ConsumerWidget {
         : run.modeDisplayName;
     return KeyedSubtree(
       key: ValueKey('workflow-runtime-${run.runId}'),
-      child: WorkflowStatusReadout(
+      child: WorkflowStatusPill(
         key: ValueKey('workflow-state-${run.currentStateId}'),
         stateTitle: stateTitle,
         modeName: modeName,
@@ -424,33 +314,4 @@ class _WorkflowRuntimeConnector extends ConsumerWidget {
       ),
     );
   }
-}
-
-class WorkflowStatusReadout extends StatelessWidget {
-  const WorkflowStatusReadout({
-    required this.stateTitle,
-    required this.modeName,
-    this.deleted = false,
-    this.terminal = false,
-    this.expanded = false,
-    this.onTap,
-    super.key,
-  });
-
-  final String stateTitle;
-  final String modeName;
-  final bool deleted;
-  final bool terminal;
-  final bool expanded;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) => WorkflowStatusPill(
-    stateTitle: stateTitle,
-    modeName: modeName,
-    deleted: deleted,
-    terminal: terminal,
-    expanded: expanded,
-    onTap: onTap,
-  );
 }

@@ -1,4 +1,5 @@
 import 'package:anywork_client/models.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 
 /// 主会话输入区唯一主按钮的语义状态。
 ///
@@ -114,7 +115,7 @@ final class ComposerFailureBlocker extends ComposerBlocker {
       recoveryIssue?.workspaceId == other.recoveryIssue?.workspaceId &&
       recoveryIssue?.threadId == other.recoveryIssue?.threadId &&
       recoveryIssue?.detail == other.recoveryIssue?.detail &&
-      _sameRecoveryActions(
+      listEquals(
         recoveryIssue?.availableActions,
         other.recoveryIssue?.availableActions,
       );
@@ -131,20 +132,6 @@ final class ComposerFailureBlocker extends ComposerBlocker {
     recoveryIssue?.detail,
     Object.hashAll(recoveryIssue?.availableActions ?? const []),
   );
-}
-
-bool _sameRecoveryActions(
-  List<RecoveryIssueAction>? left,
-  List<RecoveryIssueAction>? right,
-) {
-  if (identical(left, right)) return true;
-  if (left == null || right == null || left.length != right.length) {
-    return false;
-  }
-  for (var index = 0; index < left.length; index += 1) {
-    if (left[index] != right[index]) return false;
-  }
-  return true;
 }
 
 /// 主按钮的完整语义状态。

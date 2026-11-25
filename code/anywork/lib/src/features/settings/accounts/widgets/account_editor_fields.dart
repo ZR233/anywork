@@ -3,24 +3,21 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
-import 'account_gemini_connection.dart';
 import 'account_sections.dart';
 
 /// Shared editor page geometry. Drafts, navigation and saving stay caller-owned.
-/// Eager form layout also makes off-screen manual rows available to ensureVisible.
+/// Eager layout lets Flutter focus traversal reveal off-screen manual inputs.
 class AccountEditorScaffold extends StatelessWidget {
   const AccountEditorScaffold({
     required this.title,
     required this.scrollKey,
     required this.children,
-    this.dirty = false,
     this.scrollController,
     super.key,
   });
   final String title;
   final Key scrollKey;
   final List<Widget> children;
-  final bool dirty;
   final ScrollController? scrollController;
 
   @override
@@ -40,14 +37,6 @@ class AccountEditorScaffold extends StatelessWidget {
                 style: Theme.of(context).textTheme.headlineMedium
                     ?.copyWith(fontWeight: FontWeight.w700),
               ),
-              if (dirty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    AppLocalizations.of(context).accountsDirty,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
               const SizedBox(height: 24),
               ...children,
             ],
@@ -107,7 +96,8 @@ class AccountNativeConnectionFields extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    final isGemini = isGeminiAccountPresentation(value);
+    final gemini = value.geminiConnection;
+    final isGemini = gemini != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -172,7 +162,9 @@ class AccountNativeConnectionFields extends StatelessWidget {
                       label: value.hasStoredCredential
                           ? l10n.settingsApiKeyKeepCurrent
                           : isGemini
-                          ? geminiCredentialLabel(l10n, value)
+                          ? gemini.mode == AccountGeminiGuidanceMode.vertexAi
+                                ? l10n.accountsGeminiCredentialLabelVertex
+                                : l10n.accountsGeminiCredentialLabelAiStudio
                           : value.credentialRequired
                           ? l10n.settingsApiKey
                           : l10n.settingsApiKeyOptional,
@@ -217,15 +209,16 @@ class AccountNativeConnectionFields extends StatelessWidget {
   }
 }
 
-class AccountManualModelEditor extends StatelessWidget {
+enum AccountManualModelFocus { id, name }
+
+class AccountManualModelEditor extends StatefulWidget {
   const AccountManualModelEditor({
     required this.value,
     required this.onFieldChanged,
     required this.onConnectionChanged,
     required this.onWireApiChanged,
     required this.onRemove,
-    this.idFocusNode,
-    this.nameFocusNode,
+    this.focusField,
     super.key,
   });
   final ManualAccountModelPresentation value;
@@ -233,11 +226,71 @@ class AccountManualModelEditor extends StatelessWidget {
   final ValueChanged<AccountConnection> onConnectionChanged;
   final ValueChanged<AccountWireApi> onWireApiChanged;
   final VoidCallback onRemove;
-  final FocusNode? idFocusNode;
-  final FocusNode? nameFocusNode;
+  final AccountManualModelFocus? focusField;
+
+  @override
+  State<AccountManualModelEditor> createState() =>
+      _AccountManualModelEditorState();
+}
+
+class _AccountManualModelEditorState extends State<AccountManualModelEditor> {
+  final FocusNode _idFocus = FocusNode();
+  final FocusNode _nameFocus = FocusNode();
+  Object? _focusRequest;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleFocus();
+  }
+
+  @override
+  void didUpdateWidget(covariant AccountManualModelEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusField != widget.focusField ||
+        oldWidget.value.editorKey != widget.value.editorKey) {
+      _scheduleFocus();
+    }
+  }
+
+  void _scheduleFocus() {
+    final request = _focusRequest = Object();
+    final node = switch (widget.focusField) {
+      AccountManualModelFocus.id => _idFocus,
+      AccountManualModelFocus.name => _nameFocus,
+      null => null,
+    };
+    if (node == null) return;
+    // The field must be attached and laid out. Replaced targets and disposed
+    // rows cannot use an earlier request to steal focus from the current input.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !identical(_focusRequest, request) ||
+          node.context == null) {
+        return;
+      }
+      FocusTraversalPolicy.defaultTraversalRequestFocusCallback(
+        node,
+        alignment: .15,
+        duration: Duration.zero,
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _idFocus.dispose();
+    _nameFocus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final value = widget.value;
+    final onFieldChanged = widget.onFieldChanged;
+    final onConnectionChanged = widget.onConnectionChanged;
+    final onWireApiChanged = widget.onWireApiChanged;
+    final onRemove = widget.onRemove;
     final l10n = AppLocalizations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -276,8 +329,8 @@ class AccountManualModelEditor extends StatelessWidget {
                       ),
                       value: field.$2,
                       focusNode: switch (field.$1) {
-                        ManualModelField.id => idFocusNode,
-                        ManualModelField.name => nameFocusNode,
+                        ManualModelField.id => _idFocus,
+                        ManualModelField.name => _nameFocus,
                         _ => null,
                       },
                       label: field.$3,
@@ -334,6 +387,59 @@ class AccountManualModelEditor extends StatelessWidget {
           ),
         if (value.error != null) AccountInlineError(message: value.error!),
       ],
+    );
+  }
+}
+
+class AccountEditorFooter extends StatelessWidget {
+  const AccountEditorFooter({
+    required this.saving,
+    required this.canSave,
+    required this.onSave,
+    required this.onCancel,
+    this.saveLabel,
+    super.key,
+  });
+  final bool saving;
+  final bool canSave;
+  final VoidCallback onSave;
+  final VoidCallback onCancel;
+  final String? saveLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return Material(
+      type: MaterialType.transparency,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Wrap(
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              if (saving)
+                const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              OutlinedButton(
+                key: const ValueKey<String>('account-cancel'),
+                onPressed: onCancel,
+                child: Text(l10n.commonCancel),
+              ),
+              FilledButton(
+                key: const ValueKey<String>('account-save'),
+                onPressed: canSave && !saving ? onSave : null,
+                child: Text(saveLabel ?? l10n.commonSave),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

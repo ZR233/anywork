@@ -1,3 +1,4 @@
+import 'package:anywork_client/studio_client.dart' show WorkflowState;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../app/theme/studio_tokens.dart';
@@ -80,4 +81,35 @@ class _ModeEditorTextFieldState extends State<ModeEditorTextField> {
       ),
     );
   }
+}
+
+class ModeWorkflowStateField extends StatelessWidget {
+  const ModeWorkflowStateField({
+    super.key,
+    required this.label,
+    required this.states,
+    required this.selectedId,
+    required this.onChanged,
+    this.validator,
+  });
+
+  final String label;
+  final Iterable<WorkflowState> states;
+  final String? selectedId;
+  final ValueChanged<String?>? onChanged;
+  final FormFieldValidator<String>? validator;
+
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<String>(
+    initialValue: states.any((state) => state.id == selectedId)
+        ? selectedId
+        : null,
+    decoration: InputDecoration(labelText: label),
+    items: [
+      for (final state in states)
+        DropdownMenuItem(value: state.id, child: Text(state.title)),
+    ],
+    onChanged: onChanged,
+    validator: validator,
+  );
 }

@@ -1,5 +1,5 @@
 import 'package:anywork_client/studio_client.dart'
-    show ModeEditorState, WorkflowState, WorkflowTransition;
+    show ModeDocument, ModeEditorState, WorkflowState, WorkflowTransition;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -36,10 +36,10 @@ class ModeDetailPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final editor = ref.watch(modeEditorStateProvider);
-    final selection = ref.watch(
+    final liveSelection = ref.watch(
       modeWorkspaceControllerProvider.select((state) => state.selection),
     );
-    final isStage = _resolvedSelection(ref, selection) is ModeStageSelection;
+    final selection = liveSelection ?? _routeSelection();
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
@@ -51,46 +51,32 @@ class ModeDetailPage extends ConsumerWidget {
         appBar: AppBar(
           leading: const BackButton(key: ModeEditorKeys.detailBack),
           title: Text(
-            isStage
+            selection is ModeStageSelection
                 ? context.l10n.modeEditorDetailStage
                 : context.l10n.modeEditorDetailTransition,
           ),
         ),
-        body: _body(context, ref, editor: editor, liveSelection: selection),
+        body: _body(context, ref, editor: editor, selection: selection),
       ),
     );
   }
 
   /// 状态恢复（selection 已丢失）时按路由 query 回退推断详情类型。
-  ModeDetailSelection? _resolvedSelection(
-    WidgetRef ref,
-    ModeDetailSelection? selection,
-  ) {
-    if (selection != null) return selection;
-    if (stage != null && stage!.isNotEmpty) {
-      return ModeDetailSelection.stage(stage!);
+  ModeDetailSelection? _routeSelection() {
+    final stateId = stage;
+    if (stateId != null && stateId.isNotEmpty) {
+      return ModeDetailSelection.stage(stateId);
     }
     final id = edge;
-    if (id != null && id.startsWith('edge:')) {
-      final body = id.substring(5);
-      final arrow = body.indexOf('->');
-      if (arrow > 0 && arrow + 2 < body.length) {
-        return ModeDetailSelection.transition(
-          sourceStateId: body.substring(0, arrow),
-          targetStateId: body.substring(arrow + 2),
-        );
-      }
-    }
-    return null;
+    return id == null ? null : parseModeTransitionSelection(id);
   }
 
   Widget _body(
     BuildContext context,
     WidgetRef ref, {
     required ModeEditorState editor,
-    required ModeDetailSelection? liveSelection,
+    required ModeDetailSelection? selection,
   }) {
-    final selection = _resolvedSelection(ref, liveSelection);
     final document = editor.document;
     final workflow = document?.definition.workflow;
     if (document == null || workflow == null || selection == null) {
@@ -106,7 +92,7 @@ class ModeDetailPage extends ConsumerWidget {
     }
     final readOnly = editor.readOnly || editor.busy;
     final notifier = ref.read(modeWorkspaceControllerProvider.notifier);
-    void replace(next) =>
+    void replace(ModeDocument next) =>
         ref.read(anyworkClientProvider).modeEditor.replace(next);
 
     switch (selection) {
@@ -127,7 +113,8 @@ class ModeDetailPage extends ConsumerWidget {
           onRenameState: (state) =>
               renameWorkflowStageDialog(context, ref, state),
           onDeleteState: (state) async {
-            if (await confirmRemoveWorkflowStage(context, ref, state.id)) {
+            if (await confirmRemoveWorkflowStage(context, ref, state.id) &&
+                context.mounted) {
               removeWorkflowStage(ref, state.id);
             }
           },

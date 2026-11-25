@@ -7,11 +7,6 @@ class _StudioFatalError extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Driver-only 只读投影：把启动致命失败的 typed code 与
-    // correlation 暴露给验收，避免从 UI 文案猜测。
-    if (error case final StudioFailure failure) {
-      StudioDriverState.publishStartupFailure(failure);
-    }
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
@@ -346,11 +341,7 @@ class _PersistenceStatusPanelState
         ? connection.errorMessage
         : null;
     final children = <Widget>[];
-    if (queue == null) {
-      children.addAll(
-        _resumeRows(context, selectedStorage, primaryThreadId: primaryThreadId),
-      );
-    } else {
+    if (queue != null) {
       final lines = <String>[
         context.l10n.persistenceQueuePending(
           queue.pendingOperations,
@@ -404,10 +395,10 @@ class _PersistenceStatusPanelState
           _diagnosticText(context, '+${queue.threads.length - _maxThreadRows}'),
         );
       }
-      children.addAll(
-        _resumeRows(context, selectedStorage, primaryThreadId: primaryThreadId),
-      );
     }
+    children.addAll(
+      _resumeRows(context, selectedStorage, primaryThreadId: primaryThreadId),
+    );
     if (transportError != null) {
       children.add(
         Row(
@@ -512,8 +503,6 @@ class _PersistenceStatusPanelState
       threadId: selected.threadId,
       storage: selected.storage,
       stage: stage,
-      isSelected: true,
-      label: selected.label,
     );
   }
 
@@ -541,8 +530,7 @@ class _PersistenceStatusPanelState
   /// 显式继续。于是“可以继续会话”只会出现在确实不阻塞的 degraded/recovering 上：会话级
   /// 暂停、存储压力暂停准入与 blocked 文案都不提继续。
   ///
-  /// 当阻塞来自**其他会话**（当前选中会话本身没有存储阻塞）时，文案必须点名来源会话，
-  /// 说清是“另一个会话”，而不是让用户以为当前会话保存失败或已经可以继续。
+  /// 其他会话的故障显示在队列诊断中，摘要只使用当前会话的存储状态。
   String _summaryMessage(
     BuildContext context, {
     required _StorageBlock? block,
@@ -552,24 +540,13 @@ class _PersistenceStatusPanelState
   }) {
     final l10n = context.l10n;
     if (block != null) {
-      // 仅当阻塞不是当前选中会话时才带上来源名字。
-      final other = block.isSelected ? null : block.label;
       return switch (block.stage) {
         // 已保存、水位核验通过，只等一次显式继续。
-        _StorageStage.ready =>
-          other == null
-              ? l10n.conversationActivityResumeReady
-              : l10n.persistenceResumeReadyOtherSession(other),
+        _StorageStage.ready => l10n.conversationActivityResumeReady,
         // 执行阶段确实到 Paused：执行已暂停（尚未恢复，不能继续）。
-        _StorageStage.executionPaused =>
-          other == null
-              ? l10n.persistenceExecutionPaused
-              : l10n.persistenceExecutionPausedOtherSession(other),
+        _StorageStage.executionPaused => l10n.persistenceExecutionPaused,
         // 故障初现/在途收束：新工作已暂停，但还不能宣称“执行已暂停”。
-        _StorageStage.windingDown =>
-          other == null
-              ? l10n.persistenceNewWorkPaused
-              : l10n.persistenceNewWorkPausedOtherSession(other),
+        _StorageStage.windingDown => l10n.persistenceNewWorkPaused,
         // 不存在 none 的 block；保持穷尽 switch。
         _StorageStage.none => l10n.persistenceQueueTitle,
       };
@@ -669,8 +646,7 @@ class _PersistenceStatusPanelState
   /// 诊断明细的折叠身份：会话级阻塞按「会话 + 故障代数 + 阶段」，其余按进程级队列。
   String _diagnosticsIdentity(_StorageBlock? block) {
     if (block == null) return 'queue';
-    final scope = block.isSelected ? 'selected' : 'other';
-    return 'storage:$scope:${block.threadId}:${block.storage.faultGeneration}:'
+    return 'storage:${block.threadId}:${block.storage.faultGeneration}:'
         '${block.stage.name}';
   }
 
@@ -773,8 +749,6 @@ class _StorageBlock {
     required this.threadId,
     required this.storage,
     required this.stage,
-    required this.isSelected,
-    required this.label,
   });
 
   final String threadId;
@@ -782,12 +756,6 @@ class _StorageBlock {
 
   /// 该会话在界面上的阶段（[ready]/[windingDown]/[executionPaused]）。
   final _StorageStage stage;
-
-  /// 是否就是当前选中会话；否则摘要必须点名来源，避免暗示当前会话出了问题。
-  final bool isSelected;
-
-  /// 该会话可辨认的显示名（标题优先，缺失退回 threadId）。
-  final String label;
 
   /// `resumeRequired && canResume`：保存已恢复、水位核验通过，只等一次显式继续。
   bool get ready => stage == _StorageStage.ready;

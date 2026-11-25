@@ -229,30 +229,6 @@
   "persistenceExecutionPaused": "保存失败，执行已暂停。",
   "persistenceSavingBackpressure": "存储压力较高，正在等待保存。",
   "persistenceNewWorkPaused": "保存失败，新工作已暂停，进行中的工作正在收束。",
-  "persistenceResumeReadyOtherSession": "另一个会话「{session}」已保存，等待继续执行。",
-  "@persistenceResumeReadyOtherSession": {
-    "placeholders": {
-      "session": {
-        "type": "String"
-      }
-    }
-  },
-  "persistenceExecutionPausedOtherSession": "另一个会话「{session}」保存失败，执行已暂停。",
-  "@persistenceExecutionPausedOtherSession": {
-    "placeholders": {
-      "session": {
-        "type": "String"
-      }
-    }
-  },
-  "persistenceNewWorkPausedOtherSession": "另一个会话「{session}」保存失败，新工作已暂停，进行中的工作正在收束。",
-  "@persistenceNewWorkPausedOtherSession": {
-    "placeholders": {
-      "session": {
-        "type": "String"
-      }
-    }
-  },
   "persistenceRetry": "重试保存",
   "threadUnopenedTitle": "会话尚未打开",
   "threadUnopenedBody": "当前仅选中该会话。打开后会读取当前状态与历史；在你发送消息之前不会恢复任何执行。",
@@ -2782,7 +2758,6 @@
       }
     }
   },
-  "acpUpdateSessionInfo": "会话信息已更新",
   "acpUpdateGeneric": "ACP 会话状态已更新",
   "acpCommandsSummary": "可用命令 ({count})",
   "@acpCommandsSummary": {
@@ -3338,7 +3313,6 @@
   "accountsGeminiBadgeMultimodal": "多模态",
   "accountsGeminiBadgeDiscovery": "在线目录",
   "accountsGeminiBadgeBundledCatalog": "内置目录",
-  "accountsGeminiBadgeImplicitCache": "隐式缓存",
   "accountsGeminiEndpointPresetsLabel": "端点",
   "accountsGeminiPresetGlobal": "global（推荐）",
   "accountsGeminiPresetAiStudioOfficial": "Gemini API (v1beta)",

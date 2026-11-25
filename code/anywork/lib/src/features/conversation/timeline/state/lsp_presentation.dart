@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import '../../../../l10n/app_localizations.dart';
 import '../../../../shared/typed_json.dart';
-import 'tool_presentation.dart';
 
 /// 操作枚举的本地化短名称。
 String timelineLspOperationLabel(
@@ -342,12 +341,6 @@ final class TimelineLspStatusPresentation extends TimelineLspPresentation {
   final bool hasOutput;
   final int? previewOmittedBytes;
   final String? fallbackText;
-}
-
-/// 从 `lsp_query` 参数提取操作枚举，供折叠行标题与展开头部共用。
-TimelineLspOperation timelineLspQueryOperation(TimelineToolPresentation item) {
-  final args = decodeJsonObject(item.arguments);
-  return TimelineLspOperation.fromWire(jsonStringValue(args['operation']));
 }
 
 /// 解析 `builtin.lsp_query@1` 工具卡片的请求上下文与有界输出文本。

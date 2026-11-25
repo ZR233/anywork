@@ -83,8 +83,8 @@ HistoryBusinessRowEntry _historyBusinessRowEntryFromFrb(
   frb_presentation.BridgeHistoryBusinessRowEntry value,
 ) => HistoryBusinessRowEntry(
   rowKey: value.rowKey,
-  anchorSeq: _exactTimelineInt(value.anchorSeq, 'history anchor'),
-  headSeq: _exactTimelineInt(value.headSeq, 'history head'),
+  anchorSeq: exactTimelineInt(value.anchorSeq, 'history anchor'),
+  headSeq: exactTimelineInt(value.headSeq, 'history head'),
   head: _historyBusinessRowHeadFromFrb(value.head),
 );
 
@@ -156,22 +156,22 @@ HistoryCostHead _historyCostHeadFromFrb(
 HistoryAccountingHead _historyAccountingHeadFromFrb(
   frb_presentation.BridgeHistoryAccountingHead value,
 ) => HistoryAccountingHead(
-  promptTokens: _exactTimelineInt(value.promptTokens, 'prompt tokens'),
-  completionTokens: _exactTimelineInt(
+  promptTokens: exactTimelineInt(value.promptTokens, 'prompt tokens'),
+  completionTokens: exactTimelineInt(
     value.completionTokens,
     'completion tokens',
   ),
-  cachedPromptTokens: _exactTimelineInt(
+  cachedPromptTokens: exactTimelineInt(
     value.cachedPromptTokens,
     'cached prompt tokens',
   ),
-  cacheWriteTokens: _exactTimelineInt(
+  cacheWriteTokens: exactTimelineInt(
     value.cacheWriteTokens,
     'cache write tokens',
   ),
-  reasoningTokens: _exactTimelineInt(value.reasoningTokens, 'reasoning tokens'),
-  inferenceCount: _exactTimelineInt(value.inferenceCount, 'inference count'),
-  totalTokens: _exactTimelineInt(value.totalTokens, 'total tokens'),
+  reasoningTokens: exactTimelineInt(value.reasoningTokens, 'reasoning tokens'),
+  inferenceCount: exactTimelineInt(value.inferenceCount, 'inference count'),
+  totalTokens: exactTimelineInt(value.totalTokens, 'total tokens'),
   cacheUsage: _cacheUsageFromFrb(value.cacheUsage),
   hasIncompleteUsage: value.hasIncompleteUsage,
   hasUnpricedUsage: value.hasUnpricedUsage,
@@ -182,7 +182,7 @@ HistoryAccountingHead _historyAccountingHeadFromFrb(
 HistoryEventRecord _historyEventRecordFromFrb(
   frb_presentation.BridgeHistoryEventRecord value,
 ) => HistoryEventRecord(
-  seq: _exactTimelineInt(value.seq, 'history event sequence'),
+  seq: exactTimelineInt(value.seq, 'history event sequence'),
   eventId: value.eventId,
   kind: value.kind,
   timelineRole: _historyTimelineRoleFromFrb(value.timelineRole),
@@ -237,10 +237,10 @@ HistoryWorkRangePage _historyWorkRangePageFromFrb(
   cut: _historyCutFromFrb(value.cut),
   afterSeq: value.afterSeq == null
       ? null
-      : _exactTimelineInt(value.afterSeq!, 'history work range afterSeq'),
+      : exactTimelineInt(value.afterSeq!, 'history work range afterSeq'),
   beforeSeq: value.beforeSeq == null
       ? null
-      : _exactTimelineInt(value.beforeSeq!, 'history work range beforeSeq'),
+      : exactTimelineInt(value.beforeSeq!, 'history work range beforeSeq'),
   events: value.events.map(_historyEventRecordFromFrb).toList(),
   next: value.next,
 );
@@ -260,8 +260,8 @@ HistoryEventBodyRef _historyBodyRefFromFrb(
   ownerEventId: value.ownerEventId,
   bodyKey: value.bodyKey,
   bodyId: value.bodyId,
-  byteStart: _exactTimelineInt(value.byteStart, 'history body start'),
-  byteLength: _exactTimelineInt(value.byteLength, 'history body length'),
+  byteStart: exactTimelineInt(value.byteStart, 'history body start'),
+  byteLength: exactTimelineInt(value.byteLength, 'history body length'),
 );
 
 frb_presentation.BridgeHistoryEventBodyRef _historyBodyRefToFrb(
@@ -278,9 +278,9 @@ frb_presentation.BridgeHistoryEventBodyRef _historyBodyRefToFrb(
 HistoryBodyWindow _historyBodyWindowFromFrb(
   frb_presentation.BridgeHistoryBodyWindow value,
 ) => HistoryBodyWindow(
-  offset: _exactTimelineInt(value.offset, 'history body offset'),
+  offset: exactTimelineInt(value.offset, 'history body offset'),
   bytes: value.bytes,
-  totalLength: _exactTimelineInt(value.totalLength, 'history body length'),
+  totalLength: exactTimelineInt(value.totalLength, 'history body length'),
   mediaType: value.mediaType,
 );
 
@@ -291,7 +291,7 @@ HistoryBodyPage _historyBodyPageFromFrb(
   entries: [
     for (final entry in value.entries)
       HistoryBodyEntry(
-        ordinal: _exactTimelineInt(entry.ordinal, 'history body ordinal'),
+        ordinal: exactTimelineInt(entry.ordinal, 'history body ordinal'),
         bodyKey: entry.bodyKey,
         role: switch (entry.role) {
           frb_presentation.BridgeHistoryBodyRole_CanonicalPayload() =>
@@ -330,7 +330,7 @@ CurrentRevision _currentRevisionFromFrb(
   frb_presentation.BridgeCurrentRevision value,
 ) => CurrentRevision(
   ownerId: value.ownerId,
-  revision: _exactTimelineInt(value.revision, 'current revision'),
+  revision: exactTimelineInt(value.revision, 'current revision'),
 );
 
 OpenCurrent _openCurrentFromFrb(
@@ -369,7 +369,7 @@ CurrentStateField _currentStateFieldFromFrb(
     BodyCurrentStateField(
       field: field,
       reference: _currentContentRefFromFrb(reference),
-      byteLength: _exactTimelineInt(byteLength, 'State field byte length'),
+      byteLength: exactTimelineInt(byteLength, 'State field byte length'),
     ),
   frb_presentation.BridgeCurrentStateField_Collection(
     :final field,
@@ -379,7 +379,7 @@ CurrentStateField _currentStateFieldFromFrb(
     CollectionCurrentStateField(
       field: field,
       reference: _currentCollectionRefFromFrb(reference),
-      count: _exactTimelineInt(count, 'State collection count'),
+      count: exactTimelineInt(count, 'State collection count'),
     ),
 };
 
@@ -398,7 +398,7 @@ CurrentCollectionRef _currentCollectionRefFromFrb(
 ) => CurrentCollectionRef(
   ownerId: value.ownerId,
   collection: value.collection,
-  revision: _exactTimelineInt(value.revision, 'current collection revision'),
+  revision: exactTimelineInt(value.revision, 'current collection revision'),
 );
 
 frb_presentation.BridgeCurrentCollectionRef _currentCollectionRefToFrb(
@@ -420,14 +420,14 @@ CurrentPayloadData _currentPayloadFromFrb(
   ) =>
     DeferredCurrentPayload(
       reference: _currentContentRefFromFrb(reference),
-      byteLength: _exactTimelineInt(byteLength, 'current payload length'),
+      byteLength: exactTimelineInt(byteLength, 'current payload length'),
     ),
 };
 
 CurrentCollectionPage _currentCollectionPageFromFrb(
   frb_presentation.BridgeCurrentCollectionPage value,
 ) => CurrentCollectionPage(
-  revision: _exactTimelineInt(value.revision, 'current revision'),
+  revision: exactTimelineInt(value.revision, 'current revision'),
   entries: [
     for (final entry in value.entries)
       CurrentCollectionEntry(
@@ -453,7 +453,7 @@ CurrentProjection _currentProjectionFromFrb(
           thinkingSummary: value.active!.thinkingSummary,
           thinkingSeconds: value.active!.thinkingSeconds == null
               ? null
-              : _exactTimelineInt(
+              : exactTimelineInt(
                   value.active!.thinkingSeconds!,
                   'current thinking seconds',
                 ),
@@ -480,7 +480,7 @@ CurrentProjection _currentProjectionFromFrb(
   plan: value.plan == null
       ? null
       : CurrentPlanHead(
-          revision: _exactTimelineInt(
+          revision: exactTimelineInt(
             value.plan!.revision,
             'current plan revision',
           ),
@@ -645,10 +645,10 @@ int? _timelineTimestampFromFrb(Object? value) {
 
 CacheUsageView _cacheUsageFromFrb(frb.BridgeCacheUsageSummary value) =>
     CacheUsageView(
-      sampleCount: _exactTimelineInt(value.sampleCount, 'usage sample count'),
+      sampleCount: exactTimelineInt(value.sampleCount, 'usage sample count'),
       legacySampleCountUnknown: value.legacySampleCountUnknown,
-      inputTokens: _exactTimelineInt(value.inputTokens, 'input tokens'),
-      cacheReadTokens: _exactTimelineInt(
+      inputTokens: exactTimelineInt(value.inputTokens, 'input tokens'),
+      cacheReadTokens: exactTimelineInt(
         value.cacheReadTokens,
         'cache read tokens',
       ),

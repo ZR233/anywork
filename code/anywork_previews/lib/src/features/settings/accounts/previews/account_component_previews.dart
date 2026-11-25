@@ -1406,7 +1406,7 @@ class _ModelDetailsPreviewScenarioState
 }
 
 @Preview(
-  name: 'Editor scaffold / dirty / production page geometry',
+  name: 'Editor scaffold / production page geometry',
   group: components,
   size: Size(960, 900),
 )
@@ -1414,7 +1414,6 @@ Widget accountEditorScaffoldPreview() => accountPreviewHost(
   (record) => AccountEditorScaffold(
     title: '合成账号编辑',
     scrollKey: const ValueKey('preview-account-editor-scroll'),
-    dirty: true,
     children: [
       AccountSection(
         title: '连接与计费',
@@ -1437,7 +1436,7 @@ Widget accountEditorScaffoldPreview() => accountPreviewHost(
       ),
     ],
   ),
-  scenarioIdentity: 'editor-scaffold-dirty',
+  scenarioIdentity: 'editor-scaffold',
 );
 
 @Preview(

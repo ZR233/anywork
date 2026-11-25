@@ -579,7 +579,7 @@ void main() {
         timelineActivityRowPreview,
         timelineToolDetailsPreview,
         timelineWebSearchPreview,
-        timelineWaitPanelPreview,
+        timelineWaitToolPreview,
         timelineWaitDetailsPreview,
         timelineChildrenPreview,
         timelineErrorShowcasePreview,

@@ -16,7 +16,7 @@ import 'package:anywork/src/features/conversation/workspace/conversation_workspa
 import 'package:anywork/src/features/status/context_usage_readout.dart';
 import 'package:anywork/src/features/status/status_bar_item.dart';
 import 'package:anywork/src/features/status/thread_status_bar.dart';
-import 'package:anywork/src/features/status/workflow_graph_panel.dart';
+import 'package:anywork/src/features/status/views/workflow_graph_panel.dart';
 import 'package:anywork/src/features/todo/todo_panel.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/composer_action_button.dart';
@@ -371,7 +371,7 @@ Widget _nativeStatusBar({
     icon: Icons.tune_outlined,
     label: '技能 6 · MCP 2',
   ),
-  workflowReadout: WorkflowStatusReadout(
+  workflowReadout: WorkflowStatusPill(
     stateTitle: '代码重构',
     modeName: '自动工作流',
     expanded: workflowExpanded,
@@ -453,7 +453,7 @@ Widget _buildNativeScenario({
         kind: ConversationSidebarPanelKind.todo,
         icon: Icons.checklist_outlined,
         label: '待办',
-        badge: const StudioPill(label: '2/4', tone: StudioTone.brand),
+        badge: const TodoCountBadge(todo: _nativeTodo),
         defaultWidthBuilder: (w) => (w * 0.34).clamp(340.0, 420.0),
         builder: (_) => const TodoPanel(todo: _nativeTodo),
       ),

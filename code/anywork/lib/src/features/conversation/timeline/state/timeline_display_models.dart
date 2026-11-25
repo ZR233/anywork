@@ -4,8 +4,6 @@ import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
 
-const presentationVersion = 6;
-
 final class DisplayBlockRef {
   const DisplayBlockRef({
     required this.blockId,

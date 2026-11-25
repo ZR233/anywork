@@ -1,57 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../widgets/account_template_selector.dart';
 import '../state/account_presentations.dart';
-
-class AccountTemplatePickerView extends StatelessWidget {
-  const AccountTemplatePickerView({
-    required this.templates,
-    required this.onSelected,
-    required this.onCancel,
-    super.key,
-  });
-  final List<AccountTemplatePresentation> templates;
-  final ValueChanged<AccountTemplateKey> onSelected;
-  final VoidCallback onCancel;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(24),
-            children: [
-              Text(
-                l10n.settingsAddAccount,
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-              const SizedBox(height: 24),
-              AccountTemplateSelector(
-                templates: templates,
-                selected: null,
-                onSelected: onSelected,
-              ),
-            ],
-          ),
-        ),
-        Align(
-          alignment: AlignmentDirectional.centerEnd,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: OutlinedButton(
-              onPressed: onCancel,
-              child: Text(l10n.commonCancel),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
 
 /// Caller shows the dialog and interprets the result; this view never saves.
 class AccountUnsavedChangesDialog extends StatelessWidget {

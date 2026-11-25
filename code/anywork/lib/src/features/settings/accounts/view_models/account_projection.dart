@@ -60,6 +60,41 @@ BillingKind domainBilling(AccountBilling billing) => switch (billing) {
   AccountBilling.unknown => BillingKind.unknown,
 };
 
+AccountTemplatePresentation projectAccountTemplate(
+  AccountTemplateView template,
+) => AccountTemplatePresentation(
+  key: AccountTemplateKey(kind: AccountKind.native, id: template.id),
+  name: template.displayName,
+  content: AccountTemplateContent.native(
+    defaultBilling: displayBilling(template.defaultBillingKind),
+    protocolLabel: template.protocol,
+    defaultEndpoint: template.baseUrl,
+    supportsModelDiscovery: template.supportsModelDiscovery,
+    supportsUsageQuery: template.supportsUsageQuery,
+  ),
+  iconKey: template.iconKey,
+  description: template.description,
+);
+
+AcpPresentationPhase projectAcpPhase(
+  AcpConnectionStateView? connection,
+  AcpAuthStateView? auth,
+) => switch ((connection, auth)) {
+  (AcpConnectionRetryingState(), _) => AcpPresentationPhase.reconnecting,
+  (AcpConnectionStartingState(), _) => AcpPresentationPhase.checking,
+  (AcpConnectionStoppingState(), _) => AcpPresentationPhase.closing,
+  (AcpConnectionBlockedState(), _) => AcpPresentationPhase.failed,
+  (_, AcpCheckingState()) => AcpPresentationPhase.checking,
+  (_, AcpRequiredState()) => AcpPresentationPhase.needsLogin,
+  (_, AcpAuthenticatingState()) => AcpPresentationPhase.authenticating,
+  (_, AcpVerifyingState()) => AcpPresentationPhase.verifying,
+  (_, AcpVerifiedState()) => AcpPresentationPhase.connected,
+  (_, AcpCancellingState()) => AcpPresentationPhase.cancelling,
+  (_, AcpClosingState()) => AcpPresentationPhase.closing,
+  (_, AcpFailedState()) => AcpPresentationPhase.failed,
+  _ => AcpPresentationPhase.idle,
+};
+
 String safeAccountError(Object error, AccountStrings strings) =>
     error is StudioFailure ? error.message : strings['failed'];
 

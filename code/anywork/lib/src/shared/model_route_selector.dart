@@ -8,9 +8,10 @@ import 'package:material_ui/material_ui.dart';
 
 import '../domain/models/studio_models.dart';
 import '../l10n/studio_l10n.dart';
-import 'account_brand.dart';
+import 'widgets/account_brand.dart';
 import 'studio_driver_keys.dart';
 import 'studio_menu_label.dart';
+import 'widgets/studio_menu_button.dart';
 
 /// A catalog model paired with its account-instance identity for selection.
 ///
@@ -196,12 +197,10 @@ class ModelRouteSelector extends StatefulWidget {
 }
 
 class _ModelRouteSelectorState extends State<ModelRouteSelector> {
-  final FocusNode _triggerFocus = FocusNode(debugLabel: 'model-route-trigger');
   final TextEditingController _search = TextEditingController();
 
   @override
   void dispose() {
-    _triggerFocus.dispose();
     _search.dispose();
     super.dispose();
   }
@@ -239,57 +238,17 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
         ),
       );
     }
-    return MenuAnchor(
+    return StudioMenuButton(
       key: widget.selectorKey,
-      childFocusNode: _triggerFocus,
-      style: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
+      tooltip: widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel,
+      enabled: canSelect,
+      onBlockedTap: widget.onBlockedTap,
+      menuStyle: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
+      buttonStyle: studioConfigurationButtonStyle(enabled: canSelect),
       alignmentOffset: const Offset(6, 6),
       onOpen: _onOpen,
       menuChildren: _menuChildren(context, contentWidth, selected),
-      builder: (context, controller, child) =>
-          _buildTrigger(context, controller, canSelect, presentation.label),
-    );
-  }
-
-  Widget _buildTrigger(
-    BuildContext context,
-    MenuController controller,
-    bool canSelect,
-    StudioMenuLabel label,
-  ) {
-    final tooltip =
-        widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel;
-    return Tooltip(
-      message: tooltip,
-      child: Semantics(
-        button: true,
-        enabled: widget.enabled || widget.onBlockedTap != null,
-        label: tooltip,
-        child: TextButton(
-          focusNode: _triggerFocus,
-          onPressed: canSelect
-              ? () {
-                  if (controller.isOpen) {
-                    controller.close();
-                  } else {
-                    controller.open();
-                  }
-                }
-              : widget.onBlockedTap,
-          style: TextButton.styleFrom(
-            overlayColor: canSelect ? null : Colors.transparent,
-            enabledMouseCursor: canSelect ? null : SystemMouseCursors.basic,
-            padding: EdgeInsets.zero,
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(6),
-            ),
-            side: BorderSide.none,
-          ),
-          child: label,
-        ),
-      ),
+      child: presentation.label,
     );
   }
 

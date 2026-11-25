@@ -200,7 +200,7 @@ packages:
     source: hosted
     version: "3.1.2"
   cross_cache:
-    dependency: "direct overridden"
+    dependency: "direct dev"
     description:
       path: "packages/cross_cache"
       relative: true

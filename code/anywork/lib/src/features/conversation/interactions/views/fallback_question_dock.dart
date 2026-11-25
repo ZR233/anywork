@@ -12,10 +12,12 @@ class FallbackQuestionDock extends StatelessWidget {
     required this.trailing,
     required this.onChanged,
     required this.onSubmit,
+    required this.enabled,
     this.error,
   });
 
   final String body;
+  final bool enabled;
   final TextEditingController controller;
   final Widget? trailing;
   final VoidCallback onChanged;
@@ -50,6 +52,7 @@ class FallbackQuestionDock extends StatelessWidget {
           ],
           TextField(
             key: StudioDriverKeys.fallbackUserInput,
+            enabled: enabled,
             controller: controller,
             minLines: 1,
             maxLines: 4,

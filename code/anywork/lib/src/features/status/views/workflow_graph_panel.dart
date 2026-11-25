@@ -1,20 +1,10 @@
-import 'dart:async';
-
-import 'package:anywork_client/conversation.dart'
-    show CurrentQueryScope, CurrentStateFieldReader, decodeCurrentWorkflowState;
 import 'package:anywork_client/models.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:vyuh_node_flow/vyuh_node_flow.dart';
 
-import '../../app/theme/studio_tokens.dart';
-import '../../l10n/studio_l10n.dart';
-import '../../presentation/providers/client_provider.dart';
-import '../../presentation/providers/thread_session_store.dart';
-import '../conversation/acp/view_models/acp_session_view_model.dart';
-import '../conversation/timeline/view_models/timeline_view_model.dart';
-import 'status_view.dart';
-import 'status_bar_item.dart';
+import '../../../app/theme/studio_tokens.dart';
+import '../../../l10n/studio_l10n.dart';
+import '../status_bar_item.dart';
 
 /// Clickable status bar pill displaying the active workflow mode/state and
 /// toggling the vertical workflow graph side panel.
@@ -78,7 +68,6 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
   static const double _nodeHeight = 76;
 
   late final NodeFlowController<_RuntimeNodeData, _RuntimeEdgeData> _controller;
-  String? _graphSignature;
   bool _initialFitPending = true;
 
   @override
@@ -91,7 +80,7 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
         showAttribution: false,
       ),
     );
-    _syncGraph(force: true);
+    _syncGraph();
   }
 
   @override
@@ -101,7 +90,7 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
     final graphChanged = oldWidget.graph != widget.graph;
     final runChanged = oldWidget.run != widget.run;
     if (graphChanged || runChanged) {
-      _syncGraph(force: true, refit: modeChanged);
+      _syncGraph(refit: modeChanged);
     }
   }
 
@@ -111,13 +100,9 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
     super.dispose();
   }
 
-  void _syncGraph({bool force = false, bool refit = false}) {
+  void _syncGraph({bool refit = false}) {
     final graph = widget.graph;
     final run = widget.run;
-    final signature = Object.hash(graph, run).toString();
-    if (!force && signature == _graphSignature) return;
-    _graphSignature = signature;
-
     if (graph == null || graph.states.isEmpty) {
       _controller.loadGraph(
         const NodeGraph<_RuntimeNodeData, _RuntimeEdgeData>(),
@@ -147,7 +132,6 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
       final point = offsets[state.id] ?? (x: 24.0, y: 24.0);
       final isCurrent = currentId == state.id;
       final isVisited = visitedIds.contains(state.id) && !isCurrent;
-      final isInitial = graph.initialStateId == state.id;
       nodes.add(
         Node<_RuntimeNodeData>(
           id: state.id,
@@ -157,7 +141,6 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
           locked: true,
           data: _RuntimeNodeData(
             state: state,
-            isInitial: isInitial,
             isCurrent: isCurrent,
             isVisited: isVisited,
             isForcedCurrent: isCurrent && forced,
@@ -384,13 +367,15 @@ class _WorkflowGraphPanelState extends State<WorkflowGraphPanel> {
                   foreground: context.colors.surface,
                 ),
               ],
-              const Spacer(),
-              Text(
-                state.id,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: context.text.labelSmall?.copyWith(
-                  color: context.colors.onSurfaceVariant,
+              Expanded(
+                child: Text(
+                  state.id,
+                  maxLines: 1,
+                  textAlign: TextAlign.end,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.text.labelSmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
                 ),
               ),
             ],
@@ -546,14 +531,12 @@ class _NodeBadge extends StatelessWidget {
 final class _RuntimeNodeData {
   const _RuntimeNodeData({
     required this.state,
-    required this.isInitial,
     required this.isCurrent,
     required this.isVisited,
     required this.isForcedCurrent,
   });
 
   final WorkflowRuntimeGraphStateView state;
-  final bool isInitial;
   final bool isCurrent;
   final bool isVisited;
   final bool isForcedCurrent;
@@ -569,275 +552,4 @@ final class _RuntimeEdgeData {
   final String guard;
   final bool isBackward;
   final bool isCrossBranch;
-}
-
-/// Native thread connector loading the runtime workflow graph snapshot and
-/// combining it with inline or deferred live [WorkflowRunView] state.
-class ThreadWorkflowGraphPanelConnector extends ConsumerStatefulWidget {
-  const ThreadWorkflowGraphPanelConnector({required this.threadId, super.key});
-
-  final String threadId;
-
-  @override
-  ConsumerState<ThreadWorkflowGraphPanelConnector> createState() =>
-      _ThreadWorkflowGraphPanelConnectorState();
-}
-
-class _ThreadWorkflowGraphPanelConnectorState
-    extends ConsumerState<ThreadWorkflowGraphPanelConnector> {
-  CurrentStateField? _field;
-  CurrentQueryScope? _scope;
-  WorkflowRunView? _deferredRun;
-  WorkflowRuntimeGraphSnapshotView? _graph;
-  Object? _graphKey;
-  bool _loadingRun = false;
-  bool _loadingGraph = false;
-  Object? _graphError;
-  int _runEpoch = 0;
-  int _graphEpoch = 0;
-
-  WorkflowRunView? _resolveRun(
-    ThreadRuntimeView? runtime,
-    WorkflowRunView? inlineRun,
-  ) => runtime?.deferredField('workflow') == null ? inlineRun : _deferredRun;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(Future<void>.microtask(_syncDeferredRun));
-    unawaited(Future<void>.microtask(_syncGraph));
-  }
-
-  @override
-  void didUpdateWidget(covariant ThreadWorkflowGraphPanelConnector oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.threadId != widget.threadId) {
-      _graph = null;
-      _graphKey = null;
-      unawaited(Future<void>.microtask(_syncDeferredRun));
-      unawaited(Future<void>.microtask(_syncGraph));
-    }
-  }
-
-  void _retireRunScope() {
-    _runEpoch++;
-    final scope = _scope;
-    _scope = null;
-    scope?.retire();
-    if (scope != null) unawaited(scope.close());
-  }
-
-  Future<void> _syncDeferredRun() async {
-    if (!mounted) return;
-    final runtime = ref
-        .read(threadSessionStoreProvider(widget.threadId))
-        .runtime;
-    final field = runtime?.deferredField('workflow');
-    if (field == null) {
-      _retireRunScope();
-      _field = null;
-      _deferredRun = null;
-      _loadingRun = false;
-      if (mounted) setState(() {});
-      return;
-    }
-    if (_field == field && (_loadingRun || _deferredRun != null)) return;
-    _retireRunScope();
-    _field = field;
-    _deferredRun = null;
-    final lease = ref.read(timelineSessionOwnerProvider).lease(widget.threadId);
-    if (lease == null || lease.isRetired) return;
-    final epoch = ++_runEpoch;
-    final scope = lease.openCurrentScope(generation: lease.generation);
-    _scope = scope;
-    _loadingRun = true;
-    if (mounted) setState(() {});
-    try {
-      final run = decodeCurrentWorkflowState(await scope.readStateField(field))
-          .currentRun;
-      if (!mounted ||
-          epoch != _runEpoch ||
-          field != _field ||
-          lease.isRetired) {
-        return;
-      }
-      _deferredRun = run;
-      unawaited(Future<void>.microtask(_syncGraph));
-    } finally {
-      if (epoch == _runEpoch) {
-        _loadingRun = false;
-        if (identical(_scope, scope)) _scope = null;
-        scope.retire();
-        unawaited(scope.close());
-      }
-      if (mounted) setState(() {});
-    }
-  }
-
-  Future<void> _syncGraph({bool force = false}) async {
-    if (!mounted) return;
-    final runtime = ref
-        .read(threadSessionStoreProvider(widget.threadId))
-        .runtime;
-    final inlineRun = ref
-        .read(statusBarViewProvider(widget.threadId))
-        ?.workflowRun;
-    final run = _resolveRun(runtime, inlineRun);
-    final key = (
-      widget.threadId,
-      run?.modeId,
-      run?.graphRevision,
-      run?.graphHash,
-    );
-    if (!force && key == _graphKey && (_loadingGraph || _graph != null)) {
-      return;
-    }
-    _graphKey = key;
-    final epoch = ++_graphEpoch;
-    _loadingGraph = true;
-    _graphError = null;
-    if (mounted) setState(() {});
-    try {
-      final graph = await ref
-          .read(anyworkClientProvider)
-          .getThreadWorkflowGraph(widget.threadId);
-      if (!mounted || epoch != _graphEpoch) return;
-      _graph = graph;
-    } catch (error) {
-      if (!mounted || epoch != _graphEpoch) return;
-      _graphError = error;
-    } finally {
-      if (epoch == _graphEpoch) {
-        _loadingGraph = false;
-        if (mounted) setState(() {});
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _graphEpoch++;
-    _retireRunScope();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final runtime = ref.watch(
-      threadSessionStoreProvider(widget.threadId)
-          .select((state) => state.runtime),
-    );
-    final inlineRun = ref.watch(
-      statusBarViewProvider(widget.threadId)
-          .select((value) => value?.workflowRun),
-    );
-    final field = runtime?.deferredField('workflow');
-    if (field != null && field != _field && !_loadingRun) {
-      unawaited(Future<void>.microtask(_syncDeferredRun));
-    }
-    final run = _resolveRun(runtime, inlineRun);
-    final nextKey = (
-      widget.threadId,
-      run?.modeId,
-      run?.graphRevision,
-      run?.graphHash,
-    );
-    if (nextKey != _graphKey && !_loadingGraph) {
-      unawaited(Future<void>.microtask(_syncGraph));
-    }
-    return WorkflowGraphPanel(
-      graph: _graph,
-      run: run,
-      loading: _loadingGraph || _loadingRun,
-      error: _graphError,
-      onRetry: () => unawaited(_syncGraph(force: true)),
-    );
-  }
-}
-
-/// ACP thread connector reading the workflow snapshot directly from
-/// [acpConversationStateProvider], falling back to `getThreadWorkflowGraph`.
-class AcpWorkflowGraphPanelConnector extends ConsumerStatefulWidget {
-  const AcpWorkflowGraphPanelConnector({required this.threadId, super.key});
-
-  final String threadId;
-
-  @override
-  ConsumerState<AcpWorkflowGraphPanelConnector> createState() =>
-      _AcpWorkflowGraphPanelConnectorState();
-}
-
-class _AcpWorkflowGraphPanelConnectorState
-    extends ConsumerState<AcpWorkflowGraphPanelConnector> {
-  WorkflowRuntimeGraphSnapshotView? _fallbackGraph;
-  bool _loadingFallback = false;
-  Object? _fallbackError;
-  int _epoch = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(Future<void>.microtask(_ensureFallbackIfNeeded));
-  }
-
-  @override
-  void didUpdateWidget(covariant AcpWorkflowGraphPanelConnector oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.threadId != widget.threadId) {
-      _fallbackGraph = null;
-      _fallbackError = null;
-      unawaited(Future<void>.microtask(_ensureFallbackIfNeeded));
-    }
-  }
-
-  Future<void> _ensureFallbackIfNeeded({bool force = false}) async {
-    if (!mounted) return;
-    final workflowState = ref
-        .read(acpConversationStateProvider(widget.threadId))
-        .value
-        ?.workflowState;
-    if (workflowState?.graph != null) return;
-    if (!force && (_loadingFallback || _fallbackGraph != null)) return;
-    final epoch = ++_epoch;
-    _loadingFallback = true;
-    _fallbackError = null;
-    if (mounted) setState(() {});
-    try {
-      final graph = await ref
-          .read(anyworkClientProvider)
-          .getThreadWorkflowGraph(widget.threadId);
-      if (!mounted || epoch != _epoch) return;
-      _fallbackGraph = graph;
-    } catch (error) {
-      if (!mounted || epoch != _epoch) return;
-      _fallbackError = error;
-    } finally {
-      if (epoch == _epoch) {
-        _loadingFallback = false;
-        if (mounted) setState(() {});
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _epoch++;
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final workflowState = ref.watch(
-      acpConversationStateProvider(widget.threadId)
-          .select((value) => value.value?.workflowState),
-    );
-    final graph = workflowState?.graph ?? _fallbackGraph;
-    return WorkflowGraphPanel(
-      graph: graph,
-      run: workflowState?.run,
-      loading: graph == null && _loadingFallback,
-      error: graph == null ? _fallbackError : null,
-      onRetry: () => unawaited(_ensureFallbackIfNeeded(force: true)),
-    );
-  }
 }

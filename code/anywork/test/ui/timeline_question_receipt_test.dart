@@ -238,7 +238,7 @@ void main() {
   }
 
   testWidgets(
-    'cancelled receipt stays read-only and narrow long answers do not overflow',
+    'cancelled receipt stays read-only without overflow in a narrow viewport',
     (tester) async {
       tester.view.physicalSize = const Size(320, 900);
       tester.view.devicePixelRatio = 1;

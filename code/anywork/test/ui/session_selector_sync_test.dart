@@ -946,10 +946,7 @@ void main() {
     );
 
     final settingsTrigger = tester.widget<TextButton>(
-      find.descendant(
-        of: find.byKey(StudioDriverKeys.sessionSettings),
-        matching: find.byType(TextButton),
-      ),
+      find.byKey(StudioDriverKeys.sessionSettings),
     );
     expect(
       settingsTrigger.onPressed,

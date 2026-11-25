@@ -6,6 +6,12 @@ import 'package:flutter/widget_previews.dart';
 import 'package:material_ui/material_ui.dart';
 
 @Preview(
+  name: '可安装更新 · 320px · 大字号',
+  group: 'Settings · Updates',
+  size: Size(320, 420),
+  textScaleFactor: 1.5,
+)
+@Preview(
   name: '新版检查失败 · 保留可安装更新',
   group: 'Settings · Updates',
   size: Size(760, 180),

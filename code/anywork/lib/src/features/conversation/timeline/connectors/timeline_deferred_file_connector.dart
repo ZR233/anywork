@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
+import '../../../../domain/timeline_file_download.dart';
 import '../../../../platform/local_file_dialogs.dart';
 import 'timeline_file_download.dart';
 

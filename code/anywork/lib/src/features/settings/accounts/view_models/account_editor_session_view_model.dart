@@ -567,19 +567,7 @@ final class AccountEditorSessionOwner {
       ),
       if (_accounts.state.value.templates.revision.isNotEmpty)
         for (final template in _accounts.state.value.templates.templates)
-          AccountTemplatePresentation(
-            key: AccountTemplateKey(kind: AccountKind.native, id: template.id),
-            name: template.displayName,
-            content: AccountTemplateContent.native(
-              defaultBilling: displayBilling(template.defaultBillingKind),
-              protocolLabel: template.protocol,
-              defaultEndpoint: template.baseUrl,
-              supportsModelDiscovery: template.supportsModelDiscovery,
-              supportsUsageQuery: template.supportsUsageQuery,
-            ),
-            iconKey: template.iconKey,
-            description: template.description,
-          ),
+          projectAccountTemplate(template),
     ],
   );
 

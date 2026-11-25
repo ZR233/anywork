@@ -457,8 +457,6 @@ class TimelineToolExpandedSlots {
   /// Uniform [TimelineToolDetailPanel] wrapped in
   /// `TimelineBodyReadQualification`, or `null` when empty.
   final Widget? standardPanel;
-
-  bool get hasStandardChildren => standardPanel != null;
 }
 
 /// Context passed into adapter presentation methods.

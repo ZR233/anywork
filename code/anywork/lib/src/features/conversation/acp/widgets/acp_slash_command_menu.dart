@@ -112,8 +112,10 @@ class _AcpSlashCommandMenuState extends State<AcpSlashCommandMenu> {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final colors = context.colors;
-    _rowKeys.length = 0;
-    for (var i = 0; i < widget.commands.length; i++) {
+    if (_rowKeys.length > widget.commands.length) {
+      _rowKeys.removeRange(widget.commands.length, _rowKeys.length);
+    }
+    while (_rowKeys.length < widget.commands.length) {
       _rowKeys.add(GlobalKey());
     }
 

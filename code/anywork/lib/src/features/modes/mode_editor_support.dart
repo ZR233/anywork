@@ -8,6 +8,7 @@ import 'package:anywork_client/studio_client.dart'
 import 'package:material_ui/material_ui.dart';
 
 import '../../l10n/app_localizations.dart';
+import 'state/mode_workspace_view_state.dart';
 
 /// Mode 编辑器与工作区的 Driver/测试身份 key。
 abstract final class ModeEditorKeys {
@@ -84,6 +85,20 @@ abstract final class ModeEditorKeys {
 
 /// 新建模式对话框的模板选择。
 enum ModeTemplateKind { minimal, none }
+
+ModeTransitionSelection? parseModeTransitionSelection(String edgeId) {
+  const prefix = 'edge:';
+  const separator = '->';
+  if (!edgeId.startsWith(prefix)) return null;
+  final sourceStart = prefix.length;
+  final arrow = edgeId.indexOf(separator, sourceStart);
+  final targetStart = arrow + separator.length;
+  if (arrow <= sourceStart || targetStart >= edgeId.length) return null;
+  return ModeTransitionSelection(
+    sourceStateId: edgeId.substring(sourceStart, arrow),
+    targetStateId: edgeId.substring(targetStart),
+  );
+}
 
 WorkflowDefinition minimalWorkflow(AppLocalizations l10n) => WorkflowDefinition(
   title: l10n.modeEditorWorkflow,

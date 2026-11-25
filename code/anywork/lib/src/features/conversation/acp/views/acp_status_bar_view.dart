@@ -191,18 +191,8 @@ class AcpConnectionStatusView extends StatelessWidget {
     };
   }
 
-  String _stopReasonLabel(BuildContext context) {
-    final l10n = context.l10n;
-    return switch (state.stopReason) {
-      AcpStopReasonKind.endTurn => l10n.acpStopReasonEndTurn,
-      AcpStopReasonKind.maxTokens => l10n.acpStopReasonMaxTokens,
-      AcpStopReasonKind.maxTurnRequests => l10n.acpStopReasonMaxTurnRequests,
-      AcpStopReasonKind.refusal => l10n.acpStopReasonRefusal,
-      AcpStopReasonKind.cancelled => l10n.acpStopReasonCancelled,
-      AcpStopReasonKind.other ||
-      null => state.stopReasonRaw ?? l10n.acpStopReasonEndTurn,
-    };
-  }
+  String _stopReasonLabel(BuildContext context) =>
+      _stopReasonText(context.l10n, state.stopReason, state.stopReasonRaw);
 }
 
 class AcpContextUsageView extends StatelessWidget {

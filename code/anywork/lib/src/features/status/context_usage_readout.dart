@@ -74,7 +74,7 @@ class _ContextDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final limit = compactLimitOf(projection);
+    final limit = _compactLimitOf(projection);
     final maxWindow = _knownTokens(projection.maxContextWindow);
     final effectiveWindow = _knownTokens(projection.contextWindow);
     final percentLabel = _percentLabel(projection);
@@ -432,7 +432,7 @@ class _ModelIdentityLine extends StatelessWidget {
 }
 
 /// 最终生效的压缩阈值；非正值与缺失都表示未知，不能当作零分母。
-int? compactLimitOf(StudioContextProjection projection) {
+int? _compactLimitOf(StudioContextProjection projection) {
   return _knownTokens(projection.autoCompactLimit);
 }
 
@@ -442,7 +442,7 @@ int? _knownTokens(int? value) {
 
 /// footer 图形的填充比例；阈值未知时为 `null`，超过阈值时截断为满格。
 double? _clampedProgress(StudioContextProjection projection) {
-  final limit = compactLimitOf(projection);
+  final limit = _compactLimitOf(projection);
   if (limit == null) {
     return null;
   }
@@ -467,7 +467,7 @@ Color _progressColor(BuildContext context, StudioContextProjection projection) {
 const _belowOnePercentLabel = '<1%';
 
 String _percentLabel(StudioContextProjection projection) {
-  final limit = compactLimitOf(projection);
+  final limit = _compactLimitOf(projection);
   if (limit == null) {
     return tokenCountUnknown;
   }
@@ -500,7 +500,7 @@ String _remainingLabel(
 
 /// 可访问性读数：详情只在悬停时出现，因此触发控件自己报告已用与阈值。
 String _contextSemanticsValue(StudioContextProjection projection) {
-  final limit = compactLimitOf(projection);
+  final limit = _compactLimitOf(projection);
   final used = formatTokenCount(projection.contextTokens);
   if (limit == null) {
     return '$used / $tokenCountUnknown';
@@ -511,13 +511,12 @@ String _contextSemanticsValue(StudioContextProjection projection) {
 String _withIncompleteMarker(
   BuildContext context,
   String value,
-  bool incomplete, {
-  String? marker,
-}) {
+  bool incomplete,
+) {
   if (!incomplete) {
     return value;
   }
-  return '$value · ${marker ?? context.l10n.statusUsageIncompleteLabel}';
+  return '$value · ${context.l10n.statusUsageIncompleteLabel}';
 }
 
 String _formatCount(int value) {

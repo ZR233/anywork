@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$AgentWorkspaceView {
 
- SessionDirectoryRow get row; SessionDirectoryRow get rootRow; AgentWorkspaceSyncState get syncState; String? get loadError; TimelineTodoListUpdate? get todo; ThreadRuntimeView get runtime; ThreadModelRouteView? get modelRoute; StudioTurnView? get turn; StudioTurnView? get lastTurn; PendingInteraction? get activeInteraction; ComposerThreadState get composer; AgentComposerMode get composerMode; List<ModelSelectionAccount> get accounts; List<ModeModelRouteView> get modeModelRoutes; List<RoleSettingsView> get roles; List<StudioAgentView> get agents;
+ SessionDirectoryRow get row; SessionDirectoryRow get rootRow; AgentWorkspaceSyncState get syncState; String? get loadError; ThreadRuntimeView get runtime; ThreadModelRouteView? get modelRoute; StudioTurnView? get turn; StudioTurnView? get lastTurn; PendingInteraction? get activeInteraction; ComposerThreadState get composer; AgentComposerMode get composerMode; List<ModelSelectionAccount> get accounts; List<ModeModelRouteView> get modeModelRoutes; List<RoleSettingsView> get roles; List<StudioAgentView> get agents;
 /// Create a copy of AgentWorkspaceView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,20 +27,20 @@ $AgentWorkspaceViewCopyWith<AgentWorkspaceView> get copyWith => _$AgentWorkspace
 @override
 bool operator ==(Object other) {
   final _this = this as AgentWorkspaceView;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentWorkspaceView&&(identical(other.row, _this.row) || other.row == _this.row)&&(identical(other.rootRow, _this.rootRow) || other.rootRow == _this.rootRow)&&(identical(other.syncState, _this.syncState) || other.syncState == _this.syncState)&&(identical(other.loadError, _this.loadError) || other.loadError == _this.loadError)&&(identical(other.todo, _this.todo) || other.todo == _this.todo)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute)&&(identical(other.turn, _this.turn) || other.turn == _this.turn)&&(identical(other.lastTurn, _this.lastTurn) || other.lastTurn == _this.lastTurn)&&(identical(other.activeInteraction, _this.activeInteraction) || other.activeInteraction == _this.activeInteraction)&&(identical(other.composer, _this.composer) || other.composer == _this.composer)&&(identical(other.composerMode, _this.composerMode) || other.composerMode == _this.composerMode)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.modeModelRoutes, _this.modeModelRoutes)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&const DeepCollectionEquality().equals(other.agents, _this.agents));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AgentWorkspaceView&&(identical(other.row, _this.row) || other.row == _this.row)&&(identical(other.rootRow, _this.rootRow) || other.rootRow == _this.rootRow)&&(identical(other.syncState, _this.syncState) || other.syncState == _this.syncState)&&(identical(other.loadError, _this.loadError) || other.loadError == _this.loadError)&&(identical(other.runtime, _this.runtime) || other.runtime == _this.runtime)&&(identical(other.modelRoute, _this.modelRoute) || other.modelRoute == _this.modelRoute)&&(identical(other.turn, _this.turn) || other.turn == _this.turn)&&(identical(other.lastTurn, _this.lastTurn) || other.lastTurn == _this.lastTurn)&&(identical(other.activeInteraction, _this.activeInteraction) || other.activeInteraction == _this.activeInteraction)&&(identical(other.composer, _this.composer) || other.composer == _this.composer)&&(identical(other.composerMode, _this.composerMode) || other.composerMode == _this.composerMode)&&const DeepCollectionEquality().equals(other.accounts, _this.accounts)&&const DeepCollectionEquality().equals(other.modeModelRoutes, _this.modeModelRoutes)&&const DeepCollectionEquality().equals(other.roles, _this.roles)&&const DeepCollectionEquality().equals(other.agents, _this.agents));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AgentWorkspaceView;
-  return Object.hash(runtimeType,_this.row,_this.rootRow,_this.syncState,_this.loadError,_this.todo,_this.runtime,_this.modelRoute,_this.turn,_this.lastTurn,_this.activeInteraction,_this.composer,_this.composerMode,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.modeModelRoutes),const DeepCollectionEquality().hash(_this.roles),const DeepCollectionEquality().hash(_this.agents));
+  return Object.hash(runtimeType,_this.row,_this.rootRow,_this.syncState,_this.loadError,_this.runtime,_this.modelRoute,_this.turn,_this.lastTurn,_this.activeInteraction,_this.composer,_this.composerMode,const DeepCollectionEquality().hash(_this.accounts),const DeepCollectionEquality().hash(_this.modeModelRoutes),const DeepCollectionEquality().hash(_this.roles),const DeepCollectionEquality().hash(_this.agents));
 }
 
 @override
 String toString() {
   final _this = this as AgentWorkspaceView;
-  return 'AgentWorkspaceView(row: ${_this.row}, rootRow: ${_this.rootRow}, syncState: ${_this.syncState}, loadError: ${_this.loadError}, todo: ${_this.todo}, runtime: ${_this.runtime}, modelRoute: ${_this.modelRoute}, turn: ${_this.turn}, lastTurn: ${_this.lastTurn}, activeInteraction: ${_this.activeInteraction}, composer: ${_this.composer}, composerMode: ${_this.composerMode}, accounts: ${_this.accounts}, modeModelRoutes: ${_this.modeModelRoutes}, roles: ${_this.roles}, agents: ${_this.agents})';
+  return 'AgentWorkspaceView(row: ${_this.row}, rootRow: ${_this.rootRow}, syncState: ${_this.syncState}, loadError: ${_this.loadError}, runtime: ${_this.runtime}, modelRoute: ${_this.modelRoute}, turn: ${_this.turn}, lastTurn: ${_this.lastTurn}, activeInteraction: ${_this.activeInteraction}, composer: ${_this.composer}, composerMode: ${_this.composerMode}, accounts: ${_this.accounts}, modeModelRoutes: ${_this.modeModelRoutes}, roles: ${_this.roles}, agents: ${_this.agents})';
 }
 
 
@@ -51,7 +51,7 @@ abstract mixin class $AgentWorkspaceViewCopyWith<$Res>  {
   factory $AgentWorkspaceViewCopyWith(AgentWorkspaceView value, $Res Function(AgentWorkspaceView) _then) = _$AgentWorkspaceViewCopyWithImpl;
 @useResult
 $Res call({
- SessionDirectoryRow row, SessionDirectoryRow rootRow, AgentWorkspaceSyncState syncState, String? loadError, TimelineTodoListUpdate? todo, ThreadRuntimeView runtime, ThreadModelRouteView? modelRoute, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<ModelSelectionAccount> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
+ SessionDirectoryRow row, SessionDirectoryRow rootRow, AgentWorkspaceSyncState syncState, String? loadError, ThreadRuntimeView runtime, ThreadModelRouteView? modelRoute, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<ModelSelectionAccount> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
 });
 
 
@@ -68,14 +68,13 @@ class _$AgentWorkspaceViewCopyWithImpl<$Res>
 
 /// Create a copy of AgentWorkspaceView
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? row = null,Object? rootRow = null,Object? syncState = null,Object? loadError = freezed,Object? todo = freezed,Object? runtime = null,Object? modelRoute = freezed,Object? turn = freezed,Object? lastTurn = freezed,Object? activeInteraction = freezed,Object? composer = null,Object? composerMode = null,Object? accounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? agents = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? row = null,Object? rootRow = null,Object? syncState = null,Object? loadError = freezed,Object? runtime = null,Object? modelRoute = freezed,Object? turn = freezed,Object? lastTurn = freezed,Object? activeInteraction = freezed,Object? composer = null,Object? composerMode = null,Object? accounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? agents = null,}) {
   return _then(AgentWorkspaceView(
 row: null == row ? _self.row : row // ignore: cast_nullable_to_non_nullable
 as SessionDirectoryRow,rootRow: null == rootRow ? _self.rootRow : rootRow // ignore: cast_nullable_to_non_nullable
 as SessionDirectoryRow,syncState: null == syncState ? _self.syncState : syncState // ignore: cast_nullable_to_non_nullable
 as AgentWorkspaceSyncState,loadError: freezed == loadError ? _self.loadError : loadError // ignore: cast_nullable_to_non_nullable
-as String?,todo: freezed == todo ? _self.todo : todo // ignore: cast_nullable_to_non_nullable
-as TimelineTodoListUpdate?,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
+as String?,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
 as ThreadRuntimeView,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
 as ThreadModelRouteView?,turn: freezed == turn ? _self.turn : turn // ignore: cast_nullable_to_non_nullable
 as StudioTurnView?,lastTurn: freezed == lastTurn ? _self.lastTurn : lastTurn // ignore: cast_nullable_to_non_nullable
@@ -171,10 +170,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  SessionDirectoryRow rootRow,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  ThreadModelRouteView? modelRoute,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  SessionDirectoryRow rootRow,  AgentWorkspaceSyncState syncState,  String? loadError,  ThreadRuntimeView runtime,  ThreadModelRouteView? modelRoute,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AgentWorkspaceView() when $default != null:
-return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.todo,_that.runtime,_that.modelRoute,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
+return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.runtime,_that.modelRoute,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
   return orElse();
 
 }
@@ -192,10 +191,10 @@ return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.to
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  SessionDirectoryRow rootRow,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  ThreadModelRouteView? modelRoute,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( SessionDirectoryRow row,  SessionDirectoryRow rootRow,  AgentWorkspaceSyncState syncState,  String? loadError,  ThreadRuntimeView runtime,  ThreadModelRouteView? modelRoute,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)  $default,) {final _that = this;
 switch (_that) {
 case _AgentWorkspaceView():
-return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.todo,_that.runtime,_that.modelRoute,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
+return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.runtime,_that.modelRoute,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -212,10 +211,10 @@ return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.to
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( SessionDirectoryRow row,  SessionDirectoryRow rootRow,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  ThreadModelRouteView? modelRoute,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( SessionDirectoryRow row,  SessionDirectoryRow rootRow,  AgentWorkspaceSyncState syncState,  String? loadError,  ThreadRuntimeView runtime,  ThreadModelRouteView? modelRoute,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,) {final _that = this;
 switch (_that) {
 case _AgentWorkspaceView() when $default != null:
-return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.todo,_that.runtime,_that.modelRoute,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
+return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.runtime,_that.modelRoute,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
   return null;
 
 }
@@ -227,14 +226,13 @@ return $default(_that.row,_that.rootRow,_that.syncState,_that.loadError,_that.to
 
 
 class _AgentWorkspaceView extends AgentWorkspaceView {
-  const _AgentWorkspaceView({required this.row, required this.rootRow, required this.syncState, this.loadError, required this.todo, required this.runtime, this.modelRoute, required this.turn, this.lastTurn, required this.activeInteraction, required this.composer, required this.composerMode, required  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes = const <ModeModelRouteView>[], required  List<RoleSettingsView> roles, required  List<StudioAgentView> agents}): _accounts = accounts,_modeModelRoutes = modeModelRoutes,_roles = roles,_agents = agents,super._();
+  const _AgentWorkspaceView({required this.row, required this.rootRow, required this.syncState, this.loadError, required this.runtime, this.modelRoute, required this.turn, this.lastTurn, required this.activeInteraction, required this.composer, required this.composerMode, required  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes = const <ModeModelRouteView>[], required  List<RoleSettingsView> roles, required  List<StudioAgentView> agents}): _accounts = accounts,_modeModelRoutes = modeModelRoutes,_roles = roles,_agents = agents,super._();
 
 
 @override final  SessionDirectoryRow row;
 @override final  SessionDirectoryRow rootRow;
 @override final  AgentWorkspaceSyncState syncState;
 @override final  String? loadError;
-@override final  TimelineTodoListUpdate? todo;
 @override final  ThreadRuntimeView runtime;
 @override final  ThreadModelRouteView? modelRoute;
 @override final  StudioTurnView? turn;
@@ -281,18 +279,18 @@ _$AgentWorkspaceViewCopyWith<_AgentWorkspaceView> get copyWith => __$AgentWorksp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentWorkspaceView&&(identical(other.row, row) || other.row == row)&&(identical(other.rootRow, rootRow) || other.rootRow == rootRow)&&(identical(other.syncState, syncState) || other.syncState == syncState)&&(identical(other.loadError, loadError) || other.loadError == loadError)&&(identical(other.todo, todo) || other.todo == todo)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute)&&(identical(other.turn, turn) || other.turn == turn)&&(identical(other.lastTurn, lastTurn) || other.lastTurn == lastTurn)&&(identical(other.activeInteraction, activeInteraction) || other.activeInteraction == activeInteraction)&&(identical(other.composer, composer) || other.composer == composer)&&(identical(other.composerMode, composerMode) || other.composerMode == composerMode)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.modeModelRoutes, _modeModelRoutes)&&const DeepCollectionEquality().equals(other.roles, _roles)&&const DeepCollectionEquality().equals(other.agents, _agents));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AgentWorkspaceView&&(identical(other.row, row) || other.row == row)&&(identical(other.rootRow, rootRow) || other.rootRow == rootRow)&&(identical(other.syncState, syncState) || other.syncState == syncState)&&(identical(other.loadError, loadError) || other.loadError == loadError)&&(identical(other.runtime, runtime) || other.runtime == runtime)&&(identical(other.modelRoute, modelRoute) || other.modelRoute == modelRoute)&&(identical(other.turn, turn) || other.turn == turn)&&(identical(other.lastTurn, lastTurn) || other.lastTurn == lastTurn)&&(identical(other.activeInteraction, activeInteraction) || other.activeInteraction == activeInteraction)&&(identical(other.composer, composer) || other.composer == composer)&&(identical(other.composerMode, composerMode) || other.composerMode == composerMode)&&const DeepCollectionEquality().equals(other.accounts, _accounts)&&const DeepCollectionEquality().equals(other.modeModelRoutes, _modeModelRoutes)&&const DeepCollectionEquality().equals(other.roles, _roles)&&const DeepCollectionEquality().equals(other.agents, _agents));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,row,rootRow,syncState,loadError,todo,runtime,modelRoute,turn,lastTurn,activeInteraction,composer,composerMode,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_modeModelRoutes),const DeepCollectionEquality().hash(_roles),const DeepCollectionEquality().hash(_agents));
+    return Object.hash(runtimeType,row,rootRow,syncState,loadError,runtime,modelRoute,turn,lastTurn,activeInteraction,composer,composerMode,const DeepCollectionEquality().hash(_accounts),const DeepCollectionEquality().hash(_modeModelRoutes),const DeepCollectionEquality().hash(_roles),const DeepCollectionEquality().hash(_agents));
 }
 
 @override
 String toString() {
-    return 'AgentWorkspaceView(row: $row, rootRow: $rootRow, syncState: $syncState, loadError: $loadError, todo: $todo, runtime: $runtime, modelRoute: $modelRoute, turn: $turn, lastTurn: $lastTurn, activeInteraction: $activeInteraction, composer: $composer, composerMode: $composerMode, accounts: $accounts, modeModelRoutes: $modeModelRoutes, roles: $roles, agents: $agents)';
+    return 'AgentWorkspaceView(row: $row, rootRow: $rootRow, syncState: $syncState, loadError: $loadError, runtime: $runtime, modelRoute: $modelRoute, turn: $turn, lastTurn: $lastTurn, activeInteraction: $activeInteraction, composer: $composer, composerMode: $composerMode, accounts: $accounts, modeModelRoutes: $modeModelRoutes, roles: $roles, agents: $agents)';
 }
 
 
@@ -303,7 +301,7 @@ abstract mixin class _$AgentWorkspaceViewCopyWith<$Res> implements $AgentWorkspa
   factory _$AgentWorkspaceViewCopyWith(_AgentWorkspaceView value, $Res Function(_AgentWorkspaceView) _then) = __$AgentWorkspaceViewCopyWithImpl;
 @override @useResult
 $Res call({
- SessionDirectoryRow row, SessionDirectoryRow rootRow, AgentWorkspaceSyncState syncState, String? loadError, TimelineTodoListUpdate? todo, ThreadRuntimeView runtime, ThreadModelRouteView? modelRoute, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<ModelSelectionAccount> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
+ SessionDirectoryRow row, SessionDirectoryRow rootRow, AgentWorkspaceSyncState syncState, String? loadError, ThreadRuntimeView runtime, ThreadModelRouteView? modelRoute, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<ModelSelectionAccount> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
 });
 
 
@@ -320,14 +318,13 @@ class __$AgentWorkspaceViewCopyWithImpl<$Res>
 
 /// Create a copy of AgentWorkspaceView
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? row = null,Object? rootRow = null,Object? syncState = null,Object? loadError = freezed,Object? todo = freezed,Object? runtime = null,Object? modelRoute = freezed,Object? turn = freezed,Object? lastTurn = freezed,Object? activeInteraction = freezed,Object? composer = null,Object? composerMode = null,Object? accounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? agents = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? row = null,Object? rootRow = null,Object? syncState = null,Object? loadError = freezed,Object? runtime = null,Object? modelRoute = freezed,Object? turn = freezed,Object? lastTurn = freezed,Object? activeInteraction = freezed,Object? composer = null,Object? composerMode = null,Object? accounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? agents = null,}) {
   return _then(_AgentWorkspaceView(
 row: null == row ? _self.row : row // ignore: cast_nullable_to_non_nullable
 as SessionDirectoryRow,rootRow: null == rootRow ? _self.rootRow : rootRow // ignore: cast_nullable_to_non_nullable
 as SessionDirectoryRow,syncState: null == syncState ? _self.syncState : syncState // ignore: cast_nullable_to_non_nullable
 as AgentWorkspaceSyncState,loadError: freezed == loadError ? _self.loadError : loadError // ignore: cast_nullable_to_non_nullable
-as String?,todo: freezed == todo ? _self.todo : todo // ignore: cast_nullable_to_non_nullable
-as TimelineTodoListUpdate?,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
+as String?,runtime: null == runtime ? _self.runtime : runtime // ignore: cast_nullable_to_non_nullable
 as ThreadRuntimeView,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
 as ThreadModelRouteView?,turn: freezed == turn ? _self.turn : turn // ignore: cast_nullable_to_non_nullable
 as StudioTurnView?,lastTurn: freezed == lastTurn ? _self.lastTurn : lastTurn // ignore: cast_nullable_to_non_nullable

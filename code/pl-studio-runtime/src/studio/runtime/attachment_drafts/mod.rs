@@ -312,7 +312,20 @@ mod tests {
             let mut open = fixture.open().await?;
             Fixture::ready(&mut open).await?;
             let pid = fixture.pid("pid")?;
-            let calls = std::fs::read(fixture.home.path().join("calls"))?;
+            // The account probe may still close after the business session becomes ready.
+            // Keep every other RPC and the entire business log, including business closes.
+            let admission_calls = || -> Result<(Vec<String>, Vec<u8>)> {
+                let calls = std::fs::read_to_string(fixture.home.path().join("calls"))?
+                    .lines()
+                    .filter(|call| *call != "session/close")
+                    .map(str::to_owned)
+                    .collect();
+                Ok((
+                    calls,
+                    std::fs::read(fixture.home.path().join("business-calls"))?,
+                ))
+            };
+            let calls = admission_calls()?;
             for filename in ["image.png", "context.pdf", "movie.mp4"] {
                 let request = AdmitAttachmentDraftsRequest {
                     context: StudioAttachmentAdmissionContext::ExistingThread {
@@ -338,7 +351,7 @@ mod tests {
                     assert!(failure.to_string().contains("ACP"));
                 }
             }
-            assert_eq!(std::fs::read(fixture.home.path().join("calls"))?, calls);
+            assert_eq!(admission_calls()?, calls);
             fixture
                 .runtime
                 .close_acp_session(open.target.clone())

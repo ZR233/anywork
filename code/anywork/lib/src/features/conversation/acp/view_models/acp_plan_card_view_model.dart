@@ -1,4 +1,5 @@
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:riverpod/riverpod.dart' show ProviderListenableSelect;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../state/acp_view_state.dart';
@@ -23,7 +24,9 @@ AcpPlanStatusKind _mapStatus(AcpPlanStatusView status) => switch (status) {
 /// plan listeners while the canonical `AcpPlanView` reference is unchanged.
 @riverpod
 AcpPlanCardViewState? acpPlanCardViewModel(Ref ref, String threadId) {
-  final plan = ref.watch(acpConversationStateProvider(threadId)).value?.plan;
+  final plan = ref.watch(
+    acpConversationStateProvider(threadId).select((state) => state.value?.plan),
+  );
   if (plan == null || plan.entries.isEmpty) return null;
   var completed = 0;
   final entries = <AcpPlanEntryPresentation>[];

@@ -170,36 +170,26 @@ class ModeStageDetailPanel extends StatelessWidget {
                   onChanged: (value) => _update(stateWith(state, title: value)),
                 ),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
+                DropdownButtonFormField<WorkflowStateKind>(
                   key: ValueKey<String>(
                     'mode-editor-detail-kind-${state.id}-${state.kind.name}',
                   ),
-                  initialValue: state.kind.name == 'finalState'
-                      ? 'final'
-                      : 'atomic',
+                  initialValue: state.kind,
                   decoration: InputDecoration(
                     labelText: l10n.modeEditorStageKind,
                   ),
                   items: [
                     DropdownMenuItem(
-                      value: 'atomic',
+                      value: WorkflowStateKind.atomic,
                       child: Text(l10n.modeEditorAtomicStage),
                     ),
                     DropdownMenuItem(
-                      value: 'final',
+                      value: WorkflowStateKind.finalState,
                       child: Text(l10n.modeEditorFinalState),
                     ),
                   ],
-                  onChanged: (value) {
-                    if (value == null) return;
-                    _update(
-                      stateWith(
-                        state,
-                        kind: value == 'final'
-                            ? WorkflowStateKind.finalState
-                            : WorkflowStateKind.atomic,
-                      ),
-                    );
+                  onChanged: (kind) {
+                    if (kind != null) _update(stateWith(state, kind: kind));
                   },
                 ),
                 const SizedBox(height: 8),

@@ -445,7 +445,7 @@ Widget accountAcpEditorPreparingPreview() =>
     accountAcpEditorPreviewHost(AccountPreviewFixtures.acpEditor);
 
 @Preview(
-  name: 'Editor / ACP / login primary / save secondary',
+  name: 'Editor / ACP / login and save actions',
   group: 'Accounts · Editor',
   size: Size(720, 900),
 )
@@ -600,27 +600,6 @@ Widget accountAcpVerifyPreview() => accountPreviewHost(
   ),
   scenarioIdentity: 'acp-verifying',
 );
-
-@Preview(
-  name: 'Picker / 8 Native + Antigravity',
-  group: 'Accounts · Components',
-  size: Size(720, 800),
-)
-Widget accountTemplatePickerPreview() => accountPreviewHost(
-  (record) => AccountTemplatePickerView(
-    templates: AccountPreviewFixtures.templates,
-    onSelected: (key) => record('template: ${key.kind.name}/${key.id}'),
-    onCancel: () => record('cancel template'),
-  ),
-  scenarioIdentity: 'template-picker',
-);
-
-@Preview(
-  name: 'Picker / 8 Native + Antigravity / 390',
-  group: 'Accounts · Components',
-  size: Size(390, 844),
-)
-Widget accountTemplatePickerNarrowPreview() => accountTemplatePickerPreview();
 
 @Preview(
   name: 'Dialog / unsaved / failure preserves raw',

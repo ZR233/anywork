@@ -32,26 +32,6 @@ abstract final class StudioDriverKeys {
   ) => ValueKey(
     StudioDriverKeyValues.delegationPreferenceOption(scope, preference),
   );
-  static ValueKey<String> modelEnabled(String accountId, String modelId) =>
-      ValueKey(StudioDriverKeyValues.modelEnabled(accountId, modelId));
-  static ValueKey<String> modelDetails(String accountId, String modelId) =>
-      ValueKey(StudioDriverKeyValues.modelDetails(accountId, modelId));
-  static ValueKey<String> accountBillingKind(String accountId) =>
-      ValueKey(StudioDriverKeyValues.accountBillingKind(accountId));
-  static ValueKey<String> billingKindOption(BillingKind? kind) =>
-      ValueKey(StudioDriverKeyValues.billingKindOption(kind));
-  static const modelDetailDialog = ValueKey(
-    StudioDriverKeyValues.modelDetailDialog,
-  );
-  static const modelDetailClose = ValueKey(
-    StudioDriverKeyValues.modelDetailClose,
-  );
-  static const modelDetailReload = ValueKey(
-    StudioDriverKeyValues.modelDetailReload,
-  );
-  static const modelDetailEvaluations = ValueKey(
-    StudioDriverKeyValues.modelDetailEvaluations,
-  );
   static ValueKey<String> agentModel(String threadId) =>
       ValueKey(StudioDriverKeyValues.agentModel(threadId));
   static const shell = ValueKey<String>(StudioDriverKeyValues.shell);
@@ -92,37 +72,13 @@ abstract final class StudioDriverKeys {
   static const timelineReturnLatest = ValueKey<String>(
     StudioDriverKeyValues.timelineReturnLatest,
   );
-  static const timelineNewOutput = ValueKey<String>(
-    StudioDriverKeyValues.timelineNewOutput,
-  );
 
-  /// 全文查看器：只在用户显式打开后存在，按 canonical item + typed field 打开。
-  static const timelineDetailDialog = ValueKey<String>(
-    StudioDriverKeyValues.timelineDetailDialog,
-  );
-  static const timelineDetailText = ValueKey<String>(
-    StudioDriverKeyValues.timelineDetailText,
-  );
-  static const timelineDetailCopy = ValueKey<String>(
-    StudioDriverKeyValues.timelineDetailCopy,
-  );
-  static const timelineDetailClose = ValueKey<String>(
-    StudioDriverKeyValues.timelineDetailClose,
-  );
-  static const timelineDetailRetry = ValueKey<String>(
-    StudioDriverKeyValues.timelineDetailRetry,
-  );
-  static const timelineDetailTerminal = ValueKey<String>(
-    StudioDriverKeyValues.timelineDetailTerminal,
-  );
   static const timelineConnectionNotice = ValueKey<String>(
     StudioDriverKeyValues.timelineConnectionNotice,
   );
   static const timelineRetryConnection = ValueKey<String>(
     StudioDriverKeyValues.timelineRetryConnection,
   );
-  static ValueKey<String> timelineDetailOpen(String id, String field) =>
-      ValueKey<String>(StudioDriverKeyValues.timelineDetailOpen(id, field));
   static ValueKey<String> timelineContentOpen(String id, String key) =>
       ValueKey<String>(StudioDriverKeyValues.timelineContentOpen(id, key));
   static ValueKey<String> timelineContentWindow(String id, String key) =>
@@ -154,9 +110,6 @@ abstract final class StudioDriverKeys {
     StudioDriverKeyValues.standalonePreparationRetry,
   );
   static const openProject = ValueKey<String>('sidebar-open-project');
-  static const projectPathDialog = ValueKey<String>('project-path-dialog');
-  static const projectPathInput = ValueKey<String>('project-path-input');
-  static const projectPathSubmit = ValueKey<String>('project-path-submit');
   static const settingsOpen = ValueKey<String>('settings-open');
   static const sidebarUpdateNow = ValueKey<String>(
     StudioDriverKeyValues.sidebarUpdateNow,
@@ -191,7 +144,6 @@ abstract final class StudioDriverKeys {
   static const skillsDiscover = ValueKey<String>('skills-discover');
   static const mcpRefresh = ValueKey<String>('mcp-refresh');
   static const mcpResetAll = ValueKey<String>('mcp-reset-all');
-  static const mcpResetAllConfirm = ValueKey<String>('mcp-reset-all-confirm');
   static const lspRefresh = ValueKey<String>('lsp-refresh');
   static const lspProbe = ValueKey<String>('lsp-probe');
   static const lspResetWorkspace = ValueKey<String>('lsp-reset-workspace');
@@ -229,17 +181,10 @@ abstract final class StudioDriverKeys {
     'ssh-password-prompt-submit',
   );
   static const sshDeleteConfirm = ValueKey<String>('ssh-delete-confirm');
-  static const addProjectSourceLocal = ValueKey<String>(
-    'add-project-source-local',
-  );
-  static const addProjectSourceRemote = ValueKey<String>(
-    'add-project-source-remote',
-  );
   static const addProjectContinue = ValueKey<String>('add-project-continue');
   static const addProjectNewConnection = ValueKey<String>(
     'add-project-new-connection',
   );
-  static const addProjectConnect = ValueKey<String>('add-project-connect');
   static const sshDirectoryDialog = ValueKey<String>('ssh-directory-dialog');
   static const sshDirectoryList = ValueKey<String>('ssh-directory-list');
   static const sshOpenCurrentDirectory = ValueKey<String>(
@@ -350,137 +295,12 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> statisticsHistoryCall(String callKey) =>
       ValueKey<String>('statistics-history-call:$callKey');
-  static const accountEditor = ValueKey<String>('account-editor');
   static const accountEdit = ValueKey<String>('account-edit');
   static const accountSave = ValueKey<String>('account-save');
-  static const accountNoCharge = ValueKey<String>('account-no-charge');
-  static const accountEditorScroll = ValueKey<String>('account-editor-scroll');
   static const accountAdd = ValueKey<String>('account-add');
-  static const accountTemplate = ValueKey<String>('account-template');
-  static const accountBaseUrl = ValueKey<String>('account-base-url');
-  static const accountBaseUrlInput = ValueKey<String>(
-    StudioDriverKeyValues.accountBaseUrlInput,
-  );
-  static const accountApiKey = ValueKey<String>('account-api-key');
   static const accountModelAdd = ValueKey<String>('account-model-add');
-  static ValueKey<String> accountManualModelDelete(
-    String accountId,
-    String modelId,
-  ) => ValueKey<String>('settings.account.$accountId.model.$modelId.delete');
-  static const accountManualModelDeleteConfirm = ValueKey<String>(
-    'settings.account.model.delete.confirm',
-  );
-  static ValueKey<String> customModelId(int index) =>
-      ValueKey<String>('account-model-$index-id');
-  static ValueKey<String> customModelAdvanced(int index) =>
-      ValueKey<String>('account-model-$index-advanced');
-  static ValueKey<String> customModelDisplayName(int index) =>
-      ValueKey<String>('account-model-$index-display-name');
   static const accountCancel = ValueKey<String>('account-cancel');
 
-  /// ACP 账号：统一的模板选择入口与接入专有字段/认证操作。
-  static const accountTemplatePicker = ValueKey<String>(
-    StudioDriverKeyValues.accountTemplatePicker,
-  );
-  static ValueKey<String> accountTemplateOption(String token) =>
-      ValueKey<String>(StudioDriverKeyValues.accountTemplateOption(token));
-  static const accountTemplateList = ValueKey<String>(
-    StudioDriverKeyValues.accountTemplateList,
-  );
-  static const acpAccountName = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountName,
-  );
-  static const acpAccountBack = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountBack,
-  );
-  static const acpAccountRemove = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountRemove,
-  );
-  static const acpAccountInstallOpen = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountInstallOpen,
-  );
-  static const acpAccountTermsOpen = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountTermsOpen,
-  );
-  static const acpAccountAuthState = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountAuthState,
-  );
-  static const acpAccountConnectionInfo = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountConnectionInfo,
-  );
-  static const acpAccountCheck = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountCheck,
-  );
-  static const acpAccountLogin = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountLogin,
-  );
-  static const acpAccountLoginMethod = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountLoginMethod,
-  );
-  static const acpAccountCancelAuth = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountCancelAuth,
-  );
-  static const acpAccountDone = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountDone,
-  );
-  static ValueKey<String> acpAccountRow(String accountId) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountRow(accountId));
-  static ValueKey<String> acpAccountNotice(String accountId) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountNotice(accountId));
-  static const acpAccountNoticeDetail = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountNoticeDetail,
-  );
-  static ValueKey<String> acpAccountDetail(String accountId) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountDetail(accountId));
-  static ValueKey<String> acpAccountAuthPhase(String phase) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountAuthPhase(phase));
-
-  /// ACP 官方 server 准备面板：来源、阶段、真实进度与阶段主操作。
-  static const acpInstallPanel = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallPanel,
-  );
-  static const acpInstallPrepare = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallPrepare,
-  );
-  static const acpInstallCancel = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallCancel,
-  );
-  static const acpInstallUsePrepared = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallUsePrepared,
-  );
-  static const acpInstallStage = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallStage,
-  );
-  static const acpInstallProgress = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallProgress,
-  );
-  static const acpInstallProgressText = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallProgressText,
-  );
-  static const acpInstallPercent = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallPercent,
-  );
-  static const acpInstallSpeed = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallSpeed,
-  );
-  static const acpInstallRetryCount = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallRetryCount,
-  );
-  static const acpInstallVersion = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallVersion,
-  );
-  static const acpInstallTarget = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallTarget,
-  );
-  static const acpInstallFailure = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallFailure,
-  );
-  static const acpInstallReadyBadge = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallReadyBadge,
-  );
-  static const acpInstallReusedBadge = ValueKey<String>(
-    StudioDriverKeyValues.acpInstallReusedBadge,
-  );
   static const toolApprove = ValueKey<String>('tool-approve');
   static const toolDeny = ValueKey<String>('tool-deny');
   static const userInputSubmit = ValueKey<String>('user-input-submit');
@@ -519,8 +339,6 @@ abstract final class StudioDriverKeys {
       ValueKey<String>(StudioDriverKeyValues.rightSidebarTab(kind));
   static ValueKey<String> timelinePlanReceipt(String id) =>
       ValueKey<String>('timeline-plan-receipt-$id');
-  static ValueKey<String> timelinePlanReceiptReply(String id) =>
-      ValueKey<String>('timeline-plan-receipt-reply-$id');
   static const userInputFirstOption = ValueKey<String>(
     'user-input-first-option',
   );
@@ -566,8 +384,6 @@ abstract final class StudioDriverKeys {
   );
   static const botsRefreshMessages = ValueKey<String>('bots-refresh-messages');
   static const botsNextMessages = ValueKey<String>('bots-next-messages');
-  static const botsStartTime = ValueKey<String>('bots-start-time');
-  static const botsEndTime = ValueKey<String>('bots-end-time');
   static ValueKey<String> botsApproveUser(String id) =>
       ValueKey<String>('bots-approve-user-$id');
   static ValueKey<String> botsClearPairing(String id) =>
@@ -581,7 +397,6 @@ abstract final class StudioDriverKeys {
   static const botsScan = ValueKey<String>('bots-scan');
   static const botsManual = ValueKey<String>('bots-manual');
   static const botsSave = ValueKey<String>('bots-save');
-  static const botsProject = ValueKey<String>('bots-project');
   static const botsAppId = ValueKey<String>('bots-app-id');
   static const botsSecret = ValueKey<String>('bots-secret');
   static const botsSend = ValueKey<String>('bots-send');
@@ -590,9 +405,6 @@ abstract final class StudioDriverKeys {
   static const botsOpenConsoleManual = ValueKey<String>(
     'bots-open-console-manual',
   );
-  static const botsFactConfig = ValueKey<String>('bots-fact-config');
-  static const botsFactConnection = ValueKey<String>('bots-fact-connection');
-  static const botsFactAuth = ValueKey<String>('bots-fact-auth');
   static ValueKey<String> botsRow(String id) =>
       ValueKey<String>('bots-row-$id');
   static ValueKey<String> botsPending(String id) =>
@@ -698,43 +510,10 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> retryRecoveryIssue(String id) =>
       ValueKey<String>('recovery-retry-$id');
 
-  /// 输入框上方的固定活动条与其展开详情。
+  /// 输入框上方的固定活动条。
   static const ValueKey<String> conversationActivity = ValueKey<String>(
     'conversation-activity',
   );
-  static const ValueKey<String> conversationActivityDetails = ValueKey<String>(
-    'conversation-activity-details',
-  );
-
-  static ValueKey<String> currentCompletedItems(String parentId) =>
-      ValueKey(StudioDriverKeyValues.currentCompletedItems(parentId));
-  static ValueKey<String> currentCollection(String collection) =>
-      ValueKey(StudioDriverKeyValues.currentCollection(collection));
-  static ValueKey<String> currentCollectionReload(String collection) =>
-      ValueKey(StudioDriverKeyValues.currentCollectionReload(collection));
-  static ValueKey<String> currentCollectionNext(String collection) =>
-      ValueKey(StudioDriverKeyValues.currentCollectionNext(collection));
-  static ValueKey<String> currentCollectionEntry(
-    String collection,
-    String id,
-  ) => ValueKey(StudioDriverKeyValues.currentCollectionEntry(collection, id));
-
-  static ValueKey<String> timelineRolledBack(String id) =>
-      ValueKey<String>('timeline-rolled-back-$id');
-
-  static ValueKey<String> timelineBlock(String id) =>
-      ValueKey<String>('timeline-block-$id');
-
-  static ValueKey<String> timelineSkillActivation(String id) =>
-      ValueKey<String>('timeline-skill-activation-$id');
-
-  /// 页面只返回预览的超大条目：按 identity 回源完整正文的入口。
-  static ValueKey<String> timelineItemBodyNotice(String id) =>
-      ValueKey<String>('timeline-item-body-notice-$id');
-  static ValueKey<String> timelineItemBodyLoad(String id) =>
-      ValueKey<String>('timeline-item-body-load-$id');
-  static ValueKey<String> timelineItemBodyRetry(String id) =>
-      ValueKey<String>('timeline-item-body-retry-$id');
 
   /// 持久化队列压力诊断块（状态/history/calls 水位、字节、年龄、压力、错误）。
   static const persistenceQueueDiagnostics = ValueKey<String>(
@@ -790,27 +569,9 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> attachmentModality(String id) =>
       ValueKey<String>('attachment-modality-$id');
 
-  static ValueKey<String> historyAttachment(String id) =>
-      ValueKey<String>('history-attachment-$id');
-
-  static ValueKey<String> timelineActivitySummary(String id) =>
-      ValueKey<String>('timeline-activity-summary-$id');
-
   /// 只读问答回执的折叠头部：点击即展开/收起，折叠与展开状态下都指向同一条目身份。
   static ValueKey<String> timelineUserInput(String id) =>
       ValueKey<String>('timeline-user-input-$id');
-
-  /// 问答回执的展开内容；是否存在该键即代表当前是否展开。
-  static ValueKey<String> timelineUserInputDetails(String id) =>
-      ValueKey<String>('timeline-user-input-details-$id');
-
-  /// 回执里一题的标题与问题正文；序号是原问题顺序，不是文本身份。
-  static ValueKey<String> timelineUserInputQuestion(String id, int index) =>
-      ValueKey<String>('timeline-user-input-question-$id-$index');
-
-  /// 回执里一题的答案正文。
-  static ValueKey<String> timelineUserInputAnswer(String id, int index) =>
-      ValueKey<String>('timeline-user-input-answer-$id-$index');
 
   /// Wait/sleep card, expanded details and secondary diagnostics.
   static ValueKey<String> waitingCard(String itemId) =>
@@ -826,14 +587,11 @@ abstract final class StudioDriverKeys {
   /// 工具图片条目的稳定唯一身份：owning 调用 id + 附件 id。
   ///
   /// 资源 id 内容寻址，同一工具组内不同调用读取同一图片会得到相同附件 id，因此条目
-  /// 的 toggle/thumbnail/dialog key 必须叠加调用身份。测试与 Widget 均使用该公式，
-  /// 保证选中的是同一条目。调用 id 取工具 callId（缺失时实现回退 toolCallId）；
-  /// 同一调用结果内重复引用同一资源时实现会追加 `#<序号>`。
+  /// 的 thumbnail/dialog key 必须叠加调用身份。测试与 Widget 均使用该公式，保证选中
+  /// 的是同一条目。调用 id 取工具 callId（缺失时实现回退 toolCallId）；同一调用结果
+  /// 内重复引用同一资源时实现会追加 `#<序号>`。
   static String toolImageEntryId(String callId, String attachmentId) =>
       '$callId:$attachmentId';
-
-  static ValueKey<String> viewImageToggle(String id) =>
-      ValueKey<String>('view-image-toggle-$id');
 
   static ValueKey<String> viewImageThumbnail(String id) =>
       ValueKey<String>('view-image-thumbnail-$id');
@@ -850,31 +608,6 @@ abstract final class StudioDriverKeys {
   static const ValueKey<String> timelineImageClose = ValueKey<String>(
     'timeline-image-close',
   );
-
-  static ValueKey<String> toolImageGallery(String groupId) =>
-      ValueKey<String>('tool-image-gallery-$groupId');
-
-  /// 展示工具图片卡片：卡片本身、成功加载的图片与失败重试入口。
-  ///
-  /// `entryId` 沿用 [toolImageEntryId] 的 owning 调用 + 附件身份公式，因此同一资源被
-  /// 不同调用展示时仍各自拥有独立的卡片身份。
-  static ValueKey<String> imageCard(String entryId) =>
-      ValueKey<String>('image-card-$entryId');
-
-  static ValueKey<String> imageCardImage(String entryId) =>
-      ValueKey<String>('image-card-image-$entryId');
-
-  static ValueKey<String> imageCardRetry(String entryId) =>
-      ValueKey<String>('image-card-retry-$entryId');
-
-  static ValueKey<String> markdownImageSource(String url) =>
-      ValueKey<String>('markdown-image-source-$url');
-
-  static ValueKey<String> markdownImageThumbnail(String url) =>
-      ValueKey<String>('markdown-image-thumbnail-$url');
-
-  static ValueKey<String> markdownImageDialog(String url) =>
-      ValueKey<String>('markdown-image-dialog-$url');
 
   static ValueKey<String> reasoningEffortOption(String effort) =>
       ValueKey<String>(StudioDriverKeyValues.reasoningEffortOption(effort));
@@ -919,37 +652,4 @@ abstract final class StudioDriverKeys {
 
   static ValueKey<String> agentTaskSummary(String id) =>
       ValueKey<String>('agent-task-summary-$id');
-
-  static ValueKey<String> accountRow(String id) =>
-      ValueKey<String>('account-row-$id');
-
-  static ValueKey<String> accountConnectionMode(String accountId) =>
-      ValueKey<String>('account-$accountId-connection-mode');
-
-  static ValueKey<String> accountConnectionModeOption(
-    String accountId,
-    String mode,
-  ) => ValueKey<String>('account-$accountId-connection-mode-$mode');
-
-  static ValueKey<String> accountModelConnectionMode(
-    String accountId,
-    String model,
-  ) => ValueKey<String>('account-$accountId-model-$model-connection-mode');
-
-  static ValueKey<String> accountModelConnectionModeOption(
-    String accountId,
-    String model,
-    String mode,
-  ) =>
-      ValueKey<String>('account-$accountId-model-$model-connection-mode-$mode');
-
-  static ValueKey<String> accountModelAutoCompactInput(
-    String accountId,
-    String model,
-  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-input');
-
-  static ValueKey<String> accountModelAutoCompactReset(
-    String accountId,
-    String model,
-  ) => ValueKey<String>('account-$accountId-model-$model-auto-compact-reset');
 }

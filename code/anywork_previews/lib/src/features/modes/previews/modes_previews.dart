@@ -86,6 +86,8 @@ class _PanelHost extends StatelessWidget {
       ...GlobalMaterialLocalizations.delegates,
     ],
     supportedLocales: AppLocalizations.supportedLocales,
+    builder: (context, child) =>
+        ListTileTheme(data: Theme.of(context).listTileTheme, child: child!),
     home: Scaffold(body: child),
   );
 }
@@ -128,7 +130,7 @@ Widget _transitionPanel({required bool readOnly}) {
   );
 }
 
-// 合成数据 · 动作仅本地记录；预览不装配 Client/Provider/FRB。
+// 使用合成数据预览生产面板。动作回调为空。
 @Preview(name: '阶段详情 / 编辑态', group: 'Modes · 阶段详情', size: Size(360, 760))
 Widget stageDetailEditablePreview() => _stagePanel(readOnly: false);
 

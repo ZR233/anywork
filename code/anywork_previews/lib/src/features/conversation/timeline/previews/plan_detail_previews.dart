@@ -98,7 +98,6 @@ Widget _host(
                       activeKind: ConversationSidebarPanelKind.plan,
                       presentation: ConversationSidebarPresentation(
                         sideBySideFeasible: true,
-                        isOverlay: false,
                         isExpandedFull: fullWidth,
                       ),
                       onSelectKind: (_) {},

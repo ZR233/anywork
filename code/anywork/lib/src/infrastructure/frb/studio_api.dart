@@ -35,6 +35,8 @@ export 'package:anywork_client/studio_ports.dart';
 import '../../platform/error_log.dart';
 import 'studio_bridge_api.dart' as frb;
 import 'studio_bridge_error.dart';
+import 'studio_numeric_converters.dart';
+import 'studio_workflow_converters.dart';
 import '../../rust/api/studio/types/thread_lsp.dart' as frb_thread_lsp_types;
 import 'usage_diagnostics.dart';
 import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
@@ -79,14 +81,12 @@ part 'studio_acp_business_port.dart';
 part 'studio_delegation_converters.dart';
 part 'studio_bots_converters.dart';
 
-PermissionMode _permissionMode(Object? value) {
-  return switch (_string(value)) {
-    'request-approval' => PermissionMode.requestApproval,
-    'auto-review' => PermissionMode.autoReview,
-    'full-access' => PermissionMode.fullAccess,
-    final label => throw FormatException('Unknown permission mode: $label'),
-  };
-}
+PermissionMode _permissionMode(String label) => switch (label) {
+  'request-approval' => PermissionMode.requestApproval,
+  'auto-review' => PermissionMode.autoReview,
+  'full-access' => PermissionMode.fullAccess,
+  _ => throw FormatException('Unknown permission mode: $label'),
+};
 
 String _permissionModeLabel(PermissionMode mode) {
   return switch (mode) {
@@ -94,64 +94,6 @@ String _permissionModeLabel(PermissionMode mode) {
     PermissionMode.autoReview => 'auto-review',
     PermissionMode.fullAccess => 'full-access',
   };
-}
-
-String _string(Object? value, {String fallback = ''}) {
-  if (value == null) {
-    return fallback;
-  }
-  if (value is String) {
-    return value.isEmpty ? fallback : value;
-  }
-  return value.toString();
-}
-
-int _frbInt(Object value) {
-  if (value is BigInt) {
-    return value.toInt();
-  }
-  if (value is int) {
-    return value;
-  }
-  if (value is num) {
-    return value.toInt();
-  }
-  return int.parse(value.toString());
-}
-
-int? _frbNullableInt(Object? value) {
-  if (value == null) {
-    return null;
-  }
-  return _frbInt(value);
-}
-
-DateTime _dateFromUnix(Object seconds) {
-  final value = switch (seconds) {
-    final BigInt value => value,
-    final int value => BigInt.from(value),
-    _ => throw const StudioFailure(
-      code: StudioFailureCode.internal,
-      message: 'The bridge timestamp is not an integer',
-      retryable: false,
-      correlationId: 'client-timestamp-type',
-    ),
-  };
-  final milliseconds = value * BigInt.from(1000);
-  final converted = milliseconds.toInt();
-  if (BigInt.from(converted) == milliseconds) {
-    try {
-      return DateTime.fromMillisecondsSinceEpoch(converted);
-    } on ArgumentError {
-      // A valid native timestamp must not wrap into another instant.
-    }
-  }
-  throw const StudioFailure(
-    code: StudioFailureCode.overloaded,
-    message: 'The bridge timestamp cannot be represented exactly',
-    retryable: false,
-    correlationId: 'client-timestamp-range',
-  );
 }
 
 ThreadRuntimeView _emptyRuntimeView() {

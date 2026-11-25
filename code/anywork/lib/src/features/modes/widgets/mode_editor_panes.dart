@@ -355,29 +355,15 @@ class ModeSettingsPanel extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
+                  ModeWorkflowStateField(
                     key: ValueKey<String>(
                       'mode-editor-settings-initial-${workflow.initialStateId}',
                     ),
-                    initialValue:
-                        workflow.states.any(
-                          (state) =>
-                              state.id == workflow.initialStateId &&
-                              state.kind == WorkflowStateKind.atomic,
-                        )
-                        ? workflow.initialStateId
-                        : null,
-                    decoration: InputDecoration(
-                      labelText: l10n.modeEditorInitialStateLabel,
+                    label: l10n.modeEditorInitialStateLabel,
+                    states: workflow.states.where(
+                      (state) => state.kind == WorkflowStateKind.atomic,
                     ),
-                    items: [
-                      for (final state in workflow.states)
-                        if (state.kind == WorkflowStateKind.atomic)
-                          DropdownMenuItem(
-                            value: state.id,
-                            child: Text(state.title),
-                          ),
-                    ],
+                    selectedId: workflow.initialStateId,
                     onChanged: readOnly
                         ? null
                         : (value) {
@@ -476,8 +462,7 @@ class ModePreviewPanel extends StatelessWidget {
     required this.busy,
     required this.l10n,
     required this.onReasonChanged,
-    required this.onStart,
-    required this.onReset,
+    required this.onRestart,
     required this.onAdvance,
   });
 
@@ -487,8 +472,7 @@ class ModePreviewPanel extends StatelessWidget {
   final bool busy;
   final AppLocalizations l10n;
   final ValueChanged<String> onReasonChanged;
-  final VoidCallback onStart;
-  final VoidCallback onReset;
+  final VoidCallback onRestart;
   final ValueChanged<String> onAdvance;
 
   @override
@@ -543,14 +527,14 @@ class ModePreviewPanel extends StatelessWidget {
                     if (snapshot == null)
                       FilledButton.icon(
                         key: ModeEditorKeys.previewStart,
-                        onPressed: busy ? null : onStart,
+                        onPressed: busy ? null : onRestart,
                         icon: const Icon(Icons.play_arrow, size: 18),
                         label: Text(l10n.modeEditorStartPreview),
                       )
                     else
                       OutlinedButton.icon(
                         key: ModeEditorKeys.previewReset,
-                        onPressed: busy ? null : onReset,
+                        onPressed: busy ? null : onRestart,
                         icon: const Icon(Icons.restart_alt, size: 18),
                         label: Text(l10n.modeEditorRestart),
                       ),
@@ -1017,7 +1001,7 @@ class _IssueList extends StatelessWidget {
         shrinkWrap: true,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         children: [
-          for (var index = 0; index < issues.length; index++)
+          for (final issue in issues)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 3),
               child: Row(
@@ -1036,7 +1020,7 @@ class _IssueList extends StatelessWidget {
                       borderRadius: BorderRadius.circular(StudioRadii.xs),
                     ),
                     child: Text(
-                      issues[index].code,
+                      issue.code,
                       style: context.text.labelSmall?.copyWith(
                         color: context.colors.onErrorContainer,
                         fontFamily: studioCodeFontFamily,
@@ -1046,7 +1030,7 @@ class _IssueList extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '${issues[index].path}: ${issues[index].message}',
+                      '${issue.path}: ${issue.message}',
                       style: context.text.bodySmall?.copyWith(
                         color: context.colors.onErrorContainer,
                       ),

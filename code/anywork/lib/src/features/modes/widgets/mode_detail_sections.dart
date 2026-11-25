@@ -73,14 +73,12 @@ class ModeDetailStageLink extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
-    this.icon = Icons.account_tree_outlined,
     this.trailing,
   });
 
   final String title;
   final String subtitle;
   final VoidCallback onTap;
-  final IconData icon;
   final Widget? trailing;
 
   @override
@@ -89,7 +87,11 @@ class ModeDetailStageLink extends StatelessWidget {
     color: context.colors.surface,
     child: ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-      leading: Icon(icon, size: 22, color: context.colors.primary),
+      leading: Icon(
+        Icons.account_tree_outlined,
+        size: 22,
+        color: context.colors.primary,
+      ),
       title: Text(
         title,
         style: context.text.bodyMedium?.copyWith(fontWeight: FontWeight.w600),

@@ -30,16 +30,13 @@ class WriteStdinToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.terminal);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolStdinRunning
-        : failed
-        ? l10n.timelineToolStdinFailed
-        : l10n.timelineToolStdinSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolStdinRunning,
+        failed: l10n.timelineToolStdinFailed,
+        succeeded: l10n.timelineToolStdinSucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) => toolField(

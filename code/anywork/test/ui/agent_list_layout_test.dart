@@ -11,6 +11,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
@@ -252,7 +253,7 @@ Future<void> _openLayoutMenu(WidgetTester tester) async {
 Future<void> _closeLayoutGraph(WidgetTester tester, AppGraph graph) async {
   final anchors = find.byType(MenuAnchor);
   if (anchors.evaluate().isNotEmpty) {
-    tester.widget<MenuAnchor>(anchors).controller?.close();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump(const Duration(milliseconds: 300));
   }
   await tester.pumpWidget(const SizedBox.shrink());

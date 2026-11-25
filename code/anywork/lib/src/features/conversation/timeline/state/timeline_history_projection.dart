@@ -213,28 +213,46 @@ abstract final class TimelineHistoryProjection {
   static ({DisplayRecord record, HistorySingleVisibility visibility})
   _projectEvent(HistoryEventRecord event, {String? idOverride}) {
     final displayId = idOverride ?? event.entityId ?? event.eventId;
-    final predecoded = ChatItemPresentation.decodeEventRecord(
+    var predecoded = ChatItemPresentation.decodeEventRecord(
       event,
       id: displayId,
     );
     final envelope = _decodeEnvelopeObject(event.payloadJson);
+    final invalidField = _invalidProjectionField(envelope);
+    if (invalidField != null) {
+      predecoded = ChatItemPresentation(
+        id: displayId,
+        compatibility: ChatItemCompatibility.malformed,
+        type: 'malformed',
+        data: const {},
+        bodies: const [],
+        raw: event.payloadJson,
+        createdAt: predecoded.createdAt,
+        diagnostic: 'Invalid $invalidField',
+      );
+      // Keep valid observation facts, including its captured cut. Typed reads
+      // below ignore damaged fields without inventing original availability.
+    }
     final meta = envelope?['meta'] is Map<String, dynamic>
         ? envelope!['meta'] as Map<String, dynamic>
         : null;
     final data = envelope?['data'] is Map<String, dynamic>
         ? envelope!['data'] as Map<String, dynamic>
         : null;
-    final capturedAt = envelope?['capturedAt'] as int?;
+    final capturedAt = _metadataValue<int>(envelope?['capturedAt']);
     final isFrozen =
         capturedAt != null ||
         event.kind == 'legacy_observed' ||
         event.kind == 'boundary_observed';
     final isTerminal = _isTerminalEvent(event, meta: meta, data: data);
-    final contentPresent = meta?['contentPresent'] as bool?;
-    final startedMillis = (meta?['startedAt'] as int?) ?? event.occurredAt;
-    final finishedMillis = isFrozen ? null : meta?['finishedAt'] as int?;
+    final contentPresent = _metadataValue<bool>(meta?['contentPresent']);
+    final startedMillis =
+        _metadataValue<int>(meta?['startedAt']) ?? event.occurredAt;
+    final finishedMillis = isFrozen
+        ? null
+        : _metadataValue<int>(meta?['finishedAt']);
     final entityId =
-        (meta?['entityId'] as String?) ??
+        _metadataValue<String>(meta?['entityId']) ??
         (event.entityId != null && event.entityId!.isNotEmpty
             ? event.entityId!
             : event.callId != null
@@ -243,7 +261,9 @@ abstract final class TimelineHistoryProjection {
     final kind = _atomKind(meta?['entityKind'], event.kind, predecoded.type);
     final delivery = _deliveryKind(meta?['delivery']);
     final textChannel = _textChannel(meta?['textChannel'] ?? data?['channel']);
-    final visibility = meta?['singleVisibility'] == 'finalEmptyAfterContent'
+    final visibility =
+        invalidField == null &&
+            meta?['singleVisibility'] == 'finalEmptyAfterContent'
         ? HistorySingleVisibility.finalEmptyAfterContent
         : HistorySingleVisibility.content;
     final tool = _toolIdentity(meta?['tool'], event);
@@ -276,11 +296,12 @@ abstract final class TimelineHistoryProjection {
       id: entityId,
       source: event.source ?? ReceiptChatSource(receiptId: event.eventId),
       sourceOrder:
-          (meta?['sourceOrder'] as int?) ?? (envelope?['sourceOrder'] as int?),
+          _metadataValue<int>(meta?['sourceOrder']) ??
+          _metadataValue<int>(envelope?['sourceOrder']),
       kind: kind,
       delivery: delivery,
       lifecycle: lifecycle,
-      turnId: event.turnId ?? (envelope?['turnId'] as String?),
+      turnId: event.turnId ?? _metadataValue<String>(envelope?['turnId']),
       attemptId: event.attemptId,
       tool: tool,
       textChannel: textChannel,
@@ -305,6 +326,33 @@ abstract final class TimelineHistoryProjection {
       predecodedPresentation: predecoded,
     );
     return (record: record, visibility: visibility);
+  }
+
+  static T? _metadataValue<T>(Object? value) => value is T ? value : null;
+
+  static String? _invalidProjectionField(Map<String, dynamic>? envelope) {
+    final rawMeta = envelope?['meta'];
+    final meta = rawMeta is Map<String, dynamic> ? rawMeta : null;
+    for (final field in {
+      'capturedAt': envelope?['capturedAt'],
+      'sourceOrder': envelope?['sourceOrder'],
+      'meta.startedAt': meta?['startedAt'],
+      'meta.finishedAt': meta?['finishedAt'],
+      'meta.sourceOrder': meta?['sourceOrder'],
+    }.entries) {
+      if (field.value != null && field.value is! int) return field.key;
+    }
+    for (final field in {
+      'turnId': envelope?['turnId'],
+      'meta.entityId': meta?['entityId'],
+    }.entries) {
+      if (field.value != null && field.value is! String) return field.key;
+    }
+    final contentPresent = meta?['contentPresent'];
+    if (contentPresent != null && contentPresent is! bool) {
+      return 'meta.contentPresent';
+    }
+    return null;
   }
 
   static Map<String, dynamic>? _decodeEnvelopeObject(String raw) {

@@ -51,6 +51,21 @@ abstract class _FrbRawResource implements ClientResource {
   Future<void> closeChildren() async {}
   Future<void> closeDart() async {}
 
+  /// Native reads are admitted only while open, before and after the await.
+  void _checkOpen() {
+    if (stopping) throw _conversationClosedFailure;
+  }
+
+  Future<T> _guardedCall<R, T>(
+    Future<R> Function() call,
+    T Function(R value) map,
+  ) => FrbStudioTransport._bridgeCall(() async {
+    _checkOpen();
+    final value = await call();
+    _checkOpen();
+    return map(value);
+  });
+
   @override
   void requestClose() {
     if (stopping) return;
@@ -1007,7 +1022,7 @@ class FrbStudioTransport
     final graph = await _bridgeCall(
       () => frb.getThreadWorkflowGraph(threadId: threadId),
     );
-    return graph == null ? null : acp_mapper.workflowGraphFromFrb(graph);
+    return graph == null ? null : workflowGraphFromFrb(graph);
   }
 
   @override

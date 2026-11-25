@@ -28,9 +28,10 @@ AccountSummary usageAccount(String id, {String? name, int? query = 1}) =>
     );
 
 final class ScriptedUsageCall {
-  ScriptedUsageCall(this.identity, this.queryRevision);
+  ScriptedUsageCall(this.identity, this.queryRevision, this.operationId);
   final NativeAccountIdentity identity;
   final int queryRevision;
+  final String operationId;
   final reply = Completer<AccountUsageFrame>();
 }
 
@@ -98,10 +99,21 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
     final query = _accounts
         .firstWhere((account) => account.identity == identity)
         .usageQueryRevision!;
-    final call = ScriptedUsageCall(identity, query);
+    final number = calls.where((call) => call.identity == identity).length + 1;
+    final call = ScriptedUsageCall(
+      identity,
+      query,
+      'usage-${identity.accountId}-$query-$number',
+    );
     calls.add(call);
-    final number = calls.where((call) => call.identity == identity).length;
-    _emit(_usageFrame(identity, query, AccountUsagePhase.querying));
+    _emit(
+      _usageFrame(
+        identity,
+        query,
+        AccountUsagePhase.querying,
+        operationId: call.operationId,
+      ),
+    );
     final gate = _entered.remove((identity.accountId, number));
     gate?.complete(call);
     return call.reply.future;
@@ -110,15 +122,19 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
   AccountUsageFrame _usageFrame(
     NativeAccountIdentity identity,
     int query,
-    AccountUsagePhase phase,
-  ) {
+    AccountUsagePhase phase, {
+    String? operationId,
+    AccountUsageSuccess? lastGood,
+  }) {
     _usageRevision++;
     _values[identity] = AccountUsageObservation(
       identity: identity,
       queryRevision: query,
       revision: _usageRevision,
       phase: phase,
+      operationId: operationId,
       checkedAt: phase == AccountUsagePhase.querying ? null : _usageRevision,
+      lastGood: lastGood,
     );
     return _usage = AccountUsageFrame(
       _stamp('account-usage', _usageRevision),
@@ -131,8 +147,66 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
       call.identity,
       call.queryRevision,
       AccountUsagePhase.unsupported,
+      operationId: call.operationId,
     ),
   );
+
+  void succeedWithQuota(ScriptedUsageCall call) {
+    final checkedAt = _usageRevision + 1;
+    call.reply.complete(
+      _usageFrame(
+        call.identity,
+        call.queryRevision,
+        AccountUsagePhase.succeeded,
+        operationId: call.operationId,
+        lastGood: AccountUsageSuccess(
+          checkedAt: checkedAt,
+          value: AccountSubscription(
+            quotas: [
+              AccountQuota(
+                window: const AccountQuotaWindow(
+                  AccountQuotaWindowKind.fiveHour,
+                ),
+                percentage: 0.25,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  AccountUsageFrame seedSuccess(
+    NativeAccountIdentity identity, {
+    int queryRevision = 1,
+  }) {
+    _usageRevision++;
+    final checkedAt = _usageRevision;
+    _values[identity] = AccountUsageObservation(
+      identity: identity,
+      queryRevision: queryRevision,
+      revision: _usageRevision,
+      phase: AccountUsagePhase.succeeded,
+      operationId: 'previous-${identity.accountId}-$queryRevision',
+      checkedAt: checkedAt,
+      lastGood: AccountUsageSuccess(
+        checkedAt: checkedAt,
+        value: AccountSubscription(
+          quotas: [
+            AccountQuota(
+              window: const AccountQuotaWindow(AccountQuotaWindowKind.fiveHour),
+              percentage: 0.5,
+            ),
+          ],
+        ),
+      ),
+    );
+    return _usage = AccountUsageFrame(
+      _stamp('account-usage', _usageRevision),
+      _values.values,
+    );
+  }
+
   void fail(ScriptedUsageCall call) => call.reply.completeError(
     StateError('Usage transport failed: ${call.identity.accountId}'),
   );

@@ -63,11 +63,10 @@ void main() {
       );
       final oldTail = stock.messages.last;
       await adapter.applyFixtureUpdate(
-        displayBatch(
-          [displayWork('next-a', 4), displayWork('next-b', 5)],
-          placement: TimelineApplyPlacement.append,
-          from: 3,
-        ),
+        displayBatch([
+          displayWork('next-a', 4),
+          displayWork('next-b', 5),
+        ], placement: TimelineApplyPlacement.append),
       );
       await Future<void>.delayed(Duration.zero);
       expect(stock.messages.map((message) => message.id), [
@@ -107,11 +106,9 @@ void main() {
       final original = stock.messages.single;
       final current = intents['existing']!.current;
       for (final batch in [
-        displayBatch(
-          [displayWork('existing', 4)],
-          placement: TimelineApplyPlacement.append,
-          from: 3,
-        ),
+        displayBatch([
+          displayWork('existing', 4),
+        ], placement: TimelineApplyPlacement.append),
         displayBatch(
           [displayWork('existing', 2)],
           placement: TimelineApplyPlacement.prepend,
@@ -124,11 +121,9 @@ void main() {
         expect(intents['existing']!.isRetired, isFalse);
       }
       await adapter.applyFixtureUpdate(
-        displayBatch(
-          [displayWork('valid', 4)],
-          placement: TimelineApplyPlacement.append,
-          from: 3,
-        ),
+        displayBatch([
+          displayWork('valid', 4),
+        ], placement: TimelineApplyPlacement.append),
       );
       expect(stock.messages.map((message) => message.id), [
         'existing',
@@ -176,11 +171,9 @@ void main() {
             placement: placement,
             through: 3,
           ),
-          TimelineApplyPlacement.append => displayBatch(
-            [displayWork('next', 4)],
-            placement: placement,
-            from: 3,
-          ),
+          TimelineApplyPlacement.append => displayBatch([
+            displayWork('next', 4),
+          ], placement: placement),
         };
         final applying = projection.applyFixtureUpdate(
           batch,
@@ -202,11 +195,9 @@ void main() {
         expect(retired, isEmpty);
         component.failure = null;
         await projection.applyFixtureUpdate(
-          displayBatch(
-            [displayWork('next', 4)],
-            placement: TimelineApplyPlacement.append,
-            from: 3,
-          ),
+          displayBatch([
+            displayWork('next', 4),
+          ], placement: TimelineApplyPlacement.append),
         );
         expect(component.messages.map((message) => message.id), [
           'old',

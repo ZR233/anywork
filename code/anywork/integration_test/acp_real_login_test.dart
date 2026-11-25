@@ -22,6 +22,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import '../test/support/acp_usage_refresh.dart';
 import 'support/observed.dart';
 
 // Opt-in real provider acceptance. The official desktop integration_test runner
@@ -363,20 +364,15 @@ void main() {
         'ACP_SESSION_NEW_VERIFIED version=$serverVersion phase=$phase',
       );
 
-      await tapKey(AccountViewKeyValues.acpAction('queryUsage'));
-      await untilObserved(graph.acp.auth, (resource) {
-        final entry = resource.value?.account(id, connectionRevision: revision);
-        if (entry?.state is AcpFailedState) {
-          throw StateError('Usage authentication failed');
-        }
-        return entry?.state is AcpVerifiedState && entry?.usage != null;
-      });
-      final usage = graph.acp.auth.value.value!
-          .account(id, connectionRevision: revision)!
-          .usage!
-          .state;
-      expect(usage, isA<AcpUsageReadyView>());
-      expect((usage as AcpUsageReadyView).groups, isNotEmpty);
+      final refresh = await AcpUsageRefresh.submit(
+        service: graph.acp,
+        mutations: graph.client.mutations,
+        accountId: id,
+        connectionRevision: revision,
+        trigger: () => tapKey(AccountViewKeyValues.acpAction('queryUsage')),
+      );
+      final usage = await refresh.waitForReady();
+      expect(usage.groups, isNotEmpty);
       await screenshot('quota-$phase');
       debugPrint('ACP_USAGE_VERIFIED groups=${usage.groups.length}');
     },

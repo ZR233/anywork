@@ -1,10 +1,14 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/items/wait/wait_tool_item.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -21,6 +25,20 @@ void main() {
         addTearDown(() => tester.binding.setSurfaceSize(null));
         const identity = 'original-wait-call';
         const taskId = 'task:original-sleep-call';
+        String? copied;
+        final messenger = tester.binding.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(SystemChannels.platform, (
+          call,
+        ) async {
+          if (call.method == 'Clipboard.setData') {
+            copied = (call.arguments as Map)['text'] as String;
+          }
+          return null;
+        });
+        addTearDown(
+          () =>
+              messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+        );
         final input = ValueNotifier(
           ThreadWaitPresentationView(
             state: ThreadWaitStateView.waiting,
@@ -60,9 +78,22 @@ void main() {
                       const SizedBox(height: 500),
                       ValueListenableBuilder(
                         valueListenable: input,
-                        builder: (_, value, _) => TimelineWaitPanel(
-                          identity: identity,
-                          presentation: value,
+                        builder: (_, value, _) => TimelineToolItemView(
+                          item: TimelineToolPresentation(
+                            id: identity,
+                            toolCallId: identity,
+                            name: 'wait',
+                            presentationContract: WaitToolItem.contractId,
+                            statusString:
+                                value.state == ThreadWaitStateView.waiting
+                                ? 'waiting'
+                                : value.state == ThreadWaitStateView.cancelled
+                                ? 'cancelled'
+                                : 'succeeded',
+                            arguments: '',
+                            output: '',
+                            wait: value,
+                          ),
                         ),
                       ),
                     ],
@@ -162,6 +193,16 @@ void main() {
           matching: find.byType(SelectableText),
         );
         expect(tester.widget<SelectableText>(raw).data, contains(taskId));
+        final selection = tester.state<EditableTextState>(
+          find.descendant(of: raw, matching: find.byType(EditableText)),
+        );
+        selection.selectAll(SelectionChangedCause.keyboard);
+        await tester.pump();
+        selection.contextMenuButtonItems
+            .firstWhere((item) => item.type == ContextMenuButtonType.copy)
+            .onPressed!();
+        await tester.pump();
+        expect(copied, contains(taskId));
         expect(tester.takeException(), isNull);
         final bounds = tester.getRect(card);
         expect(bounds.left, greaterThanOrEqualTo(0));

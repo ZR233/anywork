@@ -1,5 +1,5 @@
-import 'dart:async';
 import 'dart:typed_data';
+
 import 'package:idb_shim/idb_browser.dart';
 
 import 'base_cache.dart';
@@ -7,62 +7,48 @@ import 'base_cache.dart';
 /// Web (HTML) implementation of [BaseCache] using IndexedDB.
 class Cache extends BaseCache {
   Database? _db;
-  Completer<void>? _dbOpenCompleter;
+  Future<Database>? _opening;
+  bool _disposed = false;
 
-  /// Initializes the IndexedDB database connection.
-  Cache() {
-    _open();
-  }
-
-  Future<void> _onUpgradeNeeded(VersionChangeEvent event) async {
-    _db = event.database;
-    if (!_db!.objectStoreNames.contains('data')) {
-      _db!.createObjectStore('data');
+  void _onUpgradeNeeded(VersionChangeEvent event) {
+    final database = event.database;
+    if (!database.objectStoreNames.contains('data')) {
+      database.createObjectStore('data');
     }
   }
 
-  Future<void> _open() async {
-    if (_dbOpenCompleter != null) {
-      return _dbOpenCompleter!.future;
-    }
-
-    _dbOpenCompleter = Completer<void>();
-
+  Future<Database> _open() async {
     try {
-      _db = await idbFactoryBrowser.open(
+      final database = await idbFactoryBrowser.open(
         'cross_cache_db',
         version: 1,
         onUpgradeNeeded: _onUpgradeNeeded,
       );
 
-      _dbOpenCompleter?.complete();
-    } catch (e) {
-      _dbOpenCompleter?.completeError(e);
-      _db = null;
+      if (_disposed) {
+        database.close();
+        throw StateError('Cache disposed during open');
+      }
+      _db = database;
+      return database;
     } finally {
-      _dbOpenCompleter = null;
+      _opening = null;
     }
   }
 
-  Future<void> _ensureDbOpen() async {
-    if (_db == null) {
-      if (_dbOpenCompleter != null) {
-        await _dbOpenCompleter!.future;
-      } else {
-        await _open();
-      }
-
-      if (_db == null) {
-        throw Exception('IndexedDB is not supported or failed to open.');
-      }
-    }
+  Future<Database> _ensureDbOpen() async {
+    if (_disposed) throw StateError('Cache disposed');
+    // Only a real operation opens the database and owns its possible failure.
+    final database = _db ?? await (_opening ??= _open());
+    if (_disposed) throw StateError('Cache disposed');
+    return database;
   }
 
   @override
   Future<void> set(String key, Uint8List value) async {
-    await _ensureDbOpen();
+    final database = await _ensureDbOpen();
 
-    final transaction = _db!.transaction('data', 'readwrite');
+    final transaction = database.transaction('data', 'readwrite');
     final store = transaction.objectStore('data');
     await store.put(value, key);
     await transaction.completed;
@@ -70,9 +56,9 @@ class Cache extends BaseCache {
 
   @override
   Future<Uint8List> get(String key) async {
-    await _ensureDbOpen();
+    final database = await _ensureDbOpen();
 
-    final transaction = _db!.transaction('data', 'readonly');
+    final transaction = database.transaction('data', 'readonly');
     final store = transaction.objectStore('data');
     final data = await store.getObject(key);
     await transaction.completed;
@@ -88,9 +74,9 @@ class Cache extends BaseCache {
 
   @override
   Future<bool> contains(String key) async {
-    await _ensureDbOpen();
+    final database = await _ensureDbOpen();
 
-    final transaction = _db!.transaction('data', 'readonly');
+    final transaction = database.transaction('data', 'readonly');
     final store = transaction.objectStore('data');
     final result = await store.getObject(key);
     await transaction.completed;
@@ -100,9 +86,9 @@ class Cache extends BaseCache {
 
   @override
   Future<void> delete(String key) async {
-    await _ensureDbOpen();
+    final database = await _ensureDbOpen();
 
-    final transaction = _db!.transaction('data', 'readwrite');
+    final transaction = database.transaction('data', 'readwrite');
     final store = transaction.objectStore('data');
     await store.delete(key);
     await transaction.completed;
@@ -110,9 +96,9 @@ class Cache extends BaseCache {
 
   @override
   Future<void> updateKey(String key, String newKey) async {
-    await _ensureDbOpen();
+    final database = await _ensureDbOpen();
 
-    final transaction = _db!.transaction('data', 'readwrite');
+    final transaction = database.transaction('data', 'readwrite');
     final store = transaction.objectStore('data');
     final data = await store.getObject(key);
 
@@ -133,11 +119,8 @@ class Cache extends BaseCache {
 
   @override
   void dispose() {
+    _disposed = true;
     _db?.close();
     _db = null;
-    if (_dbOpenCompleter != null && !_dbOpenCompleter!.isCompleted) {
-      _dbOpenCompleter!.completeError(Exception('Cache disposed during open'));
-      _dbOpenCompleter = null;
-    }
   }
 }

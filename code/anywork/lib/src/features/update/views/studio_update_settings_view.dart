@@ -21,110 +21,124 @@ class StudioUpdateSettingsView extends StatelessWidget {
   final VoidCallback onOpenReleaseNotes;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    child: LayoutBuilder(
+      builder: (context, constraints) => _content(
+        context,
+        actionsBelow:
+            constraints.maxWidth <
+            600 * MediaQuery.textScalerOf(context).scale(14) / 14,
+      ),
+    ),
+  );
+
+  Widget _content(BuildContext context, {required bool actionsBelow}) {
     final theme = Theme.of(context);
     final action = _action(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                Icons.system_update_alt,
-                size: 20,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      context.l10n.settingsStudioUpdateTitle,
-                      style: context.text.bodyMedium?.copyWith(
-                        color: context.colors.onSurface,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _statusText(context),
-                      style: context.text.bodySmall?.copyWith(
-                        color: context.colors.onSurfaceVariant,
-                      ),
-                    ),
-                    if (state.readyVersion != null &&
-                        state.statusKind != StudioUpdateStatusKind.ready &&
-                        state.statusKind !=
-                            StudioUpdateStatusKind.installerLaunched) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        context.l10n.settingsStudioUpdateReady(
-                          state.readyVersion!,
-                        ),
-                        style: context.text.bodySmall,
-                      ),
-                    ],
-                    if (state.requestKind ==
-                            StudioUpdateRequestKind.preparing ||
-                        state.requestKind ==
-                            StudioUpdateRequestKind.cancelling ||
-                        state.requestKind ==
-                            StudioUpdateRequestKind.cancelled) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        switch (state.requestKind) {
-                          StudioUpdateRequestKind.cancelling =>
-                            context.l10n.settingsStudioUpdateCancelling,
-                          StudioUpdateRequestKind.cancelled =>
-                            context.l10n.settingsStudioUpdateCancelled,
-                          _ => context.l10n.settingsStudioUpdatePreparing,
-                        },
-                        key: const ValueKey('studio-update-request'),
-                        style: context.text.bodySmall,
-                      ),
-                    ],
-                    if (state.errorKind != StudioUpdateErrorKind.none) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        state.errorKind == StudioUpdateErrorKind.cancelled
-                            ? context.l10n.settingsStudioUpdateCancelled
-                            : context.l10n.settingsStudioUpdateFailed(
-                                state.errorMessage,
-                              ),
-                        key: const ValueKey('studio-update-error'),
-                        style: context.text.bodySmall?.copyWith(
-                          color: theme.colorScheme.error,
-                        ),
-                      ),
-                    ],
-                    if (state.requestErrorMessage case final error?) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        context.l10n.settingsStudioUpdateFailed(error),
-                        style: context.text.bodySmall?.copyWith(
-                          color: theme.colorScheme.error,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              if (action != null) ...[const SizedBox(width: 16), action],
-            ],
-          ),
-          if (state.showProgress) ...[
-            const SizedBox(height: 10),
-            LinearProgressIndicator(
-              key: const ValueKey('studio-update-progress'),
-              value: state.progress,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.system_update_alt,
+              size: 20,
+              color: theme.colorScheme.onSurfaceVariant,
             ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    context.l10n.settingsStudioUpdateTitle,
+                    style: context.text.bodyMedium?.copyWith(
+                      color: context.colors.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _statusText(context),
+                    style: context.text.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
+                    ),
+                  ),
+                  if (state.readyVersion != null &&
+                      state.statusKind != StudioUpdateStatusKind.ready &&
+                      state.statusKind !=
+                          StudioUpdateStatusKind.installerLaunched) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      context.l10n.settingsStudioUpdateReady(
+                        state.readyVersion!,
+                      ),
+                      style: context.text.bodySmall,
+                    ),
+                  ],
+                  if (state.requestKind == StudioUpdateRequestKind.preparing ||
+                      state.requestKind == StudioUpdateRequestKind.cancelling ||
+                      state.requestKind ==
+                          StudioUpdateRequestKind.cancelled) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      switch (state.requestKind) {
+                        StudioUpdateRequestKind.cancelling =>
+                          context.l10n.settingsStudioUpdateCancelling,
+                        StudioUpdateRequestKind.cancelled =>
+                          context.l10n.settingsStudioUpdateCancelled,
+                        _ => context.l10n.settingsStudioUpdatePreparing,
+                      },
+                      key: const ValueKey('studio-update-request'),
+                      style: context.text.bodySmall,
+                    ),
+                  ],
+                  if (state.errorKind != StudioUpdateErrorKind.none) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      state.errorKind == StudioUpdateErrorKind.cancelled
+                          ? context.l10n.settingsStudioUpdateCancelled
+                          : context.l10n.settingsStudioUpdateFailed(
+                              state.errorMessage,
+                            ),
+                      key: const ValueKey('studio-update-error'),
+                      style: context.text.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ],
+                  if (state.requestErrorMessage case final error?) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      context.l10n.settingsStudioUpdateFailed(error),
+                      style: context.text.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (action != null && !actionsBelow) ...[
+              const SizedBox(width: 16),
+              action,
+            ],
           ],
+        ),
+        if (action != null && actionsBelow) ...[
+          const SizedBox(height: 12),
+          Align(alignment: AlignmentDirectional.centerEnd, child: action),
         ],
-      ),
+        if (state.showProgress) ...[
+          const SizedBox(height: 10),
+          LinearProgressIndicator(
+            key: const ValueKey('studio-update-progress'),
+            value: state.progress,
+          ),
+        ],
+      ],
     );
   }
 

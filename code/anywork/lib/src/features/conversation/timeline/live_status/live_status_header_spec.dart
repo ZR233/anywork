@@ -136,7 +136,7 @@ final class LiveStatusHeaderSpec {
         true,
       ),
       ConversationActivityKind.storageBlocked => _storageStyle(
-        storageSeverity ?? _inferStorageSeverity(view.storage),
+        storageSeverity ?? LiveStorageSeverity.fromStorage(view.storage),
       ),
       ConversationActivityKind.responding => (
         view.kind.icon,
@@ -541,19 +541,6 @@ final class LiveStatusHeaderSpec {
       false,
     ),
   };
-
-  static LiveStorageSeverity _inferStorageSeverity(
-    ThreadStorageStateView? storage,
-  ) {
-    if (storage == null) return LiveStorageSeverity.fault;
-    if (storage.resumeRequired && storage.canResume) {
-      return LiveStorageSeverity.resumeReady;
-    }
-    if (storage.hasFault) return LiveStorageSeverity.fault;
-    if (storage.pressurePaused) return LiveStorageSeverity.pressure;
-    if (storage.resumeRequired) return LiveStorageSeverity.resumeRequired;
-    return LiveStorageSeverity.paused;
-  }
 
   static String? _trimmed(String? value) {
     final trimmed = value?.trim();
