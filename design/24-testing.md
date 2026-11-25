@@ -21,6 +21,8 @@
 
 Windows 和 macOS 的静态检查独立于 Linux 构件准备。两平台的完整应用构建与打包由 [RC 和正式发布](23-release-update.md) 承担，原生行为可按场景单独验证。
 
+Linux 的工程工具与 helper 分开准备：`linux-inputs` 只构建并共享同次运行的 xtask，`gui-generated` 在工具就绪后即可执行；`remote-helpers` 恢复该工具并构建两个 Linux musl 架构的 helper，与生成检查并行。桌面与原生集成同时等待工具、helper 和 `linux-test-inputs` 的共享测试输入。各作业继续校验构件的来源及适用环境，最终门禁要求路径计划选中的 helper 作业成功；仅生成相关变更不触发 helper。Rust、Flutter 与规模检查不等待 helper。
+
 桌面集成测试通过动态发现与确定性分片执行，各分片无重叠且完整覆盖同一待测集合，不另行维护第二份场景清单。桌面 `smoke` 子集保留基础跨层等待场景；`full` 子集覆盖全部受控桌面集成场景；需要真实外部账号与网络的场景（`acp_real_login`、`chatgpt_real_login`、`acp_agy_conversation`）仅在提供对应环境变量与授权条件时显式启用，不依赖运行期跳过伪装通过。
 `test-project --list` 与执行只使用 `code/anywork/integration_test` 当前发现的 case；请求不存在的 case 会直接以 `unknown desktop case` 失败，不回退到其他场景或空成功。
 

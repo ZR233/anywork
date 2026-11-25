@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "flutter-checks": "skipped",
         "gui-generated": "skipped",
         "linux-inputs": "skipped",
+        "remote-helpers": "skipped",
         "linux-test-inputs": "skipped",
         "linux-desktop": "skipped",
         "linux-native": "skipped",
@@ -98,18 +100,21 @@ class GateEvaluateTest(unittest.TestCase):
         ))
         self.assertEqual(errors, [])
 
-    def test_gui_generation_requires_inputs_without_helper_job(self):
-        for path in (
-            "code/anywork/lib/src/infrastructure/frb/api.dart",
-            "code/anywork/lib/src/features/settings/accounts/view_models/account_editor_view_model.dart",
-            "code/anywork/lib/l10n/app_zh.arb",
+    def test_gui_generation_requires_helpers_only_for_application_suites(self):
+        for path, needs_helpers in (
+            ("code/anywork/lib/src/infrastructure/frb/api.dart", True),
+            (
+                "code/anywork/lib/src/features/settings/accounts/view_models/account_editor_view_model.dart",
+                False,
+            ),
+            ("code/anywork/lib/l10n/app_zh.arb", False),
         ):
             with self.subTest(path=path):
                 plan = plan_from_paths([path], event_name="pull_request")
                 required = plan["required_jobs"]
                 self.assertIn("gui-generated", required)
                 self.assertIn("linux-inputs", required)
-                self.assertNotIn("remote-helpers", required)
+                self.assertEqual("remote-helpers" in required, needs_helpers)
                 results = _results(**{job: "success" for job in required})
                 self.assertEqual(evaluate(required, results), [])
                 for status in ("skipped", "failure"):
@@ -136,6 +141,36 @@ class GateEvaluateTest(unittest.TestCase):
                 with self.subTest(input_status=status):
                     errors = evaluate(required, {**results, "linux-test-inputs": status})
                     self.assertTrue(any("linux-test-inputs" in error for error in errors))
+
+    def test_gate_requires_successful_remote_helpers_for_desktop_and_native(self):
+        for path in (
+            "code/anywork/integration_test/smoke_test.dart",
+            "code/anywork/lib/src/app/studio_host_lifecycle.dart",
+        ):
+            required = plan_from_paths([path], event_name="push")["required_jobs"]
+            results = _results(**{job: "success" for job in required})
+            base_env = {
+                f"{job.upper().replace('-', '_')}_RESULT": result
+                for job, result in results.items()
+                if job != "remote-helpers"
+            }
+            base_env["REQUIRED_JOBS"] = ",".join(required)
+            for status in ("success", "failure", "skipped", "cancelled", None):
+                with self.subTest(path=path, helper_status=status):
+                    env = base_env.copy()
+                    if status is not None:
+                        env["REMOTE_HELPERS_RESULT"] = status
+                    result = subprocess.run(
+                        [sys.executable, Path(__file__).with_name("pr_quality_gate.py")],
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    expected = 0 if status == "success" else 1
+                    self.assertEqual(result.returncode, expected, result.stderr or result.stdout)
+                    if expected:
+                        self.assertIn("remote-helpers", result.stderr)
 
     def test_selected_platform_and_specialized_jobs_must_succeed(self):
         for path, job in (
