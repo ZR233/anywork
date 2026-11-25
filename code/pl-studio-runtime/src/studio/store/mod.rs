@@ -12,6 +12,7 @@ pub(crate) mod attachment;
 pub(in crate::studio) mod catalog;
 pub(in crate::studio) mod directory;
 mod error;
+mod lifecycle;
 pub(in crate::studio) mod object;
 mod project;
 pub(in crate::studio) use project::ProjectRow;
