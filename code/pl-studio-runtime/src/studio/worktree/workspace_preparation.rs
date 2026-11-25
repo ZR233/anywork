@@ -1,4 +1,8 @@
 //! Product workspace allocation independent of Agent execution and model sessions.
+
+#[cfg(test)]
+mod cleanup_tests;
+
 use super::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease, WorktreeLeaseOwner,
     WorktreeLeaseOwnerKind, WorktreeLeaseState,

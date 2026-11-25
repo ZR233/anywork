@@ -343,4 +343,8 @@ impl ThreadWriteBehindWriter {
 
 #[cfg(test)]
 #[path = "handle_tests.rs"]
-mod storage_fault_tests;
+mod queue_tests;
+
+#[cfg(test)]
+#[path = "test_support.rs"]
+pub(in crate::studio) mod test_support;

@@ -17,6 +17,10 @@ mod migration;
 
 #[cfg(test)]
 mod admission_tests;
+#[cfg(test)]
+mod binding_tests;
+#[cfg(test)]
+pub(in crate::studio) mod test_support;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
