@@ -30,8 +30,9 @@ use super::ids::unix_seconds;
 use super::storage::write_behind::ThreadWriteBehindWriter;
 pub(in crate::studio) use thread_directory::NativeAgentObservation;
 pub(crate) use thread_directory::ThreadMetadataSignal;
+pub(in crate::studio) use topics::ProductEventReceiver;
 pub(crate) use topics::ProductTopicSignal;
-use topics::TopicChannels;
+use topics::{ProductPublication, TopicChannels};
 pub use topics::{ProductTopicReceiver, ProductTopicRecvError, ProductTopicTryRecvError};
 
 /// Studio 低频产品状态 owner 与事件通道。
@@ -49,7 +50,9 @@ pub struct ProductEventBus {
     store: StudioStore,
     writer: ThreadWriteBehindWriter,
     /// runtime 内部消费者的显式混合通道；不面向 GUI transport。
-    internal: broadcast::Sender<StudioProductEventEnvelope>,
+    internal: broadcast::Sender<ProductPublication>,
+    /// Catalog refresh consumes values except AgentDirectory, which it observes through a signal.
+    catalog_events: broadcast::Sender<StudioProductEventEnvelope>,
     topics: Arc<std::sync::Mutex<TopicChannels>>,
     sequence: Arc<AtomicU64>,
     revisions: Arc<ProductStateRevisions>,
@@ -61,6 +64,7 @@ pub struct ProductEventBus {
     /// 其他快照 owner 同样持有自身同步锁直至 revision、载荷及 emit 完成；
     /// Project 快照锁不与 index 同时持有。所有同步锁统一保留中毒后的 owner。
     thread_index: Arc<std::sync::Mutex<thread_directory::ThreadDirectoryIndex>>,
+    agent_history: Arc<thread_directory::AgentDirectoryHistory>,
     /// Serialize durable commands only. Queries and hot writers never acquire this lock.
     directory_commands: Arc<Mutex<()>>,
     /// 已发布的 Mode catalog revision；按真变才发，避免重复装载空转发布。
@@ -119,6 +123,7 @@ impl ProductEventBus {
     }
     pub(in crate::studio) fn new(store: StudioStore, writer: ThreadWriteBehindWriter) -> Self {
         let (internal, _) = broadcast::channel(256);
+        let (catalog_events, _) = broadcast::channel(256);
         // The catalog is already loaded. Register every persisted direct child before any
         // observation can publish a host collection; activation ancestry can omit siblings.
         let mut child_interactions = ChildInteractionsProjection::default();
@@ -152,6 +157,7 @@ impl ProductEventBus {
             store,
             writer,
             internal,
+            catalog_events,
             topics: Arc::new(std::sync::Mutex::new(TopicChannels::default())),
             sequence: Arc::new(AtomicU64::new(0)),
             revisions: Arc::new(ProductStateRevisions::default()),
@@ -163,6 +169,7 @@ impl ProductEventBus {
                 PersistenceQueuePublication::default(),
             )),
             thread_index: Arc::new(std::sync::Mutex::new(thread_index)),
+            agent_history: Arc::default(),
             directory_commands: Arc::new(Mutex::new(())),
             mode_catalog_revision: Arc::new(std::sync::Mutex::new(0)),
             child_interactions: Arc::new(std::sync::Mutex::new(child_interactions)),
@@ -183,10 +190,22 @@ impl ProductEventBus {
     ///
     /// 该通道只服务 Studio runtime 自己的跨领域观察（工具目录刷新）；GUI transport
     /// 必须使用 typed topic 订阅，不得借用本通道后再在末端丢弃无关领域。
-    pub(in crate::studio) fn subscribe_internal(
+    pub(in crate::studio) fn subscribe_internal(&self) -> ProductEventReceiver {
+        // Serialize value demand with AgentDirectory's notification-only commit. A subscriber
+        // admitted after that commit reads its baseline; one admitted before it gets a value.
+        let _topics = self
+            .topics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ProductEventReceiver::new(self.internal.subscribe())
+    }
+
+    /// Internal catalog refresh values. Observe AgentDirectory through subscribe_topic_signal;
+    /// its payload does not contribute to catalog witnesses, but its wake still starts a scan.
+    pub(in crate::studio) fn subscribe_catalog_events(
         &self,
     ) -> broadcast::Receiver<StudioProductEventEnvelope> {
-        self.internal.subscribe()
+        self.catalog_events.subscribe()
     }
 
     pub fn current_sequence(&self) -> u64 {
@@ -202,7 +221,18 @@ impl ProductEventBus {
             created_at: unix_seconds(),
             kind,
         };
-        let _ = self.internal.send(envelope.clone());
+        if self.internal.receiver_count() > 0 {
+            let _ = self
+                .internal
+                .send(ProductPublication::Value(envelope.clone()));
+        }
+        if !matches!(
+            envelope.kind,
+            StudioProductEventKind::AgentDirectoryChanged(_)
+        ) && self.catalog_events.receiver_count() > 0
+        {
+            let _ = self.catalog_events.send(envelope.clone());
+        }
         self.topics
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

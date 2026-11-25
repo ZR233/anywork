@@ -48,11 +48,55 @@ impl ProductEventBus {
             "compare agent directory members"
         );
         if !changes.upserted.is_empty() || !changes.removed.is_empty() {
-            let agents = index.agent_directory_entries();
+            self.agent_history.record(&changes);
+            let publication = || {
+                let (revision, updated_at) = self.revision(&self.revisions.agent);
+                super::super::topics::ProductPublication::AgentDirectory {
+                    sequence: self
+                        .sequence
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1,
+                    created_at: crate::studio::unix_seconds(),
+                    state: self.agent_history.capture(
+                        self.thread_index.clone(),
+                        revision,
+                        updated_at,
+                    ),
+                }
+            };
+            // Existing full internal observers receive their exact envelope before typed
+            // dispatch. Keep that ordering even while another thread holds the topic registry.
+            if self.internal.receiver_count() > 0 {
+                self.bump(&self.revisions.agent);
+                let publication = publication();
+                let _ = self.internal.send(publication.clone());
+                self.topics
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .dispatch_publication(&publication);
+                return;
+            }
+            let topic = crate::StudioProductTopic::AgentDirectory;
+            let mut topics = self
+                .topics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.bump(&self.revisions.agent);
-            self.emit(StudioProductEventKind::AgentDirectoryChanged(
-                self.agent_directory_state_locked(agents),
-            ));
+            if topics.has_value_receivers(&topic) || self.internal.receiver_count() > 0 {
+                // Queue a revision lease, not a collection. Dequeue/materialization retains
+                // that lease even if subsequent writes overwrite the broadcast ring.
+                let publication = publication();
+                if self.internal.receiver_count() > 0 {
+                    let _ = self.internal.send(publication.clone());
+                }
+                topics.dispatch_publication(&publication);
+            } else {
+                // Registration, revision and wake commit together. No receiver can register in
+                // the gap and miss both a value and its baseline. No full collection is built.
+                self.sequence
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                topics.notify(&topic);
+            }
         }
     }
 

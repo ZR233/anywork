@@ -1,6 +1,6 @@
 use super::*;
 
-fn memory_index(rows: &[SessionDirectoryRow]) -> ThreadDirectoryIndex {
+pub(super) fn memory_index(rows: &[SessionDirectoryRow]) -> ThreadDirectoryIndex {
     ThreadDirectoryIndex::new(
         rows.iter()
             .filter(|row| row.is_root_row())
