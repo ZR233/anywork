@@ -188,8 +188,8 @@ void main() {
       items: [TimelineTodoItem(step: '验证状态恢复', status: 'inProgress')],
     );
 
-    var showWorkflow = false;
-    var showTodo = true;
+    final sidebar = ConversationSidebarState<void>()
+      ..openPanel(ConversationSidebarPanelKind.todo);
 
     await tester.pumpWidget(
       acpTestApp(
@@ -209,10 +209,6 @@ void main() {
                 builder: (_) => TodoPanel(todo: todo),
               ),
             ];
-            final activeKind = showWorkflow
-                ? ConversationSidebarPanelKind.workflow
-                : ConversationSidebarPanelKind.todo;
-            final showSidebar = showWorkflow || showTodo;
             return ConversationWorkspaceShell(
               readingArea: const SizedBox.expand(),
               footerDockBuilder: (_, _) => const SizedBox.shrink(),
@@ -223,30 +219,28 @@ void main() {
                     WorkflowStatusPill(
                       stateTitle: '规划',
                       modeName: '自动',
-                      expanded: showWorkflow,
+                      expanded: sidebar.isPanelOpen(
+                        ConversationSidebarPanelKind.workflow,
+                      ),
                       onTap: () => setState(() {
-                        showWorkflow = !showWorkflow;
-                        if (showWorkflow) showTodo = false;
+                        sidebar.togglePanel(
+                          ConversationSidebarPanelKind.workflow,
+                        );
                       }),
                     ),
                   ],
                 ),
               ),
-              sidebarBuilder: !showSidebar
+              sidebarBuilder: !sidebar.isOpen
                   ? null
                   : (_, presentation) => ConversationRightSidebar(
                       entries: entries,
-                      activeKind: activeKind,
+                      activeKind: sidebar.activeKind!,
                       presentation: presentation,
                       onSelectKind: (kind) => setState(() {
-                        showWorkflow =
-                            kind == ConversationSidebarPanelKind.workflow;
-                        showTodo = kind == ConversationSidebarPanelKind.todo;
+                        sidebar.openPanel(kind);
                       }),
-                      onCollapse: () => setState(() {
-                        showWorkflow = false;
-                        showTodo = false;
-                      }),
+                      onCollapse: () => setState(sidebar.collapse),
                     ),
             );
           },

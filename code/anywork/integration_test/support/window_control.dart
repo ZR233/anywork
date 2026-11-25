@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -598,10 +597,11 @@ String? _x11Resize(
   } on Object catch (error) {
     return 'libX11 is unavailable: $error';
   }
-  Pointer<Uint8>? name;
+  Pointer<ffi.Utf8>? name;
   if (display != driverDisplay) {
-    name = _cString(display);
-    if (name == null) {
+    try {
+      name = display.toNativeUtf8(allocator: ffi.calloc);
+    } on Object {
       _record(
         diagnostics,
         'display name $display -> could not be copied to native memory',
@@ -638,53 +638,9 @@ String? _x11Resize(
       );
     }
   } finally {
-    if (name != null) _freeCString(name);
+    if (name != null) ffi.calloc.free(name);
   }
   return null;
-}
-
-/// Copies [value] into native C memory for Xlib.
-///
-/// Only the display name needs this, so there is deliberately no general
-/// allocator here: `dart:ffi` ships the allocator in `package:ffi`, which is not
-/// a declared dependency, so the loaded C library is used directly.
-Pointer<Uint8>? _cString(String value) {
-  final bytes = utf8.encode(value);
-  for (final library in _cLibraries()) {
-    try {
-      final malloc = library.lookupFunction<_MallocNative, _Malloc>('malloc');
-      final buffer = malloc(bytes.length + 1);
-      if (buffer == nullptr) return null;
-      final view = buffer.asTypedList(bytes.length + 1);
-      view.setRange(0, bytes.length, bytes);
-      view[bytes.length] = 0;
-      return buffer;
-    } on Object {
-      continue;
-    }
-  }
-  return null;
-}
-
-void _freeCString(Pointer<Uint8> pointer) {
-  for (final library in _cLibraries()) {
-    try {
-      library.lookupFunction<_FreeNative, _Free>('free')(pointer);
-      return;
-    } on Object {
-      continue;
-    }
-  }
-}
-
-List<DynamicLibrary> _cLibraries() {
-  final libraries = <DynamicLibrary>[DynamicLibrary.process()];
-  try {
-    libraries.add(DynamicLibrary.open('libc.so.6'));
-  } on Object {
-    // The C library is only a fallback; the process table is preferred.
-  }
-  return libraries;
 }
 
 typedef _XOpenDisplayNative = Pointer<Void> Function(Pointer<Char>);
@@ -700,7 +656,3 @@ typedef _XFlushNative = Int32 Function(Pointer<Void>);
 typedef _XFlush = int Function(Pointer<Void>);
 typedef _XCloseDisplayNative = Int32 Function(Pointer<Void>);
 typedef _XCloseDisplay = int Function(Pointer<Void>);
-typedef _MallocNative = Pointer<Uint8> Function(IntPtr);
-typedef _Malloc = Pointer<Uint8> Function(int);
-typedef _FreeNative = Void Function(Pointer<Uint8>);
-typedef _Free = void Function(Pointer<Uint8>);

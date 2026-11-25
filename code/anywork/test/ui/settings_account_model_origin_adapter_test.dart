@@ -5,8 +5,6 @@ import '../support/pump_client_future.dart';
 import 'package:anywork/src/features/settings/settings_agents_tab.dart';
 import 'package:anywork/src/features/settings/settings_agent_profile_dialog.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/domain/models/agent_workspace_view.dart';
-import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
@@ -157,70 +155,6 @@ void main() {
       );
     },
   );
-
-  test('composer projections observe canonical qualification without recomputing it', () {
-    const model = AccountModelView(
-      modelId: 'model',
-      displayName: 'Model',
-      reasoningEfforts: [],
-      typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
-    );
-    final thread = SessionDirectoryRow(
-      backend: NativeAgentBackendView(
-        config: const NativeAgentConfigView(),
-        status: ThreadStatusView.idle,
-      ),
-      sessionId: 'thread',
-      agentId: 'thread',
-      threadId: 'thread',
-      workspaceId: 'project',
-      title: 'Thread',
-      mode: ThreadModeId.auto,
-      delegationMode: DelegationMode.profile,
-      delegationPreference: DelegationPreference.balanced,
-      updatedAt: DateTime.utc(2026),
-      workspacePath: '/project',
-    );
-    StudioComposerProjection projection(AccountModelView value) =>
-        StudioComposerProjection(
-          row: thread,
-          rootRow: thread,
-          syncState: AgentWorkspaceSyncState.ready,
-          loadError: null,
-          composer: const ComposerThreadState.idle(),
-          composerMode: AgentComposerMode.editable,
-          accounts: [
-            ModelSelectionAccount(
-              id: 'p',
-              name: 'P',
-              billingKind: BillingKind.unknown,
-              models: [value],
-            ),
-          ],
-          modeModelRoutes: const [],
-          roles: const [],
-          activeInteraction: null,
-          turn: null,
-          modelRoute: null,
-          workflow: null,
-          targetDiagnostic: null,
-        );
-    final before = projection(model);
-    expect(projection(model.copyWith()), before);
-    final after = projection(
-      model.copyWith(
-        typeSupport: const [
-          ModelTypeSupportView(
-            modelType: ModelType.text,
-            exclusions: [ModelTypeExclusion.contextParametersInvalid],
-          ),
-        ],
-      ),
-    );
-    expect(after, isNot(before));
-    expect(after.accounts.single.modelsFor(type: ModelType.text), isEmpty);
-    expect(after.accounts.single.models.single.modelId, 'model');
-  });
 
   test('session and Agent adapters query canonical text types and deduplicate routes', () {
     const text = AccountModelView(

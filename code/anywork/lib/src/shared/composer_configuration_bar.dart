@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'studio_menu_button.dart';
+
 /// A presentation entry with an inline control and an equivalent menu item.
 ///
 /// Owners provide the same current value, eligibility and action in both forms.
@@ -75,20 +77,14 @@ class ComposerConfigurationBar extends StatelessWidget {
             ],
             if (hidden.isNotEmpty) ...[
               if (visible.isNotEmpty) const SizedBox(width: _gap),
-              MenuAnchor(
-                menuChildren: [for (final item in hidden) item.menuItem],
-                builder: (context, controller, _) => SizedBox.square(
-                  dimension: _moreWidth,
-                  child: IconButton(
-                    key: moreKey,
-                    tooltip: moreTooltip,
-                    padding: EdgeInsets.zero,
-                    iconSize: 18,
-                    onPressed: () => controller.isOpen
-                        ? controller.close()
-                        : controller.open(),
-                    icon: const Icon(Icons.more_horiz),
-                  ),
+              SizedBox.square(
+                dimension: _moreWidth,
+                child: StudioMenuButton.icon(
+                  buttonKey: moreKey,
+                  tooltip: moreTooltip,
+                  buttonStyle: IconButton.styleFrom(padding: EdgeInsets.zero),
+                  menuChildren: [for (final item in hidden) item.menuItem],
+                  icon: const Icon(Icons.more_horiz, size: 18),
                 ),
               ),
             ],

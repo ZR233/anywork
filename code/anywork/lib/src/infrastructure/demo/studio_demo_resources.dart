@@ -19,6 +19,15 @@ abstract base class _DemoPortProxy<R extends ClientResource>
 
   @override
   Future<void> retryClose() => entry.retryClose();
+
+  /// A closed entry ends the observation with `null` instead of an error.
+  Future<T?> nextFrame<T>(Future<T?> Function(R resource) next) async {
+    try {
+      return await next(await entry.ready);
+    } on ClientResourceClosed {
+      return null;
+    }
+  }
 }
 
 final class _DemoAccountPort extends _DemoPortProxy<DemoAccountObservation>
@@ -26,13 +35,8 @@ final class _DemoAccountPort extends _DemoPortProxy<DemoAccountObservation>
   _DemoAccountPort(super.entry);
 
   @override
-  Future<AccountDomainFrame?> next() async {
-    try {
-      return await (await entry.ready).next();
-    } on ClientResourceClosed {
-      return null;
-    }
-  }
+  Future<AccountDomainFrame?> next() =>
+      nextFrame((resource) => resource.next());
 }
 
 final class _DemoThreadsPort extends _DemoPortProxy<_DemoThreadsObservation>
@@ -40,13 +44,8 @@ final class _DemoThreadsPort extends _DemoPortProxy<_DemoThreadsObservation>
   _DemoThreadsPort(super.entry);
 
   @override
-  Future<ThreadDirectoryFrame?> next() async {
-    try {
-      return await (await entry.ready).next();
-    } on ClientResourceClosed {
-      return null;
-    }
-  }
+  Future<ThreadDirectoryFrame?> next() =>
+      nextFrame((resource) => resource.next());
 }
 
 final class _DemoThreadPort extends _DemoPortProxy<_DemoThreadObservation>
@@ -54,13 +53,8 @@ final class _DemoThreadPort extends _DemoPortProxy<_DemoThreadObservation>
   _DemoThreadPort(super.entry);
 
   @override
-  Future<ThreadMetadataFrame?> next() async {
-    try {
-      return await (await entry.ready).next();
-    } on ClientResourceClosed {
-      return null;
-    }
-  }
+  Future<ThreadMetadataFrame?> next() =>
+      nextFrame((resource) => resource.next());
 }
 
 final class _DemoProductTopicPort
@@ -102,8 +96,9 @@ final class _DemoProductTopicResource implements ClientResource {
       _streamClosed = _controller.close();
       return;
     }
-    // Register before reading the canonical baseline, as in the original demo
-    // stream. The scope owns this raw resource before any producer can start.
+    // Register the sink before reading the canonical baseline so no payload
+    // published in between is lost. The scope owns this raw resource before
+    // any producer can start.
     (transport._topicSinks[topic] ??=
             <void Function(ProductTopicEventPayload)>{})
         .add(_receive);

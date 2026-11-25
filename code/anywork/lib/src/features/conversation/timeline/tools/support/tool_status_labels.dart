@@ -35,6 +35,20 @@ bool isTimelineToolIssue(String status) =>
 bool isTimelineToolStopped(String status) =>
     timelineStoppedStatuses.contains(status);
 
+/// Selects a tool's action wording without treating queued, stopped or unknown
+/// states as successful completion. Those states use the full status title.
+String? toolLifecycleVerb(
+  String status, {
+  required String running,
+  required String failed,
+  required String succeeded,
+}) => switch (status) {
+  final status when timelineToolRunningStatuses.contains(status) => running,
+  'failed' => failed,
+  'succeeded' => succeeded,
+  _ => null,
+};
+
 String toolStatusTitle(AppLocalizations l10n, String status, String name) {
   final label = name.trim().isEmpty ? l10n.timelineToolFallback : name;
   return switch (status) {

@@ -36,16 +36,13 @@ class DeepseekWebFetchToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.public);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolFetchRunning
-        : failed
-        ? l10n.timelineToolFetchFailed
-        : l10n.timelineToolFetchSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolFetchRunning,
+        failed: l10n.timelineToolFetchFailed,
+        succeeded: l10n.timelineToolFetchSucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) =>

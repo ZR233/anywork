@@ -9,7 +9,6 @@ class SidebarFooter extends StatelessWidget {
     this.hasUpdate = false,
     this.updateBusy = false,
     this.onUpdateNow,
-    this.touchMode = false,
   });
 
   final bool archived;
@@ -18,7 +17,6 @@ class SidebarFooter extends StatelessWidget {
   final bool hasUpdate;
   final bool updateBusy;
   final VoidCallback? onUpdateNow;
-  final bool touchMode;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -32,7 +30,7 @@ class SidebarFooter extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: SidebarFooterButton(
+                  child: _SidebarFooterButton(
                     key: const ValueKey('sidebar-archived'),
                     tooltip: context.l10n.sidebarArchived,
                     icon: Icons.archive_outlined,
@@ -42,7 +40,7 @@ class SidebarFooter extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: SidebarFooterButton(
+                  child: _SidebarFooterButton(
                     key: StudioDriverKeys.settingsOpen,
                     tooltip: context.l10n.sidebarSettings,
                     icon: Icons.settings_outlined,
@@ -90,8 +88,8 @@ class SidebarFooter extends StatelessWidget {
   );
 }
 
-class SidebarFooterButton extends StatelessWidget {
-  const SidebarFooterButton({
+class _SidebarFooterButton extends StatelessWidget {
+  const _SidebarFooterButton({
     required this.icon,
     required this.tooltip,
     required this.onPressed,

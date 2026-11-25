@@ -38,16 +38,13 @@ class WaitToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.hourglass_empty);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolWaitRunning
-        : failed
-        ? l10n.timelineToolWaitFailed
-        : l10n.timelineToolWaitSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolWaitRunning,
+        failed: l10n.timelineToolWaitFailed,
+        succeeded: l10n.timelineToolWaitSucceeded,
+      );
 
   @override
   List<ToolDetailValue> output(AppLocalizations l10n, Object? result) =>

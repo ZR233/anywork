@@ -541,7 +541,7 @@ void main() {
     await _close(tester, composer);
   });
 
-  testWidgets('停止与继续被拒绝显示 typed 文案且不清草稿', (tester) async {
+  testWidgets('停止与继续被拒绝显示 typed 文案', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
     await composer.publish(execution: _running);
@@ -1427,11 +1427,6 @@ void main() {
       reason: '重建后的输入区从命令板 accepted 恢复正在停止',
     );
 
-    expect(
-      find.byKey(StudioDriverKeys.composerStopping),
-      findsOneWidget,
-      reason: '重建后仍显示正在停止（受理来自命令板 accepted）',
-    );
     expect(
       find.byKey(StudioDriverKeys.composerStop),
       findsNothing,

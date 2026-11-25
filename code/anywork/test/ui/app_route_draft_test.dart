@@ -238,7 +238,6 @@ void main() {
       );
       final oldPageCut = transport.scriptedPageCut!;
       var hiddenFrames = 0;
-      var hiddenAcks = 0;
 
       await _settingsRoundTrip(
         tester,
@@ -265,7 +264,6 @@ void main() {
           );
           expect(oldLease.isRetired, isTrue);
           hiddenFrames = connection.watchCalls;
-          hiddenAcks = connection.watchCalls;
           expect(composer.state.draft, 'Thread draft entered before Settings');
           expect(composer.stamp, composerStamp);
           expect(
@@ -295,7 +293,6 @@ void main() {
           );
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
           expect(connection.watchCalls, hiddenFrames);
-          expect(connection.watchCalls, hiddenAcks);
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
@@ -392,7 +389,6 @@ void main() {
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
       expect(connection.watchCalls, hiddenFrames);
-      expect(connection.watchCalls, hiddenAcks);
       expect(transport.bootstrapCalls, 1);
 
       transport.botProjectId = workspaceId;

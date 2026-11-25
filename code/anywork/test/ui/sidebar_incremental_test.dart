@@ -55,7 +55,6 @@ Widget _host(Widget child, {double scale = 1}) => MaterialApp(
 
 Widget _sidebar() => StudioSidebar(
   data: SidebarData(projectIds: [_project.id], selectedProjectId: _project.id),
-  onQueryChanged: (_) {},
   projectStructureBuilder: (context, projectId, selection, builder) =>
       SidebarProjectConnector(
         key: ValueKey(projectId),

@@ -175,10 +175,9 @@ AccountSettingsView _accountSettingsFromFrb(
       ),
   };
 
-  final catalogModels =
+  final models =
       catalog?.effectiveModels.map(accountModelFromCatalog).toList() ??
       const <AccountModelView>[];
-  final models = catalog == null ? const <AccountModelView>[] : catalogModels;
   return AccountSettingsView(
     modelCatalog: catalog == null
         ? const ModelCatalogStatusView()

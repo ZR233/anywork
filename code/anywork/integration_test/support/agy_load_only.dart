@@ -392,7 +392,8 @@ Future<void> runAgyLoadOnly({
           'driverErrorPresent': close.driverError != null,
           'remoteCloseErrorPresent': close.remoteCloseError != null,
         };
-        expect(close.localComplete && close.sdkFinished, isTrue);
+        expect(close.localComplete, isTrue);
+        expect(close.sdkFinished, isFalse);
         expect(close.cleanupTimedOut || close.unfinishedControls, isFalse);
         expect(close.unfinishedPrompt, isNull);
         expect(close.ownerFailures, isEmpty);

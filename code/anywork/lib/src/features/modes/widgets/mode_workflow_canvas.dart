@@ -122,11 +122,6 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
         oldWidget.selectedEdgeId != widget.selectedEdgeId) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _syncSelection());
     }
-    if (oldWidget.readOnly != widget.readOnly) {
-      _controller.setBehavior(
-        widget.readOnly ? NodeFlowBehavior.inspect : NodeFlowBehavior.design,
-      );
-    }
   }
 
   @override
@@ -177,20 +172,21 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
 
   void _syncSelection() {
     if (!mounted) return;
-    final previousFocus = FocusManager.instance.primaryFocus;
-    var changedSelection = false;
+    final canvasFocus = _controller.canvasFocusNode;
+    // NodeFlow's selection APIs also request keyboard focus. Suppress that
+    // request only during projection updates, without unfocusing the canvas.
+    final suppressFocus = !canvasFocus.hasFocus && canvasFocus.canRequestFocus;
+    if (suppressFocus) canvasFocus.canRequestFocus = false;
     _syncingSelection = true;
     try {
       final nodeId = widget.selectedStateId;
       final edgeId = widget.selectedEdgeId;
       if (nodeId != null && _controller.getNode(nodeId) != null) {
         if (!_controller.selectedNodeIds.contains(nodeId)) {
-          changedSelection = true;
           _controller.selectNode(nodeId);
         }
       } else if (edgeId != null && _controller.getConnection(edgeId) != null) {
         if (!_controller.selectedConnectionIds.contains(edgeId)) {
-          changedSelection = true;
           _controller.selectConnection(edgeId);
         }
       } else {
@@ -198,15 +194,7 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
       }
     } finally {
       _syncingSelection = false;
-      // Controller selection requests canvas focus. A projection refresh must
-      // keep the user's cursor in the property field they are editing.
-      if (changedSelection &&
-          previousFocus != null &&
-          previousFocus != _controller.canvasFocusNode &&
-          previousFocus.context != null &&
-          previousFocus.canRequestFocus) {
-        previousFocus.requestFocus();
-      }
+      if (suppressFocus) canvasFocus.canRequestFocus = true;
     }
   }
 
@@ -510,7 +498,7 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
     BuildContext context,
     Connection<Object?> connection,
     ConnectionLabel label,
-    Rect position,
+    Rect _,
     VoidCallback? onTap,
   ) {
     final edge = connection.data is _EdgeData
@@ -556,10 +544,8 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: context.text.labelSmall?.copyWith(
-                      color: selected
-                          ? context.colors.onPrimaryContainer
-                          : context.colors.onSurfaceVariant,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      color: context.colors.onPrimaryContainer,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
@@ -787,7 +773,6 @@ class _ModeWorkflowCanvasState extends State<ModeWorkflowCanvas> {
                                             onDeleted: _onConnectionDeleted,
                                             onBeforeComplete:
                                                 _validateConnection,
-                                            onBeforeDelete: (_) async => true,
                                           ),
                                       onSelectionChange: (selection) {
                                         if (_syncingSelection) return;
@@ -832,7 +817,7 @@ final class _WorkflowNodeData {
     required this.state,
     required this.initial,
     required this.ordinal,
-    this.dimmed = false,
+    required this.dimmed,
   });
 
   final WorkflowState state;
@@ -874,7 +859,7 @@ final class _WorkflowNodeData {
 }
 
 final class _EdgeData {
-  const _EdgeData({required this.guard, this.dimmed = false});
+  const _EdgeData({required this.guard, required this.dimmed});
 
   final String guard;
   final bool dimmed;

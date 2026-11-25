@@ -195,6 +195,25 @@ void main() {
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
+      addTearDown(() async {
+        // Release controlled external work even when a behavior assertion fails.
+        final reconnect = transport.reconnectGate;
+        if (reconnect != null && !reconnect.isCompleted) {
+          reconnect.complete(transport.mcpSnapshot);
+        }
+        final lspReset = transport.lspResetGate;
+        if (lspReset != null && !lspReset.isCompleted) {
+          lspReset.complete(transport.threadLspSnapshot);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        container.dispose();
+        final report = await pumpClientFuture(
+          tester,
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
+          'thread mcp teardown',
+        );
+        expect(report.complete, isTrue);
+      });
       transport.mcpSnapshot = const ThreadMcpStateSnapshot(
         threadId: 'thread-main',
         scope: SshMcpScope(sshAlias: 'gpu-box'),
@@ -249,6 +268,13 @@ void main() {
       );
       final otherLspLease = graph.client.channels.acquireThreadLsp(
         'thread-other',
+      );
+      addTearDown(
+        () => pumpClientFuture(
+          tester,
+          otherLspLease.release(),
+          'other thread LSP observation released',
+        ),
       );
       await tester.pumpAndSettle();
       expect(
@@ -494,7 +520,13 @@ void main() {
         find.byKey(StudioDriverKeys.mcpResetServer('dcgm_metrics')),
       );
       await tester.pump();
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(StudioDriverKeys.mcpResetServer('dcgm_metrics')),
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsOneWidget,
+      );
       expect(
         tester
             .widget<IconButton>(
@@ -736,20 +768,6 @@ void main() {
         same(chrome),
       );
       expect(tester.takeException(), isNull);
-
-      await tester.pumpWidget(const SizedBox.shrink());
-      await pumpClientFuture(
-        tester,
-        otherLspLease.release(),
-        'other thread LSP observation released',
-      );
-      container.dispose();
-      final report = await pumpClientFuture(
-        tester,
-        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
-        'thread mcp teardown',
-      );
-      expect(report.complete, isTrue);
     },
   );
 }

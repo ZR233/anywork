@@ -9,7 +9,7 @@ import '../widgets/account_gemini_connection.dart';
 import '../widgets/account_sections.dart';
 import '../widgets/account_template_selector.dart';
 
-class NativeAccountEditorView extends StatefulWidget {
+class NativeAccountEditorView extends StatelessWidget {
   const NativeAccountEditorView({
     required this.value,
     required this.onFieldChanged,
@@ -66,84 +66,15 @@ class NativeAccountEditorView extends StatefulWidget {
   final VoidCallback? onOpenChatGptUsage;
 
   @override
-  State<NativeAccountEditorView> createState() =>
-      _NativeAccountEditorViewState();
-}
-
-class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
-  final Map<String, GlobalKey> _rowKeys = {};
-  final FocusNode _targetFocus = FocusNode();
-  int _focusGeneration = 0;
-  int? _scheduledGeneration;
-  bool _focusCompleted = false;
-
-  @override
-  void didUpdateWidget(covariant NativeAccountEditorView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.value.editorId != widget.value.editorId ||
-        oldWidget.focusManualModelEditorKey !=
-            widget.focusManualModelEditorKey ||
-        oldWidget.focusManualModelId != widget.focusManualModelId) {
-      _focusGeneration++;
-      _focusCompleted = false;
-    }
-    if (oldWidget.value.editorId != widget.value.editorId) _rowKeys.clear();
-  }
-
-  void _scheduleFocus() {
-    final target = widget.focusManualModelEditorKey;
-    if (target == null ||
-        _focusCompleted ||
-        _scheduledGeneration == _focusGeneration ||
-        !widget.value.manualModels.any((model) => model.editorKey == target)) {
-      return;
-    }
-    final generation = _focusGeneration;
-    _scheduledGeneration = generation;
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!mounted || generation != _focusGeneration) return;
-      _scheduledGeneration = null;
-      final targetContext = _rowKeys[target]?.currentContext;
-      if (targetContext == null) return;
-      await Scrollable.ensureVisible(
-        targetContext,
-        alignment: .15,
-        duration: Duration.zero,
-      );
-      if (!mounted ||
-          generation != _focusGeneration ||
-          _rowKeys[target]?.currentContext == null) {
-        return;
-      }
-      _targetFocus.requestFocus();
-      _focusCompleted = true;
-    });
-  }
-
-  @override
-  void dispose() {
-    _focusGeneration++;
-    _targetFocus.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final value = widget.value;
     final l10n = AppLocalizations.of(context);
-    final ids = value.manualModels.map((model) => model.editorKey).toSet();
-    _rowKeys.removeWhere((key, _) => !ids.contains(key));
-    for (final id in ids) {
-      _rowKeys.putIfAbsent(id, GlobalKey.new);
-    }
-    _scheduleFocus();
     final templateSection =
-        widget.templateSelector ??
+        templateSelector ??
         AccountTemplateSelector(
           templates: value.templates,
           selected: value.templateKey,
           enabled: value.canChangeTemplate && !value.saving,
-          onSelected: widget.onTemplateChanged,
+          onSelected: onTemplateChanged,
         );
     return AccountEditorScaffold(
       title: value.accountKey == null
@@ -155,7 +86,7 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
           value.editorId,
         ),
       ),
-      scrollController: widget.scrollController,
+      scrollController: scrollController,
       children: [
         templateSection,
         const SizedBox(height: 24),
@@ -179,10 +110,10 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                   ],
                   selected: {value.authentication},
                   onSelectionChanged:
-                      value.saving || widget.onAuthenticationChanged == null
+                      value.saving || onAuthenticationChanged == null
                       ? null
                       : (selection) =>
-                            widget.onAuthenticationChanged!(selection.single),
+                            onAuthenticationChanged!(selection.single),
                 ),
                 const SizedBox(height: 20),
               ],
@@ -191,34 +122,33 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                       AccountAuthenticationMethod.chatGpt) ...[
                 _ChatGptConnection(
                   value: value,
-                  onStart: widget.onStartChatGptLogin,
-                  onCancel: widget.onCancelChatGptLogin,
-                  onOpenAuthorization: widget.onOpenChatGptAuthorization,
-                  onOpenUsage: widget.onOpenChatGptUsage,
+                  onStart: onStartChatGptLogin,
+                  onCancel: onCancelChatGptLogin,
+                  onOpenAuthorization: onOpenChatGptAuthorization,
+                  onOpenUsage: onOpenChatGptUsage,
                 ),
                 const SizedBox(height: 20),
               ],
-              if (isGeminiAccountPresentation(value)) ...[
+              if (value.geminiConnection case final connection?) ...[
                 AccountGeminiConnectionPanel(
-                  value: value,
-                  onTemplateChanged: widget.onTemplateChanged,
-                  onEndpointPresetSelected: (endpoint) => widget.onFieldChanged(
-                    NativeAccountField.endpoint,
-                    endpoint,
-                  ),
+                  value: connection,
+                  saving: value.saving,
+                  onTemplateChanged: onTemplateChanged,
+                  onEndpointPresetSelected: (endpoint) =>
+                      onFieldChanged(NativeAccountField.endpoint, endpoint),
                 ),
                 const SizedBox(height: 20),
               ],
               AccountNativeConnectionFields(
                 value: value,
-                onChanged: widget.onFieldChanged,
+                onChanged: onFieldChanged,
                 hideApiCredentials:
                     value.isOpenAiTemplate &&
                     value.authentication == AccountAuthenticationMethod.chatGpt,
                 billingControl: AccountBillingControl(
                   value: value.billing,
-                  onChanged: widget.onBillingChanged,
-                  onReset: widget.onResetBilling,
+                  onChanged: onBillingChanged,
+                  onReset: onResetBilling,
                   layout: AccountBillingControlLayout.field,
                 ),
               ),
@@ -233,7 +163,7 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                     value: value.setDefaultOnCreate,
                     onChanged: value.saving
                         ? null
-                        : widget.onSetDefaultOnCreateChanged,
+                        : onSetDefaultOnCreateChanged,
                   ),
                 ),
               ],
@@ -244,8 +174,8 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                 saveLabel: value.accountKey == null
                     ? l10n.settingsAddAccount
                     : null,
-                onSave: widget.onSave,
-                onCancel: widget.onCancel,
+                onSave: onSave,
+                onCancel: onCancel,
               ),
             ],
           ),
@@ -266,17 +196,17 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                       ),
                     ),
                     value: model,
-                    actions: widget.modelActions,
+                    actions: modelActions,
                   ),
               ],
             ),
           ),
         AccountSection(
-          key: widget.manualSectionKey,
+          key: manualSectionKey,
           title: l10n.settingsAccountCustomModelsTitle,
           actions: [
             OutlinedButton.icon(
-              onPressed: value.canAddModel ? widget.onAddModel : null,
+              onPressed: value.canAddModel ? onAddModel : null,
               icon: const Icon(Icons.add),
               label: Text(l10n.settingsAddModel),
             ),
@@ -287,7 +217,7 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
               if (value.manualModels.isEmpty) Text(l10n.settingsNoCustomModels),
               for (final model in value.manualModels)
                 Padding(
-                  key: _rowKeys[model.editorKey],
+                  key: ValueKey((value.editorId, model.editorKey)),
                   padding: const EdgeInsets.only(bottom: 20),
                   child: KeyedSubtree(
                     key: ValueKey(
@@ -295,31 +225,24 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                     ),
                     child: AccountManualModelEditor(
                       value: model,
-                      idFocusNode:
-                          widget.focusManualModelEditorKey == model.editorKey &&
-                              widget.focusManualModelId
-                          ? _targetFocus
+                      focusField: focusManualModelEditorKey == model.editorKey
+                          ? focusManualModelId
+                                ? AccountManualModelFocus.id
+                                : AccountManualModelFocus.name
                           : null,
-                      nameFocusNode:
-                          widget.focusManualModelEditorKey == model.editorKey &&
-                              !widget.focusManualModelId
-                          ? _targetFocus
-                          : null,
-                      onFieldChanged: (field, raw) =>
-                          widget.onManualModelFieldChanged(
-                            model.editorKey,
-                            field,
-                            raw,
-                          ),
+                      onFieldChanged: (field, raw) => onManualModelFieldChanged(
+                        model.editorKey,
+                        field,
+                        raw,
+                      ),
                       onConnectionChanged: (connection) =>
-                          widget.onManualModelConnectionChanged(
+                          onManualModelConnectionChanged(
                             model.editorKey,
                             connection,
                           ),
-                      onWireApiChanged: (api) => widget
-                          .onManualModelWireApiChanged(model.editorKey, api),
-                      onRemove: () =>
-                          widget.onRemoveManualModel(model.editorKey),
+                      onWireApiChanged: (api) =>
+                          onManualModelWireApiChanged(model.editorKey, api),
+                      onRemove: () => onRemoveManualModel(model.editorKey),
                     ),
                   ),
                 ),
@@ -445,68 +368,6 @@ class _ChatGptConnection extends StatelessWidget {
           ],
         ),
       ],
-    );
-  }
-}
-
-class AccountEditorFooter extends StatelessWidget {
-  const AccountEditorFooter({
-    required this.saving,
-    required this.canSave,
-    required this.onSave,
-    required this.onCancel,
-    this.saveLabel,
-    this.saveIsPrimary = true,
-    super.key,
-  });
-  final bool saving;
-  final bool canSave;
-  final VoidCallback onSave;
-  final VoidCallback onCancel;
-  final String? saveLabel;
-  final bool saveIsPrimary;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context);
-    return Material(
-      type: MaterialType.transparency,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Wrap(
-            alignment: WrapAlignment.end,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              if (saving)
-                const SizedBox.square(
-                  dimension: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              OutlinedButton(
-                key: const ValueKey<String>('account-cancel'),
-                onPressed: onCancel,
-                child: Text(l10n.commonCancel),
-              ),
-              if (saveIsPrimary)
-                FilledButton(
-                  key: const ValueKey<String>('account-save'),
-                  onPressed: canSave && !saving ? onSave : null,
-                  child: Text(saveLabel ?? l10n.commonSave),
-                )
-              else
-                OutlinedButton(
-                  key: const ValueKey<String>('account-save'),
-                  onPressed: canSave && !saving ? onSave : null,
-                  child: Text(saveLabel ?? l10n.commonSave),
-                ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

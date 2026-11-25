@@ -4,7 +4,6 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../domain/models/studio_models.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../widgets/interaction_widgets.dart';
 
 class QuestionStep extends StatelessWidget {
   const QuestionStep({
@@ -113,45 +112,31 @@ class _QuestionOptionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
-      ignoring: onChanged == null,
-      child: Opacity(
-        opacity: onChanged == null ? 0.55 : 1,
-        child: DockOptionRow(
-          title: option.label,
-          subtitle: option.description,
-          selected: selected,
-          onPressed: () => onChanged?.call(!selected),
-          leading: _OptionMark(selected: selected),
-        ),
+    return Material(
+      color: selected
+          ? context.colors.primaryContainer
+          : context.colors.surfaceContainerLowest,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(StudioRadii.sm),
+        side: selected
+            ? BorderSide(color: context.colors.primary)
+            : BorderSide.none,
       ),
-    );
-  }
-}
-
-class _OptionMark extends StatelessWidget {
-  const _OptionMark({required this.selected});
-
-  final bool selected;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 140),
-      width: 20,
-      height: 20,
-      margin: const EdgeInsets.only(top: 1),
-      decoration: BoxDecoration(
-        color: selected ? context.colors.primary : context.colors.surface,
-        borderRadius: BorderRadius.circular(5),
-        border: Border.all(
-          color: selected ? context.colors.primary : context.colors.outline,
-          width: 2,
-        ),
+      clipBehavior: Clip.antiAlias,
+      child: CheckboxListTile(
+        value: selected,
+        onChanged: onChanged == null
+            ? null
+            : (value) {
+                if (value != null) onChanged!(value);
+              },
+        controlAffinity: ListTileControlAffinity.leading,
+        contentPadding: const EdgeInsets.fromLTRB(10, 0, 12, 0),
+        title: Text(option.label, style: context.text.labelLarge),
+        subtitle: option.description.isEmpty
+            ? null
+            : Text(option.description, style: context.text.bodySmall),
       ),
-      child: selected
-          ? Icon(Icons.check, size: 13, color: context.colors.onPrimary)
-          : null,
     );
   }
 }

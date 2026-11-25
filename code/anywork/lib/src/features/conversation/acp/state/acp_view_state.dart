@@ -215,9 +215,6 @@ sealed class AcpUpdatePresentation with _$AcpUpdatePresentation {
     required List<AcpSlashCommandPresentation> commands,
   }) = AcpCommandsUpdatePresentation;
 
-  const factory AcpUpdatePresentation.sessionInfo() =
-      AcpSessionInfoUpdatePresentation;
-
   const factory AcpUpdatePresentation.superseded() =
       AcpSupersededUpdatePresentation;
 

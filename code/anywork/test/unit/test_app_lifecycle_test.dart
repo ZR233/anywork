@@ -4,20 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../support/recording_demo_transport.dart';
-import '../support/chatgpt_scene_transport.dart';
 import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
 void main() {
-  test('ChatGPT fixture preserves its injected subscription catalog', () async {
-    final transport = ChatGptSceneTransport();
-    final catalog = await transport.loadAccountCatalog();
-    expect(
-      catalog.template('openai')!.defaultBillingKind,
-      BillingKind.subscription,
-    );
-  });
-
   test(
     'root closes a scripted product owner before its frames are consumed',
     () async {

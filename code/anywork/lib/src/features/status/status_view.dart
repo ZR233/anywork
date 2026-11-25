@@ -220,11 +220,9 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
           _stateCollectionFields[name] != field) {
         return;
       }
-      final values = switch (page.entries) {
-        final entries => await Future.wait([
-          for (final entry in entries) _stateCollectionValue(scope, entry),
-        ]),
-      };
+      final values = await Future.wait([
+        for (final entry in page.entries) _stateCollectionValue(scope, entry),
+      ]);
       _stateCollections[name] = List.unmodifiable(
         nextPage ? [...?_stateCollections[name], ...values] : values,
       );
@@ -465,23 +463,19 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
     // Closing the popover never cancels Client's command or shared resources.
     _closeRetention ??= ref.keepAlive().close;
     _errors.remove(key);
-    _publishCommands();
+    _refresh();
     try {
       await command();
     } catch (error) {
       _errors[key] = error.toString();
     } finally {
       _pending.remove(key);
-      if (ref.mounted) _publishCommands();
+      if (ref.mounted) _refresh();
       if (_pending.isEmpty) {
         _closeRetention?.call();
         _closeRetention = null;
       }
     }
-  }
-
-  void _publishCommands() {
-    _refresh();
   }
 }
 

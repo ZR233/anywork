@@ -157,6 +157,8 @@ Widget _composerPreviewHost(
     ...GlobalMaterialLocalizations.delegates,
   ],
   supportedLocales: AppLocalizations.supportedLocales,
+  builder: (context, child) =>
+      ListTileTheme(data: Theme.of(context).listTileTheme, child: child!),
   home: Scaffold(
     body: Center(
       child: SingleChildScrollView(

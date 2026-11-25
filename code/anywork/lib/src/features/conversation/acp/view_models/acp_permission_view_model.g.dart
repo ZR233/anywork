@@ -61,7 +61,7 @@ final class AcpPermissionViewModelProvider
 }
 
 String _$acpPermissionViewModelHash() =>
-    r'9a1bea77c79eec1b50f332e892bb55079a88da87';
+    r'6704dce51e768a77f590fe32330e496dbe21c82e';
 
 final class AcpPermissionViewModelFamily extends $Family
     with

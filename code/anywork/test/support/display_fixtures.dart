@@ -45,14 +45,12 @@ final class TimelineFixtureBatch {
     required this.blocks,
     required this.placement,
     this.throughOrder = 0,
-    this.from,
     this.before,
   });
 
   final List<DisplayBlock> blocks;
   final TimelineApplyPlacement placement;
   final int throughOrder;
-  final int? from;
   final String? before;
 }
 
@@ -60,13 +58,11 @@ TimelineFixtureBatch displayBatch(
   List<DisplayBlock> blocks, {
   TimelineApplyPlacement placement = TimelineApplyPlacement.set,
   int? through,
-  int? from,
   String? before,
 }) => TimelineFixtureBatch(
   blocks: blocks,
   placement: placement,
   throughOrder: through ?? (blocks.isEmpty ? 0 : blocks.last.blockOrder),
-  from: from,
   before: before,
 );
 

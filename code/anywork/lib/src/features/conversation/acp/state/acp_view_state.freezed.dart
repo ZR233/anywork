@@ -2086,15 +2086,14 @@ extension AcpUpdatePresentationPatterns on AcpUpdatePresentation {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AcpNoticeUpdatePresentation value)?  notice,TResult Function( AcpUsageUpdatePresentation value)?  usage,TResult Function( AcpCompactionUpdatePresentation value)?  compaction,TResult Function( AcpCommandsUpdatePresentation value)?  availableCommands,TResult Function( AcpSessionInfoUpdatePresentation value)?  sessionInfo,TResult Function( AcpSupersededUpdatePresentation value)?  superseded,TResult Function( AcpGenericUpdatePresentation value)?  generic,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AcpNoticeUpdatePresentation value)?  notice,TResult Function( AcpUsageUpdatePresentation value)?  usage,TResult Function( AcpCompactionUpdatePresentation value)?  compaction,TResult Function( AcpCommandsUpdatePresentation value)?  availableCommands,TResult Function( AcpSupersededUpdatePresentation value)?  superseded,TResult Function( AcpGenericUpdatePresentation value)?  generic,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that);case AcpUsageUpdatePresentation() when usage != null:
 return usage(_that);case AcpCompactionUpdatePresentation() when compaction != null:
 return compaction(_that);case AcpCommandsUpdatePresentation() when availableCommands != null:
-return availableCommands(_that);case AcpSessionInfoUpdatePresentation() when sessionInfo != null:
-return sessionInfo(_that);case AcpSupersededUpdatePresentation() when superseded != null:
+return availableCommands(_that);case AcpSupersededUpdatePresentation() when superseded != null:
 return superseded(_that);case AcpGenericUpdatePresentation() when generic != null:
 return generic(_that);case _:
   return orElse();
@@ -2114,15 +2113,14 @@ return generic(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AcpNoticeUpdatePresentation value)  notice,required TResult Function( AcpUsageUpdatePresentation value)  usage,required TResult Function( AcpCompactionUpdatePresentation value)  compaction,required TResult Function( AcpCommandsUpdatePresentation value)  availableCommands,required TResult Function( AcpSessionInfoUpdatePresentation value)  sessionInfo,required TResult Function( AcpSupersededUpdatePresentation value)  superseded,required TResult Function( AcpGenericUpdatePresentation value)  generic,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AcpNoticeUpdatePresentation value)  notice,required TResult Function( AcpUsageUpdatePresentation value)  usage,required TResult Function( AcpCompactionUpdatePresentation value)  compaction,required TResult Function( AcpCommandsUpdatePresentation value)  availableCommands,required TResult Function( AcpSupersededUpdatePresentation value)  superseded,required TResult Function( AcpGenericUpdatePresentation value)  generic,}){
 final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation():
 return notice(_that);case AcpUsageUpdatePresentation():
 return usage(_that);case AcpCompactionUpdatePresentation():
 return compaction(_that);case AcpCommandsUpdatePresentation():
-return availableCommands(_that);case AcpSessionInfoUpdatePresentation():
-return sessionInfo(_that);case AcpSupersededUpdatePresentation():
+return availableCommands(_that);case AcpSupersededUpdatePresentation():
 return superseded(_that);case AcpGenericUpdatePresentation():
 return generic(_that);}
 }
@@ -2138,15 +2136,14 @@ return generic(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AcpNoticeUpdatePresentation value)?  notice,TResult? Function( AcpUsageUpdatePresentation value)?  usage,TResult? Function( AcpCompactionUpdatePresentation value)?  compaction,TResult? Function( AcpCommandsUpdatePresentation value)?  availableCommands,TResult? Function( AcpSessionInfoUpdatePresentation value)?  sessionInfo,TResult? Function( AcpSupersededUpdatePresentation value)?  superseded,TResult? Function( AcpGenericUpdatePresentation value)?  generic,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AcpNoticeUpdatePresentation value)?  notice,TResult? Function( AcpUsageUpdatePresentation value)?  usage,TResult? Function( AcpCompactionUpdatePresentation value)?  compaction,TResult? Function( AcpCommandsUpdatePresentation value)?  availableCommands,TResult? Function( AcpSupersededUpdatePresentation value)?  superseded,TResult? Function( AcpGenericUpdatePresentation value)?  generic,}){
 final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that);case AcpUsageUpdatePresentation() when usage != null:
 return usage(_that);case AcpCompactionUpdatePresentation() when compaction != null:
 return compaction(_that);case AcpCommandsUpdatePresentation() when availableCommands != null:
-return availableCommands(_that);case AcpSessionInfoUpdatePresentation() when sessionInfo != null:
-return sessionInfo(_that);case AcpSupersededUpdatePresentation() when superseded != null:
+return availableCommands(_that);case AcpSupersededUpdatePresentation() when superseded != null:
 return superseded(_that);case AcpGenericUpdatePresentation() when generic != null:
 return generic(_that);case _:
   return null;
@@ -2165,14 +2162,13 @@ return generic(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String title,  String? description)?  notice,TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult Function( List<AcpSlashCommandPresentation> commands)?  availableCommands,TResult Function()?  sessionInfo,TResult Function()?  superseded,TResult Function()?  generic,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String title,  String? description)?  notice,TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult Function( List<AcpSlashCommandPresentation> commands)?  availableCommands,TResult Function()?  superseded,TResult Function()?  generic,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation() when usage != null:
 return usage(_that.usedFormatted,_that.sizeFormatted,_that.costLabel);case AcpCompactionUpdatePresentation() when compaction != null:
 return compaction(_that.statusLabel,_that.errorMessage,_that.inProgress);case AcpCommandsUpdatePresentation() when availableCommands != null:
-return availableCommands(_that.commands);case AcpSessionInfoUpdatePresentation() when sessionInfo != null:
-return sessionInfo();case AcpSupersededUpdatePresentation() when superseded != null:
+return availableCommands(_that.commands);case AcpSupersededUpdatePresentation() when superseded != null:
 return superseded();case AcpGenericUpdatePresentation() when generic != null:
 return generic();case _:
   return orElse();
@@ -2192,14 +2188,13 @@ return generic();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String title,  String? description)  notice,required TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)  usage,required TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)  compaction,required TResult Function( List<AcpSlashCommandPresentation> commands)  availableCommands,required TResult Function()  sessionInfo,required TResult Function()  superseded,required TResult Function()  generic,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String title,  String? description)  notice,required TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)  usage,required TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)  compaction,required TResult Function( List<AcpSlashCommandPresentation> commands)  availableCommands,required TResult Function()  superseded,required TResult Function()  generic,}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation():
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation():
 return usage(_that.usedFormatted,_that.sizeFormatted,_that.costLabel);case AcpCompactionUpdatePresentation():
 return compaction(_that.statusLabel,_that.errorMessage,_that.inProgress);case AcpCommandsUpdatePresentation():
-return availableCommands(_that.commands);case AcpSessionInfoUpdatePresentation():
-return sessionInfo();case AcpSupersededUpdatePresentation():
+return availableCommands(_that.commands);case AcpSupersededUpdatePresentation():
 return superseded();case AcpGenericUpdatePresentation():
 return generic();}
 }
@@ -2215,14 +2210,13 @@ return generic();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String title,  String? description)?  notice,TResult? Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult? Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult? Function( List<AcpSlashCommandPresentation> commands)?  availableCommands,TResult? Function()?  sessionInfo,TResult? Function()?  superseded,TResult? Function()?  generic,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String title,  String? description)?  notice,TResult? Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult? Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult? Function( List<AcpSlashCommandPresentation> commands)?  availableCommands,TResult? Function()?  superseded,TResult? Function()?  generic,}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation() when usage != null:
 return usage(_that.usedFormatted,_that.sizeFormatted,_that.costLabel);case AcpCompactionUpdatePresentation() when compaction != null:
 return compaction(_that.statusLabel,_that.errorMessage,_that.inProgress);case AcpCommandsUpdatePresentation() when availableCommands != null:
-return availableCommands(_that.commands);case AcpSessionInfoUpdatePresentation() when sessionInfo != null:
-return sessionInfo();case AcpSupersededUpdatePresentation() when superseded != null:
+return availableCommands(_that.commands);case AcpSupersededUpdatePresentation() when superseded != null:
 return superseded();case AcpGenericUpdatePresentation() when generic != null:
 return generic();case _:
   return null;
@@ -2519,38 +2513,6 @@ as List<AcpSlashCommandPresentation>,
 
 
 }
-
-/// @nodoc
-
-
-class AcpSessionInfoUpdatePresentation implements AcpUpdatePresentation {
-  const AcpSessionInfoUpdatePresentation();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpSessionInfoUpdatePresentation);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'AcpUpdatePresentation.sessionInfo()';
-}
-
-
-}
-
-
-
 
 /// @nodoc
 

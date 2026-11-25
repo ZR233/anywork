@@ -1,5 +1,6 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../mode_editor_support.dart';
 import '../state/mode_workspace_view_state.dart';
 
 part 'mode_workspace_controller.g.dart';
@@ -13,47 +14,23 @@ class ModeWorkspaceController extends _$ModeWorkspaceController {
   @override
   ModeWorkspaceViewState build() => const ModeWorkspaceViewState();
 
-  void selectStage(String? stateId) {
-    if (stateId == null) {
-      if (state.selection == null) return;
-      state = state.copyWith(selection: null);
-      return;
-    }
-    final current = state.selection;
-    if (current is ModeStageSelection && current.stateId == stateId) return;
-    state = state.copyWith(
-      selection: ModeDetailSelection.stage(stateId),
-      section: state.section == ModeWorkspaceSection.flow
-          ? state.section
-          : state.section,
-    );
-  }
+  void selectStage(String? stateId) =>
+      _select(stateId == null ? null : ModeDetailSelection.stage(stateId));
 
   void selectTransition(String? edgeId) {
     if (edgeId == null) {
-      if (state.selection == null) return;
-      state = state.copyWith(selection: null);
+      closeDetail();
       return;
     }
-    final parts = _parseEdgeId(edgeId);
-    if (parts == null) return;
-    final current = state.selection;
-    if (current is ModeTransitionSelection &&
-        current.sourceStateId == parts.$1 &&
-        current.targetStateId == parts.$2) {
-      return;
-    }
-    state = state.copyWith(
-      selection: ModeDetailSelection.transition(
-        sourceStateId: parts.$1,
-        targetStateId: parts.$2,
-      ),
-    );
+    final selection = parseModeTransitionSelection(edgeId);
+    if (selection != null) _select(selection);
   }
 
-  void closeDetail() {
-    if (state.selection == null) return;
-    state = state.copyWith(selection: null);
+  void closeDetail() => _select(null);
+
+  void _select(ModeDetailSelection? selection) {
+    if (state.selection == selection) return;
+    state = state.copyWith(selection: selection);
   }
 
   void setSection(ModeWorkspaceSection section) {
@@ -87,13 +64,5 @@ class ModeWorkspaceController extends _$ModeWorkspaceController {
       validationRequested: false,
       focus: ModeWorkflowFocus.all,
     );
-  }
-
-  (String, String)? _parseEdgeId(String edgeId) {
-    if (!edgeId.startsWith('edge:')) return null;
-    final body = edgeId.substring(5);
-    final arrow = body.indexOf('->');
-    if (arrow <= 0 || arrow + 2 >= body.length) return null;
-    return (body.substring(0, arrow), body.substring(arrow + 2));
   }
 }

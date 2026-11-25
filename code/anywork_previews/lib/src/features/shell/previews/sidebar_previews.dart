@@ -42,7 +42,6 @@ Widget _wholeSidebar({required double width, double textScale = 1}) =>
         height: 900,
         child: StudioSidebar(
           data: sidebarPreviewData,
-          onQueryChanged: recordSidebarPreviewIntent,
           projectStructureBuilder: (context, projectId, selection, builder) =>
               builder(
                 sidebarPreviewProjects.singleWhere(
@@ -52,7 +51,9 @@ Widget _wholeSidebar({required double width, double textScale = 1}) =>
                   window: SidebarWindow(
                     threadIds: [
                       for (final row in sidebarPreviewThreads)
-                        if (row.workspaceId == projectId) row.threadId,
+                        if (row.workspaceId == projectId &&
+                            row.archived == selection.archived)
+                          row.threadId,
                     ],
                     loaded: true,
                   ),
@@ -148,6 +149,7 @@ class _HeaderPreview extends StatefulWidget {
 
 class _HeaderPreviewState extends State<_HeaderPreview> {
   final _controller = TextEditingController();
+  DirectoryFilter _filter = DirectoryFilter.all;
 
   @override
   void dispose() {
@@ -158,10 +160,10 @@ class _HeaderPreviewState extends State<_HeaderPreview> {
   @override
   Widget build(BuildContext context) => SidebarHeader(
     searchController: _controller,
-    filter: DirectoryFilter.all,
+    filter: _filter,
     onSearchChanged: recordSidebarPreviewIntent,
     onClearSearch: _controller.clear,
-    onFilterChanged: recordSidebarPreviewIntent,
+    onFilterChanged: (filter) => setState(() => _filter = filter),
     onNewSession: () => recordSidebarPreviewIntent('new session'),
   );
 }
@@ -275,13 +277,13 @@ Widget sidebarPageStatusPreview() => _sidebarPreviewHost(
 );
 
 @Preview(
-  name: '底栏 · 归档与设置',
+  name: '底栏 · 归档已选中',
   group: 'Shell · Sidebar parts',
   size: Size(336, 64),
 )
 Widget sidebarFooterPreview() => _sidebarPreviewHost(
   SidebarFooter(
-    archived: false,
+    archived: true,
     onToggleArchived: () => recordSidebarPreviewIntent('toggle archived'),
     onSettings: () => recordSidebarPreviewIntent('settings'),
   ),
@@ -298,20 +300,7 @@ Widget sidebarFooterUpdatePreview() => _sidebarPreviewHost(
   ),
 );
 
-@Preview(name: '底栏按钮 · 选中', group: 'Shell · Sidebar parts', size: Size(164, 56))
-Widget sidebarFooterButtonPreview() => _sidebarPreviewHost(
-  Padding(
-    padding: const EdgeInsets.all(6),
-    child: SidebarFooterButton(
-      icon: Icons.archive_outlined,
-      tooltip: '已归档',
-      selected: true,
-      onPressed: () => recordSidebarPreviewIntent('archived'),
-    ),
-  ),
-);
-
-@Preview(name: '项目菜单', group: 'Shell · Sidebar parts', size: Size(48, 48))
+@Preview(name: '项目菜单', group: 'Shell · Sidebar parts', size: Size(380, 280))
 Widget sidebarProjectMenuPreview() => _sidebarPreviewHost(
   SidebarProjectMenu(
     menuKey: const ValueKey('sidebar-preview-project-menu'),
@@ -320,7 +309,7 @@ Widget sidebarProjectMenuPreview() => _sidebarPreviewHost(
   ),
 );
 
-@Preview(name: '会话菜单', group: 'Shell · Sidebar parts', size: Size(48, 48))
+@Preview(name: '会话菜单', group: 'Shell · Sidebar parts', size: Size(660, 400))
 Widget sidebarThreadMenuPreview() => _sidebarPreviewHost(
   SidebarThreadMenu(
     row: sidebarPreviewThreads.first,

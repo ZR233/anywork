@@ -219,12 +219,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
               tooltip: todo.explanation?.trim().isNotEmpty == true
                   ? todo.explanation!.trim()
                   : l10n.timelineTodoListFallback,
-              badge: _TodoCountBadge(
-                completed: todo.items
-                    .where((item) => item.status == 'completed')
-                    .length,
-                total: todo.items.length,
-              ),
+              badge: TodoCountBadge(todo: todo),
               defaultWidthBuilder: (w) => (w * 0.34).clamp(340.0, 420.0),
               builder: (_) => TodoPanel(todo: todo),
             ),
@@ -303,21 +298,22 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
               : null,
           readingArea: readingArea,
           readingAction: const ReturnToLatestButton(),
-          overlays: [
-            if (workspace.loadError case final error?)
-              _ReadingErrorBanner(
-                message: error,
-                onRetry: () => _retryThreadLoad(threadId),
-              ),
-            if (workspace.isLoading)
-              StudioWorkspaceLoading(
-                key: const ValueKey('agent-workspace-loading'),
-                hasContent:
-                    timelineDisplay != null &&
-                    timelineDisplay.threadId == threadId &&
-                    timelineDisplay.generation > 0,
-              ),
-          ],
+          readingBanner: switch (workspace.loadError) {
+            final error? => _ReadingErrorBanner(
+              message: error,
+              onRetry: () => _retryThreadLoad(threadId),
+            ),
+            null => null,
+          },
+          readingOverlay: workspace.isLoading
+              ? StudioWorkspaceLoading(
+                  key: const ValueKey('agent-workspace-loading'),
+                  hasContent:
+                      timelineDisplay != null &&
+                      timelineDisplay.threadId == threadId &&
+                      timelineDisplay.generation > 0,
+                )
+              : null,
           scrollFooter: pendingPlan != null,
           footerDockBuilder: (context, compact) => _Footer(
             threadId: threadId,
@@ -441,20 +437,6 @@ class _WorkspacePlanPresentation {
 
   final String identity;
   final PlanDetailStatus status;
-}
-
-class _TodoCountBadge extends StatelessWidget {
-  const _TodoCountBadge({required this.completed, required this.total});
-
-  final int completed;
-  final int total;
-
-  @override
-  Widget build(BuildContext context) {
-    final allDone = total > 0 && completed == total;
-    final tone = allDone ? StudioTone.success : StudioTone.brand;
-    return StudioPill(label: '$completed/$total', tone: tone);
-  }
 }
 
 /// 已选中但尚未打开的会话：显式打开入口。
@@ -645,12 +627,8 @@ class _StandalonePreparationFailureView extends StatelessWidget {
   }
 }
 
-/// Reads the deferred todo value only while the Todo surface is mounted.
-///
-/// The inline field is a size placeholder, never a complete empty todo list.
-/// Each generation owns one Current read scope and retires it when the field,
-/// Thread or widget lifetime changes.
-class _DeferredTodoPanel extends ConsumerStatefulWidget {
+/// Resolves the mounted workspace's Todo entry and its badge from Current.
+class _DeferredTodoPanel extends ConsumerWidget {
   const _DeferredTodoPanel({
     required this.threadId,
     required this.runtime,
@@ -664,107 +642,9 @@ class _DeferredTodoPanel extends ConsumerStatefulWidget {
   final Widget Function(TimelineTodoListUpdate? todo) builder;
 
   @override
-  ConsumerState<_DeferredTodoPanel> createState() => _DeferredTodoPanelState();
-}
-
-class _DeferredTodoPanelState extends ConsumerState<_DeferredTodoPanel> {
-  CurrentStateField? _field;
-  CurrentQueryScope? _scope;
-  TimelineTodoListUpdate? _loaded;
-  Object? _error;
-  bool _loading = false;
-  int _epoch = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _scheduleSync();
-  }
-
-  @override
-  void didUpdateWidget(covariant _DeferredTodoPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.threadId != widget.threadId ||
-        oldWidget.runtime.deferredField('todo') !=
-            widget.runtime.deferredField('todo')) {
-      _scheduleSync();
-    }
-  }
-
-  void _scheduleSync() {
-    unawaited(Future<void>.microtask(_sync));
-  }
-
-  void _retire() {
-    _epoch++;
-    final scope = _scope;
-    _scope = null;
-    scope?.retire();
-    if (scope != null) unawaited(scope.close());
-  }
-
-  Future<void> _sync() async {
-    if (!mounted) return;
-    final field = widget.runtime.deferredField('todo');
-    if (field == null) {
-      _retire();
-      _field = null;
-      _loaded = null;
-      _error = null;
-      _loading = false;
-      if (mounted) setState(() {});
-      return;
-    }
-    if (_loading && field == _field) return;
-    _retire();
-    _field = field;
-    _loaded = null;
-    _error = null;
-    final lease = ref.read(timelineSessionOwnerProvider).lease(widget.threadId);
-    if (lease == null || lease.isRetired) return;
-    final epoch = ++_epoch;
-    final scope = lease.openCurrentScope(generation: lease.generation);
-    _scope = scope;
-    _loading = true;
-    if (mounted) setState(() {});
-    try {
-      final value = await scope.readStateField(field);
-      final todo = decodeCurrentTodoState(value);
-      if (!mounted || epoch != _epoch || field != _field || lease.isRetired) {
-        return;
-      }
-      _loaded = todo;
-    } catch (error) {
-      if (mounted && epoch == _epoch && field == _field) _error = error;
-    } finally {
-      if (epoch == _epoch) {
-        _loading = false;
-        final current = _scope;
-        if (identical(current, scope)) _scope = null;
-        scope.retire();
-        unawaited(scope.close());
-      }
-      if (mounted) setState(() {});
-    }
-  }
-
-  @override
-  void dispose() {
-    _retire();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final field = widget.runtime.deferredField('todo');
-    final todo = field == null
-        ? widget.inline
-        : field == _field
-        ? _loaded
-        : null;
-    if (field != null && field != _field && !_loading && _error == null) {
-      _scheduleSync();
-    }
-    return widget.builder(todo);
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (runtime.deferredField('todo') == null) return builder(inline);
+    final todo = ref.watch(deferredTodoProvider(threadId));
+    return builder(todo.isLoading ? null : todo.asData?.value);
   }
 }

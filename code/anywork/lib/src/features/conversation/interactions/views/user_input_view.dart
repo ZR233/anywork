@@ -77,6 +77,7 @@ class _UserInputViewState extends State<UserInputView> {
     final questions = widget.payload.questions;
     if (questions.isEmpty) {
       return FallbackQuestionDock(
+        enabled: enabled,
         body: widget.payload.rawBody,
         controller: _fallbackController,
         trailing: widget.trailing,
@@ -331,8 +332,9 @@ class _UserInputViewState extends State<UserInputView> {
   }
 
   /// root 自身交互走本会话目标，转交的 child 交互经主会话提交。
-  void _submit(UserInputResolutionCommand resolution) =>
-      widget.onSubmit(resolution);
+  void _submit(UserInputResolutionCommand resolution) {
+    if (widget.enabled) widget.onSubmit(resolution);
+  }
 }
 
 String _questionKey(UserQuestionView question, int index) {

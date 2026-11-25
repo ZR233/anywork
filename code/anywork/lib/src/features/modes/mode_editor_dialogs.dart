@@ -14,6 +14,7 @@ import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/client_provider.dart';
 import 'mode_editor_support.dart';
+import 'widgets/mode_editor_fields.dart';
 
 enum _UnsavedChoice { save, discard, cancel }
 
@@ -492,26 +493,17 @@ Future<WorkflowTransition?> showTransitionDialog(
   BuildContext context, {
   required WorkflowDefinition workflow,
   String? initialSourceId,
-  String? initialTargetId,
 }) => showDialog<WorkflowTransition>(
   context: context,
-  builder: (context) => _TransitionDialog(
-    workflow: workflow,
-    initialSourceId: initialSourceId,
-    initialTargetId: initialTargetId,
-  ),
+  builder: (context) =>
+      _TransitionDialog(workflow: workflow, initialSourceId: initialSourceId),
 );
 
 class _TransitionDialog extends StatefulWidget {
-  const _TransitionDialog({
-    required this.workflow,
-    this.initialSourceId,
-    this.initialTargetId,
-  });
+  const _TransitionDialog({required this.workflow, this.initialSourceId});
 
   final WorkflowDefinition workflow;
   final String? initialSourceId;
-  final String? initialTargetId;
 
   @override
   State<_TransitionDialog> createState() => _TransitionDialogState();
@@ -520,22 +512,12 @@ class _TransitionDialog extends StatefulWidget {
 class _TransitionDialogState extends State<_TransitionDialog> {
   final _formKey = GlobalKey<FormState>();
   final _guard = TextEditingController();
-  late String? _source = widget.initialSourceId;
-  late String? _target = widget.initialTargetId;
-
-  @override
-  void initState() {
-    super.initState();
-    final atomic = widget.workflow.states
-        .where((state) => state.kind == WorkflowStateKind.atomic)
-        .toList(growable: false);
-    if (_source == null && atomic.isNotEmpty) {
-      _source = atomic.first.id;
-    }
-    if (_target == null && widget.workflow.states.isNotEmpty) {
-      _target = widget.workflow.states.first.id;
-    }
-  }
+  late final _atomicStates = widget.workflow.states
+      .where((state) => state.kind == WorkflowStateKind.atomic)
+      .toList(growable: false);
+  late String? _source =
+      widget.initialSourceId ?? _atomicStates.firstOrNull?.id;
+  late String? _target = widget.workflow.states.firstOrNull?.id;
 
   @override
   void dispose() {
@@ -555,7 +537,6 @@ class _TransitionDialogState extends State<_TransitionDialog> {
           transition.targetStateId == target,
     );
     if (duplicate) {
-      setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(l10n.modeEditorDuplicateTransition)),
       );
@@ -573,9 +554,6 @@ class _TransitionDialogState extends State<_TransitionDialog> {
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    final atomic = widget.workflow.states
-        .where((state) => state.kind == WorkflowStateKind.atomic)
-        .toList(growable: false);
     return AlertDialog(
       key: const ValueKey<String>('mode-editor-transition-dialog'),
       title: Text(l10n.modeEditorAddTransition),
@@ -587,32 +565,22 @@ class _TransitionDialogState extends State<_TransitionDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              DropdownButtonFormField<String>(
+              ModeWorkflowStateField(
                 key: ModeEditorKeys.detailField('new-source'),
-                initialValue: _source,
-                decoration: InputDecoration(
-                  labelText: l10n.modeEditorSourceState,
-                ),
-                items: [
-                  for (final state in atomic)
-                    DropdownMenuItem(value: state.id, child: Text(state.title)),
-                ],
-                onChanged: (value) => setState(() => _source = value),
+                label: l10n.modeEditorSourceState,
+                states: _atomicStates,
+                selectedId: _source,
+                onChanged: (value) => _source = value,
                 validator: (value) =>
                     value == null ? l10n.modeEditorChooseSource : null,
               ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
+              ModeWorkflowStateField(
                 key: ModeEditorKeys.detailField('new-target'),
-                initialValue: _target,
-                decoration: InputDecoration(
-                  labelText: l10n.modeEditorTargetState,
-                ),
-                items: [
-                  for (final state in widget.workflow.states)
-                    DropdownMenuItem(value: state.id, child: Text(state.title)),
-                ],
-                onChanged: (value) => setState(() => _target = value),
+                label: l10n.modeEditorTargetState,
+                states: widget.workflow.states,
+                selectedId: _target,
+                onChanged: (value) => _target = value,
                 validator: (value) =>
                     value == null ? l10n.modeEditorChooseTarget : null,
               ),

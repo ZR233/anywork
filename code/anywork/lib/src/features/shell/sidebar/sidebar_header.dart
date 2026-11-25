@@ -70,44 +70,47 @@ class SidebarHeader extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          TextField(
-            key: const ValueKey('sidebar-search'),
-            controller: searchController,
-            onChanged: onSearchChanged,
-            style: context.text.bodySmall,
-            decoration: InputDecoration(
-              hintText: context.l10n.sidebarSearch,
-              isDense: true,
-              filled: true,
-              fillColor: context.colors.surface.withValues(alpha: .6),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: 9,
-              ),
-              prefixIcon: const Icon(Icons.search, size: 16),
-              prefixIconConstraints: BoxConstraints(
-                minWidth: 32,
-                minHeight: height,
-              ),
-              suffixIconConstraints: BoxConstraints(
-                minWidth: 32,
-                minHeight: height,
-              ),
-              suffixIcon: searchController.text.isEmpty
-                  ? null
-                  : _tileIconButton(
-                      key: const ValueKey('sidebar-search-clear'),
-                      tooltip: context.l10n.settingsCancel,
-                      icon: Icons.close,
-                      minTarget: touchMode ? 44 : 32,
-                      onPressed: onClearSearch,
-                    ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: context.colors.outlineVariant),
+          ValueListenableBuilder(
+            valueListenable: searchController,
+            builder: (context, value, _) => TextField(
+              key: const ValueKey('sidebar-search'),
+              controller: searchController,
+              onChanged: onSearchChanged,
+              style: context.text.bodySmall,
+              decoration: InputDecoration(
+                hintText: context.l10n.sidebarSearch,
+                isDense: true,
+                filled: true,
+                fillColor: context.colors.surface.withValues(alpha: .6),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+                prefixIcon: const Icon(Icons.search, size: 16),
+                prefixIconConstraints: BoxConstraints(
+                  minWidth: 32,
+                  minHeight: height,
+                ),
+                suffixIconConstraints: BoxConstraints(
+                  minWidth: 32,
+                  minHeight: height,
+                ),
+                suffixIcon: value.text.isEmpty
+                    ? null
+                    : _tileIconButton(
+                        key: const ValueKey('sidebar-search-clear'),
+                        tooltip: context.l10n.settingsCancel,
+                        icon: Icons.close,
+                        minTarget: touchMode ? 44 : 32,
+                        onPressed: onClearSearch,
+                      ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide(color: context.colors.outlineVariant),
+                ),
               ),
             ),
           ),

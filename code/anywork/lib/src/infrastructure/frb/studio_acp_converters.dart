@@ -65,7 +65,7 @@ AcpLocalDetectionSnapshotView _acpLocalDetectionSnapshotFromFrb(
     ),
   };
   return AcpLocalDetectionSnapshotView(
-    revision: _frbInt(value.revision),
+    revision: value.revision.toInt(),
     operationId: value.operationId,
     state: phase,
     program: program,
@@ -199,7 +199,7 @@ AcpAuthStateView _acpAuthStateFromFrb(frb.BridgeAcpAuthState value) =>
         server: final server,
       ) =>
         AcpVerifiedState(
-          checkedAt: _frbInt(checkedAt),
+          checkedAt: checkedAt.toInt(),
           server: server == null ? null : _acpServerFromFrb(server),
         ),
       frb.BridgeAcpAuthState_Closing(
@@ -250,7 +250,7 @@ AcpAccountSettingsView _acpAccountFromFrb(frb.BridgeAcpAccountSettings value) =>
       args: List.unmodifiable(value.args),
       env: Map.unmodifiable(value.env),
       documentRevision: value.documentRevision,
-      connectionRevision: _frbInt(value.connectionRevision),
+      connectionRevision: value.connectionRevision.toInt(),
     );
 
 frb.BridgeAcpAccountUpdate _acpAccountUpdateToFrb(AcpAccountUpdateView value) =>
@@ -269,7 +269,7 @@ frb.BridgeAcpAccountUpdate _acpAccountUpdateToFrb(AcpAccountUpdateView value) =>
 AcpAuthAccountView _acpAuthAccountFromFrb(frb.BridgeAcpAuthAccount value) =>
     AcpAuthAccountView(
       accountId: value.accountId,
-      connectionRevision: _frbInt(value.connectionRevision),
+      connectionRevision: value.connectionRevision.toInt(),
       connection: _acpConnectionFromFrb(value.connection),
       state: _acpAuthStateFromFrb(value.state),
       usage: value.usage == null ? null : _acpUsageFromFrb(value.usage!),
@@ -290,7 +290,7 @@ AcpConnectionStateView _acpConnectionFromFrb(
   ) =>
     AcpConnectionRetryingState(
       attempt: attempt,
-      nextRetryAt: _frbInt(nextRetryAt),
+      nextRetryAt: nextRetryAt.toInt(),
       failure: _acpFailureFromFrb(failure),
     ),
   frb.BridgeAcpConnectionState_Blocked(:final failure) =>
@@ -303,7 +303,7 @@ AcpAuthActiveOperationView? _acpAuthActiveOperationFromFrb(
     ? null
     : AcpAuthActiveOperationView(
         operationId: value.operationId,
-        connectionRevision: _frbInt(value.connectionRevision),
+        connectionRevision: value.connectionRevision.toInt(),
         action: _acpAuthActionFromFrb(value.action),
       );
 
@@ -316,7 +316,7 @@ AcpAuthActionView _acpAuthActionFromFrb(frb.BridgeAcpAuthAction action) =>
 AcpUsageObservationView _acpUsageFromFrb(
   frb.BridgeAcpUsageObservation value,
 ) => AcpUsageObservationView(
-  checkedAt: _frbInt(value.checkedAt),
+  checkedAt: value.checkedAt.toInt(),
   state: switch (value.state) {
     frb.BridgeAcpUsageState_Ready(:final groups) => AcpUsageReadyView(
       groups: [
@@ -327,14 +327,12 @@ AcpUsageObservationView _acpUsageFromFrb(
               for (final limit in group.limits)
                 AcpQuotaLimitView(
                   label: limit.label,
-                  nextResetAt: limit.nextResetAt == null
-                      ? null
-                      : _frbInt(limit.nextResetAt!),
+                  nextResetAt: limit.nextResetAt?.toInt(),
                   remaining: switch (limit.remaining) {
                     frb.BridgeAcpQuotaRemaining_Percentage(:final value) =>
                       AcpQuotaPercentageView(value),
                     frb.BridgeAcpQuotaRemaining_Units(:final value) =>
-                      AcpQuotaUnitsView(_frbInt(value)),
+                      AcpQuotaUnitsView(value.toInt()),
                     frb.BridgeAcpQuotaRemaining_Unknown() =>
                       const AcpQuotaUnknownView(),
                     frb.BridgeAcpQuotaRemaining_Disabled() =>
@@ -366,8 +364,8 @@ AcpUsageObservationView _acpUsageFromFrb(
 
 AcpAuthSnapshotView _acpAuthSnapshotFromFrb(frb.BridgeAcpAuthSnapshot value) =>
     AcpAuthSnapshotView(
-      revision: _frbInt(value.revision),
-      updatedAt: _frbInt(value.updatedAt),
+      revision: value.revision.toInt(),
+      updatedAt: value.updatedAt.toInt(),
       accounts: [
         for (final account in value.accounts) _acpAuthAccountFromFrb(account),
       ],
@@ -453,9 +451,9 @@ AcpInstallReleaseView _acpInstallReleaseFromFrb(
 AcpInstallProgressView _acpInstallProgressFromFrb(
   frb.BridgeAcpInstallProgress value,
 ) => AcpInstallProgressView(
-  completedBytes: _frbInt(value.completedBytes),
-  totalBytes: _frbNullableInt(value.totalBytes),
-  bytesPerSecond: _frbNullableInt(value.bytesPerSecond),
+  completedBytes: value.completedBytes.toInt(),
+  totalBytes: value.totalBytes?.toInt(),
+  bytesPerSecond: value.bytesPerSecond?.toInt(),
 );
 
 AcpInstallFailureView _acpInstallFailureFromFrb(
@@ -473,7 +471,7 @@ AcpInstalledServerView _acpInstalledServerFromFrb(
   installationId: value.installationId,
   release: _acpInstallReleaseFromFrb(value.release),
   program: value.program,
-  readyAt: _frbInt(value.readyAt),
+  readyAt: value.readyAt.toInt(),
   reused: value.reused,
 );
 
@@ -497,7 +495,7 @@ AcpInstallStateView _acpInstallStateFromFrb(frb.BridgeAcpInstallState value) =>
           operationId: operationId,
           release: _acpInstallReleaseFromFrb(release),
           progress: _acpInstallProgressFromFrb(progress),
-          retryCount: _frbInt(retryCount),
+          retryCount: retryCount.toInt(),
         ),
       frb.BridgeAcpInstallState_Verifying(
         :final operationId,
@@ -559,7 +557,7 @@ AcpInstallUpdateStateView _acpInstallUpdateStateFromFrb(
     :final latestVersion,
   ) =>
     AcpInstallUpdateUpToDateState(
-      checkedAt: _frbInt(checkedAt),
+      checkedAt: checkedAt.toInt(),
       latestVersion: latestVersion,
     ),
   frb.BridgeAcpInstallUpdateState_UpdateAvailable(
@@ -567,7 +565,7 @@ AcpInstallUpdateStateView _acpInstallUpdateStateFromFrb(
     :final latest,
   ) =>
     AcpInstallUpdateAvailableState(
-      checkedAt: _frbInt(checkedAt),
+      checkedAt: checkedAt.toInt(),
       latest: _acpInstallReleaseFromFrb(latest),
     ),
   frb.BridgeAcpInstallUpdateState_IncompatibleMajor(
@@ -575,12 +573,12 @@ AcpInstallUpdateStateView _acpInstallUpdateStateFromFrb(
     :final latestVersion,
   ) =>
     AcpInstallUpdateIncompatibleMajorState(
-      checkedAt: _frbInt(checkedAt),
+      checkedAt: checkedAt.toInt(),
       latestVersion: latestVersion,
     ),
   frb.BridgeAcpInstallUpdateState_Failed(:final checkedAt, :final failure) =>
     AcpInstallUpdateFailedState(
-      checkedAt: _frbInt(checkedAt),
+      checkedAt: checkedAt.toInt(),
       failure: _acpInstallFailureFromFrb(failure),
     ),
 };
@@ -598,8 +596,8 @@ AcpInstallEntryView _acpInstallEntryFromFrb(frb.BridgeAcpInstallEntry value) =>
 AcpInstallSnapshotView _acpInstallSnapshotFromFrb(
   frb.BridgeAcpInstallSnapshot value,
 ) => AcpInstallSnapshotView(
-  revision: _frbInt(value.revision),
-  updatedAt: _frbInt(value.updatedAt),
+  revision: value.revision.toInt(),
+  updatedAt: value.updatedAt.toInt(),
   installations: [
     for (final entry in value.installations) _acpInstallEntryFromFrb(entry),
   ],

@@ -5,6 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/delegation_labels.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_menu_label.dart';
+import '../../../../shared/studio_menu_button.dart';
 
 /// 创建期环境控制的呈现；草稿和导航仍由各自的 Client owner 持有。
 class StartEnvironmentView extends StatelessWidget {
@@ -69,7 +70,15 @@ class StartEnvironmentView extends StatelessWidget {
               ),
             ),
           )
-        : MenuAnchor(
+        : StudioMenuButton(
+            buttonKey: StudioDriverKeys.sessionWorkspaceMode,
+            enabled: enabled,
+            tooltip: enabled
+                ? (workspaceMode == ThreadWorkspaceMode.worktree
+                      ? context.l10n.composerWorkspaceModeWorktree
+                      : context.l10n.composerWorkspaceModeLocal)
+                : context.l10n.composerEnvironmentLocked,
+            buttonStyle: _triggerStyle(),
             menuChildren: [
               for (final mode in ThreadWorkspaceMode.values)
                 MenuItemButton(
@@ -88,18 +97,21 @@ class StartEnvironmentView extends StatelessWidget {
                   ),
                 ),
             ],
-            builder: (context, controller, child) => _EnvironmentTrigger(
-              key: StudioDriverKeys.sessionWorkspaceMode,
+            child: StudioMenuLabel(
               enabled: enabled,
+              maxWidth: 160,
               label: workspaceMode == ThreadWorkspaceMode.worktree
                   ? context.l10n.composerWorkspaceModeWorktree
                   : context.l10n.composerWorkspaceModeLocal,
-              onPressed: controller.isOpen ? controller.close : controller.open,
             ),
           );
-    final delegationSelector = MenuAnchor(
+    final delegationSelector = StudioMenuButton(
+      buttonKey: StudioDriverKeys.sessionSettings,
+      enabled: enabled,
+      tooltip: enabled ? summary : context.l10n.composerEnvironmentLocked,
+      buttonStyle: _triggerStyle(),
       crossAxisUnconstrained: false,
-      style: MenuStyle(
+      menuStyle: MenuStyle(
         maximumSize: WidgetStatePropertyAll(
           Size(
             menuWidth,
@@ -158,12 +170,7 @@ class StartEnvironmentView extends StatelessWidget {
             ),
           ),
       ],
-      builder: (context, controller, child) => _EnvironmentTrigger(
-        key: StudioDriverKeys.sessionSettings,
-        enabled: enabled,
-        label: summary,
-        onPressed: controller.isOpen ? controller.close : controller.open,
-      ),
+      child: StudioMenuLabel(enabled: enabled, label: summary, maxWidth: 160),
     );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
@@ -198,28 +205,8 @@ class StartEnvironmentView extends StatelessWidget {
   }
 }
 
-class _EnvironmentTrigger extends StatelessWidget {
-  const _EnvironmentTrigger({
-    required this.label,
-    required this.enabled,
-    required this.onPressed,
-    super.key,
-  });
-  final String label;
-  final bool enabled;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) => Tooltip(
-    message: enabled ? label : context.l10n.composerEnvironmentLocked,
-    child: TextButton(
-      onPressed: enabled ? onPressed : null,
-      style: TextButton.styleFrom(
-        padding: EdgeInsets.zero,
-        minimumSize: Size.zero,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      ),
-      child: StudioMenuLabel(label: label, enabled: enabled, maxWidth: 160),
-    ),
-  );
-}
+ButtonStyle _triggerStyle() => TextButton.styleFrom(
+  padding: EdgeInsets.zero,
+  minimumSize: Size.zero,
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+);

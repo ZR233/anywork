@@ -310,17 +310,108 @@ void main() {
       (resource) => resource.loaded,
     );
     await tester.pumpAndSettle();
-    await tapKey('account-usage-check');
-    await untilObserved(graph.accountUsage.state, (resource) {
-      if (resource.failure case final error?) throw error;
-      final usage = resource.value?[identity];
-      if (usage?.phase == AccountUsagePhase.failed ||
-          usage?.phase == AccountUsagePhase.missingCredential ||
-          usage?.phase == AccountUsagePhase.unsupported) {
-        throw StateError('ChatGPT quota failed: ${usage?.failure?.code}');
+    final accountUsage = graph.accountUsage.state;
+    final identityFailures = graph.accountUsage.queryFailures;
+    final failuresBeforeWait = identityFailures.value;
+    if (accountUsage.value.value?[identity]?.phase ==
+        AccountUsagePhase.querying) {
+      final initialDone = Completer<void>();
+      final initialUsage = accountUsage.watchLatest((resource) {
+        if (initialDone.isCompleted) return;
+        if (resource.failure case final error?) {
+          initialDone.completeError(error);
+        } else if (resource.value?[identity]?.phase !=
+            AccountUsagePhase.querying) {
+          initialDone.complete();
+        }
+      });
+      final initialFailure = identityFailures.watchLatest((failures) {
+        if (!initialDone.isCompleted &&
+            !identical(failures, failuresBeforeWait) &&
+            failures.containsKey(identity)) {
+          initialDone.completeError(
+            StateError('The initial ChatGPT quota query failed'),
+          );
+        }
+      });
+      try {
+        await initialDone.future;
+      } finally {
+        initialUsage.observation.cancel();
+        initialFailure.observation.cancel();
       }
-      return usage?.phase == AccountUsagePhase.succeeded;
+    }
+    final beforeUsage = accountUsage.value.value?[identity];
+    if (beforeUsage?.phase == AccountUsagePhase.querying) {
+      throw StateError('A prior ChatGPT quota query is still active');
+    }
+    final previousOperationId = beforeUsage?.operationId;
+    final beforeUsageRevision = beforeUsage?.revision ?? -1;
+    final beforeQueryRevision =
+        graph.accounts.state.value.account(identity)?.usageQueryRevision ??
+        beforeUsage?.queryRevision;
+    if (beforeQueryRevision == null) {
+      throw StateError('ChatGPT account has no usage query identity');
+    }
+    final failuresBeforeRefresh = identityFailures.value;
+    final refreshed = Completer<(String, int)>();
+    void failRefresh(Object error) {
+      if (!refreshed.isCompleted) refreshed.completeError(error);
+    }
+
+    void inspectRefresh(
+      domain.AccountResource<
+        Map<domain.NativeAccountIdentity, AccountUsageObservation>
+      >
+      resource,
+    ) {
+      if (refreshed.isCompleted) return;
+      if (resource.failure case final error?) {
+        failRefresh(error);
+        return;
+      }
+      final usage = resource.value?[identity];
+      if (usage == null ||
+          usage.revision <= beforeUsageRevision ||
+          usage.queryRevision != beforeQueryRevision ||
+          usage.operationId == null ||
+          usage.operationId == previousOperationId) {
+        return;
+      }
+      if (usage.phase == AccountUsagePhase.failed ||
+          usage.phase == AccountUsagePhase.missingCredential ||
+          usage.phase == AccountUsagePhase.unsupported) {
+        failRefresh(StateError('ChatGPT quota failed: ${usage.failure?.code}'));
+        return;
+      }
+      if (usage.phase == AccountUsagePhase.succeeded &&
+          usage.lastGood != null) {
+        refreshed.complete((usage.operationId!, usage.revision));
+      }
+    }
+
+    final usageWatch = accountUsage.watchLatest(inspectRefresh);
+    final failureWatch = identityFailures.watchLatest((failures) {
+      if (!identical(failures, failuresBeforeRefresh) &&
+          failures.containsKey(identity)) {
+        failRefresh(StateError('ChatGPT usage transport query failed'));
+      }
     });
+    final refreshEvidence = refreshed.future;
+    try {
+      // The latest-value feed may coalesce Querying. A terminal retains the
+      // new operation ID, so an old success cannot satisfy this refresh.
+      final evidence = await Future.wait([
+        refreshEvidence.then<Object>((value) => value),
+        tapKey('account-usage-check').then<Object>((_) => 'clicked'),
+      ], eagerError: true);
+      final (operationId, terminalRevision) = evidence.first as (String, int);
+      expect(operationId, isNot(previousOperationId));
+      expect(terminalRevision, greaterThan(beforeUsageRevision));
+    } finally {
+      usageWatch.observation.cancel();
+      failureWatch.observation.cancel();
+    }
     final usage = graph.accountUsage.state.value.value![identity]!;
     expect(usage.lastGood!.value, isA<AccountSubscription>());
     final quota = usage.lastGood!.value as AccountSubscription;

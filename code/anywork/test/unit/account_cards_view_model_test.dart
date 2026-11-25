@@ -353,6 +353,8 @@ void main() {
         'acp.failed': 'Failed',
         'acp.reconnecting': 'Reconnecting',
         'acp.connected': 'Connected',
+        'acp.cancelled': 'Cancelled',
+        'acp': 'ACP',
       }),
     );
     await h.container.pump();
@@ -436,6 +438,49 @@ void main() {
       'Reconnecting',
     );
     expect(_usage(h, _alpha), isNull);
+    for (final example in const [
+      (
+        auth: AcpCancelledState(),
+        connection: AcpConnectionStoppedState(),
+        phase: AcpPresentationPhase.idle,
+        status: 'Cancelled',
+      ),
+      (
+        auth: AcpUncheckedState(),
+        connection: AcpConnectionStoppedState(),
+        phase: AcpPresentationPhase.idle,
+        status: 'ACP',
+      ),
+      (
+        auth: AcpCancelledState(),
+        connection: AcpConnectionRetryingState(
+          attempt: 2,
+          nextRetryAt: 42,
+          failure: AcpAuthFailureView(
+            code: AcpAuthFailureCodeView.transport,
+            stage: AcpAuthStageView.initialize,
+            message: 'Disconnected',
+            retryable: true,
+          ),
+        ),
+        phase: AcpPresentationPhase.reconnecting,
+        status: 'Reconnecting',
+      ),
+    ]) {
+      _auth(
+        h,
+        accounts: [
+          AcpAuthAccountView(
+            accountId: 'alpha',
+            connectionRevision: 1,
+            state: example.auth,
+            connection: example.connection,
+          ),
+        ],
+      );
+      final content = _row(h, _alpha).content as AcpAccountRowContent;
+      expect((content.phase, content.status), (example.phase, example.status));
+    }
     _auth(h, accounts: [_authAccount('alpha')]);
     expect(
       (_row(h, _alpha).content as AcpAccountRowContent).status,

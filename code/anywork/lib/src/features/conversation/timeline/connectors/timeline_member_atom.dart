@@ -83,7 +83,6 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     }
   }
 
-  String? _observationError;
   Object _rangeQualification = Object();
   VoidCallback? _unregister;
   @override
@@ -117,7 +116,6 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   bool _readActive(String key) =>
       _active &&
       !_unavailable &&
-      _observationError == null &&
       (key == 'payload' ||
           key.startsWith('part.summaryText.') ||
           (widget.atom.kind != ChatAtomKind.toolCall &&
@@ -154,7 +152,6 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (!_active || _unavailable) {
       return;
     }
-    _observationError = null;
     final reader = widget.currentReader;
     if (reader == null) return;
     _owner ??= CurrentAtomBodyOwner(reader, isActive: () => _active);
@@ -398,9 +395,10 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
 
   Widget _recordView(BuildContext context) {
     final atom = widget.atom;
-    if (_observationError case final error?) return Text(error);
     if (widget.record.contentSource case FrozenObservation(:final available)) {
-      if (!available) {
+      if (!available &&
+          widget.record.predecodedPresentation?.compatibility !=
+              ChatItemCompatibility.malformed) {
         return Text(
           widget.record.startFact != null && widget.record.endFact == null
               ? '旧边界观察不可用 · 封存时尚未结束'

@@ -292,14 +292,12 @@ final class StudioDriverFacts {
         const {},
     Map<AccountIdentity, AccountResource<AccountDetails>> accountDetails =
         const {},
-    List<String> accountTemplates = const [],
     this.acpAuth = const AcpAuthSnapshotView.empty(),
     this.acpAuthResource,
     this.acpInstallResource,
     required this.acpAuthLoaded,
     this.acpInstall,
     List<CommandStatus> commands = const [],
-    this.settingsReady = false,
     this.persistence = const PersistenceStateSnapshot.ready(),
     List<StudioRecoveryIssue> recoveryIssues = const [],
     this.project,
@@ -312,7 +310,6 @@ final class StudioDriverFacts {
        accounts = List.unmodifiable(accounts),
        accountUsageQueryFailures = Map.unmodifiable(accountUsageQueryFailures),
        accountDetails = Map.unmodifiable(accountDetails),
-       accountTemplates = List.unmodifiable(accountTemplates),
        commands = List.unmodifiable(commands),
        recoveryIssues = List.unmodifiable(recoveryIssues);
 
@@ -357,7 +354,6 @@ final class StudioDriverFacts {
     for (final resource in accountDetails.values)
       if (resource.value case AcpAccountDetails(:final account)) account,
   ];
-  final List<String> accountTemplates;
   final AcpAuthSnapshotView acpAuth;
   final AccountResource<AcpAuthSnapshotView>? acpAuthResource;
   final AccountResource<AcpInstallSnapshotView>? acpInstallResource;
@@ -373,7 +369,6 @@ final class StudioDriverFacts {
   /// 与 `acpAuth` 分开：准备事实不能替代认证事实，下载完成也不是已保存。
   final StudioDriverAcpInstallFacts? acpInstall;
   final List<CommandStatus> commands;
-  final bool settingsReady;
   final PersistenceStateSnapshot persistence;
   final List<StudioRecoveryIssue> recoveryIssues;
   final StudioProject? project;
@@ -527,8 +522,6 @@ abstract final class StudioDriverState {
   static int? _nativeExitRemainingMs;
   static int? _nativeCleanupBudgetMs;
   static int _exitRequests = 0;
-  static String? _startupFailureCode;
-  static String? _startupFailureCorrelationId;
 
   /// Application assembly lends a query; binding never creates an observer or
   /// changes resource demand. Each request reads current Client facts directly.
@@ -567,27 +560,6 @@ abstract final class StudioDriverState {
   static void markExitRequested() {
     _exitRequests++;
   }
-
-  /// 记录启动致命失败的 typed code 与 correlation，供
-  /// 验收只读判定，而不是从 UI 文本猜测。
-  static void publishStartupFailure(StudioFailure failure) {
-    _startupFailureCode = failure.code.name;
-    _startupFailureCorrelationId = failure.correlationId;
-  }
-
-  /// 只读退出诊断：native 剩余期限、清理预算、退出请求次数、typed 报告与
-  /// 已观察阶段。验收据此对齐 remaining/stage，无需从长请求的断开推断。
-  static Map<String, Object?> exitDiagnosticsJson() => <String, Object?>{
-    'nativeExit': _nativeExitJson(),
-    'shutdownReport': _shutdownReportJson(),
-    'shutdownPhases': _shutdownPhasesJson(),
-    'startup': _startupJson(),
-  };
-
-  static Map<String, Object?> _startupJson() => <String, Object?>{
-    'failureCode': _startupFailureCode,
-    'correlationId': _startupFailureCorrelationId,
-  };
 
   static Map<String, Object?> _nativeExitJson() => <String, Object?>{
     'remainingMs': _nativeExitRemainingMs,

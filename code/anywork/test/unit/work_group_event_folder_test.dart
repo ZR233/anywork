@@ -10,7 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_histor
 import 'package:anywork/src/features/conversation/timeline/state/work_group_event_folder.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/history_work_range_members.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';

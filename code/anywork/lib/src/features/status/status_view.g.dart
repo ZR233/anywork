@@ -54,7 +54,7 @@ final class StartedItemsViewModelProvider
 }
 
 String _$startedItemsViewModelHash() =>
-    r'feb6bb550f9a24c196747fc1c5b03c6965a999ff';
+    r'3929f74d9b22c6d210a979bcd1b34e2cb261eeff';
 
 /// A display observation only: Client remains the sole owner of topic streams.
 

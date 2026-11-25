@@ -173,25 +173,16 @@ String _purposeLabel(BuildContext context, String? purpose) =>
 /// 会话顶栏「打开工作区」菜单：并列 VS Code、Zed 与终端三个外部入口。
 ///
 /// 有当前会话及所属项目即显示入口，不以编辑器安装情况控制整个入口；
-/// 三项各自探测可用性，不可用时禁用并说明原因。三个入口的目标都由会话
-class _SessionOpenWorkspaceMenu extends ConsumerStatefulWidget {
+/// 三项各自探测可用性，不可用时禁用并说明原因。目标取自所选会话。
+class _SessionOpenWorkspaceMenu extends ConsumerWidget {
   const _SessionOpenWorkspaceMenu({required this.state});
 
   final HeaderView state;
 
   @override
-  ConsumerState<_SessionOpenWorkspaceMenu> createState() =>
-      _SessionOpenWorkspaceMenuState();
-}
-
-class _SessionOpenWorkspaceMenuState
-    extends ConsumerState<_SessionOpenWorkspaceMenu> {
-  final MenuController _controller = MenuController();
-
-  @override
-  Widget build(BuildContext context) {
-    final project = widget.state.selectedProject;
-    final thread = widget.state.selectedRootRow;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final project = state.selectedProject;
+    final thread = state.selectedRootRow;
     if (project == null || thread == null) {
       return const SizedBox.shrink();
     }
@@ -206,11 +197,12 @@ class _SessionOpenWorkspaceMenuState
     final targetDescription = alias == null
         ? thread.workspacePath
         : '$alias:${thread.workspacePath}';
-    return MenuAnchor(
-      controller: _controller,
+    return StudioMenuButton(
+      tooltip: '$label\n$targetDescription',
+      buttonKey: StudioDriverKeys.sessionOpenWorkspaceMenu,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        _menuItem(
+        workspaceOpenMenuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceVsCode,
           icon: const HostAppLogo(
             app: HostAppIcon.vsCode,
@@ -223,7 +215,7 @@ class _SessionOpenWorkspaceMenuState
           onActivated: () =>
               _openThreadWorkspaceInVsCode(context, ref, project, thread),
         ),
-        _menuItem(
+        workspaceOpenMenuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceZed,
           icon: const HostAppLogo(app: HostAppIcon.zed, fallback: Icons.code),
           label: context.l10n.sessionOpenInZed,
@@ -233,7 +225,7 @@ class _SessionOpenWorkspaceMenuState
           onActivated: () =>
               _openThreadWorkspaceInZed(context, ref, project, thread),
         ),
-        _menuItem(
+        workspaceOpenMenuItem(
           key: StudioDriverKeys.sessionOpenWorkspaceTerminal,
           icon: const HostAppLogo(
             app: HostAppIcon.terminal,
@@ -247,63 +239,23 @@ class _SessionOpenWorkspaceMenuState
               _openThreadWorkspaceInTerminal(context, ref, project, thread),
         ),
       ],
-      child: Tooltip(
-        message: '$label\n$targetDescription',
-        child: TextButton(
-          key: StudioDriverKeys.sessionOpenWorkspaceMenu,
-          onPressed: () {
-            if (_controller.isOpen) {
-              _controller.close();
-            } else {
-              _controller.open();
-            }
-          },
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.folder_open_outlined,
-                size: 18,
-                color: context.colors.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Text(label),
-              const SizedBox(width: 4),
-              Icon(
-                Icons.keyboard_arrow_down,
-                size: 16,
-                color: context.colors.onSurfaceVariant,
-              ),
-            ],
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.folder_open_outlined,
+            size: 18,
+            color: context.colors.onSurfaceVariant,
           ),
-        ),
-      ),
-    );
-  }
-
-  /// 单行条目按内容自然收紧；完整目标与不可用原因由提示和读屏说明承载。
-  MenuItemButton _menuItem({
-    required Key key,
-    required Widget icon,
-    required String label,
-    required String targetDescription,
-    required bool available,
-    required String unavailableReason,
-    required VoidCallback onActivated,
-  }) {
-    // 菜单项保持 Material 原生布局；完整目标与不可用原因由 Tooltip 和
-    // semanticsLabel 承载，不把路径挤进菜单行。
-    final tooltipMessage = available
-        ? '$label\n$targetDescription'
-        : '$label\n$targetDescription\n$unavailableReason';
-    return MenuItemButton(
-      key: key,
-      semanticsLabel: tooltipMessage,
-      leadingIcon: icon,
-      onPressed: available ? onActivated : null,
-      child: Tooltip(
-        message: tooltipMessage,
-        child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+          const SizedBox(width: 8),
+          Text(label),
+          const SizedBox(width: 4),
+          Icon(
+            Icons.keyboard_arrow_down,
+            size: 16,
+            color: context.colors.onSurfaceVariant,
+          ),
+        ],
       ),
     );
   }

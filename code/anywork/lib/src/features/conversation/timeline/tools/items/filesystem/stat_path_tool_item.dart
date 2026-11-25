@@ -35,16 +35,13 @@ class StatPathToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.menu_book_outlined);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolReadReading
-        : failed
-        ? l10n.timelineToolReadFailed
-        : l10n.timelineToolReadCompleted;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolReadReading,
+        failed: l10n.timelineToolReadFailed,
+        succeeded: l10n.timelineToolReadCompleted,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) => toolField(

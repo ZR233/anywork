@@ -5,6 +5,7 @@ import 'package:anywork/src/features/settings/accounts/view_models/native_accoun
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/account_brand.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -56,6 +57,14 @@ NativeAccountEditorPresentation _editorPresentation({
   endpoint: AccountTextPresentation(raw: endpoint),
   credential: const AccountTextPresentation(helper: 'suppressed-cred-helper'),
   protocolLabel: 'gemini',
+  geminiConnection: projectGeminiConnection(
+    protocol: 'gemini',
+    templateId: templateId,
+    endpoint: endpoint,
+    canSwitchMode: creating,
+    supportsModelDiscovery: templateId == 'gemini',
+    hasBundledCatalog: templateId == 'vertex-ai',
+  ),
   canChangeTemplate: creating,
   hasStoredCredential: !creating,
   credentialRequired: true,
@@ -120,6 +129,27 @@ void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
 
   testWidgets(
+    'Google text outside the host does not identify an official endpoint',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(960, 1080));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _wrapEditor(
+          presentation: _editorPresentation(
+            templateId: 'vertex-ai',
+            endpoint:
+                'https://proxy.example/v1?upstream=aiplatform.googleapis.com',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('自定义端点'), findsOneWidget);
+      expect(find.text('隐式缓存'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'creating Vertex AI account switches mode and applies region preset',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(960, 1080));
@@ -165,6 +195,46 @@ void main() {
         switchedTemplate,
         const AccountTemplateKey(kind: AccountKind.native, id: 'gemini'),
       );
+    },
+  );
+
+  testWidgets(
+    'endpoint presets support keyboard activation and disable while saving',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(960, 1080));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final changes = <(NativeAccountField, String)>[];
+      final presentation = _editorPresentation(
+        templateId: 'vertex-ai',
+        endpoint: 'https://aiplatform.googleapis.com/v1/publishers/google',
+      );
+      Widget host({required bool saving}) => _wrapEditor(
+        presentation: presentation.copyWith(saving: saving),
+        onFieldChanged: (field, raw) => changes.add((field, raw)),
+      );
+      await tester.pumpWidget(host(saving: false));
+      await tester.pumpAndSettle();
+      final region = find.text('us-central1');
+      await tester.ensureVisible(region);
+      Focus.of(tester.element(region)).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pumpAndSettle();
+      expect(changes, [
+        (
+          NativeAccountField.endpoint,
+          'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
+        ),
+      ]);
+      await tester.pumpWidget(host(saving: true));
+      // Saving deliberately keeps an indeterminate progress indicator active.
+      await tester.pump(const Duration(milliseconds: 300));
+      final chip = find.ancestor(of: region, matching: find.byType(ChoiceChip));
+      expect(tester.widget<ChoiceChip>(chip).onSelected, isNull);
+      await tester.tap(region);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(changes, hasLength(1));
+      expect(tester.takeException(), isNull);
     },
   );
 

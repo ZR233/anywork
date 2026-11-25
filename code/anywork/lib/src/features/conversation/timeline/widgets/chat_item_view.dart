@@ -224,7 +224,8 @@ class _ChatItemViewState extends State<ChatItemView> {
   }
 
   Widget _buildContent(BuildContext context) {
-    if (item.observationUnavailable) {
+    if (item.observationUnavailable &&
+        item.compatibility != ChatItemCompatibility.malformed) {
       final record = item.displayRecord!;
       return _promptBubble(
         Text(

@@ -17,8 +17,7 @@ final studioVersionProvider = Provider<String>((ref) => _compiledStudioVersion);
 
 final studioUpdateRequestProvider = Provider<StudioUpdateRequest>((ref) {
   final request = ref.read(anyworkClientProvider).updates.request;
-  observeClient(ref, request, (_) => ref.invalidateSelf());
-  return request.value;
+  return observeClient(ref, request, (_) => ref.invalidateSelf());
 });
 
 /// Update startup and installation survive observer and route lifetimes.

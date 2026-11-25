@@ -607,7 +607,6 @@ Widget _planReadingArea({
     activeKind: ConversationSidebarPanelKind.plan,
     presentation: ConversationSidebarPresentation(
       sideBySideFeasible: true,
-      isOverlay: false,
       isExpandedFull: !split,
     ),
     onSelectKind: (_) {},

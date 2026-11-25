@@ -125,9 +125,7 @@ AccountDomainFrame _accountFrameFromFrb(
             credentialReady: account.credentialReady,
             usageQueryRevision: account.usageQueryRevision?.toInt(),
             acpEnabled: account.acpEnabled,
-            acpConnectionRevision: _frbNullableInt(
-              account.acpConnectionRevision,
-            ),
+            acpConnectionRevision: account.acpConnectionRevision?.toInt(),
             acpTemplate: account.acpTemplate == null
                 ? null
                 : _acpProviderFromFrb(account.acpTemplate!),
@@ -278,7 +276,7 @@ ChatGptLoginSnapshot _chatGptLoginSnapshotFromFrb(
     frb_chatgpt.BridgeChatGptLoginPhase.failed => ChatGptLoginPhase.failed,
   },
   authorizationUrl: value.authorizationUrl,
-  expiresAt: _frbNullableInt(value.expiresAt),
+  expiresAt: value.expiresAt?.toInt(),
   account: value.account == null
       ? null
       : _chatGptAccountInfoFromFrb(value.account!),

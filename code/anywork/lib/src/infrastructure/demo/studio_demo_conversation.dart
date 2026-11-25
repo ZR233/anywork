@@ -304,7 +304,7 @@ _DemoItem _demoPlanCompletion(
   _DemoPlanRequest request,
   _DemoPlanDecision decision,
   DateTime completedAt,
-) => _demoItem(
+) => _DemoItem(
   id: 'demo-plan:${request.interaction.id}',
   threadId: request.interaction.threadId,
   turnId: request.interaction.turnId,
@@ -346,24 +346,11 @@ final class _DemoItem {
   String? textFor(String key) => content.fields[key];
 }
 
-_DemoItem _demoItem({
-  required String id,
-  required String threadId,
-  required String? turnId,
-  required DateTime updatedAt,
-  required _DemoContent content,
-}) => _DemoItem(
-  id: id,
-  threadId: threadId,
-  turnId: turnId,
-  updatedAt: updatedAt,
-  content: content,
-);
 _DemoItem _demoRevise(
   _DemoItem item, {
   DateTime? updatedAt,
   required _DemoContent content,
-}) => _demoItem(
+}) => _DemoItem(
   id: item.id,
   threadId: item.threadId,
   turnId: item.turnId,
@@ -845,19 +832,12 @@ final class _DemoHistory {
 // Tokens are opaque to callers; retaining only issued boundaries is not history caching.
 
 final class _DemoReadSource {
-  _DemoReadSource(this._api, this.threadId, this._history, this.scope)
-    : h0 = _history.head,
-      itemH0 = _history.head;
+  _DemoReadSource(this._api, this.threadId, this._history, this.scope);
   final DemoStudioTransport _api;
   final _DemoHistory _history;
   final ChatScope scope;
-  final int h0;
-  final int itemH0;
   final String threadId;
   final Map<String, (String, int, int)> _cursors = {};
-  final Set<Future<void>> _accepted = {};
-  bool _closed = false;
-  Future<void>? _closing;
   String cursor(String kind, int revision, int boundary) {
     final token = 'demo:${newStudioCorrelationId()}';
     _cursors[token] = (kind, revision, boundary);
@@ -870,40 +850,6 @@ final class _DemoReadSource {
       throw _demoQueryFailure('Invalid original read cursor');
     }
     return c.$3;
-  }
-
-  Future<T> _read<T>(T Function() query) {
-    if (_closed || _api._runtimeExiting) {
-      return Future.error(_conversationClosedFailure);
-    }
-    final result = Future<T>.microtask(query);
-    final settled = result.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    _accepted.add(settled);
-    unawaited(settled.then((_) => _accepted.remove(settled)));
-    return result;
-  }
-
-  ChatAtom fit(ChatAtom message, int budget) {
-    if (message.payload == null) return message;
-    if (message.payload is DeferredPayload) return message;
-    if (_demoEncoded(chatAtomToJson(message)) <= budget) return message;
-    final length = switch (message.payload!) {
-      InlinePayload(:final bytes) => bytes.length,
-      DeferredPayload(:final byteLength) => byteLength,
-    };
-    return _demoCopy(
-      message,
-      payload: DeferredPayload(
-        reference: ContentRef(
-          databaseId: _history.epoch,
-          target: ItemPayloadTarget(itemId: message.id),
-        ),
-        byteLength: length,
-      ),
-    );
   }
 
   // Scope selects chat members, not the lifetime of already issued Item refs.
@@ -958,148 +904,4 @@ final class _DemoReadSource {
         }
     }
   }
-
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) => _read(() {
-    _demoDemand(demand);
-    if (!_demoHasActivity(scope) || reference.ownerId != _history.epoch) {
-      throw _demoMissing();
-    }
-    if (reference.collection != 'interactions' ||
-        reference.revision != _history.interactionRevision) {
-      throw _demoStale();
-    }
-    final rows = _api._demoWorkspace(threadId).interactions.toList()
-      ..sort(
-        (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
-          _history.positions[('interaction', b.id)]!,
-        ),
-      );
-    final source = <(String, int, Map<String, Object?>)>[
-      for (final row in rows)
-        (
-          row.id,
-          _history.positions[('interaction', row.id)]!,
-          {
-            'interactionId': row.id,
-            'scope': {'threadId': row.threadId, 'turnId': row.turnId},
-            'revision': row.revision,
-            'kind': row.kind.name,
-            'title': row.title,
-            'body': row.body,
-          },
-        ),
-    ];
-    final start = continuation == null
-        ? 0
-        : boundary(continuation, reference.collection, reference.revision);
-    final out = <CurrentCollectionEntry>[];
-    if (_demoEncoded({
-          'revision': reference.revision,
-          'entries': [],
-          'continuation': null,
-        }) >
-        demand.maxBytes) {
-      throw _demoQueryFailure(
-        'InvalidDemand: collection envelope does not fit',
-      );
-    }
-    var more = false;
-    String? next;
-    for (final row in source) {
-      final index = row.$2;
-      if (index < start) continue;
-      if (out.length == demand.maxItems) {
-        more = true;
-        break;
-      }
-      final bytes = utf8.encode(jsonEncode(row.$3));
-      CurrentPayloadData payload = InlineCurrentPayload(bytes: bytes);
-      CurrentCollectionEntry candidate = CurrentCollectionEntry(
-        id: row.$1,
-        position: index,
-        payload: payload,
-      );
-      final token = cursor(reference.collection, reference.revision, index + 1);
-      int encoded() => _demoEncoded({
-        'revision': reference.revision,
-        'entries': [
-          for (final e in [...out, candidate])
-            {
-              'id': e.id,
-              'position': e.position,
-              'payload': switch (e.payload) {
-                InlineCurrentPayload(:final bytes) => {
-                  'kind': 'inline',
-                  'bytes': bytes,
-                },
-                DeferredCurrentPayload(:final reference, :final byteLength) => {
-                  'kind': 'deferred',
-                  'reference': {
-                    'ownerId': reference.ownerId,
-                    'domain': reference.domain,
-                    'entityId': reference.entityId,
-                    'contentKey': reference.contentKey,
-                    'generation': reference.generation,
-                  },
-                  'byteLength': byteLength,
-                },
-              },
-            },
-        ],
-        'continuation': token,
-      });
-      if (encoded() > demand.maxBytes) {
-        final key = (reference.collection, row.$1, 'payload');
-        _history.currentBodies.putIfAbsent(
-          key,
-          () => _DemoBody()..append(bytes),
-        );
-        payload = DeferredCurrentPayload(
-          reference: CurrentContentRef(
-            ownerId: _history.epoch,
-            domain: 'collection:${reference.collection}',
-            entityId: '${row.$2}',
-            contentKey: 'entry',
-            generation: '${reference.revision}',
-          ),
-          byteLength: bytes.length,
-        );
-        candidate = CurrentCollectionEntry(
-          id: row.$1,
-          position: index,
-          payload: payload,
-        );
-        if (encoded() > demand.maxBytes) {
-          if (out.isEmpty) {
-            throw _demoQueryFailure(
-              'InvalidDemand: current entry does not fit',
-            );
-          }
-          more = true;
-          break;
-        }
-      }
-      out.add(candidate);
-      next = token;
-    }
-    // An exact-sized page may carry a cursor to one empty EOF page.
-    return CurrentCollectionPage(
-      revision: reference.revision,
-      entries: out,
-      continuation: more ? next : null,
-    );
-  });
-
-  void requestClose() {
-    _closed = true;
-  }
-
-  Future<void> close() => _closing ??= () async {
-    requestClose();
-    await Future.wait(_accepted.toList());
-  }();
 }

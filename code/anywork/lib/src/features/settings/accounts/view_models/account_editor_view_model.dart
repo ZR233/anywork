@@ -1340,22 +1340,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
               ),
               templates: [
                 for (final value in catalog.templates)
-                  AccountTemplatePresentation(
-                    key: AccountTemplateKey(
-                      kind: AccountKind.native,
-                      id: value.id,
-                    ),
-                    name: value.displayName,
-                    content: AccountTemplateContent.native(
-                      defaultBilling: displayBilling(value.defaultBillingKind),
-                      protocolLabel: value.protocol,
-                      defaultEndpoint: value.baseUrl,
-                      supportsModelDiscovery: value.supportsModelDiscovery,
-                      supportsUsageQuery: value.supportsUsageQuery,
-                    ),
-                    description: value.description,
-                    iconKey: value.iconKey,
-                  ),
+                  projectAccountTemplate(value),
               ],
               name: AccountTextPresentation(
                 raw: draft.name,
@@ -1391,6 +1376,23 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                         : null),
               ),
               protocolLabel: draft.protocol,
+              geminiConnection: projectGeminiConnection(
+                protocol: draft.protocol,
+                templateId: draft.templateId,
+                endpoint: draft.endpoint,
+                canSwitchMode:
+                    _key.creating &&
+                    !_created &&
+                    !_saving &&
+                    catalog.template('gemini') != null &&
+                    catalog.template('vertex-ai') != null,
+                supportsModelDiscovery: template?.supportsModelDiscovery,
+                hasBundledCatalog:
+                    catalog
+                        .modelCatalogs[template?.modelCatalogId]
+                        ?.isNotEmpty ??
+                    false,
+              ),
               setDefaultOnCreate: _setDefaultOnCreate,
               showSetDefaultOnCreate: _key.creating,
               canChangeTemplate: _key.creating && !_created && !_saving,
@@ -1514,7 +1516,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
     );
   }
 
-  void acpChanged() => _publish();
   void _changed() {
     if (!ref.mounted || _finished) return;
     if (_raw != null || _acpName != null) {

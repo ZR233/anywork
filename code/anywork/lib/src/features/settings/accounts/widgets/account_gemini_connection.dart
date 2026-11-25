@@ -4,50 +4,19 @@ import '../../../../l10n/app_localizations.dart';
 import '../../../../shared/account_brand.dart';
 import '../state/account_presentations.dart';
 
-const String _vertexGlobalEndpoint =
-    'https://aiplatform.googleapis.com/v1/publishers/google';
-const String _aiStudioEndpoint =
-    'https://generativelanguage.googleapis.com/v1beta';
-
-bool isGeminiAccountPresentation(NativeAccountEditorPresentation value) {
-  final templateId = value.templateKey.id;
-  if (templateId == 'gemini' || templateId == 'vertex-ai') {
-    return true;
-  }
-  return value.protocolLabel.toLowerCase().contains('gemini');
-}
-
-bool _isVertexMode(NativeAccountEditorPresentation value) {
-  if (value.templateKey.id == 'vertex-ai') {
-    return true;
-  }
-  if (value.templateKey.id == 'gemini') {
-    return false;
-  }
-  return value.endpoint.raw.toLowerCase().contains('aiplatform.googleapis.com');
-}
-
-String geminiCredentialLabel(
-  AppLocalizations l10n,
-  NativeAccountEditorPresentation value,
-) => _isVertexMode(value)
-    ? l10n.accountsGeminiCredentialLabelVertex
-    : l10n.accountsGeminiCredentialLabelAiStudio;
-
-String _normalizedEndpoint(String raw) =>
-    raw.trim().replaceFirst(RegExp(r'/+$'), '');
-
 /// Focused guidance, access-mode switcher and official endpoint presets for
 /// Google Gemini REST accounts (AI Studio & GCP Vertex AI).
 class AccountGeminiConnectionPanel extends StatelessWidget {
   const AccountGeminiConnectionPanel({
     required this.value,
+    required this.saving,
     required this.onTemplateChanged,
     required this.onEndpointPresetSelected,
     super.key,
   });
 
-  final NativeAccountEditorPresentation value;
+  final AccountGeminiConnectionPresentation value;
+  final bool saving;
   final ValueChanged<AccountTemplateKey> onTemplateChanged;
   final ValueChanged<String> onEndpointPresetSelected;
 
@@ -56,20 +25,9 @@ class AccountGeminiConnectionPanel extends StatelessWidget {
     final l10n = AppLocalizations.of(context);
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final hasVertexTemplate = value.templates.any(
-      (t) => t.key.kind == AccountKind.native && t.key.id == 'vertex-ai',
-    );
-    final hasGeminiTemplate = value.templates.any(
-      (t) => t.key.kind == AccountKind.native && t.key.id == 'gemini',
-    );
-    final canSwitchMode =
-        value.canChangeTemplate && hasVertexTemplate && hasGeminiTemplate;
-    final isVertex = _isVertexMode(value);
-    final normalized = _normalizedEndpoint(value.endpoint.raw);
+    final isVertex = value.mode == AccountGeminiGuidanceMode.vertexAi;
     final isCustomEndpoint =
-        normalized.isNotEmpty &&
-        !normalized.contains('aiplatform.googleapis.com') &&
-        !normalized.contains('generativelanguage.googleapis.com');
+        value.endpointKind == AccountGeminiEndpointKind.custom;
 
     final modeTitle = isCustomEndpoint
         ? l10n.accountsGeminiModeCustom
@@ -83,62 +41,63 @@ class AccountGeminiConnectionPanel extends StatelessWidget {
         : l10n.accountsGeminiHintAiStudio;
 
     final presets = isVertex
-        ? <(String label, String url)>[
-            (l10n.accountsGeminiPresetGlobal, _vertexGlobalEndpoint),
+        ? <(String, AccountGeminiEndpointPreset)>[
             (
-              'us-central1',
-              'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
+              l10n.accountsGeminiPresetGlobal,
+              AccountGeminiEndpointPreset.vertexGlobal,
             ),
-            (
-              'europe-west4',
-              'https://europe-west4-aiplatform.googleapis.com/v1/publishers/google',
-            ),
+            ('us-central1', AccountGeminiEndpointPreset.vertexUsCentral1),
+            ('europe-west4', AccountGeminiEndpointPreset.vertexEuropeWest4),
             (
               'asia-northeast1',
-              'https://asia-northeast1-aiplatform.googleapis.com/v1/publishers/google',
+              AccountGeminiEndpointPreset.vertexAsiaNortheast1,
             ),
           ]
-        : <(String label, String url)>[
-            (l10n.accountsGeminiPresetAiStudioOfficial, _aiStudioEndpoint),
+        : <(String, AccountGeminiEndpointPreset)>[
+            (
+              l10n.accountsGeminiPresetAiStudioOfficial,
+              AccountGeminiEndpointPreset.aiStudio,
+            ),
           ];
 
     final badges = <(IconData icon, String label)>[
       (Icons.vpn_key_outlined, l10n.accountsGeminiBadgeHeader),
       (Icons.image_outlined, l10n.accountsGeminiBadgeMultimodal),
-      if (isVertex)
-        (Icons.inventory_2_outlined, l10n.accountsGeminiBadgeBundledCatalog)
-      else
+      if (value.hasBundledCatalog)
+        (Icons.inventory_2_outlined, l10n.accountsGeminiBadgeBundledCatalog),
+      if (value.supportsModelDiscovery == true)
         (Icons.travel_explore_outlined, l10n.accountsGeminiBadgeDiscovery),
-      if (!isCustomEndpoint)
-        (Icons.bolt_outlined, l10n.accountsGeminiBadgeImplicitCache),
     ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (canSwitchMode) ...[
+        if (value.canSwitchMode) ...[
           Align(
             alignment: AlignmentDirectional.centerStart,
-            child: SegmentedButton<String>(
+            child: SegmentedButton<AccountGeminiGuidanceMode>(
               key: const ValueKey<String>('gemini-access-mode-switcher'),
               segments: [
                 ButtonSegment(
-                  value: 'vertex-ai',
+                  value: AccountGeminiGuidanceMode.vertexAi,
                   icon: const Icon(Icons.cloud_outlined),
                   label: Text(l10n.accountsGeminiModeVertexAi),
                 ),
                 ButtonSegment(
-                  value: 'gemini',
+                  value: AccountGeminiGuidanceMode.aiStudio,
                   icon: const Icon(Icons.auto_awesome_outlined),
                   label: Text(l10n.accountsGeminiModeAiStudio),
                 ),
               ],
-              selected: {isVertex ? 'vertex-ai' : 'gemini'},
-              onSelectionChanged: value.saving
+              selected: {value.mode},
+              onSelectionChanged: saving
                   ? null
                   : (selection) {
-                      final id = selection.single;
-                      if (id == value.templateKey.id) return;
+                      final mode = selection.single;
+                      if (mode == value.mode) return;
+                      final id = mode == AccountGeminiGuidanceMode.vertexAi
+                          ? 'vertex-ai'
+                          : 'gemini';
                       onTemplateChanged(
                         AccountTemplateKey(kind: AccountKind.native, id: id),
                       );
@@ -215,11 +174,14 @@ class AccountGeminiConnectionPanel extends StatelessWidget {
                   children: [
                     for (final preset in presets)
                       _GeminiEndpointPresetChip(
-                        key: ValueKey<String>('gemini-preset:${preset.$2}'),
+                        key: ValueKey<String>(
+                          'gemini-preset:${preset.$2.endpoint}',
+                        ),
                         label: preset.$1,
-                        selected: normalized == preset.$2,
-                        enabled: !value.saving,
-                        onTap: () => onEndpointPresetSelected(preset.$2),
+                        selected: value.selectedPreset == preset.$2,
+                        enabled: !saving,
+                        onTap: () =>
+                            onEndpointPresetSelected(preset.$2.endpoint),
                       ),
                   ],
                 ),
@@ -251,9 +213,6 @@ class _GeminiEndpointPresetChip extends StatelessWidget {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final radius = BorderRadius.circular(8);
-    final backgroundColor = selected
-        ? colors.primaryContainer
-        : colors.surfaceContainerLowest;
     final borderColor = selected
         ? colors.primary.withValues(alpha: 0.45)
         : colors.outlineVariant;
@@ -261,41 +220,20 @@ class _GeminiEndpointPresetChip extends StatelessWidget {
         ? colors.onPrimaryContainer
         : colors.onSurface;
 
-    return Semantics(
-      button: true,
+    return ChoiceChip(
+      label: Text(label),
       selected: selected,
-      enabled: enabled,
-      label: label,
-      child: Material(
-        color: backgroundColor,
-        shape: RoundedRectangleBorder(
-          borderRadius: radius,
-          side: BorderSide(color: borderColor),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (selected) ...[
-                  Icon(Icons.check, size: 16, color: foregroundColor),
-                  const SizedBox(width: 6),
-                ],
-                Text(
-                  label,
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    height: 1.25,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    color: foregroundColor,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+      onSelected: enabled ? (_) => onTap() : null,
+      backgroundColor: colors.surfaceContainerLowest,
+      selectedColor: colors.primaryContainer,
+      checkmarkColor: foregroundColor,
+      showCheckmark: true,
+      side: BorderSide(color: borderColor),
+      shape: RoundedRectangleBorder(borderRadius: radius),
+      labelStyle: theme.textTheme.labelMedium?.copyWith(
+        height: 1.25,
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+        color: foregroundColor,
       ),
     );
   }

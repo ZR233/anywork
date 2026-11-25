@@ -4,85 +4,40 @@ ThreadNotificationFrame _currentNotificationFrameFromEnvelope(
   frb.BridgeThreadNotificationEnvelope envelope,
 ) {
   final threadId = envelope.threadId;
-  final revision = _exactTimelineInt(envelope.revision, 'state counter');
-  final epoch = _exactTimelineInt(envelope.epoch, 'state counter');
-  final baseRevision = _exactTimelineInt(
-    envelope.baseRevision,
-    'state counter',
-  );
-  return envelope.notification.when(
-    turnStarted: (turn) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadTurnUpdate(_turnFromFrb(turn)),
+  final revision = exactTimelineInt(envelope.revision, 'state counter');
+  final epoch = exactTimelineInt(envelope.epoch, 'state counter');
+  final baseRevision = exactTimelineInt(envelope.baseRevision, 'state counter');
+  final update = envelope.notification.when<ThreadWorkspaceUpdate>(
+    turnStarted: (turn) => ThreadTurnUpdate(_turnFromFrb(turn)),
+    turnUpdated: (turn) => ThreadTurnUpdate(_turnFromFrb(turn)),
+    turnCompleted: (turn) => ThreadTurnUpdate(_turnFromFrb(turn)),
+    interactionChanged: (interaction) => ThreadInteractionUpdate(
+      interaction: _interactionFromFrb(interaction),
+      pending: _interactionIsPending(interaction),
     ),
-    turnUpdated: (turn) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadTurnUpdate(_turnFromFrb(turn)),
+    threadRuntimeUpdated: (runtime, modelRoute) => ThreadRuntimeUpdate(
+      runtime: _threadRuntimeFromFrb(runtime),
+      todo: _todoFromFrb(runtime.todo),
+      modelRoute: _threadModelRouteFromFrb(modelRoute),
     ),
-    turnCompleted: (turn) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadTurnUpdate(_turnFromFrb(turn)),
+    activityChanged: (activity) => ThreadActivityUpdate(
+      activity: activity == null ? null : _threadActivityFromFrb(activity),
     ),
-    interactionChanged: (interaction) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadInteractionUpdate(
-        interaction: _interactionFromFrb(interaction),
-        pending: _interactionIsPending(interaction),
-      ),
+    storageChanged: (storage) => ThreadStorageUpdate(
+      storage: storage == null ? null : _threadStorageFromFrb(storage),
     ),
-    threadRuntimeUpdated: (runtime, modelRoute) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadRuntimeUpdate(
-        runtime: _threadRuntimeFromFrb(runtime),
-        todo: _todoFromFrb(runtime.todo),
-        modelRoute: _threadModelRouteFromFrb(modelRoute),
-      ),
-    ),
-    activityChanged: (activity) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadActivityUpdate(
-        activity: activity == null ? null : _threadActivityFromFrb(activity),
-      ),
-    ),
-    storageChanged: (storage) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadStorageUpdate(
-        storage: storage == null ? null : _threadStorageFromFrb(storage),
-      ),
-    ),
-    businessRefsChanged: (references) => ThreadNotificationFrame(
-      threadId: threadId,
-      revision: revision,
-      epoch: epoch,
-      baseRevision: baseRevision,
-      update: ThreadBusinessRefsUpdate(
-        references: _businessRefsFromFrb(references),
-      ),
-    ),
+    businessRefsChanged: (references) =>
+        ThreadBusinessRefsUpdate(references: _businessRefsFromFrb(references)),
     lagged: (dropped) => throw ConversationContinuityError(
       'Current notification gap (thread=$threadId, dropped=$dropped)',
     ),
+  );
+  return ThreadNotificationFrame(
+    threadId: threadId,
+    revision: revision,
+    epoch: epoch,
+    baseRevision: baseRevision,
+    update: update,
   );
 }
 
@@ -98,7 +53,7 @@ ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
   }
   return ThreadWorkspace(
     thread: _threadFromFrb(value.thread),
-    revision: _exactTimelineInt(value.revision, 'state counter'),
+    revision: exactTimelineInt(value.revision, 'state counter'),
     businessRefs: _businessRefsFromFrb(value.businessRefs),
     interactions: value.interactions
         .where(_interactionIsPending)
@@ -152,7 +107,7 @@ ThreadActivityView _threadActivityFromFrb(
       for (final field in value.deferred_) _currentStateFieldFromFrb(field),
     ],
     identity: value.identity,
-    revision: _exactTimelineInt(value.revision, 'state counter'),
+    revision: exactTimelineInt(value.revision, 'state counter'),
     turnId: value.turnId,
     executionId: value.executionId,
     inputId: value.inputId,
@@ -195,7 +150,7 @@ ThreadActivityToolEntry _activityToolFromFrb(
     },
     state: _activityToolStateFromFrb(value.state),
     ordinal: _exactNullableTimelineInt(value.ordinal, 'state counter'),
-    startedAt: _frbNullableInt(value.startedAt),
+    startedAt: value.startedAt?.toInt(),
     wait: value.wait == null ? null : _waitFromFrb(value.wait!),
   );
 }
@@ -233,7 +188,7 @@ ThreadStorageStateView _threadStorageFromFrb(
         ThreadHistoryFault.blobFailed,
       null => null,
     },
-    faultGeneration: _exactTimelineInt(value.faultGeneration, 'state counter'),
+    faultGeneration: exactTimelineInt(value.faultGeneration, 'state counter'),
     acceptedSequence: _exactNullableTimelineInt(
       value.acceptedSequence,
       'state counter',
@@ -272,11 +227,11 @@ StudioThread _threadFromFrb(frb.BridgeThread value) {
         : _savedRouteFromFrb(value.frozenModel!),
     workspaceMode: ThreadWorkspaceMode.fromId(value.workspaceMode),
     workspacePath: value.workspacePath,
-    createdAt: _dateFromUnix(value.createdAt),
-    updatedAt: _dateFromUnix(value.updatedAt),
+    createdAt: dateFromUnix(value.createdAt),
+    updatedAt: dateFromUnix(value.updatedAt),
     lastUserMessageAt: value.lastUserMessageAt == null
         ? null
-        : _dateFromUnix(value.lastUserMessageAt!),
+        : dateFromUnix(value.lastUserMessageAt!),
     parentThreadId: value.parentThreadId,
     rootThreadId: value.rootThreadId,
     agentPath: value.agentPath,
@@ -314,10 +269,10 @@ ThreadWaitPresentationView _waitFromFrb(
               },
             ),
         ],
-        timeoutMs: _exactTimelineInt(timeoutMs, 'state counter'),
+        timeoutMs: exactTimelineInt(timeoutMs, 'state counter'),
       ),
       timer: (durationMs) => ThreadWaitTimerIntentView(
-        durationMs: _exactTimelineInt(durationMs, 'state counter'),
+        durationMs: exactTimelineInt(durationMs, 'state counter'),
       ),
     ),
     state: switch (value.state) {
@@ -339,17 +294,17 @@ StudioTurnView _turnFromFrb(frb.BridgeTurn value) {
     inputId: value.inputId,
     turnId: value.id,
     threadId: value.threadId,
-    revision: _exactTimelineInt(value.revision, 'state counter'),
+    revision: exactTimelineInt(value.revision, 'state counter'),
     state: _turnStateFromFrb(value.state),
-    updatedAt: _dateFromUnix(value.updatedAt),
+    updatedAt: dateFromUnix(value.updatedAt),
   );
 }
 
 StudioTurnState _turnStateFromFrb(frb.BridgeTurnState value) {
   return value.when(
-    queued: (queuedAt) => QueuedStudioTurnState(queuedAt: _frbInt(queuedAt)),
+    queued: (queuedAt) => QueuedStudioTurnState(queuedAt: queuedAt.toInt()),
     running: (startedAt, phase) => RunningStudioTurnState(
-      startedAt: _frbInt(startedAt),
+      startedAt: startedAt.toInt(),
       activity: switch (phase) {
         frb.BridgeTurnPhase.preparing => StudioTurnActivity.preparing,
         frb.BridgeTurnPhase.thinking => StudioTurnActivity.thinking,
@@ -360,8 +315,8 @@ StudioTurnState _turnStateFromFrb(frb.BridgeTurnState value) {
       },
     ),
     completed: (startedAt, completedAt, completion) => CompletedStudioTurnState(
-      startedAt: _frbNullableInt(startedAt),
-      completedAt: _frbInt(completedAt),
+      startedAt: startedAt?.toInt(),
+      completedAt: completedAt.toInt(),
       completion: switch (completion) {
         frb.BridgeTurnCompletion.normal => StudioTurnCompletion.normal,
         frb.BridgeTurnCompletion.interactionRequested =>
@@ -370,27 +325,27 @@ StudioTurnState _turnStateFromFrb(frb.BridgeTurnState value) {
     ),
     cancelled: (startedAt, requestedAt, completedAt, cause) =>
         CancelledStudioTurnState(
-          startedAt: _frbNullableInt(startedAt),
-          requestedAt: _frbInt(requestedAt),
-          completedAt: _frbInt(completedAt),
+          startedAt: startedAt?.toInt(),
+          requestedAt: requestedAt.toInt(),
+          completedAt: completedAt.toInt(),
           cause: _turnCancellationCauseFromFrb(cause),
         ),
     failed: (startedAt, completedAt, failure) => FailedStudioTurnState(
-      startedAt: _frbNullableInt(startedAt),
-      completedAt: _frbInt(completedAt),
+      startedAt: startedAt?.toInt(),
+      completedAt: completedAt.toInt(),
       failure: _turnFailureFromFrb(failure),
     ),
     budgetLimited: (startedAt, completedAt, limit, rollover) =>
         BudgetLimitedStudioTurnState(
-          startedAt: _frbNullableInt(startedAt),
-          completedAt: _frbInt(completedAt),
+          startedAt: startedAt?.toInt(),
+          completedAt: completedAt.toInt(),
           limit: StudioTurnBudgetLimit(
             kind: StudioTurnBudgetLimitKind.values.byName(limit.kind.name),
             usage: StudioTurnBudgetUsage(
               modelSteps: limit.usage.modelSteps,
               toolCalls: limit.usage.toolCalls,
               waitCalls: limit.usage.waitCalls,
-              elapsedMs: _exactTimelineInt(
+              elapsedMs: exactTimelineInt(
                 limit.usage.elapsedMs,
                 'state counter',
               ),
@@ -468,15 +423,12 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
                 value.liveUsage!.state == frb.BridgeThreadRuntimeUsageState.live
                 ? ThreadRuntimeUsageState.live
                 : ThreadRuntimeUsageState.authoritative,
-            observationSequence: _exactTimelineInt(
+            observationSequence: exactTimelineInt(
               value.liveUsage!.observationSequence,
               'state counter',
             ),
           ),
-    contextTokens: _exactTimelineInt(
-      usage.latestContextTokens,
-      'state counter',
-    ),
+    contextTokens: exactTimelineInt(usage.latestContextTokens, 'state counter'),
     contextWindow:
         _exactNullableTimelineInt(usage.contextWindow, 'state counter') ?? 0,
     maxContextWindow: _exactNullableTimelineInt(
@@ -487,30 +439,24 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
       usage.autoCompactLimit,
       'state counter',
     ),
-    totalTokens: _exactTimelineInt(usage.totalTokens, 'state counter'),
-    promptTokens: _exactTimelineInt(usage.promptTokens, 'state counter'),
-    completionTokens: _exactTimelineInt(
-      usage.completionTokens,
-      'state counter',
-    ),
-    cachedPromptTokens: _exactTimelineInt(
+    totalTokens: exactTimelineInt(usage.totalTokens, 'state counter'),
+    promptTokens: exactTimelineInt(usage.promptTokens, 'state counter'),
+    completionTokens: exactTimelineInt(usage.completionTokens, 'state counter'),
+    cachedPromptTokens: exactTimelineInt(
       usage.cachedPromptTokens,
       'state counter',
     ),
-    cacheWriteTokens: _exactTimelineInt(
-      usage.cacheWriteTokens,
-      'state counter',
-    ),
-    reasoningTokens: _exactTimelineInt(usage.reasoningTokens, 'state counter'),
-    inferenceCount: _exactTimelineInt(usage.inferenceCount, 'state counter'),
+    cacheWriteTokens: exactTimelineInt(usage.cacheWriteTokens, 'state counter'),
+    reasoningTokens: exactTimelineInt(usage.reasoningTokens, 'state counter'),
+    inferenceCount: exactTimelineInt(usage.inferenceCount, 'state counter'),
     cacheUsage: CacheUsageView(
       sampleCount: usage.cacheUsage.sampleCount.toInt(),
       legacySampleCountUnknown: usage.cacheUsage.legacySampleCountUnknown,
-      inputTokens: _exactTimelineInt(
+      inputTokens: exactTimelineInt(
         usage.cacheUsage.inputTokens,
         'state counter',
       ),
-      cacheReadTokens: _exactTimelineInt(
+      cacheReadTokens: exactTimelineInt(
         usage.cacheUsage.cacheReadTokens,
         'state counter',
       ),
@@ -529,11 +475,11 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     ),
     promptCachePolicy: usage.promptCachePolicy,
     prefixChangedReason: usage.prefixChangedReason?.name,
-    turnCompletionTokens: _exactTimelineInt(
+    turnCompletionTokens: exactTimelineInt(
       value.turnCompletionTokens,
       'state counter',
     ),
-    turnResponseMillis: _exactTimelineInt(
+    turnResponseMillis: exactTimelineInt(
       value.turnResponseMillis,
       'state counter',
     ),
@@ -544,7 +490,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     workflow: value.workflow == null
         ? null
         : _workflowRuntimeFromFrb(value.workflow!),
-    plan: value.plan == null ? null : _planRuntimeFromFrb(value.plan!),
+    plan: value.plan == null ? null : planRuntimeFromFrb(value.plan!),
     execution: value.execution == null
         ? null
         : _agentExecutionFromFrb(value.execution!),
@@ -564,7 +510,7 @@ ThreadModelRouteView? _threadModelRouteFromFrb(
     modelId: value.modelId,
     effort: value.effort,
     serviceTier: value.serviceTier,
-    revision: _exactTimelineInt(value.revision, 'state counter'),
+    revision: exactTimelineInt(value.revision, 'state counter'),
     available: value.available,
     unavailableReason: value.unavailableReason,
   );
@@ -587,59 +533,16 @@ ContinuationView _continuationFromFrb(
     frb.BridgeContinuationReason.executionFailed =>
       ContinuationReason.executionFailed,
   },
-  createdAt: _dateFromUnix(continuation.createdAt),
+  createdAt: dateFromUnix(continuation.createdAt),
 );
-
-PlanRuntimeView _planRuntimeFromFrb(frb.BridgePlanRuntimeSnapshot value) {
-  final document = value.document;
-  return PlanRuntimeView(
-    revision: _exactTimelineInt(value.revision, 'state counter'),
-    state: switch (value.state) {
-      frb.BridgePlanPhase.drafting => PlanRuntimePhase.drafting,
-      frb.BridgePlanPhase.awaitingConfirmation =>
-        PlanRuntimePhase.awaitingConfirmation,
-      frb.BridgePlanPhase.revisionRequested =>
-        PlanRuntimePhase.revisionRequested,
-      frb.BridgePlanPhase.approved => PlanRuntimePhase.approved,
-    },
-    document: document == null
-        ? null
-        : PlanDocumentView(
-            version: _exactTimelineInt(document.version, 'state counter'),
-            markdown: document.markdown,
-            contentHash: document.contentHash,
-          ),
-    updatedAt: _dateFromUnix(value.updatedAt),
-  );
-}
 
 WorkflowRuntimeView _workflowRuntimeFromFrb(
   frb.BridgeWorkflowRuntimeSnapshot value,
 ) {
   final run = value.currentRun;
   return WorkflowRuntimeView(
-    revision: _exactTimelineInt(value.revision, 'state counter'),
-    currentRun: run == null
-        ? null
-        : WorkflowRunView(
-            lineageId: run.lineageId,
-            runId: run.runId,
-            modeId: run.modeId,
-            graphRevision: _exactTimelineInt(
-              run.graphRevision,
-              'state counter',
-            ),
-            graphHash: run.graphHash,
-            currentStateId: run.currentStateId,
-            terminal: run.lifecycle == frb.BridgeWorkflowRunLifecycle.terminal,
-            startedAt: _dateFromUnix(run.startedAt),
-            updatedAt: _dateFromUnix(run.updatedAt),
-            visitedStateIds: List<String>.unmodifiable(run.visitedStateIds),
-            lastTransitionForced: run.lastTransitionForced,
-            currentStateTitle: run.currentStateTitle,
-            modeDisplayName: run.modeDisplayName,
-            modeDeleted: run.modeDeleted,
-          ),
+    revision: exactTimelineInt(value.revision, 'state counter'),
+    currentRun: run == null ? null : workflowRunFromFrb(run),
   );
 }
 
@@ -699,7 +602,7 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
     turnId: value.scope.turnId,
     kind: mapped.kind,
     payload: mapped.payload,
-    revision: _exactTimelineInt(value.revision, 'state counter'),
+    revision: exactTimelineInt(value.revision, 'state counter'),
   );
 }
 
@@ -735,7 +638,7 @@ Object _studioFailure(Object error) {
     // 已是领域错误：保持身份与堆栈，不二次包装。
     final StudioFailure failure => failure,
     final frb.BridgeError bridge => StudioFailure(
-      code: _studioFailureCode(bridge.code),
+      code: studioFailureCodeFromBridge(bridge.code),
       message: bridge.message,
       retryable: bridge.retryable,
       correlationId: bridge.correlationId,
@@ -764,10 +667,6 @@ StudioFailureReason? _failureReasonFromDetails(String? detailsJson) {
   final label = decoded['reason'];
   return label is String ? StudioFailureReason.fromLabel(label) : null;
 }
-
-/// 传输中立错误码到领域错误码的完整映射；每个桥变体都必须显式落位。
-StudioFailureCode _studioFailureCode(frb.BridgeErrorCode code) =>
-    studioFailureCodeFromBridge(code);
 
 frb.BridgeInteractionResolution _interactionResolutionFromDomain(
   InteractionResolutionCommand resolution,

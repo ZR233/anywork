@@ -152,11 +152,11 @@ String accountInitials(String value) {
   }
   if (words.length == 1) {
     final word = words.first;
-    return word.substring(0, word.length < 2 ? word.length : 2).toUpperCase();
+    return word.characters.take(2).toString().toUpperCase();
   }
   return words
       .take(2)
-      .map((word) => word.isEmpty ? '' : word.substring(0, 1))
+      .map((word) => word.characters.first)
       .join()
       .toUpperCase();
 }

@@ -1063,6 +1063,154 @@ DelegationModelDetail vmPerformance() => DelegationModelDetail(
 );
 
 void main() {
+  for (final templateId in <String?>[null, 'missing-gemini-template']) {
+    test(
+      'Gemini guidance preserves raw drafts and save eligibility: $templateId',
+      () async {
+        final h = AccountsVmHarness();
+        addTearDown(h.dispose);
+        h.accounts.put(
+          NativeAccountDetails(
+            identity: const NativeAccountIdentity('native'),
+            name: 'Gemini account',
+            authentication: account_domain.AccountAuthenticationMethod.apiKey,
+            protocol: 'gemini',
+            templateId: templateId,
+            baseUrl: AccountGeminiEndpointPreset.vertexGlobal.endpoint,
+            hasBearerToken: true,
+            credentialRequired: true,
+            usageQueryRevision: 1,
+            customModels: const [],
+          ),
+        );
+        final key = editKey();
+        final owner = await h.editor(key);
+        owner.setStrings(
+          const AccountStrings({
+            'required': 'Required',
+            'unknownTemplate': 'Unknown template',
+          }),
+        );
+        final initial = h.editorState(key).native!.geminiConnection!;
+        expect(initial.mode, AccountGeminiGuidanceMode.vertexAi);
+        expect(initial.supportsModelDiscovery, isNull);
+        expect(initial.hasBundledCatalog, isFalse);
+        expect(initial.canSwitchMode, isFalse);
+        const raw =
+            '  https://proxy.example/v1?upstream=aiplatform.googleapis.com  ';
+        owner.changeField(NativeAccountField.endpoint, raw);
+        final state = h.editorState(key);
+        expect(state.native!.endpoint.raw, raw);
+        expect(
+          state.native!.geminiConnection!.endpointKind,
+          AccountGeminiEndpointKind.custom,
+        );
+        expect(state.dirty, isTrue);
+        expect(state.canSave, templateId == null);
+        expect(h.accounts.patches, isEmpty);
+        expect(h.accounts.creates, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'Gemini endpoint guidance uses wire protocol and structured URI fields',
+    () {
+      const cases =
+          <(String, AccountGeminiEndpointKind, AccountGeminiGuidanceMode)>[
+            (
+              'https://generativelanguage.googleapis.com/v1beta',
+              AccountGeminiEndpointKind.official,
+              AccountGeminiGuidanceMode.aiStudio,
+            ),
+            (
+              ' https://aiplatform.googleapis.com/v1/publishers/google/ ',
+              AccountGeminiEndpointKind.official,
+              AccountGeminiGuidanceMode.vertexAi,
+            ),
+            (
+              'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
+              AccountGeminiEndpointKind.official,
+              AccountGeminiGuidanceMode.vertexAi,
+            ),
+            (
+              'https://aiplatform.googleapis.com.example.test/v1/publishers/google',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.aiStudio,
+            ),
+            (
+              'https://proxy.example/aiplatform.googleapis.com',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.aiStudio,
+            ),
+            (
+              'https://aiplatform.googleapis.com@proxy.example/v1',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.aiStudio,
+            ),
+            (
+              'https://proxy.example/v1?host=aiplatform.googleapis.com',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.aiStudio,
+            ),
+            (
+              'http://aiplatform.googleapis.com/v1/publishers/google',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.vertexAi,
+            ),
+            (
+              'https://aiplatform.googleapis.com/unsupported/path',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.vertexAi,
+            ),
+            (
+              'https://aiplatform.googleapis.com:8443/v1/publishers/google',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.vertexAi,
+            ),
+            (
+              'http://[invalid',
+              AccountGeminiEndpointKind.custom,
+              AccountGeminiGuidanceMode.aiStudio,
+            ),
+          ];
+      for (final (endpoint, kind, mode) in cases) {
+        final value = projectGeminiConnection(
+          protocol: 'gemini',
+          templateId: null,
+          endpoint: endpoint,
+          canSwitchMode: false,
+        )!;
+        expect(
+          (value.endpointKind, value.mode),
+          (kind, mode),
+          reason: endpoint,
+        );
+      }
+      for (final protocol in [
+        'Google Gemini',
+        'gemini-compatible',
+        'open_ai',
+      ]) {
+        expect(
+          projectGeminiConnection(
+            protocol: protocol,
+            templateId: 'gemini',
+            endpoint: AccountGeminiEndpointPreset.aiStudio.endpoint,
+            canSwitchMode: false,
+          ),
+          isNull,
+        );
+      }
+      final fixedTemplate = projectGeminiConnection(
+        protocol: 'gemini',
+        templateId: 'gemini',
+        endpoint: AccountGeminiEndpointPreset.vertexGlobal.endpoint,
+        canSwitchMode: false,
+      )!;
+      expect(fixedTemplate.mode, AccountGeminiGuidanceMode.aiStudio);
+    },
+  );
   test('OpenAI subscription save requires the current editor login with direct permission', () async {
     final h = AccountsVmHarness();
     addTearDown(h.dispose);

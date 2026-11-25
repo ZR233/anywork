@@ -194,16 +194,12 @@ StudioDriverFacts queryStudioDriverFacts(
     accountUsage: usageRepository.state.value,
     accountUsageQueryFailures: usageRepository.queryFailures.value,
     accountDetails: observedAccountDetails,
-    accountTemplates: [
-      for (final template in summaries.templates.templates) template.id,
-    ],
     acpAuth: acpService.auth.value.value ?? const AcpAuthSnapshotView.empty(),
     acpAuthResource: acpService.auth.value,
     acpInstallResource: acpService.install.value,
     // 单一来源：canonical 观察的加载事实，不由 revision 或空快照推断。
     acpAuthLoaded: acpService.auth.value.loaded,
     commands: settings.commands.values.toList(growable: false),
-    settingsReady: canonical?.state.value != null,
     persistence:
         client.persistence.state.persistence ??
         const PersistenceStateSnapshot.ready(),
@@ -213,54 +209,6 @@ StudioDriverFacts queryStudioDriverFacts(
     bots: _botsFacts(client),
     acpInstall: _acpInstallFacts(acpService),
   );
-}
-
-/// Diagnostics read an existing registry and existing domain mirrors. Reading
-/// this endpoint never changes topic demand, even if no Widget observes it.
-Map<String, Object?> studioDriverTopicDiagnostics(
-  AnyworkClient client, {
-  required TimelineSessionOwner timeline,
-  required AccountsRepository accountsRepository,
-  required ModelsRepository modelsRepository,
-  required AccountUsageRepository usageRepository,
-  required AcpService acpService,
-}) {
-  final refs = client.channels.activeTopicRefCountViews();
-  return <String, Object?>{
-    'availability': 'available',
-    'registryAvailability': 'available',
-    'leaseRefs': <String, int>{
-      'topicCount': refs.length,
-      'totalRefs': refs.values.fold(0, (total, value) => total + value),
-    },
-    'connections': _connectionCounts(client),
-    'projectionRevisions': _projectionRevisions(
-      client,
-      timeline.source.value?.threadId,
-    ),
-    // Domain observations expose business resource stamps, not transport sync
-    // counters. Reading these surfaces acquires no display/network demand.
-    'accountDomains': {
-      'summaries': studioDriverSummariesJson(accountsRepository.state.value),
-      'catalogs': [
-        for (final entry in modelsRepository.state.value.accounts.entries)
-          {
-            'accountId': entry.key.accountId,
-            ...studioDriverResourceJson(entry.value),
-          },
-      ],
-      'configurations': [
-        for (final entry in modelsRepository.state.value.configurations.entries)
-          {
-            'accountId': entry.key.accountId,
-            ...studioDriverResourceJson(entry.value),
-          },
-      ],
-      'usage': studioDriverResourceJson(usageRepository.state.value),
-      'acpAuth': studioDriverResourceJson(acpService.auth.value),
-      'acpInstall': studioDriverResourceJson(acpService.install.value),
-    },
-  };
 }
 
 /// 当前展示代次的只读事实。
@@ -695,88 +643,6 @@ ComposerThreadState _newThreadComposer(
   );
 }
 
-Map<String, int> _connectionCounts(AnyworkClient client) {
-  final counts = _SyncCounts();
-  final settings = client.settings.state;
-  counts.add(settings.configSync);
-  counts.add(settings.agentProfilesSync);
-  counts.add(client.project.state.projectSync);
-  counts.add(client.project.state.agentSync);
-  counts.add(client.recovery.state.sync);
-  counts.add(client.mcp.state.sync);
-  for (final store in client.ownedMcpCatalogs) {
-    counts.add(store.state.sync);
-  }
-  for (final store in client.ownedThreadMcp) {
-    counts.add(store.state.sync);
-  }
-  counts.add(client.lsp.state.sync);
-  counts.add(client.modeCatalog.state.sync);
-  counts.add(client.updater.state.sync);
-  counts.add(client.persistence.state.stateSync);
-  counts.add(client.persistence.state.queueSync);
-  counts.add(client.bots.state.sync);
-  for (final store in client.ownedSkills) {
-    counts.add(store.state.sync);
-  }
-  for (final store in client.ownedSessionCosts) {
-    counts.add(store.state.sync);
-  }
-  for (final session in client.conversations.sessionStates) {
-    counts.add(session.sync);
-  }
-  return counts.toJson();
-}
-
-Map<String, Object?> _projectionRevisions(
-  AnyworkClient client,
-  String? presentationThreadId,
-) {
-  final settings = client.settings.state;
-  final selection = client.selection.state;
-  final visible = client.conversations.visibleThreadId.value;
-  final selected =
-      presentationThreadId ?? visible ?? selection.selectedThreadId;
-  final session =
-      selected == null ||
-          (presentationThreadId == null &&
-              visible == null &&
-              selection.needsOpen)
-      ? null
-      : client.conversations.sessionState(selected);
-  final skills = [
-    for (final store in client.ownedSkills)
-      if (store.state.value != null) store.state.revision,
-  ];
-  final costs = [
-    for (final store in client.ownedSessionCosts)
-      if (store.state.value != null) store.state.revision,
-  ];
-  return <String, Object?>{
-    'settings': settings.settingsRevision,
-    'recovery': client.recovery.state.revision,
-    'mcp': client.mcp.state.revision,
-    'lsp': client.lsp.state.revision,
-    'threadModeCatalog': client.modeCatalog.state.revision,
-    'persistence': client.persistence.state.stateRevision,
-    'persistenceQueue': client.persistence.state.queue?.revision,
-    'agentProfiles': settings.agentProfiles?.revision,
-    'bots': client.bots.state.revision,
-    // Directory revisions belong to explicit observation frames. This
-    // request-local diagnostic owns no directory demand.
-    'threadDirectory': null,
-    'presentationThread': session?.workspace?.revision,
-    'skills': {
-      'scopeCount': skills.length,
-      'maxRevision': _maxRevision(skills),
-    },
-    'sessionCosts': {
-      'scopeCount': costs.length,
-      'maxRevision': _maxRevision(costs),
-    },
-  };
-}
-
 AgentWorkspaceSyncState _sessionSyncState(ThreadSessionState session) =>
     switch (session.sync.phase) {
       DomainSyncPhase.idle =>
@@ -805,47 +671,6 @@ const _emptyRuntime = ThreadRuntimeView(
   activeMcpServers: [],
   activeLspServers: [],
 );
-
-int? _maxRevision(Iterable<int> revisions) {
-  int? maximum;
-  for (final revision in revisions) {
-    if (maximum == null || revision > maximum) maximum = revision;
-  }
-  return maximum;
-}
-
-class _SyncCounts {
-  var topicCount = 0;
-  var connectedCount = 0;
-  var reconnectingCount = 0;
-  var failedCount = 0;
-  var errorCount = 0;
-
-  void add(DomainSyncStatus sync) {
-    if (sync.phase == DomainSyncPhase.idle) return;
-    topicCount++;
-    switch (sync.phase) {
-      case DomainSyncPhase.connecting:
-      case DomainSyncPhase.idle:
-        break;
-      case DomainSyncPhase.ready:
-        connectedCount++;
-      case DomainSyncPhase.reconnecting:
-        reconnectingCount++;
-      case DomainSyncPhase.failed:
-        failedCount++;
-    }
-    if (sync.errorMessage != null) errorCount++;
-  }
-
-  Map<String, int> toJson() => <String, int>{
-    'topicCount': topicCount,
-    'connectedCount': connectedCount,
-    'reconnectingCount': reconnectingCount,
-    'failedCount': failedCount,
-    'errorCount': errorCount,
-  };
-}
 
 StudioDriverBotsFacts? _botsFacts(AnyworkClient client) {
   final clock = client.bots.state;

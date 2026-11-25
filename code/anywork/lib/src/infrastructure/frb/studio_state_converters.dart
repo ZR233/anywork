@@ -186,26 +186,14 @@ SettingsStateSnapshot _settingsConfigStateFromFrb(
 SettingsStateSnapshot _modelCatalogStateFromFrb(
   frb.BridgeModelCatalogStateSnapshot snapshot,
 ) {
-  SettingsStateData convert(frb.BridgeModelCatalogStateData data) {
-    return SettingsStateData(
-      accounts: data.accounts.map(_accountCatalogSettingsFromFrb).toList(),
-    );
-  }
-
   return SettingsStateSnapshot(
     accounts: switch (snapshot) {
-      frb.BridgeModelCatalogStateSnapshot_Ready(:final value) => convert(
-        value,
-      ).accounts,
-      frb.BridgeModelCatalogStateSnapshot_Refreshing(:final value) => convert(
-        value,
-      ).accounts,
-      frb.BridgeModelCatalogStateSnapshot_Stale(:final value) => convert(
-        value,
-      ).accounts,
-      frb.BridgeModelCatalogStateSnapshot_Degraded(:final value) => convert(
-        value,
-      ).accounts,
+      frb.BridgeModelCatalogStateSnapshot_Ready(:final value) ||
+      frb.BridgeModelCatalogStateSnapshot_Refreshing(:final value) ||
+      frb.BridgeModelCatalogStateSnapshot_Stale(:final value) ||
+      frb.BridgeModelCatalogStateSnapshot_Degraded(
+        :final value,
+      ) => value.accounts.map(_accountCatalogSettingsFromFrb).toList(),
       _ => const [],
     },
     modelCatalogRevision: switch (snapshot) {

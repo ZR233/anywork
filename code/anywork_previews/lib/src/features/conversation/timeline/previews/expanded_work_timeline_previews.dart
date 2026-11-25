@@ -16,7 +16,7 @@ import 'expanded_work_timeline_fixture.dart';
 Widget expandedWorkHistoryPreview() => const ExpandedWorkTimelineFixture();
 
 @Preview(
-  name: 'WG-live-120 · 实时底部 · 120成员完整展开',
+  name: 'WG-live-120 · 主时间线 live 模型 · 120成员完整展开',
   group: 'Timeline · 完整工作组',
   size: Size(820, 820),
 )
@@ -32,7 +32,7 @@ Widget expandedWorkHistoryScaledPreview() =>
     const ExpandedWorkTimelineFixture(textScale: 1.5);
 
 @Preview(
-  name: 'WG-live-120-folded · 实时底部 · 折叠后展开',
+  name: 'WG-live-120-folded · 主时间线 live 模型 · 折叠后展开',
   group: 'Timeline · 完整工作组',
   size: Size(820, 820),
 )

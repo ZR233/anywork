@@ -1,11 +1,9 @@
-import 'dart:async';
-
-import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../state/patch_presentation.dart';
+import 'timeline_copy_path_button.dart';
 
 /// apply_patch 参数/窗口正文到修改片段的统一入口。
 ///
@@ -201,7 +199,7 @@ class TimelinePatchDiffView extends StatelessWidget {
     final statBadge = additions > 0 || deletions > 0
         ? TimelineDiffStatBadge(additions: additions, deletions: deletions)
         : null;
-    final copyButton = _DiffCopyPathButton(path: file.moveTo ?? file.path);
+    final copyButton = TimelineCopyPathButton(path: file.moveTo ?? file.path);
 
     if (softWrap) {
       return Wrap(
@@ -317,59 +315,6 @@ class TimelineDiffStatBadge extends StatelessWidget {
           if (deletions > 0)
             Text('-$deletions', style: baseStyle?.copyWith(color: delColor)),
         ],
-      ),
-    );
-  }
-}
-
-class _DiffCopyPathButton extends StatefulWidget {
-  const _DiffCopyPathButton({required this.path});
-
-  final String path;
-
-  @override
-  State<_DiffCopyPathButton> createState() => _DiffCopyPathButtonState();
-}
-
-class _DiffCopyPathButtonState extends State<_DiffCopyPathButton> {
-  bool _copied = false;
-  Timer? _timer;
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  void _copy() {
-    unawaited(Clipboard.setData(ClipboardData(text: widget.path)));
-    _timer?.cancel();
-    setState(() => _copied = true);
-    _timer = Timer(const Duration(milliseconds: 1600), () {
-      if (mounted) setState(() => _copied = false);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    return Tooltip(
-      message: _copied
-          ? l10n.timelineOutcomeCopied
-          : l10n.timelinePatchCopyPath,
-      child: InkWell(
-        onTap: _copy,
-        borderRadius: const BorderRadius.all(Radius.circular(4)),
-        child: Padding(
-          padding: const EdgeInsets.all(3),
-          child: Icon(
-            _copied ? Icons.check_rounded : Icons.content_copy_rounded,
-            size: 13,
-            color: _copied
-                ? context.colors.primary
-                : context.colors.onSurfaceVariant,
-          ),
-        ),
       ),
     );
   }

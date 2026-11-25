@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../../features/conversation/timeline/connectors/timeline_file_download.dart';
+import '../../domain/timeline_file_download.dart';
 import '../../rust/api/studio/handlers/file_download.dart' as native;
 
 class FrbTimelineFileDownload implements TimelineFileDownload {

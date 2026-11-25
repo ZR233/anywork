@@ -835,4 +835,4 @@ final class PersistencePanelViewProvider
 }
 
 String _$persistencePanelViewHash() =>
-    r'0ca542d0a02569a64c637d3c753b15d73013cf68';
+    r'e5cb7c3a90da9b48fc6facdc9178453a1271c5a4';

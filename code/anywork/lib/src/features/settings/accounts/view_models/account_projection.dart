@@ -60,6 +60,93 @@ BillingKind domainBilling(AccountBilling billing) => switch (billing) {
   AccountBilling.unknown => BillingKind.unknown,
 };
 
+AccountTemplatePresentation projectAccountTemplate(
+  AccountTemplateView template,
+) => AccountTemplatePresentation(
+  key: AccountTemplateKey(kind: AccountKind.native, id: template.id),
+  name: template.displayName,
+  content: AccountTemplateContent.native(
+    defaultBilling: displayBilling(template.defaultBillingKind),
+    protocolLabel: template.protocol,
+    defaultEndpoint: template.baseUrl,
+    supportsModelDiscovery: template.supportsModelDiscovery,
+    supportsUsageQuery: template.supportsUsageQuery,
+  ),
+  iconKey: template.iconKey,
+  description: template.description,
+);
+
+AccountGeminiConnectionPresentation? projectGeminiConnection({
+  required String protocol,
+  required String? templateId,
+  required String endpoint,
+  required bool canSwitchMode,
+  bool? supportsModelDiscovery,
+  bool hasBundledCatalog = false,
+}) {
+  if (protocol != 'gemini') return null;
+  // Parse only for display; never normalize or write back the user's raw draft.
+  final normalized = endpoint.trim().replaceFirst(RegExp(r'/+$'), '');
+  final uri = Uri.tryParse(normalized);
+  final host = uri?.host ?? '';
+  final vertexHost =
+      host == 'aiplatform.googleapis.com' ||
+      RegExp(r'^[a-z]+(?:-[a-z]+)*[0-9]+-aiplatform\.googleapis\.com$')
+          .hasMatch(host);
+  final aiStudioHost = host == 'generativelanguage.googleapis.com';
+  final vertexPath =
+      uri?.path == '/v1/publishers/google' ||
+      uri?.path == '/v1beta1/publishers/google';
+  final aiStudioPath = uri?.path == '/v1beta' || uri?.path == '/v1';
+  final official =
+      uri != null &&
+      uri.scheme == 'https' &&
+      uri.userInfo.isEmpty &&
+      uri.port == 443 &&
+      !uri.hasQuery &&
+      !uri.hasFragment &&
+      ((vertexHost && vertexPath) || (aiStudioHost && aiStudioPath));
+  final mode = switch (templateId) {
+    'vertex-ai' => AccountGeminiGuidanceMode.vertexAi,
+    'gemini' => AccountGeminiGuidanceMode.aiStudio,
+    _ =>
+      vertexHost
+          ? AccountGeminiGuidanceMode.vertexAi
+          : AccountGeminiGuidanceMode.aiStudio,
+  };
+  return AccountGeminiConnectionPresentation(
+    mode: mode,
+    endpointKind: official
+        ? AccountGeminiEndpointKind.official
+        : AccountGeminiEndpointKind.custom,
+    selectedPreset: AccountGeminiEndpointPreset.values
+        .where((preset) => normalized == preset.endpoint)
+        .firstOrNull,
+    canSwitchMode: canSwitchMode,
+    supportsModelDiscovery: supportsModelDiscovery,
+    hasBundledCatalog: hasBundledCatalog,
+  );
+}
+
+AcpPresentationPhase projectAcpPhase(
+  AcpConnectionStateView? connection,
+  AcpAuthStateView? auth,
+) => switch ((connection, auth)) {
+  (AcpConnectionRetryingState(), _) => AcpPresentationPhase.reconnecting,
+  (AcpConnectionStartingState(), _) => AcpPresentationPhase.checking,
+  (AcpConnectionStoppingState(), _) => AcpPresentationPhase.closing,
+  (AcpConnectionBlockedState(), _) => AcpPresentationPhase.failed,
+  (_, AcpCheckingState()) => AcpPresentationPhase.checking,
+  (_, AcpRequiredState()) => AcpPresentationPhase.needsLogin,
+  (_, AcpAuthenticatingState()) => AcpPresentationPhase.authenticating,
+  (_, AcpVerifyingState()) => AcpPresentationPhase.verifying,
+  (_, AcpVerifiedState()) => AcpPresentationPhase.connected,
+  (_, AcpCancellingState()) => AcpPresentationPhase.cancelling,
+  (_, AcpClosingState()) => AcpPresentationPhase.closing,
+  (_, AcpFailedState()) => AcpPresentationPhase.failed,
+  _ => AcpPresentationPhase.idle,
+};
+
 String safeAccountError(Object error, AccountStrings strings) =>
     error is StudioFailure ? error.message : strings['failed'];
 

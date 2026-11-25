@@ -178,7 +178,7 @@ void main() {
   );
 
   test(
-    'older prepend and terminal replace stay in serial Flyer order',
+    'older prepend and accepted-window reconcile stay in serial Flyer order',
     () async {
       final stock = InMemoryChatController();
       final adapter = TimelineMessageController(stock, generation: 14);
@@ -190,7 +190,9 @@ void main() {
       final older = adapter.applyBlocks([
         displaySingle(completionEntry('b', 1, isText: true, text: 'older b')),
       ], TimelineApplyPlacement.prepend);
-      final terminal = adapter.replaceBlocks([
+      final terminal = adapter.reconcileBlocks([
+        displaySingle(completionEntry('b', 1, isText: true, text: 'older b')),
+        displaySingle(completionEntry('a', 2, isText: true, text: 'a')),
         displaySingle(_mutableTextEntry('c', 3, 'terminal c', active: false)),
       ]);
       await Future.wait([older, terminal]);

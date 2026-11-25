@@ -453,9 +453,11 @@ void main() {
     },
   );
 
+  // Both model locations are rows in TimelineView. Bounded live work scrolling
+  // is covered by live_status_surface_view_test.dart, including its fixed header.
   for (final location in WorkDisplayLocation.values) {
     testWidgets(
-      '$location production main timeline reaches first middle last of 120 mixed members',
+      'TimelineView $location model reaches first middle last of 120 mixed members',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(820, 720));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -490,49 +492,50 @@ void main() {
       },
     );
 
-    testWidgets('$location bottom follows additions and async height', (
-      tester,
-    ) async {
-      await tester.binding.setSurfaceSize(const Size(820, 720));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      final key = GlobalKey<ExpandedWorkTimelineFixtureState>();
-      await tester.pumpWidget(
-        ExpandedWorkTimelineFixture(
-          key: key,
-          location: location,
-          initialCount: 30,
-        ),
-      );
-      await _layout(tester);
-      final state = key.currentState!;
-      final scroll = state.controls.scrollController;
-      scroll.jumpTo(scroll.position.minScrollExtent);
-      await _layout(tester);
-      state.appendMember();
-      await _layout(tester);
-      expect(
-        scroll.position.pixels,
-        closeTo(scroll.position.minScrollExtent, 1),
-      );
-      await state.growMiddle();
-      await _layout(tester);
-      expect(
-        scroll.position.pixels,
-        closeTo(scroll.position.minScrollExtent, 1),
-      );
-      expect(
-        find.text(
-          '完整 31 项 · ${location == WorkDisplayLocation.history ? '历史消息行' : '当前消息行'}',
-        ),
-        findsOneWidget,
-      );
-      expect(_groupVerticalScrolls(), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    });
+    testWidgets(
+      'TimelineView $location model follows additions and async height',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(820, 720));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final key = GlobalKey<ExpandedWorkTimelineFixtureState>();
+        await tester.pumpWidget(
+          ExpandedWorkTimelineFixture(
+            key: key,
+            location: location,
+            initialCount: 30,
+          ),
+        );
+        await _layout(tester);
+        final state = key.currentState!;
+        final scroll = state.controls.scrollController;
+        scroll.jumpTo(scroll.position.minScrollExtent);
+        await _layout(tester);
+        state.appendMember();
+        await _layout(tester);
+        expect(
+          scroll.position.pixels,
+          closeTo(scroll.position.minScrollExtent, 1),
+        );
+        await state.growMiddle();
+        await _layout(tester);
+        expect(
+          scroll.position.pixels,
+          closeTo(scroll.position.minScrollExtent, 1),
+        );
+        expect(
+          find.text(
+            '完整 31 项 · ${location == WorkDisplayLocation.history ? '历史消息行' : '当前消息行'}',
+          ),
+          findsOneWidget,
+        );
+        expect(_groupVerticalScrolls(), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
 
     testWidgets(
-      '$location actual main drag enters history and later growth does not force bottom',
+      'TimelineView $location model drag enters history and later growth does not force bottom',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(820, 720));
         addTearDown(() => tester.binding.setSurfaceSize(null));

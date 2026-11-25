@@ -417,7 +417,7 @@ abstract final class LiveStatusMachine {
         LiveStorageAttention(
           activity: storageView,
           storage: storage,
-          severity: _classifyStorage(storage),
+          severity: LiveStorageSeverity.fromStorage(storage),
         ),
       );
     }
@@ -451,22 +451,6 @@ abstract final class LiveStatusMachine {
     }
 
     return attentions;
-  }
-
-  static LiveStorageSeverity _classifyStorage(ThreadStorageStateView storage) {
-    if (storage.resumeRequired && storage.canResume) {
-      return LiveStorageSeverity.resumeReady;
-    }
-    if (storage.hasFault) {
-      return LiveStorageSeverity.fault;
-    }
-    if (storage.pressurePaused) {
-      return LiveStorageSeverity.pressure;
-    }
-    if (storage.resumeRequired) {
-      return LiveStorageSeverity.resumeRequired;
-    }
-    return LiveStorageSeverity.paused;
   }
 
   static bool _isAttentionOnlyActivity(ConversationActivityKind kind) =>

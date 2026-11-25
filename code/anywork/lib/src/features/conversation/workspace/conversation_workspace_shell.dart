@@ -22,7 +22,8 @@ class ConversationWorkspaceShell extends StatefulWidget {
     required this.statusBar,
     this.topBanner,
     this.readingAction,
-    this.overlays = const [],
+    this.readingBanner,
+    this.readingOverlay,
     this.scrollFooter = false,
     this.sidebarBuilder,
     this.sidebarExpanded = false,
@@ -50,7 +51,8 @@ class ConversationWorkspaceShell extends StatefulWidget {
   final Widget? topBanner;
   final Widget readingArea;
   final Widget? readingAction;
-  final List<Widget> overlays;
+  final Widget? readingBanner;
+  final Widget? readingOverlay;
   final Widget Function(BuildContext context, bool compact) footerDockBuilder;
   final bool scrollFooter;
   final Widget statusBar;
@@ -106,11 +108,10 @@ class _ConversationWorkspaceShellState
             child: Stack(
               children: [
                 Positioned.fill(child: widget.readingArea),
-                for (final overlay in widget.overlays)
-                  if (_fillsReadingArea(overlay))
-                    Positioned.fill(child: overlay)
-                  else
-                    Positioned(top: 0, left: 0, right: 0, child: overlay),
+                if (widget.readingBanner case final banner?)
+                  Positioned(top: 0, left: 0, right: 0, child: banner),
+                if (widget.readingOverlay case final overlay?)
+                  Positioned.fill(child: overlay),
               ],
             ),
           ),
@@ -149,9 +150,6 @@ class _ConversationWorkspaceShellState
     );
   }
 
-  static bool _fillsReadingArea(Widget overlay) =>
-      overlay.key == const ValueKey('agent-workspace-loading');
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -185,7 +183,6 @@ class _ConversationWorkspaceShellState
 
               final presentation = ConversationSidebarPresentation(
                 sideBySideFeasible: sideBySideFeasible,
-                isOverlay: isNarrowOverlay,
                 isExpandedFull: isKeepFooterExpanded || isCoverAllExpanded,
               );
               final rawSidebar = widget.sidebarBuilder?.call(

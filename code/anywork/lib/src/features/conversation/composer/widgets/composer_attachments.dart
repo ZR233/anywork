@@ -6,8 +6,9 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../../../shared/studio_menu_button.dart';
 
-class AttachmentMenu extends StatefulWidget {
+class AttachmentMenu extends StatelessWidget {
   const AttachmentMenu({
     required this.enabled,
     required this.localCapabilities,
@@ -24,63 +25,41 @@ class AttachmentMenu extends StatefulWidget {
   final Future<void> Function() onAddUrl;
 
   @override
-  State<AttachmentMenu> createState() => _AttachmentMenuState();
-}
-
-class _AttachmentMenuState extends State<AttachmentMenu> {
-  final MenuController _controller = MenuController();
-
-  @override
   Widget build(BuildContext context) {
     final hasAny =
-        widget.localCapabilities.isNotEmpty ||
-        widget.remoteCapabilities.isNotEmpty;
-    final enabled = widget.enabled && hasAny;
-    return MenuAnchor(
+        localCapabilities.isNotEmpty || remoteCapabilities.isNotEmpty;
+    return StudioMenuButton.icon(
       key: StudioDriverKeys.attachmentEntry,
-      controller: _controller,
+      enabled: enabled && hasAny,
+      tooltip: hasAny
+          ? context.l10n.composerAttachmentAddTooltip
+          : context.l10n.composerAttachmentUnsupportedTooltip,
+      icon: const Icon(Icons.attach_file),
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        if (widget.localCapabilities.isNotEmpty)
+        if (localCapabilities.isNotEmpty)
           MenuItemButton(
             key: StudioDriverKeys.attachmentLocal,
             overflowAxis: Axis.vertical,
-            onPressed: () {
-              unawaited(widget.onPickLocal(widget.localCapabilities));
-            },
+            onPressed: enabled
+                ? () => unawaited(onPickLocal(localCapabilities))
+                : null,
             child: ListTile(
               leading: const Icon(Icons.folder_open_outlined),
               title: Text(context.l10n.composerAttachmentPickLocal),
             ),
           ),
-        if (widget.remoteCapabilities.isNotEmpty)
+        if (remoteCapabilities.isNotEmpty)
           MenuItemButton(
             key: StudioDriverKeys.attachmentUrl,
             overflowAxis: Axis.vertical,
-            onPressed: () {
-              unawaited(widget.onAddUrl());
-            },
+            onPressed: enabled ? () => unawaited(onAddUrl()) : null,
             child: ListTile(
               leading: const Icon(Icons.link),
               title: Text(context.l10n.composerAddUrlTitle),
             ),
           ),
       ],
-      child: IconButton(
-        tooltip: hasAny
-            ? context.l10n.composerAttachmentAddTooltip
-            : context.l10n.composerAttachmentUnsupportedTooltip,
-        onPressed: enabled
-            ? () {
-                if (_controller.isOpen) {
-                  _controller.close();
-                } else {
-                  _controller.open();
-                }
-              }
-            : null,
-        icon: const Icon(Icons.attach_file),
-      ),
     );
   }
 }

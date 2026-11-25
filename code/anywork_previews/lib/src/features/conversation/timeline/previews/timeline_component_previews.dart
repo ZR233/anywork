@@ -715,14 +715,10 @@ Widget timelineWebSearchPreview() => _timelinePreviewHost(
 );
 
 @Preview(name: '等待 / 折叠过程', group: 'Timeline · 历史组件', size: Size(720, 360))
-Widget timelineWaitPanelPreview() => _timelinePreviewHost(
+Widget timelineWaitToolPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineWaitPanel(
-      identity: 'preview-wait-panel',
-      presentation:
-          (TimelinePreviewFixtures.waiting.toolCard as DecodedToolCard)
-              .value
-              .wait!,
+    child: TimelineToolItemView(
+      item: (TimelinePreviewFixtures.waiting.toolCard as DecodedToolCard).value,
     ),
   ),
 );

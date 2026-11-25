@@ -21,8 +21,10 @@ import 'package:material_ui/material_ui.dart';
 import 'timeline_preview_fixtures.dart';
 
 /// Synthetic immutable rows and UI-only controls. No native or query assembly.
-/// Both historical messages and the live bottomSliver use production TimelineView
-/// and CompletionRunView. Member 001 / 060 / 120 are the screenshot landmarks.
+/// Both history and live models appear as rows in the production TimelineView
+/// using CompletionRunView. This fixture exercises the main timeline scroll;
+/// the bounded LiveStatusSurfaceView work area has separate widget coverage.
+/// Member 001 / 060 / 120 are the screenshot landmarks.
 class ExpandedWorkTimelineFixture extends StatefulWidget {
   const ExpandedWorkTimelineFixture({
     this.location = WorkDisplayLocation.history,

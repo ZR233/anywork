@@ -33,16 +33,13 @@ class WriteSessionNoteToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.edit_outlined);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolEditRunning
-        : failed
-        ? l10n.timelineToolEditFailed
-        : l10n.timelineToolEditSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolEditRunning,
+        failed: l10n.timelineToolEditFailed,
+        succeeded: l10n.timelineToolEditSucceeded,
+      );
 
   @override
   ToolRowTarget rowTarget(

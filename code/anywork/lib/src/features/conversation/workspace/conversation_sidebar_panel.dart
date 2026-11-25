@@ -18,12 +18,10 @@ enum ConversationExpandedDockBehavior {
 final class ConversationSidebarPresentation {
   const ConversationSidebarPresentation({
     required this.sideBySideFeasible,
-    required this.isOverlay,
     required this.isExpandedFull,
   });
 
   final bool sideBySideFeasible;
-  final bool isOverlay;
   final bool isExpandedFull;
 }
 

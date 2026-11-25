@@ -40,16 +40,13 @@ class WorkflowRestartToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.route_outlined);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolWorkflowRunning
-        : failed
-        ? l10n.timelineToolWorkflowFailed
-        : l10n.timelineToolWorkflowSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolWorkflowRunning,
+        failed: l10n.timelineToolWorkflowFailed,
+        succeeded: l10n.timelineToolWorkflowSucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) => toolField(

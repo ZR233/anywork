@@ -113,6 +113,148 @@ void main() {
     expect(uncaught, isEmpty);
   });
 
+  test('a fast refresh terminal replaces old success without requiring a querying frame', () async {
+    final transport = ScriptedUsageTransport();
+    final graph = _graph(transport);
+    const identity = NativeAccountIdentity('a');
+    graph.accountDomains.acceptFrame(transport.seedSuccess(identity));
+    await graph.accountUsage.state.waitFor(
+      (resource) =>
+          resource.value?[identity]?.phase == AccountUsagePhase.succeeded,
+    );
+    final previous = graph.accountUsage.state.value.value![identity]!;
+    final terminalRevision = Completer<int>();
+    final usageWatch = graph.accountUsage.state.watchLatest((resource) {
+      final usage = resource.value?[identity];
+      if (usage != null &&
+          usage.revision > previous.revision &&
+          usage.queryRevision == previous.queryRevision &&
+          usage.operationId != null &&
+          usage.operationId != previous.operationId &&
+          usage.phase == AccountUsagePhase.succeeded &&
+          usage.lastGood != null &&
+          !terminalRevision.isCompleted) {
+        terminalRevision.complete(usage.revision);
+      }
+    });
+    addTearDown(usageWatch.observation.cancel);
+
+    final refresh = graph.accountUsage.refresh(identity);
+    final call = await transport.started('a');
+    // Complete immediately after the backend accepts the request. The test
+    // deliberately does not wait for a later sample of Querying.
+    transport.succeedWithQuota(call);
+    await refresh;
+
+    expect(terminalRevision.isCompleted, isTrue);
+    expect(await terminalRevision.future, greaterThan(previous.revision));
+    final refreshed = graph.accountUsage.state.value.value![identity]!;
+    expect(refreshed.operationId, call.operationId);
+    expect(refreshed.phase, AccountUsagePhase.succeeded);
+    expect(refreshed.lastGood!.value, isA<AccountSubscription>());
+  });
+
+  test(
+    'a delayed refresh transport failure cannot reuse the prior success',
+    () async {
+      final transport = ScriptedUsageTransport();
+      final graph = _graph(transport);
+      const identity = NativeAccountIdentity('a');
+      graph.accountDomains.acceptFrame(transport.seedSuccess(identity));
+      await graph.accountUsage.state.waitFor(
+        (resource) =>
+            resource.value?[identity]?.phase == AccountUsagePhase.succeeded,
+      );
+      final previous = graph.accountUsage.state.value.value![identity]!;
+      final failuresBefore = graph.accountUsage.queryFailures.value;
+      var sawTerminalSuccess = false;
+      final failed = Completer<void>();
+      final usageWatch = graph.accountUsage.state.watchLatest((resource) {
+        final usage = resource.value?[identity];
+        if (usage != null &&
+            usage.revision > previous.revision &&
+            usage.queryRevision == previous.queryRevision &&
+            usage.operationId != null &&
+            usage.operationId != previous.operationId &&
+            usage.phase == AccountUsagePhase.succeeded) {
+          sawTerminalSuccess = true;
+        }
+      });
+      final failureWatch = graph.accountUsage.queryFailures.watchLatest((next) {
+        if (!failed.isCompleted &&
+            !identical(next, failuresBefore) &&
+            next.containsKey(identity)) {
+          failed.complete();
+        }
+      });
+      addTearDown(usageWatch.observation.cancel);
+      addTearDown(failureWatch.observation.cancel);
+
+      final refresh = graph.accountUsage.refresh(identity);
+      final call = await transport.started('a');
+      // Hold the response until the real feed publishes the in-flight state.
+      await graph.accountUsage.state.waitFor(
+        (resource) =>
+            resource.value?[identity]?.operationId == call.operationId,
+      );
+      transport.fail(call);
+      await expectLater(refresh, throwsStateError);
+      expect(failed.isCompleted, isTrue);
+      await failed.future;
+      expect(sawTerminalSuccess, isFalse);
+      expect(
+        graph.accountUsage.state.value.value![identity]!.phase,
+        AccountUsagePhase.querying,
+      );
+    },
+  );
+
+  test('a late result for an obsolete usage query is not accepted as the refresh result', () async {
+    final transport = ScriptedUsageTransport();
+    final graph = _graph(transport);
+    const identity = NativeAccountIdentity('a');
+    graph.accountDomains.acceptFrame(transport.seedSuccess(identity));
+    await graph.accountUsage.state.waitFor(
+      (resource) =>
+          resource.value?[identity]?.phase == AccountUsagePhase.succeeded,
+    );
+    final previous = graph.accountUsage.state.value.value![identity]!;
+    var acceptedTerminal = false;
+    final usageWatch = graph.accountUsage.state.watchLatest((resource) {
+      final usage = resource.value?[identity];
+      if (usage != null &&
+          usage.revision > previous.revision &&
+          usage.queryRevision == previous.queryRevision &&
+          usage.operationId != null &&
+          usage.operationId != previous.operationId &&
+          usage.phase == AccountUsagePhase.succeeded) {
+        acceptedTerminal = true;
+      }
+    });
+    addTearDown(usageWatch.observation.cancel);
+
+    final refresh = graph.accountUsage.refresh(identity);
+    final call = await transport.started('a');
+    graph.accountDomains.acceptFrame(
+      transport.publishAccounts([
+        usageAccount('a', query: 2),
+        usageAccount('b'),
+      ]),
+    );
+    expect(
+      graph.accountUsage.state.value.value!.containsKey(identity),
+      isFalse,
+    );
+    transport.succeedWithQuota(call);
+    await refresh;
+
+    expect(acceptedTerminal, isFalse);
+    expect(
+      graph.accountUsage.state.value.value!.containsKey(identity),
+      isFalse,
+    );
+  });
+
   test('readonly providers reflect usage and query identity changes without issuing requests', () async {
     final transport = ScriptedUsageTransport();
     final graph = _graph(transport);

@@ -40,16 +40,13 @@ class ExecToolItem extends StructuredTimelineToolAdapter {
       );
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolCommandRunning
-        : failed
-        ? l10n.timelineToolCommandFailed
-        : l10n.timelineToolCommandSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolCommandRunning,
+        failed: l10n.timelineToolCommandFailed,
+        succeeded: l10n.timelineToolCommandSucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) => toolField(

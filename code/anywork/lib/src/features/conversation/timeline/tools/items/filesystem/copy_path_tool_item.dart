@@ -40,16 +40,13 @@ class CopyPathToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.content_copy_outlined);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolCopyRunning
-        : failed
-        ? l10n.timelineToolCopyFailed
-        : l10n.timelineToolCopySucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolCopyRunning,
+        failed: l10n.timelineToolCopyFailed,
+        succeeded: l10n.timelineToolCopySucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) =>

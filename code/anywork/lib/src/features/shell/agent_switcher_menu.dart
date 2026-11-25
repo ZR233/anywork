@@ -12,6 +12,7 @@ import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
+import '../../shared/studio_menu_button.dart';
 import 'recovery_issue_indicator.dart';
 
 /// 智能体切换列表。
@@ -42,8 +43,6 @@ class AgentSwitcherMenu extends ConsumerStatefulWidget {
 }
 
 class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
-  final MenuController _controller = MenuController();
-
   /// Client 命令板里各成员的停止命令状态（threadId → `stop:<threadId>`）。
   ///
   /// 请求在途与失败都从这里派生：命令板跨 widget 重建与菜单重开存活，行内不再维护
@@ -285,6 +284,9 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   @override
   Widget build(BuildContext context) {
     final agents = AgentDirectoryQueries.menuOrder(widget.agents);
+    final byAgentId = {
+      for (final member in widget.agents) member.agentId: member,
+    };
     final aggregateColor = _aggregateAgentColor(context, agents);
     final viewport = MediaQuery.sizeOf(context);
     final availableWidth = (viewport.width - 24)
@@ -300,12 +302,14 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final menuHeight = (viewport.height - 96)
         .clamp(0.0, _agentMenuMaxHeight)
         .toDouble();
-    return MenuAnchor(
-      controller: _controller,
+    return StudioMenuButton(
+      // The trigger already displays its complete localized label.
+      tooltip: '',
+      buttonKey: StudioDriverKeys.agentSwitcher,
       // 关闭官方 UnconstrainedBox 包装，让下方 MenuStyle 的宽度约束真正生效；
       // 菜单宽度因此稳定、各行等宽，标题过长只做行内省略。
       crossAxisUnconstrained: false,
-      style: MenuStyle(
+      menuStyle: MenuStyle(
         minimumSize: WidgetStatePropertyAll(Size(menuWidth, 0)),
         maximumSize: WidgetStatePropertyAll(Size(menuWidth, menuHeight)),
         padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
@@ -317,27 +321,18 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
             agent,
             selected: agent.threadId == widget.selectedThreadId,
             menuWidth: menuWidth,
+            depth: _agentDepth(agent, byAgentId),
           ),
       ],
-      child: TextButton(
-        key: StudioDriverKeys.agentSwitcher,
-        onPressed: () {
-          if (_controller.isOpen) {
-            _controller.close();
-          } else {
-            _controller.open();
-          }
-        },
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.circle, size: 6, color: aggregateColor),
-            const SizedBox(width: 8),
-            Text(context.l10n.statusAgentsCount(_countedMembers(agents))),
-            const SizedBox(width: 4),
-            const Icon(Icons.keyboard_arrow_down, size: 14),
-          ],
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.circle, size: 6, color: aggregateColor),
+          const SizedBox(width: 8),
+          Text(context.l10n.statusAgentsCount(_countedMembers(agents))),
+          const SizedBox(width: 4),
+          const Icon(Icons.keyboard_arrow_down, size: 14),
+        ],
       ),
     );
   }
@@ -345,10 +340,10 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   /// 成员层级深度：沿 `parentAgentId` 链在本次菜单成员集合内计数。
   ///
   /// 深度只用于缩进展示；判据是目录行的 typed 父链接，不是路径或 ID 形状。
-  int _agentDepth(StudioAgentView agent) {
-    final byAgentId = {
-      for (final member in widget.agents) member.agentId: member,
-    };
+  int _agentDepth(
+    StudioAgentView agent,
+    Map<String, StudioAgentView> byAgentId,
+  ) {
     var depth = 0;
     var current = agent;
     final visited = <String>{};
@@ -369,6 +364,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     StudioAgentView agent, {
     required bool selected,
     required double menuWidth,
+    required int depth,
   }) {
     final row = widget.workspaceRows
         .where((row) => row.threadId == agent.threadId)
@@ -470,7 +466,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
         _agentActionSize -
         statusWidth -
         _agentRowGap * 3;
-    final indent = (_agentDepth(agent) * _agentIndentStep).clamp(
+    final indent = (depth * _agentIndentStep).clamp(
       0.0,
       (summaryWidth - 48).clamp(0.0, menuWidth),
     );

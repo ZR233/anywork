@@ -92,11 +92,7 @@ class _DockHeader extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Icon(
-          _iconFor(kind),
-          size: 20,
-          color: _badgeBackgroundFor(context, kind),
-        ),
+        Icon(_iconFor(kind), size: 20, color: context.colors.primary),
         const SizedBox(width: 11),
         Expanded(
           child: Column(
@@ -201,7 +197,7 @@ class _DockFooter extends StatelessWidget {
   }
 }
 
-enum InteractionDockKind { question, permission, plan }
+enum InteractionDockKind { question, permission }
 
 class DockActions extends StatelessWidget {
   const DockActions({required this.children, super.key});
@@ -266,76 +262,9 @@ class InteractionCodeBlock extends StatelessWidget {
   }
 }
 
-class DockOptionRow extends StatelessWidget {
-  const DockOptionRow({
-    required this.title,
-    required this.selected,
-    required this.onPressed,
-    this.subtitle,
-    this.leading,
-    super.key,
-  });
-
-  final String title;
-  final String? subtitle;
-  final bool selected;
-  final Widget? leading;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: selected ? colors.primaryContainer : colors.surfaceContainerLowest,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(StudioRadii.sm),
-        side: selected ? BorderSide(color: colors.primary) : BorderSide.none,
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onPressed,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 12, 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (leading != null) ...[leading!, const SizedBox(width: 10)],
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: Theme.of(context).textTheme.labelLarge),
-                    if (subtitle?.isNotEmpty ?? false) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle!,
-                        style: Theme.of(context).textTheme.bodySmall
-                            ?.copyWith(color: context.colors.onSurfaceVariant),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 IconData _iconFor(InteractionDockKind kind) {
   return switch (kind) {
     InteractionDockKind.question => Icons.help_outline,
     InteractionDockKind.permission => Icons.admin_panel_settings_outlined,
-    InteractionDockKind.plan => Icons.task_alt_outlined,
-  };
-}
-
-Color _badgeBackgroundFor(BuildContext context, InteractionDockKind kind) {
-  return switch (kind) {
-    InteractionDockKind.question => context.colors.primary,
-    InteractionDockKind.permission => context.colors.primary,
-    InteractionDockKind.plan => context.colors.primary,
   };
 }

@@ -7,21 +7,8 @@ const _conversationClosedFailure = StudioFailure(
   correlationId: 'client-timeline-closed',
 );
 
-int _exactTimelineInt(BigInt value, String what) {
-  final result = value.toInt();
-  if (value.isNegative || result < 0 || BigInt.from(result) != value) {
-    throw StudioFailure(
-      code: StudioFailureCode.overloaded,
-      message: 'Timeline $what cannot be represented exactly',
-      retryable: false,
-      correlationId: 'client-timeline-range',
-    );
-  }
-  return result;
-}
-
 int? _exactNullableTimelineInt(BigInt? value, String what) =>
-    value == null ? null : _exactTimelineInt(value, what);
+    value == null ? null : exactTimelineInt(value, what);
 
 int _exactSignedTimelineInt(Object value) {
   final integer = switch (value) {
@@ -68,7 +55,7 @@ ChatSourceId _chatSourceFromFrb(frb_chat_types.BridgeChatSourceId value) =>
 ChatFactPosition _chatPositionFromFrb(
   frb_chat_types.BridgeChatFactPosition value,
 ) => ChatFactPosition(
-  effectSeq: _exactTimelineInt(value.effectSeq, 'effect sequence'),
+  effectSeq: exactTimelineInt(value.effectSeq, 'effect sequence'),
   suborder: value.suborder,
 );
 
@@ -93,10 +80,7 @@ ThreadBusinessRefs _businessRefsFromFrb(frb.BridgeThreadBusinessRefs value) =>
       plan: value.plan == null
           ? null
           : CurrentPlanHead(
-              revision: _exactTimelineInt(
-                value.plan!.revision,
-                'plan revision',
-              ),
+              revision: exactTimelineInt(value.plan!.revision, 'plan revision'),
               phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
               document: value.plan!.document == null
                   ? null
@@ -109,10 +93,10 @@ ThreadBusinessRefs _businessRefsFromFrb(frb.BridgeThreadBusinessRefs value) =>
 
 ContentWindow _contentWindowFromFrb(frb_chat_types.BridgeContentWindow value) =>
     ContentWindow(
-      offset: _exactTimelineInt(value.offset, 'content offset'),
+      offset: exactTimelineInt(value.offset, 'content offset'),
       bytes: value.bytes,
       generation: value.generation,
-      availableThrough: _exactTimelineInt(
+      availableThrough: exactTimelineInt(
         value.availableThrough,
         'available bytes',
       ),
@@ -195,7 +179,7 @@ ProductTopicFrame? productTopicFrameFromEnvelope(
         event: ProductTopicEventEnvelope(
           eventId: event.eventId,
           sequence: event.sequence,
-          createdAt: _dateFromUnix(event.createdAt),
+          createdAt: dateFromUnix(event.createdAt),
           payload: _productPayloadFromFrb(event.payload),
         ),
       ),
@@ -420,7 +404,7 @@ StudioAgentView _agentDirectoryEntryFromFrb(
       frb.BridgeAgentActivity_Acp(:final explicitlyClosed) =>
         AcpStudioAgentActivity(explicitlyClosed: explicitlyClosed),
     },
-    updatedAt: _dateFromUnix(agent.updatedAt),
+    updatedAt: dateFromUnix(agent.updatedAt),
   );
 }
 
@@ -444,11 +428,11 @@ SessionDirectoryRow _sessionDirectoryRowFromFrb(
     workspacePath: value.workspacePath,
     role: value.role,
     backend: _agentBackendFromFrb(value.backend),
-    createdAt: _dateFromUnix(value.createdAt),
-    updatedAt: _dateFromUnix(value.updatedAt),
+    createdAt: dateFromUnix(value.createdAt),
+    updatedAt: dateFromUnix(value.updatedAt),
     lastUserMessageAt: value.lastUserMessageAt == null
         ? null
-        : _dateFromUnix(value.lastUserMessageAt!),
+        : dateFromUnix(value.lastUserMessageAt!),
     archived: value.archived,
   );
 }
@@ -967,7 +951,7 @@ SessionCostsStateView _sessionCostsStateFromFrb(
   return SessionCostsStateView(
     rootThreadId: value.rootThreadId,
     revision: value.revision.toInt(),
-    updatedAt: updatedAt == 0 ? null : _dateFromUnix(value.updatedAt),
+    updatedAt: updatedAt == 0 ? null : dateFromUnix(value.updatedAt),
     statisticsPending: value.statisticsPending,
     statisticsGap: value.statisticsGap,
     readFailed: value.readFailed,
@@ -1002,7 +986,7 @@ PersistenceQueueStateView _persistenceQueueStateFromFrb(
   final updatedAt = value.updatedAt.toInt();
   return PersistenceQueueStateView(
     revision: value.revision.toInt(),
-    updatedAt: updatedAt == 0 ? null : _dateFromUnix(value.updatedAt),
+    updatedAt: updatedAt == 0 ? null : dateFromUnix(value.updatedAt),
     queue: _persistenceQueueFromFrb(value.queue),
   );
 }
@@ -1593,7 +1577,7 @@ UpdaterStateSnapshot updaterStateFromFrb(
       ? null
       : ReadyStudioUpdate(
           update: _updateInfoFromFrb(snapshot.readyUpdate!.update),
-          readyAt: _dateFromUnix(snapshot.readyUpdate!.readyAt),
+          readyAt: dateFromUnix(snapshot.readyUpdate!.readyAt),
         ),
 );
 
@@ -1602,31 +1586,31 @@ UpdaterActivity _updaterActivityFromFrb(
 ) => switch (snapshot) {
   frb.BridgeUpdaterActivity_Disabled(:final field0) => DisabledUpdaterActivity(
     revision: field0.revision.toInt(),
-    updatedAt: _dateFromUnix(field0.updatedAt),
+    updatedAt: dateFromUnix(field0.updatedAt),
   ),
   frb.BridgeUpdaterActivity_Idle(:final field0) => IdleUpdaterActivity(
     revision: field0.revision.toInt(),
-    updatedAt: _dateFromUnix(field0.updatedAt),
+    updatedAt: dateFromUnix(field0.updatedAt),
   ),
   frb.BridgeUpdaterActivity_Checking(:final field0) => CheckingUpdaterActivity(
     revision: field0.revision.toInt(),
     operationId: field0.operationId,
-    startedAt: _dateFromUnix(field0.startedAt),
+    startedAt: dateFromUnix(field0.startedAt),
   ),
   frb.BridgeUpdaterActivity_UpToDate(:final field0) => UpToDateUpdaterActivity(
     revision: field0.revision.toInt(),
-    checkedAt: _dateFromUnix(field0.checkedAt),
+    checkedAt: dateFromUnix(field0.checkedAt),
   ),
   frb.BridgeUpdaterActivity_Available(:final field0) =>
     AvailableUpdaterActivity(
       revision: field0.revision.toInt(),
-      checkedAt: _dateFromUnix(field0.checkedAt),
+      checkedAt: dateFromUnix(field0.checkedAt),
       update: _updateInfoFromFrb(field0.update),
     ),
   frb.BridgeUpdaterActivity_Downloading(:final field0) =>
     DownloadingUpdaterActivity(
       revision: field0.revision.toInt(),
-      updatedAt: _dateFromUnix(field0.updatedAt),
+      updatedAt: dateFromUnix(field0.updatedAt),
       update: _updateInfoFromFrb(field0.update),
       downloaded: field0.downloaded.toInt(),
       total: field0.total.toInt(),
@@ -1634,32 +1618,32 @@ UpdaterActivity _updaterActivityFromFrb(
   frb.BridgeUpdaterActivity_Verifying(:final field0) =>
     VerifyingUpdaterActivity(
       revision: field0.revision.toInt(),
-      updatedAt: _dateFromUnix(field0.updatedAt),
+      updatedAt: dateFromUnix(field0.updatedAt),
       update: _updateInfoFromFrb(field0.update),
       downloaded: field0.downloaded.toInt(),
       total: field0.total.toInt(),
     ),
   frb.BridgeUpdaterActivity_Ready(:final field0) => ReadyUpdaterActivity(
     revision: field0.revision.toInt(),
-    readyAt: _dateFromUnix(field0.readyAt),
+    readyAt: dateFromUnix(field0.readyAt),
     update: _updateInfoFromFrb(field0.update),
   ),
   frb.BridgeUpdaterActivity_InstallerLaunched(:final field0) =>
     InstallerLaunchedUpdaterActivity(
       revision: field0.revision.toInt(),
-      launchedAt: _dateFromUnix(field0.launchedAt),
+      launchedAt: dateFromUnix(field0.launchedAt),
       update: _updateInfoFromFrb(field0.update),
     ),
   frb.BridgeUpdaterActivity_CheckFailed(:final field0) =>
     CheckFailedUpdaterActivity(
       revision: field0.revision.toInt(),
-      failedAt: _dateFromUnix(field0.failedAt),
+      failedAt: dateFromUnix(field0.failedAt),
       error: _updaterErrorFromFrb(field0.error),
     ),
   frb.BridgeUpdaterActivity_InstallFailed(:final field0) =>
     InstallFailedUpdaterActivity(
       revision: field0.revision.toInt(),
-      failedAt: _dateFromUnix(field0.failedAt),
+      failedAt: dateFromUnix(field0.failedAt),
       update: _updateInfoFromFrb(field0.update),
       error: _updaterErrorFromFrb(field0.error),
     ),
@@ -1669,7 +1653,7 @@ StudioUpdateInfoView _updateInfoFromFrb(
   frb.BridgeVerifiedUpdateSummary update,
 ) => StudioUpdateInfoView(
   version: update.version,
-  publishedAt: _dateFromUnix(update.publishedAt),
+  publishedAt: dateFromUnix(update.publishedAt),
   notesUrl: update.notesUrl,
 );
 

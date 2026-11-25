@@ -56,18 +56,6 @@ String? _trimOrNull(String? value) {
   };
 }
 
-List<AcpCapabilityKind> _mapCapabilities(AcpAgentCapabilitiesView? caps) {
-  if (caps == null) return const [];
-  return [
-    if (caps.image) AcpCapabilityKind.image,
-    if (caps.audio) AcpCapabilityKind.audio,
-    if (caps.embeddedContext) AcpCapabilityKind.embeddedContext,
-    if (caps.loadSession) AcpCapabilityKind.loadSession,
-    if (caps.resumeSession) AcpCapabilityKind.resumeSession,
-    if (caps.listSessions) AcpCapabilityKind.listSessions,
-  ];
-}
-
 List<AcpConfigReadoutItem> _mapDetailConfigItems(AcpConversationState? state) {
   if (state == null) return const [];
   if (state.configOptions != null || state.modes != null) {
@@ -311,6 +299,6 @@ AcpSessionDetailViewState acpSessionDetailViewModel(Ref ref, String threadId) {
     completedTurns: state?.completedTurns,
     updatedAt: state?.snapshotUpdatedAt,
     configItems: _mapDetailConfigItems(state),
-    capabilities: _mapCapabilities(state?.capabilities),
+    capabilities: mapAcpCapabilities(state?.capabilities),
   );
 }

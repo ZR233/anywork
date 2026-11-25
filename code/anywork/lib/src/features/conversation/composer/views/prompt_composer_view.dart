@@ -1,4 +1,5 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../domain/models/composer_primary_action.dart';
@@ -41,16 +42,10 @@ bool _sameRecoveryDiagnostic(
       left.impact != right.impact ||
       left.workspaceId != right.workspaceId ||
       left.threadId != right.threadId ||
-      left.detail != right.detail ||
-      left.availableActions.length != right.availableActions.length) {
+      left.detail != right.detail) {
     return false;
   }
-  for (var index = 0; index < left.availableActions.length; index += 1) {
-    if (left.availableActions[index] != right.availableActions[index]) {
-      return false;
-    }
-  }
-  return true;
+  return listEquals(left.availableActions, right.availableActions);
 }
 
 /// Recovery 拒绝的失败走本地化诊断行，不再重复渲染原始 SDK 文本。

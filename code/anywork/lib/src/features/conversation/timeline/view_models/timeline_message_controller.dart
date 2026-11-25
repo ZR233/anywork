@@ -113,14 +113,6 @@ final class TimelineMessageController {
     });
   }
 
-  /// Replaces rows by stable row identity and appends genuinely new anchors.
-  ///
-  /// This is one controller admission and one serial Flyer mutation.
-  Future<void> replaceBlocks(List<DisplayBlock> blocks) {
-    if (_disposed || _retired) throw const StaleConversationScope();
-    return _serialize(() => _replaceBlocks(blocks));
-  }
-
   /// Reconciles one replaceable History window by stable row identity.
   ///
   /// Existing rows are updated in place, genuinely new rows append in order,
@@ -180,36 +172,6 @@ final class TimelineMessageController {
       if (_disposed || _retired) return;
       final unit = _unitOf(next);
       _replaceUnit(oldUnit, unit);
-    }
-  }
-
-  Future<void> _replaceBlocks(List<DisplayBlock> blocks) async {
-    final existingById = {
-      for (final message in controller.messages) message.id: message,
-    };
-    final appended = <Message>[];
-    for (final block in blocks) {
-      final next = _message(block);
-      final old = existingById[block.id];
-      if (old == null) {
-        appended.add(next);
-        continue;
-      }
-      final oldUnit = _unitOf(old);
-      if (sameDisplayBlock(oldUnit.block, block)) continue;
-      if (_isFrozenBoundary(oldUnit) && !_isFrozenBoundary(_unitOf(next))) {
-        continue;
-      }
-      await controller.updateMessage(old, next);
-      if (_disposed || _retired) return;
-      final unit = _unitOf(next);
-      _replaceUnit(oldUnit, unit);
-    }
-    if (appended.isNotEmpty) {
-      await _applyBlocks(
-        blocks.where((block) => existingById[block.id] == null).toList(),
-        TimelineApplyPlacement.append,
-      );
     }
   }
 

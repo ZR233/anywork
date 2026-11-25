@@ -183,42 +183,32 @@ class _BotDetail extends StatelessWidget {
                       ? null
                       : Text(_sourceLabel(context, conversation)),
                   onTap: () => onOpenConversation(conversation),
-                  trailing: PopupMenuButton<String>(
-                    key: StudioDriverKeys.botsConversationActions(
+                  trailing: StudioMenuButton.icon(
+                    buttonKey: StudioDriverKeys.botsConversationActions(
                       conversation.chatId,
                     ),
+                    tooltip: MaterialLocalizations.of(context).showMenuTooltip,
                     enabled: !busy,
-                    onSelected: (action) {
-                      if (action == 'platform') {
-                        onSelectChat(conversation.chatId);
-                      }
-                      if (action == 'new') onCreateThread(conversation);
-                      if (action == 'trust') {
-                        onTrustChat(conversation.chatId, true);
-                      }
-                      if (action == 'revoke') {
-                        onTrustChat(conversation.chatId, false);
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      PopupMenuItem(
-                        value: 'platform',
+                    icon: const Icon(Icons.more_vert),
+                    menuChildren: [
+                      MenuItemButton(
+                        onPressed: () => onSelectChat(conversation.chatId),
                         child: Text(context.l10n.botsPlatformTools),
                       ),
                       if (conversation.kind == BotConversationKind.group)
-                        PopupMenuItem(
-                          value:
-                              bot.trustedChatIds.contains(conversation.chatId)
-                              ? 'revoke'
-                              : 'trust',
+                        MenuItemButton(
+                          onPressed: () => onTrustChat(
+                            conversation.chatId,
+                            !bot.trustedChatIds.contains(conversation.chatId),
+                          ),
                           child: Text(
                             bot.trustedChatIds.contains(conversation.chatId)
                                 ? context.l10n.settingsBotsRevoke
                                 : context.l10n.settingsBotsApproveGroup,
                           ),
                         ),
-                      PopupMenuItem(
-                        value: 'new',
+                      MenuItemButton(
+                        onPressed: () => onCreateThread(conversation),
                         child: Text(context.l10n.settingsBotsNewThread),
                       ),
                     ],

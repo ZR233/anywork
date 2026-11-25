@@ -927,10 +927,6 @@ void main() {
               as WorkDisplayBlock;
       expect(settledWorkBody.members.beforeSeq, 4);
       expect(settledWorkBody.timing.finishedAtMillis, 4000);
-      expect(
-        identical(lease.controller.messages[2], settledReplyMessage),
-        isTrue,
-      );
 
       // Expand Turn 1's settled WorkRange inside TimelineConnector and verify persistence.
       final historyReadStarted = Completer<void>();

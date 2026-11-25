@@ -181,7 +181,7 @@ Future<void> addWorkflowTransitionDialog(
     workflow: workflow,
     initialSourceId: sourceStateId,
   );
-  if (transition == null) return;
+  if (transition == null || !context.mounted) return;
   final document = _documentOf(ref);
   if (document == null) return;
   _replaceDocument(ref, addTransition(document, transition));
@@ -205,7 +205,7 @@ Future<void> renameWorkflowStageDialog(
     state: state,
     workflow: workflow,
   );
-  if (id == null || id == state.id) return;
+  if (id == null || id == state.id || !context.mounted) return;
   _replaceDocument(
     ref,
     replaceState(document, state.id, stateWith(state, id: id)),

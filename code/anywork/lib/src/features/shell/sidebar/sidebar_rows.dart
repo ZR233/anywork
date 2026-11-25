@@ -92,7 +92,7 @@ class SidebarProjectRow extends StatelessWidget {
                     ),
                   ),
                 ),
-              if (issue != null) _recoveryIndicator(context, issue),
+              if (issue != null) RecoveryIssueIndicator(issue: issue, size: 16),
               // 常驻新建入口：折叠热区与项目的行内操作互不干扰。
               _tileIconButton(
                 key: StudioDriverKeys.projectNewSession(project.id),
@@ -303,7 +303,7 @@ class SidebarThreadRow extends StatelessWidget {
               if (issue != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: _recoveryIndicator(context, issue),
+                  child: RecoveryIssueIndicator(issue: issue, size: 16),
                 ),
               if (row.workspaceMode.isWorktree)
                 SizedBox.square(
@@ -458,17 +458,3 @@ class SidebarThreadRow extends StatelessWidget {
     },
   };
 }
-
-Widget _recoveryIndicator(BuildContext context, StudioRecoveryIssue issue) =>
-    Tooltip(
-      message: context.recoveryIssueLabel(issue),
-      child: Icon(
-        issue.impact == RecoveryIssueImpact.advisory
-            ? Icons.info_outline
-            : Icons.error_outline,
-        size: 16,
-        color: issue.impact == RecoveryIssueImpact.advisory
-            ? context.colors.primary
-            : context.colors.error,
-      ),
-    );

@@ -1,4 +1,5 @@
 import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
 
 import 'account_preview_fixtures.dart';
 import 'account_list_preview_data.dart';
@@ -27,6 +28,19 @@ abstract final class AccountTemplatePreviewFixtures {
       };
 
   static AccountBilling billing(String id) => nativeContent(id).defaultBilling;
+
+  static AccountGeminiConnectionPresentation? geminiConnection(
+    String id, {
+    bool creating = false,
+    String? endpointRaw,
+  }) => projectGeminiConnection(
+    protocol: id == 'gemini' || id == 'vertex-ai' ? 'gemini' : '',
+    templateId: id,
+    endpoint: endpointRaw ?? endpoint(id),
+    canSwitchMode: creating,
+    supportsModelDiscovery: nativeContent(id).supportsModelDiscovery,
+    hasBundledCatalog: id == 'vertex-ai',
+  );
 
   static final _sharedUsageUnknownTemplate = _createUsageUnknownTemplate();
 
@@ -220,6 +234,7 @@ abstract final class AccountTemplatePreviewFixtures {
         credentialRequired: id != 'openai-compatible',
         isOpenAiTemplate: id == 'openai',
         protocolLabel: protocol(id),
+        geminiConnection: geminiConnection(id),
         canSave: true,
         canAddModel: true,
         billing: billingControl(id),
@@ -252,6 +267,7 @@ abstract final class AccountTemplatePreviewFixtures {
       credentialRequired: id != 'openai-compatible',
       isOpenAiTemplate: id == 'openai',
       protocolLabel: protocol(id),
+      geminiConnection: geminiConnection(id, creating: true),
       canSave: true,
       canAddModel: true,
       billing: billingControl(id),
@@ -263,6 +279,10 @@ abstract final class AccountTemplatePreviewFixtures {
   static NativeAccountEditorPresentation
   geminiEditEditor() => editor('vertex-ai').copyWith(
     dirty: true,
+    geminiConnection: geminiConnection(
+      'vertex-ai',
+      endpointRaw: AccountGeminiEndpointPreset.vertexUsCentral1.endpoint,
+    ),
     endpoint: const AccountTextPresentation(
       raw: 'https://us-central1-aiplatform.googleapis.com/v1/publishers/google',
     ),

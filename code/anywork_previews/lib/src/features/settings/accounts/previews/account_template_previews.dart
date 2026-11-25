@@ -6,9 +6,54 @@ import 'account_preview_host.dart';
 import 'account_template_preview_fixtures.dart';
 
 import 'package:anywork/src/features/settings/accounts/state/account_presentations.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
 
 // All interactions use the shared production-View host and local recording.
 // Names intentionally include the exact template ID for Previewer filtering.
+
+@Preview(
+  name: 'Gemini / no template / custom endpoint / narrow',
+  group: 'Accounts · Templates',
+  size: Size(420, 1000),
+)
+Widget accountGeminiWithoutTemplatePreview() {
+  const endpoint = 'https://proxy.example/v1?host=aiplatform.googleapis.com';
+  return accountNativeEditorPreviewHost(
+    AccountTemplatePreviewFixtures.editor('gemini').copyWith(
+      templateKey: const AccountTemplateKey(kind: AccountKind.native, id: ''),
+      endpoint: const AccountTextPresentation(raw: endpoint),
+      geminiConnection: projectGeminiConnection(
+        protocol: 'gemini',
+        templateId: null,
+        endpoint: endpoint,
+        canSwitchMode: false,
+      ),
+    ),
+    textScale: 1.3,
+  );
+}
+
+@Preview(
+  name: 'Gemini / missing template / retained draft',
+  group: 'Accounts · Templates',
+  size: Size(900, 1000),
+)
+Widget accountGeminiMissingTemplatePreview() => accountNativeEditorPreviewHost(
+  AccountTemplatePreviewFixtures.editor('gemini').copyWith(
+    templateKey: const AccountTemplateKey(
+      kind: AccountKind.native,
+      id: 'missing-template',
+    ),
+    geminiConnection: projectGeminiConnection(
+      protocol: 'gemini',
+      templateId: 'missing-template',
+      endpoint: AccountGeminiEndpointPreset.aiStudio.endpoint,
+      canSwitchMode: false,
+    ),
+    canSave: false,
+    error: '合成状态：模板目录已不包含该模板。',
+  ),
+);
 
 @Preview(
   name: 'Template / openai / List',

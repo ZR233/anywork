@@ -54,7 +54,7 @@ final class ModeWorkspaceControllerProvider
 }
 
 String _$modeWorkspaceControllerHash() =>
-    r'91d529e5f88d924e6f2f1c11351c9d503a92146d';
+    r'dd805fb7acf94096e63809e5413362a41bdf5345';
 
 /// Mode 工作区界面状态的唯一 owner。
 ///

@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:anywork_client/models.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -8,7 +7,6 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 
@@ -393,95 +391,15 @@ final _statusJsonText = jsonEncode({
   ],
 });
 
-final _statusDeclaredWindowItem = ChatItemPresentation.forUnit(
-  TimelineDisplayUnit(
-    block: DisplayBlock(
-      id: 'preview-lsp-status-unit',
-      blockOrder: 1,
-      body: SingleDisplayBlock(
-        visibility: HistorySingleVisibility.content,
-        record: DisplayRecord(
-          atom: ChatAtom(
-            id: 'preview-lsp-status',
-            source: TimelinePreviewFixtures.groupSource,
-            sourceOrder: 1,
-            kind: ChatAtomKind.toolCall,
-            delivery: ChatDeliveryKind.foreground,
-            tool: const ChatToolIdentity(
-              callId: 'preview-lsp-status-call',
-              name: 'lsp_status',
-            ),
-            lifecycle: const TerminalChatAtom(
-              started: ChatFactPosition(effectSeq: 1, suborder: 0),
-              ended: ChatFactPosition(effectSeq: 2, suborder: 0),
-              outcome: ChatTerminalOutcome.completed,
-            ),
-            contents: const [
-              ChatAtomContent(
-                role: ChatContentRole.toolArguments,
-                reference: ContentRef(
-                  databaseId: 'preview',
-                  target: BodyContentTarget(
-                    owner: ItemContentOwner(itemId: 'preview-lsp-status'),
-                    key: 'tool.arguments',
-                  ),
-                ),
-              ),
-              ChatAtomContent(
-                role: ChatContentRole.toolOutput,
-                reference: ContentRef(
-                  databaseId: 'preview',
-                  target: BodyContentTarget(
-                    owner: ItemContentOwner(itemId: 'preview-lsp-status'),
-                    key: 'tool.result',
-                  ),
-                ),
-              ),
-            ],
-            payload: InlinePayload(
-              bytes: utf8.encode(
-                jsonEncode({
-                  'contract': 'anywork.chat/1',
-                  'type': 'tool',
-                  'data': {
-                    'invocation': {
-                      'toolCallId': 'preview-lsp-status-call',
-                      'name': 'lsp_status',
-                      'presentationContract': 'builtin.lsp_status@1',
-                    },
-                    'state': {
-                      'kind': 'succeeded',
-                      'completedAt': 1735689612,
-                      'output': {'attachments': <Object>[]},
-                    },
-                  },
-                  'bodies': [
-                    TimelinePreviewFixtures.body('tool.arguments', '{}'),
-                    TimelinePreviewFixtures.body(
-                      'tool.result',
-                      _statusJsonText,
-                    ),
-                  ],
-                  'sealedAt': 1735689612,
-                }),
-              ),
-            ),
-          ),
-          contentSource: CompletedOriginal(completionId: 'preview-lsp-status'),
-        ),
-      ),
-    ),
-  ),
+// This scene exercises the inline status result. Deferred body reads have
+// their own owner-qualified widget coverage; no unused atom references here.
+final _statusItem = _lspToolItem(
+  id: 'preview-lsp-status',
+  name: 'lsp_status',
+  contract: 'builtin.lsp_status@1',
+  arguments: const {},
+  result: _statusJsonText,
 );
-
-Widget _declaredStatusCard() {
-  return ChatItemView(
-    key: const ValueKey('preview-lsp-status-declared'),
-    item: _statusDeclaredWindowItem,
-    initiallyExpanded: true,
-    bodyBuilder: _lspPreviewMarkdown,
-  );
-}
 
 @Preview(
   name: 'LSP 查询 / 悬停说明与引用定位',
@@ -555,7 +473,7 @@ Widget timelineLspCapabilitiesAndStatusPreview() => _lspPreviewHost(
       children: [
         _lspCard(_capabilitiesItem),
         const SizedBox(height: 12),
-        _declaredStatusCard(),
+        _lspCard(_statusItem),
       ],
     ),
   ),
@@ -573,7 +491,7 @@ Widget timelineLspNarrowLargeTextPreview() => _lspPreviewHost(
       children: [
         _lspCard(_referencesQueryItem),
         const SizedBox(height: 12),
-        _declaredStatusCard(),
+        _lspCard(_statusItem),
       ],
     ),
   ),

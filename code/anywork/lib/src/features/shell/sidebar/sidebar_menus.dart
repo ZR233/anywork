@@ -26,10 +26,20 @@ Widget _tileIconButton({
   );
 }
 
-/// 侧栏项目行的更多菜单：Material [MenuAnchor] + [IconButton] 触发器，
-/// 锚定与键盘交互为框架行为。触发按钮与 [MenuAnchor.childFocusNode]
-/// 共用同一 [FocusNode]，焦点转移和恢复交给框架。
-class SidebarProjectMenu extends StatefulWidget {
+const _sidebarMenuStyle = MenuStyle(
+  maximumSize: WidgetStatePropertyAll(Size(360, double.infinity)),
+);
+
+ButtonStyle _sidebarMenuButtonStyle(double target) => IconButton.styleFrom(
+  minimumSize: Size.square(target),
+  maximumSize: Size.square(target),
+  visualDensity: VisualDensity.standard,
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  padding: EdgeInsets.zero,
+);
+
+/// 侧栏项目行的更多菜单。共享触发器负责锚定、键盘交互与焦点恢复。
+class SidebarProjectMenu extends StatelessWidget {
   const SidebarProjectMenu({
     super.key,
     required this.menuKey,
@@ -47,38 +57,25 @@ class SidebarProjectMenu extends StatefulWidget {
   final bool canRetryRecovery;
   final FutureOr<void> Function(SidebarProjectAction action) onAction;
 
-  @override
-  State<SidebarProjectMenu> createState() => _SidebarProjectMenuState();
-}
-
-class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
-  final FocusNode _triggerFocus = FocusNode(debugLabel: 'project-menu-trigger');
-
-  @override
-  void dispose() {
-    _triggerFocus.dispose();
-    super.dispose();
-  }
-
   void _select(SidebarProjectAction action) {
-    final result = widget.onAction(action);
+    final result = onAction(action);
     if (result is Future<void>) unawaited(result);
   }
 
   @override
   Widget build(BuildContext context) {
-    return MenuAnchor(
-      key: widget.menuKey,
-      childFocusNode: _triggerFocus,
+    return StudioMenuButton.icon(
+      key: menuKey,
+      tooltip: context.l10n.sidebarProjects,
+      icon: const Icon(Icons.more_horiz, size: 18),
+      buttonStyle: _sidebarMenuButtonStyle(minTarget),
       crossAxisUnconstrained: false,
-      style: const MenuStyle(
-        maximumSize: WidgetStatePropertyAll(Size(360, double.infinity)),
-      ),
+      menuStyle: _sidebarMenuStyle,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        if (widget.canRetryRecovery && widget.recoveryIssueId != null)
+        if (canRetryRecovery && recoveryIssueId != null)
           MenuItemButton(
-            key: ValueKey('project-retry-recovery-${widget.recoveryIssueId}'),
+            key: ValueKey('project-retry-recovery-$recoveryIssueId'),
             overflowAxis: Axis.vertical,
             onPressed: () => _select(SidebarProjectAction.retryRecovery),
             child: Text(context.l10n.runtimeFatalRetry),
@@ -87,7 +84,7 @@ class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
           overflowAxis: Axis.vertical,
           onPressed: () => _select(SidebarProjectAction.pin),
           child: Text(
-            widget.pinned ? context.l10n.sidebarUnpin : context.l10n.sidebarPin,
+            pinned ? context.l10n.sidebarUnpin : context.l10n.sidebarPin,
           ),
         ),
         MenuItemButton(
@@ -102,22 +99,6 @@ class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
           child: Text(context.l10n.sidebarCloseProject),
         ),
       ],
-      builder: (context, controller, child) => IconButton(
-        constraints: BoxConstraints.tightFor(
-          width: widget.minTarget,
-          height: widget.minTarget,
-        ),
-        tooltip: context.l10n.sidebarProjects,
-        onPressed: () =>
-            controller.isOpen ? controller.close() : controller.open(),
-        focusNode: _triggerFocus,
-        visualDensity: VisualDensity.standard,
-        style: const ButtonStyle(
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        padding: EdgeInsets.zero,
-        icon: const Icon(Icons.more_horiz, size: 18),
-      ),
     );
   }
 }
@@ -125,10 +106,8 @@ class _SidebarProjectMenuState extends State<SidebarProjectMenu> {
 /// 侧栏会话行的更多菜单：重命名、归档、复制会话工作区路径，以及
 /// 通过 Material [SubmenuButton] 承载的会话级打开方式入口（VS Code、Zed、
 /// 终端；不可用时禁用并说明原因），并保留 recovery issue 的重试入口。
-/// Material [MenuAnchor] 和 [SubmenuButton] 负责锚定、二级菜单、键盘导航
-/// 与焦点恢复，与页眉菜单共用同一套打开实现，不新增后端能力。
-/// 触发按钮与 [MenuAnchor.childFocusNode] 共用同一 [FocusNode]。
-class SidebarThreadMenu extends StatefulWidget {
+/// [StudioMenuButton] 和 [SubmenuButton] 负责锚定、二级菜单、键盘导航与焦点恢复。
+class SidebarThreadMenu extends StatelessWidget {
   const SidebarThreadMenu({
     super.key,
     required this.row,
@@ -154,45 +133,32 @@ class SidebarThreadMenu extends StatefulWidget {
   final bool removalPending;
   final FutureOr<void> Function(SidebarThreadAction action) onAction;
 
-  @override
-  State<SidebarThreadMenu> createState() => _SidebarThreadMenuState();
-}
-
-class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
-  final FocusNode _triggerFocus = FocusNode(debugLabel: 'thread-menu-trigger');
-
-  @override
-  void dispose() {
-    _triggerFocus.dispose();
-    super.dispose();
-  }
-
   void _select(SidebarThreadAction action) {
-    final result = widget.onAction(action);
+    final result = onAction(action);
     if (result is Future<void>) unawaited(result);
   }
 
   @override
   Widget build(BuildContext context) {
-    final row = widget.row;
-    final blockReason = widget.recoveryIssue == null
+    final issue = recoveryIssue;
+    final blockReason = issue == null
         ? context.l10n.composerBlockedWorkspace
-        : context.recoveryIssueLabel(widget.recoveryIssue!);
+        : context.recoveryIssueLabel(issue);
     return SizedBox.square(
-      dimension: widget.minTarget,
-      child: MenuAnchor(
+      dimension: minTarget,
+      child: StudioMenuButton.icon(
         key: StudioDriverKeys.threadMenu(row.threadId),
-        childFocusNode: _triggerFocus,
+        tooltip: MaterialLocalizations.of(context).showMenuTooltip,
+        icon: const Icon(Icons.more_horiz, size: 18),
+        buttonStyle: _sidebarMenuButtonStyle(minTarget),
         // 受控紧凑宽度需要约束横轴；默认 UnconstrainedBox 会让长路径撑开内容。
         crossAxisUnconstrained: false,
-        style: const MenuStyle(
-          maximumSize: WidgetStatePropertyAll(Size(360, double.infinity)),
-        ),
+        menuStyle: _sidebarMenuStyle,
         alignmentOffset: const Offset(6, 6),
         menuChildren: [
-          if (widget.canRetryRecovery && widget.recoveryIssueId != null)
+          if (canRetryRecovery && recoveryIssueId != null)
             MenuItemButton(
-              key: StudioDriverKeys.retryRecoveryIssue(widget.recoveryIssueId!),
+              key: StudioDriverKeys.retryRecoveryIssue(recoveryIssueId!),
               overflowAxis: Axis.vertical,
               onPressed: () => _select(SidebarThreadAction.retryRecovery),
               child: Text(context.l10n.runtimeFatalRetry),
@@ -200,7 +166,7 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
           MenuItemButton(
             key: StudioDriverKeys.renameThread(row.threadId),
             overflowAxis: Axis.vertical,
-            onPressed: widget.blocked
+            onPressed: blocked
                 ? null
                 : () => _select(SidebarThreadAction.rename),
             child: Text(context.l10n.sidebarRenameSession),
@@ -209,14 +175,14 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
             // 归档不依赖工作区访问状态；物理工作树检查与归档相互独立。
             key: StudioDriverKeys.archiveThread(row.threadId),
             overflowAxis: Axis.vertical,
-            onPressed: widget.removalPending
+            onPressed: removalPending
                 ? null
                 : () => _select(SidebarThreadAction.archive),
             child: Text(context.l10n.sidebarArchiveSession),
           ),
           MenuItemButton(
             key: StudioDriverKeys.deleteThread(row.threadId),
-            style: widget.removalPending
+            style: removalPending
                 ? null
                 : ButtonStyle(
                     foregroundColor: WidgetStatePropertyAll(
@@ -224,7 +190,7 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
                     ),
                   ),
             overflowAxis: Axis.vertical,
-            onPressed: widget.removalPending
+            onPressed: removalPending
                 ? null
                 : () => _select(SidebarThreadAction.delete),
             child: Text(context.l10n.sidebarDeleteSession),
@@ -242,90 +208,69 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
             key: StudioDriverKeys.openThreadWorkspace(row.threadId),
             leadingIcon: const Icon(Icons.open_in_new, size: 18),
             menuChildren: [
-              _workspaceMenuEntry(
+              workspaceOpenMenuItem(
                 key: StudioDriverKeys.openThreadVsCode(row.threadId),
                 icon: HostAppArtwork(
-                  bytes: widget.hostApps.vsCodeIcon,
+                  bytes: hostApps.vsCodeIcon,
                   fallback: Icons.code,
                 ),
                 label: context.l10n.sessionOpenInVsCode,
-                targetDescription: widget.targetDescription,
+                targetDescription: targetDescription,
                 available:
-                    widget.hostApps.vsCode &&
-                    !widget.blocked &&
-                    row.workspacePath.isNotEmpty,
-                unavailableReason: widget.blocked
+                    hostApps.vsCode && !blocked && row.workspacePath.isNotEmpty,
+                unavailableReason: blocked
                     ? blockReason
                     : context.l10n.sessionVsCodeUnavailable,
                 onActivated: () => _select(SidebarThreadAction.openVsCode),
               ),
-              _workspaceMenuEntry(
+              workspaceOpenMenuItem(
                 key: StudioDriverKeys.openThreadZed(row.threadId),
                 icon: HostAppArtwork(
-                  bytes: widget.hostApps.zedIcon,
+                  bytes: hostApps.zedIcon,
                   fallback: Icons.code,
                 ),
                 label: context.l10n.sessionOpenInZed,
-                targetDescription: widget.targetDescription,
+                targetDescription: targetDescription,
                 available:
-                    widget.hostApps.zed &&
-                    !widget.blocked &&
-                    row.workspacePath.isNotEmpty,
-                unavailableReason: widget.blocked
+                    hostApps.zed && !blocked && row.workspacePath.isNotEmpty,
+                unavailableReason: blocked
                     ? blockReason
                     : context.l10n.sessionZedUnavailable,
                 onActivated: () => _select(SidebarThreadAction.openZed),
               ),
-              _workspaceMenuEntry(
+              workspaceOpenMenuItem(
                 key: StudioDriverKeys.openThreadTerminal(row.threadId),
                 icon: HostAppArtwork(
-                  bytes: widget.hostApps.terminalIcon,
+                  bytes: hostApps.terminalIcon,
                   fallback: Icons.terminal,
                 ),
                 label: context.l10n.sessionOpenInTerminal,
-                targetDescription: widget.targetDescription,
+                targetDescription: targetDescription,
                 available:
-                    widget.hostApps.terminal &&
-                    !widget.blocked &&
+                    hostApps.terminal &&
+                    !blocked &&
                     row.workspacePath.isNotEmpty,
-                unavailableReason: widget.blocked
+                unavailableReason: blocked
                     ? blockReason
-                    : widget.hostApps.terminalUnavailableReason,
+                    : hostApps.terminalUnavailableReason,
                 onActivated: () => _select(SidebarThreadAction.openTerminal),
               ),
             ],
             child: Tooltip(
-              message:
-                  '${context.l10n.sessionOpenWith}\n${widget.targetDescription}',
+              message: '${context.l10n.sessionOpenWith}\n$targetDescription',
               child: Text(context.l10n.sessionOpenWith),
             ),
           ),
         ],
-        builder: (context, controller, child) => IconButton(
-          tooltip: MaterialLocalizations.of(context).showMenuTooltip,
-          constraints: BoxConstraints.tightFor(
-            width: widget.minTarget,
-            height: widget.minTarget,
-          ),
-          onPressed: () =>
-              controller.isOpen ? controller.close() : controller.open(),
-          focusNode: _triggerFocus,
-          visualDensity: VisualDensity.standard,
-          style: const ButtonStyle(
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          padding: EdgeInsets.zero,
-          icon: const Icon(Icons.more_horiz, size: 18),
-        ),
       ),
     );
   }
 }
 
-/// 侧栏会话菜单二级入口中的应用条目；不可用时禁用并说明原因，
+/// 会话页眉及侧栏打开菜单共用的应用条目；不可用时禁用并说明原因，
 /// 悬停与读屏可获取完整打开目标。布局完全交给 Material
 /// [MenuItemButton]，菜单行只显示应用图标与操作名称。
-Widget _workspaceMenuEntry({
+MenuItemButton workspaceOpenMenuItem({
   required Key key,
   required Widget icon,
   required String label,

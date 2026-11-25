@@ -30,16 +30,13 @@ class PlanTransitionToolItem extends StructuredTimelineToolAdapter {
       const TimelineToolIcon.data(Icons.checklist_rtl);
 
   @override
-  String? verb(AppLocalizations l10n, TimelineToolPresentation item) {
-    final running = timelineToolRunningStatuses.contains(item.statusString);
-    final failed = item.statusString == 'failed';
-    if (!running && !failed && item.statusString != 'succeeded') return null;
-    return running
-        ? l10n.timelineToolPlanRunning
-        : failed
-        ? l10n.timelineToolPlanFailed
-        : l10n.timelineToolPlanSucceeded;
-  }
+  String? verb(AppLocalizations l10n, TimelineToolPresentation item) =>
+      toolLifecycleVerb(
+        item.statusString,
+        running: l10n.timelineToolPlanRunning,
+        failed: l10n.timelineToolPlanFailed,
+        succeeded: l10n.timelineToolPlanSucceeded,
+      );
 
   @override
   List<ToolDetailValue> input(AppLocalizations l10n, String text) {

@@ -632,21 +632,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Saving failed; new work is paused while in-flight work winds down.';
 
   @override
-  String persistenceResumeReadyOtherSession(String session) {
-    return 'Another session “$session” is saved and waiting to resume.';
-  }
-
-  @override
-  String persistenceExecutionPausedOtherSession(String session) {
-    return 'Another session “$session” failed to save; its execution is paused.';
-  }
-
-  @override
-  String persistenceNewWorkPausedOtherSession(String session) {
-    return 'Another session “$session” failed to save; its new work is paused while in-flight work winds down.';
-  }
-
-  @override
   String get persistenceRetry => 'Retry saving';
 
   @override
@@ -6896,9 +6881,6 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get acpUpdateSessionInfo => 'Session metadata updated';
-
-  @override
   String get acpUpdateGeneric => 'Session status updated';
 
   @override
@@ -8301,9 +8283,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountsGeminiBadgeBundledCatalog => 'Built-in catalog';
-
-  @override
-  String get accountsGeminiBadgeImplicitCache => 'Implicit caching';
 
   @override
   String get accountsGeminiEndpointPresetsLabel => 'Endpoints';

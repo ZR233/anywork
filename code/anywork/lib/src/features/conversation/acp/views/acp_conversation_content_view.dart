@@ -735,11 +735,6 @@ class _SessionUpdateBlock extends StatelessWidget {
         ),
       AcpCommandsUpdatePresentation(:final commands) =>
         _AvailableCommandsActivityBlock(commands: commands),
-      AcpSessionInfoUpdatePresentation() => TimelineActivityRow(
-        icon: Icons.info_outline_rounded,
-        label: l10n.acpUpdateSessionInfo,
-        expandable: false,
-      ),
       AcpSupersededUpdatePresentation() => const SizedBox.shrink(),
       AcpGenericUpdatePresentation() => TimelineActivityRow(
         icon: Icons.sync_rounded,

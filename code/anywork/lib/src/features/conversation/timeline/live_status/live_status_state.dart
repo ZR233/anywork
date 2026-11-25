@@ -12,7 +12,16 @@ enum LiveStorageSeverity {
   pressure,
   paused,
   resumeRequired,
-  resumeReady,
+  resumeReady;
+
+  static LiveStorageSeverity fromStorage(ThreadStorageStateView? storage) {
+    if (storage == null) return fault;
+    if (storage.resumeRequired && storage.canResume) return resumeReady;
+    if (storage.hasFault) return fault;
+    if (storage.pressurePaused) return pressure;
+    if (storage.resumeRequired) return resumeRequired;
+    return paused;
+  }
 }
 
 /// 实时流同步连接状态。

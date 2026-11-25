@@ -11,6 +11,7 @@ import 'package:anywork/src/features/status/status_bar_item.dart';
 import 'package:anywork/src/features/status/started_items_panel.dart';
 import 'package:anywork/src/features/status/started_items_state.dart';
 import 'package:anywork/src/features/status/thread_status_bar.dart';
+import 'package:anywork/src/features/status/workflow_graph_panel.dart';
 
 final _statusFixture = StatusBarView(
   row: SessionDirectoryRow(
@@ -130,7 +131,7 @@ Widget _threadStatusBarPreview({VoidCallback? onOpenPlan, bool dark = false}) =>
                   onReconnectLsp: (_) {},
                 ),
               ),
-              workflowReadout: WorkflowStatusReadout(
+              workflowReadout: WorkflowStatusPill(
                 stateTitle: '规划',
                 modeName: '任务流程',
                 deleted: true,

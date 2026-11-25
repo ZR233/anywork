@@ -80,7 +80,7 @@ final class AcpPlanCardViewModelProvider
 }
 
 String _$acpPlanCardViewModelHash() =>
-    r'75d267b70dd03512f220a985cbcf1554f8fbf03a';
+    r'f88fcb3519281af788eb9dc58321aeaa9fe14919';
 
 /// Selects ONLY `state.value?.plan` so streaming message chunks never notify
 /// plan listeners while the canonical `AcpPlanView` reference is unchanged.

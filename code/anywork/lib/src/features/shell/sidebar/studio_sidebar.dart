@@ -9,6 +9,8 @@ import '../../../l10n/studio_l10n.dart';
 import '../../../shared/host_app_artwork.dart';
 import '../../../shared/studio_badges.dart';
 import '../../../shared/studio_driver_keys.dart';
+import '../../../shared/studio_menu_button.dart';
+import '../recovery_issue_indicator.dart';
 import 'sidebar_models.dart';
 
 part 'sidebar_header.dart';
@@ -26,7 +28,6 @@ class StudioSidebar extends StatefulWidget {
   const StudioSidebar({
     super.key,
     required this.data,
-    required this.onQueryChanged,
     required this.projectStructureBuilder,
     required this.threadBuilder,
     required this.onNewSession,
@@ -42,7 +43,6 @@ class StudioSidebar extends StatefulWidget {
   });
 
   final SidebarData data;
-  final ValueChanged<SidebarQuerySelection> onQueryChanged;
   final Widget Function(
     BuildContext context,
     String projectId,
@@ -81,7 +81,6 @@ class StudioSidebar extends StatefulWidget {
     required bool archived,
     required VoidCallback onToggleArchived,
     required VoidCallback? onSettings,
-    required bool touchMode,
   })?
   footerBuilder;
 
@@ -109,9 +108,6 @@ class _StudioSidebarState extends State<StudioSidebar> {
   void initState() {
     super.initState();
     if (widget.data.selectedProjectId case final id?) _expanded.add(id);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _publishQuery();
-    });
   }
 
   @override
@@ -124,22 +120,10 @@ class _StudioSidebarState extends State<StudioSidebar> {
       _expanded.add(id);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || widget.data.selectedProjectId != id) return;
-        _publishQuery();
         final target = _projectKeys[id]?.currentContext;
         if (target != null) Scrollable.ensureVisible(target, alignment: .1);
       });
     }
-  }
-
-  void _publishQuery() {
-    widget.onQueryChanged(
-      SidebarQuerySelection(
-        search: _search.text,
-        filter: _filter,
-        archived: _archived,
-        expandedProjectIds: _expanded,
-      ),
-    );
   }
 
   void _change(VoidCallback update) {
@@ -148,16 +132,13 @@ class _StudioSidebarState extends State<StudioSidebar> {
       update();
       _querySearch = _search.text;
     });
-    _publishQuery();
   }
 
   void _changeSearch() {
-    setState(() {});
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 200), () {
       if (!mounted) return;
       setState(() => _querySearch = _search.text);
-      _publishQuery();
     });
   }
 
@@ -176,21 +157,13 @@ class _StudioSidebarState extends State<StudioSidebar> {
   @override
   Widget build(BuildContext context) {
     final data = widget.data;
-    final projects =
-        [
-          for (final id in data.projectIds)
-            if (id != data.standaloneProjectId) id,
-        ]..sort((a, b) {
-          final pin =
-              (data.pinnedProjectIds.contains(b) ? 1 : 0) -
-              (data.pinnedProjectIds.contains(a) ? 1 : 0);
-          return pin != 0
-              ? pin
-              : data.projectIds
-                    .indexOf(a)
-                    .compareTo(data.projectIds.indexOf(b));
-        });
     final standalone = data.standaloneProjectId;
+    final pinned = <String>[];
+    final ordinary = <String>[];
+    for (final id in data.projectIds) {
+      if (id == standalone) continue;
+      (data.pinnedProjectIds.contains(id) ? pinned : ordinary).add(id);
+    }
     return Listener(
       onPointerDown: (event) {
         final touch =
@@ -267,12 +240,12 @@ class _StudioSidebarState extends State<StudioSidebar> {
                                 onPressed: widget.onClose,
                               ),
                       ),
-                      if (projects.isEmpty)
+                      if (pinned.isEmpty && ordinary.isEmpty)
                         Padding(
                           padding: const EdgeInsets.all(12),
                           child: Text(context.l10n.sidebarNoResults),
                         ),
-                      for (final projectId in projects)
+                      for (final projectId in [...pinned, ...ordinary])
                         _projectStructure(projectId, (project, structure) {
                           if (!_showProject(project, structure)) {
                             return const SizedBox.shrink();
@@ -367,11 +340,9 @@ class _StudioSidebarState extends State<StudioSidebar> {
                     onToggleArchived: () =>
                         _change(() => _archived = !_archived),
                     onSettings: widget.onSettings,
-                    touchMode: _touchInput,
                   ) ??
                   SidebarFooter(
                     archived: _archived,
-                    touchMode: _touchInput,
                     onToggleArchived: () =>
                         _change(() => _archived = !_archived),
                     onSettings: widget.onSettings,

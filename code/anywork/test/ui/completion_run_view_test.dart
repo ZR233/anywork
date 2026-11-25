@@ -48,13 +48,13 @@ void main() {
           displayBatch([displayWork('first', 1)]),
         );
         await tester.pumpWidget(display());
-        expect(find.text(_runTitle(tester, 1)), findsOneWidget);
+        expect(find.text(_runTitle(tester)), findsOneWidget);
         expect(find.byType(TimelineActivityIndicator), findsNothing);
         expect(find.byType(TimelineRestingCat), findsNothing);
         expect(find.byType(TimelineWritingIndicator), findsNothing);
         expect(built, 0);
         expect(find.byType(_Body), findsNothing);
-        await tester.tap(find.text(_runTitle(tester, 1)));
+        await tester.tap(find.text(_runTitle(tester)));
         await tester.pumpAndSettle();
         expect(find.text('成员正文'), findsOneWidget);
         final first = tester.element(find.byType(_Body));
@@ -63,20 +63,18 @@ void main() {
                 as TimelineDisplayUnit;
         final token = unit.expansion.bodyGeneration;
         await adapter.applyFixtureUpdate(
-          displayBatch(
-            [displayWork('second', 2)],
-            placement: TimelineApplyPlacement.append,
-            from: 1,
-          ),
+          displayBatch([
+            displayWork('second', 2),
+          ], placement: TimelineApplyPlacement.append),
         );
         await tester.pumpWidget(display());
         expect(controller.messages, hasLength(2));
-        expect(find.text(_runTitle(tester, 1)), findsOneWidget);
+        expect(find.text(_runTitle(tester)), findsOneWidget);
         expect(find.byType(TimelineActivityIndicator), findsNothing);
         expect(tester.element(find.byType(_Body)), same(first));
         expect(unit.expansion.bodyGeneration, same(token));
         expect(retired, 0);
-        await tester.tap(find.text(_runTitle(tester, 1)));
+        await tester.tap(find.text(_runTitle(tester)));
         // Eligibility is revoked in the tap callback, before the closing animation.
         expect(unit.expansion.retirement.value, isTrue);
         expect(unit.expansion.bodyActive, isFalse);
@@ -117,7 +115,7 @@ void main() {
             ),
           ),
         );
-        expect(find.text(_runTitle(tester, 100000)), findsOneWidget);
+        expect(find.text(_runTitle(tester)), findsOneWidget);
         expect(reads, 0);
         expect(find.textContaining('失败'), findsNothing);
         expect(find.textContaining('思考'), findsNothing);
@@ -129,7 +127,7 @@ void main() {
   }
 }
 
-String _runTitle(WidgetTester tester, int count) => activityDurationLabel(
+String _runTitle(WidgetTester tester) => activityDurationLabel(
   tester.element(find.byType(Scaffold)),
   1,
   kind: ActivityDurationKind.worked,

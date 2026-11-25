@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_projection.dart';
 
 import 'account_preview_fixtures.dart';
 import 'account_list_preview_data.dart';
@@ -267,6 +268,16 @@ class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
         ),
         NativeAccountField.endpoint => _value.copyWith(
           endpoint: _value.endpoint.copyWith(raw: raw),
+          geminiConnection: projectGeminiConnection(
+            protocol: _value.geminiConnection == null ? '' : 'gemini',
+            templateId: _value.templateKey.id,
+            endpoint: raw,
+            canSwitchMode: _value.geminiConnection?.canSwitchMode ?? false,
+            supportsModelDiscovery:
+                _value.geminiConnection?.supportsModelDiscovery,
+            hasBundledCatalog:
+                _value.geminiConnection?.hasBundledCatalog ?? false,
+          ),
         ),
         NativeAccountField.credential => _value.copyWith(
           credential: _value.credential.copyWith(raw: raw),
@@ -292,6 +303,10 @@ class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
               ),
               isOpenAiTemplate: key.id == 'openai',
               protocolLabel: native.protocolLabel,
+              geminiConnection: AccountTemplatePreviewFixtures.geminiConnection(
+                key.id,
+                creating: _value.canChangeTemplate,
+              ),
               billing: AccountBillingPresentation(
                 effective: native.defaultBilling,
                 allowedOverrides: AccountPreviewFixtures.billingOverrides,

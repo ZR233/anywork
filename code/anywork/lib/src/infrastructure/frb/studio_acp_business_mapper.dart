@@ -7,8 +7,7 @@ import '../../rust/api/studio/types/acp.dart' as auth;
 import '../../rust/api/studio/types/acp_business.dart' as b;
 import '../../rust/api/studio/types/acp_business/content.dart' as c;
 import '../../rust/api/studio/types/acp_business/notification.dart' as n;
-import '../../rust/api/studio/types/mode_editor.dart' as me;
-import '../../rust/api/studio/types/thread_stream.dart' as ts;
+import 'studio_workflow_converters.dart';
 
 // Only structural translation. No protocol parser, state, replay or Native DTOs.
 AcpJsonObject? acpMetaFromFrb(Map<String, b.BridgeAcpJsonValue>? value) =>
@@ -530,88 +529,6 @@ AcpSessionInfoSnapshotView _infoSnapshot(b.BridgeAcpSessionInfoSnapshot v) =>
       completedTurns: v.completedTurns?.toInt(),
       updatedAt: v.updatedAt.toInt(),
     );
-
-models.WorkflowRunView workflowRunFromFrb(ts.BridgeWorkflowRun run) {
-  return models.WorkflowRunView(
-    lineageId: run.lineageId,
-    runId: run.runId,
-    modeId: run.modeId,
-    graphRevision: run.graphRevision.toInt(),
-    graphHash: run.graphHash,
-    currentStateId: run.currentStateId,
-    terminal: run.lifecycle == ts.BridgeWorkflowRunLifecycle.terminal,
-    startedAt: DateTime.fromMillisecondsSinceEpoch(
-      run.startedAt.toInt() * 1000,
-    ),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(
-      run.updatedAt.toInt() * 1000,
-    ),
-    visitedStateIds: List<String>.unmodifiable(run.visitedStateIds),
-    lastTransitionForced: run.lastTransitionForced,
-    currentStateTitle: run.currentStateTitle,
-    modeDisplayName: run.modeDisplayName,
-    modeDeleted: run.modeDeleted,
-  );
-}
-
-models.WorkflowRuntimeGraphSnapshotView workflowGraphFromFrb(
-  ts.BridgeWorkflowRuntimeGraphSnapshot graph,
-) {
-  return models.WorkflowRuntimeGraphSnapshotView(
-    modeId: graph.modeId,
-    modeDisplayName: graph.modeDisplayName,
-    modeDeleted: graph.modeDeleted,
-    initialStateId: graph.initialStateId,
-    states: [
-      for (final s in graph.states)
-        models.WorkflowRuntimeGraphStateView(
-          id: s.id,
-          title: s.title,
-          kind: switch (s.kind) {
-            me.BridgeWorkflowStateKind.atomic =>
-              models.WorkflowStateKind.atomic,
-            me.BridgeWorkflowStateKind.finalState =>
-              models.WorkflowStateKind.finalState,
-          },
-          instructions: s.instructions,
-        ),
-    ],
-    edges: [
-      for (final e in graph.edges)
-        models.WorkflowRuntimeGraphEdgeView(
-          id: e.id,
-          sourceStateId: e.sourceStateId,
-          targetStateId: e.targetStateId,
-          guard: e.guard,
-        ),
-    ],
-  );
-}
-
-models.PlanRuntimeView planRuntimeFromFrb(ts.BridgePlanRuntimeSnapshot value) {
-  final document = value.document;
-  return models.PlanRuntimeView(
-    revision: value.revision.toInt(),
-    state: switch (value.state) {
-      ts.BridgePlanPhase.drafting => models.PlanRuntimePhase.drafting,
-      ts.BridgePlanPhase.awaitingConfirmation =>
-        models.PlanRuntimePhase.awaitingConfirmation,
-      ts.BridgePlanPhase.revisionRequested =>
-        models.PlanRuntimePhase.revisionRequested,
-      ts.BridgePlanPhase.approved => models.PlanRuntimePhase.approved,
-    },
-    document: document == null
-        ? null
-        : models.PlanDocumentView(
-            version: document.version.toInt(),
-            markdown: document.markdown,
-            contentHash: document.contentHash,
-          ),
-    updatedAt: DateTime.fromMillisecondsSinceEpoch(
-      value.updatedAt.toInt() * 1000,
-    ),
-  );
-}
 
 AcpWorkflowStateView acpWorkflowStateFromFrb(
   b.BridgeAcpWorkflowStateSnapshot v,

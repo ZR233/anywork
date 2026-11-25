@@ -5,6 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/composer_configuration_bar.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_menu_label.dart';
+import '../../../../shared/studio_menu_button.dart';
 import '../state/acp_view_state.dart';
 
 String _currentLabel(AcpConfigControlPresentation control) => switch (control) {
@@ -112,14 +113,19 @@ class AcpConfigurationBar extends StatelessWidget {
                       ).measureWidth(context)
                     : null,
                 inline: inlineIds.contains(control.id)
-                    ? _SelectConfigAnchor(
+                    ? StudioMenuButton(
                         key: _controlKey(control),
-                        control: control,
-                        interactive: interactive,
+                        enabled: interactive,
                         tooltip: interactive
                             ? _controlTooltip(context, control)
                             : lockedMessage,
                         menuChildren: _choices(control, interactive),
+                        buttonStyle: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: _inlineLabel(control, interactive),
                       )
                     : null,
                 menuItem: Tooltip(
@@ -213,37 +219,3 @@ StudioMenuLabel _inlineLabel(
   enabled: interactive,
   maxWidth: 160,
 );
-
-class _SelectConfigAnchor extends StatelessWidget {
-  const _SelectConfigAnchor({
-    super.key,
-    required this.control,
-    required this.interactive,
-    required this.tooltip,
-    required this.menuChildren,
-  });
-
-  final AcpConfigControlPresentation control;
-  final bool interactive;
-  final String tooltip;
-  final List<Widget> menuChildren;
-
-  @override
-  Widget build(BuildContext context) => MenuAnchor(
-    menuChildren: menuChildren,
-    builder: (context, controller, _) => Tooltip(
-      message: tooltip,
-      child: TextButton(
-        onPressed: interactive && menuChildren.isNotEmpty
-            ? () => controller.isOpen ? controller.close() : controller.open()
-            : null,
-        style: TextButton.styleFrom(
-          padding: EdgeInsets.zero,
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        child: _inlineLabel(control, interactive),
-      ),
-    ),
-  );
-}
