@@ -1,7 +1,7 @@
 //! Explicit display facts, bound to the original canonical input/Turn owner.
 
-use super::owner::ReplyRun;
 use super::projection::ReplyProjection;
+use super::session::ReplySession;
 use crate::bots::InboundWorkOutcome;
 use crate::channel_output::{ChannelDeliveryResult, ChannelTarget, FileDelivery};
 use crate::studio::StudioRuntime;
@@ -23,7 +23,7 @@ fn operation(
 
 pub(super) async fn deliver_file_displays(
     runtime: &StudioRuntime,
-    run: &mut ReplyRun,
+    run: &mut ReplySession,
     turn_id: &str,
     projection: &ReplyProjection,
     cancel: &CancellationToken,
@@ -175,3 +175,6 @@ fn record_result(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

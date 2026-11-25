@@ -4,22 +4,27 @@
 //! HTTP、WebSocket、Protobuf 复用成熟组件，产品只维护所需飞书协议。
 
 mod archive;
-mod commands;
+mod binding;
 mod config;
 mod connect;
 mod credentials;
 mod files;
 mod host;
 mod inbound;
+mod inbound_dispatch;
 mod media;
 mod occupancy;
 mod operation;
 mod owner;
 mod protocol;
+mod query;
 mod registration;
+mod registry;
 mod reply;
 mod send;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod workspace;
 
 pub(crate) use archive::BotArchiveGuard;

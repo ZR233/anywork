@@ -234,3 +234,6 @@ mod tests {
             .expect("distinct identities are accepted");
     }
 }
+
+#[cfg(test)]
+mod terminals;

@@ -1,7 +1,7 @@
-use super::protocol::TEXT_SEGMENT_LIMIT_BYTES;
-use super::protocol::error::{FeishuError, FeishuErrorKind};
-use super::protocol::im::content_hash;
-use super::protocol::im::markdown_request_bytes;
+use crate::bots::protocol::TEXT_SEGMENT_LIMIT_BYTES;
+use crate::bots::protocol::error::{FeishuError, FeishuErrorKind};
+use crate::bots::protocol::im::content_hash;
+use crate::bots::protocol::im::markdown_request_bytes;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::time::Instant;

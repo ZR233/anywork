@@ -1,8 +1,8 @@
-use super::owner::ReplyTarget;
-use super::owner::{
-    ClaimGuard, ReplyRun, Step, attention, hint_key, interaction_hint, recoverable,
-};
+use super::lease::ClaimGuard;
+use super::owner::{attention, hint_key, interaction_hint, recoverable};
 use super::projection::ReplyProjection;
+use super::session::ReplyTarget;
+use super::session::{ReplySession, Step};
 use crate::InteractionStatus;
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
@@ -26,6 +26,26 @@ fn interaction_local<'a>(
     Ok(local)
 }
 
+async fn current_interaction_locals(
+    runtime: &StudioRuntime,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<BTreeSet<String>, InboundWorkOutcome> {
+    let snapshot = runtime
+        .thread_snapshot(thread_id)
+        .await
+        .map_err(|error| recoverable(format!("canonical thread snapshot failed: {error:#}")))?;
+    let mut locals = BTreeSet::new();
+    for interaction in &snapshot.interactions {
+        if interaction.scope.turn_id != turn_id {
+            continue;
+        }
+        let local = interaction_local(&interaction.interaction_id, thread_id)?;
+        locals.insert(local.to_owned());
+    }
+    Ok(locals)
+}
+
 impl BotRuntime {
     /// Turn 以交互请求收尾：边界终局只由 UserInput 类交互决定。
     ///
@@ -36,7 +56,7 @@ impl BotRuntime {
     pub(super) async fn advance_interactions(
         &self,
         runtime: &StudioRuntime,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         turn_id: &str,
         projection: &ReplyProjection,
         cancel: &CancellationToken,
@@ -139,22 +159,11 @@ impl BotRuntime {
     async fn turn_interaction_locals(
         &self,
         runtime: &StudioRuntime,
-        run: &ReplyRun,
+        run: &ReplySession,
         turn_id: &str,
         projection: &ReplyProjection,
     ) -> Result<BTreeSet<String>, InboundWorkOutcome> {
-        let snapshot = runtime
-            .thread_snapshot(&run.thread_id)
-            .await
-            .map_err(|error| recoverable(format!("canonical thread snapshot failed: {error:#}")))?;
-        let mut locals = BTreeSet::new();
-        for interaction in &snapshot.interactions {
-            if interaction.scope.turn_id != turn_id {
-                continue;
-            }
-            let local = interaction_local(&interaction.interaction_id, &run.thread_id)?;
-            locals.insert(local.to_owned());
-        }
+        let mut locals = current_interaction_locals(runtime, &run.thread_id, turn_id).await?;
         if !locals.is_empty() {
             return Ok(locals);
         }
@@ -171,29 +180,16 @@ impl BotRuntime {
     pub(super) async fn hint_pending_interactions(
         &self,
         runtime: &StudioRuntime,
-        run: &mut ReplyRun,
+        run: &mut ReplySession,
         turn_id: &str,
         cancel: &CancellationToken,
     ) -> Step {
         // Running Turns use only the current canonical interaction snapshot. Cold
         // timeline discovery is for terminal recovery, not an O(history) token path.
-        let snapshot = match runtime.thread_snapshot(&run.thread_id).await {
-            Ok(snapshot) => snapshot,
-            Err(_) => {
-                return Step::Done(recoverable("canonical interaction snapshot is not ready"));
-            }
+        let locals = match current_interaction_locals(runtime, &run.thread_id, turn_id).await {
+            Ok(locals) => locals,
+            Err(outcome) => return Step::Done(outcome),
         };
-        let mut locals = BTreeSet::new();
-        for interaction in &snapshot.interactions {
-            if interaction.scope.turn_id != turn_id {
-                continue;
-            }
-            let local = match interaction_local(&interaction.interaction_id, &run.thread_id) {
-                Ok(local) => local,
-                Err(outcome) => return Step::Done(outcome),
-            };
-            locals.insert(local.to_owned());
-        }
         let mut waiting = false;
         for local in &locals {
             let pending = match runtime.bot_interaction_fact(&run.thread_id, local) {
@@ -239,7 +235,7 @@ impl BotRuntime {
         if waiting { Step::Wait } else { Step::Continue }
     }
 
-    async fn send_interaction_hint(&self, run: &mut ReplyRun, local: &str) -> Step {
+    async fn send_interaction_hint(&self, run: &mut ReplySession, local: &str) -> Step {
         let key = hint_key(local);
         if run.hinted.contains(&key) {
             return Step::Wait;
@@ -274,7 +270,7 @@ impl BotRuntime {
         }
     }
 
-    async fn switch_watch_input(&self, run: &mut ReplyRun, continuation: String) -> Step {
+    async fn switch_watch_input(&self, run: &mut ReplySession, continuation: String) -> Step {
         let managed = match self.managed(&run.bot_id).await {
             Ok(managed) => managed,
             Err(_) => return Step::Done(InboundWorkOutcome::LostClaim),

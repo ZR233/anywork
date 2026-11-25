@@ -458,57 +458,146 @@ fn decode(row: QueryResult, binding: &CardBinding) -> Result<CardStream, FeishuE
         || text("message_id")? != binding.message_id
         || text("thread_id")? != binding.thread_id
         || text("original_input")? != binding.original_input
-        || text("watch_input")? != state.watch_input
+    {
+        return Err(invalid_card(
+            "stored owner identity conflicts with the card binding",
+        ));
+    }
+    if text("watch_input")? != state.watch_input
         || text("turn_id")? != state.turn_id.as_deref().unwrap_or_default()
         || row.try_get::<i64>("", "version").map_err(|_| corrupt())? != state.version
-        || state.version <= 0
-        || state.sequence < 0
-        || state.confirmed_sequence > state.sequence
-        || state.confirmed_sequence < 0
-        || state.watch_input.is_empty()
-        || state.turn_id.as_ref().is_some_and(String::is_empty)
-        || state.turn_id.is_none() && !matches!(state.lifecycle, CardLifecycle::Paused | CardLifecycle::InteractionEnded | CardLifecycle::NeedsAttention)
-        || state.platform_message_id.is_some() && state.card_id.is_none()
-        || state
-            .card_id
-            .as_ref()
-            .is_some_and(|id| id.trim().is_empty() || id.len() > 256)
-        || state.card_id.is_some() && state.confirmed_text.trim().is_empty()
+    {
+        return Err(invalid_card(
+            "indexed card progress conflicts with its persisted state",
+        ));
+    }
+    validate_progress(&state)?;
+    validate_lifecycle(&state)?;
+    validate_operation(&state)?;
+    Ok(state)
+}
+
+fn validate_progress(state: &CardStream) -> Result<(), FeishuError> {
+    if state.version <= 0 || !(0..=state.sequence).contains(&state.confirmed_sequence) {
+        return Err(invalid_card(
+            "card revision or confirmed sequence is outside its range",
+        ));
+    }
+    if state.watch_input.is_empty() || state.turn_id.as_ref().is_some_and(String::is_empty) {
+        return Err(invalid_card("card input or Turn identity is empty"));
+    }
+    if state
+        .card_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty() || id.len() > 256)
+    {
+        return Err(invalid_card("platform card ID has an invalid length"));
+    }
+    if state.card_id.is_some() && state.confirmed_text.trim().is_empty()
         || !state.confirmed_text.is_empty()
             && state.confirmed_content_hash != hash(state.confirmed_text.as_bytes())
         || state
             .final_content_hash
             .as_ref()
             .is_some_and(|hash| *hash != state.confirmed_content_hash)
-        || matches!(state.lifecycle, CardLifecycle::Created) && state.card_id.is_none()
-        || matches!(
-            state.lifecycle,
-            CardLifecycle::Streaming | CardLifecycle::Paused
-        ) && state.platform_message_id.is_none()
-        || state.lifecycle.terminal() && state.card_id.is_none()
-        || state.recovery.is_some() && !state.recovery_used
-        || state.lifecycle == CardLifecycle::Completed && (state.final_content_hash.is_none() || state.platform_message_id.is_none())
-        || state.lifecycle == CardLifecycle::NoFinalReply && state.final_content_hash.is_some()
-        || state.lifecycle.terminal() && state.last_operation.as_ref().is_none_or(|operation| {
-            operation.status != CardOperationStatus::Confirmed || !matches!(operation.action, CardAction::Settings { streaming: false, lifecycle, .. } if lifecycle == state.lifecycle)
-        })
-        || state.last_operation.as_ref().is_none_or(|operation| {
-            operation.sequence < 0
-                || operation.sequence > state.sequence
-                || operation.uuid.len() != 32
-                || operation.content_hash
-                    != hash(
-                        &serde_json::to_vec(&operation.action)
-                            .expect("card operation strings serialize"),
-                    )
-                || operation.action.sequenced() && (operation.sequence == 0 || state.card_id.is_none())
-                || matches!(operation.action, CardAction::Content { .. }) && state.platform_message_id.is_none()
-                || matches!(operation.action, CardAction::Send) && state.card_id.is_none()
-        })
     {
-        return Err(corrupt());
+        return Err(invalid_card(
+            "confirmed card content conflicts with its fingerprints",
+        ));
     }
-    Ok(state)
+    if state.recovery.is_some() && !state.recovery_used {
+        return Err(invalid_card(
+            "card recovery lacks its consumed recovery budget",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lifecycle(state: &CardStream) -> Result<(), FeishuError> {
+    if state.turn_id.is_none()
+        && !matches!(
+            state.lifecycle,
+            CardLifecycle::Paused | CardLifecycle::InteractionEnded | CardLifecycle::NeedsAttention
+        )
+    {
+        return Err(invalid_card("card lifecycle requires an associated Turn"));
+    }
+    if (state.platform_message_id.is_some()
+        || matches!(state.lifecycle, CardLifecycle::Created)
+        || state.lifecycle.terminal())
+        && state.card_id.is_none()
+    {
+        return Err(invalid_card(
+            "card lifecycle or platform message requires a card ID",
+        ));
+    }
+    if matches!(
+        state.lifecycle,
+        CardLifecycle::Streaming | CardLifecycle::Paused
+    ) && state.platform_message_id.is_none()
+    {
+        return Err(invalid_card(
+            "streaming or paused card lacks a platform message ID",
+        ));
+    }
+    if state.lifecycle == CardLifecycle::Completed
+        && (state.final_content_hash.is_none() || state.platform_message_id.is_none())
+    {
+        return Err(invalid_card(
+            "completed card lacks confirmed final text or message identity",
+        ));
+    }
+    if state.lifecycle == CardLifecycle::NoFinalReply && state.final_content_hash.is_some() {
+        return Err(invalid_card(
+            "preview-only card claims a confirmed final reply",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_operation(state: &CardStream) -> Result<(), FeishuError> {
+    let operation = state
+        .last_operation
+        .as_ref()
+        .ok_or_else(|| invalid_card("card lacks its durable operation"))?;
+    if !(0..=state.sequence).contains(&operation.sequence)
+        || operation.uuid.len() != 32
+        || operation.content_hash
+            != hash(
+                &serde_json::to_vec(&operation.action).expect("card operation strings serialize"),
+            )
+    {
+        return Err(invalid_card(
+            "card operation sequence, UUID or fingerprint is invalid",
+        ));
+    }
+    if (operation.action.sequenced() && (operation.sequence == 0 || state.card_id.is_none()))
+        || (matches!(operation.action, CardAction::Content { .. })
+            && state.platform_message_id.is_none())
+        || (matches!(operation.action, CardAction::Send) && state.card_id.is_none())
+    {
+        return Err(invalid_card(
+            "card operation lacks the platform identity or sequence it requires",
+        ));
+    }
+    if state.lifecycle.terminal()
+        && (operation.status != CardOperationStatus::Confirmed
+            || !matches!(operation.action, CardAction::Settings { streaming: false, lifecycle, .. } if lifecycle == state.lifecycle))
+    {
+        return Err(invalid_card(
+            "terminal card lacks a confirmed streaming close for its lifecycle",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_card(reason: &str) -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Unavailable,
+        format!("card stream state is unreadable: {reason}; local recovery required"),
+        false,
+        None,
+    )
 }
 
 fn corrupt() -> FeishuError {
@@ -519,3 +608,6 @@ fn corrupt() -> FeishuError {
         None,
     )
 }
+
+#[cfg(test)]
+mod tests;

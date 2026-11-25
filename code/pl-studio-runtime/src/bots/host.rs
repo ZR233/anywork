@@ -48,20 +48,6 @@ impl std::fmt::Debug for BotToolError {
 // through the explicit trusted accessor above.
 impl std::error::Error for BotToolError {}
 
-#[cfg(test)]
-tokio::task_local! {
-    static SERVICE_FAILURE: FeishuError;
-}
-
-/// Injects a service failure after project authorization and before external access.
-#[cfg(test)]
-pub(in crate::bots) async fn with_service_failure<T>(
-    error: FeishuError,
-    operation: impl Future<Output = T>,
-) -> T {
-    SERVICE_FAILURE.scope(error, operation).await
-}
-
 #[derive(Clone)]
 pub struct StudioBotSessionHost {
     pub runtime: BotRuntime,
@@ -189,10 +175,6 @@ impl StudioBotSessionHost {
             .into_iter()
             .any(|bot| bot.id == bot_id);
         if allowed {
-            #[cfg(test)]
-            if let Ok(error) = SERVICE_FAILURE.try_with(Clone::clone) {
-                return Err(error);
-            }
             Ok(())
         } else {
             Err(FeishuError::new(
@@ -204,3 +186,6 @@ impl StudioBotSessionHost {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

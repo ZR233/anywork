@@ -3,7 +3,8 @@ use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::{BotRuntime, ManagedBot};
 use crate::bots::protocol::cardkit::{CardSettings, FeishuCardKit, validate_card};
 use crate::bots::protocol::im::FeishuIm;
-use crate::bots::reply::owner::{ReplyRun, attention, classify_send_error};
+use crate::bots::reply::owner::{attention, classify_send_error};
+use crate::bots::reply::session::ReplySession;
 use crate::bots::storage::card::{
     CardAction, CardLifecycle, CardOperationStatus, CardStream, hash,
 };
@@ -20,7 +21,7 @@ impl BotRuntime {
     pub(super) async fn perform_card_action(
         &self,
         managed: &ManagedBot,
-        run: &ReplyRun,
+        run: &ReplySession,
         state: &mut CardStream,
         action: CardAction,
         cancel: &CancellationToken,
