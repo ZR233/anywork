@@ -28,6 +28,7 @@ use super::{
         V24HistorySource,
     },
     schema,
+    writer_lease::WriterLease,
 };
 use crate::studio::storage::history::schema::{
     initialize as prepare_schema24,
@@ -181,10 +182,6 @@ struct PendingReport<'a> {
     backup_name: &'static str,
 }
 
-struct WriterLease {
-    _file: File,
-}
-
 /// The caller holds its maintenance admission gate while deciding whether
 /// existing writers must retire. Reading an already current store never does.
 pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Result<bool> {
@@ -279,7 +276,7 @@ async fn upgrade_history_with_files(
         }
     }
     read.close().await?;
-    let _lease = acquire_writer_lease(history_path).await?;
+    let _lease = WriterLease::acquire(history_path)?;
     let read = schema::connect(history_path, true, false).await?;
     let format = classify_source(&read).await?;
     if format != SourceFormat::Schema27 && pending_maintenance.path.try_exists()? {
@@ -702,28 +699,6 @@ async fn history_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, 
         counts.insert(table.into(), db_u64(row.try_get::<i64>("", "c")?, table)?);
     }
     Ok(counts)
-}
-
-async fn acquire_writer_lease(history_path: &Path) -> Result<WriterLease> {
-    // HistoryStore and this one-shot upgrade must contend on the same physical path. The caller
-    // still owns the Thread maintenance/ownership gate and must stop the old writer before this
-    // entry is invoked; this lease only prevents a second process from entering either path.
-    let lock_path = writer_lock_path(history_path);
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    fs4::FileExt::try_lock(&file)
-        .map_err(|error| HistoryError::Conflict(format!("history writer lease: {error}")))?;
-    Ok(WriterLease { _file: file })
-}
-
-fn writer_lock_path(history_path: &Path) -> PathBuf {
-    let mut lock_path = history_path.as_os_str().to_os_string();
-    lock_path.push(".writer.lock");
-    PathBuf::from(lock_path)
 }
 
 async fn classify_source(db: &DatabaseConnection) -> Result<SourceFormat> {

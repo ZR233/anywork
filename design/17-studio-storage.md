@@ -4,13 +4,13 @@
 
 运行时只使用无版本号的 `data/` 当前数据根；`v2/` 与 `studio/v2/` 仅作为显式、可接续的迁移输入。只支持 v2 会话与产品数据迁入当前布局，v2 之前的会话、产品数据库、调用统计与迁移状态**不导入、不激活、不自动归档，也不清空删除**。配置与凭据仍遵循 [20](./20-config.md) 的安全升级边界；用户技能唯一来源见 [10](./10-skills.md#102-目录层级与同名覆盖优先级)，产品数据根不再拥有用户技能目录。
 
-Native 会话目录使用独立的 `current.json` 与 `history.sqlite`：前者保存完整可恢复对象，后者保存 schema 26 原子事件历史；附件和工具资源继续位于会话 `resources/`。current 的捕获、写入、读取和恢复不以历史数据库为依赖；覆盖写入的失败边界、代次隔离、附件校验与暂停恢复合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。每 Thread 只允许一个 current writer 和一个 history writer，二者分别保存、关闭及报告错误，不以一方成功推进另一方。
+Native 会话目录使用独立的 `current.json` 与 `history.sqlite`：前者保存完整可恢复对象，后者保存 schema 27 原子事件历史；附件和工具资源继续位于会话 `resources/`。current 的捕获、写入、读取和恢复不以历史数据库为依赖；覆盖写入的失败边界、代次隔离、附件校验与暂停恢复合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。每 Thread 只允许一个 current writer 和一个 history writer，二者分别保存、关闭及报告错误，不以一方成功推进另一方。
 
-Native 追加历史使用 schema 26，由身份元数据 `history_store_meta` 和 `history_events`、`history_bodies`、`history_body_chunks` 三张业务表组成。`history_events` 仅保存开放式索引标量列与尾部的 `payload_schema`、`payload_json`（无 `kind` 枚举 `CHECK`，无持久化 `Work`/`Member`/`group_*` 行，正文 `<= 16 KiB` 有效 UTF-8 直接内联为 `inlineText`，`> 16 KiB` 与二进制附件存入 `history_bodies` + `history_body_chunks`）；三个业务表均由数据库触发器禁止更新与删除。读取和写入资格校验数据库身份、Thread 身份、schema 与迁移结果，坏库与非 schema 26 文件不在普通打开时自动重建；schema 25 与 24 库经由 §17.22 / §17.21 显式迁移升级至 schema 26。具体接受、查询及关闭边界见 [15](./15-session-storage.md#独立追加历史)。
+Native 追加历史使用 schema 27，由身份元数据 `history_store_meta` 和 `history_events`、`history_bodies`、`history_body_chunks` 三张业务表组成。`history_events` 仅保存开放式索引标量列与尾部的 `payload_schema`、`payload_json`（无 `kind` 枚举 `CHECK`，无持久化 `Work`/`Member`/`group_*` 行，正文 `<= 16 KiB` 有效 UTF-8 直接内联为 `inlineText`，`> 16 KiB` 与二进制附件存入 `history_bodies` + `history_body_chunks`）；三个业务表均由数据库触发器禁止更新与删除。读取和写入资格校验数据库身份、Thread 身份、schema 与迁移结果，坏库与非 schema 27 文件不在普通打开时自动重建；schema 24／25／26 库经由 §17.21 至 §17.23 显式迁移升级至 schema 27。具体接受、查询及关闭边界见 [15](./15-session-storage.md#独立追加历史)。
 
-名为 schema 24 的旧库先沿 §17.21 一次性迁移生成基础结构，并立即经 §17.22 串联升级到 schema 26；已为 schema 25 的旧库则直接在单一 `IMMEDIATE` 事务内原地零拷贝复用全部 `history_bodies` 与 `history_body_chunks` 升级到 schema 26。旧表、旧 `HistoryClassifier`、旧 presentation writer 和备份不成为 schema 26 运行期 fallback；完整边界见 [17.21](#1721-独立当前状态与追加历史的升级边界) 与 [17.22](#1722-schema-25-到-26-原子事件迁移边界)。
+名为 schema 24 的旧库先沿 §17.21 一次性迁移生成基础结构，并经 §17.22 和 §17.23 串联升级到 schema 27；已为 schema 25 的旧库则直接在单一 `IMMEDIATE` 事务内原地零拷贝复用全部 `history_bodies` 与 `history_body_chunks` 升级到 schema 27。旧表、旧 `HistoryClassifier`、旧 presentation writer 和备份不成为 schema 27 运行期 fallback；完整边界见 [17.21](#1721-独立当前状态与追加历史的升级边界)、[17.22](#1722-schema-25-到-26-原子事件迁移边界) 与 [17.23](#1723-schema-26-到-27-边界语义与索引精简迁移)。
 
-迁移完成后的正常运行只使用 `current.json`、schema 26 history 和原可靠资源。不会双写旧格式、保留共同水位、从历史回放 current 或把迁移备份当备用数据源。迁移实现、失败回滚与最终运行证据由对应 PR 和测试提供；本文不把合同声明当作已完成验收。
+迁移完成后的正常运行只使用 `current.json`、schema 27 history 和原可靠资源。不会双写旧格式、保留共同水位、从历史回放 current 或把迁移备份当备用数据源。迁移实现、失败回滚与最终运行证据由对应 PR 和测试提供；本文不把合同声明当作已完成验收。
 
 ### 当前结构与迁移输入
 
@@ -21,7 +21,7 @@ Native 追加历史使用 schema 26，由身份元数据 `history_store_meta` �
 | 配置与凭据关联 | `config.toml`、用户预设及操作系统凭据服务；迁移见 [20](./20-config.md) | 设置视图、模型目录观察缓存 |
 | 工作区与会话目录 | `workspaces.toml`、`catalog.toml` 的轻量目录事实 | 侧栏展示；旧产品库目录副本不再维护 |
 | 会话 Current | 单会话 `current.json` 的完整暂停恢复对象 | 内存 snapshot、Current State/body/collection |
-| 会话可靠历史 | 单会话 schema 26 `history.sqlite` 的原子事件与混合正文 | 内存页面、Current overlay、工作组视图折叠、传输 DTO、调用诊断 |
+| 会话可靠历史 | 单会话 schema 27 `history.sqlite` 的原子事件与混合正文 | 内存页面、Current overlay、工作组视图折叠、传输 DTO、调用诊断 |
 | 独立产品业务 | `studio.sqlite` 中模型评价等各领域事实 | 不承担会话正文恢复 |
 | 调用观察 | `calls.sqlite` 与滚动 JSONL，按自身保留期管理 | 不代替可靠累计用量、会话正文或检查点 |
 
@@ -33,7 +33,7 @@ Native 追加历史使用 schema 26，由身份元数据 `history_store_meta` �
 
 旧缺口缺少来源或次数时，迁移为明确的历史未知；旧性能值与身份保留，无法证明的用途和首内容观测来源同样保持未知。不扫描过期诊断重建可靠累计，不补写旧 TTFT，不用当前时间、估算或零补齐观测。升级失败在原事务内回滚并保留原数据；不能清库恢复默认。
 
-Native 历史当前为 schema 26，Current JSON schema 为 1；`calls.sqlite` 使用自己的格式与迁移序列。旧历史格式 `10`／`11`、checkpoint `6`、模型回执 `5`、压缩回执 `4`、以及 schema 24／25 的既有持久化分组结构只作为显式迁移输入，正常 schema 26 reader 不再按这些格式运行。迁移成功后事件、正文、Turn/Source/Cost/Accounting 与 Current 分别按当前结构读取；旧性能样本缺少原始用量有效性证据时保持 `LegacyUnknown`，不能为汇总补造数值。
+Native 历史当前为 schema 27，Current JSON schema 为 1；`calls.sqlite` 使用自己的格式与迁移序列。旧历史格式 `10`／`11`、checkpoint `6`、模型回执 `5`、压缩回执 `4`、以及 schema 24／25 的既有持久化分组结构只作为显式迁移输入，正常 schema 27 reader 不再按这些格式运行。迁移成功后事件、正文、Turn/Source/Cost/Accounting 与 Current 分别按当前结构读取；旧性能样本缺少原始用量有效性证据时保持 `LegacyUnknown`，不能为汇总补造数值。
 
 历史格式 `10`／`11` 及既有原子 Timeline 阶段只作为 v24 迁移输入的冻结来源。迁移必须同时核对 official Applied 记录与实际表结构，不能仅凭数字、缺表或旧 checkpoint 版本猜测。已具备原子表的输入不得重建或重排 canonical 身份，已完成计量的输入不得重算累计；正文、未知时间、费用与 provenance 保留，标记与结构矛盾时停止并保全现场。schema 25 reader 不执行这些旧步骤。
 
@@ -758,7 +758,7 @@ Linux 监督进程将一次安装终态原子写入 `$XDG_STATE_HOME/anywork/upd
 
 提交结果不明时重新连接观察实际格式，不能重复追加或猜测恢复，也不删除尚未确认归属与提交结果的报告。文件准备完成而数据库事务失败时保留有效 current；下次只有在独占维护阶段确认仍为 schema 24，才把所属暂存报告归档为 `uncommitted-report.json` 并重试历史升级。完整旧库、升级前已有 current 的副本、报告和仍被引用的资源保留用于显式维护与回滚；正常 current、history 与 Timeline 不访问这些备份。升级后的两个存储分别加载、分别失败，不把一次性准备顺序推广成日常共同水位或提交栅栏。
 
-冷 Current reader 首次建立已保存基线时，复用显式恢复入口准备缺失的 `current.json`；schema 24／25 升级在现有维护锁内完成，其中 schema 24 库先经本节完成 24→25 转换后再串联 §17.22 升至 schema 26。已有有效 Current 仍独立读取，不因 History 损坏而失败。Windows 上创建迁移备份时，SQLite 的目标路径与普通连接一样保留规范化原生路径前缀，以支持完整会话目录深度；同步迁移备份及已有 Current 时，文件句柄必须具备写权限并保持原字节，不得通过截断或跳过落盘同步完成升级。
+冷 Current reader 首次建立已保存基线时，复用显式恢复入口准备缺失的 `current.json`；schema 24／25 升级在现有维护锁内完成，其中 schema 24 库先经本节完成 24→25 转换后再串联 §17.22 与 §17.23 升至 schema 27。已有有效 Current 仍独立读取，不因 History 损坏而失败。Windows 上创建迁移备份时，SQLite 的目标路径与普通连接一样保留规范化原生路径前缀，以支持完整会话目录深度；同步迁移备份及已有 Current 时，文件句柄必须具备写权限并保持原字节，不得通过截断或跳过落盘同步完成升级。
 
 ## 17.22 Schema 25 到 26 原子事件迁移边界
 
