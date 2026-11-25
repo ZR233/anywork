@@ -270,6 +270,13 @@ pub(super) struct TopicChannels {
 }
 
 impl TopicChannels {
+    /// Only value subscriptions require a frozen event payload; signals read the owner later.
+    pub(super) fn has_value_receivers(&self, topic: &StudioProductTopic) -> bool {
+        self.channels
+            .sender(topic)
+            .is_some_and(|sender| sender.receiver_count() > 0)
+    }
+
     /// Wake-only latest-state observation: no business payload and no event backlog.
     pub(super) fn subscribe_signal(
         registry: &Arc<Mutex<Self>>,

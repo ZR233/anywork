@@ -325,6 +325,10 @@ impl ThreadDirectoryIndex {
     }
 
     pub(super) fn agent_directory_entries(&self) -> Vec<StudioAgentDirectoryEntry> {
+        tracing::trace!(
+            materialized_agents = self.agent_order.len(),
+            "materialize agent directory snapshot"
+        );
         self.agent_order
             .iter()
             .filter_map(|id| self.agent_directory_entry(id))

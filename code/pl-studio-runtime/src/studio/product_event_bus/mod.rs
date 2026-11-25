@@ -50,6 +50,8 @@ pub struct ProductEventBus {
     writer: ThreadWriteBehindWriter,
     /// runtime 内部消费者的显式混合通道；不面向 GUI transport。
     internal: broadcast::Sender<StudioProductEventEnvelope>,
+    /// Catalog refresh consumes values except AgentDirectory, which it observes through a signal.
+    catalog_events: broadcast::Sender<StudioProductEventEnvelope>,
     topics: Arc<std::sync::Mutex<TopicChannels>>,
     sequence: Arc<AtomicU64>,
     revisions: Arc<ProductStateRevisions>,
@@ -119,6 +121,7 @@ impl ProductEventBus {
     }
     pub(in crate::studio) fn new(store: StudioStore, writer: ThreadWriteBehindWriter) -> Self {
         let (internal, _) = broadcast::channel(256);
+        let (catalog_events, _) = broadcast::channel(256);
         // The catalog is already loaded. Register every persisted direct child before any
         // observation can publish a host collection; activation ancestry can omit siblings.
         let mut child_interactions = ChildInteractionsProjection::default();
@@ -152,6 +155,7 @@ impl ProductEventBus {
             store,
             writer,
             internal,
+            catalog_events,
             topics: Arc::new(std::sync::Mutex::new(TopicChannels::default())),
             sequence: Arc::new(AtomicU64::new(0)),
             revisions: Arc::new(ProductStateRevisions::default()),
@@ -186,7 +190,21 @@ impl ProductEventBus {
     pub(in crate::studio) fn subscribe_internal(
         &self,
     ) -> broadcast::Receiver<StudioProductEventEnvelope> {
+        // Serialize value demand with AgentDirectory's notification-only commit. A subscriber
+        // admitted after that commit reads its baseline; one admitted before it gets a value.
+        let _topics = self
+            .topics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.internal.subscribe()
+    }
+
+    /// Internal catalog refresh values. Observe AgentDirectory through subscribe_topic_signal;
+    /// its payload does not contribute to catalog witnesses, but its wake still starts a scan.
+    pub(in crate::studio) fn subscribe_catalog_events(
+        &self,
+    ) -> broadcast::Receiver<StudioProductEventEnvelope> {
+        self.catalog_events.subscribe()
     }
 
     pub fn current_sequence(&self) -> u64 {
@@ -202,7 +220,16 @@ impl ProductEventBus {
             created_at: unix_seconds(),
             kind,
         };
-        let _ = self.internal.send(envelope.clone());
+        if self.internal.receiver_count() > 0 {
+            let _ = self.internal.send(envelope.clone());
+        }
+        if !matches!(
+            envelope.kind,
+            StudioProductEventKind::AgentDirectoryChanged(_)
+        ) && self.catalog_events.receiver_count() > 0
+        {
+            let _ = self.catalog_events.send(envelope.clone());
+        }
         self.topics
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

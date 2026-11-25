@@ -48,11 +48,37 @@ impl ProductEventBus {
             "compare agent directory members"
         );
         if !changes.upserted.is_empty() || !changes.removed.is_empty() {
-            let agents = index.agent_directory_entries();
+            let emit_value = || {
+                let agents = index.agent_directory_entries();
+                self.emit(StudioProductEventKind::AgentDirectoryChanged(
+                    self.agent_directory_state_locked(agents),
+                ));
+            };
+            // Existing full internal observers receive their exact envelope before typed
+            // dispatch. Keep that ordering even while another thread holds the topic registry.
+            if self.internal.receiver_count() > 0 {
+                self.bump(&self.revisions.agent);
+                emit_value();
+                return;
+            }
+            let topic = crate::StudioProductTopic::AgentDirectory;
+            let mut topics = self
+                .topics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.bump(&self.revisions.agent);
-            self.emit(StudioProductEventKind::AgentDirectoryChanged(
-                self.agent_directory_state_locked(agents),
-            ));
+            if topics.has_value_receivers(&topic) || self.internal.receiver_count() > 0 {
+                // Exact value consumers retain the frozen collection, revision and dispatch
+                // order. Release the registry before emit; the index still freezes this cut.
+                drop(topics);
+                emit_value();
+            } else {
+                // Registration, revision and wake commit together. No receiver can register in
+                // the gap and miss both a value and its baseline. No full collection is built.
+                self.sequence
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                topics.notify(&topic);
+            }
         }
     }
 

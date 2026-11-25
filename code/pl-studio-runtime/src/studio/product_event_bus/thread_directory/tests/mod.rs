@@ -195,6 +195,7 @@ mod hot;
 
 mod window;
 
+mod agent_publication;
 mod index;
 
 impl ProductEventBus {
