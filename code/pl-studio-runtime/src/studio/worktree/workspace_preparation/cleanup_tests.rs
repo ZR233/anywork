@@ -1,7 +1,4 @@
-use std::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::Duration,
-};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use futures::{FutureExt, future::BoxFuture};
 use sea_orm::ConnectionTrait;
@@ -251,7 +248,7 @@ async fn cancelled_cleanup_reentry_waits_for_its_completion_ack() -> Result<()> 
     let cleanup_leases = leases.clone();
     let cleanup_store = store.clone();
     let cleanup_manager = manager.clone();
-    let cleanup = tokio::spawn(async move {
+    let mut cleanup = tokio::spawn(async move {
         cleanup_workspace(
             &cleanup_store,
             &cleanup_leases,
@@ -261,7 +258,10 @@ async fn cancelled_cleanup_reentry_waits_for_its_completion_ack() -> Result<()> 
         )
         .await
     });
-    tokio::time::timeout(Duration::from_secs(5), waiting).await??;
+    tokio::select! {
+        committed = waiting => committed.context("writer dropped the cleanup commit gate")?,
+        early = &mut cleanup => anyhow::bail!("cleanup returned before its ACK gate: {early:?}"),
+    }
     cleanup.abort();
     assert!(cleanup.await.unwrap_err().is_cancelled());
     let mut cleaned = leases
@@ -286,10 +286,11 @@ async fn cancelled_cleanup_reentry_waits_for_its_completion_ack() -> Result<()> 
         "completion reentry must wait for writer ACK"
     );
     drop(retry);
+    let completion_ticket = writer.admitted_ticket();
     release
         .send(())
         .map_err(|_| anyhow::anyhow!("completion writer lost its owner"))?;
-    wait_for_durable_ticket(&writer, writer.admitted_ticket()).await?;
+    writer.flush_through(completion_ticket).await?;
     let cleaned = leases
         .get("cancelled-cleanup")
         .context("completion phase after ACK")?;
