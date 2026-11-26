@@ -312,7 +312,11 @@ void main() {
       );
       Error.throwWithStackTrace(error, stack);
     }
-    expect(find.text('展示风格'), findsOneWidget);
+    Finder questionDockText(String text) => find.descendant(
+      of: find.byType(UserInputView),
+      matching: find.text(text),
+    );
+    expect(questionDockText('展示风格'), findsOneWidget);
     expect(
       graph.client.drafts.composer(draftThread).state.draft,
       _preservedDraft,
@@ -328,20 +332,20 @@ void main() {
       'questions-pending released; request_user_input awaiting answers',
       'Real ordinary question dock replaces, but preserves, the unsent draft.',
     );
-    expect(find.text('这次时间线里的问答回执，你更想要哪种展示？'), findsOneWidget);
+    expect(questionDockText('这次时间线里的问答回执，你更想要哪种展示？'), findsOneWidget);
     await _tap(tester, find.byKey(StudioDriverKeys.userInputFirstOption));
     await _tap(tester, find.byKey(StudioDriverKeys.userInputSubmit));
 
     final notes = find.byKey(StudioDriverKeys.userInputText('notes'));
     await _until(tester, () => notes.evaluate().isNotEmpty, 'notes question');
-    expect(find.text('交付说明'), findsOneWidget);
+    expect(questionDockText('交付说明'), findsOneWidget);
     await tester.enterText(notes, _notesAnswer);
     await tester.pump();
     await _tap(tester, find.byKey(StudioDriverKeys.userInputSubmit));
 
     final secret = find.byKey(StudioDriverKeys.userInputText('token'));
     await _until(tester, () => secret.evaluate().isNotEmpty, 'secret question');
-    expect(find.text('访问令牌'), findsOneWidget);
+    expect(questionDockText('访问令牌'), findsOneWidget);
     await tester.enterText(secret, _secretAnswer);
     await tester.pump();
     expect(tester.widget<TextField>(secret).controller!.text, _secretAnswer);

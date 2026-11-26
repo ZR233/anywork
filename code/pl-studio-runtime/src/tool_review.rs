@@ -158,7 +158,8 @@ mod tests {
                 ModelToolCall, PreparedModelCall,
             },
             thread::{
-                HistoryExport, ThreadEffectBatch, ThreadHandle, TurnInput, UsageSummary,
+                HistoryExport, ThreadEffectBatch, ThreadError, ThreadHandle, TurnInput,
+                UsageSummary,
                 cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
                 history_sink::{HistorySink, HistorySinkHandle},
             },
@@ -434,7 +435,10 @@ mod tests {
         );
         assert_eq!(executed.load(Ordering::Relaxed), 0);
         assert_eq!(requests.load(Ordering::Relaxed), 1);
-        thread.close().await?;
+        // The fixture refuses the original write permanently. Preserving the
+        // thread must fail, and deletion can still release its resources.
+        assert!(matches!(thread.close().await, Err(ThreadError::Storage(_))));
+        thread.close_for_deletion().await?;
         shutdown.cancel();
         timeout(Duration::from_secs(5), server).await???;
         Ok(())

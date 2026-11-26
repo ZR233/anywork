@@ -232,10 +232,16 @@ void main() {
     final meta = payload['meta'] as Map<String, Object?>;
     expect(meta['state'], {'kind': 'knownTerminal', 'outcome': 'completed'});
     expect(panel.item.wait!.state, ThreadWaitStateView.ready);
-    final resultReference = original.bodies.singleWhere(
-      (body) => body.bodyKey == 'tool.result',
-    );
-    expect(waitItem.body('tool.result')!.feedReference, resultReference);
+    final resultBody = waitItem.body('tool.result');
+    expect(resultBody, isNotNull);
+    final resultReference = original.bodies
+        .where((body) => body.bodyKey == 'tool.result')
+        .singleOrNull;
+    expect(resultBody!.feedReference, resultReference);
+    if (resultReference == null) {
+      expect(original.resultPreview, isNotEmpty);
+      expect(resultBody.text, original.resultPreview);
+    }
     final card = find.byKey(StudioDriverKeys.waitingCard(panel.item.id));
     await observed.tap(card);
     await observed.until(
