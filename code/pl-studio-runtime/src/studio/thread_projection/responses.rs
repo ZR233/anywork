@@ -198,8 +198,9 @@ pub(super) fn project_attempt(
         lifecycle = ThreadContentLifecycle::completed(stamp.updated_at);
         for item in &mut response.presentation_items {
             if let CompletionPresentationItemKind::Text(_) = item.kind {
-                item.kind =
-                    CompletionPresentationItemKind::Text(pl_core::model::ModelTextChannel::Commentary);
+                item.kind = CompletionPresentationItemKind::Text(
+                    pl_core::model::ModelTextChannel::Commentary,
+                );
             }
         }
         if response.text.is_empty() && response.presentation_items.is_empty() {

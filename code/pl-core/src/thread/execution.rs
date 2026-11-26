@@ -288,7 +288,10 @@ impl Owner {
                 };
                 self.publish_snapshot();
             }
-            RunPhase::Starting | RunPhase::NextStep { .. } | RunPhase::ToolBatch(_) | RunPhase::Settling(_) => {}
+            RunPhase::Starting
+            | RunPhase::NextStep { .. }
+            | RunPhase::ToolBatch(_)
+            | RunPhase::Settling(_) => {}
         }
     }
 
@@ -1487,11 +1490,9 @@ impl Owner {
             }
         }
         if was_stopping
-            && !self
-                .state
-                .tasks
-                .values()
-                .any(|task| task.turn_id == run.input.turn_id && task.status == task::TaskStatus::Running)
+            && !self.state.tasks.values().any(|task| {
+                task.turn_id == run.input.turn_id && task.status == task::TaskStatus::Running
+            })
         {
             self.stopping_turn = None;
             self.publish_snapshot();

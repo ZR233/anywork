@@ -2029,8 +2029,7 @@ async fn meta_bus_records_hidden_input_lifecycle_and_step_preemption_events() ->
             output_claim: None,
         }),
     });
-    bus.sink()
-        .emit(pl_core::thread::CoreEvent::Durable(commit));
+    bus.sink().emit(pl_core::thread::CoreEvent::Durable(commit));
     bus.wait_admitted_commit(1).await?;
 
     let reader = store.reader();
@@ -2073,7 +2072,10 @@ async fn meta_bus_records_hidden_input_lifecycle_and_step_preemption_events() ->
     assert_eq!(preempted_json["factType"], "step_preempted");
     assert_eq!(preempted_json["attemptId"], "att-1");
     assert_eq!(preempted_json["phase"], "streaming");
-    assert_eq!(preempted_json["triggerInputIds"], serde_json::json!(["in-3"]));
+    assert_eq!(
+        preempted_json["triggerInputIds"],
+        serde_json::json!(["in-3"])
+    );
     assert_eq!(preempted_json["partialRecordId"], "att-1:partial");
 
     let mut layer = super::timeline_layer::TimelineDataLayer::new();
@@ -2165,8 +2167,7 @@ async fn meta_bus_streaming_soft_preemption_keeps_partial_text_and_suppresses_in
             output_claim: None,
         }),
     });
-    bus.sink()
-        .emit(pl_core::thread::CoreEvent::Durable(commit));
+    bus.sink().emit(pl_core::thread::CoreEvent::Durable(commit));
     bus.wait_admitted_commit(1).await?;
 
     let (_, originals, _) = store
@@ -2223,7 +2224,10 @@ async fn meta_bus_streaming_soft_preemption_keeps_partial_text_and_suppresses_in
 
     let reopened = HistoryStore::open(&db_path, "soft-preempt", HistoryLimits::default()).await?;
     let mut cold = super::timeline_layer::TimelineDataLayer::new();
-    let cold_items = match cold.load_initial_page(&reopened.reader(), 10, false).await? {
+    let cold_items = match cold
+        .load_initial_page(&reopened.reader(), 10, false)
+        .await?
+    {
         TimelinePatch::Reset { items, .. } => items,
         other => panic!("expected cold Reset, got {other:?}"),
     };

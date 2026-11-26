@@ -17,13 +17,16 @@ use pl_core::{
         ObservedPartIdentity, ObservedPartKind, PreparedModelCall, ProviderPartIdentity,
     },
     thread::{
-        ContinuationReason, CoreEvent, CoreEventSink, CoreLiveEvent, ExecutionPhase, ModelStepLimit,
-        PreemptedStepPhase, ResumeRequest, ThreadError, ThreadHandle, TurnOutcome, TurnState,
+        ContinuationReason, CoreEvent, CoreEventSink, CoreLiveEvent, ExecutionPhase,
+        ModelStepLimit, PreemptedStepPhase, ResumeRequest, ThreadError, ThreadHandle, TurnOutcome,
+        TurnState,
         context_preparation::{
             ContextPreparation, ContextPreparationHook, ContextPreparationRequest, ContextPreparer,
         },
         current::{RuntimeEpoch, ThreadCurrent},
-        input::{InputChange, InputDriverOptions, InputExecution, InputPurpose, InputState, ThreadInput},
+        input::{
+            InputChange, InputDriverOptions, InputExecution, InputPurpose, InputState, ThreadInput,
+        },
     },
     tool::{
         ToolOutput,
@@ -87,7 +90,10 @@ async fn streaming_soft_preemption_preserves_partial_text_and_keeps_same_turn() 
     }
 
     impl ModelSession for StreamingPreemptModel {
-        async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
             self.requests.lock().unwrap().push(request.context.clone());
             let idx = self.calls.fetch_add(1, Ordering::SeqCst);
             let started = self.streaming_started.clone();
@@ -130,9 +136,15 @@ async fn streaming_soft_preemption_preserves_partial_text_and_keeps_same_turn() 
     )
     .unwrap();
 
-    thread.submit_input(msg("m1", "Tell a long story"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m1", "Tell a long story"), Some(driver()))
+        .await
+        .unwrap();
     streaming_started.notified().await;
-    thread.submit_input(msg("m2", "Pivot immediately"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m2", "Pivot immediately"), Some(driver()))
+        .await
+        .unwrap();
 
     wait_for(&thread, |s| s.execution.is_none() && s.inputs.is_empty()).await;
     let snapshot = thread.snapshot();
@@ -140,7 +152,10 @@ async fn streaming_soft_preemption_preserves_partial_text_and_keeps_same_turn() 
 
     let effects = thread.effects().await.unwrap();
     let turns: Vec<_> = effects.iter().filter_map(|e| e.turn.as_ref()).collect();
-    assert!(turns.iter().all(|t| t.turn_id == turns[0].turn_id), "soft preemption must stay in one Turn");
+    assert!(
+        turns.iter().all(|t| t.turn_id == turns[0].turn_id),
+        "soft preemption must stay in one Turn"
+    );
     assert_eq!(
         turns.last().unwrap().state,
         TurnState::Finished(TurnOutcome::Completed)
@@ -152,7 +167,12 @@ async fn streaming_soft_preemption_preserves_partial_text_and_keeps_same_turn() 
     assert_eq!(preemptions.len(), 1);
     assert_eq!(preemptions[0].phase, PreemptedStepPhase::Streaming);
     assert_eq!(preemptions[0].trigger_input_ids, vec!["m2".to_string()]);
-    assert!(preemptions[0].partial_record_id.as_deref().is_some_and(|id| id.ends_with(":partial")));
+    assert!(
+        preemptions[0]
+            .partial_record_id
+            .as_deref()
+            .is_some_and(|id| id.ends_with(":partial"))
+    );
 
     let m2_injected = effects.iter().flat_map(|e| e.inputs.iter()).any(|change| {
         matches!(
@@ -166,7 +186,10 @@ async fn streaming_soft_preemption_preserves_partial_text_and_keeps_same_turn() 
             } if id == "m2" && rec_id == "input:m2"
         )
     });
-    assert!(m2_injected, "m2 consumption must mark injected_mid_turn = true");
+    assert!(
+        m2_injected,
+        "m2 consumption must mark injected_mid_turn = true"
+    );
 
     {
         let locked = requests.lock().unwrap();
@@ -178,7 +201,10 @@ async fn streaming_soft_preemption_preserves_partial_text_and_keeps_same_turn() 
             .collect();
         assert_eq!(roles.len(), 3);
         assert!(second_req.records[0].id == "input:m1");
-        assert!(matches!(second_req.records[1].source, ContextSource::Assistant));
+        assert!(matches!(
+            second_req.records[1].source,
+            ContextSource::Assistant
+        ));
         assert!(second_req.records[1].tool_calls.is_empty());
         assert_eq!(second_req.records[1].content, vec![text("First half...")]);
         assert!(second_req.records[2].id == "input:m2");
@@ -192,9 +218,15 @@ async fn preparing_soft_preemption_emits_preparing_event_and_merges_fifo_without
     let thread = ThreadHandle::start("prep-preempt".into(), DynModelSession::new(model)).unwrap();
     let hold = preparation::HoldPreparation::install(&thread).await;
 
-    thread.submit_input(msg("m1", "First message"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m1", "First message"), Some(driver()))
+        .await
+        .unwrap();
     hold.entered().await;
-    thread.submit_input(msg("m2", "Second message"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m2", "Second message"), Some(driver()))
+        .await
+        .unwrap();
 
     wait_for(&thread, |s| s.execution.is_none() && s.inputs.is_empty()).await;
     let effects = thread.effects().await.unwrap();
@@ -220,12 +252,7 @@ async fn preparing_soft_preemption_emits_preparing_event_and_merges_fifo_without
         assert_eq!(user_records[0].content, vec![text("First message")]);
         assert_eq!(user_records[1].id, "input:m2");
         assert_eq!(user_records[1].content, vec![text("Second message")]);
-        assert!(
-            !reqs[0]
-                .records
-                .iter()
-                .any(|r| r.id.ends_with(":partial"))
-        );
+        assert!(!reqs[0].records.iter().any(|r| r.id.ends_with(":partial")));
     }
     thread.close().await.unwrap();
 }
@@ -290,9 +317,15 @@ async fn tool_batch_injection_does_not_cancel_running_tool_and_continues_same_tu
         .await
         .unwrap();
 
-    thread.submit_input(msg("m1", "Run slow tool"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m1", "Run slow tool"), Some(driver()))
+        .await
+        .unwrap();
     started.notified().await;
-    thread.submit_input(msg("m2", "Use slow output too"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m2", "Use slow output too"), Some(driver()))
+        .await
+        .unwrap();
     tokio::task::yield_now().await;
     assert!(
         !was_cancelled.load(Ordering::SeqCst),
@@ -315,7 +348,11 @@ async fn tool_batch_injection_does_not_cancel_running_tool_and_continues_same_tu
         assert_eq!(reqs.len(), 2);
         let second = &reqs[1].records;
         assert!(second.iter().any(|r| r.id == "input:m2"));
-        assert!(second.iter().any(|r| matches!(r.source, ContextSource::ToolResult { .. })));
+        assert!(
+            second
+                .iter()
+                .any(|r| matches!(r.source, ContextSource::ToolResult { .. }))
+        );
     }
     thread.close().await.unwrap();
 }
@@ -385,7 +422,10 @@ async fn wait_tool_wakes_immediately_on_pending_immediate_input() {
     // Step 0 emits HeldBgTool (runs > 1s and becomes an async TaskRecord); Step 1 emits AccessTool.
     struct TwoCallModel(std::sync::atomic::AtomicUsize);
     impl ModelSession for TwoCallModel {
-        async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
             let calls = match self.0.fetch_add(1, Ordering::SeqCst) {
                 0 => vec![ModelToolCall {
                     presentation_contract: None,
@@ -452,7 +492,11 @@ async fn wait_tool_wakes_immediately_on_pending_immediate_input() {
         .clone();
     let waiter = tokio::spawn(async move {
         access
-            .wait(&[task_id], Duration::from_secs(30), CancellationToken::new())
+            .wait(
+                &[task_id],
+                Duration::from_secs(30),
+                CancellationToken::new(),
+            )
             .await
             .unwrap()
     });
@@ -504,10 +548,19 @@ async fn rapid_multi_message_preserves_strict_fifo_distinct_context_records() {
         .await
         .unwrap();
 
-    thread.submit_input(msg("m1", "first"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m1", "first"), Some(driver()))
+        .await
+        .unwrap();
     entered.notified().await;
-    thread.submit_input(msg("m2", "second"), Some(driver())).await.unwrap();
-    thread.submit_input(msg("m3", "third"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m2", "second"), Some(driver()))
+        .await
+        .unwrap();
+    thread
+        .submit_input(msg("m3", "third"), Some(driver()))
+        .await
+        .unwrap();
     release.notify_one();
 
     wait_for(&thread, |s| s.execution.is_none() && s.inputs.is_empty()).await;
@@ -519,7 +572,11 @@ async fn rapid_multi_message_preserves_strict_fifo_distinct_context_records() {
             .iter()
             .filter(|r| matches!(r.source, ContextSource::User))
             .collect();
-        assert_eq!(users.len(), 3, "three rapid inputs must remain 3 distinct records");
+        assert_eq!(
+            users.len(),
+            3,
+            "three rapid inputs must remain 3 distinct records"
+        );
         assert_eq!(users[0].id, "input:m1");
         assert_eq!(users[0].content, vec![text("first")]);
         assert_eq!(users[1].id, "input:m2");
@@ -539,7 +596,10 @@ async fn concurrent_input_near_turn_completion_continues_same_turn() {
         calls: std::sync::atomic::AtomicUsize,
     }
     impl ModelSession for GateModel {
-        async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
             self.requests.lock().unwrap().push(request.context.clone());
             let idx = self.calls.fetch_add(1, Ordering::SeqCst);
             let entered = self.entered.clone();
@@ -571,10 +631,16 @@ async fn concurrent_input_near_turn_completion_continues_same_turn() {
     )
     .unwrap();
 
-    thread.submit_input(msg("m1", "initial"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m1", "initial"), Some(driver()))
+        .await
+        .unwrap();
     entered.notified().await;
     // Submit m2 and immediately release m1 completion without cancelling (no preempt wait needed).
-    thread.submit_input(msg("m2", "right at finish"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m2", "right at finish"), Some(driver()))
+        .await
+        .unwrap();
     release.notify_one();
 
     wait_for(&thread, |s| s.execution.is_none() && s.inputs.is_empty()).await;
@@ -600,7 +666,10 @@ async fn explicit_stop_sets_interrupted_and_resume_continues() {
         calls: std::sync::atomic::AtomicUsize,
     }
     impl ModelSession for HeldModel {
-        async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
             let idx = self.calls.fetch_add(1, Ordering::SeqCst);
             let entered = self.entered.clone();
             Ok(PreparedModelCall::new(async move {
@@ -652,7 +721,10 @@ async fn explicit_stop_sets_interrupted_and_resume_continues() {
     .unwrap();
     let live_log = Arc::new(StopEventLog::default());
     thread.attach_event_sink(live_log.clone()).await.unwrap();
-    thread.submit_input(msg("m1", "stop me"), Some(driver())).await.unwrap();
+    thread
+        .submit_input(msg("m1", "stop me"), Some(driver()))
+        .await
+        .unwrap();
     entered.notified().await;
     let exec_id = thread.snapshot().execution.unwrap().id;
     assert!(thread.interrupt_execution(exec_id.clone()).await.unwrap());
@@ -693,7 +765,10 @@ async fn explicit_stop_sets_interrupted_and_resume_continues() {
         )
         .await
         .unwrap();
-    wait_for(&thread, |s| s.execution.is_none() && s.continuation.is_none()).await;
+    wait_for(&thread, |s| {
+        s.execution.is_none() && s.continuation.is_none()
+    })
+    .await;
     let effects = thread.effects().await.unwrap();
     let completed = effects
         .iter()
@@ -706,9 +781,11 @@ async fn explicit_stop_sets_interrupted_and_resume_continues() {
 
 #[tokio::test]
 async fn legacy_current_json_with_delivery_field_deserializes_cleanly() {
-    let mut legacy_json =
-        serde_json::to_value(ThreadCurrent::new("legacy-thread".into(), RuntimeEpoch::new()))
-            .unwrap();
+    let mut legacy_json = serde_json::to_value(ThreadCurrent::new(
+        "legacy-thread".into(),
+        RuntimeEpoch::new(),
+    ))
+    .unwrap();
     legacy_json["state"]["inputs"] = serde_json::json!([
         {
             "delivery": { "kind": "nextTurn" },
@@ -735,8 +812,8 @@ async fn legacy_current_json_with_delivery_field_deserializes_cleanly() {
         }
     ]);
     legacy_json["state"]["inputOrdinal"] = serde_json::json!(1);
-    let parsed: ThreadCurrent =
-        serde_json::from_value(legacy_json).expect("legacy current.json must ignore removed delivery field");
+    let parsed: ThreadCurrent = serde_json::from_value(legacy_json)
+        .expect("legacy current.json must ignore removed delivery field");
     assert_eq!(parsed.state.inputs.len(), 1);
     assert_eq!(parsed.state.terminal_inputs.len(), 1);
     let thread = ThreadHandle::restore_current(parsed, None).unwrap();

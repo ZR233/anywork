@@ -290,7 +290,10 @@ impl Owner {
     }
 
     pub(super) fn has_pending_immediate_inputs(&self) -> bool {
-        self.state.inputs.iter().any(|record| self.driveable(record))
+        self.state
+            .inputs
+            .iter()
+            .any(|record| self.driveable(record))
     }
 
     pub(super) fn first_pending_input_id(&self) -> Option<String> {
@@ -433,7 +436,10 @@ impl Owner {
 
     /// Projects every currently pending driveable input in strict FIFO ordinal order, keeping each
     /// message as its own `ContextSource::User` record without flattening boundaries.
-    pub(super) fn pending_immediate_context(&self, turn_id: &str) -> (Vec<ContextRecord>, Vec<String>) {
+    pub(super) fn pending_immediate_context(
+        &self,
+        turn_id: &str,
+    ) -> (Vec<ContextRecord>, Vec<String>) {
         let mut pending: Vec<_> = self
             .state
             .inputs

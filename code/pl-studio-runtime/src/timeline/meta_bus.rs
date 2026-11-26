@@ -602,8 +602,10 @@ fn translate_commit(
                     turn_id,
                     attempt_id,
                 } => {
-                    let event_id =
-                        format!("input-consumed:{run_str}:{}:{id}:{revision}", effect.sequence);
+                    let event_id = format!(
+                        "input-consumed:{run_str}:{}:{id}:{revision}",
+                        effect.sequence
+                    );
                     if !state.completed_drafts.insert(event_id.clone())
                         || history.event_exists_in_memory(&event_id)
                     {
@@ -638,8 +640,10 @@ fn translate_commit(
                     events.push(ev);
                 }
                 pl_core::thread::input::InputState::Discarded => {
-                    let event_id =
-                        format!("input-discarded:{run_str}:{}:{id}:{revision}", effect.sequence);
+                    let event_id = format!(
+                        "input-discarded:{run_str}:{}:{id}:{revision}",
+                        effect.sequence
+                    );
                     if !state.completed_drafts.insert(event_id.clone())
                         || history.event_exists_in_memory(&event_id)
                     {

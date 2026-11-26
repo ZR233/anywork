@@ -519,8 +519,7 @@ impl Owner {
         let result = exit.result.map_err(Arc::new);
         let member_error = self.finish_model_members();
         let soft_preempted = self.active.as_ref().is_some_and(|run| {
-            run.is_step_preempted(self.interrupt.is_closing())
-                && run.input.turn_id == input.turn_id
+            run.is_step_preempted(self.interrupt.is_closing()) && run.input.turn_id == input.turn_id
         });
         if !soft_preempted
             && input.cancellation.is_cancelled()
