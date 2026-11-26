@@ -138,7 +138,7 @@ impl SessionMetaLayer {
 
 struct FeedInner {
     thread_id: String,
-    reader: HistoryReader,
+    reader: Mutex<Option<HistoryReader>>,
     timeline: tokio::sync::Mutex<TimelineDataLayer>,
     live_status: Mutex<LiveStatusSnapshot>,
     session_meta: SessionMetaLayer,
@@ -155,12 +155,30 @@ impl Drop for FeedInner {
 }
 
 impl FeedInner {
-    async fn close_inner(&self) {
+    fn reader(&self) -> std::sync::MutexGuard<'_, Option<HistoryReader>> {
+        self.reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn request_close(&self) {
         self.cancel.cancel();
-        self.reader.request_close();
+        if let Some(reader) = self.reader().as_ref() {
+            reader.request_close();
+        }
+    }
+
+    async fn close_inner(&self) {
+        self.request_close();
         self.tasks.close();
         self.tasks.wait().await;
-        self.reader.close().await;
+        let reader = self.reader().clone();
+        if let Some(reader) = reader {
+            reader.close().await;
+            // A retired feed may still be held by a client. Release its share
+            // of the history writer so a new runtime can acquire the lease.
+            self.reader().take();
+        }
     }
 }
 
@@ -179,8 +197,7 @@ impl FeedCloseHandle {
 
     pub fn request_close(&self) {
         if let Some(inner) = self.0.upgrade() {
-            inner.cancel.cancel();
-            inner.reader.request_close();
+            inner.request_close();
         }
     }
 
@@ -266,7 +283,7 @@ impl ConversationFeed {
 
         let inner = Arc::new(FeedInner {
             thread_id,
-            reader,
+            reader: Mutex::new(Some(reader)),
             timeline: tokio::sync::Mutex::new(tl),
             live_status: Mutex::new(initial_live.clone()),
             session_meta: SessionMetaLayer::new(initial_meta),
@@ -362,7 +379,8 @@ impl ConversationFeed {
     pub async fn load_older(&self, cursor: String, limit: u32) -> Result<TimelinePatch> {
         self.ensure_active()?;
         let mut tl = self.inner.timeline.lock().await;
-        let patch = tl.load_older(&self.inner.reader, cursor, limit).await?;
+        let reader = self.history_reader()?;
+        let patch = tl.load_older(&reader, cursor, limit).await?;
         self.ensure_active()?;
         Ok(patch)
     }
@@ -372,10 +390,9 @@ impl ConversationFeed {
         after_seq: Option<u64>,
         before_seq: Option<u64>,
     ) -> Result<Vec<WorkGroupMember>> {
-        self.ensure_active()?;
+        let reader = self.history_reader()?;
         let members =
-            TimelineDataLayer::load_work_group_members(&self.inner.reader, after_seq, before_seq)
-                .await?;
+            TimelineDataLayer::load_work_group_members(&reader, after_seq, before_seq).await?;
         self.ensure_active()?;
         Ok(members)
     }
@@ -386,10 +403,9 @@ impl ConversationFeed {
         offset: u64,
         max_bytes: u32,
     ) -> Result<BodyWindow> {
-        self.ensure_active()?;
+        let reader = self.history_reader()?;
         let window =
-            TimelineDataLayer::read_body_window(&self.inner.reader, reference, offset, max_bytes)
-                .await?;
+            TimelineDataLayer::read_body_window(&reader, reference, offset, max_bytes).await?;
         self.ensure_active()?;
         Ok(window)
     }
@@ -402,8 +418,9 @@ impl ConversationFeed {
         );
         // Keep the rebuilt cut and its first patch in the same ordering as live appends.
         let mut timeline = self.inner.timeline.lock().await;
+        let reader = self.history_reader()?;
         let patch = timeline
-            .load_initial_page(&self.inner.reader, limit, is_working_live)
+            .load_initial_page(&reader, limit, is_working_live)
             .await?;
         self.ensure_active()?;
         if !send_event(&self.inner, ConversationEvent::Timeline(patch.clone())).await {
@@ -413,8 +430,12 @@ impl ConversationFeed {
     }
 
     pub fn request_close(&self) {
-        self.inner.cancel.cancel();
-        self.inner.reader.request_close();
+        self.inner.request_close();
+    }
+
+    fn history_reader(&self) -> Result<HistoryReader> {
+        self.ensure_active()?;
+        self.inner.reader().clone().ok_or_else(stale_feed_error)
     }
 
     pub async fn close(&self) {

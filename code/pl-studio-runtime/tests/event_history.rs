@@ -5,6 +5,7 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use pl_studio_runtime::history::*;
 use pl_studio_runtime::timeline::{
@@ -407,10 +408,14 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             let mut collected = Vec::new();
             loop {
                 let win = feed.read_body_window(&reference, offset, 64 * 1024).await?;
-                if let Some(chunk) = win.text {
-                    collected.extend_from_slice(chunk.as_bytes());
-                    offset += chunk.len() as u64;
-                }
+                ensure!(win.offset == offset, "body window skipped the requested offset");
+                let bytes = match win.text {
+                    Some(text) => text.into_bytes(),
+                    None => STANDARD.decode(win.bytes_base64.context("missing body window bytes")?)?,
+                };
+                ensure!(win.eof || !bytes.is_empty(), "body window made no progress");
+                offset += bytes.len() as u64;
+                collected.extend(bytes);
                 if win.eof {
                     break;
                 }
