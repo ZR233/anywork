@@ -319,7 +319,7 @@ async fn tool_error_during_interrupt_does_not_poison_input_driver() {
         .await
         .unwrap();
     thread
-        .resume_inputs(pl_core::thread::input::InputDriverOptions {
+        .drive_pending(pl_core::thread::input::InputDriverOptions {
             max_model_steps: ModelStepLimit::Unlimited,
         })
         .await

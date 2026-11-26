@@ -7,7 +7,7 @@ pub(super) struct StepWork {
     pub(super) retry_of: Option<String>,
     pub(super) frozen_input: Vec<ContextRecord>,
     pub(super) consumed_messages: u64,
-    pub(super) steering_ids: Vec<String>,
+    pub(super) pending_input_ids: Vec<String>,
     pub(super) context: ContextSnapshot,
     pub(super) base_context_revision: u64,
     pub(super) tool_projection: Option<OpaquePayload>,
@@ -189,18 +189,26 @@ impl Owner {
                     )
             })
         });
-        // Freeze consumption before any awaited preparation. Mailbox input arriving while the
+        // Freeze consumption before any awaited preparation. Input arriving while the
         // hook runs belongs to the next step and must not change this preview or its watermark.
         let (messages, consumed_messages) = if retry_of.is_none() || correcting {
             self.message_context(&input.turn_id)
         } else {
             (Vec::new(), self.state.consumed_messages)
         };
-        let (steering, steering_ids) = if retry_of.is_none() || correcting {
-            self.steering_context(&input.turn_id)
+        let collect_pending = (retry_of.is_none() || correcting)
+            && !matches!(
+                self.active.as_ref().map(|r| &r.reply),
+                Some(super::execution::RunReply::Step(_) | super::execution::RunReply::Compact(_))
+            );
+        let (pending_records, pending_input_ids) = if collect_pending {
+            self.pending_immediate_context(&input.turn_id)
         } else {
             (Vec::new(), Vec::new())
         };
+        if let Some(run) = self.active.as_mut() {
+            run.current_step_inputs = pending_input_ids.clone();
+        }
         let mut frozen_input = messages;
         if !input.content.is_empty() {
             frozen_input.push(ContextRecord {
@@ -217,7 +225,7 @@ impl Owner {
                 content: input.content.clone(),
             });
         }
-        frozen_input.extend(steering);
+        frozen_input.extend(pending_records);
 
         Ok(StepWork {
             input,
@@ -225,7 +233,7 @@ impl Owner {
             retry_of,
             frozen_input,
             consumed_messages,
-            steering_ids,
+            pending_input_ids,
             context: self.state.context.clone(),
             base_context_revision: self.state.context.revision,
             tool_projection: None,
@@ -350,7 +358,7 @@ impl Owner {
         let StepWork {
             ref input,
             ref plan,
-            ref steering_ids,
+            ref pending_input_ids,
             ref context,
             consumed_messages,
             ..
@@ -410,7 +418,7 @@ impl Owner {
             }),
         });
         step.admitted_attempt = attempts.last().cloned();
-        self.validate_steering(steering_ids)?;
+        self.validate_pending_inputs(pending_input_ids)?;
         // Consumption can retire the task/permission that still owns an undelivered result.
         // Keep the entire synchronous admission atomic, including the owner fields outside state:
         // no snapshot may expose it until publish has reserved both resource cuts.
@@ -419,8 +427,7 @@ impl Owner {
         let previous_retry_plan = self.retry_plan.clone();
         let previous_claim = self.pending_output_claim.clone();
         let admission = (|| {
-            self.consume_active_input(&input.turn_id, &input.attempt_id)?;
-            self.consume_steering(steering_ids, &input.turn_id, &input.attempt_id)?;
+            self.consume_pending_inputs(pending_input_ids, &input.turn_id, &input.attempt_id)?;
             self.retry_plan = Some((input.attempt_id.clone(), plan.clone()));
             self.state.context = context.clone();
             // Direct input enters confirmed context and loses its temporary ownership in this
@@ -431,20 +438,15 @@ impl Owner {
                 };
             }
             self.current_model_running = true;
-            // Whether this admission really executes queued work — a Message input of this batch or of the
-            // steering set, or the messages it delivers. That is what serves a point nothing claims any
-            // more, and it is measured before the watermark and the inputs move.
+            // Whether this admission really serves queued/pending user work — a Message input or
+            // delivered inbox message — which supersedes any un-claimed continuation point.
             let ran_queued_work = consumed_messages > self.state.consumed_messages
-                || self
-                    .active_inputs
-                    .iter()
-                    .chain(steering_ids.iter())
-                    .any(|id| {
-                        self.state.inputs.iter().any(|record| {
-                            record.input.id == *id
-                                && record.input.purpose == input::InputPurpose::Message
-                        })
-                    });
+                || pending_input_ids.iter().any(|id| {
+                    self.state.inputs.iter().any(|record| {
+                        record.input.id == *id
+                            && record.input.purpose == input::InputPurpose::Message
+                    })
+                });
             self.state.consumed_messages = consumed_messages;
             // Actual submitted content supersedes owed work when its frozen batch is admitted.
             // Resume already consumed its one-shot token when reserving this execution.
@@ -516,14 +518,64 @@ impl Owner {
         }
         let result = exit.result.map_err(Arc::new);
         let member_error = self.finish_model_members();
-        if input.cancellation.is_cancelled()
-            && self.interrupted_turn.as_deref() == Some(&input.turn_id)
+        let soft_preempted = self.active.as_ref().is_some_and(|run| {
+            run.is_step_preempted(self.interrupt.is_closing())
+                && run.input.turn_id == input.turn_id
+        });
+        if !soft_preempted
+            && input.cancellation.is_cancelled()
+            && self.stopping_turn.as_deref() == Some(&input.turn_id)
             && let Err(error) = &result
             && error.kind != crate::model::ModelFailureKind::Cancelled
         {
-            self.policy
+            self.driver
                 .fail(Arc::new(ThreadError::Model(error.clone())));
-            self.pause_inputs();
+            self.pause_execution();
+        }
+        if soft_preempted {
+            let partial_text = extract_partial_text(
+                self.model_progress
+                    .as_ref()
+                    .filter(|(id, _)| id == &input.attempt_id)
+                    .map(|(_, receiver)| receiver.borrow().clone())
+                    .as_ref(),
+                Some(&result),
+            );
+            let partial_record_id = partial_text.map(|text| {
+                let id = format!("{}:partial", input.attempt_id);
+                let mut records = self.state.context.records.to_vec();
+                records.push(ContextRecord {
+                    id: id.clone(),
+                    turn_id: Some(input.turn_id.clone()),
+                    source: ContextSource::Assistant,
+                    content: vec![ContextContent::Text {
+                        text: Arc::from(text),
+                    }],
+                    tool_calls: Vec::new(),
+                });
+                self.state.context = ContextSnapshot {
+                    revision: output_revision,
+                    records: records.into(),
+                };
+                id
+            });
+            if let Some(call) = &mut self.current_call {
+                call.phase = current::SavedModelPhase::Applied;
+            }
+            self.current_snapshot_missing = false;
+            let trigger_input_ids = self
+                .active
+                .as_ref()
+                .map(|run| run.preempt_triggers.clone())
+                .unwrap_or_default();
+            self.pending_step_preemptions.push(StepPreemptionEvent {
+                seq: self.state.commit_sequence.saturating_add(1),
+                turn_id: input.turn_id.clone(),
+                attempt_id: Some(input.attempt_id.clone()),
+                phase: PreemptedStepPhase::Streaming,
+                trigger_input_ids,
+                partial_record_id,
+            });
         }
         let (outcome, result) = if input.cancellation.is_cancelled() {
             (
@@ -664,4 +716,41 @@ impl Owner {
         }
         self.publish_snapshot();
     }
+}
+
+fn extract_partial_text(
+    progress: Option<&crate::model::ModelProgress>,
+    result: Option<&Result<ModelStepOutput, Arc<crate::model::ModelError>>>,
+) -> Option<String> {
+    if let Some(progress) = progress {
+        let mut text = String::new();
+        for part in progress.parts() {
+            if let crate::model::ObservedPartIdentity::Provider(identity) = part.identity()
+                && identity.part == crate::model::ObservedPartKind::OutputText
+            {
+                text.push_str(&part.text());
+            }
+        }
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+        if let Some(aggregate) = progress.channel(crate::model::AggregateChannel::Text) {
+            let aggregate_text = aggregate.text();
+            if !aggregate_text.trim().is_empty() {
+                return Some(aggregate_text);
+            }
+        }
+    }
+    if let Some(Ok(output)) = result {
+        let mut text = String::new();
+        for item in &output.content {
+            if let ContextContent::Text { text: chunk } = item {
+                text.push_str(chunk);
+            }
+        }
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    None
 }

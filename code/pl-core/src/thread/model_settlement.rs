@@ -63,17 +63,15 @@ impl ModelSettlementPort {
         let commands = self.commands.upgrade().ok_or(ModelMemberError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::SettleModel {
-                    settlement: ModelSubAttemptSettlement {
-                        turn_id: self.turn_id.clone(),
-                        attempt_id: self.attempt_id.clone(),
-                        generation,
-                        payload,
-                    },
-                    reply,
+            .send(handle::LoopEvent::SettleModel {
+                settlement: ModelSubAttemptSettlement {
+                    turn_id: self.turn_id.clone(),
+                    attempt_id: self.attempt_id.clone(),
+                    generation,
+                    payload,
                 },
-            ))
+                reply,
+            })
             .await
             .map_err(|_| ModelMemberError::Closed)?;
         await_settlement(response).await
@@ -294,6 +292,7 @@ impl Owner {
                 settlements: Arc::from([settlement.clone()]),
                 ..Default::default()
             },
+            Arc::from([]),
             Arc::from([]),
         )
         .expect("a settlement produces an effect");

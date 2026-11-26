@@ -173,6 +173,7 @@ pub(super) fn project_attempt(
     snapshot: &ThreadSnapshot,
     stamp: AttemptStamp<'_>,
     finalize: &BTreeSet<String>,
+    soft_preempted: bool,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let AttemptStamp {
         thread_id,
@@ -189,9 +190,31 @@ pub(super) fn project_attempt(
         items.push(opaque);
         return Ok(items);
     }
-    let Some((mut response, lifecycle, channel)) = select_response(snapshot, stamp)? else {
+    let Some((mut response, mut lifecycle, channel)) = select_response(snapshot, stamp)? else {
         return Ok(items);
     };
+    if soft_preempted {
+        response.cancelled_failure = None;
+        lifecycle = ThreadContentLifecycle::completed(stamp.updated_at);
+        for item in &mut response.presentation_items {
+            if let CompletionPresentationItemKind::Text(_) = item.kind {
+                item.kind =
+                    CompletionPresentationItemKind::Text(pl_core::model::ModelTextChannel::Commentary);
+            }
+        }
+        if response.text.is_empty() && response.presentation_items.is_empty() {
+            let partial_id = format!("{}:partial", attempt.attempt_id);
+            if let Some(record) = snapshot.context.records.iter().find(|r| {
+                r.id == partial_id && matches!(r.source, pl_core::context::ContextSource::Assistant)
+            }) {
+                for item in &record.content {
+                    if let ContextContent::Text { text } = item {
+                        response.text.push_str(text);
+                    }
+                }
+            }
+        }
+    }
     items.extend(project_recovery(
         stamp,
         &response.observation,
@@ -1320,6 +1343,7 @@ mod recovery_tests {
                 updated_at: 2,
             },
             &BTreeSet::new(),
+            false,
         )?;
         let item = items
             .iter()

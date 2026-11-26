@@ -172,7 +172,7 @@ async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempot
     // Explicitly continuing executes the single staged continuation exactly once; the repeated
     // answer above did not enqueue a second input, so exactly one model request follows.
     resumed
-        .resume_inputs(pl_core::thread::input::InputDriverOptions {
+        .drive_pending(pl_core::thread::input::InputDriverOptions {
             max_model_steps: pl_core::thread::ModelStepLimit::Limited(
                 3.try_into().expect("nonzero limit"),
             ),

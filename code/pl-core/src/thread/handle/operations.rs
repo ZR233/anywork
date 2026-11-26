@@ -201,15 +201,13 @@ impl ThreadHandle {
             model_settlements: Default::default(),
             effect_window: effect_window.clone(),
             permission_leases: Default::default(),
-            active_inputs: Vec::new(),
-            input_batch_through: None,
-            frozen_turn: None,
-            interrupted_turn: None,
-            policy: if resumed {
-                input::ExecutionPolicy::Paused(input::PauseReason::User)
+            stopping_turn: None,
+            driver: if resumed {
+                input::ExecutionDriver::Stopped
             } else {
-                input::ExecutionPolicy::Paused(input::PauseReason::Initial)
+                input::ExecutionDriver::Idle
             },
+            pending_step_preemptions: Vec::new(),
             interrupt: interrupt.clone(),
             task_commands: events.downgrade(),
             event_bus,
@@ -288,9 +286,7 @@ impl ThreadHandle {
         }
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                super::mailbox::MailboxCommand::BeginIdleClose(reply),
-            ))
+            .send(UserCommand::BeginIdleClose(reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         if !response.await.map_err(|_| ThreadError::Closed)? {
@@ -308,9 +304,7 @@ impl ThreadHandle {
     pub async fn interrupt_turn(&self, expected: Option<String>) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                super::mailbox::MailboxCommand::InterruptTurn { expected, reply },
-            ))
+            .send(UserCommand::InterruptTurn { expected, reply })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -333,12 +327,10 @@ impl ThreadHandle {
     ) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                super::mailbox::MailboxCommand::InterruptExecution {
-                    expected: expected_execution_id,
-                    reply,
-                },
-            ))
+            .send(UserCommand::InterruptExecution {
+                expected: expected_execution_id,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -353,9 +345,7 @@ impl ThreadHandle {
     pub async fn cancel_running_turn(&self, expected: String) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                super::mailbox::MailboxCommand::CancelRunningTurn { expected, reply },
-            ))
+            .send(UserCommand::CancelRunningTurn { expected, reply })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -459,11 +449,7 @@ impl ThreadHandle {
     ) -> Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::Extensions(
-                    super::mailbox::ExtensionRequest::Mutate(mutations, reply),
-                ),
-            ))
+            .send(LoopEvent::MutateExtensions(mutations, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -477,13 +463,11 @@ impl ThreadHandle {
         use crate::model::ModelMemberError;
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::OpenAuxiliaryModel {
-                    caller: None,
-                    turn_id,
-                    reply,
-                },
-            ))
+            .send(LoopEvent::OpenAuxiliaryModel {
+                caller: None,
+                turn_id,
+                reply,
+            })
             .await
             .map_err(|_| ModelMemberError::Closed)?;
         response.await.map_err(|_| ModelMemberError::Closed)?
@@ -497,9 +481,7 @@ impl ThreadHandle {
         use crate::model::ModelMemberError;
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::VerifyModelSettlement { settlement, reply },
-            ))
+            .send(LoopEvent::VerifyModelSettlement { settlement, reply })
             .await
             .map_err(|_| ModelMemberError::Closed)?;
         super::model_settlement::await_settlement(response).await
@@ -512,9 +494,7 @@ impl ThreadHandle {
     pub async fn send_message(&self, message: inbox::ThreadMessage) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(super::mailbox::MailboxCommand::Message(
-                message, None, reply,
-            )))
+            .send(LoopEvent::Message(message, None, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -534,13 +514,11 @@ impl ThreadHandle {
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::MessageWithExtensions {
-                    message,
-                    mutations,
-                    reply,
-                },
-            ))
+            .send(LoopEvent::MessageWithExtensions {
+                message,
+                mutations,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -558,11 +536,7 @@ impl ThreadHandle {
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(super::mailbox::MailboxCommand::Message(
-                message,
-                Some(options),
-                reply,
-            )))
+            .send(LoopEvent::Message(message, Some(options), reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -582,20 +556,18 @@ impl ThreadHandle {
     ) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::WakeAcceptedMessage {
-                    id: id.to_owned(),
-                    sequence,
-                    options,
-                    reply,
-                },
-            ))
+            .send(LoopEvent::WakeAcceptedMessage {
+                id: id.to_owned(),
+                sequence,
+                options,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
-    /// Accepts a parent-authored message, interrupts active work and continues after cleanup.
+    /// Accepts a parent-authored message and continues immediately.
     /// Duplicate identities return the original receipt without restarting execution.
     ///
     /// # Errors
@@ -606,10 +578,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::ContinueMessage(message, options, None, reply),
-            ))
+        self.user_commands
+            .send(UserCommand::ContinueMessage(message, options, None, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -629,14 +599,12 @@ impl ThreadHandle {
         receipt_extension_id: String,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::ContinueMessage(
-                    message,
-                    options,
-                    Some(receipt_extension_id),
-                    reply,
-                ),
+        self.user_commands
+            .send(UserCommand::ContinueMessage(
+                message,
+                options,
+                Some(receipt_extension_id),
+                reply,
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -707,9 +675,7 @@ impl ThreadHandle {
     pub async fn retry_history_admission(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::RetryHistoryAdmission(reply),
-            ))
+            .send(LoopEvent::RetryHistoryAdmission(reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -725,9 +691,7 @@ impl ThreadHandle {
     ) -> Result<task::TaskCancellationReceipt, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                super::mailbox::MailboxCommand::CancelTask(id, reply),
-            ))
+            .send(UserCommand::CancelTask(id, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -744,27 +708,7 @@ impl ThreadHandle {
     ) -> Result<permissions::PermissionRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                mailbox::MailboxCommand::ResolvePermission(resolution, reply),
-            ))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
-    }
-
-    /// Atomically selects queue or current-Turn delivery and records the immutable input.
-    ///
-    /// # Errors
-    /// Rejects incompatible routing policy, duplicate identities with different content and storage pressure.
-    pub async fn submit_input_with_policy(
-        &self,
-        submission: input::InputSubmission,
-    ) -> Result<input::InputRecord, ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.user_commands
-            .send(UserCommand::Mailbox(mailbox::MailboxCommand::SubmitInput(
-                submission, reply,
-            )))
+            .send(UserCommand::ResolvePermission(resolution, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -878,12 +822,10 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         let result = match self
             .events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::InstallRuntimeBundle(
-                    Box::new(update),
-                    batch.clone(),
-                    reply,
-                ),
+            .send(LoopEvent::InstallRuntimeBundle(
+                Box::new(update),
+                batch.clone(),
+                reply,
             ))
             .await
         {
@@ -905,9 +847,7 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         let result = match self
             .events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::Register(batch.clone(), reply),
-            ))
+            .send(LoopEvent::RegisterTools(batch.clone(), reply))
             .await
         {
             Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
@@ -924,9 +864,7 @@ impl ThreadHandle {
     pub async fn retry_tool_cleanup(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::RetryToolCleanup(reply),
-            ))
+            .send(LoopEvent::RetryToolCleanup(reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -944,9 +882,7 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         let result = match self
             .events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::RetireTools(batch.clone(), reply),
-            ))
+            .send(LoopEvent::RetireTools(batch.clone(), reply))
             .await
         {
             Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
@@ -981,9 +917,7 @@ impl ThreadHandle {
     pub async fn queue_runtime_facts(&self, facts: Vec<RuntimeFact>) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::QueueRuntimeFacts(facts, reply),
-            ))
+            .send(LoopEvent::QueueRuntimeFacts(facts, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1092,9 +1026,7 @@ impl ThreadHandle {
     pub async fn resume_storage(&self, generation: u64) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::ResumeStorage { generation, reply },
-            ))
+            .send(LoopEvent::ResumeStorage { generation, reply })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1105,14 +1037,12 @@ impl ThreadHandle {
         loop {
             let (reply, response) = oneshot::channel();
             self.events
-                .send(LoopEvent::Mailbox(
-                    super::mailbox::MailboxCommand::RetryOutputStorage(reply),
-                ))
+                .send(LoopEvent::RetryOutputStorage(reply))
                 .await
                 .map_err(|_| ThreadError::Closed)?;
             match response.await.map_err(|_| ThreadError::Closed)? {
-                super::mailbox::OutputRetryReply::Finished(result) => return result,
-                super::mailbox::OutputRetryReply::Waiting(finished) => finished.cancelled().await,
+                super::cold::OutputRetryReply::Finished(result) => return result,
+                super::cold::OutputRetryReply::Waiting(finished) => finished.cancelled().await,
             }
         }
     }
@@ -1125,9 +1055,7 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         if self
             .user_commands
-            .send(UserCommand::Mailbox(super::mailbox::MailboxCommand::Flush(
-                reply,
-            )))
+            .send(UserCommand::Flush(reply))
             .await
             .is_err()
         {

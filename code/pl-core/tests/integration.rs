@@ -20,6 +20,8 @@ mod continuation_execution;
 mod digest_compatibility;
 #[path = "integration/flush_reachability.rs"]
 mod flush_reachability;
+#[path = "integration/immediate_messaging.rs"]
+mod immediate_messaging;
 #[path = "integration/interaction_collection_revision.rs"]
 mod interaction_collection_revision;
 #[path = "integration/interaction_recovery.rs"]

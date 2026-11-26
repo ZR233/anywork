@@ -80,15 +80,7 @@ pub(crate) struct ThreadInputRow {
     pub revision: u64,
     /// Content digest of a terminal identity; a resident record carries none.
     pub digest: Option<String>,
-    pub delivery: ThreadInputDelivery,
     pub state: ThreadInputState,
-}
-
-/// Typed `InputDelivery` fact of one input.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ThreadInputDelivery {
-    NextTurn,
-    CurrentTurn { turn_id: String },
 }
 
 /// Typed `InputState` of one canonical input.
@@ -102,18 +94,7 @@ pub(crate) enum ThreadInputState {
 /// Reads the exact persisted input queues from the complete Current JSON.
 /// History sequences are deliberately absent from this observation.
 pub(crate) async fn thread_inputs(home: &Path, thread_id: &str) -> Result<Vec<ThreadInputRow>> {
-    use pl_core::thread::{
-        current::ThreadCurrent,
-        input::{InputDelivery, InputState},
-    };
-    fn delivery(value: &InputDelivery) -> ThreadInputDelivery {
-        match value {
-            InputDelivery::NextTurn => ThreadInputDelivery::NextTurn,
-            InputDelivery::CurrentTurn { turn_id } => ThreadInputDelivery::CurrentTurn {
-                turn_id: turn_id.clone(),
-            },
-        }
-    }
+    use pl_core::thread::{current::ThreadCurrent, input::InputState};
     fn state(value: &InputState) -> ThreadInputState {
         match value {
             InputState::Pending => ThreadInputState::Pending,
@@ -150,7 +131,6 @@ pub(crate) async fn thread_inputs(home: &Path, thread_id: &str) -> Result<Vec<Th
                 ordinal: input.ordinal,
                 revision: input.revision,
                 digest: None,
-                delivery: delivery(&input.delivery),
                 state: state(&input.state),
             })
             .collect::<Vec<_>>();
@@ -166,7 +146,6 @@ pub(crate) async fn thread_inputs(home: &Path, thread_id: &str) -> Result<Vec<Th
                     ordinal: input.ordinal,
                     revision: input.revision,
                     digest: Some(input.digest.clone()),
-                    delivery: delivery(&input.delivery),
                     state: state(&input.state),
                 }),
         );

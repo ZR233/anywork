@@ -92,15 +92,9 @@ pub(super) struct Owner {
     pub(super) pending_model_connection_events: Vec<crate::model::ModelConnectionEvent>,
     pub(super) permission_leases:
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
-    pub(super) active_inputs: Vec<String>,
-    pub(super) input_batch_through: Option<u64>,
-    /// Turn whose frozen batch is being prepared right now, if any.
-    ///
-    /// A batch copies its content when it freezes, so a replacement that arrives afterwards cannot be
-    /// absorbed into it; this is what lets the owner recognize that case and re-freeze instead.
-    pub(super) frozen_turn: Option<String>,
-    pub(super) interrupted_turn: Option<String>,
-    pub(super) policy: input::ExecutionPolicy,
+    pub(super) stopping_turn: Option<String>,
+    pub(super) driver: input::ExecutionDriver,
+    pub(super) pending_step_preemptions: Vec<StepPreemptionEvent>,
     pub(super) task_commands: mpsc::WeakSender<handle::LoopEvent>,
     pub(super) event_bus: events::EventBus,
     pub(super) progress_tracker: events::ModelProgressTracker,
@@ -386,58 +380,12 @@ impl Owner {
         mut user_rx: mpsc::Receiver<UserCommand>,
         mut event_rx: mpsc::Receiver<LoopEvent>,
     ) {
-        use futures::{FutureExt, StreamExt};
+        use futures::StreamExt;
         let mut pressure_updates = self.subscribe_pressure();
         let mut pressure_subscribed = self.cold.is_some();
         let mut user_open = true;
-        let mut admitted_batch: Option<(usize, usize, usize)> = None;
         loop {
-            let (mut user_remaining, mut event_remaining, mut results_remaining) =
-                admitted_batch.take().unwrap_or_else(|| {
-                    (
-                        user_rx.len(),
-                        event_rx.len(),
-                        self.background.len() + self.maintenance.len(),
-                    )
-                });
-            let mut ready = 0;
-            // Bounded priority window: Tier 1 user commands always drain before Tier 2 events.
-            while ready < 31 && (user_remaining > 0 || event_remaining > 0) {
-                if user_remaining > 0 {
-                    user_remaining -= 1;
-                    if let Ok(command) = user_rx.try_recv() {
-                        self.handle_user_command(command);
-                    }
-                } else {
-                    event_remaining -= 1;
-                    if let Ok(event) = event_rx.try_recv() {
-                        self.handle_loop_event(event);
-                    }
-                }
-                ready += 1;
-            }
-            while ready < 31 && results_remaining > 0 {
-                if let Some(Some(completion)) = self.background.next().now_or_never() {
-                    self.finish_background(completion);
-                } else if let Some(Some(completion)) = self.maintenance.next().now_or_never() {
-                    self.finish_maintenance(completion);
-                } else {
-                    results_remaining = 0;
-                    break;
-                }
-                ready += 1;
-                results_remaining -= 1;
-            }
-            if user_remaining > 0 || event_remaining > 0 || results_remaining > 0 {
-                if let Some(work) = self.primary.as_mut()
-                    && let Some(completion) = (&mut work.future).now_or_never()
-                {
-                    work.future = Box::pin(std::future::ready(completion));
-                }
-                admitted_batch = Some((user_remaining, event_remaining, results_remaining));
-                tokio::task::yield_now().await;
-                continue;
-            }
+            let drained_full = self.drain_ready(&mut user_rx, &mut event_rx);
             if !pressure_subscribed && self.cold.is_some() {
                 pressure_updates = self.subscribe_pressure();
                 pressure_subscribed = true;
@@ -450,6 +398,10 @@ impl Owner {
             }
             match self.start_ready_work() {
                 Ok(true) => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Ok(false) if drained_full => {
                     tokio::task::yield_now().await;
                     continue;
                 }
@@ -526,17 +478,48 @@ impl Owner {
         }
     }
 
-    fn handle_user_command(&mut self, command: UserCommand) {
-        if let UserCommand::Mailbox(mailbox_cmd) = command {
-            self.process_mailbox(mailbox_cmd);
-            return;
+    /// Bounded priority drain: Tier 1 user commands always drain before Tier 2 events and ready
+    /// background/maintenance completions. Returns true when the per-tick budget was saturated so
+    /// the caller yields fairly before returning to `select!`.
+    fn drain_ready(
+        &mut self,
+        user_rx: &mut mpsc::Receiver<UserCommand>,
+        event_rx: &mut mpsc::Receiver<LoopEvent>,
+    ) -> bool {
+        use futures::{FutureExt, StreamExt};
+        const DRAIN_BUDGET: usize = 32;
+        let mut drained = 0;
+        while drained < DRAIN_BUDGET {
+            if let Ok(command) = user_rx.try_recv() {
+                self.handle_user_command(command);
+            } else if let Ok(event) = event_rx.try_recv() {
+                self.handle_loop_event(event);
+            } else if let Some(Some(completion)) = self.background.next().now_or_never() {
+                self.finish_background(completion);
+            } else if let Some(Some(completion)) = self.maintenance.next().now_or_never() {
+                self.finish_maintenance(completion);
+            } else {
+                return false;
+            }
+            drained += 1;
         }
-        if self.interrupt.is_closing() && !matches!(command, UserCommand::Close(_, _)) {
+        true
+    }
+
+    fn handle_user_command(&mut self, command: UserCommand) {
+        if self.interrupt.is_closing()
+            && matches!(
+                command,
+                UserCommand::CurrentResume { .. }
+                    | UserCommand::Turn(_, _)
+                    | UserCommand::ResolveInteraction(_, _)
+                    | UserCommand::CancelInteraction(_, _)
+            )
+        {
             command.reject();
             return;
         }
         match command {
-            UserCommand::Mailbox(_) => unreachable!("mailbox already handled"),
             UserCommand::CurrentResume {
                 epoch,
                 expected_stop_generation,
@@ -544,7 +527,7 @@ impl Owner {
                 reply,
             } => match self.prepare_current_resume(epoch, expected_stop_generation, input) {
                 Ok(input) => {
-                    match self.start_run(input, super::execution::RunReply::Current(reply)) {
+                    match self.start_run(input, super::execution::RunReply::Current(reply), None) {
                         Err((error, reply)) => reply.reject(error),
                         Ok(()) => self.active.as_mut().unwrap().restored = true,
                     }
@@ -559,29 +542,172 @@ impl Owner {
             UserCommand::CancelInteraction(cancellation, reply) => {
                 let _ = reply.send(self.cancel_interaction(cancellation));
             }
-            UserCommand::QueuedTurn(request, reply) => {
-                if self.active.is_some() {
-                    let _ = reply.send(Err(ThreadError::InputRequiresIdle));
-                } else if let Some(content) = self.freeze_next_input_batch() {
-                    if let Err((error, reply)) = self.start_run(
-                        TurnInput {
-                            turn_id: request.turn_id,
-                            attempt_prefix: request.attempt_prefix,
-                            content,
-                            max_model_steps: request.max_model_steps,
-                            cancellation: request.cancellation,
-                        },
-                        super::execution::RunReply::Queued(reply),
-                    ) {
-                        reply.reject(error);
+            UserCommand::ResolvePermission(resolution, reply) => {
+                let _ = reply.send(self.resolve_execution_permission(resolution));
+            }
+            UserCommand::ContinueMessage(message, options, receipt, reply) => {
+                let _ = reply.send(self.continue_message(message, options, receipt.as_deref()));
+            }
+            UserCommand::Resume(request, options, reply) => {
+                let _ = reply.send(self.resume(request, options));
+            }
+            UserCommand::InterruptTurn { expected, reply } => {
+                let active = self
+                    .state
+                    .turns
+                    .iter()
+                    .rev()
+                    .find(|turn| turn.state == TurnState::Running)
+                    .map(|turn| turn.turn_id.clone())
+                    .or_else(|| self.stopping_turn.clone());
+                let result = match active {
+                    Some(turn_id) if expected.as_ref().is_some_and(|id| id != &turn_id) => {
+                        Err(ThreadError::InvalidIdentity)
+                    }
+                    Some(turn_id) => {
+                        self.stopping_turn = Some(turn_id.clone());
+                        self.pause_execution();
+                        self.note_execution_phase(ExecutionPhase::Stopping);
+                        let result = self.cancel_turn_tasks(&turn_id);
+                        let interrupted = self.interrupt.interrupt();
+                        self.publish_snapshot();
+                        result.map(|()| interrupted)
+                    }
+                    None => {
+                        self.pause_execution();
+                        self.publish_snapshot();
+                        Ok(false)
+                    }
+                };
+                let _ = reply.send(result);
+            }
+            UserCommand::InterruptExecution { expected, reply } => {
+                let current = self.state.execution.clone();
+                let result = match current {
+                    Some(execution) if execution.id == expected => {
+                        let turn_id = execution.turn_id.clone();
+                        self.note_execution_phase(ExecutionPhase::Stopping);
+                        self.pause_execution();
+                        let source = turn_id
+                            .as_ref()
+                            .map_or_else(|| "execution".to_owned(), |id| format!("turn:{id}"));
+                        self.form_continuation(
+                            ContinuationReason::UserStop,
+                            turn_id.clone(),
+                            &source,
+                        );
+                        let tasks = turn_id.as_ref().map_or(Ok(()), |turn_id| {
+                            self.stopping_turn = Some(turn_id.clone());
+                            self.cancel_turn_tasks(turn_id)
+                        });
+                        let cancelled = self.interrupt.interrupt();
+                        self.publish().and(tasks).map(|()| cancelled)
+                    }
+                    Some(_) | None => Err(ThreadError::InvalidIdentity),
+                };
+                let _ = reply.send(result);
+            }
+            UserCommand::CancelRunningTurn { expected, reply } => {
+                let running = self
+                    .state
+                    .turns
+                    .iter()
+                    .any(|turn| turn.state == TurnState::Running && turn.turn_id == expected);
+                let result = if running {
+                    self.stopping_turn = Some(expected.clone());
+                    let result = self.cancel_turn_tasks(&expected);
+                    let interrupted = self.active.as_ref().is_some_and(|run| {
+                        run.turn_cancel.cancel();
+                        true
+                    });
+                    self.publish_snapshot();
+                    result.map(|()| interrupted)
+                } else {
+                    Ok(false)
+                };
+                let _ = reply.send(result);
+            }
+            UserCommand::SubmitInput(input, drive, reply) => {
+                let result = self.submit_immediate_input(input, drive);
+                let _ = reply.send(result);
+            }
+            UserCommand::DiscardInput(id, reply) => {
+                let _ = reply.send(self.discard_input(&id));
+            }
+            UserCommand::DrivePending(options, reply) => {
+                let _ = reply.send(self.drive_pending(options));
+            }
+            UserCommand::PauseExecution(reply) => {
+                self.pause_execution();
+                let _ = reply.send(());
+            }
+            UserCommand::CancelTask(id, reply) => {
+                let _ = reply.send(self.cancel_task(&id));
+            }
+            UserCommand::Flush(reply) => self.start_flush(reply),
+            UserCommand::BeginIdleClose(reply) => {
+                let idle = self.active.is_none()
+                    && !self
+                        .state
+                        .turns
+                        .iter()
+                        .any(|turn| turn.state == TurnState::Running)
+                    && !self
+                        .state
+                        .inputs
+                        .iter()
+                        .any(|record| record.state == input::InputState::Pending)
+                    && !self
+                        .state
+                        .tasks
+                        .values()
+                        .any(|task| task.status == task::TaskStatus::Running)
+                    && !self
+                        .state
+                        .interactions
+                        .values()
+                        .any(|record| record.state == interactions::InteractionState::Pending)
+                    && !self
+                        .state
+                        .permissions
+                        .values()
+                        .any(|record| record.state == permissions::PermissionState::Pending)
+                    && !self
+                        .state
+                        .inbox
+                        .iter()
+                        .any(|record| record.sequence > self.state.consumed_messages)
+                    && self.pending.is_empty()
+                    && self.pending_effects.is_empty()
+                    && self.output_obligations.is_empty()
+                    && self.pending_output_repairs.is_empty()
+                    && self.operation_budgets.is_empty()
+                    && !self.state.persistence.resume_required
+                    && self.cold_error.is_none()
+                    && !self.cold.as_ref().is_some_and(|store| {
+                        let status = store.idle_status(&self.id);
+                        status.reclaimable_thread_bytes != Some(status.pressure.thread_bytes)
+                            || status.pressure.durable_sequence < self.state.commit_sequence
+                            || status.pressure.error.is_some()
+                    });
+                let idle = if idle {
+                    self.interrupt.begin_close();
+                    self.state.lifecycle = ThreadLifecycle::Closing;
+                    match self.publish() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            self.driver.fail(Arc::new(error));
+                            false
+                        }
                     }
                 } else {
-                    let _ = reply.send(Ok(None));
-                }
+                    false
+                };
+                let _ = reply.send(idle);
             }
             UserCommand::Turn(input, reply) => {
                 if let Err((error, reply)) =
-                    self.start_run(input, super::execution::RunReply::Turn(reply))
+                    self.start_run(input, super::execution::RunReply::Turn(reply), None)
                 {
                     reply.reject(error);
                 }
@@ -593,16 +719,267 @@ impl Owner {
     }
 
     fn handle_loop_event(&mut self, event: LoopEvent) {
-        if let LoopEvent::Mailbox(mailbox_cmd) = event {
-            self.process_mailbox(mailbox_cmd);
-            return;
-        }
-        if self.interrupt.is_closing() {
+        if self.interrupt.is_closing()
+            && matches!(
+                event,
+                LoopEvent::ContextPreparation(_, _)
+                    | LoopEvent::Reveal(_, _)
+                    | LoopEvent::RequestInteraction(_, _)
+                    | LoopEvent::Application(_, _)
+                    | LoopEvent::Resources(_, _)
+                    | LoopEvent::Retry { .. }
+                    | LoopEvent::AttachHistory(_, _)
+                    | LoopEvent::AttachEventSink(_, _)
+                    | LoopEvent::Capacity(_, _)
+                    | LoopEvent::PatchRuntimeFacts(_, _)
+                    | LoopEvent::UpdateFacts(_, _)
+                    | LoopEvent::CompactContext(_, _, _)
+                    | LoopEvent::ReplaceContext(_, _)
+                    | LoopEvent::Execute(_, _, _)
+                    | LoopEvent::Step(_, _)
+            )
+        {
             event.reject();
             return;
         }
         match event {
-            LoopEvent::Mailbox(_) => unreachable!("mailbox already handled"),
+            LoopEvent::ReadCurrent { captured, reply } => {
+                let _ = reply.send(self.read_current(captured));
+            }
+            LoopEvent::ReadResume(request, reply) => {
+                let _ = reply.send(self.read_resume(&request));
+            }
+            LoopEvent::InvokeNested {
+                caller,
+                executor,
+                tool_id,
+                arguments,
+                cancellation,
+                reply,
+            } => match self.begin_nested(caller, executor, tool_id, arguments, cancellation) {
+                Ok(id) => {
+                    self.nested_replies.insert(id, reply);
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                }
+            },
+            LoopEvent::InstallRuntimeBundle(update, batch, reply) => {
+                let result = if self.interrupt.is_closing()
+                    || self.state.lifecycle != ThreadLifecycle::Open
+                {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.queue_runtime_bundle(*update, batch.take().unwrap_or_default())
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::RuntimeAuthorizationChanged => {
+                if let Err(error) = self.retire_revoked_runtime_tools() {
+                    self.fail_owner_work(error);
+                }
+            }
+            LoopEvent::RegisterTools(tools, reply) => {
+                let tools = tools.take().unwrap_or_default();
+                self.tools.retain_candidates(&tools);
+                let result = if self.state.lifecycle == ThreadLifecycle::Open
+                    && !self.interrupt.is_closing()
+                {
+                    let result = self
+                        .tools
+                        .replace(tools)
+                        .and_then(|()| self.revoke_stale_permissions());
+                    result.and_then(|()| {
+                        self.state.discovered_tools = self.tools.discovery();
+                        self.publish()
+                    })
+                } else {
+                    drop(tools);
+                    Err(ThreadError::Closed)
+                };
+                if result.is_err() {
+                    self.publish_snapshot();
+                }
+                let _ = reply.send(result);
+            }
+            LoopEvent::RetryToolCleanup(reply) => {
+                self.tools.retry_cleanup();
+                self.retry_retired_runtime_models();
+                self.publish_snapshot();
+                let _ = reply.send(Ok(()));
+            }
+            LoopEvent::RetireTools(batch, reply) => {
+                let tools = batch.take().unwrap_or_default();
+                self.tools.retain_candidates(&tools);
+                drop(tools);
+                self.publish_snapshot();
+                let _ = reply.send(Ok(()));
+            }
+            LoopEvent::QueueRuntimeFacts(facts, reply) => {
+                let _ = reply.send(self.queue_runtime_facts(facts));
+            }
+            LoopEvent::ToolProgress {
+                caller,
+                executor,
+                update,
+                reply,
+            } => {
+                let result = self.report_tool_progress(caller, executor, update);
+                let _ = reply.send(result);
+            }
+            LoopEvent::ToolOutputStorageFault {
+                caller,
+                executor,
+                fault,
+                reply,
+            } => {
+                let result = self.report_tool_output_storage_fault(caller, executor, fault);
+                let _ = reply.send(result);
+            }
+            LoopEvent::RequestPermission {
+                caller,
+                authority,
+                payload,
+                reply,
+            } => {
+                let _ = reply.send(self.request_execution_permission(caller, authority, payload));
+            }
+            LoopEvent::OpenAuxiliaryModel {
+                caller,
+                turn_id,
+                reply,
+            } => {
+                let _ = reply.send(self.open_auxiliary_model_settlement(caller, turn_id));
+            }
+            LoopEvent::SettleModel { settlement, reply } => {
+                self.admit_model_settlement(settlement, reply);
+            }
+            LoopEvent::VerifyModelSettlement { settlement, reply } => {
+                self.verify_saved_model_settlement(settlement, reply);
+            }
+            LoopEvent::RecordTaskObservation {
+                caller,
+                payload,
+                reply,
+            } => {
+                let running = self
+                    .state
+                    .tasks
+                    .get(&caller)
+                    .is_some_and(|task| task.status == task::TaskStatus::Running);
+                let id = format!("tool-observation:{}", payload.format());
+                let result = if running {
+                    let expected_revision =
+                        self.state.extensions.get(&id).map(|record| record.revision);
+                    self.mutate_extensions(vec![extensions::ExtensionMutation::Put {
+                        id,
+                        expected_revision,
+                        payload,
+                    }])
+                    .map(|_| ())
+                } else {
+                    Err(ThreadError::TaskAccessExpired)
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::ValidateExecution {
+                caller,
+                executor,
+                reply,
+            } => {
+                let result = if self.state.lifecycle != ThreadLifecycle::Open
+                    || self.interrupt.is_closing()
+                {
+                    Err(ThreadError::Closed)
+                } else if !self
+                    .state
+                    .tasks
+                    .get(&caller)
+                    .is_some_and(|task| task.status == task::TaskStatus::Running)
+                    || self
+                        .executions
+                        .token(&caller)
+                        .is_some_and(|token| token.is_cancelled())
+                {
+                    Err(ThreadError::TaskAccessExpired)
+                } else if !executor.remains_authorized(&self.tools) {
+                    Err(ThreadError::ToolPermissionRevoked)
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::ToolCancelTask {
+                caller,
+                authorization,
+                target,
+                reply,
+            } => {
+                let result = match self.state.tasks.get(&caller) {
+                    Some(task) if task.status == task::TaskStatus::Running => {
+                        if self
+                            .tools
+                            .permits_task_cancellation(&task.tool_id, authorization.as_ref())
+                        {
+                            self.cancel_task(&target)
+                        } else {
+                            Err(ThreadError::TaskAccessDenied)
+                        }
+                    }
+                    Some(_) | None => Err(ThreadError::TaskAccessExpired),
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::RetryHistoryAdmission(reply) => {
+                let _ = reply.send(self.retry_history_admission());
+            }
+            LoopEvent::ResumeStorage { generation, reply } => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.resume_storage(generation)
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::RetryOutputStorage(reply) => {
+                self.start_output_retry(reply);
+            }
+            LoopEvent::Message(message, drive, reply) => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.receive_message(message, drive, None)
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::MessageWithExtensions {
+                message,
+                mutations,
+                reply,
+            } => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.receive_message_with_extensions(message, mutations)
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::MutateExtensions(mutations, reply) => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.mutate_extensions(mutations)
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::WakeAcceptedMessage {
+                id,
+                sequence,
+                options,
+                reply,
+            } => {
+                let _ = reply.send(self.wake_accepted_message(&id, sequence, options));
+            }
             LoopEvent::ContextPreparation(preparation, reply) => {
                 self.context_preparation = preparation;
                 let _ = reply.send(Ok(()));
@@ -721,12 +1098,15 @@ impl Owner {
         // 观察，但撤销整组 live 用量与耗时，消费者因此回退到 canonical 成对样本。门控在
         // 每次发布时重新计算，所以随后到达的在途观察也无法把这个代次的 pair 复活。
         //
-        // 直接取消输入代次 token 或调用 `ThreadHandle::interrupt` 不经过 `interrupted_turn`，
-        // 因此门控同时读取真实 active token 的取消状态；否则这些入口的下一次发布仍会带着
-        // 停止前的成对样本。
-        let live_measurement_withdrawn = self.interrupted_turn.is_some()
+        // 直接取消或正在软抢占中的尝试不保留活体速度采样；明确停轮、关闭或显式取消的 Turn
+        // 撤回实时测量，让消费者回退到 canonical 样本。
+        let live_measurement_withdrawn = self.stopping_turn.is_some()
             || self.interrupt.is_closing()
-            || self.interrupt.active_cancelled();
+            || self.interrupt.active_cancelled()
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|run| run.is_step_preempted(false));
         snapshot.model_progress = self
             .model_progress
             .as_ref()
@@ -745,19 +1125,21 @@ impl Owner {
                     progress,
                 }
             });
-        snapshot.input_execution = if let Some(error) = self.policy.error() {
+        snapshot.input_execution = if let Some(error) = self.driver.error() {
             input::InputExecution::Failed {
                 error: error.clone(),
             }
-        } else if let Some(turn_id) = &self.interrupted_turn {
+        } else if let Some(turn_id) = &self.stopping_turn {
             input::InputExecution::Interrupting {
                 turn_id: turn_id.clone(),
             }
-        } else if let Some(input_id) = self.active_inputs.first() {
-            input::InputExecution::Running {
-                input_id: input_id.clone(),
-            }
-        } else if self.policy.options().is_some()
+        } else if let Some(input_id) = self.active.as_ref().and_then(|run| {
+            run.primary_input_id
+                .clone()
+                .or_else(|| run.current_step_inputs.first().cloned())
+        }) {
+            input::InputExecution::Running { input_id }
+        } else if self.driver.options().is_some()
             && self.state.lifecycle == ThreadLifecycle::Open
             && !self.interrupt.is_closing()
         {
@@ -880,6 +1262,7 @@ impl Owner {
                 connections: std::mem::take(&mut self.pending_model_connection_events).into(),
             },
             std::mem::take(&mut self.pending_context_compactions).into(),
+            std::mem::take(&mut self.pending_step_preemptions).into(),
         ) else {
             self.pending_output_claim = None;
             return Ok(());
@@ -1227,14 +1610,17 @@ mod close_tests {
             .unwrap();
         tool.started.cancelled().await;
         thread
-            .submit_input(ThreadInput {
-                id: "queued-before-close".into(),
-                purpose: InputPurpose::Message,
-                payload: OpaquePayload::text("pending work"),
-                context: vec![ContextContent::Text {
-                    text: "pending work".into(),
-                }],
-            })
+            .submit_input(
+                ThreadInput {
+                    id: "queued-before-close".into(),
+                    purpose: InputPurpose::Message,
+                    payload: OpaquePayload::text("pending work"),
+                    context: vec![ContextContent::Text {
+                        text: "pending work".into(),
+                    }],
+                },
+                None,
+            )
             .await
             .unwrap();
         assert!(thread.snapshot().continuation.is_none());
@@ -1457,14 +1843,17 @@ mod close_tests {
                 .await
                 .unwrap();
             thread
-                .submit_input(ThreadInput {
-                    id: "owed-before-flush".into(),
-                    purpose: InputPurpose::Message,
-                    payload: OpaquePayload::text("unsaved input"),
-                    context: vec![ContextContent::Text {
-                        text: "unsaved input".into(),
-                    }],
-                })
+                .submit_input(
+                    ThreadInput {
+                        id: "owed-before-flush".into(),
+                        purpose: InputPurpose::Message,
+                        payload: OpaquePayload::text("unsaved input"),
+                        context: vec![ContextContent::Text {
+                            text: "unsaved input".into(),
+                        }],
+                    },
+                    None,
+                )
                 .await
                 .unwrap();
             let admissions = store.admissions.load(Ordering::SeqCst);
@@ -1542,12 +1931,15 @@ mod close_tests {
             .await
             .unwrap();
         thread
-            .submit_input(ThreadInput {
-                id: "rejected-batch".into(),
-                purpose: InputPurpose::Message,
-                payload: OpaquePayload::text("pending deletion"),
-                context: vec![],
-            })
+            .submit_input(
+                ThreadInput {
+                    id: "rejected-batch".into(),
+                    purpose: InputPurpose::Message,
+                    payload: OpaquePayload::text("pending deletion"),
+                    context: vec![],
+                },
+                None,
+            )
             .await
             .unwrap();
         let before = thread.snapshot();

@@ -79,6 +79,7 @@ pub(super) struct BotRegistrationOwner {
 pub(super) struct BotReplyOwner {
     pub(super) tasks: Mutex<super::reply::BotReplyTasks>,
     pub(super) archive_seals: std::sync::Mutex<BTreeMap<String, usize>>,
+    pub(super) thread_gates: std::sync::Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     pub(super) slots: Arc<Semaphore>,
     pub(super) cancel: CancellationToken,
     pub(super) recovery: Mutex<Option<JoinHandle<()>>>,
@@ -89,6 +90,7 @@ impl Default for BotReplyOwner {
         Self {
             tasks: Mutex::default(),
             archive_seals: std::sync::Mutex::default(),
+            thread_gates: std::sync::Mutex::default(),
             slots: Arc::new(Semaphore::new(32)),
             cancel: CancellationToken::new(),
             recovery: Mutex::new(None),
@@ -137,6 +139,21 @@ impl Clone for BotRuntime {
         Self {
             inner: self.inner.clone(),
         }
+    }
+}
+
+impl BotRuntime {
+    pub(super) fn thread_reply_gate(&self, thread_id: &str) -> Arc<Mutex<()>> {
+        let mut gates = self
+            .inner
+            .reply_work
+            .thread_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates
+            .entry(thread_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 }
 

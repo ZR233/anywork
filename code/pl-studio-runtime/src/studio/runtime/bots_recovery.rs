@@ -21,7 +21,6 @@ impl StudioRuntime {
             .find(|record| record.input.id == input_id)
         {
             return Ok(BotInputRead::Ready {
-                delivery: record.delivery.clone(),
                 state: record.state.clone(),
             });
         }
@@ -31,7 +30,6 @@ impl StudioRuntime {
             .find(|identity| identity.id == input_id)
         {
             return Ok(BotInputRead::Ready {
-                delivery: identity.delivery.clone(),
                 state: identity.state.clone(),
             });
         }

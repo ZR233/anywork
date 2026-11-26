@@ -1155,7 +1155,6 @@ async fn verify_pending_identities(
         let durable = decode_legacy_input_identity(&row.try_get::<String>("", "payload")?)?;
         if durable.id != input.input.id
             || durable.digest != input.input.digest()
-            || durable.delivery != input.delivery
             || durable.purpose != input.input.purpose
             || durable.ordinal != input.ordinal
             || durable.revision != input.revision

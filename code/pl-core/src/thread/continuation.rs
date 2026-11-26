@@ -120,16 +120,15 @@ impl Owner {
             input = self
                 .prepare_current_resume(self.runtime_epoch, self.interrupt.stops(), input)
                 .map_err(|e| ThreadError::CurrentResume(Arc::new(e)))?;
-        } else {
-            input.content = self.freeze_next_input_batch().unwrap_or_default();
         }
+        let primary_input_id = self.first_pending_input_id();
         let accepted_revision = self
             .state
             .commit_sequence
             .checked_add(1)
             .ok_or(ThreadError::RevisionExhausted)?;
-        self.policy.enable(options);
-        self.start_run(input, super::execution::RunReply::Driver)
+        self.driver.enable(options);
+        self.start_run(input, super::execution::RunReply::Driver, primary_input_id)
             .map_err(|(error, _)| error)?;
         let execution_id = self
             .state
@@ -173,21 +172,6 @@ impl Owner {
         }
     }
 
-    pub(super) fn continue_input(
-        &mut self,
-        input: input::ThreadInput,
-        options: input::InputDriverOptions,
-    ) -> Result<input::InputRecord, ThreadError> {
-        if let Some(receipt) = input::duplicate_input_receipt(&self.state, &input)? {
-            return Ok(receipt);
-        }
-        self.validate_continuation_admission()?;
-        let record = self.accept_input_with_policy(input, input::InputPolicy::StartOrQueue)?;
-        self.input_batch_through = Some(record.ordinal);
-        self.request_continuation(options);
-        Ok(record)
-    }
-
     pub(super) fn continue_message(
         &mut self,
         message: inbox::ThreadMessage,
@@ -204,8 +188,26 @@ impl Owner {
         }
         self.validate_continuation_admission()?;
         let sequence = self.receive_message(message, Some(options), receipt)?;
-        self.request_continuation(options);
+        self.driver.enable(options);
+        if self.active.is_some() {
+            self.preempt_or_wake_active_run(&format!("message:{sequence}"), false);
+        }
+        self.publish_snapshot();
         Ok(sequence)
+    }
+
+    pub(super) fn cancel_turn_tasks(&mut self, turn_id: &str) -> Result<(), ThreadError> {
+        let tasks: Vec<_> = self
+            .state
+            .tasks
+            .values()
+            .filter(|task| task.turn_id == turn_id && task.status == task::TaskStatus::Running)
+            .map(|task| task.id.clone())
+            .collect();
+        for task in tasks {
+            self.cancel_task(&task)?;
+        }
+        Ok(())
     }
 
     fn validate_continuation_admission(&mut self) -> Result<(), ThreadError> {
@@ -259,38 +261,9 @@ impl Owner {
         self.state.continuation = Some(point);
     }
 
-    fn request_continuation(&mut self, options: input::InputDriverOptions) {
-        self.policy.enable(options);
-        if let Some(run) = &self.active {
-            let turn_id = run.input.turn_id.clone();
-            self.interrupted_turn = Some(turn_id.clone());
-            if let Err(error) = self.cancel_turn_tasks(&turn_id) {
-                self.policy.fail(Arc::new(error));
-            }
-            if let Some(run) = self.active.as_ref() {
-                run.input.cancellation.cancel();
-            }
-        }
-        self.publish_snapshot();
-    }
-
-    pub(super) fn cancel_turn_tasks(&mut self, turn_id: &str) -> Result<(), ThreadError> {
-        let tasks: Vec<_> = self
-            .state
-            .tasks
-            .values()
-            .filter(|task| task.turn_id == turn_id && task.status == task::TaskStatus::Running)
-            .map(|task| task.id.clone())
-            .collect();
-        for task in tasks {
-            self.cancel_task(&task)?;
-        }
-        Ok(())
-    }
-
-    /// Wait in the owner loop for physical task completion, servicing the mailbox throughout.
+    /// Wait in the owner loop for explicit stop cleanup, servicing the owner throughout.
     pub(super) fn continuation_ready(&mut self) -> bool {
-        let Some(turn_id) = &self.interrupted_turn else {
+        let Some(turn_id) = &self.stopping_turn else {
             return true;
         };
         if self
@@ -306,7 +279,7 @@ impl Owner {
         {
             return false;
         }
-        self.interrupted_turn = None;
+        self.stopping_turn = None;
         self.publish_snapshot();
         true
     }

@@ -608,10 +608,9 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<History
         }
         ensure_effect_state(inner, index)?;
         if effect.prepared.bus_admitted {
-            if !effect_state(inner, index)?.complete {
-                let mut events = Vec::new();
-                if let Some(report) = &effect.prepared.parent_report {
-                    events.push(delivery_event(
+            if let Some(report) = &effect.prepared.parent_report {
+                if !effect_state(inner, index)?.complete {
+                    let events = vec![delivery_event(
                         &inner.thread.id,
                         "parent_report",
                         &report.id,
@@ -622,9 +621,30 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<History
                             anchor: false,
                             database_id: &database_id,
                         },
-                    )?);
+                    )?];
+                    append_basic_events(inner, index, events)?;
+                    append_usage_events(
+                        inner,
+                        index,
+                        PreparedHistoryUsage {
+                            events: Vec::new(),
+                            accepted_sequence: None,
+                            usage_revision: history.memory_admission_revision(),
+                        },
+                    )?;
+                    complete_effect(inner, index)?;
                 }
-                append_basic_events(inner, index, events)?;
+                let events = effect_state(inner, index)?
+                    .frozen_events
+                    .context("parent report events were not frozen")?;
+                let mut accepted = history.accept_batch(&events).await;
+                if matches!(accepted, Err(crate::history::HistoryError::Capacity)) {
+                    history.flush().await?;
+                    accepted = history.accept_batch(&events).await;
+                }
+                accepted.map_err(anyhow::Error::new)?;
+            } else if !effect_state(inner, index)?.complete {
+                append_basic_events(inner, index, Vec::new())?;
                 append_usage_events(
                     inner,
                     index,
@@ -636,15 +656,6 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<History
                 )?;
                 complete_effect(inner, index)?;
             }
-            let events = effect_state(inner, index)?
-                .frozen_events
-                .context("parent report events were not frozen")?;
-            let mut accepted = history.accept_batch(&events).await;
-            if matches!(accepted, Err(crate::history::HistoryError::Capacity)) {
-                history.flush().await?;
-                accepted = history.accept_batch(&events).await;
-            }
-            accepted.map_err(anyhow::Error::new)?;
             mark_effect_accepted(inner, index)?;
         } else {
             admit_effect(inner, &history, effect, index).await?;

@@ -30,7 +30,7 @@ impl ContextPreparationHook for ObserveTurnInput {
 async fn preparation_exposes_only_the_pending_turn_initiator_not_later_tool_steps() {
     use pl_core::{
         context::OpaquePayload,
-        thread::input::{QueuedTurn, ThreadInput},
+        thread::input::{InputDriverOptions, ThreadInput},
     };
     let (model, _) = ScriptedModel::new(&["record"]);
     let thread = ThreadHandle::start("turn-input".into(), DynModelSession::new(model)).unwrap();
@@ -53,20 +53,26 @@ async fn preparation_exposes_only_the_pending_turn_initiator_not_later_tool_step
             context: vec![text(&format!("user input {id}"))],
         };
         expected.extend([Some(input.clone()), None]);
-        thread.submit_input(input).await.unwrap();
         let request = turn(id);
-        assert!(
-            thread
-                .run_next_input(QueuedTurn {
-                    turn_id: request.turn_id,
-                    attempt_prefix: request.attempt_prefix,
+        let mut updates = thread.subscribe();
+        thread
+            .submit_input(
+                input,
+                Some(InputDriverOptions {
                     max_model_steps: request.max_model_steps,
-                    cancellation: request.cancellation,
-                })
-                .await
-                .unwrap()
-                .is_some()
-        );
+                }),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(snapshot) = updates.next().await {
+                if snapshot.inputs.is_empty() && snapshot.execution.is_none() {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("immediate input completed");
     }
     // User-shaped context without admitted input is not a new host input identity.
     thread.run_turn(turn("direct-context")).await.unwrap();

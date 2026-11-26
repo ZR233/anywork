@@ -64,7 +64,8 @@ flowchart TD
 
 - **`timeline_role = 2`（`Boundary`，直接展示与天然隔断）**：用户输入（`input_accepted`）、助手可见完成正文（`text_completed`）、上下文压缩完成（`compaction_completed`）、计划公开决议（`plan_resolved`）、模型或 SSH 连接状态迁移（`connection_disconnected` / `connection_reconnected`）、轮次异常/中断回执（`turn_receipt_recorded`）以及具备独立展示资格的终态工具（问答回执、媒体展示等）。
 - **`timeline_role = 1`（`Work`，折叠工作项）**：工具生命周期（`tool_called` / `tool_waiting_approval` / `tool_backgrounded` / `tool_cancel_requested` / `tool_completed`）、推理终态（`reasoning_completed`）、子智能体终态（`agent_completed`）与等待/技能/文件过程事件。不直接推送给主时间线。
-- **`timeline_role = 0`（`Hidden`，内部审计与控制）**：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded` 等。不进入主时间线，也不触发封组。
+- **`timeline_role = 0`（`Hidden`，内部审计与控制）**：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded`、以及立即消息与软抢占元事件 `input_consumed`、`input_discarded`、`step_preempted`（记录 `inputId` / `ordinal` / `contextRecordId` / `injectedMidTurn` 与软抢占阶段、`triggerInputIds`、`partialRecordId`）。不进入主时间线，也不触发封组，均沿用 Schema 27。
+- **软抢占部分正文的零中断回退**：模型流式阶段被立即消息触发步级软抢占时，若存在非空已生成正文（`{attempt_id}:partial`），产品投影将其以 `completed` 状态的非终局 `Commentary` `TextCompleted`（`is_final_turn_delivery = false`）持久化，同时抑制虚假的 `TurnReceiptRecorded`（`interrupted`）或取消提示，保证热内存视图与冷重启数据库重建完全一致。
 
 工作组稳定身份使用组内**第一条工作事件的单调序号 `work:<first_work_seq>`**，边界事件使用 `msg:<seq>`。实时和历史都以接下来的 `Boundary` 封组。最新边界之后尚未封口的工作保留为待封组事件，重开或重启时继续等待下一条边界。分页接缝按同一边界归属分组。
 
@@ -96,7 +97,7 @@ stateDiagram-v2
     Working --> Idle : TurnEnded / RunEnded / TurnReceiptRecorded / RunActivity(None)
 
     StreamingText --> StreamingText : TextStreamDelta (16ms 节拍合并增量)
-    StreamingText --> Working : TextStreamEnded / Boundary (Turn 仍活跃 -> 清空缓冲并开新思考容器)
+    StreamingText --> Working : TextStreamEnded / Boundary / StepPreempted (Turn 仍活跃 & 非 Stopping -> 清空旧流与推理缓冲并开新思考容器)
     StreamingText --> Compacting : CompactionStarted
     StreamingText --> Reconnecting : ModelRecovery(Repairing/Waiting/Retrying)
     StreamingText --> Stopping : RunActivity(Stopping)

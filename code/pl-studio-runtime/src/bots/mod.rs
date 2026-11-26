@@ -52,9 +52,8 @@ async fn join_owned_task(
 /// 当前 owner 的有界输入身份；缺失不证明从未受理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BotInputRead {
-    /// 当前 owner 仍保留该输入的路由与消费状态。
+    /// 当前 owner 仍保留该输入的消费状态。
     Ready {
-        delivery: pl_core::thread::input::InputDelivery,
         state: pl_core::thread::input::InputState,
     },
     /// 当前 owner 不再保留该身份，不表示可以重放或重发。

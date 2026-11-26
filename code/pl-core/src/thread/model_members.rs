@@ -190,6 +190,7 @@ impl Owner {
             sequence,
             members,
             Arc::from([]),
+            Arc::from([]),
         )
         .expect("a member always produces an effect");
         let funded = crate::model::encoded_member_bytes(&effect)

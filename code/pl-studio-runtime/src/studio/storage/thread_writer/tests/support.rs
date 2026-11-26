@@ -327,7 +327,6 @@ pub(crate) fn visible_input_ticket(
     let mut write = (*ticket(thread_id, sequence)).clone();
     let input = InputRecord {
         accepted_sequence: sequence,
-        delivery: Default::default(),
         input: ThreadInput {
             purpose: pl_core::thread::input::InputPurpose::Message,
             id: input_id.to_owned(),

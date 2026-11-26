@@ -62,7 +62,7 @@ pub(crate) fn encode() -> Result<OpaquePayload> {
 /// The Session has sealed the child's admission. Pause the existing queue before saving
 /// the durable close marker, leaving already admitted execution to the normal close path.
 pub(crate) async fn commit(thread: &pl_core::thread::ThreadHandle) -> Result<()> {
-    thread.pause_inputs().await?;
+    thread.pause_execution().await?;
     if !is_explicitly_closed(&thread.snapshot())? {
         thread
             .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {

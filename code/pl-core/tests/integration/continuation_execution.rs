@@ -341,9 +341,9 @@ async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops
     let thread = ThreadHandle::start("preparing".into(), DynModelSession::new(model)).unwrap();
     let hold = preparation::HoldPreparation::install(&thread).await;
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("asked", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
@@ -376,7 +376,7 @@ async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops
     ));
 
     // Only an explicit continuation starts the input that was never consumed.
-    thread.resume_inputs(options()).await.unwrap();
+    thread.drive_pending(options()).await.unwrap();
     wait_until(|| {
         matches!(
             input_state(&thread, "asked"),
@@ -410,7 +410,7 @@ async fn recovery_offers_a_continuation_without_running_or_repeating_anything() 
         .await
         .unwrap();
     thread
-        .submit_input(message_input("owed", "Please handle this request"))
+        .submit_input(message_input("owed", "Please handle this request"), None)
         .await
         .unwrap();
     let output = thread
@@ -548,11 +548,11 @@ async fn a_step_limited_turn_stays_continuable_without_replaying_inputs_or_tools
         .await
         .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("asked", "Please handle this request"),
-            InputDriverOptions {
+            Some(InputDriverOptions {
                 max_model_steps: ModelStepLimit::Limited(1.try_into().expect("nonzero limit")),
-            },
+            }),
         )
         .await
         .unwrap();
@@ -615,9 +615,9 @@ async fn only_an_unavailable_model_failure_stays_continuable() {
         )
         .unwrap();
         thread
-            .submit_input_and_run(
+            .submit_input(
                 message_input("asked", "Please handle this request"),
-                options(),
+                Some(options()),
             )
             .await
             .unwrap();
@@ -652,9 +652,9 @@ async fn only_an_unavailable_model_failure_stays_continuable() {
     )
     .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("asked", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
@@ -689,9 +689,9 @@ async fn closing_with_live_work_keeps_it_as_a_host_shutdown_point() {
         .await
         .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("asked", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
@@ -825,7 +825,7 @@ async fn ordinary_content_may_not_claim_the_control_format() {
         context: Vec::new(),
     };
     assert!(matches!(
-        thread.submit_input(message()).await,
+        thread.submit_input(message(), None).await,
         Err(ThreadError::InvalidControlInput)
     ));
     assert!(thread.snapshot().inputs.is_empty());
@@ -856,9 +856,9 @@ async fn an_idle_close_does_not_make_the_thread_continuable() {
         .await
         .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("asked", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
@@ -988,9 +988,9 @@ async fn a_tool_then_failure_stays_continuable_after_a_binding_swap(
         .await
         .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("asked", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
@@ -1112,9 +1112,9 @@ async fn an_external_stop_before_the_cancellation_settles_keeps_the_queue_stoppe
     )
     .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("first", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
@@ -1126,10 +1126,13 @@ async fn an_external_stop_before_the_cancellation_settles_keeps_the_queue_stoppe
         Some(InputState::Consumed { .. })
     ));
 
-    // A content takeover while the Turn is Running: it cancels that generation and deliberately keeps the
-    // queue enabled so the continuation itself can run.
+    // An immediate follow-up while the Turn is Running softly preempts the current step without
+    // killing the Turn itself.
     thread
-        .submit_input_and_continue(message_input("real", "Also check the logs"), options())
+        .submit_input(
+            message_input("real", "Also check the logs"),
+            Some(options()),
+        )
         .await
         .unwrap();
     // The owner is still parked inside the call that ignores cancellation, so this external stop is
@@ -1154,7 +1157,7 @@ async fn an_external_stop_before_the_cancellation_settles_keeps_the_queue_stoppe
     );
 
     // Only an explicit continuation resumes it, and it carries that content.
-    thread.resume_inputs(options()).await.unwrap();
+    thread.drive_pending(options()).await.unwrap();
     wait_until(|| {
         matches!(
             input_state(&thread, "real"),
@@ -1191,18 +1194,21 @@ async fn a_content_takeover_of_a_running_turn_continues_without_an_extra_stop() 
     )
     .unwrap();
     thread
-        .submit_input_and_run(
+        .submit_input(
             message_input("first", "Please handle this request"),
-            options(),
+            Some(options()),
         )
         .await
         .unwrap();
     observed
         .await
         .expect("the first request is admitted and in flight");
-    // No stop is issued: the takeover's own cancellation is what has to keep the queue running.
+    // No stop is issued: soft preemption keeps the Turn alive and delivers the follow-up.
     thread
-        .submit_input_and_continue(message_input("real", "Also check the logs"), options())
+        .submit_input(
+            message_input("real", "Also check the logs"),
+            Some(options()),
+        )
         .await
         .unwrap();
     drop(release);

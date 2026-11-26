@@ -213,7 +213,7 @@ impl SessionRuntime {
             .resolve_interaction(prepare_resolution(&thread_id, current, resolution)?)
             .await?;
         if is_root {
-            thread.resume_inputs(execution).await?;
+            thread.drive_pending(execution).await?;
         }
         project_user_input(&thread_id, &committed)
     }

@@ -785,6 +785,35 @@ impl LiveStatusDataLayer {
                 state.revision += 1;
                 return Some(state.snapshot());
             }
+            HistoryEventKind::StepPreempted => {
+                if state.stopping {
+                    return None;
+                }
+                let needs_reset = !state.working_items.is_empty()
+                    || state.reasoning_preview.is_some()
+                    || !state.reasoning_summary_text.is_empty()
+                    || !state.reasoning_body_text.is_empty()
+                    || !state.stream_text.is_empty()
+                    || state.stream_attempt_id.is_some()
+                    || state.stream_dirty
+                    || state.reasoning_dirty
+                    || !matches!(state.current_phase(), LiveStatusPhase::Working { .. });
+                state.clear_stream_buffer();
+                if state.turn_active {
+                    if needs_reset {
+                        state.enter_fresh_working(now_ms);
+                        state.revision += 1;
+                        return Some(state.snapshot());
+                    }
+                    return None;
+                }
+                if !matches!(state.current_phase(), LiveStatusPhase::Idle) {
+                    state.enter_idle();
+                    state.revision += 1;
+                    return Some(state.snapshot());
+                }
+                return None;
+            }
             _ => {}
         }
 

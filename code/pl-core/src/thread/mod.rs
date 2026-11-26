@@ -53,7 +53,6 @@ use crate::model::{
 mod handle;
 pub use handle::ThreadHandle;
 use handle::{LoopEvent, UserCommand};
-mod mailbox;
 mod model_members;
 mod model_settlement;
 mod model_step;

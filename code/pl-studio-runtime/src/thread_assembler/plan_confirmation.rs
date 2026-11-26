@@ -323,7 +323,7 @@ impl SessionRuntime {
         let prepared = prepare_resolution(thread_id, current, saved_plan, &resolution)?;
         self.prepare_input_admission(thread_id, &thread).await?;
         let committed = thread.resolve_interaction(prepared).await?;
-        thread.resume_inputs(execution).await?;
+        thread.drive_pending(execution).await?;
         project_plan_confirmation(thread_id, &committed)
     }
 }

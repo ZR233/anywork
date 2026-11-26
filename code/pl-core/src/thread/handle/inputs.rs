@@ -2,25 +2,6 @@
 use super::*;
 
 impl ThreadHandle {
-    /// Accepts an input and continues execution, interrupting the current Turn when necessary.
-    ///
-    /// # Errors
-    /// Rejects conflicting input identities or unavailable admission without interrupting work.
-    pub async fn submit_input_and_continue(
-        &self,
-        input: input::ThreadInput,
-        options: input::InputDriverOptions,
-    ) -> Result<input::InputRecord, ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::ContinueInput(input, options, reply),
-            ))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
-    }
-
     /// Accepts a typed, idempotent Resume control without manufacturing user input.
     pub async fn resume_execution(
         &self,
@@ -29,9 +10,7 @@ impl ThreadHandle {
     ) -> Result<ContinuationOperation, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::Resume(request, options, reply),
-            ))
+            .send(UserCommand::Resume(request, options, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -43,82 +22,54 @@ impl ThreadHandle {
     ) -> Result<ContinuationRead, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.events
-            .send(LoopEvent::Mailbox(
-                crate::thread::mailbox::MailboxCommand::ReadResume(request, reply),
-            ))
+            .send(LoopEvent::ReadResume(request, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
-    /// Enables actor-owned serial execution of queued inputs. Recovery leaves this disabled.
-    /// Failures and interaction/step-limit stops pause execution until explicitly resumed.
+    /// Enables execution of pending immediate inputs after recovery, pause or failure.
     ///
     /// # Errors
-    /// Returns a closed owner error without consuming queued input.
-    pub async fn resume_inputs(
+    /// Returns a closed owner error without consuming pending input.
+    pub async fn drive_pending(
         &self,
         options: input::InputDriverOptions,
     ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::ResumeInputs(options, reply),
-            ))
+            .send(UserCommand::DrivePending(options, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
-    /// Pauses future queue execution. Use `interrupt` separately to cancel the active Turn.
+    /// Pauses future execution of pending inputs. Use `interrupt` separately to cancel an active Turn.
     ///
     /// # Errors
     /// Returns an error if the owner is no longer reachable.
-    pub async fn pause_inputs(&self) -> Result<(), ThreadError> {
+    pub async fn pause_execution(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::PauseInputs(reply),
-            ))
+            .send(UserCommand::PauseExecution(reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)
     }
 
-    /// Saves immutable input and returns its idempotent receipt without waiting for the model.
+    /// Saves immutable input under immediate-only semantics: starts execution when idle (if `drive`
+    /// is provided), or softly preempts preparing/streaming steps and wakes waits during a Turn.
     ///
     /// # Errors
     /// Rejects conflicting identities, closed owners and cold-storage pressure.
     pub async fn submit_input(
         &self,
         input: input::ThreadInput,
+        drive: Option<input::InputDriverOptions>,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::Input(input, None, reply),
-            ))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
-    }
-
-    /// Admits input and requests actor-owned queue execution in the same mailbox operation.
-    /// The receipt proves admission, not execution; a racing close preserves the pending input.
-    /// Repeating a consumed identity does not restart execution.
-    ///
-    /// # Errors
-    /// Rejects input identity conflicts and admission failure before returning a receipt.
-    pub async fn submit_input_and_run(
-        &self,
-        input: input::ThreadInput,
-        options: input::InputDriverOptions,
-    ) -> Result<input::InputRecord, ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::Input(input, Some(options), reply),
-            ))
+            .send(UserCommand::SubmitInput(input, drive, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -131,26 +82,7 @@ impl ThreadHandle {
     pub async fn discard_input(&self, id: String) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                crate::thread::mailbox::MailboxCommand::DiscardInput(id, reply),
-            ))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
-    }
-
-    /// Drives the oldest pending input with fresh execution identities after host assembly.
-    /// Recovery itself never calls this method. None means the queue is empty.
-    ///
-    /// # Errors
-    /// Returns execution or admission failure. Input stays pending until model-request admission.
-    pub async fn run_next_input(
-        &self,
-        request: input::QueuedTurn,
-    ) -> Result<Option<TurnCompletion>, ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.user_commands
-            .send(UserCommand::QueuedTurn(request, reply))
+            .send(UserCommand::DiscardInput(id, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?

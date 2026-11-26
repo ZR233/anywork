@@ -1938,3 +1938,391 @@ async fn meta_bus_capacity_failure_is_not_acknowledged_and_same_commit_can_retry
     store.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn meta_bus_records_hidden_input_lifecycle_and_step_preemption_events() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let db_path = temp.path().join("meta-events.sqlite");
+    let store = HistoryStore::open(&db_path, "meta-events", HistoryLimits::default()).await?;
+    let bus = MetaEventBus::open(
+        test_thread("meta-events"),
+        store.clone(),
+        pl_core::thread::current::RuntimeEpoch::new(),
+    );
+
+    let make_hidden_input = |id: &str,
+                             ordinal: u64,
+                             revision: u64,
+                             state: pl_core::thread::input::InputState|
+     -> Result<pl_core::thread::input::InputRecord> {
+        Ok(pl_core::thread::input::InputRecord {
+            accepted_sequence: 1,
+            input: pl_core::thread::input::ThreadInput {
+                id: id.into(),
+                purpose: pl_core::thread::input::InputPurpose::Message,
+                payload: pl_core::context::OpaquePayload::new(
+                    "pl.studio.prompt",
+                    1,
+                    r#"{"text":"hidden","presentation":"hidden","attachments":[]}"#,
+                )?,
+                context: vec![pl_core::context::ContextContent::Text {
+                    text: "hidden".into(),
+                }],
+            },
+            ordinal,
+            revision,
+            state,
+        })
+    };
+    let consumed_state = pl_core::thread::input::InputState::Consumed {
+        turn_id: "turn-1".into(),
+        attempt_id: "att-1".into(),
+    };
+    let discarded_state = pl_core::thread::input::InputState::Discarded;
+    let state = pl_core::thread::ThreadSnapshot {
+        inputs: std::sync::Arc::from([
+            make_hidden_input("in-1", 1, 2, consumed_state.clone())?,
+            make_hidden_input("in-2", 2, 3, discarded_state.clone())?,
+        ]),
+        ..Default::default()
+    };
+    let inputs = std::sync::Arc::from([
+        pl_core::thread::input::InputChange::Transition {
+            id: "in-1".into(),
+            ordinal: 1,
+            revision: 2,
+            state: consumed_state,
+            context_record_id: Some("input:in-1".into()),
+            injected_mid_turn: true,
+        },
+        pl_core::thread::input::InputChange::Transition {
+            id: "in-2".into(),
+            ordinal: 2,
+            revision: 3,
+            state: discarded_state,
+            context_record_id: None,
+            injected_mid_turn: false,
+        },
+    ]);
+    let step_preemptions = std::sync::Arc::from([pl_core::thread::StepPreemptionEvent {
+        seq: 1,
+        turn_id: "turn-1".into(),
+        attempt_id: Some("att-1".into()),
+        phase: pl_core::thread::PreemptedStepPhase::Streaming,
+        trigger_input_ids: vec!["in-3".into()],
+        partial_record_id: Some("att-1:partial".into()),
+    }]);
+
+    let commit = std::sync::Arc::new(pl_core::thread::CoreCommitEvent {
+        thread_id: "meta-events".into(),
+        sequence: 1,
+        export: std::sync::Arc::new(pl_core::thread::HistoryExport {
+            effect: std::sync::Arc::new(pl_core::thread::ThreadEffectBatch {
+                thread_id: "meta-events".into(),
+                sequence: 1,
+                committed_at: 1_000,
+                inputs,
+                step_preemptions,
+                ..Default::default()
+            }),
+            state,
+            output_claim: None,
+        }),
+    });
+    bus.sink()
+        .emit(pl_core::thread::CoreEvent::Durable(commit));
+    bus.wait_admitted_commit(1).await?;
+
+    let reader = store.reader();
+    let (_, originals, _) = reader
+        .events_window(
+            crate::history::HistoryEventsQuery::AllEvents,
+            None,
+            None,
+            true,
+            crate::history::HistoryDemand::default(),
+        )
+        .await?;
+
+    let consumed = originals
+        .iter()
+        .find(|ev| ev.kind == HistoryEventKind::InputConsumed)
+        .expect("InputConsumed meta event should be recorded");
+    assert_eq!(consumed.timeline_role, HistoryTimelineRole::Hidden);
+    let consumed_json: serde_json::Value = serde_json::from_str(&consumed.payload_json)?;
+    assert_eq!(consumed_json["factType"], "input_consumed");
+    assert_eq!(consumed_json["inputId"], "in-1");
+    assert_eq!(consumed_json["contextRecordId"], "input:in-1");
+    assert_eq!(consumed_json["injectedMidTurn"], true);
+
+    let discarded = originals
+        .iter()
+        .find(|ev| ev.kind == HistoryEventKind::InputDiscarded)
+        .expect("InputDiscarded meta event should be recorded");
+    assert_eq!(discarded.timeline_role, HistoryTimelineRole::Hidden);
+    let discarded_json: serde_json::Value = serde_json::from_str(&discarded.payload_json)?;
+    assert_eq!(discarded_json["factType"], "input_discarded");
+    assert_eq!(discarded_json["inputId"], "in-2");
+
+    let preempted = originals
+        .iter()
+        .find(|ev| ev.kind == HistoryEventKind::StepPreempted)
+        .expect("StepPreempted meta event should be recorded");
+    assert_eq!(preempted.timeline_role, HistoryTimelineRole::Hidden);
+    let preempted_json: serde_json::Value = serde_json::from_str(&preempted.payload_json)?;
+    assert_eq!(preempted_json["factType"], "step_preempted");
+    assert_eq!(preempted_json["attemptId"], "att-1");
+    assert_eq!(preempted_json["phase"], "streaming");
+    assert_eq!(preempted_json["triggerInputIds"], serde_json::json!(["in-3"]));
+    assert_eq!(preempted_json["partialRecordId"], "att-1:partial");
+
+    let mut layer = super::timeline_layer::TimelineDataLayer::new();
+    match layer.load_initial_page(&reader, 10, false).await? {
+        TimelinePatch::Reset { items, .. } => assert!(items.is_empty()),
+        other => panic!("hidden meta events must not render visible items: {other:?}"),
+    }
+
+    bus.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn meta_bus_streaming_soft_preemption_keeps_partial_text_and_suppresses_interrupted_receipt()
+-> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let db_path = temp.path().join("soft-preempt.sqlite");
+    let store = HistoryStore::open(&db_path, "soft-preempt", HistoryLimits::default()).await?;
+    let bus = MetaEventBus::open(
+        test_thread("soft-preempt"),
+        store.clone(),
+        pl_core::thread::current::RuntimeEpoch::new(),
+    );
+
+    let attempt_update = pl_core::thread::journal::AttemptUpdate {
+        request_metadata: None,
+        usage_binding: None,
+        tool_projection: None,
+        turn_id: "turn-1".into(),
+        attempt_id: "att-1".into(),
+        retry_of: None,
+        input_revision: 1,
+        tools: std::sync::Arc::from([]),
+        outcome: pl_core::thread::AttemptOutcome::Cancelled {
+            result: Err(std::sync::Arc::new(pl_core::model::ModelError {
+                kind: pl_core::model::ModelFailureKind::Cancelled,
+                context_recovery: None,
+                source: None,
+                details: None,
+                usage: Box::default(),
+            })),
+        },
+        input_estimate: None,
+    };
+    let partial_record = pl_core::context::ContextRecord {
+        id: "att-1:partial".into(),
+        turn_id: Some("turn-1".into()),
+        source: pl_core::context::ContextSource::Assistant,
+        content: vec![pl_core::context::ContextContent::Text {
+            text: "partial work".into(),
+        }],
+        tool_calls: Vec::new(),
+    };
+    let preemptions = std::sync::Arc::from([pl_core::thread::StepPreemptionEvent {
+        seq: 1,
+        turn_id: "turn-1".into(),
+        attempt_id: Some("att-1".into()),
+        phase: pl_core::thread::PreemptedStepPhase::Streaming,
+        trigger_input_ids: vec!["in-2".into()],
+        partial_record_id: Some("att-1:partial".into()),
+    }]);
+
+    let state = pl_core::thread::ThreadSnapshot {
+        context: pl_core::context::ContextSnapshot {
+            revision: 1,
+            records: std::sync::Arc::from([partial_record.clone()]),
+        },
+        ..Default::default()
+    };
+    let effect = pl_core::thread::ThreadEffectBatch {
+        thread_id: "soft-preempt".into(),
+        sequence: 1,
+        committed_at: 1_000,
+        context: Some(pl_core::thread::journal::ContextChange::Append {
+            revision: 1,
+            records: std::sync::Arc::from([partial_record]),
+        }),
+        attempt: Some(attempt_update),
+        step_preemptions: preemptions,
+        ..Default::default()
+    };
+    let commit = std::sync::Arc::new(pl_core::thread::CoreCommitEvent {
+        thread_id: "soft-preempt".into(),
+        sequence: 1,
+        export: std::sync::Arc::new(pl_core::thread::HistoryExport {
+            effect: std::sync::Arc::new(effect),
+            state,
+            output_claim: None,
+        }),
+    });
+    bus.sink()
+        .emit(pl_core::thread::CoreEvent::Durable(commit));
+    bus.wait_admitted_commit(1).await?;
+
+    let (_, originals, _) = store
+        .reader()
+        .events_window(
+            crate::history::HistoryEventsQuery::Originals {
+                scope: crate::ChatScope {
+                    query_class: crate::ChatClassFilter::All {},
+                    parent_id: None,
+                },
+            },
+            None,
+            None,
+            true,
+            crate::history::HistoryDemand::default(),
+        )
+        .await?;
+    assert!(
+        !originals
+            .iter()
+            .any(|ev| ev.kind == HistoryEventKind::TurnReceiptRecorded),
+        "soft preemption must not emit interrupted TurnReceiptRecorded"
+    );
+    assert!(
+        originals.iter().any(|ev| {
+            ev.kind == HistoryEventKind::TextCompleted
+                && ev.timeline_role == HistoryTimelineRole::Boundary
+        }),
+        "partial assistant text should be preserved as Boundary TextCompleted"
+    );
+
+    let mut hot = super::timeline_layer::TimelineDataLayer::new();
+    let hot_items = match hot.load_initial_page(&store.reader(), 10, true).await? {
+        TimelinePatch::Reset { items, .. } => items,
+        other => panic!("expected hot Reset, got {other:?}"),
+    };
+    assert!(
+        hot_items.iter().any(|item| matches!(
+            item,
+            TimelineItem::AssistantText {
+                channel,
+                outcome,
+                is_final_turn_delivery: false,
+                text,
+                ..
+            } if channel == "commentary" && outcome == "completed" && text == "partial work"
+        )),
+        "expected completed non-final partial commentary item, got {hot_items:?}"
+    );
+
+    store.flush().await?;
+    bus.close().await;
+    store.close().await?;
+
+    let reopened = HistoryStore::open(&db_path, "soft-preempt", HistoryLimits::default()).await?;
+    let mut cold = super::timeline_layer::TimelineDataLayer::new();
+    let cold_items = match cold.load_initial_page(&reopened.reader(), 10, false).await? {
+        TimelinePatch::Reset { items, .. } => items,
+        other => panic!("expected cold Reset, got {other:?}"),
+    };
+    assert_eq!(hot_items, cold_items);
+    reopened.close().await?;
+    Ok(())
+}
+
+#[test]
+fn live_status_resets_streaming_text_to_working_on_step_preempted() {
+    let layer = LiveStatusDataLayer::new();
+    assert!(
+        layer
+            .on_live_event(&CoreLiveEvent::ReasoningDelta {
+                attempt_id: "att-1".into(),
+                item_id: "reason-1".into(),
+                generation: 0,
+                text: "old reasoning summary".into(),
+                replace: false,
+                is_summary: true,
+            })
+            .is_some()
+    );
+    assert!(
+        layer
+            .on_live_event(&CoreLiveEvent::TextStreamStarted {
+                attempt_id: "att-1".into(),
+                item_id: "item-1".into(),
+                generation: 0,
+            })
+            .is_some()
+    );
+    assert!(
+        layer
+            .on_live_event(&CoreLiveEvent::TextStreamDelta {
+                attempt_id: "att-1".into(),
+                item_id: "item-1".into(),
+                generation: 0,
+                text: "partial delta".into(),
+                replace: false,
+            })
+            .is_none()
+    );
+
+    let mut record = crate::protocol::history::HistoryEventRecord {
+        seq: 1,
+        event_id: "step-preempted:1".into(),
+        kind: HistoryEventKind::StepPreempted,
+        timeline_role: HistoryTimelineRole::Hidden,
+        occurred_at: Some(2_000),
+        recorded_at: 2_000,
+        run_id: Some("run-1".into()),
+        turn_id: Some("turn-1".into()),
+        attempt_id: Some("att-1".into()),
+        call_id: None,
+        entity_id: Some("att-1".into()),
+        message_id: None,
+        tool_name: None,
+        source: None,
+        original: None,
+        row_scope: None,
+        row_key: None,
+        payload_schema: "anywork.business/1".into(),
+        payload_json: "{}".into(),
+    };
+    let snapshot = layer
+        .on_history_record(&record)
+        .expect("StepPreempted should immediately transition StreamingText -> Working");
+    assert!(matches!(
+        &snapshot.phase,
+        LiveStatusPhase::Working {
+            items,
+            reasoning_preview: None,
+            ..
+        } if items.is_empty()
+    ));
+    assert!(
+        layer.flush_coalesced().is_none(),
+        "stale buffered stream_text must not re-emit StreamingText after preemption"
+    );
+
+    let stopping = layer
+        .on_live_event(&CoreLiveEvent::RunActivity {
+            execution: Some(pl_core::thread::ActiveExecution {
+                id: "exec-1".into(),
+                phase: pl_core::thread::ExecutionPhase::Stopping,
+                turn_id: Some("turn-1".into()),
+            }),
+        })
+        .expect("RunActivity(Stopping) should latch Stopping");
+    assert!(matches!(stopping.phase, LiveStatusPhase::Stopping { .. }));
+    assert!(
+        layer.on_history_record(&record).is_none(),
+        "StepPreempted must be ignored while Stopping is latched"
+    );
+
+    record.kind = HistoryEventKind::TurnEnded;
+    let idle = layer
+        .on_history_record(&record)
+        .expect("TurnEnded should transition Stopping -> Idle");
+    assert!(matches!(idle.phase, LiveStatusPhase::Idle));
+}

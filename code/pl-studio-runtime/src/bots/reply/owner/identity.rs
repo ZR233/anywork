@@ -107,13 +107,13 @@ async fn bot_current_identity_deduplicates_and_new_platform_message_stays_distin
         let cancellation = CancellationToken::new();
         let accepted = env
             .runtime
-            .submit_queued_prompt(request(&original, BODY), &cancellation)
+            .submit_prompt_cancellable(request(&original, BODY), &cancellation)
             .await?;
         let first_turn = completed_input(&env.runtime, &id, &original).await?;
         env.runtime.synchronize_thread_observation(&id).await?;
         let replay = env
             .runtime
-            .submit_queued_prompt(request(&original, BODY), &cancellation)
+            .submit_prompt_cancellable(request(&original, BODY), &cancellation)
             .await?;
         anyhow::ensure!(
             replay.input_id == accepted.input_id && replay.thread_id == accepted.thread_id,
@@ -121,7 +121,7 @@ async fn bot_current_identity_deduplicates_and_new_platform_message_stays_distin
         );
         anyhow::ensure!(
             env.runtime
-                .submit_queued_prompt(
+                .submit_prompt_cancellable(
                     request(&original, "changed platform message"),
                     &cancellation
                 )
@@ -130,7 +130,7 @@ async fn bot_current_identity_deduplicates_and_new_platform_message_stays_distin
             "same bot identity accepted changed content"
         );
         env.runtime
-            .submit_queued_prompt(request(&second, BODY), &cancellation)
+            .submit_prompt_cancellable(request(&second, BODY), &cancellation)
             .await?;
         let second_turn = completed_input(&env.runtime, &id, &second).await?;
         anyhow::ensure!(first_turn.id != second_turn.id);

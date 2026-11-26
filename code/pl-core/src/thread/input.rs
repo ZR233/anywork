@@ -76,40 +76,6 @@ impl ThreadInput {
     }
 }
 
-/// Host-selected input routing policy, evaluated atomically by the Thread owner.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum InputPolicy {
-    #[default]
-    StartOrSteer,
-    StartOrQueue,
-    StartOnly,
-    SteerOnly,
-}
-
-/// Original routing decision. An unconsumed steer is retained for later recovery like any input.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    tag = "kind",
-    content = "value"
-)]
-pub enum InputDelivery {
-    #[default]
-    NextTurn,
-    CurrentTurn {
-        turn_id: String,
-    },
-}
-
-/// One input and its execution intent. Duplicate IDs retain their original routing receipt.
-#[derive(Debug)]
-pub struct InputSubmission {
-    pub input: ThreadInput,
-    pub policy: InputPolicy,
-    pub drive: Option<InputDriverOptions>,
-}
-
 /// Consumption is a framework fact, never inferred from the input's opaque payload.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
@@ -129,8 +95,6 @@ pub enum InputState {
 pub struct InputRecord {
     /// Commit that first admitted this input; retained unchanged after consumption.
     pub accepted_sequence: u64,
-    #[serde(default)]
-    pub delivery: InputDelivery,
     pub input: ThreadInput,
     pub ordinal: u64,
     pub revision: u64,
@@ -146,7 +110,6 @@ pub struct InputRecord {
 pub struct InputIdentity {
     /// Content digest of the originally accepted body.
     pub digest: String,
-    pub delivery: InputDelivery,
     pub id: String,
     pub ordinal: u64,
     /// Purpose the original admission had, so a control operation stays recognisable after its body
@@ -163,7 +126,6 @@ impl InputIdentity {
     pub fn from_record(record: &InputRecord) -> Self {
         Self {
             digest: record.input.digest(),
-            delivery: record.delivery.clone(),
             id: record.input.id.clone(),
             ordinal: record.ordinal,
             purpose: record.input.purpose,
@@ -176,7 +138,6 @@ impl InputIdentity {
     pub fn receipt(&self, input: ThreadInput, accepted_sequence: u64) -> InputRecord {
         InputRecord {
             accepted_sequence,
-            delivery: self.delivery.clone(),
             input,
             ordinal: self.ordinal,
             revision: self.revision,
@@ -204,33 +165,23 @@ pub fn input_receipt(
     identity.receipt(input, accepted_sequence)
 }
 
+pub(super) fn immediate_context_record_id(input_id: &str) -> String {
+    format!("input:{input_id}")
+}
+
 impl InputRecord {
     /// Returns the framework context identity used when this input was actually admitted to a
-    /// model call. A queued or metadata-only input has no model-visible record. Compaction may
+    /// model call. A pending or metadata-only input has no model-visible record. Compaction may
     /// remove the record from current context while the original request and journal retain it.
     pub fn context_record_id(&self) -> Option<String> {
-        let InputState::Consumed {
-            turn_id,
-            attempt_id,
-        } = &self.state
-        else {
+        let InputState::Consumed { .. } = &self.state else {
             return None;
         };
-        if self.input.context.is_empty() {
-            return None;
-        }
-        Some(
-            if matches!(&self.delivery, InputDelivery::CurrentTurn { turn_id: target } if target == turn_id)
-            {
-                steering_record_id(turn_id, &self.input.id)
-            } else {
-                format!("{attempt_id}:input")
-            },
-        )
+        (!self.input.context.is_empty()).then(|| immediate_context_record_id(&self.input.id))
     }
 }
 
-/// Queue log operation. Consumption references the original content instead of copying it again.
+/// Input log operation. Consumption references the original identity instead of copying content again.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     rename_all = "camelCase",
@@ -242,21 +193,18 @@ pub enum InputChange {
     Accepted(InputRecord),
     Transition {
         id: String,
+        #[serde(default)]
+        ordinal: u64,
         revision: u64,
         state: InputState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_record_id: Option<String>,
+        #[serde(default)]
+        injected_mid_turn: bool,
     },
 }
 
-/// Execution parameters for the oldest pending input; these do not alter its saved content.
-#[derive(Debug)]
-pub struct QueuedTurn {
-    pub turn_id: String,
-    pub attempt_prefix: String,
-    pub max_model_steps: crate::thread::ModelStepLimit,
-    pub cancellation: CancellationToken,
-}
-
-/// Host-selected bounds for serial queue execution, frozen separately for each Turn.
+/// Host-selected bounds for execution, frozen separately for each Turn.
 #[derive(Debug, Clone, Copy)]
 pub struct InputDriverOptions {
     pub max_model_steps: crate::thread::ModelStepLimit,
@@ -280,80 +228,93 @@ pub enum InputExecution {
 }
 
 /// Execution authorization is independent from physical cancellation and pending input facts.
-/// Notifications may wake a dormant driver, but only explicit continuation can leave a pause.
+/// Notifications may wake an idle driver, but explicit stop/failure stays paused until resumed.
 #[derive(Debug)]
-pub(super) enum ExecutionPolicy {
-    Enabled(InputDriverOptions),
-    Paused(PauseReason),
-}
-#[derive(Debug)]
-pub(super) enum PauseReason {
-    Initial,
-    User,
+pub(super) enum ExecutionDriver {
+    Idle,
+    Active(InputDriverOptions),
+    Stopped,
     Failed(Arc<ThreadError>),
 }
 
-impl ExecutionPolicy {
+impl ExecutionDriver {
     pub(super) fn options(&self) -> Option<InputDriverOptions> {
         match self {
-            Self::Enabled(options) => Some(*options),
-            Self::Paused(_) => None,
+            Self::Active(options) => Some(*options),
+            Self::Idle | Self::Stopped | Self::Failed(_) => None,
         }
     }
+
     pub(super) fn error(&self) -> Option<&Arc<ThreadError>> {
         match self {
-            Self::Paused(PauseReason::Failed(error)) => Some(error),
+            Self::Failed(error) => Some(error),
             _ => None,
         }
     }
+
     pub(super) fn enable(&mut self, options: InputDriverOptions) {
-        *self = Self::Enabled(options);
+        *self = Self::Active(options);
     }
+
     pub(super) fn wake(&mut self, options: InputDriverOptions) {
-        if matches!(self, Self::Paused(PauseReason::Initial) | Self::Enabled(_)) {
+        if matches!(self, Self::Idle | Self::Active(_)) {
             self.enable(options);
         }
     }
-    pub(super) fn pause(&mut self) {
-        if !matches!(self, Self::Paused(PauseReason::Failed(_))) {
-            *self = Self::Paused(PauseReason::User);
+
+    pub(super) fn stop(&mut self) {
+        if !matches!(self, Self::Failed(_)) {
+            *self = Self::Stopped;
         }
     }
+
     pub(super) fn fail(&mut self, error: Arc<ThreadError>) {
-        *self = Self::Paused(PauseReason::Failed(error));
+        *self = Self::Failed(error);
     }
 }
 
 impl Owner {
-    pub(super) fn resume_inputs(&mut self, options: InputDriverOptions) -> Result<(), ThreadError> {
+    pub(super) fn drive_pending(&mut self, options: InputDriverOptions) -> Result<(), ThreadError> {
         if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
         }
-        // An explicit resume of a queue that had stopped is a fresh authorization, so the stop
-        // generation an earlier cancellation armed for the queue's next Turn is spent: the resumed
-        // queue runs under the stop count it now has, not under one a stop already overtook.
-        self.policy.enable(options);
+        // An explicit enable is a fresh user authorization after an earlier stop or failure.
+        self.driver.enable(options);
         self.publish_snapshot();
         Ok(())
     }
 
-    pub(super) fn pause_inputs(&mut self) {
-        self.policy.pause();
+    pub(super) fn pause_execution(&mut self) {
+        self.driver.stop();
         self.publish_snapshot();
     }
 
-    pub(super) fn start_queued_work(&mut self) -> Result<bool, ThreadError> {
+    pub(super) fn has_pending_immediate_inputs(&self) -> bool {
+        self.state.inputs.iter().any(|record| self.driveable(record))
+    }
+
+    pub(super) fn first_pending_input_id(&self) -> Option<String> {
+        self.state
+            .inputs
+            .iter()
+            .filter(|record| self.driveable(record))
+            .min_by_key(|record| record.ordinal)
+            .map(|record| record.input.id.clone())
+    }
+
+    pub(super) fn start_immediate_work(&mut self) -> Result<bool, ThreadError> {
         if self.state.lifecycle != ThreadLifecycle::Open
             || self.interrupt.is_closing()
             || !self.continuation_ready()
         {
             return Ok(false);
         }
-        let Some(options) = self.policy.options() else {
+        let Some(options) = self.driver.options() else {
             return Ok(false);
         };
-        let source = if let Some(record) = self.state.inputs.iter().find(|r| self.driveable(r)) {
-            format!("input:{}", record.input.id)
+        let primary_input_id = self.first_pending_input_id();
+        let source = if let Some(input_id) = &primary_input_id {
+            format!("input:{input_id}")
         } else if self.state.wake_messages_through > self.state.consumed_messages {
             format!("message:{}", self.state.wake_messages_through)
         } else {
@@ -372,23 +333,17 @@ impl Owner {
             input = self
                 .prepare_current_resume(self.runtime_epoch, self.interrupt.stops(), input)
                 .map_err(|e| ThreadError::CurrentResume(Arc::new(e)))?;
-        } else {
-            input.content = self.freeze_next_input_batch().unwrap_or_default();
         }
-        self.start_run(input, super::execution::RunReply::Driver)
+        self.start_run(input, super::execution::RunReply::Driver, primary_input_id)
             .map_err(|(error, _)| error)?;
         self.active.as_mut().unwrap().restored = restored;
         Ok(true)
     }
 
-    pub(super) fn accept_input(&mut self, input: ThreadInput) -> Result<InputRecord, ThreadError> {
-        self.accept_input_with_policy(input, InputPolicy::StartOrQueue)
-    }
-
-    pub(super) fn accept_input_with_policy(
+    pub(super) fn submit_immediate_input(
         &mut self,
         input: ThreadInput,
-        policy: InputPolicy,
+        drive: Option<InputDriverOptions>,
     ) -> Result<InputRecord, ThreadError> {
         if input.id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
@@ -408,34 +363,33 @@ impl Owner {
         if let Some(error) = &self.cold_error {
             return Err(ThreadError::Storage(error.clone()));
         }
-        let active_turn = self
-            .state
-            .turns
-            .last()
-            .filter(|turn| turn.state == TurnState::Running)
-            .map(|turn| turn.turn_id.clone());
-        let delivery = match policy {
-            InputPolicy::StartOnly
-                if active_turn.is_some()
-                    || self
-                        .state
-                        .inputs
-                        .iter()
-                        .any(|input| input.state == InputState::Pending) =>
+        let record = stage_input(&mut self.state, input)?;
+        if let Some(options) = drive {
+            self.driver.enable(options);
+        }
+        if self.active.is_some() {
+            if self.has_pending_model_switch()
+                && !self.interrupt.is_closing()
+                && self.stopping_turn.is_none()
             {
-                return Err(ThreadError::InputRequiresIdle);
+                let turn_id = self
+                    .active
+                    .as_ref()
+                    .expect("active run checked above")
+                    .input
+                    .turn_id
+                    .clone();
+                self.stopping_turn = Some(turn_id.clone());
+                if let Some(run) = self.active.as_ref() {
+                    run.turn_cancel.cancel();
+                }
+                self.cancel_turn_tasks(&turn_id)?;
+            } else {
+                self.preempt_or_wake_active_run(&record.input.id, true);
             }
-            InputPolicy::SteerOnly if active_turn.is_none() => {
-                return Err(ThreadError::InputRequiresActiveTurn);
-            }
-            InputPolicy::StartOrSteer | InputPolicy::SteerOnly => active_turn
-                .map_or(InputDelivery::NextTurn, |turn_id| {
-                    InputDelivery::CurrentTurn { turn_id }
-                }),
-            InputPolicy::StartOnly | InputPolicy::StartOrQueue => InputDelivery::NextTurn,
-        };
-        let record = stage_input_with_delivery(&mut self.state, input, delivery)?;
+        }
         self.publish()?;
+        self.publish_snapshot();
         Ok(record)
     }
 
@@ -465,59 +419,46 @@ impl Owner {
             InputState::Consumed { .. } => return Err(ThreadError::InputConsumed),
             InputState::Pending => {}
         }
-        if self.active_inputs.iter().any(|active| active == id) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|run| run.current_step_inputs.iter().any(|active| active == id))
+        {
             return Err(ThreadError::InputInUse);
         }
-        let record = self.change_input(id, InputState::Discarded)?;
+        let record = self.change_input(id, InputState::Discarded, false)?;
         self.publish()?;
         Ok(record)
     }
 
-    /// Freeze a batch without consuming it; ordinary admission later confirms consumption.
-    pub(super) fn freeze_next_input_batch(&mut self) -> Option<Vec<ContextContent>> {
-        let record = self
+    /// Projects every currently pending driveable input in strict FIFO ordinal order, keeping each
+    /// message as its own `ContextSource::User` record without flattening boundaries.
+    pub(super) fn pending_immediate_context(&self, turn_id: &str) -> (Vec<ContextRecord>, Vec<String>) {
+        let mut pending: Vec<_> = self
             .state
             .inputs
             .iter()
-            .find(|record| self.driveable(record))
-            .cloned()?;
-        let through = self.input_batch_through.take().unwrap_or(record.ordinal);
-        // The frozen batch is one commit's worth of work: every input it covers is consumed by the
-        // admission that also advances the message watermark, so the next Turn never re-delivers an
-        // already admitted input and a body-less control never starts a Turn of its own.
-        let batch: Vec<_> = self
-            .state
-            .inputs
-            .iter()
-            .filter(|input| input.ordinal <= through && self.driveable(input))
-            .cloned()
+            .filter(|record| self.driveable(record))
             .collect();
-        self.active_inputs = batch.iter().map(|input| input.input.id.clone()).collect();
-        Some(
-            batch
-                .into_iter()
-                .flat_map(|input| input.input.context)
-                .collect(),
-        )
-    }
-
-    /// Stages consumption just before request publication; no independently published watermark.
-    pub(super) fn steering_context(&self, turn_id: &str) -> (Vec<ContextRecord>, Vec<String>) {
-        let mut records = Vec::new();
-        let mut ids = Vec::new();
-        for input in self.state.inputs.iter().filter(|input| input.state == InputState::Pending
-            && matches!(&input.delivery, InputDelivery::CurrentTurn { turn_id: target } if target == turn_id)
-            && !self.active_inputs.contains(&input.input.id)) {
-            ids.push(input.input.id.clone());
-            if !input.input.context.is_empty() {
-                records.push(ContextRecord { id: steering_record_id(turn_id, &input.input.id), turn_id: Some(turn_id.into()),
-                    source: ContextSource::User, content: input.input.context.clone(), tool_calls: Vec::new() });
+        pending.sort_by_key(|record| record.ordinal);
+        let mut records = Vec::with_capacity(pending.len());
+        let mut ids = Vec::with_capacity(pending.len());
+        for record in pending {
+            ids.push(record.input.id.clone());
+            if !record.input.context.is_empty() {
+                records.push(ContextRecord {
+                    id: immediate_context_record_id(&record.input.id),
+                    turn_id: Some(turn_id.into()),
+                    source: ContextSource::User,
+                    content: record.input.context.clone(),
+                    tool_calls: Vec::new(),
+                });
             }
         }
         (records, ids)
     }
 
-    pub(super) fn validate_steering(&self, ids: &[String]) -> Result<(), ThreadError> {
+    pub(super) fn validate_pending_inputs(&self, ids: &[String]) -> Result<(), ThreadError> {
         if ids.iter().any(|id| {
             !self
                 .state
@@ -530,63 +471,28 @@ impl Owner {
         Ok(())
     }
 
-    pub(super) fn consume_steering(
+    pub(super) fn consume_pending_inputs(
         &mut self,
         ids: &[String],
         turn_id: &str,
         attempt_id: &str,
     ) -> Result<(), ThreadError> {
+        let turn_step_zero = self.active.as_ref().is_some_and(|r| r.steps == 0);
+        let primary_input_id = self
+            .active
+            .as_ref()
+            .and_then(|r| r.primary_input_id.clone());
         for id in ids {
+            let is_turn_initiator =
+                turn_step_zero && primary_input_id.as_deref() == Some(id.as_str());
             self.change_input(
                 id,
                 InputState::Consumed {
                     turn_id: turn_id.into(),
                     attempt_id: attempt_id.into(),
                 },
+                !is_turn_initiator,
             )?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn consume_active_input(
-        &mut self,
-        turn_id: &str,
-        attempt_id: &str,
-    ) -> Result<(), ThreadError> {
-        for id in self.active_inputs.clone() {
-            let Some(previous) = self
-                .state
-                .inputs
-                .iter()
-                .find(|record| record.input.id == id)
-            else {
-                // The input already reached a terminal state and left the bounded resident queue
-                // when an earlier step of this Turn consumed it. Its resident receipt stays the
-                // authority: a consumption attributed to this Turn completes normally, while any
-                // other terminal state stays an input conflict.
-                if active_input_already_consumed(&self.state, &id, turn_id) {
-                    continue;
-                }
-                return Err(ThreadError::InputConsumed);
-            };
-            match &previous.state {
-                InputState::Pending => {
-                    self.change_input(
-                        &id,
-                        InputState::Consumed {
-                            turn_id: turn_id.into(),
-                            attempt_id: attempt_id.into(),
-                        },
-                    )?;
-                }
-                InputState::Consumed {
-                    turn_id: consumed_turn,
-                    ..
-                } if consumed_turn == turn_id => {}
-                InputState::Consumed { .. } | InputState::Discarded => {
-                    return Err(ThreadError::InputConsumed);
-                }
-            }
         }
         Ok(())
     }
@@ -595,6 +501,7 @@ impl Owner {
         &mut self,
         id: &str,
         state: InputState,
+        injected_mid_turn: bool,
     ) -> Result<InputRecord, ThreadError> {
         let mut inputs = self.state.inputs.to_vec();
         let record = inputs
@@ -610,8 +517,12 @@ impl Owner {
         self.state.inputs = inputs.into();
         self.append_input_change(InputChange::Transition {
             id: record.input.id.clone(),
+            ordinal: record.ordinal,
             revision: record.revision,
             state: record.state.clone(),
+            context_record_id: record.context_record_id(),
+            injected_mid_turn: matches!(record.state, InputState::Consumed { .. })
+                && injected_mid_turn,
         });
         Ok(record)
     }
@@ -621,10 +532,6 @@ impl Owner {
         changes.push(record);
         self.state.input_changes = changes.into();
     }
-}
-
-fn steering_record_id(turn_id: &str, input_id: &str) -> String {
-    format!("steer:{}:{turn_id}{input_id}", turn_id.len())
 }
 
 /// Answers a repeated input submission from bounded current state.
@@ -660,36 +567,10 @@ pub(super) fn duplicate_input_receipt(
     Ok(Some(identity.receipt(input.clone(), state.commit_sequence)))
 }
 
-/// Reports whether bounded owner state already records `id` as consumed by `turn_id`.
-///
-/// A consumed input leaves the resident queue as soon as its commit publishes, so a later step of
-/// the same Turn sees only its resident receipt. An identity that already left the bounded window is
-/// accepted as this Turn's own admission receipt: the owner lists only inputs it admitted into the
-/// active batch, discarding an in-use input is refused, and Turns are serial, so a listed input that
-/// is no longer resident can only have been consumed by this Turn.
-fn active_input_already_consumed(state: &ThreadSnapshot, id: &str, turn_id: &str) -> bool {
-    state
-        .terminal_inputs
-        .iter()
-        .find(|identity| identity.id == id)
-        .is_none_or(|identity| {
-            matches!(&identity.state, InputState::Consumed { turn_id: consumed, .. } if consumed == turn_id)
-        })
-}
-
 /// Stages input as part of an already-admitted control transaction, without starting execution.
 pub(super) fn stage_input(
     state: &mut ThreadSnapshot,
     input: ThreadInput,
-) -> Result<InputRecord, ThreadError> {
-    stage_input_with_delivery(state, input, InputDelivery::NextTurn)
-}
-
-/// Stages one input under the delivery it was routed to and the continuation it carries.
-pub(super) fn stage_input_with_delivery(
-    state: &mut ThreadSnapshot,
-    input: ThreadInput,
-    delivery: InputDelivery,
 ) -> Result<InputRecord, ThreadError> {
     if input.id.is_empty() {
         return Err(ThreadError::InvalidIdentity);
@@ -719,7 +600,6 @@ pub(super) fn stage_input_with_delivery(
             .commit_sequence
             .checked_add(1)
             .ok_or(ThreadError::RevisionExhausted)?,
-        delivery,
         input,
         ordinal,
         revision: 1,

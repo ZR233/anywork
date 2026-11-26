@@ -54,6 +54,7 @@ event_kinds! {
     InputAccepted => "input_accepted",
     InputConsumed => "input_consumed",
     InputDiscarded => "input_discarded",
+    StepPreempted => "step_preempted",
     TextCompleted => "text_completed",
     PlanResolved => "plan_resolved",
     TurnReceiptRecorded => "turn_receipt_recorded",
