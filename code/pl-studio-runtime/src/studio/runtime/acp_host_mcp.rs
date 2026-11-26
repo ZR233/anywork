@@ -139,8 +139,9 @@ fn append_delegation_instructions(instructions: &mut String, host: &AgentHost) {
          `definition.definitionId` into `profileId`. Use its backend and workspace contract \
          to select the matching branch of `anywork_spawn_agent`. When the task calls for \
          a child and you have selected a valid Profile, invoke that tool and wait for the \
-         child report. Some clients display it under the anywork server's qualified name. \
-         If blocked, identify the exact missing tool or report the attempted call and its error.\n",
+         child report. Look for the server-qualified name as well, such as \
+         `mcp_anywork_anywork_spawn_agent` in agy. If it is absent from your callable tools, \
+         report that you could not send a call. If you sent one, report its actual result.\n",
     );
     let selection = host.delegation();
     let has_native = profiles

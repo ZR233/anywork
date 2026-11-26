@@ -383,12 +383,11 @@ impl AcpWorkflowPlanOwner {
                 AcpHostInteractionAnswer::Question { answers },
             ) => {
                 ensure!(!answers.is_empty(), "Answers are empty");
-                for (id, answer) in answers {
+                for id in answers.keys() {
                     ensure!(
                         questions.iter().any(|question| question.id == *id),
                         "Unknown question `{id}`"
                     );
-                    ensure!(!answer.answers.is_empty(), "Question `{id}` has no answer");
                 }
             }
             _ => anyhow::bail!("Answer does not match the ACP interaction"),
