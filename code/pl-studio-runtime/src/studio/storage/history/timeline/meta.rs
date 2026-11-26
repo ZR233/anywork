@@ -356,7 +356,8 @@ fn user_input(input: &ThreadToolUserInput, thread_id: &str) -> Result<TimelineUs
             .map(|question| {
                 Ok(TimelineQuestionDescriptor {
                     id: question.id.clone(),
-                    is_other: question.is_other,
+                    // The frozen metadata format still requires this field.
+                    is_other: false,
                     is_secret: question.is_secret,
                     option_count: question
                         .options

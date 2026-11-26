@@ -39,7 +39,6 @@ class UserQuestionView {
     required this.id,
     required this.header,
     required this.question,
-    required this.isOther,
     required this.isSecret,
     required this.options,
   });
@@ -47,7 +46,6 @@ class UserQuestionView {
   final String id;
   final String header;
   final String question;
-  final bool isOther;
   final bool isSecret;
   final List<UserQuestionOptionView> options;
 }
@@ -199,7 +197,6 @@ class PendingInteraction {
                 id: string(question['id']),
                 header: string(question['header']),
                 question: string(question['question']),
-                isOther: flag(question['isOther']),
                 isSecret: flag(question['isSecret']),
                 options: [
                   for (final raw

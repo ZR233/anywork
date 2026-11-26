@@ -172,7 +172,6 @@ void main() {
               id: 'q1',
               header: 'Target branch',
               question: 'Which branch should receive the PR?',
-              isOther: false,
               isSecret: false,
               options: [],
             ),

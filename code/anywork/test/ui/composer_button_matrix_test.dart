@@ -379,7 +379,6 @@ void main() {
               id: agentSessionPlanConfirmationQuestionId,
               header: 'Implementation plan',
               question: '# Restored plan\n\n1. Preserve pending decisions.',
-              isOther: false,
               isSecret: false,
               options: [],
             ),

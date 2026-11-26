@@ -453,7 +453,7 @@ InteractionPayload _requestPayload(
   threadId: threadId,
 ).interaction.payload;
 
-class _ReadOnlyInteractionDetails extends StatefulWidget {
+class _ReadOnlyInteractionDetails extends StatelessWidget {
   const _ReadOnlyInteractionDetails({
     required this.id,
     required this.payload,
@@ -461,24 +461,9 @@ class _ReadOnlyInteractionDetails extends StatefulWidget {
   });
   final String id;
   final InteractionPayload payload;
-  @override
-  State<_ReadOnlyInteractionDetails> createState() =>
-      _ReadOnlyInteractionDetailsState();
-}
-
-class _ReadOnlyInteractionDetailsState
-    extends State<_ReadOnlyInteractionDetails> {
-  final _controllers = <String, TextEditingController>{};
-  @override
-  void dispose() {
-    for (final controller in _controllers.values) {
-      controller.dispose();
-    }
-    super.dispose();
-  }
 
   @override
-  Widget build(BuildContext context) => switch (widget.payload) {
+  Widget build(BuildContext context) => switch (payload) {
     UserInputInteractionPayload(:final questions) => InteractionDockShell(
       kind: InteractionDockKind.question,
       title: context.l10n.interactionDetailsQuestionDetailsReadOnly,
@@ -501,25 +486,15 @@ class _ReadOnlyInteractionDetailsState
             else
               QuestionStep(
                 // The selectable public prompt above owns this text. Reuse the
-                // existing option/field layout without duplicating the prompt.
+                // existing option layout without duplicating the prompt.
                 question: UserQuestionView(
                   id: question.id,
                   header: question.header,
                   question: '',
-                  isOther: question.isOther,
                   isSecret: false,
                   options: question.options,
                 ),
-                questionKey: 'details:${widget.id}:${question.id}',
-                isFirstQuestion: false,
-                firstOptionKey: GlobalKey(),
-                controller: _controllers.putIfAbsent(
-                  question.id,
-                  TextEditingController.new,
-                ),
-                selected: const {},
-                onOptionChanged: (_, _) {},
-                onTextChanged: (_) {},
+                questionKey: 'details:$id:${question.id}',
                 enabled: false,
               ),
         ],

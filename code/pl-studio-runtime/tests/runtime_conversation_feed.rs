@@ -37,7 +37,7 @@ async fn closing_a_thread_waiting_for_input_drains_history_and_saves_current() -
             support::tool_reply(
                 "request_user_input",
                 "ask",
-                serde_json::json!({"questions":[{"id":"choice","header":"Choice","question":"Choose?","isOther":true}]}),
+                serde_json::json!({"questions":[{"id":"choice","header":"Choice","question":"Choose?"}]}),
             ),
         )],
         vec![],

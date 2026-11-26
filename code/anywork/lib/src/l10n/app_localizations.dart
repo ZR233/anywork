@@ -4515,11 +4515,11 @@ abstract class AppLocalizations {
   /// **'Question'**
   String get interactionQuestionFallback;
 
-  /// No description provided for @interactionOtherLabel.
+  /// No description provided for @interactionCustomAnswerLabel.
   ///
   /// In en, this message translates to:
-  /// **'Other'**
-  String get interactionOtherLabel;
+  /// **'Custom answer'**
+  String get interactionCustomAnswerLabel;
 
   /// No description provided for @interactionSecretHint.
   ///

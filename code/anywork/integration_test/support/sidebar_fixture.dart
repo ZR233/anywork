@@ -828,7 +828,6 @@ final class SidebarProviderFixture {
           'id': 'sidebar-attention-question',
           'header': 'Sidebar fixture',
           'question': 'Keep this synthetic thread waiting for attention?',
-          'isOther': false,
           'isSecret': false,
           'options': [
             {'label': 'Continue', 'description': 'Fixture option'},

@@ -78,7 +78,6 @@ class _QuestionPreviewState extends State<_QuestionPreview> {
                     id: 'verification',
                     header: '验证范围',
                     question: '可同时选择多个选项，也可补充说明。',
-                    isOther: true,
                     isSecret: false,
                     options: [
                       UserQuestionOptionView(
