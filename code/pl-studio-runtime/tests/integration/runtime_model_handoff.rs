@@ -5,8 +5,9 @@ use anyhow::{Context, Result, ensure};
 use pl_model::model::ModelTransportProfile;
 use pl_provider_fixture::ReplyStage;
 use pl_studio_runtime::{
-    SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest, ThreadActivityToolState,
-    ThreadWaitState, ThreadWorkspaceMode, TurnCancellationCause, TurnState,
+    CommandEffectPoint, SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest,
+    ThreadActivityToolState, ThreadWaitState, ThreadWorkspaceMode, TurnCancellationCause,
+    TurnState, timeline::ConversationEvent,
 };
 use serde_json::json;
 use support::{Environment, prompt_step, reached, text_reply, tool_reply};
@@ -79,7 +80,6 @@ async fn active_root_route_save_then_submit_summarizes_source_after_tool_cancell
             }
         }
         .await;
-        feed.close().await;
         let held = observation?;
         let source_turn = held.active_turn.as_ref().context("source Turn is active")?;
         let revision = held.model_route.as_ref().context("source route")?.revision;
@@ -101,14 +101,35 @@ async fn active_root_route_save_then_submit_summarizes_source_after_tool_cancell
             env.child_provider.recorded().is_empty(),
             "saving a route sent a target request"
         );
-        let selected = env
-            .runtime
-            .thread_snapshot(id)
-            .await?
-            .model_route
-            .context("saved target route")?;
-        ensure!(selected.account_id == "child-fixture" && selected.revision > revision);
+        let route_key = format!("thread-route:{id}");
+        let saved_revision = saved
+            .receipt
+            .targets
+            .iter()
+            .find(|target| target.resource_key == route_key)
+            .context("route save receipt has no Thread route target")?
+            .revision;
+        ensure!(saved_revision > revision);
+        ensure!(saved.receipt.effect == CommandEffectPoint::NextTurn);
         ensure!(saved.runtime.thread_id == *id);
+
+        // Match the composer's authority: the save receipt acknowledges the command,
+        // and the same session feed publishes the committed selector independently.
+        let selected = loop {
+            match feed.next_event().await {
+                Some(ConversationEvent::SessionMeta(meta)) => {
+                    if let Some(route) = meta.model_route
+                        && route.revision >= saved_revision
+                    {
+                        break route;
+                    }
+                }
+                Some(_) => {}
+                None => anyhow::bail!("ConversationFeed closed before the saved route appeared"),
+            }
+        };
+        feed.close().await;
+        ensure!(selected.revision == saved_revision && selected.account_id == "child-fixture");
 
         // This public admission prepares B before interrupting A. Cancelling the held wait
         // then pairs its result into A's committed context, advancing it after that candidate's
