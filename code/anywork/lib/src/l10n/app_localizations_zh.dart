@@ -2383,7 +2383,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get interactionQuestionFallback => '问题';
 
   @override
-  String get interactionOtherLabel => '其他';
+  String get interactionCustomAnswerLabel => '自定义回答';
 
   @override
   String get interactionSecretHint => '输入敏感信息';

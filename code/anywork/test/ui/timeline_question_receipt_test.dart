@@ -71,13 +71,11 @@ void main() {
           {
             'id': 'public-q',
             'isSecret': false,
-            'isOther': true,
             'optionCount': optionCount,
           },
           {
             'id': 'secret-q',
             'isSecret': true,
-            'isOther': true,
             'optionCount': 0,
           },
         ],

@@ -415,7 +415,6 @@ fn interaction_summary(content: &InteractionContent) -> serde_json::Value {
                         .map(|option| &option.label)
                         .collect::<Vec<_>>())
                         .unwrap_or_default(),
-                    "isOther": question.is_other,
                 }))
                 .collect::<Vec<_>>()
         ),

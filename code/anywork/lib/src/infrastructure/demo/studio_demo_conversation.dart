@@ -514,7 +514,6 @@ Map<String, Object?> _demoInteractionDetail(
               'id': question.id,
               'header': question.header,
               'question': question.question,
-              'isOther': question.isOther,
               'isSecret': question.isSecret,
               if (question.options.isNotEmpty)
                 'options': [

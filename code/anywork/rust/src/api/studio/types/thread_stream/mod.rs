@@ -520,7 +520,6 @@ pub struct BridgeUserQuestion {
     pub id: String,
     pub header: String,
     pub question: String,
-    pub is_other: bool,
     pub is_secret: bool,
     pub options: Option<Vec<BridgeUserQuestionOption>>,
 }

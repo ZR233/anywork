@@ -289,7 +289,6 @@ void main() {
                   id: agentSessionPlanConfirmationQuestionId,
                   header: 'Plan',
                   question: markdown,
-                  isOther: false,
                   isSecret: false,
                   options: [],
                 ),

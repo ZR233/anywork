@@ -924,7 +924,6 @@ mod tests {
                         id: question_id.into(),
                         header: "Confirmation".into(),
                         question: "Continue with this proposal?".into(),
-                        is_other: true,
                         is_secret: false,
                         options: None,
                     }],

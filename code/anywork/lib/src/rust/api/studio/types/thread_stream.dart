@@ -1532,7 +1532,6 @@ class BridgeUserQuestion {
   final String id;
   final String header;
   final String question;
-  final bool isOther;
   final bool isSecret;
   final List<BridgeUserQuestionOption>? options;
 
@@ -1540,7 +1539,6 @@ class BridgeUserQuestion {
     required this.id,
     required this.header,
     required this.question,
-    required this.isOther,
     required this.isSecret,
     this.options,
   });
@@ -1550,7 +1548,6 @@ class BridgeUserQuestion {
       id.hashCode ^
       header.hashCode ^
       question.hashCode ^
-      isOther.hashCode ^
       isSecret.hashCode ^
       options.hashCode;
 
@@ -1562,7 +1559,6 @@ class BridgeUserQuestion {
           id == other.id &&
           header == other.header &&
           question == other.question &&
-          isOther == other.isOther &&
           isSecret == other.isSecret &&
           options == other.options;
 }

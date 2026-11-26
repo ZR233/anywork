@@ -23,7 +23,6 @@ fn question_fixture() -> QuestionFixture {
                 id: "provider".into(),
                 header: "Provider".into(),
                 question: "Which provider should the next release verify?".into(),
-                is_other: true,
                 is_secret: false,
                 options: Some(vec![crate::UserQuestionOption {
                     label: "anthropic".into(),
@@ -34,7 +33,6 @@ fn question_fixture() -> QuestionFixture {
                 id: "token".into(),
                 header: "Token".into(),
                 question: "Paste the deployment token".into(),
-                is_other: true,
                 is_secret: true,
                 options: None,
             },
@@ -138,7 +136,6 @@ fn plan_fixture(plan: &str) -> Result<crate::plan_tool::PlanConfirmationPrompt> 
             id: crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
             header: "Plan".into(),
             question: plan.into(),
-            is_other: true,
             is_secret: false,
             options: Some(vec![
                 UserQuestionOption {

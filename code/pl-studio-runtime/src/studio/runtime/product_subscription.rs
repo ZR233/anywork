@@ -633,7 +633,6 @@ mod tests {
             id: "provider".into(),
             header: "Provider".into(),
             question: "Which provider should be used?".into(),
-            is_other: true,
             is_secret: false,
             options: None,
         }];
@@ -682,7 +681,6 @@ mod tests {
                 id: crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
                 header: "Plan".into(),
                 question: plan.into(),
-                is_other: true,
                 is_secret: false,
                 options: None,
             },

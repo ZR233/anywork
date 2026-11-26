@@ -201,7 +201,7 @@ async fn production_cli_runs_non_git_task_from_stdin_and_emits_only_final_text()
 
 #[tokio::test]
 async fn production_cli_preserves_blocked_budget_and_model_failure_exits() -> Result<()> {
-    let question = pl_provider_fixture::RealtimeToolCall { item_id: "ask", call_id: "ask", name: "request_user_input", arguments: serde_json::json!({"questions":[{"id":"choice","header":"Choice","question":"Choose?","isOther":true}]}).to_string() };
+    let question = pl_provider_fixture::RealtimeToolCall { item_id: "ask", call_id: "ask", name: "request_user_input", arguments: serde_json::json!({"questions":[{"id":"choice","header":"Choice","question":"Choose?"}]}).to_string() };
     let tool = pl_provider_fixture::RealtimeToolCall {
         item_id: "list",
         call_id: "list",

@@ -28,7 +28,6 @@ void main() {
                       id: 'public',
                       header: '公开问题',
                       question: '公开详情',
-                      isOther: true,
                       isSecret: false,
                       options: [],
                     ),
@@ -36,7 +35,6 @@ void main() {
                       id: 'secret',
                       header: '秘密问题',
                       question: '秘密详情',
-                      isOther: false,
                       isSecret: true,
                       options: [],
                     ),
@@ -48,6 +46,7 @@ void main() {
         ),
       );
       expect(find.text('公开问题'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
       expect(find.textContaining('公开详情'), findsOneWidget);
       expect(find.textContaining('秘密问题'), findsNothing);
       expect(find.textContaining('秘密详情'), findsNothing);

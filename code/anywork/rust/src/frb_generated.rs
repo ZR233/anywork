@@ -21412,7 +21412,6 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeUserQuestion 
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_header = <String>::sse_decode(deserializer);
         let mut var_question = <String>::sse_decode(deserializer);
-        let mut var_isOther = <bool>::sse_decode(deserializer);
         let mut var_isSecret = <bool>::sse_decode(deserializer);
         let mut var_options = <Option<
             Vec<crate::api::studio::types::thread_stream::BridgeUserQuestionOption>,
@@ -21421,7 +21420,6 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeUserQuestion 
             id: var_id,
             header: var_header,
             question: var_question,
-            is_other: var_isOther,
             is_secret: var_isSecret,
             options: var_options,
         };
@@ -42892,7 +42890,6 @@ impl flutter_rust_bridge::IntoDart
             self.id.into_into_dart().into_dart(),
             self.header.into_into_dart().into_dart(),
             self.question.into_into_dart().into_dart(),
-            self.is_other.into_into_dart().into_dart(),
             self.is_secret.into_into_dart().into_dart(),
             self.options.into_into_dart().into_dart(),
         ]
@@ -55205,7 +55202,6 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeUserQuestion 
         <String>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.header, serializer);
         <String>::sse_encode(self.question, serializer);
-        <bool>::sse_encode(self.is_other, serializer);
         <bool>::sse_encode(self.is_secret, serializer);
         <Option<Vec<crate::api::studio::types::thread_stream::BridgeUserQuestionOption>>>::sse_encode(self.options, serializer);
     }
