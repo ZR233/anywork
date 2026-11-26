@@ -220,12 +220,7 @@ impl ModelProgressTracker {
                         let key = format!("{}:{}", identity.item_id, identity.content_index);
                         let is_summary = matches!(identity.part, ObservedPartKind::SummaryText);
                         self.emit_reasoning_part(
-                            attempt_id,
-                            generation,
-                            &key,
-                            is_summary,
-                            part,
-                            bus,
+                            attempt_id, generation, &key, is_summary, part, bus,
                         );
                     }
                 },

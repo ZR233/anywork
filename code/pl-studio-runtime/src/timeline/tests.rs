@@ -1720,7 +1720,10 @@ async fn live_status_state_machine_stopping_summary_boundary_and_stray_guard() -
             })
             .is_none()
     );
-    assert!(matches!(layer.snapshot().phase, LiveStatusPhase::Stopping { .. }));
+    assert!(matches!(
+        layer.snapshot().phase,
+        LiveStatusPhase::Stopping { .. }
+    ));
 
     // RunActivity(None) resets Stopping -> Idle.
     let idle = layer

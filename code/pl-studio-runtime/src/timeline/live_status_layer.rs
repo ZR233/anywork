@@ -358,14 +358,19 @@ fn status_from_entity_state(state: &HistoryEntityState) -> &'static str {
 fn extract_live_tool_info(
     record: &HistoryEventRecord,
     tool_name: &str,
-) -> (String, String, Option<&'static str>, Option<i64>, Option<i64>) {
+) -> (
+    String,
+    String,
+    Option<&'static str>,
+    Option<i64>,
+    Option<i64>,
+) {
     let default_kind = classify_live_tool_kind(tool_name, None).to_owned();
     let Ok(envelope) = decode_event_envelope(record) else {
         return (default_kind, tool_name.to_owned(), None, None, None);
     };
-    let kind =
-        classify_live_tool_kind(tool_name, envelope.meta.presentation_contract.as_deref())
-            .to_owned();
+    let kind = classify_live_tool_kind(tool_name, envelope.meta.presentation_contract.as_deref())
+        .to_owned();
     let summary = envelope
         .bodies
         .iter()
@@ -454,8 +459,8 @@ impl LiveStatusDataLayer {
         if let CoreLiveEvent::RunActivity { execution } = event {
             return match execution {
                 Some(exec) if exec.phase == ExecutionPhase::Stopping => {
-                    let already_stopping =
-                        state.stopping && matches!(state.phase, Some(LiveStatusPhase::Stopping { .. }));
+                    let already_stopping = state.stopping
+                        && matches!(state.phase, Some(LiveStatusPhase::Stopping { .. }));
                     state.turn_active = true;
                     state.enter_stopping(now_ms);
                     if already_stopping {
@@ -832,8 +837,7 @@ impl LiveStatusDataLayer {
                             .clone()
                             .or_else(|| record.entity_id.clone())
                             .unwrap_or_else(|| record.event_id.clone());
-                        let tool_name =
-                            record.tool_name.clone().unwrap_or_else(|| "tool".into());
+                        let tool_name = record.tool_name.clone().unwrap_or_else(|| "tool".into());
                         let (kind, summary, terminal_status, started_at, finished_at) =
                             extract_live_tool_info(record, &tool_name);
                         let status = match record.kind {
@@ -878,10 +882,7 @@ impl LiveStatusDataLayer {
                             kind: "agent".into(),
                             tool_name: "agent".into(),
                             status: if terminal { "completed" } else { "running" }.into(),
-                            summary: record
-                                .tool_name
-                                .clone()
-                                .unwrap_or_else(|| entity_id),
+                            summary: record.tool_name.clone().unwrap_or(entity_id),
                             started_at_ms: Some(now_ms),
                             finished_at_ms: terminal.then_some(now_ms),
                         });
@@ -950,10 +951,8 @@ impl LiveStatusDataLayer {
                     }
                     _ => {
                         let had_work_items = !state.working_items.is_empty();
-                        let was_streaming = matches!(
-                            state.current_phase(),
-                            LiveStatusPhase::StreamingText { .. }
-                        );
+                        let was_streaming =
+                            matches!(state.current_phase(), LiveStatusPhase::StreamingText { .. });
                         state.clear_working_container();
                         state.clear_stream_buffer();
                         if matches!(state.current_phase(), LiveStatusPhase::Reconnecting { .. }) {
