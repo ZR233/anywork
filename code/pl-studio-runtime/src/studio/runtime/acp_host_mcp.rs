@@ -70,39 +70,121 @@ pub(crate) async fn prepare_open(
                         .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?,
                 )
             };
-            let mode_instructions = if is_root {
-                resources
-                    .workflow_plan
-                    .get()
-                    .and_then(|wp| wp.compiled_mode_instructions())
-            } else {
-                None
-            };
+            instructions.push_str(
+                "\nCall tools from the anywork MCP catalog directly by their top-level `anywork_*` \
+                 names. Use `anywork_list_agents`, `anywork_send_message`, `anywork_wait_agent`, \
+                 `anywork_interrupt_agent`, and `anywork_close_agent` for the member operations \
+                 and targets the host allows. Retain the real child and report identities and \
+                 use the cursors from `anywork_wait_agent`. A receipt accepting a child or a \
+                 message does not establish completed work. Host tools operate within the \
+                 configured workspace permissions.\n",
+            );
+            append_delegation_instructions(&mut instructions, &host);
+            if let Some(workflow_plan) = resources.workflow_plan.get() {
+                instructions.push_str(
+                    "\nYour Plan belongs to this agent. Inspect it with `anywork_plan_current`, \
+                     `anywork_plan_next`, and `anywork_plan_history`. For mutations, call \
+                     `anywork_plan_transition` with the latest Plan `expectedRevision`. To revise \
+                     an approved plan, move it to `drafting` before submitting the updated plan. \
+                     If a previous prompt ended before its Plan confirmation was answered, \
+                     return that Plan to `drafting` before resubmitting it.\n\
+                     When a material decision requires the user, call `anywork_request_user_input` \
+                     if it is available. Submit a complete plain-language Markdown Plan with \
+                     `anywork_plan_transition` using `targetState=awaitingConfirmation` and \
+                     `force=false`. Call each of these interactive tools on its own. The host \
+                     presents a structured card and the call waits for the user's response. \
+                     The host applies approval or revision feedback, or handles cancellation. \
+                     Continue dependent implementation only after the host returns an accepted \
+                     decision with `snapshot.state=approved`. Never approve the Plan yourself or \
+                     use `force=true` to bypass confirmation. If the user requests changes, use \
+                     the feedback to revise and resubmit the Plan. Honor cancellation. If the \
+                     card is unavailable or there is no decision, report the need for user input \
+                     and pause the work that depends on it.\n",
+                );
+                if let Some(mode_instructions) = workflow_plan.compiled_mode_instructions() {
+                    instructions.push_str(&mode_instructions);
+                }
+            }
+            if !is_root {
+                instructions.push_str(
+                    "\nAs a child agent, use your own Plan for your assigned work. Root workflow \
+                     transitions and child spawning are unavailable in this session.\n",
+                );
+            }
             let mut setup = resources
                 .prepare_host_mcp(host, caller, is_root, frontend)
                 .await
                 .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?;
-            instructions.push_str(
-                "\nUse the `anywork_*` tools for host-managed agent delegation, member queries, \
-                 report waiting, interruption and closing. Agent IDs and profile IDs come from \
-                 these tools. Receipt acceptance is not completion; use `anywork_wait_agent` \
-                 cursors and retain actual report identities.\n\
-                 Use `anywork_plan_current`, `anywork_plan_next`, `anywork_plan_history`, and \
-                 `anywork_plan_transition` to manage your independent per-agent Plan state \
-                 machine (`drafting` -> `awaitingConfirmation` -> `approved` / `revisionRequested`). \
-                 In ACP, transitioning to `awaitingConfirmation` records the plan non-blockingly: \
-                 present the plan clearly to the user in your visible response and await user confirmation \
-                 or revision.\n\
-                 These host MCP tools do not grant recursive child-agent spawning or override \
-                 configured filesystem restrictions.\n",
-            );
-            if let Some(mode_instructions) = mode_instructions {
-                instructions.push_str(&mode_instructions);
-            }
             setup.instructions = Some(instructions);
             Ok(setup)
         })
     }))
+}
+
+fn append_delegation_instructions(instructions: &mut String, host: &AgentHost) {
+    if host.identity.parent_agent_id.is_some() {
+        return;
+    }
+    let profiles = host.spawn_profiles();
+    if profiles.is_empty() {
+        instructions.push_str(
+            "\nNo executable child Profile is available in this session. Continue work within \
+             your own authorized scope and report any work blocked by the lack of a child.\n",
+        );
+        return;
+    }
+    instructions.push_str(
+        "\nRead `anywork_list_agent_profiles` before delegating. Use a returned executable \
+         `profileId` and its backend and workspace contract to choose the branch of \
+         `anywork_spawn_agent` offered in the current MCP catalog. If the tool or a suitable \
+         Profile is unavailable, continue within your own authorized scope and report any blocker.\n",
+    );
+    let selection = host.delegation();
+    let has_native = profiles
+        .iter()
+        .any(|profile| profile.backend == crate::AgentBackendKind::Native);
+    let has_acp = profiles
+        .iter()
+        .any(|profile| profile.backend == crate::AgentBackendKind::Acp);
+    match selection.mode {
+        crate::DelegationMode::Profile => instructions.push_str(
+            "Fixed delegation is frozen for this session. Use the Profile's preset route and \
+             omit `modelSelection`.\n",
+        ),
+        crate::DelegationMode::Automatic => instructions.push_str(
+            "Automatic delegation is frozen for this session. The Profile sets the role and \
+             workspace permissions. Follow the selection rules for its backend.\n",
+        ),
+    }
+    if has_native && let Some(preference) = crate::studio::delegation::preference_prompt(selection)
+    {
+        instructions.push_str(
+            "For an automatic Native dispatch, read the candidate list with \
+             `anywork_list_delegation_models`, then batch-read details for suitable candidates \
+             with `anywork_get_delegation_models`. If either tool or a suitable candidate is \
+             unavailable, use an eligible ACP Profile or continue within your authorized scope. \
+             Pass an explicit `modelSelection` with the selected `accountId` and `modelId`. \
+             Choose a legal `effort` from the model's returned options when nonempty and omit \
+             `effort` when there are none. Apply the following shared preference to Native \
+             model selection.\n",
+        );
+        instructions.push_str(
+            &preference
+                .replace("先发现 delegation_model 工具，用", "直接用")
+                .replace("list_delegation_models", "anywork_list_delegation_models")
+                .replace("get_delegation_models", "anywork_get_delegation_models"),
+        );
+        instructions.push('\n');
+    }
+    if has_acp {
+        instructions.push_str(
+            "For an ACP Profile in either mode, omit `modelSelection`. Use `acpConfig` only \
+             for actual settings declared by that ACP service. Supply an ordered array of \
+             `{id, value}` using declared option value IDs or booleans as appropriate. \
+             Otherwise omit `acpConfig` to use the service's new-session defaults. Never \
+             infer these settings from the parent's model or session.\n",
+        );
+    }
 }
 
 fn instructions(
@@ -709,6 +791,7 @@ impl crate::thread_assembler::host_agent_tools::AgentToolSink for AgentMcpTools<
 
 #[derive(Debug, Clone, Copy)]
 enum AcpPlanToolKind {
+    AskUser,
     Current,
     Next,
     History,
@@ -754,6 +837,19 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
             now_ms,
         };
         let value = match self.kind {
+            AcpPlanToolKind::AskUser => {
+                let args: pl_tool::ask_user::AskUserInput = input.decode()?;
+                let resolution = self
+                    .owner
+                    .ask_user(
+                        plan_ctx.call_id,
+                        args.into_questions()?,
+                        &context.cancellation,
+                    )
+                    .await
+                    .map_err(|error| ToolError::new(std::io::Error::other(error)))?;
+                serde_json::to_value(resolution).map_err(ToolError::new)?
+            }
             AcpPlanToolKind::Current => {
                 let _: pl_tool_plan::PlanEmptyArgs = input.decode()?;
                 serde_json::to_value(self.owner.current(plan_ctx).await.map_err(ToolError::new)?)
@@ -778,23 +874,10 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                 let args: pl_tool_plan::PlanTransitionArgs = input.decode()?;
                 let outcome = self
                     .owner
-                    .transition(args, plan_ctx)
+                    .transition_from_tool(args, plan_ctx, &context.cancellation)
                     .await
-                    .map_err(ToolError::new)?;
-                let mut val = serde_json::to_value(&outcome).map_err(ToolError::new)?;
-                if outcome.accepted
-                    && outcome.awaiting_confirmation
-                    && let Some(obj) = val.as_object_mut()
-                {
-                    obj.insert(
-                        "acpNote".into(),
-                        Value::String(
-                            "Plan recorded as awaitingConfirmation (non-blocking in ACP). Present this plan clearly to the user and wait for their reply to approve or revise."
-                                .into(),
-                        ),
-                    );
-                }
-                val
+                    .map_err(|error| ToolError::new(std::io::Error::other(error)))?;
+                serde_json::to_value(&outcome).map_err(ToolError::new)?
             }
         };
         json_output("application/json", &value)
@@ -899,6 +982,10 @@ fn attach_workflow_and_plan_tools(
 
     type Owner = super::acp_business::AcpWorkflowPlanOwner;
     let plan_defs = [
+        (
+            AcpPlanToolKind::AskUser,
+            pl_tool::ask_user::ask_user_tool_definition(),
+        ),
         (
             AcpPlanToolKind::Current,
             ToolDefinition::json(
@@ -1009,6 +1096,12 @@ impl HostTools for Handler {
             Err(error) => (serde_json::json!({ "error": error.to_string() }), true),
         };
         if let Some((arguments, host_call_id)) = evidence {
+            let redacted = Value::String("User answered".into());
+            let logged_value = if request.tool_id == "anywork_request_user_input" && !error {
+                &redacted
+            } else {
+                &value
+            };
             tracing::trace!(
                 target: "pl_studio_runtime::acp_host_call_evidence",
                 record_json = %serde_json::json!({
@@ -1019,7 +1112,7 @@ impl HostTools for Handler {
                     "hostCallId": host_call_id,
                     "toolId": request.tool_id,
                     "arguments": arguments,
-                    "value": &value,
+                    "value": logged_value,
                     "isError": error,
                 }),
                 "host_mcp_call_result"
@@ -3150,38 +3243,10 @@ mod tests {
                 && forced["snapshot"]["currentStateId"] == "completed"
         );
 
-        // Independent Plan tool test + ACP non-blocking `awaitingConfirmation` + `force: true` jump.
-        let submitted = root_peer
-            .tool(
-                "anywork_plan_transition",
-                json!({
-                    "targetState": "awaitingConfirmation",
-                    "expectedRevision": 0,
-                    "content": "# ACP Plan\n\n- Step 1\n",
-                    "reason": "ready for confirmation"
-                }),
-            )
-            .await?;
-        ensure!(submitted["accepted"] == true && submitted["awaitingConfirmation"] == true);
-        ensure!(
-            submitted["acpNote"]
-                .as_str()
-                .is_some_and(|s| s.contains("non-blocking"))
-        );
-        let forced_plan = root_peer
-            .tool(
-                "anywork_plan_transition",
-                json!({
-                    "targetState": "approved",
-                    "force": true,
-                    "expectedRevision": 1,
-                    "reason": "forced approve"
-                }),
-            )
-            .await?;
-        ensure!(forced_plan["accepted"] == true && forced_plan["forced"] == true);
-
-        // Child agent's independent Plan remains untouched at drafting rev 0.
+        // The transport fixture has no active prompt. Opening the Plan tool
+        // catalog does not create an interaction or mutate either Plan.
+        let root_plan = root_peer.tool("anywork_plan_current", json!({})).await?;
+        ensure!(root_plan["state"] == "drafting" && root_plan["revision"] == 0);
         let child_plan = child_peer.tool("anywork_plan_current", json!({})).await?;
         ensure!(child_plan["state"] == "drafting" && child_plan["revision"] == 0);
 
@@ -3191,7 +3256,7 @@ mod tests {
         ensure!(wf_run.current_state_id == "completed" && wf_run.last_transition_forced);
         ensure!(
             wf_state.plan.context("snapshot plan")?.state
-                == crate::plan_tool::AgentSessionPlanPhase::Approved
+                == crate::plan_tool::AgentSessionPlanPhase::Drafting
         );
 
         root_service.close().await?;

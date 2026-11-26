@@ -13,6 +13,7 @@ import '../view_models/acp_plan_card_view_model.dart';
 import '../view_models/acp_session_view_model.dart';
 import '../views/acp_workspace_view.dart';
 import 'acp_composer_connector.dart';
+import 'acp_host_interaction_connector.dart';
 import 'acp_permission_connector.dart';
 import 'acp_plan_card_connector.dart';
 import 'acp_status_bar_connector.dart';
@@ -167,6 +168,12 @@ class _AcpWorkspaceConnectorState extends ConsumerState<AcpWorkspaceConnector> {
           child: AcpTimelineConnector(threadId: threadId),
         ),
         permissionDock: AcpPermissionConnector(threadId: threadId),
+        hostInteractionDock: AcpHostInteractionConnector(
+          threadId: threadId,
+          onReadPlan: () => setState(
+            () => sidebar.openPanel(ConversationSidebarPanelKind.plan),
+          ),
+        ),
         composerBuilder: (context, compact) => switch (child) {
           true => const StudioChildReadOnlyPanel(),
           false => AcpComposerConnector(threadId: threadId, compact: compact),

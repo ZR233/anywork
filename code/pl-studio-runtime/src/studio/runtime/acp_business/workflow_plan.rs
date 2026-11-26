@@ -1,6 +1,6 @@
 //! Per-agent ACP Workflow and Plan ownership, atomic persistence, and state push.
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result, ensure};
 use pl_tool_plan::{
@@ -9,11 +9,12 @@ use pl_tool_plan::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::sync::{Mutex as AsyncMutex, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 
 use crate::mode::{SavedThreadMode, ThreadModeId, ThreadModeManager};
 use crate::plan_tool::AgentSessionPlanRuntimeSnapshot;
-use crate::protocol::AcpWorkflowStateSnapshot;
+use crate::protocol::{AcpHostInteractionAnswer, AcpPendingInteraction, AcpWorkflowStateSnapshot};
 use crate::studio::thread_projection::workflow_graph_from_saved_mode;
 use crate::workflow_tool::machine::{
     RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
@@ -49,6 +50,93 @@ pub(crate) struct AcpPlanToolContext {
 struct AcpWorkflowStateInner {
     workflow: Option<PersistedAcpWorkflow>,
     plan: PlanRecord,
+    interaction: Option<PendingInteraction>,
+}
+
+struct PendingInteraction {
+    view: AcpPendingInteraction,
+    caller: CancellationToken,
+    prompt: CancellationToken,
+    answer: Option<oneshot::Sender<InteractionDecision>>,
+    published: bool,
+}
+
+struct InteractionDecision {
+    answer: AcpHostInteractionAnswer,
+    recorded: oneshot::Sender<Result<()>>,
+}
+
+impl PendingInteraction {
+    fn id(&self) -> &str {
+        match &self.view {
+            AcpPendingInteraction::Question { id, .. }
+            | AcpPendingInteraction::PlanConfirmation { id } => id,
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.caller.is_cancelled() || self.prompt.is_cancelled()
+    }
+}
+
+struct InteractionWait<'a> {
+    owner: &'a AcpWorkflowPlanOwner,
+    id: String,
+    prompt: CancellationToken,
+    answer: oneshot::Receiver<InteractionDecision>,
+}
+
+impl Drop for InteractionWait<'_> {
+    fn drop(&mut self) {
+        let mut guard = self
+            .owner
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard
+            .interaction
+            .as_ref()
+            .is_some_and(|pending| pending.id() == self.id)
+        {
+            guard.interaction = None;
+            self.owner.updates.send_modify(|snapshot| {
+                if let Some(snapshot) = snapshot {
+                    snapshot.pending_interaction = None;
+                }
+            });
+        }
+    }
+}
+
+impl InteractionWait<'_> {
+    fn publish(&self) -> Result<()> {
+        let mut guard = self
+            .owner
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = guard
+            .interaction
+            .as_mut()
+            .context("ACP interaction retired")?;
+        ensure!(!pending.is_cancelled(), "ACP interaction cancelled");
+        pending.published = true;
+        self.owner.updates.send_modify(|snapshot| {
+            if let Some(snapshot) = snapshot {
+                snapshot.pending_interaction = Some(pending.view.clone());
+            }
+        });
+        Ok(())
+    }
+
+    async fn receive(&mut self, caller: &CancellationToken) -> Result<InteractionDecision> {
+        tokio::select! {
+            biased;
+            () = caller.cancelled() => anyhow::bail!("ACP interaction cancelled"),
+            () = self.prompt.cancelled() => anyhow::bail!("ACP prompt ended while waiting for input"),
+            answer = &mut self.answer => answer.context("ACP interaction answer dropped"),
+        }
+    }
 }
 
 /// Owns the per-agent ACP `Plan` state machine and (for root) the selected Thread Mode +
@@ -63,6 +151,7 @@ pub(crate) struct AcpWorkflowPlanOwner {
     /// Caller cancellation abandons only the wait, not this transaction.
     persist_gate: Arc<AsyncMutex<()>>,
     updates: watch::Sender<Option<AcpWorkflowStateSnapshot>>,
+    session: OnceLock<pl_acp::session::Session>,
 }
 
 impl std::fmt::Debug for AcpWorkflowPlanOwner {
@@ -141,9 +230,14 @@ impl AcpWorkflowPlanOwner {
             is_root,
             resources_dir,
             thread_modes,
-            inner: Arc::new(Mutex::new(AcpWorkflowStateInner { workflow, plan })),
+            inner: Arc::new(Mutex::new(AcpWorkflowStateInner {
+                workflow,
+                plan,
+                interaction: None,
+            })),
             persist_gate: Arc::new(AsyncMutex::new(())),
             updates,
+            session: OnceLock::new(),
         });
         if initial_workflow_created {
             owner.persist_workflow().await?;
@@ -188,6 +282,230 @@ impl AcpWorkflowPlanOwner {
         self.updates.subscribe()
     }
 
+    pub(super) fn bind_session(&self, session: pl_acp::session::Session) -> Result<()> {
+        self.session
+            .set(session)
+            .map_err(|_| anyhow::anyhow!("ACP workflow session already bound"))
+    }
+
+    async fn reserve_interaction(
+        &self,
+        view: AcpPendingInteraction,
+        caller: &CancellationToken,
+    ) -> Result<InteractionWait<'_>> {
+        let prompt = self
+            .session
+            .get()
+            .context("ACP session is unavailable")?
+            .active_prompt_lifetime()?;
+        let _gate = self.persist_gate.lock().await;
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure!(
+            !caller.is_cancelled() && !prompt.is_cancelled(),
+            "ACP interaction cancelled"
+        );
+        ensure!(
+            guard.interaction.is_none(),
+            "Another ACP interaction is already active"
+        );
+        if let Some(workflow) = &guard.workflow
+            && workflow.mode_id == ThreadModeId::auto()
+        {
+            ensure!(
+                workflow
+                    .state
+                    .current_run
+                    .as_ref()
+                    .is_some_and(|run| run.current_state_id == "planning"),
+                "Advance the ACP workflow to planning before requesting user input or Plan confirmation"
+            );
+        }
+        let (send, answer) = oneshot::channel();
+        let pending = PendingInteraction {
+            view,
+            caller: caller.clone(),
+            prompt: prompt.clone(),
+            answer: Some(send),
+            published: false,
+        };
+        let id = pending.id().to_owned();
+        guard.interaction = Some(pending);
+        Ok(InteractionWait {
+            owner: self,
+            id,
+            prompt,
+            answer,
+        })
+    }
+
+    pub(super) async fn answer_interaction(
+        &self,
+        id: &str,
+        answer: AcpHostInteractionAnswer,
+    ) -> Result<()> {
+        let (recorded, result) = oneshot::channel();
+        self.submit_decision(id, InteractionDecision { answer, recorded })?;
+        result
+            .await
+            .context("ACP interaction ended before recording the decision")?
+    }
+
+    fn submit_decision(&self, id: &str, decision: InteractionDecision) -> Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = guard
+            .interaction
+            .as_mut()
+            .filter(|pending| pending.id() == id && pending.published && !pending.is_cancelled())
+            .context("ACP interaction is no longer active")?;
+        match (&pending.view, &decision.answer) {
+            (_, AcpHostInteractionAnswer::Cancel)
+            | (
+                AcpPendingInteraction::PlanConfirmation { .. },
+                AcpHostInteractionAnswer::ApprovePlan,
+            ) => {}
+            (
+                AcpPendingInteraction::PlanConfirmation { .. },
+                AcpHostInteractionAnswer::RevisePlan { feedback },
+            ) => {
+                ensure!(
+                    !feedback.trim().is_empty(),
+                    "Plan revision requires feedback"
+                );
+            }
+            (
+                AcpPendingInteraction::Question { questions, .. },
+                AcpHostInteractionAnswer::Question { answers },
+            ) => {
+                ensure!(!answers.is_empty(), "Answers are empty");
+                for (id, answer) in answers {
+                    ensure!(
+                        questions.iter().any(|question| question.id == *id),
+                        "Unknown question `{id}`"
+                    );
+                    ensure!(!answer.answers.is_empty(), "Question `{id}` has no answer");
+                }
+            }
+            _ => anyhow::bail!("Answer does not match the ACP interaction"),
+        }
+        pending
+            .answer
+            .take()
+            .context("ACP interaction was already answered")?
+            .send(decision)
+            .map_err(|_| anyhow::anyhow!("ACP interaction is no longer active"))
+    }
+
+    pub(crate) async fn ask_user(
+        &self,
+        id: String,
+        questions: Vec<crate::UserQuestion>,
+        caller: &CancellationToken,
+    ) -> Result<crate::protocol::UserInputResolution> {
+        let mut wait = self
+            .reserve_interaction(AcpPendingInteraction::Question { id, questions }, caller)
+            .await?;
+        wait.publish()?;
+        let decision = wait.receive(caller).await?;
+        drop(wait);
+        let _ = decision.recorded.send(Ok(()));
+        match decision.answer {
+            AcpHostInteractionAnswer::Question { answers } => {
+                Ok(crate::protocol::UserInputResolution { answers })
+            }
+            _ => anyhow::bail!("The user cancelled the question"),
+        }
+    }
+
+    pub(crate) async fn transition_from_tool(
+        &self,
+        args: PlanTransitionArgs,
+        context: AcpPlanToolContext,
+        caller: &CancellationToken,
+    ) -> Result<PlanTransitionOutcome> {
+        ensure!(
+            !matches!(
+                args.target_state,
+                pl_tool_plan::PlanState::Approved | pl_tool_plan::PlanState::RevisionRequested
+            ),
+            "Plan approval and revision are decided by the user in the confirmation card"
+        );
+        if args.target_state != pl_tool_plan::PlanState::AwaitingConfirmation {
+            return Ok(self.transition(args, context).await?);
+        }
+        ensure!(!args.force, "Submit Plan confirmation without force");
+        let mut wait = self
+            .reserve_interaction(
+                AcpPendingInteraction::PlanConfirmation {
+                    id: context.call_id.clone(),
+                },
+                caller,
+            )
+            .await?;
+        let submitted = self.transition(args, context.clone()).await?;
+        if !submitted.accepted || !submitted.awaiting_confirmation || submitted.replayed {
+            return Ok(submitted);
+        }
+        wait.publish()?;
+        let decision = wait.receive(caller).await?;
+        let (target_state, feedback, cancelled) = match decision.answer {
+            AcpHostInteractionAnswer::ApprovePlan => {
+                (pl_tool_plan::PlanState::Approved, None, false)
+            }
+            AcpHostInteractionAnswer::RevisePlan { feedback } => (
+                pl_tool_plan::PlanState::RevisionRequested,
+                Some(feedback),
+                false,
+            ),
+            AcpHostInteractionAnswer::Cancel => (pl_tool_plan::PlanState::Drafting, None, true),
+            AcpHostInteractionAnswer::Question { .. } => {
+                unreachable!("interaction answer was validated")
+            }
+        };
+        let decided = self
+            .transition_as(
+                PlanTransitionArgs {
+                    target_state,
+                    content: None,
+                    feedback,
+                    reason: cancelled.then(|| "The user cancelled Plan confirmation".to_owned()),
+                    force: false,
+                    expected_revision: Some(submitted.snapshot.revision),
+                    idempotency_key: Some(format!("{}/user-decision", context.call_id)),
+                },
+                AcpPlanToolContext {
+                    now_ms: crate::studio::unix_seconds() * 1000,
+                    ..context
+                },
+                PlanActor::User,
+            )
+            .await;
+        drop(wait);
+        let decided = match decided {
+            Ok(decided) if decided.accepted => decided,
+            result => {
+                let message = result.err().map_or_else(
+                    || "Could not record the user's Plan decision".to_owned(),
+                    |error| error.to_string(),
+                );
+                let _ = decision
+                    .recorded
+                    .send(Err(anyhow::anyhow!(message.clone())));
+                anyhow::bail!(message);
+            }
+        };
+        let _ = decision.recorded.send(Ok(()));
+        if cancelled {
+            anyhow::bail!("The user cancelled Plan confirmation");
+        }
+        Ok(decided)
+    }
+
     pub(crate) fn snapshot(&self) -> AcpWorkflowStateSnapshot {
         let modes = self.thread_modes.snapshot();
         let guard = self
@@ -205,6 +523,11 @@ impl AcpWorkflowPlanOwner {
             .unwrap_or_default()
             .snapshot();
         let plan = Some(AgentSessionPlanRuntimeSnapshot::from(&plan_snapshot));
+        let pending_interaction = guard
+            .interaction
+            .as_ref()
+            .filter(|pending| pending.published)
+            .map(|pending| pending.view.clone());
         if let Some(wf) = &guard.workflow {
             let mode_deleted = modes.mode(&wf.mode_id).is_none();
             let mut run = wf
@@ -224,6 +547,7 @@ impl AcpWorkflowPlanOwner {
                 run,
                 graph,
                 plan,
+                pending_interaction,
             }
         } else {
             AcpWorkflowStateSnapshot {
@@ -232,6 +556,7 @@ impl AcpWorkflowPlanOwner {
                 run: None,
                 graph: None,
                 plan,
+                pending_interaction,
             }
         }
     }
@@ -242,7 +567,7 @@ impl AcpWorkflowPlanOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let wf = guard.workflow.as_ref()?;
-        let mode_prompt = wf.saved_mode.definition.prompt.trim();
+        let mode_prompt = acp_mode_prompt(wf);
         let mut out = format!(
             "\n# Thread Mode: {} (`{}`)\n",
             wf.saved_mode.definition.display_name, wf.mode_id
@@ -252,21 +577,31 @@ impl AcpWorkflowPlanOwner {
             out.push('\n');
         }
         out.push_str(
-            "\n[ACP Host Tool Name Mapping]\n\
-             In this ACP Host MCP session, all workflow_* and plan_* tools referenced in Mode \
-             instructions are exposed with the `anywork_` prefix:\n\
-             - Root workflow tools: `anywork_workflow_current`, `anywork_workflow_next`, \
-               `anywork_workflow_graph`, `anywork_workflow_history`, `anywork_workflow_transition`, \
-               `anywork_workflow_restart`.\n\
-             - Independent per-agent Plan tools: `anywork_plan_current`, `anywork_plan_next`, \
-               `anywork_plan_history`, `anywork_plan_transition`.\n\
-             Both `anywork_workflow_transition` and `anywork_plan_transition` default to `force=false` \
-             and validate allowed paths (returning allowed candidates and all states on rejection). \
-             Keep `force=false` when submitting `anywork_plan_transition` to `awaitingConfirmation` \
-             (transition `approved -> drafting` first when re-planning), and write ELI5 Markdown by \
-             default. During `reviewing`, call `anywork_plan_current` to read the full Plan \
-             document and guide reviewers accordingly. Only pass `force=true` when you intentionally \
-             need to override state-machine rules.\n",
+            "\n[ACP Root Workflow]\n\
+             Use the latest Studio Host State for the active mode, run, revision, and stage. \
+             Continue from the actual current stage across turns and reconnects. If the state \
+             is missing or stale, read `anywork_workflow_current`. The current state and each \
+             accepted transition already contain allowed edges. Use `anywork_workflow_next`, \
+             `anywork_workflow_graph`, or `anywork_workflow_history` for additional detail. \
+             Interpret references to host tools in Mode text according to the current top-level \
+             `anywork_*` MCP catalog. Follow this ACP call sequence if a workflow tool's stage \
+             or guard text uses Native calling or confirmation conventions.\n\
+             Advance with `anywork_workflow_transition` along an allowed edge with `force=false`. \
+             Use the actual `runId`, `revision`, and `currentStateId` as `expectedRunId`, \
+             `expectedRevision`, and `expectedStateId`, and submit the `targetStateId` and \
+             `completion` (reason, summary, evidence). Check `accepted` and the returned `snapshot` \
+             before acting on the new stage. On a CAS conflict or rejection, refresh the current \
+             state and allowed edges before choosing a new action. Use `anywork_workflow_restart` \
+             only for an explicitly required new run.\n\
+             In the built-in `mode.auto` workflow, reach `planning` before requesting structured \
+             user input or submitting a Plan for confirmation. If outside `planning`, transition first \
+             and wait for an accepted snapshot showing `planning` before making either call. If \
+             the active graph or catalog prevents that, report the blocker and pause dependent work. \
+             Clarify material conflicts with `anywork_request_user_input`, then submit the Plan \
+             with `anywork_plan_transition` using `targetState=awaitingConfirmation` and `force=false`. \
+             Wait for the host to confirm approval before advancing from planning to implementation. \
+             In `reviewing`, first call `anywork_plan_current` and read `document.content`. Use the \
+             Plan's scope, decisions, risks, and checks to guide the review and any reviewers.\n",
         );
         Some(out)
     }
@@ -342,6 +677,7 @@ impl AcpWorkflowPlanOwner {
                 &AcpWorkflowStateInner {
                     workflow: Some(workflow.clone()),
                     plan: guard.plan.clone(),
+                    interaction: None,
                 },
                 &modes,
             );
@@ -378,6 +714,10 @@ impl AcpWorkflowPlanOwner {
     ) -> Result<Value, AcpWorkflowPlanError> {
         let modes = self.thread_modes.snapshot();
         self.commit_record(move |guard| {
+            ensure!(
+                guard.interaction.is_none(),
+                "Wait for the active ACP interaction before advancing the workflow"
+            );
             let workflow = guard
                 .workflow
                 .as_ref()
@@ -420,6 +760,10 @@ impl AcpWorkflowPlanOwner {
     ) -> Result<Value, AcpWorkflowPlanError> {
         let modes = self.thread_modes.snapshot();
         self.commit_record(move |guard| {
+            ensure!(
+                guard.interaction.is_none(),
+                "Wait for the active ACP interaction before restarting the workflow"
+            );
             let workflow = guard
                 .workflow
                 .as_ref()
@@ -527,9 +871,14 @@ impl AcpWorkflowPlanOwner {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             install.commit(&mut guard);
-                        }
-                        if let Some(snapshot) = snapshot {
-                            updates.send_replace(Some(snapshot));
+                            if let Some(mut snapshot) = snapshot {
+                                snapshot.pending_interaction = guard
+                                    .interaction
+                                    .as_ref()
+                                    .filter(|pending| pending.published)
+                                    .map(|pending| pending.view.clone());
+                                updates.send_replace(Some(snapshot));
+                            }
                         }
                         Ok(value)
                     }
@@ -586,6 +935,17 @@ impl PlanHost for AcpWorkflowPlanOwner {
         args: PlanTransitionArgs,
         context: Self::Context,
     ) -> Result<PlanTransitionOutcome, Self::Error> {
+        self.transition_as(args, context, PlanActor::Agent).await
+    }
+}
+
+impl AcpWorkflowPlanOwner {
+    async fn transition_as(
+        &self,
+        args: PlanTransitionArgs,
+        context: AcpPlanToolContext,
+        actor: PlanActor,
+    ) -> Result<PlanTransitionOutcome, AcpWorkflowPlanError> {
         let idempotency_key = args.idempotency_key.clone().or_else(|| {
             Some(format!(
                 "{}/{}/{}",
@@ -598,6 +958,13 @@ impl PlanHost for AcpWorkflowPlanOwner {
         let modes = self.thread_modes.snapshot();
         let now_ms = context.now_ms;
         self.commit_record(move |guard| {
+            if let Some(pending) = &guard.interaction {
+                ensure!(
+                    pending.id() == context.call_id
+                        && matches!(pending.view, AcpPendingInteraction::PlanConfirmation { .. }),
+                    "Wait for the active ACP interaction before changing the Plan"
+                );
+            }
             let mut plan = Plan::from_record(guard.plan.clone())
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
             let command = PlanTransitionCommand {
@@ -609,7 +976,7 @@ impl PlanHost for AcpWorkflowPlanOwner {
                 expected_revision: args.expected_revision,
                 idempotency_key,
                 argument_hash: arg_hash,
-                actor: PlanActor::Agent,
+                actor,
                 timestamp_ms: now_ms,
             };
             let outcome = plan.transition(command);
@@ -669,6 +1036,7 @@ fn write_workflow<T>(
             &AcpWorkflowStateInner {
                 workflow: Some(workflow.clone()),
                 plan: current_plan.clone(),
+                interaction: None,
             },
             modes,
         )
@@ -692,6 +1060,7 @@ fn write_plan<T>(
         &AcpWorkflowStateInner {
             workflow: current_workflow.cloned(),
             plan: plan.clone(),
+            interaction: None,
         },
         modes,
     );
@@ -703,35 +1072,113 @@ fn write_plan<T>(
     })))
 }
 
+fn acp_mode_prompt(workflow: &PersistedAcpWorkflow) -> &str {
+    if workflow.mode_id.as_str() == ThreadModeId::AUTO {
+        "Use `simple` for a small, clear task with no design conflict or request for a plan. \
+         Choose `planning` for complex or risky work, an explicit request for a plan, or a conflict \
+         with existing design or contracts. If one of these conditions arises later, pause the \
+         affected work, preserve valid evidence, and return to `planning` along an allowed edge. \
+         Continue through the stages of the actual run and advance to `completed` after delivery \
+         and verification."
+    } else {
+        &workflow.saved_mode.definition.prompt
+    }
+}
+
+fn acp_current_stage(state: &crate::workflow_tool::WorkflowState, is_builtin_auto: bool) -> Value {
+    // Only built-in stages have Studio-owned Native interaction instructions to replace.
+    // Leave custom mode prose and the frozen workflow graph intact.
+    let (instructions, criteria): (&str, &[&str]) = match (is_builtin_auto, state.id.as_str()) {
+        (true, "triage") => (
+            "Check the user goal, constraints, scope, and any relevant design. Even for an \
+             ordinary question, commit the route with `anywork_workflow_transition` before \
+             answering. Choose `simple` for a small clear task. Choose `planning` for \
+             complex work, a plan request, or a design conflict, and wait for the accepted \
+             transition before opening a structured question or Plan confirmation.",
+            &[
+                "The scope and any design conflict are understood, and the selected edge fits the task.",
+            ],
+        ),
+        (true, "simple") => (
+            "Complete the small task and verify the result. Call `anywork_workflow_transition` \
+             to record `completed` before giving the final answer, including for a one-line \
+             reply. If the task turns out to require planning, take the edge to `planning` first.",
+            &["The requested result is ready and the necessary checks have passed."],
+        ),
+        (true, "planning") => (
+            "Check the relevant code, design, and contracts. If the user needs to resolve a \
+             conflict, explain the current design, options, trade-offs, and recommendation using \
+             `anywork_request_user_input`. Use the returned decision to finish the Plan. Submit \
+             a complete plain-language Markdown Plan via `anywork_plan_transition` with \
+             `targetState=awaitingConfirmation` and `force=false`. Include the goal, current \
+             constraints, proposed steps and trade-offs, scope, and how to verify the outcome. \
+             Leave `planning` for implementation after the host confirms approval.",
+            &[
+                "Scope, trade-offs, and acceptance checks are clear. The user has resolved any material conflict.",
+                "The host returned an approved Plan for the proposed work.",
+            ],
+        ),
+        (true, "reviewing") => (
+            "First read `document.content` from `anywork_plan_current`. Review the actual changes \
+             and verification evidence against the Plan's goals, scope, decisions, and acceptance \
+             checks. If a reviewer is available, provide the relevant Plan and concrete pass and \
+             fail criteria. Return implementation defects to `working`, document discrepancies to \
+             `editing_documents`, and design conflicts to `planning`.",
+            &[
+                "The current Plan has been read and checked against the changes and verification results.",
+                "Applicable acceptance checks, evaluations, and resource cleanup are complete.",
+            ],
+        ),
+        _ => return serde_json::json!(state),
+    };
+    let mut stage = state.clone();
+    stage.instructions = instructions.to_owned();
+    stage.completion_criteria = criteria
+        .iter()
+        .map(|criterion| (*criterion).to_owned())
+        .collect();
+    serde_json::json!(stage)
+}
+
 fn studio_host_state_block(
     workflow: &PersistedAcpWorkflow,
     plan: &PlanSnapshot,
     include_mode_prompt: bool,
 ) -> String {
-    let mode_prompt_section =
-        if include_mode_prompt && !workflow.saved_mode.definition.prompt.trim().is_empty() {
-            Some(format!(
-                "Mode `{}` (`{}`) instructions:\n{}",
-                workflow.saved_mode.definition.display_name,
-                workflow.mode_id,
-                workflow.saved_mode.definition.prompt.trim()
-            ))
-        } else {
-            None
-        };
+    let is_builtin_auto = workflow.mode_id.as_str() == ThreadModeId::AUTO;
+    let mode_prompt = acp_mode_prompt(workflow);
+    let mode_prompt_section = if include_mode_prompt && !mode_prompt.is_empty() {
+        format!(
+            "Mode `{}` (`{}`) instructions:\n{mode_prompt}\n\n",
+            workflow.saved_mode.definition.display_name, workflow.mode_id,
+        )
+    } else {
+        String::new()
+    };
     let machine_json = workflow.state.current_run.as_ref().map(|run| {
         let graph = workflow.saved_mode.definition.workflow.as_ref();
-        let current_state =
-            graph.and_then(|g| g.states.iter().find(|s| s.id == run.current_state_id));
+        let use_acp_planning_guards = is_builtin_auto && run.current_state_id == "planning";
+        let current_state = graph
+            .and_then(|g| g.states.iter().find(|s| s.id == run.current_state_id))
+            .map(|state| acp_current_stage(state, is_builtin_auto));
         let outgoing: Vec<Value> = graph
             .map(|g| {
                 g.transitions
                     .iter()
                     .filter(|t| t.source_state_id == run.current_state_id)
                     .map(|t| {
+                        let guard = match (use_acp_planning_guards, t.target_state_id.as_str()) {
+                            (true, "editing_documents") => {
+                                "The host confirmed Plan approval and design or contract documents need updating first."
+                            }
+                            (true, "working") => {
+                                "The host confirmed Plan approval and implementation can start without prior document changes."
+                            }
+                            _ => t.guard.as_str(),
+                        };
                         serde_json::json!({
                             "targetStateId": t.target_state_id,
-                            "guard": t.guard,
+                            "guard": guard,
                         })
                     })
                     .collect()
@@ -743,6 +1190,7 @@ fn studio_host_state_block(
             "runId": run.run_id,
             "revision": workflow.state.revision,
             "lifecycle": run.lifecycle,
+            "currentStateId": run.current_state_id,
             "currentState": current_state,
             "allowedTransitions": outgoing,
         })
@@ -753,12 +1201,14 @@ fn studio_host_state_block(
         "hasDocument": plan.document.is_some(),
     });
     format!(
-        "[Studio Host State]\n{}{}\nPlan: {}\nUse `anywork_workflow_*` (when workflow is present) and `anywork_plan_*` MCP tools to inspect or advance states. In `planning`, clarify design conflicts first, then submit an ELI5 plan via `anywork_plan_transition(targetState=\"awaitingConfirmation\", force=false)`. In `reviewing`, call `anywork_plan_current` to read the full Plan document and instruct reviewers from it.\n",
-        mode_prompt_section
-            .as_ref()
-            .map_or(String::new(), |section| format!("{section}\n\n")),
+        "[Studio Host State]\n{mode_prompt_section}{}\nPlan: {}\n\
+         Use this mode and state in place of earlier snapshots. Update your view after each \
+         accepted tool transition. Commit phase changes with tools before replying, even when \
+         the user wants a short final answer. In `mode.auto`, confirm `planning` before \
+         opening a structured question or Plan confirmation. In `reviewing`, first read the \
+         latest Plan body with `anywork_plan_current`.\n",
         machine_json.as_ref().map_or_else(
-            || "Workflow: none".to_string(),
+            || format!("Workflow: none for mode `{}`", workflow.mode_id),
             |value| format!("Workflow: {value}")
         ),
         plan_json,

@@ -4,6 +4,7 @@ mod usage;
 
 pub(crate) use interaction::child_interaction as bridge_child_interaction;
 pub(crate) use interaction::interaction as bridge_interaction;
+pub(crate) use interaction::question as bridge_user_question;
 
 use super::presentation::current_state_field;
 use anyhow::Result;

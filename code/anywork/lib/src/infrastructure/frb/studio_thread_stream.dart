@@ -580,23 +580,7 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
     userInput: (questions, state) => (
       kind: InteractionKind.userInput,
       payload: UserInputInteractionPayload(
-        questions: [
-          for (final question in questions)
-            UserQuestionView(
-              id: question.id,
-              header: question.header,
-              question: question.question,
-              isOther: question.isOther,
-              isSecret: question.isSecret,
-              options: [
-                for (final option in question.options ?? const [])
-                  UserQuestionOptionView(
-                    label: option.label,
-                    description: option.description,
-                  ),
-              ],
-            ),
-        ],
+        questions: questions.map(userQuestionFromFrb).toList(),
       ) as InteractionPayload,
     ),
     toolApproval:

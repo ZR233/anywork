@@ -70,6 +70,13 @@ Future<void> answerAcpPermission({
   request: request,
 );
 
+Future<void> answerAcpHostInteraction({
+  required BridgeAcpHostInteractionAnswerRequest request,
+}) => RustLib.instance.api
+    .crateApiStudioHandlersAcpBusinessAnswerAcpHostInteraction(
+      request: request,
+    );
+
 Future<BridgeAcpListResponse> listAcpSessions({
   required BridgeAcpListRequest request,
 }) => RustLib.instance.api.crateApiStudioHandlersAcpBusinessListAcpSessions(

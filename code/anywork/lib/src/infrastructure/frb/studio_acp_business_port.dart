@@ -151,6 +151,22 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
   }
 
   @override
+  Future<void> answerHostInteraction(
+    acp_business.AcpHostInteractionAnswerRequestView request,
+  ) async {
+    final wire = frb_acp_types.BridgeAcpHostInteractionAnswerRequest(
+      target: acp_mapper.acpTargetToFrb(request.target),
+      interactionId: request.interactionId,
+      answer: acp_mapper.acpHostInteractionAnswerToFrb(request.answer),
+    );
+    await ensureReady();
+    await _acpBusinessCall(
+      () => frb_acp_business.answerAcpHostInteraction(request: wire),
+      command: 'answerHostInteraction',
+    );
+  }
+
+  @override
   Future<acp_business.AcpListSessionsResponseView> list(
     acp_business.AcpListRequestView request,
   ) async {

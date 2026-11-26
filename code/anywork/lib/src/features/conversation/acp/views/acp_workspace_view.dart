@@ -13,6 +13,7 @@ class AcpWorkspaceView extends StatelessWidget {
     required this.composerBuilder,
     required this.statusBar,
     this.permissionDock,
+    this.hostInteractionDock,
     this.sidebarBuilder,
     this.sidebarExpanded = false,
     this.expandedDockBehavior = ConversationExpandedDockBehavior.coverAll,
@@ -24,6 +25,7 @@ class AcpWorkspaceView extends StatelessWidget {
 
   final Widget readingArea;
   final Widget? permissionDock;
+  final Widget? hostInteractionDock;
   final Widget Function(BuildContext context, bool compact) composerBuilder;
   final Widget statusBar;
   final Widget? Function(
@@ -45,7 +47,11 @@ class AcpWorkspaceView extends StatelessWidget {
       footerDockBuilder: (context, compact) => ComposerDockView(
         compact: compact,
         additionalDiagnostics: const [],
-        childInteractions: permissionDock,
+        childInteractions: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [?permissionDock, ?hostInteractionDock],
+        ),
         content: composerBuilder(context, compact),
       ),
       statusBar: statusBar,

@@ -104,6 +104,13 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
   }
 
   @override
+  Future<void> answerHostInteraction(
+    AcpHostInteractionAnswerRequestView request,
+  ) async {
+    record('answerHostInteraction', request, null);
+  }
+
+  @override
   Future<AcpListSessionsResponseView> list(AcpListRequestView request) async =>
       record('list', request, listValue);
 

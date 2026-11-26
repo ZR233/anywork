@@ -87,6 +87,37 @@ impl From<UserQuestionInput> for UserQuestion {
     }
 }
 
+impl AskUserInput {
+    pub fn into_questions(self) -> Result<Vec<UserQuestion>, pl_core::tool::opaque::ToolError> {
+        if self
+            .questions
+            .iter()
+            .any(|question| question.id == AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
+        {
+            return Err(pl_core::tool::opaque::ToolError::new(crate::tool_error(
+                "request_user_input",
+                format!(
+                    "question ID `{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID}` is reserved for plan_transition"
+                ),
+            )));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        if self.questions.is_empty()
+            || self.questions.iter().any(|question| {
+                question.id.trim().is_empty()
+                    || question.question.trim().is_empty()
+                    || !ids.insert(&question.id)
+            })
+        {
+            return Err(pl_core::tool::opaque::ToolError::new(crate::tool_error(
+                "request_user_input",
+                "questions require unique nonempty IDs and question text",
+            )));
+        }
+        Ok(self.questions.into_iter().map(UserQuestion::from).collect())
+    }
+}
+
 impl pl_agent_tool::typed::TypedTool for AskUserTool {
     const NAME: &'static str = ASK_USER_TOOL_NAME;
     const DESCRIPTION: &'static str = ASK_USER_TOOL_DESCRIPTION;
@@ -100,36 +131,7 @@ impl pl_agent_tool::typed::TypedTool for AskUserTool {
         input: Self::Args,
         _: pl_core::tool::opaque::CallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        if input
-            .questions
-            .iter()
-            .any(|question| question.id == AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
-        {
-            return Err(pl_core::tool::opaque::ToolError::new(crate::tool_error(
-                "request_user_input",
-                format!(
-                    "question ID `{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID}` is reserved for plan_transition"
-                ),
-            )));
-        }
-        let mut ids = std::collections::BTreeSet::new();
-        if input.questions.is_empty()
-            || input.questions.iter().any(|question| {
-                question.id.trim().is_empty()
-                    || question.question.trim().is_empty()
-                    || !ids.insert(&question.id)
-            })
-        {
-            return Err(pl_core::tool::opaque::ToolError::new(crate::tool_error(
-                "request_user_input",
-                "questions require unique nonempty IDs and question text",
-            )));
-        }
-        let questions = input
-            .questions
-            .into_iter()
-            .map(UserQuestion::from)
-            .collect::<Vec<_>>();
+        let questions = input.into_questions()?;
         let encoded =
             serde_json::to_string(&questions).map_err(pl_core::tool::opaque::ToolError::new)?;
         let payload = pl_core::context::OpaquePayload::new("pl.tool.user-input", 1, encoded)

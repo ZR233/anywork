@@ -15,9 +15,10 @@ pub use self::directory::{
     BridgeThreadsObservation, open_thread_observation, open_threads_observation,
 };
 pub use self::handlers::acp_business::{
-    BridgeAcpSessionObservation, acp_session_snapshot, answer_acp_permission, close_acp_session,
-    configure_acp_session, interrupt_acp_session, list_acp_sessions, open_acp_session,
-    prompt_acp_session, replace_acp_session, set_acp_session_mode, set_acp_thread_mode,
+    BridgeAcpSessionObservation, acp_session_snapshot, answer_acp_host_interaction,
+    answer_acp_permission, close_acp_session, configure_acp_session, interrupt_acp_session,
+    list_acp_sessions, open_acp_session, prompt_acp_session, replace_acp_session,
+    set_acp_session_mode, set_acp_thread_mode,
 };
 pub use self::handlers::file_download::{
     BridgeFileDownload, BridgeFileDownloadPhase, BridgeFileDownloadStatus, start_file_download,

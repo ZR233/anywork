@@ -16,6 +16,7 @@ class UserInputView extends StatefulWidget {
     this.error,
     required this.onSubmit,
     this.trailing,
+    this.preserveQuestionIds = false,
     super.key,
   });
 
@@ -24,6 +25,7 @@ class UserInputView extends StatefulWidget {
   final Object? error;
   final ValueChanged<UserInputResolutionCommand> onSubmit;
   final Widget? trailing;
+  final bool preserveQuestionIds;
 
   @override
   State<UserInputView> createState() => _UserInputViewState();
@@ -335,9 +337,10 @@ class _UserInputViewState extends State<UserInputView> {
   void _submit(UserInputResolutionCommand resolution) {
     if (widget.enabled) widget.onSubmit(resolution);
   }
-}
 
-String _questionKey(UserQuestionView question, int index) {
-  final id = question.id.trim();
-  return id.isEmpty ? 'answer_$index' : id;
+  String _questionKey(UserQuestionView question, int index) {
+    if (widget.preserveQuestionIds) return question.id;
+    final id = question.id.trim();
+    return id.isEmpty ? 'answer_$index' : id;
+  }
 }

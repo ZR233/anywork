@@ -309,6 +309,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_Map_String_bridge_acp_json_value_None(dynamic raw);
 
   @protected
+  Map<String, List<String>> dco_decode_Map_String_list_String_None(dynamic raw);
+
+  @protected
   BridgeAccountObservation
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountObservation(
     dynamic raw,
@@ -578,6 +581,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpHostInteractionAnswerRequest
+  dco_decode_box_autoadd_bridge_acp_host_interaction_answer_request(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAcpInstallFailure dco_decode_box_autoadd_bridge_acp_install_failure(
     dynamic raw,
   );
@@ -650,6 +659,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAcpObservationGap dco_decode_box_autoadd_bridge_acp_observation_gap(
     dynamic raw,
   );
+
+  @protected
+  BridgeAcpPendingInteraction
+  dco_decode_box_autoadd_bridge_acp_pending_interaction(dynamic raw);
 
   @protected
   BridgeAcpPermissionAnswerRequest
@@ -1959,6 +1972,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpHostInteractionAnswer dco_decode_bridge_acp_host_interaction_answer(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpHostInteractionAnswerRequest
+  dco_decode_bridge_acp_host_interaction_answer_request(dynamic raw);
+
+  @protected
   BridgeAcpInstallAvailability dco_decode_bridge_acp_install_availability(
     dynamic raw,
   );
@@ -2071,6 +2093,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpOpenIntent dco_decode_bridge_acp_open_intent(dynamic raw);
+
+  @protected
+  BridgeAcpPendingInteraction dco_decode_bridge_acp_pending_interaction(
+    dynamic raw,
+  );
 
   @protected
   BridgeAcpPermissionAnswerRequest
@@ -4499,6 +4526,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_record_string_bridge_acp_json_value(dynamic raw);
 
   @protected
+  List<(String, List<String>)> dco_decode_list_record_string_list_string(
+    dynamic raw,
+  );
+
+  @protected
   List<(String, String)> dco_decode_list_record_string_string(dynamic raw);
 
   @protected
@@ -4603,6 +4635,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAcpObservationGap?
   dco_decode_opt_box_autoadd_bridge_acp_observation_gap(dynamic raw);
+
+  @protected
+  BridgeAcpPendingInteraction?
+  dco_decode_opt_box_autoadd_bridge_acp_pending_interaction(dynamic raw);
 
   @protected
   BridgeAcpPermissionOptionId?
@@ -5130,6 +5166,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  (String, List<String>) dco_decode_record_string_list_string(dynamic raw);
+
+  @protected
   (String, String) dco_decode_record_string_string(dynamic raw);
 
   @protected
@@ -5369,6 +5408,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   Map<String, BridgeAcpJsonValue>
   sse_decode_Map_String_bridge_acp_json_value_None(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Map<String, List<String>> sse_decode_Map_String_list_String_None(
     SseDeserializer deserializer,
   );
 
@@ -5670,6 +5714,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpHostInteractionAnswerRequest
+  sse_decode_box_autoadd_bridge_acp_host_interaction_answer_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAcpInstallFailure sse_decode_box_autoadd_bridge_acp_install_failure(
     SseDeserializer deserializer,
   );
@@ -5754,6 +5804,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpObservationGap sse_decode_box_autoadd_bridge_acp_observation_gap(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpPendingInteraction
+  sse_decode_box_autoadd_bridge_acp_pending_interaction(
     SseDeserializer deserializer,
   );
 
@@ -7449,6 +7505,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpHostInteractionAnswer sse_decode_bridge_acp_host_interaction_answer(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpHostInteractionAnswerRequest
+  sse_decode_bridge_acp_host_interaction_answer_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAcpInstallAvailability sse_decode_bridge_acp_install_availability(
     SseDeserializer deserializer,
   );
@@ -7597,6 +7664,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpOpenIntent sse_decode_bridge_acp_open_intent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpPendingInteraction sse_decode_bridge_acp_pending_interaction(
     SseDeserializer deserializer,
   );
 
@@ -10633,6 +10705,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<(String, List<String>)> sse_decode_list_record_string_list_string(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<(String, String)> sse_decode_list_record_string_string(
     SseDeserializer deserializer,
   );
@@ -10763,6 +10840,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAcpObservationGap?
   sse_decode_opt_box_autoadd_bridge_acp_observation_gap(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpPendingInteraction?
+  sse_decode_opt_box_autoadd_bridge_acp_pending_interaction(
     SseDeserializer deserializer,
   );
 
@@ -11426,6 +11509,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  (String, List<String>) sse_decode_record_string_list_string(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   (String, String) sse_decode_record_string_string(
     SseDeserializer deserializer,
   );
@@ -11718,6 +11806,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_Map_String_bridge_acp_json_value_None(
     Map<String, BridgeAcpJsonValue> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_Map_String_list_String_None(
+    Map<String, List<String>> self,
     SseSerializer serializer,
   );
 
@@ -12065,6 +12159,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_acp_host_interaction_answer_request(
+    BridgeAcpHostInteractionAnswerRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_acp_install_failure(
     BridgeAcpInstallFailure self,
     SseSerializer serializer,
@@ -12163,6 +12263,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_acp_observation_gap(
     BridgeAcpObservationGap self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_pending_interaction(
+    BridgeAcpPendingInteraction self,
     SseSerializer serializer,
   );
 
@@ -14078,6 +14184,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_acp_host_interaction_answer(
+    BridgeAcpHostInteractionAnswer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_host_interaction_answer_request(
+    BridgeAcpHostInteractionAnswerRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_acp_install_availability(
     BridgeAcpInstallAvailability self,
     SseSerializer serializer,
@@ -14257,6 +14375,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_acp_open_intent(
     BridgeAcpOpenIntent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_pending_interaction(
+    BridgeAcpPendingInteraction self,
     SseSerializer serializer,
   );
 
@@ -17942,6 +18066,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_record_string_list_string(
+    List<(String, List<String>)> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_record_string_string(
     List<(String, String)> self,
     SseSerializer serializer,
@@ -18085,6 +18215,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_acp_observation_gap(
     BridgeAcpObservationGap? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_pending_interaction(
+    BridgeAcpPendingInteraction? self,
     SseSerializer serializer,
   );
 
@@ -18803,6 +18939,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_string_bridge_acp_json_value(
     (String, BridgeAcpJsonValue) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_string_list_string(
+    (String, List<String>) self,
     SseSerializer serializer,
   );
 

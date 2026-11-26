@@ -10,10 +10,11 @@ use anyhow::{Context, Result, ensure};
 use clap::Args;
 use pl_studio_runtime::{
     AcpBusinessFailure, AcpBusinessFailureKind, AcpBusinessSnapshot, AcpCompletedRun,
-    AcpOpenIntent, AcpRunId, AcpSessionEvent, AcpSessionObservation, AcpSessionTarget,
-    OpenAcpSessionRequest, SessionConfigId, SessionConfigOptionValue, SkillSearchOptions,
-    StudioPendingPersistence, StudioRuntime, StudioRuntimeOptions, StudioShutdownOutcome,
-    StudioShutdownReport, StudioStartupErrorKind, ThreadWorkspaceMode,
+    AcpHostInteractionAnswer, AcpOpenIntent, AcpPendingInteraction, AcpRunId, AcpSessionEvent,
+    AcpSessionObservation, AcpSessionTarget, OpenAcpSessionRequest, SessionConfigId,
+    SessionConfigOptionValue, SkillSearchOptions, StudioPendingPersistence, StudioRuntime,
+    StudioRuntimeOptions, StudioShutdownOutcome, StudioShutdownReport, StudioStartupErrorKind,
+    ThreadWorkspaceMode,
     acp_schema::{
         ContentBlock, SessionConfigKind, SessionConfigSelectOptions, SessionUpdate, StopReason,
         TextContent,
@@ -460,6 +461,25 @@ async fn check_event(
     match event {
         AcpSessionEvent::Failed { error } => Err(Failure::business(error)),
         AcpSessionEvent::Gap { gap } => Err(Failure::runtime(format!("ACP 观察缺口: {gap:?}"))),
+        AcpSessionEvent::WorkflowStateUpdated { state } if state.pending_interaction.is_some() => {
+            let id = match state
+                .pending_interaction
+                .expect("pending interaction checked")
+            {
+                AcpPendingInteraction::Question { id, .. }
+                | AcpPendingInteraction::PlanConfirmation { id } => id,
+            };
+            let cancelled = runtime
+                .answer_acp_host_interaction(target.clone(), id, AcpHostInteractionAnswer::Cancel)
+                .await;
+            Err(Failure {
+                code: 3,
+                message: match cancelled {
+                    Ok(()) => "ACP 等待用户答复，非交互执行已取消卡片".into(),
+                    Err(error) => format!("ACP 等待用户答复，取消卡片失败: {error:?}"),
+                },
+            })
+        }
         AcpSessionEvent::Permission { id, .. } => {
             let rejected = runtime
                 .answer_acp_permission(target.clone(), id, None)

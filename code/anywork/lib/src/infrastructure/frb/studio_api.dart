@@ -35,6 +35,7 @@ export 'package:anywork_client/studio_ports.dart';
 import '../../platform/error_log.dart';
 import 'studio_bridge_api.dart' as frb;
 import 'studio_bridge_error.dart';
+import 'studio_interaction_converters.dart';
 import 'studio_numeric_converters.dart';
 import 'studio_workflow_converters.dart';
 import '../../rust/api/studio/types/thread_lsp.dart' as frb_thread_lsp_types;

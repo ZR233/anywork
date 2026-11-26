@@ -127,6 +127,20 @@ pub async fn answer_acp_permission(
         .await
         .map_err(convert::business_error)
 }
+pub async fn answer_acp_host_interaction(
+    request: BridgeAcpHostInteractionAnswerRequest,
+) -> Result<(), BridgeAcpBusinessError> {
+    let bridge = active_bridge().await?;
+    bridge
+        .studio
+        .answer_acp_host_interaction(
+            request.target.into(),
+            request.interaction_id,
+            convert::protocol_host_interaction_answer(request.answer),
+        )
+        .await
+        .map_err(convert::business_error)
+}
 pub async fn list_acp_sessions(
     request: BridgeAcpListRequest,
 ) -> Result<BridgeAcpListResponse, BridgeAcpBusinessError> {
