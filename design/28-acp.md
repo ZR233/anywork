@@ -314,7 +314,7 @@ Native 与 ACP 共用受控工作区文件后端和图片准备逻辑。Native �
 
 ACP Host MCP 的结构化提问与 Plan 确认由当前 ACP 会话承载。内置自动工作流先切入规划，再用结构化提问处理需要用户裁定的冲突。提交计划后由桌面确认卡片收集批准、修改意见或取消，用户决定与原调用关联并由宿主更新 Plan。确认工具等待真实答复。用户点击取消会将 Plan 退回起草。中断、提示替换或运行结束会撤去旧卡片，保留已保存的 Plan，重新提交前需回到起草。Plan 文档与状态仍归 ACP Plan 所有者，外部代理自己推送的执行步骤继续通过 ACP `plan` 更新显示。非交互宿主应取消需要人工输入的调用并报告等待输入。
 
-工作流转换声明以说明文字描述 `force` 和 `completion.evidence` 的默认行为，省去部分 ACP 客户端无法消费的 `default` 注解。宿主解析仍接受省略的可选字段，并分别应用 `false` 和空数组。ACP `plan_transition` 只公布交互前的提交与撤回参数 `targetState`、`content`、`expectedRevision`、`force`。批准和修改由卡片提交，宿主用原调用身份生成内部幂等键。
+ACP 工作流转换工具使用简短说明，从共享输入声明中省去供工具目录展示的说明和格式注解。宿主使用原参数和校验规则，`force` 和 `completion.evidence` 省略时分别使用 `false` 和空数组。ACP `plan_transition` 只公布交互前的提交与撤回参数 `targetState`、`content`、`expectedRevision`、`force`。批准和修改由卡片提交，宿主用原调用身份生成内部幂等键。
 
 分派使用会话冻结的分派模式和偏好。固定模式按 Profile 的预设路由派发；自动模式对 Native 子智能体先读取候选目录和详情再传 `modelSelection`，ACP 子智能体沿用真实服务配置入口 `acpConfig`。提示词按实际可用工具给出调用指引，结果以宿主返回的子智能体身份和报告为准。
 

@@ -1078,6 +1078,14 @@ fn attach_workflow_and_plan_tools(
 
     if is_root {
         for (kind, definition) in crate::workflow_tool::workflow_tool_definitions()? {
+            let definition = if matches!(
+                kind,
+                crate::workflow_tool::WorkflowOperationKind::Transition
+            ) {
+                acp_workflow_transition_definition(&definition)?
+            } else {
+                definition
+            };
             let projection = prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object)?;
             attach_direct(
                 tools,
@@ -1091,6 +1099,28 @@ fn attach_workflow_and_plan_tools(
         }
     }
     Ok(())
+}
+
+fn acp_workflow_transition_definition(definition: &ToolDefinition) -> Result<ToolDefinition> {
+    use schemars::transform::{RecursiveTransform, Transform};
+
+    let pl_agent_tool::InputFormat::JsonSchema(schema) = definition.input() else {
+        anyhow::bail!("Workflow transition requires a JSON schema");
+    };
+    let mut schema = schemars::Schema::try_from(schema.clone())?;
+    // Keep the shared parameter contract while omitting annotations that can
+    // prevent ACP clients from exposing the function to their model.
+    RecursiveTransform(|schema: &mut schemars::Schema| {
+        for key in ["title", "$schema", "description", "format", "default"] {
+            schema.remove(key);
+        }
+    })
+    .transform(&mut schema);
+    Ok(ToolDefinition::json(
+        definition.name(),
+        "Move the workflow to an allowed next stage.",
+        schema.to_value(),
+    )?)
 }
 
 impl HostTools for Handler {
