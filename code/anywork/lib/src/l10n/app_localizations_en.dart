@@ -2515,7 +2515,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get interactionQuestionFallback => 'Question';
 
   @override
-  String get interactionOtherLabel => 'Other';
+  String get interactionCustomAnswerLabel => 'Custom answer';
 
   @override
   String get interactionSecretHint => 'Enter secret answer';

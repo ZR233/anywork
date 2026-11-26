@@ -36,7 +36,6 @@ const _question = PendingInteraction(
         id: 'q1',
         header: 'Scope',
         question: 'Which module should change first?',
-        isOther: false,
         isSecret: false,
         options: [
           UserQuestionOptionView(
@@ -121,7 +120,6 @@ const _childPlan = PendingInteraction(
         id: agentSessionPlanConfirmationQuestionId,
         header: 'Plan',
         question: 'Child plan document',
-        isOther: true,
         isSecret: false,
         options: [
           UserQuestionOptionView(

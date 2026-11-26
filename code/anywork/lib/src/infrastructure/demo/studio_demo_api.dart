@@ -5996,7 +5996,6 @@ class DemoStudioTransport extends StudioTransport
                   for (final question in payload.questions)
                     {
                       'id': question.id,
-                      'isOther': question.isOther,
                       'isSecret': question.isSecret,
                       'optionCount': question.options.length,
                     },
@@ -7720,7 +7719,6 @@ final theme = pureStudioTheme();
               id: agentSessionPlanConfirmationQuestionId,
               header: 'Plan',
               question: document.markdown,
-              isOther: true,
               isSecret: false,
               options: [
                 UserQuestionOptionView(
@@ -7805,7 +7803,6 @@ final theme = pureStudioTheme();
                       id: 'driver-question',
                       header: 'Driver',
                       question: 'Continue?',
-                      isOther: false,
                       isSecret: false,
                       options: [],
                     ),

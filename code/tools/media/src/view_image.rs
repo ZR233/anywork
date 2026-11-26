@@ -57,6 +57,58 @@ impl ViewImageError {
     }
 }
 
+pub struct WorkspaceImage {
+    pub original: Arc<[u8]>,
+    pub original_media_type: &'static str,
+    pub normalized: pl_tool_media_support::NormalizedToolImage,
+}
+
+pub async fn prepare_workspace_image(
+    reader: &impl ImageReader,
+    path: String,
+    context: ImageContext,
+) -> Result<WorkspaceImage, ViewImageError> {
+    let limits = context
+        .limits
+        .filter(|limits| limits.max_count != Some(0))
+        .ok_or_else(|| ViewImageError::invalid("prepared model does not support image input"))?;
+    if context.cancellation.is_cancelled() {
+        return Err(ViewImageError::invalid("image read cancelled"));
+    }
+    let original = reader
+        .read(path, MAX_SOURCE_BYTES)
+        .await
+        .map_err(ViewImageError::new)?;
+    if original.len() > MAX_SOURCE_BYTES {
+        return Err(ViewImageError::invalid(
+            "image source exceeds the byte limit",
+        ));
+    }
+    if context.cancellation.is_cancelled() {
+        return Err(ViewImageError::invalid("image read cancelled"));
+    }
+    let format = image::guess_format(&original).map_err(ViewImageError::new)?;
+    let original_media_type = pl_tool_media_support::media_type(format)
+        .ok_or_else(|| ViewImageError::invalid("unsupported image header"))?;
+    let total_limit = limits.max_total_bytes;
+    let normalized = prepare_image(NAME, original.clone(), None, limits)
+        .await
+        .map_err(ViewImageError::new)?;
+    if total_limit.is_some_and(|limit| normalized.bytes.len() as u64 > limit) {
+        return Err(ViewImageError::invalid(
+            "image exceeds the prepared total-byte limit",
+        ));
+    }
+    if context.cancellation.is_cancelled() {
+        return Err(ViewImageError::invalid("image preparation cancelled"));
+    }
+    Ok(WorkspaceImage {
+        original,
+        original_media_type,
+        normalized,
+    })
+}
+
 pub struct ViewImage<B, H> {
     media: Arc<H>,
     reader: PhantomData<fn() -> B>,
@@ -84,51 +136,18 @@ impl<B: ImageReader, H: MediaHost> TypedTool for ViewImage<B, H> {
         input: Input,
         context: Context<B>,
     ) -> Result<Self::Output, Self::Error> {
-        let limits = context
-            .image
-            .limits
-            .filter(|limits| limits.max_count != Some(0))
-            .ok_or_else(|| {
-                ViewImageError::invalid("prepared model does not support image input")
-            })?;
-        if context.image.cancellation.is_cancelled() {
-            return Err(ViewImageError::invalid("image read cancelled"));
-        }
-        let bytes = context
-            .reader
-            .read(input.path.clone(), MAX_SOURCE_BYTES)
-            .await
-            .map_err(ViewImageError::new)?;
-        if bytes.len() > MAX_SOURCE_BYTES {
-            return Err(ViewImageError::invalid(
-                "image source exceeds the byte limit",
-            ));
-        }
-        if context.image.cancellation.is_cancelled() {
-            return Err(ViewImageError::invalid("image read cancelled"));
-        }
-        let format = image::guess_format(&bytes).map_err(ViewImageError::new)?;
-        let source_type = pl_tool_media_support::media_type(format)
-            .ok_or_else(|| ViewImageError::invalid("unsupported image header"))?;
-        let total_limit = limits.max_total_bytes;
-        let normalized = prepare_image(NAME, bytes.clone(), None, limits)
-            .await
-            .map_err(ViewImageError::new)?;
-        if total_limit.is_some_and(|limit| normalized.bytes.len() as u64 > limit) {
-            return Err(ViewImageError::invalid(
-                "image exceeds the prepared total-byte limit",
-            ));
-        }
-        if context.image.cancellation.is_cancelled() {
-            return Err(ViewImageError::invalid("image preparation cancelled"));
-        }
+        let WorkspaceImage {
+            original,
+            original_media_type,
+            normalized,
+        } = prepare_workspace_image(&context.reader, input.path.clone(), context.image).await?;
         let dimensions = (normalized.width, normalized.height);
         let retained = self
             .media
             .retain(Media {
                 kind: MediaKind::Image,
-                bytes,
-                media_type: source_type.into(),
+                bytes: original,
+                media_type: original_media_type.into(),
                 model_image: Some(PreparedImage {
                     bytes: normalized.bytes.into(),
                     media_type: normalized.media_type,

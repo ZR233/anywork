@@ -154,9 +154,8 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
     }
     match name {
         "write_stdin" => Vec::new(),
-        "write_file" | "stat_path" | "view_image" | "create_directory" | "delete_path" => {
-            argument_path(arguments, "path").into_iter().collect()
-        }
+        "write_file" | "stat_path" | "view_image" | "read_text_file" | "create_directory"
+        | "delete_path" => argument_path(arguments, "path").into_iter().collect(),
         "show_files" => {
             serde_json::from_value::<crate::file_display::ShowFilesInput>(arguments.clone())
                 .map(|input| {

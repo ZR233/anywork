@@ -7,7 +7,6 @@ UserQuestionView userQuestionFromFrb(BridgeUserQuestion question) =>
       id: question.id,
       header: question.header,
       question: question.question,
-      isOther: question.isOther,
       isSecret: question.isSecret,
       options: [
         for (final option in question.options ?? const [])

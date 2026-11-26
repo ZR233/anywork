@@ -43,7 +43,6 @@ void main() {
                       id: 'question',
                       header: 'Credential',
                       question: 'Provide the test credential',
-                      isOther: true,
                       isSecret: true,
                       options: null,
                     ),

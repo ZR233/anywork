@@ -617,7 +617,6 @@ fn q1_arguments() -> String {
                 "id": Q1_ID,
                 "header": "Wording",
                 "question": "Which receipt wording should the final reply use?",
-                "isOther": true,
                 "isSecret": false,
                 "options": [
                     {

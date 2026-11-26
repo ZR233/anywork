@@ -136,7 +136,6 @@ pub(crate) fn question(value: UserQuestion) -> BridgeUserQuestion {
         id: value.id,
         header: value.header,
         question: value.question,
-        is_other: value.is_other,
         is_secret: value.is_secret,
         options: value.options.map(|options| {
             options

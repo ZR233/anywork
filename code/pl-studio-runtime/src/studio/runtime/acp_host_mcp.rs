@@ -9,8 +9,8 @@ use http::{Request, StatusCode, header::AUTHORIZATION};
 use pl_acp::session::{AllowOnceForTool, PermissionToolCall, PrepareOpen, schema};
 use pl_agent_tool::ToolDefinition;
 use pl_studio_mcp::{
-    HostCatalog, HostError, HostInvocation, HostMcpService, HostResult, HostTool, HostTools,
-    ipc::IpcServer,
+    HostCatalog, HostContent, HostError, HostInvocation, HostMcpService, HostResult, HostTool,
+    HostTools, ipc::IpcServer,
 };
 use pl_tool::collaboration::control::{AgentCallContext, ControlError};
 use rmcp::transport::streamable_http_server::{
@@ -275,7 +275,8 @@ async fn workspace_instructions(
          Use the anywork_ workspace tools for business commands, files and enabled Git. \
          These host tools retain the real execution identity, permissions, captures and cleanup owner. \
          Do not infer business paths from host cwd or use local tools for an SSH workspace. \
-         Use only tools actually present in the catalog; read/list/search require anywork_exec_command when enabled. \
+         Use anywork_read_text_file for UTF-8 files and anywork_view_image for images when present. \
+         Use anywork_exec_command for directory listing and search when enabled. \
          Absent commands grant no execution capability. Accepted executions remain owned by this instance. \
          Use anywork_wait and anywork_get_tool_task to read results, not another prompt's automatic delivery. \
          Tool permissions are not an OS sandbox and cannot disable the external agent's own host tools.\n",
@@ -597,7 +598,7 @@ struct Handler {
     _lifetime: TaskTrackerToken,
 }
 
-type DomainResult = Result<(Value, bool), ControlError>;
+type DomainResult = Result<HostResult, ControlError>;
 type DomainInvocation = dyn Fn(
         Arc<AgentHost>,
         pl_core::context::OpaquePayload,
@@ -608,10 +609,10 @@ type DomainInvocation = dyn Fn(
 type CloseInvocation = dyn Fn() -> futures::future::BoxFuture<'static, Result<(), pl_core::tool::opaque::ToolError>>
     + Send
     + Sync;
-pub(super) type HostHandle<C> = pl_agent_tool::ToolHandle<
+pub(super) type HostHandle<C, O = pl_core::tool::ToolOutput> = pl_agent_tool::ToolHandle<
     pl_core::context::OpaquePayload,
     C,
-    pl_core::tool::ToolOutput,
+    O,
     pl_core::tool::opaque::ToolError,
 >;
 
@@ -648,21 +649,22 @@ pub(super) fn prepare_binding(
     Ok(projection)
 }
 
-pub(super) fn attach_binding<C, T, F>(
+pub(super) fn attach_binding<C, O, T, F>(
     tools: &mut BTreeMap<String, HostBinding>,
     projection: pl_studio_mcp::ToolProjection,
     tool: T,
     invoke: F,
 ) where
     C: Send + 'static,
+    O: Send + 'static,
     T: pl_agent_tool::Tool<
             Input = pl_core::context::OpaquePayload,
             Context = C,
-            Output = pl_core::tool::ToolOutput,
+            Output = O,
             Error = pl_core::tool::opaque::ToolError,
         >,
     F: Fn(
-            Arc<HostHandle<C>>,
+            Arc<HostHandle<C, O>>,
             Arc<AgentHost>,
             pl_core::context::OpaquePayload,
             AgentCallContext,
@@ -739,10 +741,12 @@ pub(super) fn host_result(
         Ok(_) => HostResult {
             value,
             is_error: false,
+            content: None,
         },
         Err(error) => HostResult {
             value: serde_json::json!({"error": error.to_string(), "output": value}),
             is_error: true,
+            content: None,
         },
     }
 }
@@ -764,8 +768,9 @@ pub(super) fn attach_direct<T>(
     attach_binding(tools, projection, tool, |handle, host, input, context| {
         Box::pin(async move {
             host.authorize_workspace_call(&context).await?;
-            let result = host_result(handle.execute(input, context).await.and_then(data_output));
-            Ok((result.value, result.is_error))
+            Ok(host_result(
+                handle.execute(input, context).await.and_then(data_output),
+            ))
         })
     });
 }
@@ -1130,17 +1135,30 @@ impl HostTools for Handler {
             result = invoke => result,
             () = self.domain_closed.cancelled() => Err(ControlError::Closed),
         };
-        let (value, error) = match result {
-            Ok(value) => value,
-            Err(error) => (serde_json::json!({ "error": error.to_string() }), true),
-        };
+        let result = result.unwrap_or_else(|error| HostResult {
+            value: serde_json::json!({ "error": error.to_string() }),
+            is_error: true,
+            content: None,
+        });
         if let Some((arguments, host_call_id)) = evidence {
-            let redacted = Value::String("User answered".into());
-            let logged_value = if request.tool_id == "anywork_request_user_input" && !error {
-                &redacted
-            } else {
-                &value
-            };
+            let summary;
+            let logged_value =
+                if request.tool_id == "anywork_request_user_input" && !result.is_error {
+                    summary = Value::String("User answered".into());
+                    &summary
+                } else if let Some(content) = &result.content {
+                    summary = match content {
+                        HostContent::Text(text) => {
+                            serde_json::json!({"contentType": "text", "bytes": text.len()})
+                        }
+                        HostContent::Image { mime_type, .. } => {
+                            serde_json::json!({"contentType": "image", "mimeType": mime_type})
+                        }
+                    };
+                    &summary
+                } else {
+                    &result.value
+                };
             tracing::trace!(
                 target: "pl_studio_runtime::acp_host_call_evidence",
                 record_json = %serde_json::json!({
@@ -1152,15 +1170,12 @@ impl HostTools for Handler {
                     "toolId": request.tool_id,
                     "arguments": arguments,
                     "value": logged_value,
-                    "isError": error,
+                    "isError": result.is_error,
                 }),
                 "host_mcp_call_result"
             );
         }
-        Ok(HostResult {
-            value,
-            is_error: error,
-        })
+        Ok(result)
     }
 }
 
@@ -1170,7 +1185,7 @@ impl Handler {
         tool_id: &str,
         arguments: Value,
         context: AgentCallContext,
-    ) -> Result<(Value, bool), ControlError> {
+    ) -> DomainResult {
         let binding = self.tools.get(tool_id).ok_or(ControlError::Closed)?;
         let Value::Object(arguments) = arguments else {
             return Err(ControlError::service(HostError::InvalidRequest));
@@ -1529,8 +1544,15 @@ mod tests {
                 Ok(pl_studio_mcp::HostResult {
                     value: result["structuredContent"].clone(),
                     is_error: result["isError"] == true,
+                    content: None,
                 })
             }
+        }
+
+        async fn completed_value(&mut self, name: &str, arguments: Value) -> Result<Value> {
+            let result = self.completed_tool(name, arguments).await?;
+            ensure!(!result.is_error, "MCP tool {name} failed: {}", result.value);
+            Ok(result.value)
         }
 
         async fn task_reply(&mut self, task: &str) -> Result<Value> {
@@ -1772,6 +1794,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ssh_workspace_mcp_reads_typed_content_without_exec() -> Result<()> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        with_ssh_workspace(|h| {
+            Box::pin(async move {
+                let mut config = h.config.clone();
+                config.runtime.tool_capabilities.exec = false;
+                let mut peer = h.start(&config, h.binding.clone()).await?;
+                let mut png = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                    10,
+                    12,
+                    image::Rgb([18, 91, 144]),
+                ))
+                .write_to(&mut png, image::ImageFormat::Png)?;
+                tokio::fs::write(h.root.join("plot"), png.into_inner()).await?;
+                tokio::fs::write(h.root.join("notes.txt"), "远端内容\n").await?;
+                tokio::fs::write(h.root.join("large.txt"), vec![b'x'; 256 * 1024 + 1]).await?;
+                let outside = h.root.parent().context("fixture parent")?;
+                tokio::fs::write(outside.join("outside.txt"), "outside").await?;
+                std::os::unix::fs::symlink(outside, h.root.join("escape"))?;
+
+                let text = peer
+                    .request(
+                        "tools/call",
+                        json!({"name":"anywork_read_text_file","arguments":{"path":"notes.txt"}}),
+                    )
+                    .await?;
+                ensure!(text["result"]["content"] == json!([{"type":"text","text":"远端内容\n"}]));
+                ensure!(text["result"].get("structuredContent").is_none());
+
+                let image = peer
+                    .request(
+                        "tools/call",
+                        json!({"name":"anywork_view_image","arguments":{"path":"plot"}}),
+                    )
+                    .await?;
+                let blocks = image["result"]["content"]
+                    .as_array()
+                    .context("image response")?;
+                ensure!(
+                    blocks.len() == 1
+                        && blocks[0]["type"] == "image"
+                        && blocks[0]["mimeType"] == "image/png"
+                );
+                ensure!(image["result"].get("structuredContent").is_none());
+                let pixels = image::load_from_memory(
+                    &STANDARD.decode(blocks[0]["data"].as_str().context("image data")?)?,
+                )?
+                .into_rgb8();
+                ensure!(
+                    pixels.dimensions() == (10, 12) && pixels.get_pixel(0, 0).0 == [18, 91, 144]
+                );
+
+                for (name, path) in [
+                    ("anywork_read_text_file", "large.txt"),
+                    ("anywork_read_text_file", "escape/outside.txt"),
+                    ("anywork_view_image", "notes.txt"),
+                ] {
+                    let failed = peer.completed_tool(name, json!({"path":path})).await?;
+                    ensure!(
+                        failed.is_error && failed.value["error"].is_string(),
+                        "{name} should reject {path}"
+                    );
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    #[tokio::test]
     async fn ssh_workspace_mcp_enforces_host_admission_paths_and_tool_capabilities() -> Result<()> {
         with_ssh_workspace(|h| Box::pin(async move {
             let forged = pl_tool::collaboration::control::AgentCallContext {
@@ -1797,21 +1891,22 @@ mod tests {
             let patch = catalog.iter().find(|tool| tool["name"] == "anywork_apply_patch").context("patch declaration")?;
             ensure!(patch["inputSchema"]["properties"]["input"]["type"] == "string");
 
-            peer.tool("anywork_create_directory", json!({"path":"src"})).await?;
-            peer.tool("anywork_write_file", json!({"path":"src/file.txt","mode":"create","content":"before\n"})).await?;
-            peer.tool("anywork_apply_patch", json!({"input":"*** Begin Patch\n*** Update File: src/file.txt\n@@\n-before\n+after\n*** End Patch"})).await?;
-            let stat = peer.tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
-            ensure!(stat["exists"] == true && stat["type"] == "file" && stat["len"] == 6);
-            peer.tool("anywork_copy_path", json!({"from":"src/file.txt","to":"copy.txt","collision":"failIfExists"})).await?;
-            peer.tool("anywork_move_path", json!({"from":"copy.txt","to":"moved.txt","collision":"failIfExists"})).await?;
-            peer.tool("anywork_delete_path", json!({"path":"moved.txt","mode":"file"})).await?;
+            // Wait for each operation to finish before sending a dependent request.
+            peer.completed_value("anywork_create_directory", json!({"path":"src"})).await?;
+            peer.completed_value("anywork_write_file", json!({"path":"src/file.txt","mode":"create","content":"before\n"})).await?;
+            peer.completed_value("anywork_apply_patch", json!({"input":"*** Begin Patch\n*** Update File: src/file.txt\n@@\n-before\n+after\n*** End Patch"})).await?;
+            let stat = peer.completed_value("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
+            ensure!(stat["exists"] == true && stat["type"] == "file" && stat["len"] == 6, "stat result: {stat}");
+            peer.completed_value("anywork_copy_path", json!({"from":"src/file.txt","to":"copy.txt","collision":"failIfExists"})).await?;
+            peer.completed_value("anywork_move_path", json!({"from":"copy.txt","to":"moved.txt","collision":"failIfExists"})).await?;
+            peer.completed_value("anywork_delete_path", json!({"path":"moved.txt","mode":"file"})).await?;
             ensure!(tokio::fs::read_to_string(h.root.join("src/file.txt")).await? == "after\n");
             ensure!(!std::path::Path::new(&h.fixture.workspace.path).join("src/file.txt").exists(), "file tool used ACP host cwd");
             tokio::fs::create_dir(h.fixture.home.path().join("outside")).await?;
             std::os::unix::fs::symlink(h.fixture.home.path().join("outside"), h.root.join("escape"))?;
             let denied = peer.completed_tool("anywork_write_file", json!({"path":"escape/forbidden","content":"bad","mode":"create"})).await?;
             ensure!(denied.is_error && !h.fixture.home.path().join("outside/forbidden").exists());
-            let git = peer.tool("anywork_git_workspace_info", json!({})).await?;
+            let git = peer.completed_value("anywork_git_workspace_info", json!({})).await?;
             ensure!(git["worktree"] == h.root.to_str().context("Git root")?);
 
             // Disabling commands does not turn file permission into unrestricted host access.

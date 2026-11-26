@@ -347,7 +347,6 @@ fn user_input(
             .map(|question| {
                 Ok(QuestionDescriptor {
                     id: question.id.clone(),
-                    is_other: question.is_other,
                     is_secret: question.is_secret,
                     option_count: question
                         .options
@@ -401,7 +400,6 @@ mod tests {
             id: AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
             header: "Plan".into(),
             question: "# Original".into(),
-            is_other: true,
             is_secret: secret,
             options: None,
         };

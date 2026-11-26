@@ -589,7 +589,6 @@ void main() {
                 id: agentSessionPlanConfirmationQuestionId,
                 header: 'Plan',
                 question: 'Approve?',
-                isOther: false,
                 isSecret: false,
                 options: [],
               ),

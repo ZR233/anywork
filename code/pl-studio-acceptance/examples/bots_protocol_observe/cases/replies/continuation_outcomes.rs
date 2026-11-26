@@ -738,7 +738,6 @@ fn question_arguments(question_id: &str) -> String {
             "id": question_id,
             "header": "Continuation",
             "question": "Should the reply continue now?",
-            "isOther": false,
             "isSecret": false,
             "options": [{"label": "continue", "description": "Continue the reply."}]
         }]

@@ -1,4 +1,6 @@
 //! Workspace and skill tools over ordinary authors and the original ACP execution owner.
+mod read;
+
 use super::acp_host_mcp::{HostBinding, HostHandle, attach_binding, prepare_binding};
 use crate::studio::thread_factory::PreparedAcpWorkspace;
 use crate::tool_json::{JsonToolInput, json_output};
@@ -194,7 +196,7 @@ impl WorkspaceTools {
         } else {
             CommandAccess::WorkspaceOnly
         };
-        family::workspace(
+        let resources = family::workspace(
             &mut sink,
             StudioCommandBinding {
                 commands: self
@@ -240,6 +242,9 @@ impl WorkspaceTools {
                 family::LspReadiness::IncludePending,
             )
             .await?;
+        }
+        if self.capabilities.workspace_files {
+            read::bind(self, resources.files, sink.tools)?;
         }
         self.bind_task_tools(sink.tools)?;
         Ok(())
@@ -328,7 +333,7 @@ impl WorkspaceTools {
         input: OpaquePayload,
         policy: InvocationPolicy,
         operation: Arc<HostHandle<WorkspaceInvocation>>,
-    ) -> Result<(serde_json::Value, bool), ControlError> {
+    ) -> Result<HostResult, ControlError> {
         let identity = ExecutionIdentity::new(context.call_id.clone(), name.clone());
         let task_id = identity.task_id.clone();
         let cancellation = self.closed.child_token();
@@ -418,12 +423,20 @@ impl WorkspaceTools {
                 let bytes = self.result_bytes(&output, observer.clone()).await.map_err(|error| ControlError::Service(error.into_boxed_dyn_error()))?;
                 let reply: HostResult = serde_json::from_slice(&bytes).map_err(ControlError::service)?;
                 if let Some(error) = &output.archive_error {
-                    return Ok((serde_json::json!({"taskId":task_id,"output":reply.value,"resultArchiveError":error}), true));
+                    return Ok(HostResult {
+                        value: serde_json::json!({"taskId":task_id,"output":reply.value,"resultArchiveError":error}),
+                        is_error: true,
+                        content: None,
+                    });
                 }
-                Ok((reply.value, reply.is_error))
+                Ok(reply)
             },
             _ = observer.cancelled() => Err(ControlError::Closed),
-            _ = tokio::time::sleep(self.foreground_handoff_timeout) => Ok((serde_json::json!({"taskId":task_id,"status":"running","message":"Execution is owned by this instance; observe with anywork_wait and anywork_get_tool_task."}), false)),
+            _ = tokio::time::sleep(self.foreground_handoff_timeout) => Ok(HostResult {
+                value: serde_json::json!({"taskId":task_id,"status":"running","message":"Execution is owned by this instance; observe with anywork_wait and anywork_get_tool_task."}),
+                is_error: false,
+                content: None,
+            }),
         }
     }
 

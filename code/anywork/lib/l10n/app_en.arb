@@ -1205,7 +1205,7 @@
     }
   },
   "interactionQuestionFallback": "Question",
-  "interactionOtherLabel": "Other",
+  "interactionCustomAnswerLabel": "Custom answer",
   "interactionSecretHint": "Enter secret answer",
   "interactionTextHint": "Enter your answer...",
   "interactionPermissionTitle": "Permission needed",

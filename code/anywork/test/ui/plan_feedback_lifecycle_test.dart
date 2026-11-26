@@ -682,7 +682,6 @@ PendingInteraction _planInteraction(String threadId, {String suffix = ''}) {
           id: agentSessionPlanConfirmationQuestionId,
           header: 'Implementation plan',
           question: '# Delivery Blueprint\n\n## Steps\n\n1. Keep it readable.',
-          isOther: false,
           isSecret: false,
           options: [],
         ),

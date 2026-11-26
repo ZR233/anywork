@@ -22,7 +22,7 @@ pub(crate) type CommandProcesses =
 
 pub(crate) struct WorkspaceResources {
     pub commands: Option<CommandProcesses>,
-    /// Native-only media tools reuse the identical physical file binding.
+    /// Shared physical file binding for the session's workspace tools.
     pub files: Arc<pl_tool::workspace_file::ExecutorWorkspaceFileBackend>,
 }
 

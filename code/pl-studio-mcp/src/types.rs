@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
@@ -25,11 +27,44 @@ pub struct HostInvocation {
     pub arguments: Map<String, Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// A tool result that the MCP adapter delivers as a single content block.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostContent {
+    Text(String),
+    Image {
+        /// Base64-encoded image data.
+        data: String,
+        mime_type: String,
+    },
+}
+
+impl fmt::Debug for HostContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text(_) => f.write_str("Text(..)"),
+            Self::Image { .. } => f.write_str("Image { .. }"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostResult {
     pub value: Value,
     pub is_error: bool,
+    /// When present, this replaces the MCP structured result and its JSON text block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<HostContent>,
+}
+
+impl fmt::Debug for HostResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostResult")
+            .field("is_error", &self.is_error)
+            .field("content", &self.content)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Safe adapter diagnostics. Business failures are returned as `HostResult`.

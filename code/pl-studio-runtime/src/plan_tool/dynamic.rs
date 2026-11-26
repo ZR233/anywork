@@ -143,7 +143,6 @@ pub(crate) fn confirmation_question(plan: String) -> UserQuestion {
         id: AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.to_string(),
         header: "Plan".to_string(),
         question: plan,
-        is_other: true,
         is_secret: false,
         options: Some(vec![
             UserQuestionOption {

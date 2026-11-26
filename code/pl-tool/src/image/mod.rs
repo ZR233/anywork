@@ -9,4 +9,4 @@ pub use thread::{
 pub use pl_tool_media::view_image::{Input as ViewImageInput, NAME as TOOL_VIEW_IMAGE};
 pub use pl_tool_media_support::ImageOutputLimits;
 
-pub use thread::thread_view_image_tool_definition;
+pub use thread::{prepare_workspace_image, thread_view_image_tool_definition};
