@@ -19,8 +19,6 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../../../anywork_client/test/support/timeline_transport.dart'
-    show TestHistoryReader;
 import '../support/chat_fixtures.dart';
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
@@ -29,7 +27,6 @@ import '../support/test_statistics_feed.dart';
 class _AttachmentTransport extends RecordingDemoTransport {
   final reads = <(String, String)>[];
   final bytes = Completer<Uint8List>();
-  final changed = Completer<HistoryCut>();
 
   @override
   Future<Uint8List> readThreadAttachment(String threadId, String attachmentId) {
@@ -38,30 +35,26 @@ class _AttachmentTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<HistoryReader> openHistoryReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int historyProtocolVersion,
+    int initialLimit = 50,
   }) async {
-    final reader = _FileHistoryReader(
-      threadId: threadId,
-      cut: HistoryCut('file-cut:$threadId'),
-    );
-    reader.onTimeline = (_, _, _) async => HistoryTimelinePage(
-      cut: reader.cut,
-      entries: [
-        HistoryTimelineEntry(
-          event: HistoryEventRecord(
+    final feed = await super.openConversationFeed(
+      threadId,
+      initialLimit: initialLimit,
+    ) as RecordingConversationFeed;
+    if (threadId == 'thread-main') {
+      feed.mapReset = (reset) => TimelineReset(
+        items: [
+          TimelineStandaloneTool(
+            id: 'files-call',
             seq: 5,
-            eventId: 'files-call',
-            kind: 'tool_completed',
-            timelineRole: HistoryTimelineRole.boundary,
-            recordedAt: 5,
-            entityId: 'files-call',
             callId: 'files-call',
             toolName: 'show_files',
-            rowKey: 'files-call',
-            source: const ReceiptChatSource(receiptId: 'files-call'),
-            payloadSchema: 'anywork.event/1',
+            presentationContract: 'builtin.show_files@1',
+            state: 'succeeded',
+            summary: 'Show files',
+            bodies: const [],
             payloadJson: jsonEncode({
               'contract': 'anywork.event/1',
               'type': 'tool',
@@ -94,23 +87,19 @@ class _AttachmentTransport extends RecordingDemoTransport {
                 {
                   'key': 'tool.output-artifacts',
                   'role': 'attachment',
-                  'byteLength': _FileHistoryReader._artifactsJson.length,
-                  'inlineText': _FileHistoryReader._artifactsJson,
+                  'byteLength': _artifactsJson.length,
+                  'inlineText': _artifactsJson,
                 },
               ],
             }),
           ),
-          hasFoldedAfter: false,
-        ),
-      ],
-    );
-    reader.onWaitChanged = (_) => changed.future;
-    return reader;
+        ],
+        hasMoreOlder: false,
+        revision: reset.revision,
+      );
+    }
+    return feed;
   }
-}
-
-final class _FileHistoryReader extends TestHistoryReader {
-  _FileHistoryReader({required super.threadId, required super.cut});
 
   static final String _artifactsJson = jsonEncode([
     {
@@ -137,12 +126,6 @@ final class _FileHistoryReader extends TestHistoryReader {
       },
     },
   ]);
-
-  @override
-  Future<HistoryEventRecord> readEvent({
-    required String eventId,
-    required HistoryDemand demand,
-  }) async => (await onTimeline!(cut, null, demand)).entries.single.event;
 }
 
 void main() {
@@ -273,10 +256,7 @@ void main() {
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
         Future<void>? revokedRead;
         if (revokeDuringRead) {
-          revokedRead = expectLater(
-            read('notes'),
-            throwsA(isA<StaleConversationScope>()),
-          );
+          revokedRead = expectLater(read('notes'), throwsA(isA<StateError>()));
           await pumpClientUntil(
             tester,
             () => transport.reads.length == 2,
@@ -323,7 +303,7 @@ void main() {
         );
         await pumpClientFuture(
           tester,
-          expectLater(read('notes'), throwsA(isA<StaleConversationScope>())),
+          expectLater(read('notes'), throwsA(isA<StateError>())),
           'retired attachment read',
         );
         expect(

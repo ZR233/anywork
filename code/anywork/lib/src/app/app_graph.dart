@@ -265,11 +265,8 @@ class AppGraph {
     return completion.future;
   }
 
-  /// 先同步封闭 Client 准入，并在首次 await 前发布「无展示」促使 Chat 子树卸载。
-  ///
-  /// `timeline.close` 在首次 await 之前同步清空展示元数据；视图卸载后其真实 `dispose`
-  /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
-  /// 提前 ACK，重复 close 得到同一个释放结果（design/26 §26.8）。
+  /// 在首次 await 前撤销展示租约和 Client 准入。视图卸载后释放借用的 controller，
+  /// 会话 feed 与应用其他资源在各自 owner 汇合关闭。
   Future<CloseReport> _close(ClientCloseBudget budget) async {
     _closed = true;
     _selectionObservation?.cancel();
@@ -279,8 +276,8 @@ class AppGraph {
     _workspaceObservation?.cancel();
     _workspaceObservation = null;
     _releaseBackendDemand();
-    final clientClose = client.close(budget: budget);
     final timelineClose = timeline.close(budget: budget);
+    final clientClose = client.close(budget: budget);
     final statisticsClose = statisticsRepository.close(budget: budget);
     final accountClose = accountDomains.close(budget: budget);
     final scopeClose = scope.close(budget: budget);

@@ -1,5 +1,4 @@
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
@@ -77,7 +76,7 @@ Finder timelineActivityTitleFinder(
 );
 
 /// Synchronous observation of the one production Main controller. It does not
-/// reconstruct grouping, Current atoms, or a second timeline collection.
+/// reconstruct grouping or a second timeline collection.
 final class TimelineObservation {
   TimelineObservation(this.tester, this.borrowLease);
 
@@ -85,25 +84,24 @@ final class TimelineObservation {
   final TimelineDisplayLease Function() borrowLease;
   TimelineDisplayLease get lease => borrowLease();
 
-  Iterable<TimelineDisplayUnit> get main sync* {
+  Iterable<TimelineItem> get main sync* {
     for (final message in lease.controller.messages) {
-      final unit = message.metadata?[timelineDisplayUnitKey];
-      expect(unit, isA<TimelineDisplayUnit>());
-      final value = unit as TimelineDisplayUnit;
-      expect(message.id, value.id);
-      expect(value.blockOrder, greaterThan(0));
-      yield value;
+      final item = timelineFeedItemOf(message);
+      expect(
+        item,
+        isNotNull,
+        reason: 'Every Main row retains its typed feed item',
+      );
+      expect(message.id, item!.id);
+      expect(item.seq, greaterThan(0));
+      yield item;
     }
   }
 
-  Iterable<TimelineDisplayUnit> get singleBlocks =>
-      main.where((unit) => unit.body is SingleDisplayBlock);
+  Iterable<WorkGroupMember> get mountedMembers =>
+      lease.groupDisplays.expand((display) => display.members);
 
-  Iterable<ChatAtom> get mountedMembers =>
-      lease.groupDisplays.expand((display) => display.atoms);
-
-  TimelineDisplayUnit unit(String id) =>
-      main.singleWhere((unit) => unit.id == id);
+  TimelineItem unit(String id) => main.singleWhere((item) => item.id == id);
 
   Finder itemRow(String id) => find.byWidgetPredicate(
     (widget) => widget is ChatItemView && widget.item.id == id,
@@ -185,92 +183,6 @@ final class TimelineObservation {
     expect(tester.widget<TimelineActivityRow>(header).expanded, isTrue);
   }
 
-  Future<void> ensureMemberReadable(
-    Finder row,
-    ChatAtom atom, {
-    Duration timeout = const Duration(seconds: 60),
-  }) async {
-    if (atom.kind == ChatAtomKind.toolCall) {
-      await expandMemberDisclosure(row, atom.id, timeout: timeout);
-      return;
-    }
-    expect(atom.kind, ChatAtomKind.reasoning);
-    expect(atom.contents, isNotEmpty);
-    expect(
-      atom.contents.every(
-        (content) =>
-            content.role == ChatContentRole.body ||
-            content.role == ChatContentRole.reasoningSummary,
-      ),
-      isTrue,
-    );
-    if (atom.contents.any((content) => content.role == ChatContentRole.body)) {
-      await expandMemberDisclosure(row, atom.id, timeout: timeout);
-      return;
-    }
-
-    final reasoning = find.descendant(
-      of: row,
-      matching: find.byType(TimelineReasoningView),
-    );
-    await until(
-      () {
-        if (reasoning.evaluate().isEmpty) return false;
-        expect(reasoning, findsOneWidget);
-        expect(tester.widget<TimelineReasoningView>(reasoning).body, isNull);
-        final header = find.descendant(
-          of: reasoning,
-          matching: find.byType(TimelineActivityRow),
-        );
-        expect(header, findsOneWidget);
-        expect(tester.widget<TimelineActivityRow>(header).expandable, isFalse);
-        expect(tester.widget<TimelineActivityRow>(header).expanded, isFalse);
-        final observations = <TimelineCurrentWindowDisplay>[
-          for (final element in row.evaluate())
-            if (element is StatefulElement &&
-                element.state is TimelineMemberDisplay)
-              ...(element.state as TimelineMemberDisplay).windows,
-        ];
-        for (final observation in observations) {
-          expect(
-            atom.contents.any(
-              (content) => content.reference == observation.reference,
-            ),
-            isTrue,
-          );
-          expect(observation.error, isNull);
-          if (observation.window == null || observation.window!.bytes.isEmpty) {
-            return false;
-          }
-        }
-        final summaries = find.descendant(
-          of: reasoning,
-          matching: find.byType(TimelineReasoningSummary),
-        );
-        if (summaries.evaluate().isEmpty ||
-            tester
-                .widgetList<TimelineReasoningSummary>(summaries)
-                .any((summary) => summary.text.trim().isEmpty)) {
-          return false;
-        }
-        return find
-            .descendant(
-              of: summaries,
-              matching: find.byWidgetPredicate(
-                (widget) =>
-                    widget is RichText &&
-                    widget.text.toPlainText().trim().isNotEmpty,
-              ),
-            )
-            .hitTestable()
-            .evaluate()
-            .isNotEmpty;
-      },
-      'visible summary-only reasoning ${atom.id}',
-      timeout: timeout,
-    );
-  }
-
   Future<void> reveal(
     Finder fragment,
     String unitId, {
@@ -291,6 +203,6 @@ final class TimelineObservation {
     fail('Timed out revealing Main row $unitId');
   }
 
-  Future<void> revealSingle(TimelineDisplayUnit block) =>
+  Future<void> revealSingle(TimelineItem block) =>
       reveal(itemRow(block.id), block.id);
 }

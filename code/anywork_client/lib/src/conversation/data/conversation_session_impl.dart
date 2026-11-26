@@ -1,67 +1,56 @@
 import 'dart:async';
 
-import '../../../lifecycle.dart'
-    show ClientCloseBudget, ClientResourceId, ClientScope, ClientLease;
+import '../../../lifecycle.dart';
 import '../../../models.dart';
 import '../../../conversation_ports.dart';
 import '../../../directory_ports.dart';
-import '../../contracts/stamps.dart';
-import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
 import '../../studio/stores/domain_sync.dart';
-import '../../studio/thread_frames.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
-import 'conversation_state_owner.dart';
-import 'state_reducer.dart';
-import 'thread_stream_gate.dart';
-import 'input_turn_facts.dart';
 import '../domain/conversation_errors.dart';
+import 'input_turn_facts.dart';
 
-/// One canonical Current state mirror and its independent observation owner.
+/// Shares one Native feed with the visible page and mirrors only its metadata.
 final class ConversationSessionImpl implements ConversationSession {
   ConversationSessionImpl(
     this.threadId, {
-    required CurrentTransport currentTransport,
-    required ReadDemand stateDemand,
+    required this.transport,
     required this.directory,
     required InputFactRegistry inputFacts,
     required ClientScope scope,
   }) : _scope = scope,
        _inputFacts = inputFacts,
        _source = LatestValue(ThreadSessionState(threadId: threadId)) {
-    _state = ConversationStateOwner(
-      threadId: threadId,
-      transport: currentTransport,
-      demand: stateDemand,
-      onState: _onState,
-      onFailure: _onFailure,
-      onAttempt: _onAttempt,
-      onInteractions: _onInteractions,
-    );
-    _directoryLease = _scope.acquireLease(
+    final lease = _scope.acquireLease(
       'conversation-directory',
       () => _SessionDirectoryLease(directory.observeThread(threadId)),
     );
-    _directoryDemand = _directoryLease.observation;
-    _directoryObservation = _directoryDemand.state.watch(
-      (_) => _rebindDirectory(),
-      fireImmediately: true,
-    );
+    _directory = lease.observation;
+    _directoryObservation = _directory.state.watch((_) {
+      if (!_closed)
+        _source.publish(
+          state.copyWith(directoryRow: _directory.state.value.frame?.row),
+        );
+    }, fireImmediately: true);
   }
   @override
   final String threadId;
+  final ConversationFeedPort transport;
   final ThreadDirectoryStore directory;
   final ClientScope _scope;
   final InputFactRegistry _inputFacts;
   final LatestValue<ThreadSessionState> _source;
-  late final ConversationStateOwner _state;
-  late final DirectoryObservation<ThreadMetadataFrame> _directoryDemand;
-  late final _SessionDirectoryLease _directoryLease;
+  late final DirectoryObservation<ThreadMetadataFrame> _directory;
   late final Observation _directoryObservation;
-  _RuntimeResync? _resync;
+  ClientAcquisition<_FeedResource>? _feed;
+  ClientScope? _feedScope;
+  final List<ClientScope> _retiredScopes = [];
+  bool _visible = false;
   bool _closed = false;
+  int _generation = 0;
+  Completer<ThreadWorkspace>? _resync;
   Future<CloseReport>? _closing;
 
   @override
@@ -69,276 +58,155 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   ValueObservation<ThreadSessionState> get source => _source;
   @override
-  // The session's real visible demand: the state owner turns on first, so
-  // this must already read true during that synchronous window, or a
-  // reentrant visibility switch cannot revoke the stale stack.
-  bool get isActive => _state.hasDemand;
+  bool get isActive => _visible && !_closed;
   @override
   bool get isClosed => _closed;
 
   void setVisible(bool visible) {
+    if (_closed && visible) throw StateError('Conversation is closed');
+    if (_visible == visible) return;
+    _visible = visible;
     if (!visible) {
-      _cancelResync();
-      _state.setDemand(false);
+      _retire();
       _source.publish(state.copyWith(sync: const DomainSyncStatus()));
       return;
     }
-    if (_closed) throw StateError('Conversation is closed');
-    // State opens first: its synchronous connecting publication may reenter
-    // visibility switching. A reentrant revoke (or an A -> B -> A cascade)
-    // bumps the generation, so this stale stack can never resurrect demand.
-    _state.setDemand(true);
-  }
-
-  SessionDirectoryRow? get _identity => _directoryDemand.state.value.frame?.row;
-
-  void _rebindDirectory() {
-    if (_closed) return;
-    final row = _identity;
-    if (identical(state.directoryRow, row)) return;
-    _source.publish(state.copyWith(directoryRow: row));
-  }
-
-  void _onAttempt(AttemptId attemptId) {
-    final pending = _resync;
-    if (pending != null) {
-      final expected = pending.expectedAttempt;
-      if (expected == null) {
-        pending.expectedAttempt = attemptId;
-      } else if (expected != attemptId) {
-        if (identical(_resync, pending)) _resync = null;
-        if (!pending.completer.isCompleted) {
-          pending.completer.completeError(ThreadStateResyncCancelled(threadId));
-        }
-      }
-    }
     _source.publish(
       state.copyWith(
-        streamEpoch: null,
-        // A replacement reader is still reconnecting until it delivers a
-        // baseline. Starting each attempt must not hide the recovery state.
-        sync: state.sync.phase == DomainSyncPhase.reconnecting
-            ? state.sync
-            : const DomainSyncStatus(phase: DomainSyncPhase.connecting),
+        sync: const DomainSyncStatus(phase: DomainSyncPhase.connecting),
       ),
     );
   }
 
-  void _onState(AttemptId attemptId, ThreadStreamFrame frame) {
-    final id = switch (frame) {
-      ThreadSnapshotFrame(:final workspace) => workspace.thread.id,
-      ThreadNotificationFrame(:final threadId) => threadId,
-    };
-    if (id != threadId)
-      throw StateError('State frame thread identity mismatch');
-    switch (frame) {
-      case ThreadSnapshotFrame(:final workspace):
-        final candidate = applyThreadSnapshotState(
-          state,
-          workspace,
-          directoryRow: _identity,
+  Future<ConversationFeedHandle> openFeed({int initialLimit = 50}) {
+    if (_closed) return Future.error(StateError('Conversation is closed'));
+    final existing = _feed;
+    if (existing != null) return existing.ready.then((r) => r.handle);
+    final generation = ++_generation;
+    // Register before publishing connecting: synchronous navigation can retire it.
+    final feedScope = _scope.child('feed-$generation');
+    _feedScope = feedScope;
+    final acquisition = feedScope.open<_FeedResource>(
+      'conversation-feed',
+      (operation) async {
+        final handle = await transport.openConversationFeed(
+          threadId,
+          initialLimit: initialLimit,
         );
-        final eligible = _eligibleResync(attemptId);
-        _source.publish(candidate);
-        if (identical(state, candidate)) _publishCurrentInputFacts(candidate);
-        if (eligible != null &&
-            identical(_resync, eligible) &&
-            eligible.expectedAttempt == attemptId &&
-            _state.currentAttemptId == attemptId) {
-          _resync = null;
-          if (!eligible.completer.isCompleted) {
-            eligible.completer.complete(candidate.workspace!);
-          }
-        }
-      case ThreadNotificationFrame():
-        switch (classifyThreadFrame(state.watermark, frame)) {
-          case ThreadFrameDecision.drop:
-            return;
-          case ThreadFrameDecision.resync:
-            throw ThreadStateContinuityError(
-              threadId: threadId,
-              expected: state.watermark,
-              revision: frame.revision,
-              epoch: frame.epoch,
-              baseRevision: frame.baseRevision,
+        return _FeedResource(
+          operation.resourceId,
+          handle,
+          onRetire: () {
+            if (generation == _generation && identical(_feedScope, feedScope)) {
+              _retire();
+            }
+          },
+          onMeta: (meta) {
+            if (_closed || generation != _generation) return;
+            _acceptMeta(meta);
+          },
+          onPresented: (event) {
+            if (_closed || generation != _generation) return;
+            _inputFacts.publish(
+              InputTurnFact(
+                threadId: threadId,
+                inputId: event.inputId,
+                itemId: event.itemId,
+                turnId: null,
+                status: StudioTurnStatus.queued,
+                saved: null,
+              ),
             );
-          case ThreadFrameDecision.apply:
-            final candidate = applyThreadNotificationState(state, frame);
-            _source.publish(candidate);
-            if (identical(state, candidate))
-              _publishCurrentInputFacts(candidate);
+          },
+          onFailure: (error) {
+            if (_closed || generation != _generation) return;
+            _source.publish(
+              state.copyWith(
+                sync: DomainSyncStatus(
+                  phase: DomainSyncPhase.failed,
+                  errorMessage: error.toString(),
+                ),
+              ),
+            );
+          },
+        );
+      },
+      onFailure: (error, stack) {
+        if (!_closed && generation == _generation) {
+          _source.publish(
+            state.copyWith(
+              sync: DomainSyncStatus(
+                phase: DomainSyncPhase.failed,
+                errorMessage: error.toString(),
+              ),
+            ),
+          );
         }
-    }
-  }
-
-  void _onInteractions(
-    AttemptId attemptId,
-    CurrentCollectionRef reference,
-    List<PendingInteraction> interactions,
-    bool complete,
-    Object? error,
-  ) {
-    final workspace = state.workspace;
-    if (_closed ||
-        _state.currentAttemptId != attemptId ||
-        workspace == null ||
-        workspace.businessRefs.interactions != reference)
-      return;
-    _source.publish(
-      state.copyWith(
-        workspace: complete
-            ? workspace.copyWith(interactions: List.unmodifiable(interactions))
-            : workspace,
-        interactionReadReference: complete ? reference : null,
-        interactionReadError: error,
-      ),
+      },
     );
-  }
-
-  void _onFailure(AttemptId attemptId, Object error, bool exhausted) {
-    final eligible = _eligibleResync(attemptId);
-    _source.publish(
-      state.copyWith(
-        sync: DomainSyncStatus(
-          phase: exhausted
-              ? DomainSyncPhase.failed
-              : DomainSyncPhase.reconnecting,
-          errorMessage: error.toString(),
-          retryExhausted: exhausted,
-        ),
-      ),
-    );
-    if (eligible != null &&
-        identical(_resync, eligible) &&
-        eligible.expectedAttempt == attemptId &&
-        _state.currentAttemptId == attemptId) {
-      _resync = null;
-      if (!eligible.completer.isCompleted) {
-        eligible.completer.completeError(error);
-      }
-    }
-  }
-
-  _RuntimeResync? _eligibleResync(AttemptId attemptId) {
-    final pending = _resync;
-    return pending?.expectedAttempt == attemptId ? pending : null;
-  }
-
-  @override
-  void refresh() {
-    _state.refresh();
-  }
-
-  @override
-  Future<ThreadWorkspace> resyncRuntime() {
-    if (_closed || !isActive)
-      return Future.error(ThreadStateResyncCancelled(threadId));
-    final pending = _resync;
-    if (pending != null) return pending.completer.future;
-    final result = _RuntimeResync();
-    _resync = result;
-    // A state resync rebuilds only the state baseline; valid content and
-    // drafts keep their live owner.
-    _state.refresh();
-    return result.completer.future;
-  }
-
-  void _cancelResync() {
-    final pending = _resync;
-    _resync = null;
-    if (pending != null && !pending.completer.isCompleted) {
-      pending.completer.completeError(ThreadStateResyncCancelled(threadId));
-    }
-  }
-
-  Future<CloseReport> retire({ClientCloseBudget? budget}) {
-    setVisible(false);
-    return Future.wait([_state.joinRetired(budget: budget)]).then(
-      (reports) => CloseReport(
-        unresolved: [for (final report in reports) ...report.unresolved],
-      ),
-    );
-  }
-
-  Future<CloseReport> close({ClientCloseBudget? budget}) {
-    final existing = _closing;
-    if (existing != null) return existing;
-    final completion = Completer<CloseReport>();
-    _closing = completion.future;
-    completion.complete(Future<CloseReport>.sync(() => _close(budget)));
-    return completion.future;
-  }
-
-  Future<CloseReport> _close(ClientCloseBudget? budget) async {
-    _closed = true;
-    _cancelResync();
-    _directoryObservation.cancel();
-    _scope.requestClose();
-    final directoryClosing = budget == null
-        ? _joinDirectoryRelease()
-        : _scope.close(budget: budget);
-    final stateClosing = _state.close(budget: budget);
-    Object? closeError;
-    StackTrace? closeStack;
-    CloseReport? stateFeed;
-    try {
-      stateFeed = await stateClosing;
-    } catch (error, stack) {
-      closeError = error;
-      closeStack = stack;
-    }
-    final directory = await directoryClosing;
-    if (closeError != null) {
-      Error.throwWithStackTrace(closeError, closeStack!);
-    }
-    return CloseReport(
-      unresolved: [...?stateFeed?.unresolved, ...directory.unresolved],
-    );
-  }
-
-  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) =>
-      Future.wait([
-        _scope.retryCleanup(budget: budget),
-        _state.retryCleanup(budget: budget),
-      ]).then(
-        (reports) => CloseReport(
-          unresolved: [for (final report in reports) ...report.unresolved],
+    if (!_closed && generation == _generation) {
+      _feed = acquisition;
+      _source.publish(
+        state.copyWith(
+          sync: const DomainSyncStatus(phase: DomainSyncPhase.connecting),
         ),
       );
-
-  Future<CloseReport> _joinDirectoryRelease() async {
-    try {
-      await _directoryLease.latestRelease;
-    } catch (_) {
-      // The scope retains the original failure and its resource identity.
+    } else {
+      acquisition.requestClose();
     }
-    // A release may synchronously reenter this join before the scope installs
-    // its result listener. Let that listener settle the entry before reading
-    // the report; this is bookkeeping, not a timer or a new cleanup wait.
-    await Future<void>.value();
-    // Cleanup has reached a real terminal result. This zero-budget call only
-    // reads the scope report; it never grants cleanup another waiting period.
-    return _scope.close(budget: ClientCloseBudget(Duration.zero));
+    return acquisition.ready.then((resource) {
+      if (_closed || generation != _generation)
+        throw ThreadStateResyncCancelled(threadId);
+      if (resource.handle.threadId != threadId) {
+        _retire();
+        throw StateError('ConversationFeed thread identity mismatch');
+      }
+      _acceptMeta(resource.handle.sessionMetaSnapshot);
+      if (_closed || generation != _generation)
+        throw ThreadStateResyncCancelled(threadId);
+      return resource.handle;
+    });
+  }
+
+  @override
+  Future<SessionDetailWindow> readSessionDetail({
+    required SessionDetailKind kind,
+    required int offset,
+    required int maxBytes,
+  }) async {
+    final feed = _feed;
+    if (_closed || feed == null) throw ThreadStateResyncCancelled(threadId);
+    final generation = _generation;
+    final resource = await feed.ready;
+    if (_closed || generation != _generation || !identical(feed, _feed)) {
+      throw ThreadStateResyncCancelled(threadId);
+    }
+    final window = await resource.handle.readSessionDetail(
+      kind: kind,
+      offset: offset,
+      maxBytes: maxBytes,
+    );
+    if (_closed || generation != _generation || !identical(feed, _feed)) {
+      throw ThreadStateResyncCancelled(threadId);
+    }
+    return window;
+  }
+
+  void _acceptMeta(SessionMetaSnapshot meta) {
+    if (meta.threadId != threadId)
+      throw StateError('SessionMeta thread identity mismatch');
+    _source.publish(state.copyWith(meta: meta, sync: DomainSyncStatus.ready));
+    if (_closed) return;
+    for (final turn in [meta.activeTurn, meta.lastTurn]) {
+      if (turn?.inputId != null && _inputFacts.isWatching(turn!.inputId!)) {
+        _inputFacts.publish(_turnFact(turn));
+      }
+    }
   }
 
   void seedInputFacts(String inputId, void Function(InputTurnFact) onFact) {
-    final seen = <String>{};
     for (final turn in [state.activeTurn, state.lastTurn]) {
-      if (turn?.inputId == inputId && seen.add(turn!.turnId)) {
-        onFact(_turnFact(turn));
-      }
-    }
-  }
-
-  void _publishCurrentInputFacts(ThreadSessionState candidate) {
-    if (_closed || !_inputFacts.hasObservers) return;
-    final seen = <(String, String)>{};
-    for (final turn in [candidate.activeTurn, candidate.lastTurn]) {
-      final input = turn?.inputId;
-      if (turn == null || input == null || !seen.add((input, turn.turnId))) {
-        continue;
-      }
-      if (_inputFacts.isWatching(input)) _inputFacts.publish(_turnFact(turn));
+      if (turn?.inputId == inputId) onFact(_turnFact(turn!));
     }
   }
 
@@ -350,34 +218,274 @@ final class ConversationSessionImpl implements ConversationSession {
     status: turn.state.status,
     saved: null,
   );
+
+  void _retire() {
+    ++_generation;
+    final resync = _resync;
+    _resync = null;
+    if (resync != null && !resync.isCompleted)
+      resync.completeError(ThreadStateResyncCancelled(threadId));
+    final feed = _feed;
+    final resources = _feedScope;
+    _feed = null;
+    _feedScope = null;
+    if (resources != null) {
+      _retiredScopes.add(resources);
+      resources.requestClose();
+    }
+    if (feed != null) {
+      feed.requestClose();
+      unawaited(
+        feed.close().then<void>((_) {
+          _retiredScopes.remove(resources);
+        }, onError: (Object _, StackTrace _) {}),
+      );
+    }
+  }
+
+  @override
+  void refresh() {
+    if (!isActive) return;
+    _retire();
+    unawaited(
+      openFeed().then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+  }
+
+  @override
+  Future<ThreadWorkspace> resyncRuntime() {
+    if (!isActive) return Future.error(ThreadStateResyncCancelled(threadId));
+    final existing = _resync;
+    if (existing != null) return existing.future;
+    _retire();
+    final pending = Completer<ThreadWorkspace>();
+    _resync = pending;
+    unawaited(
+      openFeed().then<void>(
+        (_) {
+          if (!identical(_resync, pending)) return;
+          _resync = null;
+          final workspace = state.workspace;
+          if (workspace == null)
+            pending.completeError(ThreadStateResyncCancelled(threadId));
+          else
+            pending.complete(workspace);
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!identical(_resync, pending)) return;
+          _resync = null;
+          pending.completeError(error, stack);
+        },
+      ),
+    );
+    return pending.future;
+  }
+
+  Future<CloseReport> retire({ClientCloseBudget? budget}) async {
+    setVisible(false);
+    final scopes = List.of(_retiredScopes);
+    final reports = await Future.wait(
+      scopes.map(
+        (scope) => scope.close(
+          budget: budget ?? ClientCloseBudget(const Duration(seconds: 30)),
+        ),
+      ),
+    );
+    for (var i = 0; i < scopes.length; i++) {
+      if (reports[i].complete) _retiredScopes.remove(scopes[i]);
+    }
+    return CloseReport(
+      unresolved: [for (final report in reports) ...report.unresolved],
+    );
+  }
+
+  Future<CloseReport> close({ClientCloseBudget? budget}) {
+    final existing = _closing;
+    if (existing != null) return existing;
+    final completion = Completer<CloseReport>();
+    _closing = completion.future;
+    completion.complete(Future.sync(() => _close(budget)));
+    return completion.future;
+  }
+
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
+    _closed = true;
+    _directoryObservation.cancel();
+    _visible = false;
+    _retire();
+    final result = await _scope.close(
+      budget: budget ?? ClientCloseBudget(const Duration(seconds: 30)),
+    );
+    _source.close();
+    return result;
+  }
+
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) =>
+      _scope.retryCleanup(budget: budget);
 }
 
 final class _SessionDirectoryLease implements ClientLease {
   _SessionDirectoryLease(this.observation);
-
   final DirectoryObservation<ThreadMetadataFrame> observation;
-  Completer<void> _release = Completer<void>();
-
-  Future<void> get latestRelease => _release.future;
-
   @override
   List<ClientResourceId> get retirementResourceIds =>
       observation.retirementResourceIds;
-
-  // Only the scope calls this method, including management-side retries. The
-  // session passively joins latestRelease and never calls the raw lease again.
   @override
-  Future<void> release() {
-    final completion = _release.isCompleted ? Completer<void>() : _release;
-    _release = completion;
-    // Publish the exact join Future before invoking reentrant external code.
-    // Future.sync preserves synchronous failures for the scope's normal path.
-    completion.complete(Future<void>.sync(observation.release));
+  Future<void> release() => observation.release();
+}
+
+/// Adapts resource ownership and taps typed metadata while the page consumes it.
+/// No timeline list, payload decoding or second event buffer lives in the SDK.
+final class _FeedResource implements ClientResource {
+  _FeedResource(
+    this.resourceId,
+    ConversationFeedHandle native, {
+    required void Function() onRetire,
+    required void Function(SessionMetaSnapshot) onMeta,
+    required void Function(ConversationInputPresented) onPresented,
+    required void Function(Object) onFailure,
+  }) : _native = native,
+       _onRetire = onRetire {
+    handle = _ObservedFeed(this, onMeta, onPresented, onFailure);
+  }
+  @override
+  final ClientResourceId resourceId;
+  final ConversationFeedHandle _native;
+  final void Function() _onRetire;
+  late final ConversationFeedHandle handle;
+  Future<void>? _closing;
+  bool _closeRequested = false;
+  bool _retired = false;
+  void _seal() {
+    if (_closeRequested) return;
+    _closeRequested = true;
+    _retired = true;
+    // Withdraw this generation before native callbacks can reopen the thread.
+    // The scope keeps ownership and joins this resource's shared close future.
+    _onRetire();
+  }
+
+  @override
+  void requestClose() {
+    if (_closeRequested) return;
+    _seal();
+    try {
+      _native.requestClose();
+    } catch (_) {
+      _closeRequested = false;
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> close() {
+    final existing = _closing;
+    if (existing != null) return existing;
+    final completion = Completer<void>();
+    _closing = completion.future;
+    completion.complete(
+      Future<void>.sync(() {
+        _seal();
+        return _native.close();
+      }),
+    );
     return completion.future;
+  }
+
+  @override
+  Future<void> retryClose() {
+    _closing = null;
+    return close();
   }
 }
 
-final class _RuntimeResync {
-  final Completer<ThreadWorkspace> completer = Completer<ThreadWorkspace>();
-  AttemptId? expectedAttempt;
+final class _ObservedFeed implements ConversationFeedHandle {
+  _ObservedFeed(this.owner, this.onMeta, this.onPresented, this.onFailure);
+  final _FeedResource owner;
+  final void Function(SessionMetaSnapshot) onMeta;
+  final void Function(ConversationInputPresented) onPresented;
+  final void Function(Object) onFailure;
+  ConversationFeedHandle get native => owner._native;
+  @override
+  String get threadId => native.threadId;
+  @override
+  LiveStatusSnapshot get liveStatusSnapshot => native.liveStatusSnapshot;
+  @override
+  SessionMetaSnapshot get sessionMetaSnapshot => native.sessionMetaSnapshot;
+  @override
+  late final Stream<ConversationFeedEvent> events = native.events.transform(
+    StreamTransformer<
+      ConversationFeedEvent,
+      ConversationFeedEvent
+    >.fromHandlers(
+      handleData: (event, sink) {
+        try {
+          switch (event) {
+            case ConversationSessionMeta(:final snapshot):
+              onMeta(snapshot);
+            case ConversationInputPresented():
+              onPresented(event);
+            case ConversationResyncRequired(:final reason):
+              onFailure(StateError(reason));
+            default:
+              break;
+          }
+          sink.add(event);
+        } catch (error, stack) {
+          onFailure(error);
+          sink.addError(error, stack);
+        }
+      },
+      handleError: (error, stack, sink) {
+        if (!owner._closeRequested) onFailure(error);
+        sink.addError(error, stack);
+      },
+      handleDone: (sink) {
+        if (!owner._closeRequested)
+          onFailure(StateError('ConversationFeed stream ended'));
+        sink.close();
+      },
+    ),
+  );
+  @override
+  Future<TimelinePatch> loadOlder({required String cursor, int limit = 50}) =>
+      native.loadOlder(cursor: cursor, limit: limit);
+  @override
+  Future<List<WorkGroupMember>> loadWorkGroupMembers({
+    int? afterSeq,
+    int? beforeSeq,
+  }) => native.loadWorkGroupMembers(afterSeq: afterSeq, beforeSeq: beforeSeq);
+  @override
+  Future<BodyWindow> readBodyWindow({
+    required BodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) => native.readBodyWindow(
+    reference: reference,
+    offset: offset,
+    maxBytes: maxBytes,
+  );
+  @override
+  Future<SessionDetailWindow> readSessionDetail({
+    required SessionDetailKind kind,
+    required int offset,
+    required int maxBytes,
+  }) async {
+    if (owner._retired) throw const ClientResourceClosed();
+    final window = await native.readSessionDetail(
+      kind: kind,
+      offset: offset,
+      maxBytes: maxBytes,
+    );
+    if (owner._retired) throw const ClientResourceClosed();
+    return window;
+  }
+
+  @override
+  Future<TimelinePatch> resetToLatest({int limit = 50}) =>
+      native.resetToLatest(limit: limit);
+  @override
+  void requestClose() => owner.requestClose();
+  @override
+  Future<void> close() => owner.close();
 }

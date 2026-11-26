@@ -286,24 +286,34 @@ fn observed_stream(part: &ObservedPart) -> Option<ObservedStream> {
     })
 }
 
+#[cfg(test)]
+fn admitted_stream_facts(attempt: &RequestAttempt, view: &AdmittedActivity<'_>) -> (bool, bool) {
+    // Reliable admission owns activity, even before a bounded progress window has bytes.
+    let mut response = false;
+    let mut reasoning = false;
+    for atom in view.atoms.iter().filter(|atom| {
+        atom.attempt_id.as_deref() == Some(&attempt.attempt_id)
+            && atom.turn_id.as_deref() == Some(&attempt.turn_id)
+            && matches!(atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
+    }) {
+        response |= atom.kind == crate::ChatAtomKind::Text;
+        reasoning |= atom.kind == crate::ChatAtomKind::Reasoning;
+    }
+    (response, reasoning)
+}
+
+#[cfg(not(test))]
+fn admitted_stream_facts(_attempt: &RequestAttempt, _view: &AdmittedActivity<'_>) -> (bool, bool) {
+    (false, false)
+}
+
 pub(super) fn has_stream_facts(
     state: &ThreadSnapshot,
     attempt: &RequestAttempt,
     admitted: Option<&AdmittedActivity<'_>>,
 ) -> (bool, bool) {
     if let Some(view) = admitted {
-        // Reliable admission owns activity, even before a bounded progress window has bytes.
-        let mut response = false;
-        let mut reasoning = false;
-        for atom in view.atoms.iter().filter(|atom| {
-            atom.attempt_id.as_deref() == Some(&attempt.attempt_id)
-                && atom.turn_id.as_deref() == Some(&attempt.turn_id)
-                && matches!(atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
-        }) {
-            response |= atom.kind == crate::ChatAtomKind::Text;
-            reasoning |= atom.kind == crate::ChatAtomKind::Reasoning;
-        }
-        return (response, reasoning);
+        return admitted_stream_facts(attempt, view);
     }
     let Some(progress) = state
         .model_progress

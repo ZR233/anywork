@@ -3969,13 +3969,10 @@ dependencies = [
 name = "pl-core"
 version = "0.1.0"
 dependencies = [
- "fs4",
  "futures",
  "hex",
  "pl-agent-tool",
  "pretty_assertions",
- "sea-orm",
- "sea-orm-migration",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3984,7 +3981,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "url",
  "uuid",
 ]
 

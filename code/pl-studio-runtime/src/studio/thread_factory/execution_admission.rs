@@ -7,7 +7,9 @@ use crate::studio::{
         worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseState},
     },
 };
+use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
+use pl_core::thread::ThreadSnapshot;
 use std::path::Path;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,12 +27,47 @@ impl StudioThreadFactory {
         Self::verify_resolved_execution_identity(&identity).await
     }
 
-    /// Audit never opens cold history. Admission resolves unknown child bindings on demand only;
-    /// neither mode activates a model or repairs/rebinds a physical resource.
+    pub(super) async fn admit_saved_execution(
+        &self,
+        thread: &crate::Thread,
+        snapshot: Option<&ThreadSnapshot>,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.verify_and_report_execution_workspace(thread, snapshot)
+            .await
+            .map_err(|error| {
+                error
+                    .downcast::<ThreadAssemblyError>()
+                    .unwrap_or_else(Self::workspace_usage_error)
+            })?;
+        self.services
+            .recovery
+            .ensure_thread_execution_access(thread)
+            .map_err(|error| {
+                super::errors::resource_error("saved Thread execution admission", error)
+            })
+    }
+
+    pub(crate) async fn verify_and_report_execution_workspace(
+        &self,
+        thread: &crate::Thread,
+        snapshot: Option<&ThreadSnapshot>,
+    ) -> Result<()> {
+        let result = self
+            .verify_execution_workspace(thread, snapshot, ExecutionWorkspaceCheck::Prepare)
+            .await;
+        self.services.product_events.emit_recovery_state(
+            self.services
+                .recovery
+                .apply_execution_workspace_check(thread, result.as_ref().err()),
+        );
+        result
+    }
+
+    /// Verifies the actual workspace against the supplied facts, without loading a checkpoint.
     pub(crate) async fn verify_execution_workspace(
         &self,
         thread: &crate::Thread,
-        snapshot: Option<&pl_core::thread::ThreadSnapshot>,
+        snapshot: Option<&ThreadSnapshot>,
         check: ExecutionWorkspaceCheck,
     ) -> Result<()> {
         let associated = self.project_record(&thread.workspace_id).await?;
@@ -73,6 +110,7 @@ impl StudioThreadFactory {
             effective.ssh_alias = None;
             if !complete
                 && frozen.is_none()
+                && thread.parent_thread_id.is_none()
                 && check == ExecutionWorkspaceCheck::Prepare
                 && !tokio::fs::try_exists(&managed).await?
             {
@@ -88,31 +126,18 @@ impl StudioThreadFactory {
                 "bot physical execution identity changed"
             );
             Self::verify_resolved_execution_identity(&identity).await?;
-            if check != ExecutionWorkspaceCheck::Audit {
-                self.verify_saved_bot_execution_workspace(thread, snapshot)
+            if check == ExecutionWorkspaceCheck::Prepare && thread.parent_thread_id.is_some() {
+                self.verify_saved_bot_child_workspace(thread, snapshot, &identity)
                     .await?;
             }
             return Ok(());
         }
-        let loaded;
-        let snapshot =
-            if snapshot.is_none() && frozen.is_none() && thread.parent_thread_id.is_some() {
-                ensure!(
-                    check != ExecutionWorkspaceCheck::Audit,
-                    "cold child execution binding requires on-demand resolution"
-                );
-                loaded = self
-                    .services
-                    .store
-                    .load_current_read_only(thread)
-                    .await?
-                    .context("child execution binding has no saved current")?
-                    .state
-                    .to_paused_snapshot();
-                Some(&loaded)
-            } else {
-                snapshot
-            };
+        if check == ExecutionWorkspaceCheck::Audit {
+            ensure!(
+                snapshot.is_some() || frozen.is_some() || thread.parent_thread_id.is_none(),
+                "cold child execution binding requires on-demand resolution"
+            );
+        }
         let assignment = snapshot
             .map(crate::studio::workspace_receipt::from_snapshot)
             .transpose()

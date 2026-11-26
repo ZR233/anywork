@@ -11,6 +11,7 @@ import '../../../../platform/local_file_dialogs.dart';
 import '../state/timeline_file_presentation.dart';
 import '../state/timeline_display_unit.dart';
 import 'file_reading_panel.dart';
+import 'timeline_feed_body_connector.dart';
 import '../state/timeline_image_resources.dart';
 import '../state/chat_item_presentation.dart';
 import '../tools/tool_item_registry.dart';
@@ -178,7 +179,8 @@ class _TimelineAttachmentsConnectorState
   final Set<String> _busyIds = {};
   final Map<String, String> _operationErrors = {};
   int _generation = 0;
-  TimelineExpansionIntent? _intent;
+  TimelineFeedContent? _content;
+  TimelineExpansionIntent? _group;
   ChatBodyPresentation? _deferredBody;
   int? _deferredGeneration;
   bool _deferredStarted = false;
@@ -202,9 +204,9 @@ class _TimelineAttachmentsConnectorState
         .resolveForChatItem(widget.item)
         .usesFileArtifactsMedia) {
       final body = widget.item.body('tool.output-artifacts');
-      if (body?.inline != null) {
+      if (body?.hasInline == true) {
         try {
-          _acceptFiles(utf8.decode(body!.inline!));
+          _acceptFiles(body!.text!);
         } catch (error) {
           _error = error;
         }
@@ -230,25 +232,28 @@ class _TimelineAttachmentsConnectorState
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final next = TimelineGroupBodyIntent.of(context);
-    final changed = !identical(next, _intent);
-    _intent = next;
+    final next = context
+        .dependOnInheritedWidgetOfExactType<TimelineFeedContent>();
+    final group = TimelineGroupBodyIntent.of(context);
+    final changed = !identical(next, _content) || !identical(group, _group);
+    _content = next;
+    _group = group;
     if (changed && _deferredBody != null) _bind();
     _startDeferred();
   }
 
   void _startDeferred() {
-    final body = _deferredBody;
+    final reference = _deferredBody?.feedReference;
     final generation = _deferredGeneration;
-    final intent = _intent;
-    if (body == null ||
+    final content = _content;
+    if (reference == null ||
         generation == null ||
         _deferredStarted ||
-        intent?.readHistoryBody == null && intent?.readCurrentBody == null) {
+        content == null) {
       return;
     }
     _deferredStarted = true;
-    unawaited(_loadFiles(body, generation, intent!));
+    unawaited(_loadFiles(reference, generation, content));
   }
 
   void _acceptFiles(String artifacts) {
@@ -259,49 +264,45 @@ class _TimelineAttachmentsConnectorState
   }
 
   Future<void> _loadFiles(
-    ChatBodyPresentation body,
+    BodyRef reference,
     int generation,
-    TimelineExpansionIntent intent,
+    TimelineFeedContent content,
   ) async {
-    final generationToken = intent.bodyGeneration;
+    final group = _group;
+    final groupGeneration = group?.bodyGeneration;
     bool current() =>
         mounted &&
         generation == _generation &&
         widget.isActive() &&
-        identical(generationToken, intent.bodyGeneration);
+        identical(content, _content) &&
+        identical(group, _group) &&
+        (group == null ||
+            group.bodyActive &&
+                identical(groupGeneration, group.bodyGeneration));
     try {
-      Future<ContentWindow> Function(ContentRange range) read;
-      final historyReference = body.historyReference;
-      final currentReference = body.currentReference;
-      if (historyReference != null && intent.readHistoryBody != null) {
-        read = (range) =>
-            intent.readHistoryBody!(generationToken, historyReference, range);
-      } else if (currentReference != null && intent.readCurrentBody != null) {
-        read = (range) =>
-            intent.readCurrentBody!(generationToken, currentReference, range);
-      } else {
-        throw StateError('文件展示回执读取尚未就绪');
-      }
-      if (!current()) throw StateError('文件展示回执已失效');
+      if (!current()) return;
       final bytes = BytesBuilder(copy: false);
-      String? revision;
-      while (bytes.length < body.byteLength) {
+      while (bytes.length < reference.byteLength) {
         final offset = bytes.length;
-        final remaining = body.byteLength - offset;
+        final remaining = reference.byteLength - offset;
         final limit = remaining < 65536 ? remaining : 65536;
-        final window = await read(
-          ContentRange(offset: offset, maxBytes: limit),
+        final window = await content.readBodyWindow(
+          reference,
+          offset: offset,
+          maxBytes: limit,
         );
         if (!current()) return;
+        final encoded = window.bytesBase64;
+        final segment = encoded == null
+            ? utf8.encode(window.text ?? '')
+            : base64Decode(encoded);
         if (window.offset != offset ||
-            window.bytes.isEmpty ||
-            window.bytes.length > limit ||
-            window.availableThrough != body.byteLength ||
-            (revision != null && revision != window.generation)) {
-          throw const FormatException('文件展示回执读取不连续或已换代');
+            segment.isEmpty ||
+            segment.length > limit ||
+            window.totalBytes != reference.byteLength) {
+          throw const FormatException('文件展示回执读取不连续');
         }
-        revision = window.generation;
-        bytes.add(window.bytes);
+        bytes.add(segment);
       }
       if (!current()) return;
       setState(() {
@@ -322,6 +323,9 @@ class _TimelineAttachmentsConnectorState
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.resources, widget.resources) ||
         oldWidget.item.id != widget.item.id ||
+        oldWidget.item.toolCallId != widget.item.toolCallId ||
+        oldWidget.item.body('tool.output-artifacts')?.feedReference !=
+            widget.item.body('tool.output-artifacts')?.feedReference ||
         (widget.item.raw == null && !identical(oldWidget.item, widget.item)) ||
         oldWidget.item.raw != widget.item.raw) {
       if (!identical(oldWidget.resources, widget.resources)) {
@@ -361,7 +365,10 @@ class _TimelineAttachmentsConnectorState
       attachments: _attachments,
       files: _files?.files,
       caption: _files?.caption,
-      itemId: widget.item.id,
+      itemId: switch (widget.item.toolCallId) {
+        final id? when id.isNotEmpty => 'call:$id',
+        _ => null,
+      },
       isActive: widget.isActive,
       busyIds: _busyIds,
       errors: _operationErrors,

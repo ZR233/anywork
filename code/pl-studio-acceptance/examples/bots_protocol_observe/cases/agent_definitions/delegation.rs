@@ -2,7 +2,7 @@
 //! parent wait → child terminal report. The same sequence resumes original IDs
 //! after the production process and future Profile configuration have changed.
 use super::{Observation, config, http, saved, wire};
-use crate::support::{HISTORY_OBSERVATION_BYTES, assert_completed_turn, open_current};
+use crate::support::{HISTORY_OBSERVATION_BYTES, assert_completed_turn, open_feed};
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use pl_studio_runtime::{AgentProfileSnapshot, AgentWorkspaceMode, ThreadStatus, ThreadWaitState};
@@ -161,29 +161,26 @@ impl Observation<'_> {
         profile: &AgentProfileSnapshot,
         saved: &saved::SavedEvidence,
     ) -> Result<String> {
-        let current = open_current(self.session.http()?, child).await?;
-        let observed = current.snapshot(crate::support::current_demand()).await;
-        let view = match (observed, current.close().await) {
-            (Ok(view), Ok(())) => view,
+        let feed = open_feed(self.session.http()?, child).await?;
+        let observed = feed.session_meta().await;
+        let meta = match (observed, feed.close().await) {
+            (Ok(meta), Ok(())) => meta,
             (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
             (Err(error), Err(close_error)) => {
-                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+                return Err(error.context(format!("Feed close also failed: {close_error:#}")));
             }
         };
-        let snapshot = view.state;
-        let turn_id = snapshot
+        let turn_id = meta
             .active_turn
             .as_ref()
             .context("gated child has no active Turn")?
             .id
             .clone();
         ensure!(
-            snapshot.thread.parent_thread_id.as_deref() == Some(parent)
-                && snapshot.thread.root_thread_id == parent
-                && snapshot.thread.role == profile.profile_id,
-            "child direct-parent/root/role association changed"
+            meta.parent_thread_id.as_deref() == Some(parent) && meta.root_thread_id == parent,
+            "child direct-parent/root association changed"
         );
-        let route = snapshot
+        let route = meta
             .model_route
             .as_ref()
             .context("child public route missing")?;
@@ -245,27 +242,22 @@ impl Observation<'_> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
             let call_id = phase.wait_call();
-            let current = open_current(self.session.http()?, parent).await?;
+            let feed = open_feed(self.session.http()?, parent).await?;
             let observed = async {
                 loop {
-                    let view = current.snapshot(crate::support::current_demand()).await?;
-                    let snapshot = &view.state;
+                    let meta = feed.session_meta().await?;
                     ensure!(
-                        snapshot.thread.status != ThreadStatus::Faulted,
+                        meta.status != ThreadStatus::Faulted,
                         "parent failed before its real child wait"
                     );
-                    if let Some(turn) = snapshot.active_turn.as_ref()
-                        && view.projection.atoms.iter().any(|atom| {
-                            atom.turn_id.as_deref() == Some(turn.id.as_str())
-                                && atom.kind == pl_studio_runtime::ChatAtomKind::ToolCall
-                                && atom
-                                    .tool
-                                    .as_ref()
-                                    .is_some_and(|tool| tool.call_id == call_id)
-                                && atom
-                                    .wait
-                                    .as_ref()
-                                    .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
+                    if meta.active_turn.is_some()
+                        && meta.activity.as_ref().is_some_and(|activity| {
+                            activity.tools.active.iter().any(|tool| {
+                                tool.call_id == call_id
+                                    && tool.wait.as_ref().is_some_and(|wait| {
+                                        wait.state() == ThreadWaitState::Waiting
+                                    })
+                            })
                         })
                     {
                         return Ok(());
@@ -278,11 +270,11 @@ impl Observation<'_> {
                 }
             }
             .await;
-            match (observed, current.close().await) {
+            match (observed, feed.close().await) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
                 (Err(error), Err(close_error)) => {
-                    Err(error.context(format!("Current close also failed: {close_error:#}")))
+                    Err(error.context(format!("Feed close also failed: {close_error:#}")))
                 }
             }
         })

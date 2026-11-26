@@ -7,9 +7,7 @@ use pl_studio_runtime::history::{
     HistoryTimelineEntry, HistoryTimelinePage, HistoryTurnHead, HistoryTurnState,
     HistoryWorkRangePage, decode_event_envelope,
 };
-use pl_studio_runtime::{
-    ContentRange, CurrentPayloadData, ReadDemand, ThreadTextChannel, Turn, TurnState,
-};
+use pl_studio_runtime::{ThreadTextChannel, Turn, TurnState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
@@ -20,10 +18,6 @@ pub(crate) const HISTORY_DEMAND: HistoryDemand = HistoryDemand {
     max_bytes: 256 * 1024,
 };
 pub(crate) const HISTORY_OBSERVATION_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_DEMAND: ReadDemand = ReadDemand {
-    max_items: 100,
-    max_bytes: 256 * 1024,
-};
 const CURSOR_PAGE_LIMIT: usize = 256;
 const BODY_CHUNK_BYTES: u32 = 64 * 1024;
 
@@ -634,75 +628,11 @@ pub(crate) async fn assert_completed_turn(
     Ok(())
 }
 
-pub(crate) async fn current_payload_bytes(
-    read: &crate::http::CurrentRead,
-    payload: &CurrentPayloadData,
-    remaining: &mut usize,
-    deadline: Instant,
-) -> Result<Vec<u8>> {
-    match payload {
-        CurrentPayloadData::Inline { bytes } => Ok(bytes.clone()),
-        CurrentPayloadData::Deferred {
-            reference,
-            byte_length,
-        } => current_content_bytes(read, reference, *byte_length, remaining, deadline).await,
-    }
-}
-
-pub(crate) async fn current_content_bytes(
-    read: &crate::http::CurrentRead,
-    reference: &pl_studio_runtime::CurrentContentRef,
-    length: u64,
-    remaining: &mut usize,
-    deadline: Instant,
-) -> Result<Vec<u8>> {
-    ensure!(
-        length <= *remaining as u64,
-        "Current content exceeds the remaining observation budget"
-    );
-    let mut bytes = Vec::with_capacity(usize::try_from(length)?);
-    let mut generation = None;
-    while (bytes.len() as u64) < length {
-        let offset = bytes.len() as u64;
-        let max_bytes = (length - offset).min(BODY_CHUNK_BYTES as u64) as u32;
-        let window = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            read.read_body(reference, ContentRange { offset, max_bytes }),
-        )
-        .await
-        .context("Current body read exceeded its deadline")??;
-        ensure!(
-            window.offset == offset
-                && !window.bytes.is_empty()
-                && window.bytes.len() <= usize::try_from(max_bytes)?
-                && window.available_through == length
-                && window.sealed,
-            "Current body range did not advance within its declared length"
-        );
-        charge_history_bytes(serde_json::to_vec(&window)?.len(), remaining)?;
-        if let Some(expected) = &generation {
-            ensure!(
-                &window.generation == expected,
-                "Current body generation changed mid-read"
-            );
-        } else {
-            generation = Some(window.generation);
-        }
-        bytes.extend(window.bytes);
-    }
-    ensure!(bytes.len() as u64 == length, "Current body length mismatch");
-    Ok(bytes)
-}
-
-pub(crate) async fn open_current(
+pub(crate) async fn open_feed(
     http: &crate::http::StudioHttp,
     thread_id: &str,
-) -> Result<crate::http::CurrentRead> {
-    http.open_current(thread_id, CURRENT_DEMAND).await
-}
-
-pub(crate) fn current_demand() -> ReadDemand {
-    CURRENT_DEMAND
+) -> Result<crate::http::FeedRead> {
+    http.open_feed(thread_id, Some(64)).await
 }
 
 fn unique_body(

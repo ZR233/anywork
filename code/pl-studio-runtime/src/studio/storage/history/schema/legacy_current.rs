@@ -306,7 +306,7 @@ async fn retire_owner(db: &impl ConnectionTrait, owner: &str) -> Result<()> {
 pub(in crate::studio::storage::history) async fn validate_cold_domains(
     db: &impl ConnectionTrait,
 ) -> Result<()> {
-    let row = db
+    let _row = db
         .query_one_raw(statement(
             "SELECT thread_id,database_id,applied_write_seq FROM history_meta WHERE id=1",
             vec![],
@@ -350,11 +350,5 @@ pub(in crate::studio::storage::history) async fn validate_cold_domains(
             state.lifecycle = serde_json::from_str(&value)?;
         }
     }
-    let _state = crate::studio::thread_projection::CurrentState::cold(
-        row.try_get("", "database_id")?,
-        row.try_get("", "thread_id")?,
-        u64::try_from(row.try_get::<i64>("", "applied_write_seq")?)?,
-        &state,
-    )?;
     Ok(())
 }

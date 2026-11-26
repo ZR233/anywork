@@ -6,7 +6,6 @@ import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/acp_ports.dart';
-import 'package:anywork_client/conversation_encoding.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/model_directory.dart';
@@ -16,14 +15,12 @@ import 'package:flutter/foundation.dart'
     show visibleForTesting, listEquals, mapEquals;
 
 import '../../domain/models/studio_models.dart';
-import '../../features/conversation/timeline/state/timeline_display_models.dart';
 import '../../platform/error_log.dart';
 import 'accounts/demo_account_observation.dart';
 
 part 'studio_demo_conversation.dart';
 part 'studio_demo_settings.dart';
 part 'studio_demo_timeline.dart';
-part 'studio_demo_current_history.dart';
 part 'studio_demo_resources.dart';
 
 const _conversationClosedFailure = StudioFailure(
@@ -1790,10 +1787,6 @@ class DemoStudioTransport extends StudioTransport
       _workspaces.putIfAbsent(
         thread.id,
         () => ThreadWorkspace(
-          businessRefs: const ThreadBusinessRefs(
-            plan: null,
-            interactions: null,
-          ),
           thread: thread,
           revision: 0,
           interactions: const [],
@@ -1833,10 +1826,6 @@ class DemoStudioTransport extends StudioTransport
       _workspaces.putIfAbsent(
         thread.id,
         () => ThreadWorkspace(
-          businessRefs: const ThreadBusinessRefs(
-            plan: null,
-            interactions: null,
-          ),
           thread: thread,
           revision: 0,
           interactions: const [],
@@ -2238,7 +2227,6 @@ class DemoStudioTransport extends StudioTransport
     display.sealDisplay('turn-demo:work');
     display.sealDisplay('turn-demo:final');
     return ThreadWorkspace(
-      businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
       thread: thread,
       revision: 1,
       interactions: const [],
@@ -2304,7 +2292,6 @@ class DemoStudioTransport extends StudioTransport
     ]);
     display.sealDisplay('${thread.id}:final');
     return ThreadWorkspace(
-      businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
       thread: thread,
       revision: 1,
       interactions: const [],
@@ -3182,9 +3169,10 @@ class DemoStudioTransport extends StudioTransport
       updatedAt: DateTime.now(),
     );
     _createdRootThreads[index] = renamed;
-    if (_workspaces[threadId] case final workspace?) {
-      _workspaces[threadId] = workspace.copyWith(thread: renamed);
-    }
+    _updateWorkspace(
+      threadId,
+      (workspace) => workspace.copyWith(thread: renamed),
+    );
     _emitThreadDirectoryUpdate(renamed);
     return RenameThreadCommandReply(
       thread: _directoryRowOf(renamed),
@@ -3213,9 +3201,10 @@ class DemoStudioTransport extends StudioTransport
       updatedAt: DateTime.now(),
     );
     _createdRootThreads[index] = renamed;
-    if (_workspaces[threadId] case final workspace?) {
-      _workspaces[threadId] = workspace.copyWith(thread: renamed);
-    }
+    _updateWorkspace(
+      threadId,
+      (workspace) => workspace.copyWith(thread: renamed),
+    );
     _emitThreadDirectoryUpdate(renamed);
   }
 
@@ -3734,7 +3723,9 @@ class DemoStudioTransport extends StudioTransport
       (thread) => deletedThreadIds.contains(thread.id),
     );
     _archivedThreadIds.remove(threadId);
-    _histories.removeWhere((id, _) => deletedThreadIds.contains(id));
+    for (final id in deletedThreadIds) {
+      _histories.remove(id)?.retire();
+    }
     _pendingItems.removeWhere((id, _) => deletedThreadIds.contains(id));
     _promptGenerations.removeWhere((id, _) => deletedThreadIds.contains(id));
     _threadModes.removeWhere((id, _) => deletedThreadIds.contains(id));
@@ -4154,15 +4145,9 @@ class DemoStudioTransport extends StudioTransport
       revision: previousRoute.revision + 1,
       available: true,
     );
-    _workspaces[threadId] = workspace.copyWith(modelRoute: route);
-    // route remains an independent Thread fact in the typed update.
-    _emitThreadUpdate(
+    _updateWorkspace(
       threadId,
-      ThreadRuntimeUpdate(
-        runtime: workspace.runtime,
-        todo: workspace.todo,
-        modelRoute: route,
-      ),
+      (current) => current.copyWith(modelRoute: route),
     );
     final settings = modeDefaultSaved ? _settingsWriteResult() : current;
     return ThreadModelRouteCommandReply(
@@ -4247,16 +4232,10 @@ class DemoStudioTransport extends StudioTransport
               revision: workspace.modelRoute!.revision + 1,
               available: true,
             );
-      _emitThreadUpdate(
+      _updateWorkspace(
         threadId,
-        ThreadRuntimeUpdate(
-          runtime: workspace.runtime,
-          todo: workspace.todo,
-          modelRoute: modelRoute,
-        ),
-      );
-      _workspaces[threadId] = _workspaces[threadId]!.copyWith(
-        thread: updatedThread,
+        (current) =>
+            current.copyWith(thread: updatedThread, modelRoute: modelRoute),
       );
       // 其二，目录事实：mode 由目录增量交付（目录 revision 前进）。不推进目录水位
       // 会让客户端的目录基线门与目录事件都看不到这次变更。
@@ -4761,98 +4740,40 @@ class DemoStudioTransport extends StudioTransport
     });
   }
 
-  /// Thread 首帧只暴露当前状态；历史正文由独立 reader 和完成尾部交付。
-  ThreadWorkspace _snapshotOf(ThreadWorkspace workspace) {
-    final history = _historyOf(workspace.thread.id);
-    history.prepareCurrent(workspace);
-    final plan = workspace.runtime.plan;
-    final references = ThreadBusinessRefs(
-      plan: plan == null
-          ? null
-          : CurrentPlanHead(
-              revision: plan.revision,
-              phase: plan.state,
-              document: plan.document == null
-                  ? null
-                  : CurrentContentRef(
-                      ownerId: history.epoch,
-                      domain: 'plan',
-                      entityId: workspace.thread.id,
-                      contentKey: 'plan.document',
-                      generation: '${plan.revision}',
-                    ),
-            ),
-      interactions: CurrentCollectionRef(
-        ownerId: history.epoch,
-        collection: 'interactions',
-        revision: history.interactionRevision,
-      ),
+  @override
+  Future<ConversationFeedHandle> openConversationFeed(
+    String threadId, {
+    int initialLimit = 50,
+  }) async {
+    _ensureDemoRunning();
+    final entry = contentScope.open<_DemoConversationFeedResource>(
+      'demo-conversation-feed',
+      (operation) async {
+        _ensureDemoRunning();
+        final workspace = _demoWorkspace(threadId);
+        return _DemoConversationFeedResource(
+          this,
+          _historyOf(threadId),
+          workspace,
+          initialLimit,
+          operation.resourceId,
+        );
+      },
     );
-    return workspace.copyWith(latestTurn: null, businessRefs: references);
+    final resource = await entry.ready;
+    resource.bind(entry);
+    return DemoConversationFeedHandle._(entry, resource);
   }
-
-  @override
-  Future<HistoryReader> openHistoryReader(
-    String threadId, {
-    required int historyProtocolVersion,
-  }) async {
-    _ensureDemoRunning();
-    if (historyProtocolVersion != 3) {
-      throw _demoQueryFailure('ProtocolVersionMismatch');
-    }
-    _demoWorkspace(threadId);
-    return _DemoHistoryReader(this, threadId, _historyOf(threadId));
-  }
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    _ensureDemoRunning();
-    if (currentProtocolVersion != 1) {
-      throw _demoQueryFailure('ProtocolVersionMismatch');
-    }
-    _demoDemand(demand);
-    _demoWorkspace(threadId);
-    return _DemoCurrentReader(this, threadId, _historyOf(threadId));
-  }
-
-  /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
-  /// 正文身份和 bodies 必须由调用方在提交消息时明确给出，不猜 renderer。
-  @visibleForTesting
-  void seedChatAtoms(
-    String threadId,
-    Iterable<ChatAtom> atoms, {
-    required ChatScope scope,
-    List<ChatSourceState> sources = const [],
-  }) {
-    _ensureDemoRunning();
-    _demoWorkspace(threadId);
-    var changed = false;
-    final history = _historyOf(threadId);
-    for (final source in sources) {
-      history.sourceStates[source.source] = source;
-    }
-    for (final atom in atoms) {
-      changed = history.accept(atom, scope) || changed;
-    }
-    if (changed) _publishContent(threadId);
-  }
-
-  @visibleForTesting
-  String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
 
   /// 通过 Demo 自身权威发布点准备状态事实；没有 GUI demand 时也继续更新业务。
   @visibleForTesting
   ThreadWorkspace seedConversationState(
     String threadId,
-    ThreadWorkspaceUpdate update,
+    ThreadWorkspace Function(ThreadWorkspace current) update,
   ) {
     _ensureDemoRunning();
     _demoWorkspace(threadId);
-    _emitThreadUpdate(threadId, update);
+    _updateWorkspace(threadId, update);
     return _demoWorkspace(threadId);
   }
 
@@ -4935,12 +4856,11 @@ class DemoStudioTransport extends StudioTransport
     }
     // No await separates the route CAS and admission. Demo follows the Thread
     // route, rather than re-reading role defaults after the user's intent.
-    _emitThreadUpdate(
+    _updateWorkspace(
       threadId,
-      ThreadRuntimeUpdate(
-        runtime: workspace.runtime.copyWith(modelId: route.modelId),
+      (current) => current.copyWith(
+        runtime: current.runtime.copyWith(modelId: route.modelId),
         todo: null,
-        modelRoute: workspace.modelRoute,
       ),
     );
     final generation = _promptGenerations.update(
@@ -4988,20 +4908,18 @@ class DemoStudioTransport extends StudioTransport
     );
     _historyOf(threadId).sealDisplay(input.inputId);
     _publishContent(threadId);
-    _emitThreadUpdate(
+    _updateTurn(
       threadId,
-      ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turnId,
-          inputId: input.inputId,
-          threadId: threadId,
-          revision: 0,
-          state: RunningStudioTurnState(
-            startedAt: now.millisecondsSinceEpoch ~/ 1000,
-            activity: StudioTurnActivity.thinking,
-          ),
-          updatedAt: now,
+      StudioTurnView(
+        turnId: turnId,
+        inputId: input.inputId,
+        threadId: threadId,
+        revision: 0,
+        state: RunningStudioTurnState(
+          startedAt: now.millisecondsSinceEpoch ~/ 1000,
+          activity: StudioTurnActivity.thinking,
         ),
+        updatedAt: now,
       ),
     );
     // 脚本化活动：提交后进入“思考中”（等待 API / 开始 reasoning）。
@@ -5037,8 +4955,8 @@ class DemoStudioTransport extends StudioTransport
     onAdmitted?.call();
     final reasoningId = '$turnId:reasoning';
     _historyOf(threadId).declareDisplay(
-      '$turnId:work',
-      [reasoningId, '$turnId:tool'],
+      '$turnId:reasoning-work',
+      [reasoningId],
       work: true,
       turnId: turnId,
     );
@@ -5106,7 +5024,7 @@ class DemoStudioTransport extends StudioTransport
       ),
     );
     final commentaryId = '$turnId:commentary';
-    // This story's commentary is an independent Single, not a Work member.
+    _historyOf(threadId).sealDisplay('$turnId:reasoning-work');
     _historyOf(
       threadId,
     ).declareDisplay(commentaryId, [commentaryId], work: false, turnId: turnId);
@@ -5157,19 +5075,17 @@ class DemoStudioTransport extends StudioTransport
     );
     _historyOf(threadId).sealDisplay(commentaryId);
     _publishContent(threadId);
-    _emitThreadUpdate(
+    _updateTurn(
       threadId,
-      ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turnId,
-          threadId: threadId,
-          revision: 1,
-          state: RunningStudioTurnState(
-            startedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            activity: StudioTurnActivity.runningTool,
-          ),
-          updatedAt: DateTime.now(),
+      StudioTurnView(
+        turnId: turnId,
+        threadId: threadId,
+        revision: 1,
+        state: RunningStudioTurnState(
+          startedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          activity: StudioTurnActivity.runningTool,
         ),
+        updatedAt: DateTime.now(),
       ),
     );
     // 脚本化活动：工具前台显示“执行中”+完整命令行预览。
@@ -5181,6 +5097,9 @@ class DemoStudioTransport extends StudioTransport
       summary: 'cargo test -p pl-model --test provider_wire',
     );
     final toolId = '$turnId:tool';
+    _historyOf(
+      threadId,
+    ).declareDisplay('$turnId:tool-work', [toolId], work: true, turnId: turnId);
     _upsertChatItem(
       threadId,
       _DemoItem(
@@ -5257,7 +5176,7 @@ class DemoStudioTransport extends StudioTransport
       ),
     );
     final finalId = '$turnId:final';
-    _historyOf(threadId).sealDisplay('$turnId:work');
+    _historyOf(threadId).sealDisplay('$turnId:tool-work');
     _historyOf(threadId)
         .declareDisplay(finalId, [finalId], work: false, turnId: turnId);
     _emitActivity(
@@ -5314,20 +5233,18 @@ class DemoStudioTransport extends StudioTransport
     );
     _historyOf(threadId).sealDisplay(finalId);
     _publishContent(threadId);
-    _emitThreadUpdate(
+    _updateTurn(
       threadId,
-      ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turnId,
-          threadId: threadId,
-          revision: 2,
-          state: CompletedStudioTurnState(
-            startedAt: null,
-            completedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            completion: StudioTurnCompletion.normal,
-          ),
-          updatedAt: DateTime.now(),
+      StudioTurnView(
+        turnId: turnId,
+        threadId: threadId,
+        revision: 2,
+        state: CompletedStudioTurnState(
+          startedAt: null,
+          completedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          completion: StudioTurnCompletion.normal,
         ),
+        updatedAt: DateTime.now(),
       ),
     );
   }
@@ -5504,20 +5421,18 @@ class DemoStudioTransport extends StudioTransport
       _demoContinuations.remove(_demoContinuations.keys.first);
     }
     // Admitted, not started: the canonical Turn is what proves effect.
-    _emitThreadUpdate(
+    _updateTurn(
       threadId,
-      ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turnId,
-          inputId: operationId.value,
-          threadId: threadId,
-          revision: 0,
-          state: RunningStudioTurnState(
-            startedAt: now.millisecondsSinceEpoch ~/ 1000,
-            activity: StudioTurnActivity.thinking,
-          ),
-          updatedAt: now,
+      StudioTurnView(
+        turnId: turnId,
+        inputId: operationId.value,
+        threadId: threadId,
+        revision: 0,
+        state: RunningStudioTurnState(
+          startedAt: now.millisecondsSinceEpoch ~/ 1000,
+          activity: StudioTurnActivity.thinking,
         ),
+        updatedAt: now,
       ),
     );
     _emitActivity(
@@ -5543,12 +5458,10 @@ class DemoStudioTransport extends StudioTransport
     _demoContinuationPoints.remove(threadId);
     final current = _workspaces[threadId];
     if (current != null && current.runtime.continuation != null) {
-      _emitThreadUpdate(
+      _updateWorkspace(
         threadId,
-        ThreadRuntimeUpdate(
+        (current) => current.copyWith(
           runtime: current.runtime.copyWith(continuation: null),
-          todo: current.todo,
-          modelRoute: current.modelRoute,
         ),
       );
     }
@@ -5734,21 +5647,19 @@ class DemoStudioTransport extends StudioTransport
       (value) => value + 1,
       ifAbsent: () => 1,
     );
-    _emitThreadUpdate(
+    _updateTurn(
       threadId,
-      ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turnId,
-          threadId: threadId,
-          revision: 2,
-          state: CancelledStudioTurnState(
-            startedAt: null,
-            requestedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            completedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            cause: const UserRequestedTurnCancellation(),
-          ),
-          updatedAt: DateTime.now(),
+      StudioTurnView(
+        turnId: turnId,
+        threadId: threadId,
+        revision: 2,
+        state: CancelledStudioTurnState(
+          startedAt: null,
+          requestedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          completedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          cause: const UserRequestedTurnCancellation(),
         ),
+        updatedAt: DateTime.now(),
       ),
     );
     return true;
@@ -5921,9 +5832,13 @@ class DemoStudioTransport extends StudioTransport
     while (_resolvedInteractions.length > 128) {
       _resolvedInteractions.remove(_resolvedInteractions.keys.first);
     }
-    _emitThreadUpdate(
+    _updateWorkspace(
       interaction.threadId,
-      ThreadInteractionUpdate(interaction: interaction, pending: false),
+      (current) => current.copyWith(
+        interactions: current.interactions
+            .where((value) => value.id != interaction.id)
+            .toList(),
+      ),
     );
     if (planRequest != null) _publishContent(interaction.threadId);
     if (interaction.kind == InteractionKind.userInput) {
@@ -6401,6 +6316,7 @@ class DemoStudioTransport extends StudioTransport
     _threadMcpGenerations[threadId] =
         (_threadMcpGenerations[threadId] ?? 1) + 1;
     final snapshot = _demoThreadMcp(threadId);
+    _updateWorkspace(threadId, (workspace) => workspace);
     _publishProductPayload(ThreadMcpStateChangedPayload(snapshot));
     return snapshot;
   }
@@ -7062,140 +6978,98 @@ class DemoStudioTransport extends StudioTransport
     _historyOf(threadId).changed(_demoWorkspace(threadId));
   }
 
-  /// demo 模拟一次 Thread 状态更新。
-  ///
-  /// 状态流只承载 Current；完成条目和正文由独立 History/Current 端口读取。
-  void _emitThreadUpdate(String threadId, ThreadWorkspaceUpdate update) {
+  void _updateWorkspace(
+    String threadId,
+    ThreadWorkspace Function(ThreadWorkspace) update,
+  ) {
     if (_runtimeExiting) return;
     final workspace = _workspaces[threadId];
     if (workspace == null) return;
-    if (update case ThreadInteractionUpdate(
-      :final interaction,
-      pending: true,
-    )) {
-      _freezeDemoPlanRequest(interaction);
+    var updated = update(workspace).copyWith(revision: workspace.revision + 1);
+    final interactionsChanged = !listEquals(
+      workspace.interactions,
+      updated.interactions,
+    );
+    if (interactionsChanged) {
+      for (final interaction in updated.interactions) {
+        if (!workspace.interactions.any(
+          (value) => identical(value, interaction),
+        )) {
+          _freezeDemoPlanRequest(interaction);
+        }
+      }
     }
-    final revision = workspace.revision + 1;
-    // Turn revisions share the Thread event sequence, just like the native projector.
-    if (update case ThreadTurnUpdate(:final turn)) {
-      update = ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turn.turnId,
-          inputId: turn.inputId ?? workspace.activeTurn?.inputId,
-          threadId: threadId,
-          revision: revision,
-          state: turn.state,
-          updatedAt: turn.updatedAt,
-        ),
-      );
-    }
-    final ThreadWorkspace updated = switch (update) {
-      ThreadBusinessRefsUpdate(:final references) => workspace.copyWith(
-        revision: revision,
-        businessRefs: references,
-      ),
-      ThreadTurnUpdate(:final turn) => workspace.copyWith(
-        revision: revision,
-        activeTurn: turn.state.isBusy ? turn : null,
-      ),
-      // 活动与生产一样只从 typed 活动事实进入状态。
-      ThreadActivityUpdate(:final activity) => workspace.copyWith(
-        revision: revision,
-        activity: activity,
-      ),
-      ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
-        workspace.copyWith(
-          revision: revision,
-          runtime: runtime,
-          todo: todo,
-          modelRoute: modelRoute,
-        ),
-      // 存储状态与生产一样只从 typed 事实进入状态。
-      ThreadStorageUpdate(:final storage) => workspace.copyWith(
-        revision: revision,
-        storage: storage,
-      ),
-      ThreadInteractionUpdate(:final interaction, :final pending) =>
-        _demoUpdateInteraction(workspace, revision, interaction, pending),
-    };
     _workspaces[threadId] = updated;
-    _historyOf(threadId).changed(updated, update: update);
-    // 子会话的交互事实变化同时刷新宿主主会话的待决集合投影。
-    if (update is ThreadInteractionUpdate) {
-      final host = updated.thread.parentThreadId;
-      if (host != null) _publishChildInteractionsIfChanged(host);
-    }
-    if (update case ThreadTurnUpdate(:final turn) when turn.state.isTerminal) {
-      _historyOf(threadId).finishDisplayTurn(turn.turnId, switch (turn.state) {
-        FailedStudioTurnState() => ChatTerminalOutcome.failed,
-        CancelledStudioTurnState() => ChatTerminalOutcome.cancelled,
-        _ => ChatTerminalOutcome.completed,
-      });
-      // Turn receipts are explicit hidden originals, not GUI display blocks.
-      _completeDemoItem(
-        _DemoItem(
-          id: 'turn:${turn.turnId.length}:${turn.turnId}',
-          threadId: threadId,
-          turnId: turn.turnId,
-          updatedAt: turn.updatedAt,
-          content: _demoTurn(turn.state, inputId: turn.inputId),
-        ),
-      );
-      _retirePendingItems(threadId);
-      // Completion and Activity are independent deliveries at the same cut;
-      // the feed orders completion admission before publishing the live exit.
-      _clearActivity(threadId);
-    }
-    // The stop target is an execution identity and the continue target is a
-    // continuation point, so the runtime projection carries both: derive them
-    // from the canonical facts and publish them as their own facts.
     final execution = _demoExecutionOf(threadId);
     final continuation = _demoContinuationPoints[threadId];
     if (execution != updated.runtime.execution ||
         continuation != updated.runtime.continuation) {
-      _emitThreadUpdate(
-        threadId,
-        ThreadRuntimeUpdate(
-          runtime: updated.runtime.copyWith(
-            execution: execution,
-            continuation: continuation,
-          ),
-          todo: updated.todo,
-          modelRoute: updated.modelRoute,
+      updated = updated.copyWith(
+        runtime: updated.runtime.copyWith(
+          execution: execution,
+          continuation: continuation,
         ),
       );
+      _workspaces[threadId] = updated;
     }
-    // Business-reference changes are State facts too. Publish the replacement
-    // after its originating update, without refreshing Main or re-reading it.
-    // Use the latest workspace because the execution update above can reenter.
-    if (update is! ThreadBusinessRefsUpdate) {
-      final latest = _workspaces[threadId]!;
-      final references = _snapshotOf(latest).businessRefs;
-      if (references != latest.businessRefs) {
-        _emitThreadUpdate(
-          threadId,
-          ThreadBusinessRefsUpdate(references: references),
-        );
-      }
+    _historyOf(threadId).changed(updated);
+    if (updated.thread.parentThreadId case final host?
+        when interactionsChanged) {
+      _publishChildInteractionsIfChanged(host);
     }
   }
 
-  /// Script progress remains private. Each member seals independently and moves
-  /// to canonical completion before the feed captures the new live boundary.
+  void _updateTurn(String threadId, StudioTurnView turn) {
+    _updateWorkspace(threadId, (workspace) {
+      final stamped = StudioTurnView(
+        turnId: turn.turnId,
+        inputId: turn.inputId ?? workspace.activeTurn?.inputId,
+        threadId: threadId,
+        revision: workspace.revision + 1,
+        state: turn.state,
+        updatedAt: turn.updatedAt,
+      );
+      if (!turn.state.isTerminal) {
+        return workspace.copyWith(activeTurn: stamped, latestTurn: stamped);
+      }
+      final history = _historyOf(threadId);
+      history.reconnecting = null;
+      history.finishDisplayTurn(turn.turnId, turn.state);
+      if (turn.state is! CompletedStudioTurnState) {
+        final id = 'turn:${turn.turnId.length}:${turn.turnId}';
+        _completeDemoItem(
+          _DemoItem(
+            id: id,
+            threadId: threadId,
+            turnId: turn.turnId,
+            updatedAt: turn.updatedAt,
+            content: _demoTurn(turn.state, inputId: stamped.inputId),
+          ),
+        );
+        history.declareDisplay(id, [id], work: false);
+        history.sealDisplay(id);
+      }
+      _retirePendingItems(threadId);
+      return workspace.copyWith(
+        activeTurn: null,
+        latestTurn: stamped,
+        activity: null,
+      );
+    });
+  }
+
+  /// The script publishes progress, then seals completed members at its boundary.
   void _upsertChatItem(String threadId, _DemoItem item) {
     if (!_workspaces.containsKey(threadId)) return;
     final pending = _pendingItems.putIfAbsent(threadId, () => {});
     if (item.content.descriptor == null) {
-      if (_historyOf(threadId).byId.containsKey(item.id)) {
-        throw StateError('Completed Demo member cannot resume streaming');
-      }
-      _historyOf(threadId).sync(item);
+      _historyOf(threadId).admit(item);
       pending[item.id] = item;
+      _publishContent(threadId);
     } else {
       _completeDemoItem(item);
       pending.remove(item.id);
     }
-    _publishContent(threadId);
   }
 
   Iterable<_DemoItem> _pendingItemsOf(String threadId) =>
@@ -7203,14 +7077,8 @@ class DemoStudioTransport extends StudioTransport
 
   void _retirePendingItems(String threadId) {
     final pending = _pendingItems.remove(threadId);
-    final history = _historyOf(threadId);
     for (final id in pending?.keys ?? const <String>[]) {
-      if (!history.byId.containsKey(id)) {
-        if (!history.displayMembership.containsKey(id)) {
-          history.bodies.remove(id);
-        }
-        history.positions.remove(('member', id));
-      }
+      _historyOf(threadId).itemSequences.remove(id);
     }
   }
 
@@ -7237,8 +7105,6 @@ class DemoStudioTransport extends StudioTransport
     final item = _pendingItems[threadId]?[itemId];
     if (item == null) throw StateError('No active Demo member $itemId');
     item.content.fields[field] = (item.content.fields[field] ?? '') + text;
-    final bodies = _historyOf(threadId).bodies.putIfAbsent(itemId, () => {});
-    (bodies[field] ??= _DemoBody()).append(utf8.encode(text));
     _publishContent(threadId);
   }
 
@@ -7250,9 +7116,9 @@ class DemoStudioTransport extends StudioTransport
     required ThreadActivityKind kind,
     String summary = '',
   }) {
-    _emitThreadUpdate(
+    _updateWorkspace(
       threadId,
-      ThreadActivityUpdate(
+      (workspace) => workspace.copyWith(
         activity: ThreadActivityView(
           threadId: threadId,
           identity: 'activity:$turnId:${kind.name}',
@@ -7265,14 +7131,6 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
-  }
-
-  /// Turn 结束或打断：清空当前活动（`activity == null`）。
-  void _clearActivity(String threadId) {
-    // Generation cancellation ends the script, not each partially produced
-    // member. Only individually completed members are eligible for history.
-    _retirePendingItems(threadId);
-    _emitThreadUpdate(threadId, const ThreadActivityUpdate(activity: null));
   }
 }
 
@@ -7373,25 +7231,6 @@ AttachmentDraftView _demoAttachmentDraft(
   );
 }
 
-ThreadWorkspace _demoUpdateInteraction(
-  ThreadWorkspace workspace,
-  int revision,
-  PendingInteraction interaction,
-  bool pending,
-) {
-  final interactions = [...workspace.interactions];
-  final index = interactions.indexWhere((item) => item.id == interaction.id);
-  if (!pending) {
-    if (index >= 0) interactions.removeAt(index);
-  } else if (index < 0) {
-    interactions.add(interaction);
-  } else {
-    interactions[index] = interaction;
-  }
-  return workspace.copyWith(revision: revision, interactions: interactions);
-}
-
-/// Deterministic demo fixture exposed only by the dedicated Driver build.
 class DriverDemoStudioTransport extends DemoStudioTransport {
   DriverDemoStudioTransport({
     required super.contentScope,
@@ -7510,10 +7349,18 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
     onAdmitted?.call();
     if (_retryNextTurn) {
       _retryNextTurn = false;
+      final display = _historyOf(threadId);
       for (var attempt = 1; attempt <= 5; attempt++) {
         await _waitDemo(promptActivityDelay);
         if (_promptGenerations[threadId] != generation) return;
         final now = DateTime.now();
+        final message = '连接中断，正在重试（$attempt/5）。';
+        display.reconnecting = LiveStatusReconnecting(
+          attemptId: turnId,
+          message: message,
+          attempt: attempt,
+          retryAfterMs: promptActivityDelay.inMilliseconds,
+        );
         _upsertChatItem(
           threadId,
           _DemoItem(
@@ -7521,20 +7368,32 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
             threadId: threadId,
             turnId: turnId,
             updatedAt: now,
-            content: _demoText(
-              channel: ThreadTextChannel.commentary,
-              text: '连接中断，正在重试（$attempt/5）。',
-              attachments: const [],
-              lifecycle: CompletedThreadContentView(now),
+            content: (
+              kind: _DemoContentKind.completed,
+              contentPresent: null,
+              textChannel: null,
+              descriptor: {
+                'type': 'connection',
+                'data': {
+                  'attempt': attempt,
+                  'maxAttempts': 5,
+                  'message': message,
+                },
+              },
+              fields: {},
+              invocation: null,
             ),
           ),
         );
         final displayId = '$turnId:connection-retry-$attempt';
-        final display = _historyOf(threadId);
         display.declareDisplay(displayId, [displayId], work: false);
         display.sealDisplay(displayId);
         _publishContent(threadId);
       }
+      await _waitDemo(promptActivityDelay);
+      if (_promptGenerations[threadId] != generation) return;
+      display.reconnecting = null;
+      _publishContent(threadId);
     }
     if (!_failNextTurn) {
       return super._completePrompt(
@@ -7548,26 +7407,24 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
     _failNextTurn = false;
     await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
-    _emitThreadUpdate(
+    _updateTurn(
       threadId,
-      ThreadTurnUpdate(
-        StudioTurnView(
-          turnId: turnId,
-          threadId: threadId,
-          revision: 1,
-          updatedAt: DateTime.now(),
-          state: FailedStudioTurnState(
-            startedAt: startedAt.millisecondsSinceEpoch ~/ 1000,
-            completedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-            failure: const StudioTurnFailureView(
-              category: 'protocol',
-              providerKind: null,
-              code: 'turnProtocolProjectionFailed',
-              httpStatus: null,
-              message: 'Injected turn protocol failure',
-              retryDisposition: StudioRetryDisposition.permanent,
-              retryAfterMs: null,
-            ),
+      StudioTurnView(
+        turnId: turnId,
+        threadId: threadId,
+        revision: 1,
+        updatedAt: DateTime.now(),
+        state: FailedStudioTurnState(
+          startedAt: startedAt.millisecondsSinceEpoch ~/ 1000,
+          completedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          failure: const StudioTurnFailureView(
+            category: 'protocol',
+            providerKind: null,
+            code: 'turnProtocolProjectionFailed',
+            httpStatus: null,
+            message: 'Injected turn protocol failure',
+            retryDisposition: StudioRetryDisposition.permanent,
+            retryAfterMs: null,
           ),
         ),
       ),

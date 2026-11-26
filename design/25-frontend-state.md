@@ -1,6 +1,6 @@
 # 25 - 客户端、前端状态与资源生命周期
 
-Native Current 与追加历史分别沿原所有权提供读取：状态栏和当前观察来自 `CurrentReader`，历史页来自 `HistoryReader`；两种引用与生命周期不得混用，Current 保存错误和暂停恢复状态不得被 History 成功掩盖。客户端只持页面状态、阅读意图及有界窗口，不重建历史或把完整 `current.json` 镜像进 Flutter。具体合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)，展示合并见 [26](./26-timeline-content.md)。HTTP、FRB、SDK 与 Flutter 使用同一组 Current/History typed DTO 和协议版本，不保留旧完成流 fallback。
+Native 会话通过单一 `ConversationFeed` 观察端口向前端交付时间线增量补丁（`TimelinePatch`）、实时状态栏快照（`LiveStatusSnapshot`）、低频会话元数据（`SessionMetaSnapshot`）与按需大字段/工作组/历史页查询；客户端只持唯一有界展示列表与局部 UI 状态，不在 Dart 侧二次拼接 `Current` 与 `History` 或解析 `payload_json`。具体契约见 [07](./07-streaming.md) 与 [26](./26-timeline-content.md)。HTTP、FRB、SDK 与 Flutter 使用同一组强类型 DTO，不保留旧双 reader 端口或旧完成流 fallback。
 
 Rust 运行时持有业务权威事实；每个应用实例装配独立的纯 Dart 领域资源；`Riverpod` 组织呈现观察与视图模型，界面组件仅渲染与发出意图。性能统计采用 [§25.13](#2513-独立统计领域与呈现模块) 的独立模块，账号功能采用 [§25.14](#2514-账号分域与可预览呈现) 的分域仓储与纯呈现；其余领域保持现有客户端边界，不因局部演进要求全应用重写，也不为已迁移领域保留旧 Client 兼容入口。本文是客户端所有权、命令回执、输入草稿与页面导航的唯一权威契约。可靠历史与迁移见 [17](./17-studio-storage.md)，流协议见 [07](./07-streaming.md)，运行时与关闭见 [18](./18-studio-state.md)，界面见 [19](./19-studio-ui.md)，验证见 [24](./24-testing.md)。
 
@@ -40,9 +40,9 @@ flowchart LR
 | --- | --- | --- | --- |
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度和请求速度档位细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
-| 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| schema 26 原子历史事件、索引派生 `WorkRange` 与 16 KiB 混合正文 | Rust HistoryStore | SDK 机械转发；Flutter 时间线 controller 持唯一有界窗口与展开意图 | database/owner、历史 cut、row/entity 身份、reader generation |
-| Current State、正文、collection 与业务引用 | Rust Current assembler / CurrentReader | Client 会话状态唯一写入口；时间线 Current owner 持一个 run overlay | owner/runtimeEpoch、revision、reference generation、reader generation |
+| 轮次、活动、用量、交互与运行时元数据 | Rust 会话（`Thread`）所有者与 `SessionMetaLayer` | Client 单一 `ConversationSession` 归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
+| 不可变历史与未入库内存拼接、封组 `WorkRange` 与 Flyer 增量补丁 | Rust `HistoryStore` + `TimelineDataLayer` | SDK 机械转发；Flutter `TimelineSessionOwner` 串行驱动 `InMemoryChatController` | `database_id`、稳定 `msg:<seq>`/`work:<first_seq>` 行身份、阅读代次 |
+| 实时状态栏状态机（思考工作组/流式正文/压缩/重连） | Rust `LiveStatusDataLayer` | Client 发布不可变 `LiveStatusSnapshot` | 会话 ID 与状态机修订号；仅驱动 `LiveStatusBar`，不触发主时间线重建 |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
@@ -54,7 +54,7 @@ History读者绑定稳定数据库身份与 opaque cut；Current 读者绑定 ow
 
 同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
 
-Demo GUI 使用同一 Current/History typed 端口的 fixture 实现。数据容器显式提供 Current owner/revision、History cut、`HistoryTimelineItem`（`divider` 原子事件与 `WorkRange`）及原子事件页与有界 body；脚本不根据完成序号或 Activity 拼出隐藏展示树。Demo 只替换传输来源，不复制生产 timeline reducer、工作组折叠器以外的第二套 reader 或关闭协议；其证据不能替代真实 Rust→FRB→SDK→生产页面验收。
+Demo GUI 使用同一 `ConversationFeed` 端口交付测试数据，包括时间线补丁、状态栏和会话元数据快照、按需读取的工作组成员及正文窗口。真实 Rust→FRB→SDK→生产页面的交接由原生验收覆盖。
 
 启动阶段的 `loading`、`ready` 与类型化失败状态由 Client 持有并供只读观察。应用生命周期调用一次引导加载，待项目会话目录与主界面必需配置就绪后才展示主界面外壳（shell）；账号静态模板由对应领域按需加载，不再作为全应用启动屏障。若在首帧基线前发生失败，必须展示类型化错误码与关联 ID（`correlationId`），显式重试时复用同一 Client 实例清除失败尝试后重新启动。启动成功后，若某个目录观察失败，则保留最后有效目录与可用主界面并展示该领域的显式重试入口，不退回无操作的启动等待页。会话状态流的同步状态与聊天界面内容状态（`ChatUiState`）分属各自独立的观察通道，互不覆盖。
 
@@ -193,39 +193,27 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 页面异步动作的后续界面副作用须同时复核官方来源路由仍为当前页面与捕获的业务所有者身份；仅有组件仍挂载不能授权旧删除、确认或保存完成后覆盖较新的导航。失去来源资格后不再发后续命令或跳转，已经准入的领域操作仍由原所有者保责。这种回调内的有限来源核验不保存目的地、页面历史或导航镜像，也不能用于重放失败动作。
 
-## 25.5 会话观察、独立读取与资源退役
+## 25.5 会话观察、单一连接与资源退役
 
-客户端不设置会话句柄、未完成操作、草稿、附件、观察者或只读模型的固定数量准入上限，也不提供容量许可、名额等待或容量不足重试。资源按实际业务与展示需求创建，由原所有者登记任务、取消并等待真实关闭；诊断与 `CloseReport` 反映真实资源状态。分页条数、编码字节、流量控制、缓存淘汰及领域业务校验各自保留，不以移除数量限制推导内存恒定或无限并发性能保证。
+客户端不设置会话句柄、未完成操作、草稿、附件、观察者或只读模型的固定数量准入上限，也不提供容量许可、名额等待或容量不足重试。资源按实际业务与展示需求创建，由原所有者登记任务、取消并等待真实关闭；诊断与 `CloseReport` 反映真实资源状态。
 
-HistoryReader、CurrentReader、History body watch、Current body watch 与界面 controller 是不同资源。SDK 只提供 typed 端口和资源归属，不建立历史镜像或事件归约器；Flutter 时间线会话 owner 持唯一主 controller 与一个 Current overlay。`ChatController` 只保存已加载的历史窗口、展开状态和 generation，局部正文拥有自己的有界读取句柄；资源不跨 AppGraph 共享，生命周期边界见 [§25.15](#2515-会话草稿与呈现分域)。
+每个可见 Native 会话在 Client 中只打开**一条** `ConversationFeed` 观察连接，不再同时开启双路 `CurrentReader` 与 `HistoryReader`。`TimelineSessionOwner` 只保存已加载的强类型 `TimelineItem` 列表（注入 Flyer `InMemoryChatController`）、工作组展开缓存与历史浏览暂停态；`LiveStatusBar` 独立订阅 `LiveStatusSnapshot`，不与主时间线耦合。
 
-范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
+FRB 单一句柄的 `requestClose` 同步调用底层生命周期封闭准入并终止推送任务，`close` 必须使用可重试的 `retry_close` 汇合所有在途查询与流任务。页面隐藏或切换仅释放展示租约，绝不停止后台运行的业务 Thread、持久化写入器或其他消费者。应用退出继续由既有唯一协调器承担；业务会话运行代次、Native 实例回收与界面读取租约的区分见 [14](./14-runtime-host.md#1411-生命周期作用域与关闭)。
 
-会话 State 观察进入重连后，启动后续尝试时保留重连状态及最近已接纳的业务快照。接纳替代快照后更新连接状态，耗尽重试则发布失败。实时状态栏将重连作为与工作组、流式正文互斥的主阶段，显示固定的本地化文案，最近一次失败详情可从提示查看。
-
-首次 await 前冻结 thread/incarnation、reader generation、attempt、operationId、草稿/附件版本并登记原始 open、watch、query、consumer 与清理责任。A→B→A 迟到页、Current reset、命令结果或 finally 只结算原请求，不能覆盖新会话、清新草稿或解除新请求 busy。命令回执与观察各自结算，UnknownOutcome 保留冻结意图，不自动重放；权威当前态仍进入所属 Repository 同一入口。
-
-观察注册与初值读取同一同步边界；可替代快照可合并，可靠完成不能丢中间事实。Provider 构建只读，导航已提交页面身份声明可见需求，不从地址字符串或平行栈猜测。页面仅 detach 自己租约，短暂 observer 重建不销毁仍有所有者的资源；真正释放后以新 handle 的 Set 建展示，不跨会话缓存旧 controller，SDK 不替离屏呈现保存历史。
-
-Current State 观察沿既有有界退避策略统计连续未恢复失败。恢复确认必须实际接纳合法 Reset/snapshot，并在同一 owner 内继续接纳后续有效 notification/projection；仅打开连接、只收到 Reset、重复旧 revision、退役 generation 的迟到结果或 History 成功不能清除失败。Current 出现 owner 更换、Lagged 或不可恢复缺口时由 Reset 重建同一小 State，不 replay 历史；协议或 schema 版本错误立即失败。History、正文或冷读都不能补造 State。
-
-会话 MCP 状态的页面主题需求由 Client 跟随成功准入的可见 `ThreadId` 持有，覆盖主／子成员及机器人绑定会话，不借用全局选择或 `SessionId` 代替页面身份。Client 在该需求边界取得既有主题租约并准备只读镜像，页面隐藏、切换和 Client 关闭时释放自身份额；失败由原资源登记表保留清理责任并发布原错误。MCP Provider 只借用已存在的镜像并观察需求变化，未准入时保持未加载，不能在构建中再次创建读模型或把读取失败伪装成空成功。该状态观察不激活 Native 会话或创建 MCP 连接；执行资源仍归 [09](./09-tool-runtime.md) 的 Thread owner。
-
-requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有的 open、producer、consumer、sink；独立 query 归原 read scope，不挂回 feed credit。失败保留 unresolved owner 与清理责任，丢句柄、Provider dispose 或取消 Future 不是 join。只回收观察，不停止 Session、Turn、后台任务、writer 或其他消费者。应用退出继续由既有唯一协调器承担；业务会话运行代次、Native 实例回收与界面读取租约的区分见 [14](./14-runtime-host.md#1411-生命周期作用域与关闭)。
-
-History page 与 Current State 在 Flutter 的同一时间线应用边界接纳，但保留各自 reader、generation 与生命周期。先把 query/State 结果交给原 controller 串行应用，重新核对 reader 与显示 generation，再公开最新 head 和 Current overlay。History 不设 ACK；Current watch 的交付也不表示 History 已接纳。controller 失败时废弃当前 generation，以新 HistoryReader 的 Set 重建；旧显示保留至新 Set 成功，不清无关草稿或业务状态。Plan、交互和文件阅读分别使用对应 Current/History 引用，不借用其他资源资格。
+查询在应用队列外等待结果，时间线所有者在应用补丁前核对会话及展示代次。控制器操作失败时，由新展示代次的 Reset 重建。草稿与业务状态继续由原所有者管理。计划、交互和文件读取各自使用对应的业务引用。
 
 ## 25.6 只读模型与细粒度呈现
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-History 不是 SDK 当前态缓存。`HistoryTimelinePage`、`HistoryWorkRangePage`、`HistoryEventRecord` 与 `HistoryBodyWindow` 经 FRB 和 SDK 机械映射后交付 Flutter 时间线 owner 与工作组 ViewModel；`WorkRange` 切分、工作组 `call_id` 合并与单条回退见 [26](./26-timeline-content.md)。时间线 controller 按稳定 `event_id`／`range_id` 与折叠后行键保存已加载窗口、工作组 ViewModel 和展开意图，不建立原子、展示块、消息三份全量镜像。older page 只返回结果，不自动修改组件。状态栏由 Current 单独投影，诊断借用已得到的结果。
+Rust 以同一历史事件分类处理实时封组和历史分页，并通过 `ConversationFeed` 交付 `TimelinePatch`。Flutter 以稳定的 `msg:<seq>` 和 `work:<first_seq>` 身份应用补丁并保存展开意图。按需读取的历史页返回补丁，由时间线所有者串行应用到组件。实时状态栏独立消费 `LiveStatusSnapshot`。工作组成员折叠与单条回退见 [26](./26-timeline-content.md)。
 
 Current State 的 `CurrentStateField` 只有 `Body` 与 `Collection` 两个分支。Body 按 `CurrentContentRef`、byte length 与 64 KiB 窗口读取；Collection 按 `CurrentCollectionRef`、demand 和 continuation 分页，`count` 始终是完整集合量，条目 deferred 时再读取其 body。原 Session owner 只查询并保留一个优先处理的交互决定，异步查询独立于 State 通知；不累计完整集合，查询错误独立可见。只有当前引用读取完成后才具备交互基线；读取中或失败都不能用缺席确认原交互已处理。Provider/ViewModel 不把分页结果拼成第二份常驻 State，也不公开或推导 live/cold generation。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
-ChatController、焦点、滚动、HistoryReader、CurrentReader、body watch、任务、permit、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，Flutter 官方组件及成熟三方优先，不为领域适配再加无职责 Manager/Facade。
+ChatController、焦点、滚动、ConversationFeed 句柄、任务、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，优先复用 Flutter 官方组件与成熟三方组件。
 
 待办与工作流的直接字段、延迟字段由时间线状态适配统一选择，消费者按会话身份观察 Riverpod 异步结果，不在多个界面重复传递运行时快照和选择分支。字段早于读取租约到达时，租约就绪须恢复读取；读取资格同时绑定原 owner、reader 和字段身份，旧成功或失败不得接管新身份。读取 scope 的取消与异步 close/join 仍由原资源所有者保责，不因呈现释放而丢弃清理结果。
 
@@ -528,15 +516,15 @@ Client 按 `threadId` 借用会话 LSP 主题并在同一个只读接纳入口�
 
 conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 data 实现，领域消费者不依赖 Flutter、Riverpod 或 FRB。ConversationRepository 持有各域当前态、观察/操作资源与传输责任，DraftsRepository 持有冻结提交和附件归属；不经旧 AnyworkClient 转发，不建立历史镜像。
 
-五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。 Current 活动头在 FRB 与 SDK 中保留完整 `ThreadActivityKind`（包括 `waitingApi`）；只有呈现层将其映射为界面的较粗活动分类，传输接纳不按 enum 名称猜测另一种类型。会话 Repository 是 Current State 的唯一 Dart writer，通过 `CurrentReader` 接纳 Reset、notification 与 projection；HistoryReader 只向时间线 owner 交付纯 query/page/cut/change。各资源独立持有 reader、generation、错误与关闭资格，正文消费受阻时仍能接纳 State；State 断流只重建 Current 基线，不清空已加载历史或草稿。历史页和正文查询在应用队列外执行，不竞争 Current watch；两者没有共同 ACK 或共同水位。
+执行、交互、配置、用量和上下文保留各自的业务所有者，通过会话订阅交付所需状态。FRB 与 SDK 保留完整的 `ThreadActivityKind`，呈现层映射到界面的活动分类。正文和历史查询在应用队列外执行，按会话代次接纳结果。流断开后可以重建对应的显示基线，草稿由草稿所有者独立维护。
 
-Plan/交互读取头从 Current State 的 `CurrentPlanHead`／`CurrentCollectionRef` 机械接纳到原领域 owner，不暴露旧 `content.current`。形状与空值语义见 [26.6](./26-timeline-content.md#266-业务引用由-state-交付)。引用与可操作业务状态来自同一发布者，不建第二可写模型；Session owner 的有界当前决定查询是可操作问题的唯一交付入口，展开的只读详情不覆盖它。引用 revision 变化只撤销受影响查询和展开窗口，保留历史、其他详情和草稿。
+计划与待处理交互的摘要经 `SessionMetaSnapshot` 交付到各自的领域所有者。可操作问题使用同一发布者给出的交互身份，历史中的只读详情独立呈现。引用 revision 变化只撤销受影响查询和展开窗口，保留历史、其他详情和草稿。
 
-时间线 Set/Prepend/最新 head replace 只接纳 History 页面；明细通过 `group_id`、`row_key`、`entity_id` 与 typed event/body ref 按同一固定 cut 分批读取并接纳完整成员集合。Current 与 History 使用共同稳定业务身份合并在同一画面，但各自引用不改名。Flutter 不解析 payload、seq 或 ordinal 猜类别，不扫描 atom 找组头；成员传输 cursor 只属于该次完整读取，不作为组内导航或覆盖主列表／其他范围，见 [26](./26-timeline-content.md)。
+时间线控制器串行应用 `TimelinePatch`。展开时使用条目携带的工作组边界或正文引用发起按需查询，主列表身份和顺序由服务端补丁决定，见 [26](./26-timeline-content.md)。
 
-工作组统一在时间线区域呈现。Current 只提供当前活动、当前 atoms 与正文 overlay，不创建第二个持久化历史工作区或稳定历史分隔项；History 只以无状态原子事件追加入库，并由覆盖索引切分相邻 `divider` 之间的 `WorkRange`；展开工作组时由 Flutter 工作组 ViewModel 在既定区间内按 `call_id`／`entity_id` 将多阶段原子事件折叠为最新态单行（跨区间完成时按 `call_id` 索引补拉 `tool_called`），单条未知或损坏事件就地降级展示。未展开不读工作组事件、参数、工具结果、思考或媒体；折叠撤销该视图自己的读取并 cancel/join。
+已封组的工作统一在主时间线呈现。用户展开时，由 Rust 按该组边界读取成员，按 `call_id`／`entity_id` 折叠成最新态，跨区间完成时用 `call_id` 索引补拉 `tool_called`。单条未知或损坏事件就地降级展示。工作组收起、会话切换或退出时，由所属界面取消或丢弃过期查询结果。
 
-History row 保留真实原子事件 `event_id`、`kind`、`call_id`、`entity_id` 与动态 `payload_json`；主列表返回 `Divider` 与索引派生 `WorkRange`，工作区间、turn、source、cost 和 event 查询各自保持类型化成员资格。SDK 机械转发 `HistoryCut` 与 Next 游标，过滤间隔不补记录。Current 不提供 completed-through，History 也不从 Current source 状态重算组边界；各 scope 的 entries、cut 与编码成本受需求约束。
+SDK 转发强类型条目、工作组成员及历史游标。历史页使用固定读取切面，旧页的补丁只补充较早的窗口。组边界从事件分类重建，当前活动状态独立投影。
 
 生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。时间线 controller 持唯一有界历史窗口：实时模式接纳最新页的 rows、cut 和 older 游标，普通更新按稳定 key 修改并裁到该页；历史浏览模式固定原 cut，older 只在同一应用队列中接纳，后台变化提示新输出而不覆盖旧窗口。回到实时位置以原 reader 的新最新页建立展示资格，同 row 只保留局部展开意图；业务提交不等待查询或绘制。组件操作成功并复核原 reader／display／mode 后，才公开 head 与 Current overlay。历史浏览不把当前 run 正文叠到旧行，Current State 与状态栏继续独立更新。具体 cut、成员与关闭合同见 [26](./26-timeline-content.md)。
 
@@ -558,7 +546,7 @@ History row 保留真实原子事件 `event_id`、`kind`、`call_id`、`entity_i
 
 ### 25.15.1 Current overlay 与历史行的呈现所有权
 
-Current Projection 的 activity 与 current atoms 只形成当前 run overlay，不创建第二个持久化历史工作区或稳定历史分隔项。History 中的 `divider` 与 `WorkRange` 由原子事件与覆盖索引确定，旧页不能覆盖最新 head；工作组 ViewModel 负责将既定区间内同 `call_id` / `entity_id` 的原子事件折叠为最新态单行。实时 overlay 只挂一处；原子历史终态出现后按同一 `event_id`／`call_id`／`entity_id` 并入并退役叠加，保留展开意图与 body 窗口。Current 换代时新 Reset 替换旧 overlay，History reader 失败只重建对应历史窗口。活动资格与阶段来自真实 Current State，不以 `execution_present` 单独证明正在工作。主时间线可见正文以事件语义区分真实内容与 `finalEmptyAfterContent`，不用文本猜边界；未知或损坏的单条历史记录原地降级回退，不影响同页其他行。Current 与 History 的 A→B→A 资格、cancel/join 分别保留，具体合同见 [26](./26-timeline-content.md)。
+会话代次绑定 `ConversationFeed` 的订阅和按需读取结果。切换会话时由新代次接管显示并关闭旧句柄，恢复最新历史时由 Reset 替换展示窗口。主时间线可见正文以事件语义区分真实内容与 `finalEmptyAfterContent`。未知或损坏的单条历史记录原地降级，其他行照常显示。实时阶段切换与历史封组的边界见 [26](./26-timeline-content.md)。
 
 实时区的活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不保留另一套平行归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍属于原 Current/History 引用。
 

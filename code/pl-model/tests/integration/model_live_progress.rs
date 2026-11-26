@@ -1946,22 +1946,45 @@ fn unknown_failure_receipt_versions_are_still_rejected() {
 #[derive(Debug, Default)]
 struct OutputQuotaStore {
     limit: u64,
-    limited_operation: Option<&'static str>,
+    limit_model_attempts_only: bool,
     charges: Arc<Mutex<Vec<u64>>>,
     settlements: Arc<Mutex<Vec<pl_core::model::ModelSubAttemptSettlement>>>,
 }
 
-impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
+impl OutputQuotaStore {
+    fn is_limited(&self, operation_id: &str) -> bool {
+        if !self.limit_model_attempts_only {
+            return true;
+        }
+        !operation_id.starts_with("task-metadata:") && !operation_id.starts_with("batch-receipts:")
+    }
+}
+
+impl pl_core::thread::history_sink::HistorySink for OutputQuotaStore {
+    fn fold_usage(
+        &self,
+        summary: &mut pl_core::thread::UsageSummary,
+        effect: &pl_core::thread::ThreadEffectBatch,
+    ) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(
+        &self,
+        _thread_id: &str,
+        _attempt_id: &str,
+        _item_id: &str,
+    ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+        Ok(())
+    }
+
     fn reserve_operation_output(
         &self,
         _thread_id: &str,
         operation_id: &str,
         max_bytes: u64,
     ) -> Result<u64, pl_core::thread::cold::ColdStoreError> {
-        if self
-            .limited_operation
-            .is_some_and(|limited| limited != operation_id)
-        {
+        if !self.is_limited(operation_id) {
             return Ok(max_bytes);
         }
         Ok(self.limit.min(max_bytes))
@@ -1973,32 +1996,38 @@ impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
         operation_id: &str,
         total: u64,
     ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
-        if self
-            .limited_operation
-            .is_none_or(|limited| limited == operation_id)
-        {
+        if self.is_limited(operation_id) {
             self.charges.lock().unwrap().push(total);
         }
         Ok(())
     }
 
+    fn release_operation_output(&self, _thread_id: &str, _operation_id: &str) {}
+
+    fn pressure(&self, _thread_id: &str) -> pl_core::thread::cold::StoragePressure {
+        pl_core::thread::cold::StoragePressure::default()
+    }
+
+    fn idle_status(&self, thread_id: &str) -> pl_core::thread::cold::StorageIdleStatus {
+        pl_core::thread::cold::StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: None,
+        }
+    }
+
+    fn subscribe_pressure(&self, _thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+
     fn admit(
         &self,
         _thread_id: &str,
-        write: pl_core::thread::cold::ThreadWrite,
+        write: std::sync::Arc<pl_core::thread::HistoryExport>,
     ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
         self.settlements
             .lock()
             .expect("admitted settlement log")
             .extend(write.effect.model_sub_attempt_settlements.iter().cloned());
-        Ok(())
-    }
-
-    async fn flush(
-        &self,
-        _thread_id: &str,
-        _sequence: u64,
-    ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
         Ok(())
     }
 }
@@ -2074,7 +2103,7 @@ async fn quota_thread(steps: Vec<Step>, limit: u64) -> QuotaRun {
     .unwrap();
     let charges = Arc::new(Mutex::new(Vec::new()));
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
             OutputQuotaStore {
                 limit,
                 charges: charges.clone(),
@@ -2401,7 +2430,7 @@ async fn fixture_stream_past_the_reliable_output_quota_cancels_with_a_partial_re
         .expect("model session opens");
     let thread = ThreadHandle::start("quota-thread".into(), session).expect("thread starts");
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
             // Include reliable start metadata, then refuse the oversized second text delta.
             OutputQuotaStore {
                 limit: 16 * 1024,
@@ -2505,7 +2534,7 @@ async fn fixture_stream_past_the_reliable_output_quota_on_tool_arguments_is_refu
     let thread = ThreadHandle::start("tool-quota-thread".into(), session).expect("thread starts");
     // Start metadata and the text delta fit; the oversized argument payload does not.
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
             OutputQuotaStore {
                 limit: 16 * 1024,
                 ..Default::default()
@@ -2665,14 +2694,14 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
     let charges = Arc::new(Mutex::new(Vec::new()));
     let settlements = Arc::new(Mutex::new(Vec::new()));
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
             OutputQuotaStore {
                 // Give the settlement the real operation ceiling. Measure tool input before
                 // the terminal frame makes the settlement eligible for admission.
                 limit: u64::MAX,
                 // Tool execution and its running/result receipts have independent reservations;
                 // this regression limits only the one model attempt that exposes the call twice.
-                limited_operation: Some("live-attempt:0"),
+                limit_model_attempts_only: true,
                 charges: charges.clone(),
                 settlements: settlements.clone(),
             },

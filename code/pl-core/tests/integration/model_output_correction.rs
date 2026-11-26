@@ -547,8 +547,14 @@ async fn corrected_batches_keep_rejection_facts_but_commit_only_valid_calls() {
         })
         .collect::<Vec<_>>();
     assert_eq!(terminal.len(), 5);
-    assert_eq!(terminal[2].retry_of.as_deref(), Some("attempt-recover:1"));
-    assert_eq!(terminal[3].retry_of.as_deref(), Some("attempt-recover:2"));
+    assert_eq!(
+        terminal[2].retry_of.as_deref(),
+        Some(terminal[1].attempt_id.as_str())
+    );
+    assert_eq!(
+        terminal[3].retry_of.as_deref(),
+        Some(terminal[2].attempt_id.as_str())
+    );
     assert_eq!(terminal[4].retry_of, None);
     let rejected = effects
         .iter()
@@ -597,12 +603,12 @@ async fn corrected_batches_keep_rejection_facts_but_commit_only_valid_calls() {
         for request in &requests[1..4] {
             assert_eq!(
                 request.committed_private_context,
-                Some(OpaquePayload::text("attempt-recover:0"))
+                Some(OpaquePayload::text(terminal[0].attempt_id.clone()))
             );
         }
         assert_eq!(
             requests[4].committed_private_context,
-            Some(OpaquePayload::text("attempt-recover:3"))
+            Some(OpaquePayload::text(terminal[3].attempt_id.clone()))
         );
         let feedback = requests[3]
             .context
@@ -629,50 +635,7 @@ async fn corrected_batches_keep_rejection_facts_but_commit_only_valid_calls() {
         );
         assert!(!feedback.contains("Tool hidden"));
     }
-    #[cfg(feature = "sqlite")]
-    let directory = tempfile::tempdir().unwrap();
-    #[cfg(feature = "sqlite")]
-    let options = pl_core::persistence::SqliteSessionOptions {
-        path: directory.path().join("rejections.sqlite"),
-    };
-    #[cfg(feature = "sqlite")]
-    let store = pl_core::persistence::SqliteSessionStore::open(options.clone())
-        .await
-        .unwrap();
-    #[cfg(feature = "sqlite")]
-    {
-        thread
-            .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(store.clone()))
-            .await
-            .unwrap();
-        thread.flush().await.unwrap();
-    }
     thread.close().await.unwrap();
-    #[cfg(feature = "sqlite")]
-    {
-        store.shutdown().await.unwrap();
-        let reopened = pl_core::persistence::SqliteSessionStore::open(options)
-            .await
-            .unwrap();
-        for effect in &effects {
-            if effect
-                .attempt
-                .as_ref()
-                .is_some_and(|a| matches!(a.outcome, AttemptOutcome::Rejected { .. }))
-            {
-                let stored = reopened
-                    .read_thread_effect("correction", effect.sequence)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(
-                    serde_json::to_value(stored).unwrap(),
-                    serde_json::to_value(effect).unwrap()
-                );
-            }
-        }
-        reopened.shutdown().await.unwrap();
-    }
 }
 
 #[tokio::test]

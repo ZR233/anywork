@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn openapi_has_independent_history_and_current_ports() -> Result<()> {
+    fn openapi_has_history_and_unified_feed_ports_without_legacy_current() -> Result<()> {
         let document = serde_json::to_value(crate::openapi_document())?;
         let paths = document["paths"].as_object().context("missing paths")?;
         for path in [
@@ -390,16 +390,26 @@ mod tests {
             "/api/v1/threads/{thread_id}/history/body",
             "/api/v1/threads/{thread_id}/history/changed",
             "/api/v1/threads/{thread_id}/history/close",
-            "/api/v1/threads/{thread_id}/current/open",
-            "/api/v1/threads/{thread_id}/current/snapshot",
-            "/api/v1/threads/{thread_id}/current/watch",
-            "/api/v1/threads/{thread_id}/current/page",
-            "/api/v1/threads/{thread_id}/current/body/read",
-            "/api/v1/threads/{thread_id}/current/body/watch",
-            "/api/v1/threads/{thread_id}/current/close",
+            "/api/v1/threads/{thread_id}/feed/open",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/older",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/work-group",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/body",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/detail",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/reset",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/close",
         ] {
             assert!(paths[path]["post"].is_object(), "{path}");
         }
+        for path in [
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/events",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/meta",
+        ] {
+            assert!(paths[path]["get"].is_object(), "{path}");
+        }
+        assert!(
+            paths.keys().all(|path| !path.contains("/current/")),
+            "legacy CurrentReader routes remain in OpenAPI"
+        );
         assert!(
             paths.keys().all(|path| !path.contains("/timeline/")),
             "legacy timeline pipeline remains in OpenAPI"

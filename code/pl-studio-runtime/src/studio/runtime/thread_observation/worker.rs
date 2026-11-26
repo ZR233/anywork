@@ -1,9 +1,9 @@
 //! Drive the projection from committed Thread and storage progress.
 
 use super::directory;
-use super::live_feed::ThreadLiveFeed;
 use super::live_owner::{HandoffMode, LiveOwner, PendingHandoff};
 use super::registry::ObservationServices;
+use super::slot::ObservationSlot;
 use crate::studio::storage::thread_writer::HistoryChannel;
 use anyhow::{Context, Result};
 use pl_core::thread::{HistoryExport, ThreadHandle, ThreadLifecycle, ThreadSnapshot};
@@ -23,16 +23,6 @@ pub(in crate::studio::runtime) struct Progress {
     pub(super) handoff: u64,
     pub(super) error: Option<Arc<anyhow::Error>>,
     pub(super) finished: bool,
-}
-
-impl Progress {
-    pub(in crate::studio::runtime) fn retained_error(&self) -> Option<Arc<anyhow::Error>> {
-        self.error.clone()
-    }
-
-    pub(in crate::studio::runtime) fn is_finished(&self) -> bool {
-        self.finished
-    }
 }
 
 pub(super) struct WorkerState {
@@ -76,20 +66,12 @@ pub(super) async fn run(
     thread: ThreadHandle,
     state: Arc<WorkerState>,
     recovered_through: u64,
-    feed: Arc<ThreadLiveFeed>,
+    slot: Arc<ObservationSlot>,
     mut catalogs: broadcast::Receiver<()>,
 ) {
     use futures::FutureExt;
     let mut updates = thread.subscribe();
-    // The reliable handoff can gain a commit this projection must take over without any new owner
-    // snapshot: an admission that storage pressure deferred lands after the observation was
-    // installed, so its fact is older than this projection's seed and is never replayed as a live
-    // frame. The channel's own status is the signal for it, and it is what makes "the writer is
-    // waiting for a handoff" reach the only task that can hand one over.
     let mut handoff = state.channel.subscribe();
-    // The coordinator's typed persistence watch is a first-class wake source: a save failure can
-    // change with no owner frame and no handoff, so without this arm the owner would only publish
-    // the fault when something unrelated happened to arrive.
     let mut persistence = projector.store.thread_persistence().subscribe();
     let mut settings = projector.settings_updates.clone();
     settings.borrow_and_update();
@@ -102,11 +84,9 @@ pub(super) async fn run(
         thread,
         state,
         recovered_through,
-        feed,
+        slot,
         live: None,
         live_floor: recovered_through,
-        // Fresh bootstrap may have a nonzero fence; the registered owner proved that its
-        // reliable channel was installed before any execution or model call.
         continuous,
     };
     // Execution preparation and retirement can change without a history commit. The directory must
@@ -315,7 +295,7 @@ pub(super) async fn run(
                 // Archive faults do not revoke the original Current publisher. Its latest RAM
                 // preview and State keep following this physical owner without a history read.
                 if let Some(live) = worker.live.as_mut() {
-                    if let Err(current_error) = live.stream(&current).await {
+                    if let Err(current_error) = live.stream(&current, detail.as_ref()).await {
                         worker.state.progress.send_modify(|progress| {
                             progress.error = Some(Arc::new(current_error));
                         });
@@ -328,10 +308,6 @@ pub(super) async fn run(
                     .state
                     .reconciliation_through
                     .fetch_max(current.commit_sequence, std::sync::atomic::Ordering::AcqRel);
-                // A fact this owner could not project leaves the committed stream discontinuous for
-                // every subscriber, so the feed tells them to resynchronize from the durable window
-                // instead of letting the client splice a hole; the worker retries the same watermark.
-                worker.feed.rebase(0);
                 worker
                     .state
                     .progress
@@ -410,7 +386,7 @@ struct ProjectionWorker {
     /// Committed watermark the Thread already had when this projection was seeded. Terminal reports
     /// for Turns at or below it are repairs, not fresh continuations, so they do not wake a parent.
     recovered_through: u64,
-    feed: Arc<ThreadLiveFeed>,
+    slot: Arc<ObservationSlot>,
     live: Option<LiveOwner>,
     /// Commits already visible at installation or across an observation failure cannot first-send.
     live_floor: u64,
@@ -529,7 +505,7 @@ impl ProjectionWorker {
             thread,
             state,
             recovered_through,
-            feed,
+            slot,
             live,
             live_floor,
             continuous,
@@ -541,8 +517,6 @@ impl ProjectionWorker {
             *live_floor = (*live_floor).max(snapshot.commit_sequence);
         }
         if live.is_none() {
-            // The product association is resolved once, when this projection owner is installed.
-            // A Thread re-activated after its directory entry left memory reads it from SQLite here.
             let product = product_association(services, id).await?;
             *live = Some(
                 LiveOwner::open(
@@ -550,7 +524,7 @@ impl ProjectionWorker {
                     thread,
                     snapshot,
                     product,
-                    Arc::clone(feed),
+                    Arc::clone(slot),
                     state.clone(),
                     persistence,
                 )
@@ -560,7 +534,7 @@ impl ProjectionWorker {
         let live = live
             .as_mut()
             .expect("live projection owner was just installed");
-        live.stream(snapshot).await?;
+        live.stream(snapshot, persistence).await?;
         live.observe_storage(snapshot, persistence);
         live.first_send &= *continuous;
         // The projection owner is the single producer of realtime content: it folds every admitted
@@ -632,7 +606,7 @@ impl ProjectionWorker {
             transfer_terminal(services, state).await?;
         }
         // Streaming previews change without a commit and belong to the same publisher.
-        live.stream(snapshot).await?;
+        live.stream(snapshot, persistence).await?;
         // The typed storage state is one owner fact: it is republished here whether this pass was
         // triggered by a commit, a preview or the coordinator's own typed status changing.
         live.observe_storage(snapshot, persistence);

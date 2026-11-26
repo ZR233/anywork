@@ -39,7 +39,7 @@ impl LiveProjection {
     ) -> Result<ProjectedContent, ProjectionError> {
         let review_delivery =
             review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
-        let (turn_failures, hidden_inputs) = self.feed.projection_facts(effect, state);
+        let (turn_failures, hidden_inputs) = self.projection_facts(effect, state);
         let provisional = super::super::project_effect_items(
             thread,
             state,
@@ -279,7 +279,7 @@ impl LiveProjection {
         items.sort_by_key(|item| item.ordinal);
         // Execution ordinals still order execution material, but must never
         // reorder the producer's terminal receipts before Session assigns seq.
-        self.feed.remember_projection(turn_failures, hidden_inputs);
+        self.remember_projection(turn_failures, hidden_inputs);
         self.placement.adopt_revisions(&existing);
         for item in &items {
             self.placement.raise_revision(&item.id, item.revision);
@@ -327,7 +327,6 @@ impl LiveProjection {
     ) -> Result<Vec<ChatDraft>, ProjectionError> {
         let mut drafts = Vec::new();
         let owner_id = self
-            .current
             .owner_id()
             .ok_or_else(|| ProjectionError::History("missing database identity".into()))?;
         // Completion order within an effect: accepted inputs, accepted inbox,
@@ -407,9 +406,7 @@ impl LiveProjection {
                 &super::super::content::text_content(&receipt.content),
                 effect.sequence,
                 effect.committed_at,
-                self.current
-                    .owner_id()
-                    .ok_or_else(|| ProjectionError::History("missing database identity".into()))?,
+                owner_id,
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
             drafts.push(draft);
@@ -449,9 +446,7 @@ impl LiveProjection {
                 completion_draft(
                     item,
                     effect.sequence,
-                    self.current.owner_id().ok_or_else(|| {
-                        ProjectionError::History("missing database identity".into())
-                    })?,
+                    owner_id,
                     original_tool_result_body(item, state),
                 )
                 .map_err(|error| ProjectionError::History(error.to_string()))?,

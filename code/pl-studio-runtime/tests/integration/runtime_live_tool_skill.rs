@@ -3,12 +3,12 @@ use crate::support;
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ChatScope, CurrentView, StopThreadRequest, StudioRuntime,
-    ThreadWorkspaceMode, TurnState,
+    ChatScope, StopThreadRequest, StudioRuntime, ThreadWorkspaceMode, TurnState,
     history::{HistoryDemand, HistoryEventsQuery, read_event_body_bytes},
+    timeline::SessionMetaSnapshot,
 };
 use serde_json::Value;
-use support::{Environment, current_demand, held_reply, program_reply, prompt_step, reached};
+use support::{Environment, held_reply, program_reply, prompt_step, reached};
 
 const PROMPT: &str = "read a skill, then hold the next model response";
 const CALL: &str = "live-skill-load-call";
@@ -19,33 +19,30 @@ async fn visible_skill(
     runtime: &StudioRuntime,
     thread: &str,
     active_turn: bool,
-) -> Result<CurrentView> {
-    let demand = current_demand();
-    let reader = runtime
-        .open_current_reader(thread, CURRENT_PROTOCOL_VERSION, demand)
-        .await?;
+) -> Result<SessionMetaSnapshot> {
+    let feed = runtime.open_conversation_feed(thread, 64).await?;
     let result = async {
-        let watch = reader.watch(None, demand).await?;
-        let observed = tokio::time::timeout(support::integration_test_deadline()?, async {
+        tokio::time::timeout(support::integration_test_deadline()?, async {
             loop {
-                let view = reader.snapshot(demand).await?;
-                if view.state.active_turn.is_some() == active_turn
-                    && view.state.runtime.as_ref().is_some_and(|runtime| {
+                let meta = feed.session_meta_snapshot();
+                if meta.active_turn.is_some() == active_turn
+                    && meta.runtime.as_ref().is_some_and(|runtime| {
                         runtime.active_skills.iter().any(|name| name == SKILL)
                     })
                 {
-                    return Ok(view);
+                    return Ok(meta);
                 }
-                ensure!(watch.next().await?.is_some(), "Current watch closed early");
+                ensure!(
+                    feed.next_event().await.is_some(),
+                    "ConversationFeed closed early"
+                );
             }
         })
         .await
-        .context("skill activation not observed through Current");
-        watch.close().await?;
-        observed?
+        .context("skill activation not observed through ConversationFeed")?
     }
     .await;
-    reader.close().await?;
+    feed.close().await;
     result
 }
 
@@ -142,15 +139,15 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
         let thread_id = &started.thread.id;
         reached(&stage).await?;
         // The provider gate proves request progress, not publication by the
-        // independent Current observer. Wait on that public observer itself.
+        // independent observation observer. Wait on ConversationFeed itself.
         let current = visible_skill(&env.runtime, thread_id, true).await?;
-        let turn = current.state
+        let turn = current
             .active_turn
             .as_ref()
             .context("original active Turn")?;
         ensure!(matches!(turn.state, TurnState::Running(_)));
         let turn_id = turn.id.clone();
-        let runtime = current.state.runtime.as_ref().context("runtime projection")?;
+        let runtime = current.runtime.as_ref().context("runtime projection")?;
         let execution_id = runtime
             .execution
             .as_ref()

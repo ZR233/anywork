@@ -1,8 +1,6 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_owned_body_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/items/acp/acp_tool_details_scope.dart';
@@ -16,12 +14,9 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
 import 'package:anywork/src/l10n/app_localizations_zh.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-
-import '../support/pump_client_future.dart';
 
 Widget _host(Widget child, {Locale locale = const Locale('zh')}) => MaterialApp(
   theme: pureStudioTheme(),
@@ -69,44 +64,12 @@ Widget _titleView(TimelineToolPresentation item, {required Locale locale}) =>
 TimelineActivityRow _row(WidgetTester tester) =>
     tester.widget<TimelineActivityRow>(find.byType(TimelineActivityRow));
 
-ContentWindow _fullWindow(
-  String text, {
-  String generation = 'result-generation',
-}) {
-  final bytes = utf8.encode(text);
-  return ContentWindow(
-    offset: 0,
-    bytes: bytes,
-    generation: generation,
-    availableThrough: bytes.length,
-    sealed: true,
-  );
-}
-
-final class _FixtureCurrentBodyWatch implements CurrentBodyWatch {
-  final StreamController<ContentWindow> _output =
-      StreamController<ContentWindow>.broadcast(sync: true);
-  Future<void>? _closing;
-  bool requested = false;
-
-  @override
-  Stream<ContentWindow> get windows => _output.stream;
-
-  void add(ContentWindow window) => _output.add(window);
-
-  @override
-  void requestClose() {
-    if (requested) return;
-    requested = true;
-    unawaited(_output.close());
-  }
-
-  @override
-  Future<void> close() => _closing ??= () async {
-    requestClose();
-    await _output.done;
-  }();
-}
+BodyWindow _fullWindow(String text) => BodyWindow(
+  offset: 0,
+  text: text,
+  totalBytes: utf8.encode(text).length,
+  eof: true,
+);
 
 final class _StatefulSlotIcon extends StatefulWidget {
   const _StatefulSlotIcon();
@@ -239,7 +202,7 @@ class _ScopeIconAdapter extends TimelineToolItemAdapter {
 
 void main() {
   testWidgets(
-    'acceptance owner ignores partial, unsealed and retired callbacks across local identity generations',
+    'acceptance owner ignores incomplete and retired callbacks across local identity generations',
     (tester) async {
       const rejected =
           '{"accepted":false,"code":"staleRevision","recoveryAction":"Qualified rejection"}';
@@ -247,7 +210,7 @@ void main() {
       final group = TimelineExpansionIntent();
       final display = Object();
       group.setBodyVisible(display, true);
-      ValueChanged<ContentWindow>? callback;
+      ValueChanged<BodyWindow>? callback;
       Widget owner(String reference, String contract, String id) => _host(
         TimelineGroupBodyIntent(
           intent: group,
@@ -275,26 +238,17 @@ void main() {
       await tester.pumpAndSettle();
       final first = callback!;
       for (final window in [
-        ContentWindow(
+        BodyWindow(
           offset: 2,
-          bytes: bytes,
-          generation: 'g',
-          availableThrough: bytes.length + 2,
-          sealed: true,
+          text: rejected,
+          totalBytes: bytes.length + 2,
+          eof: true,
         ),
-        ContentWindow(
+        BodyWindow(
           offset: 0,
-          bytes: bytes,
-          generation: 'g',
-          availableThrough: bytes.length + 10,
-          sealed: true,
-        ),
-        ContentWindow(
-          offset: 0,
-          bytes: bytes,
-          generation: 'g',
-          availableThrough: bytes.length,
-          sealed: false,
+          text: rejected,
+          totalBytes: bytes.length + 10,
+          eof: false,
         ),
       ]) {
         first(window);
@@ -322,7 +276,8 @@ void main() {
       active(_fullWindow(rejected));
       await tester.pumpAndSettle();
       expect(_row(tester).isIssue, isTrue);
-      group.replaceBody();
+      group.setBodyVisible(display, false);
+      group.setBodyVisible(display, true);
       await tester.pumpAndSettle();
       expect(_row(tester).label, contains('结果待确认'));
       active(_fullWindow(rejected));
@@ -334,102 +289,7 @@ void main() {
       expect(_row(tester).isIssue, isFalse);
       await tester.pumpWidget(const SizedBox.shrink());
       group.dispose();
-      group.retirement.dispose();
       expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets(
-    'Current body owner renders only its entity reference and closes its watch',
-    (tester) async {
-      const reference = CurrentContentRef(
-        ownerId: 'owner',
-        domain: 'thread',
-        entityId: 'atom',
-        contentKey: 'body',
-        generation: '1',
-      );
-      final watch = _FixtureCurrentBodyWatch();
-      final intent = TimelineExpansionIntent();
-      final visibility = Object();
-      intent.setBodyVisible(visibility, true);
-      final unit = TimelineDisplayUnit(
-        expansion: intent,
-        block: DisplayBlock(
-          id: 'atom',
-          blockOrder: 1,
-          body: SingleDisplayBlock(
-            visibility: HistorySingleVisibility.content,
-            record: DisplayRecord(
-              atom: ChatAtom(
-                id: 'atom',
-                source: const ForegroundTurnChatSource(turnId: 'turn'),
-                sourceOrder: 1,
-                kind: ChatAtomKind.text,
-                delivery: ChatDeliveryKind.foreground,
-                lifecycle: const ActiveChatAtom(
-                  started: null,
-                  status: ChatActiveStatus.running,
-                ),
-                turnId: 'turn',
-                contentPresent: true,
-                contents: const [],
-              ),
-              contentSource: const CurrentAtomSource(),
-              currentContents: const [
-                CurrentAtomContent(
-                  role: ChatContentRole.body,
-                  reference: reference,
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-      intent.current = unit;
-      CurrentContentRef? watchedReference;
-      ContentRange? watchedRange;
-      Object? watchedGeneration;
-      intent.watchCurrentBody = (generation, actualReference, range) {
-        watchedGeneration = generation;
-        watchedReference = actualReference;
-        watchedRange = range;
-        return watch;
-      };
-
-      await tester.pumpWidget(
-        _host(
-          TimelineGroupBodyIntent(
-            intent: intent,
-            child: TimelineOwnedBodyConnector(
-              itemId: 'atom',
-              contentKey: 'body',
-              label: 'body',
-              currentReference: reference,
-              disclosed: true,
-              witness: (_, child) => child,
-            ),
-          ),
-        ),
-      );
-      await pumpClientUntil(
-        tester,
-        () => watchedReference != null && watch._output.hasListener,
-        'Current body watch listening',
-      );
-      expect(watchedReference, reference);
-      expect(watchedGeneration, same(intent.bodyGeneration));
-      expect(watchedRange?.offset, 0);
-
-      watch.add(_fullWindow('current body', generation: '1'));
-      await tester.pumpAndSettle();
-      expect(find.text('current body'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pumpAndSettle();
-      expect(watch.requested, isTrue);
-      intent.setBodyVisible(visibility, false);
-      intent.dispose();
-      intent.retirement.dispose();
     },
   );
 
@@ -1370,7 +1230,6 @@ void main() {
       final group = TimelineExpansionIntent();
       addTearDown(() {
         group.dispose();
-        group.retirement.dispose();
       });
 
       Widget hostWithItem(String id) => _host(
@@ -1408,8 +1267,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(_row(tester).icon, Icons.auto_awesome);
 
-      // Replacing group body retires transient state and clears icon override.
-      group.replaceBody();
+      // Starting a new disclosure generation clears the previous icon override.
+      group.setBodyVisible(Object(), true);
       await tester.pumpAndSettle();
       expect(_row(tester).icon, Icons.extension_outlined);
 

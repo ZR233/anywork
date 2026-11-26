@@ -288,9 +288,10 @@ async fn http_read_idle_is_bounded_and_preserves_an_unsafe_attempt_without_repla
 async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reachable() {
     use pl_core::model::{CancellationToken, Model};
     use pl_core::thread::{
-        StepInput, ThreadError, ThreadHandle,
-        cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+        HistoryExport, StepInput, ThreadEffectBatch, ThreadError, ThreadHandle, UsageSummary,
+        cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
         current::SavedModelPhase,
+        history_sink::{HistorySink, HistorySinkHandle},
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::sync::Notify;
@@ -303,8 +304,36 @@ async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reac
     }
     #[derive(Debug)]
     struct Store(Arc<Gate>);
-    impl ColdStore for Store {
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+    impl HistorySink for Store {
+        fn fold_usage(&self, _: &mut UsageSummary, _: &ThreadEffectBatch) {}
+        fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
+            Ok(max)
+        }
+        fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn release_operation_output(&self, _: &str, _: &str) {}
+        fn pressure(&self, _: &str) -> StoragePressure {
+            StoragePressure::default()
+        }
+        fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+            StorageIdleStatus {
+                pressure: self.pressure(thread_id),
+                reclaimable_thread_bytes: None,
+            }
+        }
+        fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            None
+        }
+        fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
             if !write.effect.model_sub_attempt_settlements.is_empty() {
                 self.0
                     .sequence
@@ -312,7 +341,11 @@ async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reac
             }
             Ok(())
         }
-        async fn flush(&self, _: &str, sequence: u64) -> Result<(), ColdStoreError> {
+        async fn confirm_model_settlement(
+            &self,
+            _: &str,
+            sequence: u64,
+        ) -> Result<(), ColdStoreError> {
             if sequence != self.0.sequence.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -350,7 +383,7 @@ async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reac
     .unwrap();
     let gate = Arc::new(Gate::default());
     thread
-        .attach_storage(ColdStoreHandle::new(Store(gate.clone())))
+        .attach_history(HistorySinkHandle::new(Store(gate.clone())))
         .await
         .unwrap();
     let running = tokio::spawn({
@@ -431,16 +464,17 @@ async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reac
     assert_eq!(receipt.settlements.len(), 1);
     assert_eq!(receipt.accounting.usage.total_tokens, Some(52));
     assert_eq!(server.finish().await.unwrap().len(), 1);
-    thread.close().await.unwrap();
+    assert!(matches!(thread.close().await, Err(ThreadError::Storage(_))));
 }
 
 #[tokio::test]
 async fn auxiliary_attempts_wait_for_their_exact_effect_and_keep_both_usage_samples() {
     use pl_core::model::Model;
     use pl_core::thread::{
-        ThreadHandle,
-        cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+        HistoryExport, ThreadEffectBatch, ThreadHandle, UsageSummary,
+        cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
         extensions::ExtensionMutation,
+        history_sink::{HistorySink, HistorySinkHandle},
     };
     use pl_model_runtime::runtime::ModelSubAttemptReceipt;
     use std::sync::{
@@ -461,8 +495,36 @@ async fn auxiliary_attempts_wait_for_their_exact_effect_and_keep_both_usage_samp
         gate: Arc<Gate>,
         reject: bool,
     }
-    impl ColdStore for Sink {
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+    impl HistorySink for Sink {
+        fn fold_usage(&self, _: &mut UsageSummary, _: &ThreadEffectBatch) {}
+        fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
+            Ok(max)
+        }
+        fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn release_operation_output(&self, _: &str, _: &str) {}
+        fn pressure(&self, _: &str) -> StoragePressure {
+            StoragePressure::default()
+        }
+        fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+            StorageIdleStatus {
+                pressure: self.pressure(thread_id),
+                reclaimable_thread_bytes: None,
+            }
+        }
+        fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            None
+        }
+        fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
             for settlement in write.effect.model_sub_attempt_settlements.iter() {
                 let mut receipts = self.gate.receipts.lock().unwrap();
                 if receipts.is_empty() {
@@ -476,7 +538,11 @@ async fn auxiliary_attempts_wait_for_their_exact_effect_and_keep_both_usage_samp
             }
             Ok(())
         }
-        async fn flush(&self, _: &str, sequence: u64) -> Result<(), ColdStoreError> {
+        async fn confirm_model_settlement(
+            &self,
+            _: &str,
+            sequence: u64,
+        ) -> Result<(), ColdStoreError> {
             if sequence > 0 && sequence == self.gate.first.load(Ordering::Acquire) {
                 self.gate.entered.notify_one();
                 self.gate.release.notified().await;
@@ -524,7 +590,7 @@ async fn auxiliary_attempts_wait_for_their_exact_effect_and_keep_both_usage_samp
         .unwrap();
         let gate = Arc::new(Gate::default());
         owner
-            .attach_storage(ColdStoreHandle::new(Sink {
+            .attach_history(HistorySinkHandle::new(Sink {
                 gate: gate.clone(),
                 reject,
             }))
@@ -582,7 +648,14 @@ async fn auxiliary_attempts_wait_for_their_exact_effect_and_keep_both_usage_samp
             );
         }
         session.close().await.unwrap();
-        owner.close().await.unwrap();
+        if reject {
+            assert!(matches!(
+                owner.close().await,
+                Err(pl_core::thread::ThreadError::Storage(_))
+            ));
+        } else {
+            owner.close().await.unwrap();
+        }
         assert_eq!(
             fixture.finish().await.unwrap().len(),
             if reject { 1 } else { 2 }

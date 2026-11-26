@@ -1,507 +1,251 @@
-//! Independent FRB owners for immutable History and mutable Current reads.
+//! Managed FRB pull handle for a Native conversation's typed observation and bounded reads.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::future::Future;
+
+use pl_lifecycle::{Managed, ManagedResource};
+use pl_studio_runtime::{ConversationFeed, StudioError, StudioErrorCode};
+use tokio::sync::{Mutex, RwLock};
 
 use crate::api::studio::{
     bridge_runtime::active_bridge,
-    convert::{chat, presentation},
+    convert::presentation,
     subscription::{
         error::{close_error, open_error},
         factory::BridgeObservationFactory,
     },
-    types::*,
+    types::{
+        BridgeBodyRef, BridgeBodyWindow, BridgeConversationEvent, BridgeError,
+        BridgeLiveStatusSnapshot, BridgeSessionDetailKind, BridgeSessionDetailWindow,
+        BridgeSessionMetaSnapshot, BridgeTimelinePatch, BridgeWorkGroupMember,
+    },
 };
-use pl_lifecycle::{Managed, ManagedResource};
-use pl_studio_runtime::{CurrentReader, history::HistoryReader};
 
-static READER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn next_reader_id(kind: &str, thread_id: &str) -> String {
-    let sequence = READER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{kind}:{thread_id}:{sequence}")
+struct ConversationResource {
+    feed: ConversationFeed,
+    next: Mutex<()>,
+    operations: RwLock<()>,
 }
 
-struct HistoryResource(HistoryReader);
-impl ManagedResource for HistoryResource {
+impl ConversationResource {
+    // The read guard lasts through the query and its conversion. Closing seals admission with
+    // the feed token and acquires the write guard before joining the backend and its reader.
+    async fn query<T>(
+        &self,
+        operation: impl Future<Output = Result<T, BridgeError>>,
+    ) -> Result<T, BridgeError> {
+        let cancel = self.feed.cancellation_token();
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(StudioError::new(
+                StudioErrorCode::StaleRevision,
+                "ConversationFeed is closed or retired",
+                false,
+            ).into()),
+            result = async {
+                let _operation = self.operations.read().await;
+                operation.await
+            } => result,
+        }
+    }
+
+    async fn next_event(&self) -> Result<Option<BridgeConversationEvent>, BridgeError> {
+        let cancel = self.feed.cancellation_token();
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Ok(None),
+            result = async {
+                let _operation = self.operations.read().await;
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+                let _next = self.next.try_lock().map_err(|_| {
+                    BridgeError::from(StudioError::new(
+                        StudioErrorCode::Busy,
+                        "A conversation next event is already in flight",
+                        true,
+                    ))
+                })?;
+                let event = self.feed.next_event().await;
+                Ok(event.map(presentation::conversation_event).transpose()?)
+            } => result,
+        }
+    }
+}
+
+impl ManagedResource for ConversationResource {
     type Error = BridgeError;
 
     fn request_close(&self) {
-        self.0.request_close();
+        self.feed.request_close();
     }
 
     async fn close(&self) -> Result<(), BridgeError> {
-        self.0.close().await;
+        self.request_close();
+        let _operations = self.operations.write().await;
+        self.feed.close().await;
         Ok(())
     }
 }
 
-struct CurrentResource(CurrentReader);
-impl ManagedResource for CurrentResource {
-    type Error = BridgeError;
-
-    fn request_close(&self) {
-        self.0.request_close();
-    }
-
-    async fn close(&self) -> Result<(), BridgeError> {
-        Ok(self.0.close().await?)
-    }
+#[flutter_rust_bridge::frb(opaque)]
+pub struct BridgeConversationFeed {
+    inner: Managed<ConversationResource>,
 }
 
-pub struct BridgeHistoryReader {
-    reader_id: String,
+pub async fn open_conversation_feed(
     thread_id: String,
-    managed: Managed<HistoryResource>,
-}
-
-pub async fn open_history_reader(
-    thread_id: String,
-    history_protocol_version: u32,
-) -> Result<BridgeHistoryReader, BridgeError> {
-    let bridge = active_bridge().await?;
-    bridge
+    initial_limit: u32,
+) -> Result<BridgeConversationFeed, BridgeError> {
+    active_bridge()
+        .await?
         .observation_factory
-        .open_history(thread_id, history_protocol_version)
+        .open_conversation(thread_id, initial_limit)
         .await
 }
 
 impl BridgeObservationFactory {
-    pub(crate) async fn open_history(
+    pub(crate) async fn open_conversation(
         &self,
         thread_id: String,
-        history_protocol_version: u32,
-    ) -> Result<BridgeHistoryReader, BridgeError> {
+        initial_limit: u32,
+    ) -> Result<BridgeConversationFeed, BridgeError> {
         let source = self.source.clone();
-        let identity = thread_id.clone();
-        let managed = self
+        let inner = self
             .scope
-            .open("history", move |_| async move {
-                let reader = source
-                    .open_history_reader(&thread_id, history_protocol_version)
+            .open("conversation-feed", move |_| async move {
+                let feed = source
+                    .open_conversation_feed(&thread_id, initial_limit)
                     .await?;
-                Ok(HistoryResource(reader))
+                Ok(ConversationResource {
+                    feed,
+                    next: Mutex::new(()),
+                    operations: RwLock::new(()),
+                })
             })
             .await
             .map_err(open_error)?;
-        let reader_id = next_reader_id("history", &identity);
-        Ok(BridgeHistoryReader {
-            reader_id,
-            thread_id: identity,
-            managed,
-        })
+        Ok(BridgeConversationFeed { inner })
     }
 }
 
-impl BridgeHistoryReader {
+impl BridgeConversationFeed {
     #[flutter_rust_bridge::frb(sync)]
     pub fn thread_id(&self) -> String {
-        self.thread_id.clone()
+        self.inner.get().feed.thread_id().to_owned()
     }
 
     #[flutter_rust_bridge::frb(sync)]
-    pub fn metadata(&self) -> Result<BridgeOpenHistoryReader, BridgeError> {
-        Ok(BridgeOpenHistoryReader {
-            reader_id: self.reader_id.clone(),
-            history_protocol_version: BRIDGE_HISTORY_PROTOCOL_VERSION,
-        })
+    pub fn live_status_snapshot(&self) -> BridgeLiveStatusSnapshot {
+        presentation::live_status_snapshot(self.inner.get().feed.live_status_snapshot())
     }
 
-    pub async fn capture(&self) -> Result<BridgeHistoryCut, BridgeError> {
-        Ok(presentation::cut_to_bridge(
-            self.managed.get().0.capture().await?,
-        ))
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn session_meta_snapshot(&self) -> Result<BridgeSessionMetaSnapshot, BridgeError> {
+        Ok(presentation::session_meta_snapshot(
+            self.inner.get().feed.session_meta_snapshot(),
+        )?)
     }
 
-    pub async fn timeline_page(
+    /// The first event is the backend's initial Timeline Reset. A single consumer pulls in order.
+    pub async fn next_event(&self) -> Result<Option<BridgeConversationEvent>, BridgeError> {
+        self.inner.get().next_event().await
+    }
+
+    pub async fn load_older(
         &self,
-        cut: Option<BridgeHistoryCut>,
-        cursor: Option<String>,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryTimelinePage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .timeline_page(
-                cut.map(presentation::bridge_to_cut),
-                cursor,
-                presentation::history_demand(demand),
-            )
-            .await?;
-        Ok(presentation::timeline_page(page))
+        cursor: String,
+        limit: u32,
+    ) -> Result<BridgeTimelinePatch, BridgeError> {
+        let resource = self.inner.get();
+        resource
+            .query(async {
+                Ok(presentation::timeline_patch(
+                    resource.feed.load_older(cursor, limit).await?,
+                )?)
+            })
+            .await
     }
 
-    pub async fn work_range_page(
+    pub async fn load_work_group_members(
         &self,
         after_seq: Option<u64>,
         before_seq: Option<u64>,
-        cut: Option<BridgeHistoryCut>,
-        cursor: Option<String>,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryWorkRangePage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .work_range_page(
-                after_seq,
-                before_seq,
-                cut.map(presentation::bridge_to_cut),
-                cursor,
-                presentation::history_demand(demand),
-            )
-            .await?;
-        Ok(presentation::work_range_page(page))
-    }
-
-    pub async fn turns_page(
-        &self,
-        cut: Option<BridgeHistoryCut>,
-        cursor: Option<String>,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryBusinessPage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .turns_page(
-                cut.map(presentation::bridge_to_cut),
-                cursor,
-                presentation::history_demand(demand),
-            )
-            .await?;
-        Ok(presentation::business_page(page))
-    }
-
-    pub async fn events_page(
-        &self,
-        query: BridgeHistoryEventsQuery,
-        cut: Option<BridgeHistoryCut>,
-        cursor: Option<String>,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryEventsPage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .events_page(
-                presentation::history_events_query(query),
-                cut.map(presentation::bridge_to_cut),
-                cursor,
-                presentation::history_demand(demand),
-            )
-            .await?;
-        Ok(presentation::events_page(page))
-    }
-
-    pub async fn read_event(
-        &self,
-        event_id: String,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryEventRecord, BridgeError> {
-        let record = self
-            .managed
-            .get()
-            .0
-            .read_event(event_id, presentation::history_demand(demand))
-            .await?;
-        Ok(presentation::event_record(record))
-    }
-
-    pub async fn list_bodies(
-        &self,
-        event_id: String,
-        cursor: Option<String>,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryBodyPage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .list_bodies(event_id, cursor, presentation::history_demand(demand))
-            .await?;
-        Ok(presentation::body_page(page))
-    }
-
-    pub async fn read_body(
-        &self,
-        reference: BridgeHistoryEventBodyRef,
-        offset: u64,
-        max_bytes: u32,
-    ) -> Result<BridgeHistoryBodyWindow, BridgeError> {
-        let window = self
-            .managed
-            .get()
-            .0
-            .read_body(
-                presentation::bridge_to_body_ref(reference),
-                offset,
-                max_bytes,
-            )
-            .await?;
-        Ok(presentation::history_body_window(window))
-    }
-
-    pub async fn accounting(
-        &self,
-        cut: Option<BridgeHistoryCut>,
-    ) -> Result<Option<BridgeHistoryAccounting>, BridgeError> {
-        let head = self
-            .managed
-            .get()
-            .0
-            .accounting(cut.map(presentation::bridge_to_cut))
-            .await?;
-        Ok(head.map(presentation::accounting))
-    }
-
-    pub async fn costs_page(
-        &self,
-        cut: Option<BridgeHistoryCut>,
-        cursor: Option<String>,
-        demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryBusinessPage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .costs_page(
-                cut.map(presentation::bridge_to_cut),
-                cursor,
-                presentation::history_demand(demand),
-            )
-            .await?;
-        Ok(presentation::business_page(page))
-    }
-
-    pub async fn wait_changed(
-        &self,
-        after: BridgeHistoryCut,
-    ) -> Result<BridgeHistoryCut, BridgeError> {
-        let changed = self
-            .managed
-            .get()
-            .0
-            .wait_changed(presentation::bridge_to_cut(after))
-            .await?;
-        Ok(presentation::cut_to_bridge(changed))
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn request_close(&self) {
-        self.managed.get().0.request_close();
-    }
-
-    pub async fn close(&self) -> Result<(), BridgeError> {
-        self.managed.close().await.map_err(close_error)
-    }
-}
-
-pub struct BridgeCurrentReader {
-    reader_id: String,
-    thread_id: String,
-    managed: Managed<CurrentResource>,
-    initial_view: BridgeCurrentView,
-}
-
-pub async fn open_current_reader(
-    thread_id: String,
-    current_protocol_version: u32,
-    demand: BridgeReadDemand,
-) -> Result<BridgeCurrentReader, BridgeError> {
-    let bridge = active_bridge().await?;
-    bridge
-        .observation_factory
-        .open_current(thread_id, current_protocol_version, demand)
-        .await
-}
-
-impl BridgeObservationFactory {
-    pub(crate) async fn open_current(
-        &self,
-        thread_id: String,
-        current_protocol_version: u32,
-        demand: BridgeReadDemand,
-    ) -> Result<BridgeCurrentReader, BridgeError> {
-        let source = self.source.clone();
-        let identity = thread_id.clone();
-        let protocol_demand = presentation::read_demand(demand);
-        let managed = self
-            .scope
-            .open("current", move |_| async move {
-                let reader = source
-                    .open_current_reader(&thread_id, current_protocol_version, protocol_demand)
-                    .await?;
-                Ok(CurrentResource(reader))
+    ) -> Result<Vec<BridgeWorkGroupMember>, BridgeError> {
+        let resource = self.inner.get();
+        resource
+            .query(async {
+                Ok(resource
+                    .feed
+                    .load_work_group_members(after_seq, before_seq)
+                    .await?
+                    .into_iter()
+                    .map(presentation::work_group_member)
+                    .collect())
             })
             .await
-            .map_err(open_error)?;
-        let reader = &managed.get().0;
-        let initial = presentation::current_view(reader.snapshot(protocol_demand).await?)?;
-        let reader_id = next_reader_id("current", &identity);
-        Ok(BridgeCurrentReader {
-            reader_id,
-            thread_id: identity,
-            managed,
-            initial_view: initial,
-        })
-    }
-}
-
-impl BridgeCurrentReader {
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn thread_id(&self) -> String {
-        self.thread_id.clone()
     }
 
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn metadata(&self) -> BridgeOpenCurrentReader {
-        BridgeOpenCurrentReader {
-            reader_id: self.reader_id.clone(),
-            current_protocol_version: BRIDGE_CURRENT_PROTOCOL_VERSION,
-            current_owner_id: self.initial_view.revision.owner_id.clone(),
-        }
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn initial_view(&self) -> BridgeCurrentView {
-        self.initial_view.clone()
-    }
-
-    pub async fn snapshot(
+    pub async fn read_body_window(
         &self,
-        demand: BridgeReadDemand,
-    ) -> Result<BridgeCurrentView, BridgeError> {
-        let view = self
-            .managed
-            .get()
-            .0
-            .snapshot(presentation::read_demand(demand))
-            .await?;
-        Ok(presentation::current_view(view)?)
+        reference: BridgeBodyRef,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<BridgeBodyWindow, BridgeError> {
+        let resource = self.inner.get();
+        resource
+            .query(async {
+                Ok(presentation::body_window(
+                    resource
+                        .feed
+                        .read_body_window(
+                            &presentation::runtime_body_ref(reference),
+                            offset,
+                            max_bytes,
+                        )
+                        .await?,
+                ))
+            })
+            .await
     }
 
-    pub async fn watch(
+    pub async fn read_session_detail(
         &self,
-        after: Option<BridgeCurrentRevision>,
-        demand: BridgeReadDemand,
-    ) -> Result<BridgeCurrentWatch, BridgeError> {
-        let watch = self
-            .managed
-            .get()
-            .0
-            .watch(
-                after.map(presentation::bridge_to_current_revision),
-                presentation::read_demand(demand),
-            )
-            .await?;
-        Ok(BridgeCurrentWatch { watch })
+        kind: BridgeSessionDetailKind,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<BridgeSessionDetailWindow, BridgeError> {
+        let resource = self.inner.get();
+        resource
+            .query(async {
+                Ok(presentation::session_detail_window(
+                    resource.feed.read_session_detail(
+                        presentation::runtime_session_detail_kind(kind),
+                        offset,
+                        max_bytes,
+                    )?,
+                ))
+            })
+            .await
     }
 
-    pub async fn page_collection(
-        &self,
-        reference: BridgeCurrentCollectionRef,
-        continuation: Option<String>,
-        demand: BridgeReadDemand,
-    ) -> Result<BridgeCurrentCollectionPage, BridgeError> {
-        let page = self
-            .managed
-            .get()
-            .0
-            .page_collection(
-                presentation::bridge_to_current_collection_ref(reference),
-                continuation,
-                presentation::read_demand(demand),
-            )
-            .await?;
-        Ok(presentation::current_collection_page(page))
-    }
-
-    pub async fn read_body(
-        &self,
-        reference: BridgeCurrentContentRef,
-        range: BridgeContentRange,
-    ) -> Result<BridgeContentWindow, BridgeError> {
-        let window = self
-            .managed
-            .get()
-            .0
-            .read_body(
-                presentation::bridge_to_current_content_ref(reference),
-                chat::range(range),
-            )
-            .await?;
-        Ok(chat::window(window))
-    }
-
-    pub async fn watch_body(
-        &self,
-        reference: BridgeCurrentContentRef,
-        range: BridgeContentRange,
-    ) -> Result<BridgeCurrentBodyWatch, BridgeError> {
-        let watch = self
-            .managed
-            .get()
-            .0
-            .watch_body(
-                presentation::bridge_to_current_content_ref(reference),
-                chat::range(range),
-            )
-            .await?;
-        Ok(BridgeCurrentBodyWatch { watch })
+    pub async fn reset_to_latest(&self, limit: u32) -> Result<BridgeTimelinePatch, BridgeError> {
+        let resource = self.inner.get();
+        resource
+            .query(async {
+                Ok(presentation::timeline_patch(
+                    resource.feed.reset_to_latest(limit).await?,
+                )?)
+            })
+            .await
     }
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_close(&self) {
-        self.managed.get().0.request_close();
+        self.inner.get().request_close();
+        self.inner.request_close();
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        self.managed.close().await.map_err(close_error)
-    }
-}
-
-pub struct BridgeCurrentWatch {
-    watch: pl_studio_runtime::CurrentWatch,
-}
-
-impl BridgeCurrentWatch {
-    // A pending next must keep only a shared FRB borrow so synchronous cancellation can enter.
-    pub async fn next(&self) -> Result<Option<BridgeCurrentFrame>, BridgeError> {
-        let frame = self.watch.next().await?;
-        match frame {
-            None => Ok(None),
-            Some(frame) => Ok(Some(presentation::current_frame(frame)?)),
-        }
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn request_close(&self) {
-        self.watch.request_close();
-    }
-
-    pub async fn close(&self) -> Result<(), BridgeError> {
-        Ok(self.watch.close().await?)
-    }
-}
-
-pub struct BridgeCurrentBodyWatch {
-    watch: pl_studio_runtime::CurrentBodyWatch,
-}
-
-impl BridgeCurrentBodyWatch {
-    // The producer wait must not exclusively borrow the handle needed to cancel that wait.
-    pub async fn next(&self) -> Result<Option<BridgeContentWindow>, BridgeError> {
-        let window = self.watch.next().await?;
-        Ok(window.map(chat::window))
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn request_close(&self) {
-        self.watch.request_close();
-    }
-
-    pub async fn close(&self) -> Result<(), BridgeError> {
-        Ok(self.watch.close().await?)
+        self.inner.retry_close().await.map_err(close_error)
     }
 }

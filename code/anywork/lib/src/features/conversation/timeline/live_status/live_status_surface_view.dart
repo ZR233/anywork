@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
@@ -14,7 +16,7 @@ import 'live_status_state.dart';
 /// 实时状态栏唯一纯 UI 表面：直接消费状态机输出 [LiveStatusGateState]。
 ///
 /// 零 Riverpod、Client、AppGraph 或 FRB 依赖；生产连接层与官方预览共用同一套
-/// 布局骨架，只通过可选 builder/slot 注入实时正文、工作组成员加载或交互面板。
+/// 布局骨架，工作组成员和交互面板由各自的连接层提供。
 class LiveStatusSurfaceView extends StatelessWidget {
   const LiveStatusSurfaceView({
     required this.gate,
@@ -22,7 +24,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
     this.liveWorkBuilder,
     this.liveWorkChildBuilder,
     this.liveWorkInitiallyExpanded = false,
-    this.responseBuilder,
     this.now,
     this.interactionDetailsSlot,
     this.onRetryError,
@@ -35,8 +36,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
   liveWorkBuilder;
   final WidgetBuilder? liveWorkChildBuilder;
   final bool liveWorkInitiallyExpanded;
-  final Widget Function(BuildContext context, LiveResponsePhase response)?
-  responseBuilder;
   final DateTime Function()? now;
   final Widget? interactionDetailsSlot;
   final VoidCallback? onRetryError;
@@ -64,49 +63,45 @@ class LiveStatusSurfaceView extends StatelessWidget {
         :final detail,
         :final attempt,
         :final maxAttempts,
+        :final retryAt,
       ):
         barChildren.add(
           Flexible(
             key: const ValueKey('live-primary-reconnecting'),
             fit: FlexFit.loose,
-            child: _StatusHeaderRow(
-              spec: LiveStatusHeaderSpec.forReconnecting(
-                context,
-                detail,
-                attempt: attempt,
-                maxAttempts: maxAttempts,
+            child: _RetryCountdown(
+              retryAt: retryAt,
+              now: now,
+              builder: (context, seconds) => _StatusHeaderRow(
+                spec: LiveStatusHeaderSpec.forReconnecting(
+                  context,
+                  detail,
+                  attempt: attempt,
+                  maxAttempts: maxAttempts,
+                  retrySeconds: seconds,
+                ),
               ),
             ),
           ),
         );
-      case LiveResponsePhase(:final activity) && final response:
-        if (activity != null) {
-          barChildren.add(
-            Flexible(
-              key: ValueKey(('live-primary-activity', activity.identity)),
-              flex: 1,
-              fit: FlexFit.loose,
-              child: ConversationActivityStatus(view: activity),
-            ),
-          );
-        }
+      case LiveResponsePhase(
+        :final itemId,
+        :final previewText,
+        :final startedAt,
+      ):
         barChildren.add(
           Flexible(
-            key: const ValueKey('live-primary-response'),
+            key: ValueKey(('live-primary-response', itemId)),
             flex: 3,
             fit: FlexFit.loose,
-            child:
-                responseBuilder?.call(context, response) ??
-                ConversationResponseView(
-                  startedAt: response.startedAt,
-                  finishedAt: response.finishedAt,
-                  active: response.isActive,
-                  now: now,
-                  child: ConversationCurrentWindowView(
-                    id: 'live-response-preview',
-                    text: response.previewText ?? '',
-                  ),
-                ),
+            child: ConversationResponseView(
+              startedAt: startedAt,
+              now: now,
+              child: ConversationCurrentWindowView(
+                id: itemId,
+                text: previewText,
+              ),
+            ),
           ),
         );
       case LiveCompactingPhase(:final activity):
@@ -217,6 +212,73 @@ class LiveStatusSurfaceView extends StatelessWidget {
               : null,
         ),
       };
+}
+
+class _RetryCountdown extends StatefulWidget {
+  const _RetryCountdown({
+    required this.retryAt,
+    required this.now,
+    required this.builder,
+  });
+
+  final DateTime? retryAt;
+  final DateTime Function()? now;
+  final Widget Function(BuildContext, int?) builder;
+
+  @override
+  State<_RetryCountdown> createState() => _RetryCountdownState();
+}
+
+class _RetryCountdownState extends State<_RetryCountdown> {
+  Timer? _timer;
+
+  Duration get _remaining =>
+      widget.retryAt?.difference((widget.now ?? DateTime.now)()) ??
+      Duration.zero;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(_RetryCountdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.retryAt != widget.retryAt || oldWidget.now != widget.now) {
+      _sync();
+    }
+  }
+
+  void _sync() {
+    _timer?.cancel();
+    final remaining = _remaining;
+    if (remaining <= Duration.zero || !TickerMode.valuesOf(context).enabled) {
+      return;
+    }
+    final next = remaining < const Duration(seconds: 1)
+        ? remaining
+        : const Duration(seconds: 1);
+    _timer = Timer(next, () {
+      setState(() {});
+      _sync();
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = _remaining;
+    final seconds = remaining > Duration.zero
+        ? (remaining.inMilliseconds + 999) ~/ 1000
+        : null;
+    return widget.builder(context, seconds);
+  }
 }
 
 class _StatusHeaderRow extends StatelessWidget {

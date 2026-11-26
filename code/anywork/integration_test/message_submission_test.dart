@@ -11,7 +11,6 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart'
     show StartComposerTarget, ThreadComposerTarget;
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.dart';
@@ -26,7 +25,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'support/composer_target_diagnostic.dart';
-import 'support/display_record_observation.dart';
 import 'support/fixture_gate.dart';
 import 'support/history_turns.dart';
 import 'support/presentation_capture.dart';
@@ -374,10 +372,8 @@ void main() {
     expect(transport.realSecondRpcStarted, isFalse);
     expect(transport.receipt, isNull);
     expect(
-      observed.singleBlocks.where(
-        (block) =>
-            (block.body as SingleDisplayBlock).record.atom.source ==
-            InputChatSource(inputId: inputId),
+      observed.main.whereType<TimelineUserMessage>().where(
+        (block) => block.inputId == inputId,
       ),
       isEmpty,
     );
@@ -408,10 +404,8 @@ void main() {
     expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     expect(card.hitTestable(), findsOneWidget);
     expect(
-      observed.singleBlocks.where(
-        (block) =>
-            (block.body as SingleDisplayBlock).record.atom.source ==
-            InputChatSource(inputId: inputId),
+      observed.main.whereType<TimelineUserMessage>().where(
+        (block) => block.inputId == inputId,
       ),
       isEmpty,
     );
@@ -420,11 +414,11 @@ void main() {
 
     transport.releaseFeed();
     final historyRows = await waitForHistoryRows(
-      conversations: graph.client.conversations,
+      feeds: transport,
       threadId: threadId,
       matches: (rows) {
         final matches = rows.where((entry) {
-          return entry.event.source == InputChatSource(inputId: inputId);
+          return entry is TimelineUserMessage && entry.inputId == inputId;
         }).toList();
         if (matches.length > 1) {
           throw StateError(
@@ -437,7 +431,7 @@ void main() {
     );
     expect(
       historyRows.where((entry) {
-        return entry.event.source == InputChatSource(inputId: inputId);
+        return entry is TimelineUserMessage && entry.inputId == inputId;
       }),
       hasLength(1),
     );
@@ -445,24 +439,23 @@ void main() {
       () =>
           owner.submissions.value.isEmpty &&
           card.evaluate().isEmpty &&
-          observed.singleBlocks
-                  .where(
-                    (block) =>
-                        (block.body as SingleDisplayBlock).record.atom.source ==
-                        InputChatSource(inputId: inputId),
-                  )
+          observed.main
+                  .whereType<TimelineUserMessage>()
+                  .where((block) => block.inputId == inputId)
                   .length ==
               1,
       'one canonical input replaces the local echo',
     );
     expect(card, findsNothing);
-    final canonical = observed.singleBlocks.singleWhere(
-      (block) =>
-          (block.body as SingleDisplayBlock).record.atom.source ==
-          InputChatSource(inputId: inputId),
+    final canonical = observed.main
+        .whereType<TimelineUserMessage>()
+        .singleWhere((block) => block.inputId == inputId);
+    final historical = historyRows.whereType<TimelineUserMessage>().singleWhere(
+      (item) => item.inputId == inputId,
     );
-    final canonicalBody = canonical.body as SingleDisplayBlock;
-    expect(completedOriginalId(canonicalBody.record), isNotNull);
+    expect(canonical.id, historical.id);
+    expect(canonical.seq, historical.seq);
+    expect(canonical.text, _second);
     await observed.revealSingle(canonical);
     final row = observed.itemRow(canonical.id);
     final canonicalText = find.descendant(
@@ -471,35 +464,28 @@ void main() {
     );
     await observed.reveal(canonicalText, canonical.id);
     expect(canonicalText.hitTestable(), findsOneWidget);
-    expect(
-      tester.widget<ChatItemView>(row).item.atom!.source,
-      InputChatSource(inputId: inputId),
-    );
+    expect(tester.widget<ChatItemView>(row).item.id, historical.id);
     expect(canonicalText, findsOneWidget);
     expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     record('canonical-painted-without-duplicate', {
       'inputId': inputId,
       'blockId': canonical.id,
-      'recordId': completedOriginalId(canonicalBody.record),
-      'nextCursor': transport.lastHeldCursor,
+      'recordId': historical.id,
+      'heldFeedEvent': transport.lastHeldEvent,
     });
     await capturePresentation(tester, 'submission-canonical.png');
     await fixtureGate(tester, provider, _stage, release: true);
     firstGateReleased = true;
-    final secondTurn = await waitForCompletedHistoryTurn(
-      conversations: graph.client.conversations,
+    final secondTurn = await waitForCompletedTurn(
+      feeds: transport,
       threadId: threadId,
       matches: (head) => head.inputId == inputId,
-      description: 'completed History Turn for the handed-off second input',
+      description: 'canonical completed Turn for the handed-off second input',
       timeout: const Duration(minutes: 2),
     );
     await until(() {
-      return observed.singleBlocks.any(
-        (block) =>
-            (block.body as SingleDisplayBlock).record.atom.source ==
-                ForegroundTurnChatSource(turnId: secondTurn.turnId) &&
-            (block.body as SingleDisplayBlock).record.atom.kind ==
-                ChatAtomKind.text,
+      return observed.main.whereType<TimelineAssistantText>().any(
+        (item) => item.turnId == secondTurn.turnId,
       );
     }, 'second real model turn completed after interrupting the first');
     await until(() {
@@ -582,14 +568,33 @@ void main() {
     expect(transport.stopReceipt!.threadId, threadId);
     expect(transport.stopReceipt!.stopped, isTrue);
     record('stop-accepted', {'executionId': stoppedExecution.id});
-    final cancelledTurn = await waitForHistoryTurn(
-      conversations: graph.client.conversations,
+    final cancelledTurn = await waitForTurn(
+      feeds: transport,
       threadId: threadId,
       matches: (head) => head.turnId == stoppedTurnId,
-      isExpectedTerminal: (head) => head.state == HistoryTurnState.cancelled,
-      description: 'cancelled stopped Turn in History',
+      isExpectedTerminal: (turn) =>
+          turn.state.status == StudioTurnStatus.cancelled,
+      description: 'canonical cancelled stopped Turn',
     );
-    expect(cancelledTurn.state, HistoryTurnState.cancelled);
+    expect(
+      cancelledTurn.state,
+      isA<CancelledStudioTurnState>().having(
+        (state) => state.cause,
+        'cause',
+        isA<InterruptedTurnCancellation>(),
+      ),
+    );
+    await waitForHistoryRows(
+      feeds: transport,
+      threadId: threadId,
+      matches: (rows) => rows.whereType<TimelineTurnOutcome>().any(
+        (outcome) =>
+            outcome.turnId == stoppedTurnId &&
+            outcome.inputId == cancelledTurn.inputId &&
+            outcome.outcome == 'interrupted',
+      ),
+      description: 'history interruption receipt for the exact stopped Turn',
+    );
     // A successful RPC is NOT the end condition: wait for the canonical
     // execution to disappear, the exact Turn to terminate and its continuation.
     await until(
@@ -648,14 +653,14 @@ void main() {
     });
     await File('$output/submission-stop-release').writeAsString('release\n');
     await File('$output/submission-resume-release').writeAsString('release\n');
-    final resumedTurn = await waitForCompletedHistoryTurn(
-      conversations: graph.client.conversations,
+    final resumedTurn = await waitForCompletedTurn(
+      feeds: transport,
       threadId: threadId,
       matches: (head) => head.turnId == resumedExecution.turnId,
-      description: 'completed resumed Turn in History',
+      description: 'canonical completed resumed Turn',
       timeout: const Duration(minutes: 2),
     );
-    expect(resumedTurn.state, HistoryTurnState.completed);
+    expect(resumedTurn.state.status, StudioTurnStatus.completed);
     await until(
       () =>
           session.state.runtime?.execution == null &&
@@ -714,7 +719,7 @@ class _SubmissionTransport extends FrbStudioTransport {
   bool realSecondRpcStarted = false;
   int submittedPromptCount = 0;
   int heldFrames = 0;
-  String? lastHeldCursor;
+  String? lastHeldEvent;
 
   void arm() {
     _rpc = Completer<void>();
@@ -796,117 +801,75 @@ class _SubmissionTransport extends FrbStudioTransport {
     return result;
   }
 
-  Future<HistoryTimelinePage> deliver(HistoryTimelinePage update) async {
+  Future<ConversationFeedEvent> deliver(ConversationFeedEvent event) async {
     final gate = _feed;
     if (gate != null && !gate.isCompleted) {
       heldFrames++;
-      lastHeldCursor = update.next;
-      record('real-response-held', {
-        'cut': update.cut.token,
-        'next': update.next,
-      });
+      lastHeldEvent = event.runtimeType.toString();
+      record('real-response-held', {'event': lastHeldEvent});
       await gate.future;
     }
-    return update;
+    return event;
   }
 
   @override
-  Future<HistoryReader> openHistoryReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int historyProtocolVersion,
-  }) async => _SubmissionHistoryReader(
-    await super.openHistoryReader(
-      threadId,
-      historyProtocolVersion: historyProtocolVersion,
-    ),
+    int initialLimit = 50,
+  }) async => _SubmissionConversationFeed(
+    await super.openConversationFeed(threadId, initialLimit: initialLimit),
     this,
   );
 }
 
-/// Holds only delivery of the original response. Closing releases that local barrier first.
-class _SubmissionHistoryReader implements HistoryReader {
-  _SubmissionHistoryReader(this.original, this.owner);
-  final HistoryReader original;
+/// Delays real feed delivery, including InputPresented, until explicitly released.
+/// Closing releases the local barrier before joining the original feed.
+class _SubmissionConversationFeed implements ConversationFeedHandle {
+  _SubmissionConversationFeed(this.original, this.owner);
+  final ConversationFeedHandle original;
   final _SubmissionTransport owner;
-  @override
-  OpenHistory get metadata => original.metadata;
   @override
   String get threadId => original.threadId;
   @override
-  Future<HistoryTimelinePage> timelinePage({
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  }) async => owner.deliver(
-    await original.timelinePage(cut: cut, cursor: cursor, demand: demand),
+  LiveStatusSnapshot get liveStatusSnapshot => original.liveStatusSnapshot;
+  @override
+  SessionMetaSnapshot get sessionMetaSnapshot => original.sessionMetaSnapshot;
+  @override
+  late final Stream<ConversationFeedEvent> events = original.events.asyncMap(
+    owner.deliver,
   );
   @override
-  Future<HistoryCut> capture() => original.capture();
+  Future<TimelinePatch> loadOlder({required String cursor, int limit = 50}) =>
+      original.loadOlder(cursor: cursor, limit: limit);
   @override
-  Future<HistoryWorkRangePage> workRangePage({
+  Future<List<WorkGroupMember>> loadWorkGroupMembers({
     int? afterSeq,
     int? beforeSeq,
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  }) => original.workRangePage(
-    afterSeq: afterSeq,
-    beforeSeq: beforeSeq,
-    cut: cut,
-    cursor: cursor,
-    demand: demand,
-  );
+  }) => original.loadWorkGroupMembers(afterSeq: afterSeq, beforeSeq: beforeSeq);
   @override
-  Future<HistoryBusinessPage> turnsPage({
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  }) => original.turnsPage(cut: cut, cursor: cursor, demand: demand);
-  @override
-  Future<HistoryEventsPage> eventsPage({
-    required HistoryEventsQuery query,
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  }) => original.eventsPage(
-    query: query,
-    cut: cut,
-    cursor: cursor,
-    demand: demand,
-  );
-  @override
-  Future<HistoryEventRecord> readEvent({
-    required String eventId,
-    required HistoryDemand demand,
-  }) => original.readEvent(eventId: eventId, demand: demand);
-  @override
-  Future<HistoryBodyPage> listBodies({
-    required String eventId,
-    String? cursor,
-    required HistoryDemand demand,
-  }) => original.listBodies(eventId: eventId, cursor: cursor, demand: demand);
-  @override
-  Future<HistoryBodyWindow> readBody({
-    required HistoryEventBodyRef reference,
+  Future<BodyWindow> readBodyWindow({
+    required BodyRef reference,
     required int offset,
     required int maxBytes,
-  }) => original.readBody(
+  }) => original.readBodyWindow(
     reference: reference,
     offset: offset,
     maxBytes: maxBytes,
   );
   @override
-  Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
-      original.accounting(cut: cut);
+  Future<SessionDetailWindow> readSessionDetail({
+    required SessionDetailKind kind,
+    required int offset,
+    required int maxBytes,
+  }) => original.readSessionDetail(
+    kind: kind,
+    offset: offset,
+    maxBytes: maxBytes,
+  );
+
   @override
-  Future<HistoryBusinessPage> costsPage({
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  }) => original.costsPage(cut: cut, cursor: cursor, demand: demand);
-  @override
-  Future<HistoryCut> waitChanged(HistoryCut after) =>
-      original.waitChanged(after);
+  Future<TimelinePatch> resetToLatest({int limit = 50}) =>
+      original.resetToLatest(limit: limit);
   @override
   void requestClose() {
     owner.releaseFeed();

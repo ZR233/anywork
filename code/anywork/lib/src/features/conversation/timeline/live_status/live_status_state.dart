@@ -1,5 +1,5 @@
 import 'package:anywork_client/models.dart';
-import 'package:flutter/foundation.dart' show immutable, listEquals, setEquals;
+import 'package:flutter/foundation.dart' show immutable, listEquals;
 
 import '../state/timeline_display_models.dart';
 
@@ -34,59 +34,51 @@ sealed class LiveStatusPrimaryPhase {
 }
 
 final class LiveReconnectingPhase extends LiveStatusPrimaryPhase {
-  const LiveReconnectingPhase({this.detail, this.attempt, this.maxAttempts});
+  const LiveReconnectingPhase({
+    this.detail,
+    this.attempt,
+    this.maxAttempts,
+    this.retryAt,
+  });
 
   final String? detail;
   final int? attempt;
   final int? maxAttempts;
+  final DateTime? retryAt;
 
   @override
   bool operator ==(Object other) =>
       other is LiveReconnectingPhase &&
       detail == other.detail &&
       attempt == other.attempt &&
-      maxAttempts == other.maxAttempts;
+      maxAttempts == other.maxAttempts &&
+      retryAt == other.retryAt;
 
   @override
-  int get hashCode => Object.hash(detail, attempt, maxAttempts);
+  int get hashCode => Object.hash(detail, attempt, maxAttempts, retryAt);
 }
 
-/// 主模型正在产出流式正文，可选附带未抑制的活动提示。
+/// 正在输出的一条正文及其计时起点。
 final class LiveResponsePhase extends LiveStatusPrimaryPhase {
-  LiveResponsePhase({
-    List<CurrentAtom> responseAtoms = const [],
-    this.previewText,
+  const LiveResponsePhase({
+    required this.itemId,
+    required this.previewText,
     this.startedAt,
-    this.finishedAt,
-    this.activity,
-  }) : responseAtoms = List.unmodifiable(responseAtoms);
-
-  final List<CurrentAtom> responseAtoms;
-  final String? previewText;
+  });
+  final String itemId;
+  final String previewText;
   final int? startedAt;
-  final int? finishedAt;
-  final ConversationActivityView? activity;
-
-  bool get isActive => finishedAt == null;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LiveResponsePhase &&
-          listEquals(responseAtoms, other.responseAtoms) &&
+          itemId == other.itemId &&
           previewText == other.previewText &&
-          startedAt == other.startedAt &&
-          finishedAt == other.finishedAt &&
-          activity == other.activity;
+          startedAt == other.startedAt;
 
   @override
-  int get hashCode => Object.hash(
-    Object.hashAll(responseAtoms),
-    previewText,
-    startedAt,
-    finishedAt,
-    activity,
-  );
+  int get hashCode => Object.hash(itemId, previewText, startedAt);
 }
 
 /// 开放工作组正在实时状态栏主区运行、等待或停止。
@@ -98,6 +90,7 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
     required this.timing,
     this.activity,
     this.thinkingSummary,
+    this.items = const [],
     required this.executionPresent,
   });
 
@@ -107,6 +100,7 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
   final WorkTiming timing;
   final ConversationActivityView? activity;
   final String? thinkingSummary;
+  final List<LiveWorkItem> items;
   final bool executionPresent;
 
   @override
@@ -119,7 +113,8 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
           timing == other.timing &&
           activity == other.activity &&
           thinkingSummary == other.thinkingSummary &&
-          executionPresent == other.executionPresent;
+          executionPresent == other.executionPresent &&
+          listEquals(items, other.items);
 
   @override
   int get hashCode => Object.hash(
@@ -131,6 +126,7 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
     activity,
     thinkingSummary,
     executionPresent,
+    Object.hashAll(items),
   );
 }
 
@@ -349,102 +345,6 @@ final class LiveStatusPresenting extends LiveStatusGateState {
   int get hashCode => presentation.hashCode;
 }
 
-/// 状态机投影所需全部不可变输入快照。
-@immutable
-final class LiveStatusInputs {
-  LiveStatusInputs({
-    this.storage,
-    List<PendingInteraction> interactions = const [],
-    this.businessRefs,
-    this.activeTurnId,
-    this.activity,
-    this.current,
-    this.liveOpenWork,
-    Set<String> renderedCurrentAtomIds = const {},
-    this.hasContentOwner = false,
-    this.connectionStatus = LiveConnectionStatus.connected,
-    this.connectionDetail,
-    this.currentAtomsError,
-    this.previewResponseText,
-    this.previewResponseStartedAt,
-  }) : interactions = List.unmodifiable(interactions),
-       renderedCurrentAtomIds = Set.unmodifiable(renderedCurrentAtomIds);
-
-  const LiveStatusInputs.empty()
-    : storage = null,
-      interactions = const [],
-      businessRefs = null,
-      activeTurnId = null,
-      activity = null,
-      current = null,
-      liveOpenWork = null,
-      renderedCurrentAtomIds = const {},
-      hasContentOwner = false,
-      connectionStatus = LiveConnectionStatus.connected,
-      connectionDetail = null,
-      currentAtomsError = null,
-      previewResponseText = null,
-      previewResponseStartedAt = null;
-
-  final ThreadStorageStateView? storage;
-  final List<PendingInteraction> interactions;
-  final ThreadBusinessRefs? businessRefs;
-  final String? activeTurnId;
-  final ThreadActivityView? activity;
-  final CurrentAtomSnapshot? current;
-  final DisplayBlock? liveOpenWork;
-  final Set<String> renderedCurrentAtomIds;
-  final bool hasContentOwner;
-  final LiveConnectionStatus connectionStatus;
-  final String? connectionDetail;
-  final Object? currentAtomsError;
-  final String? previewResponseText;
-  final int? previewResponseStartedAt;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusInputs &&
-          storage == other.storage &&
-          listEquals(interactions, other.interactions) &&
-          businessRefs == other.businessRefs &&
-          activeTurnId == other.activeTurnId &&
-          activity == other.activity &&
-          current == other.current &&
-          _sameOptionalBlock(liveOpenWork, other.liveOpenWork) &&
-          setEquals(renderedCurrentAtomIds, other.renderedCurrentAtomIds) &&
-          hasContentOwner == other.hasContentOwner &&
-          connectionStatus == other.connectionStatus &&
-          connectionDetail == other.connectionDetail &&
-          currentAtomsError == other.currentAtomsError &&
-          previewResponseText == other.previewResponseText &&
-          previewResponseStartedAt == other.previewResponseStartedAt;
-
-  @override
-  int get hashCode => Object.hash(
-    storage,
-    Object.hashAll(interactions),
-    businessRefs,
-    activeTurnId,
-    activity,
-    current,
-    liveOpenWork?.id,
-    Object.hashAllUnordered(renderedCurrentAtomIds),
-    hasContentOwner,
-    connectionStatus,
-    connectionDetail,
-    currentAtomsError,
-    previewResponseText,
-    previewResponseStartedAt,
-  );
-}
-
-bool _sameOptionalBlock(DisplayBlock? first, DisplayBlock? second) =>
-    identical(first, second) ||
-    (first != null && second != null && sameDisplayBlock(first, second));
-
-/// 当前组件实际使用的只读展示结果；仅含派生表面，供 ViewModel、纯视图与驱动只读事实共用。
-@immutable
 final class LiveStatusView {
   const LiveStatusView({
     required this.threadId,

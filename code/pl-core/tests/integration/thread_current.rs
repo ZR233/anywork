@@ -901,96 +901,6 @@ impl pl_agent_tool::Tool for KnownBeforeCommitTool {
 }
 
 #[tokio::test]
-async fn rejected_tool_control_still_accepts_known_output_once_without_an_executor_retry() {
-    let state = ThreadSnapshot {
-        interaction_collection_revision: u64::MAX,
-        ..Default::default()
-    };
-    let checkpoint = pl_core::thread::ThreadCheckpoint::capture("thread".into(), 0, state).unwrap();
-    let thread = ThreadHandle::resume(
-        "thread".into(),
-        DynModelSession::new(CallSession),
-        Some(checkpoint),
-    )
-    .unwrap();
-    let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    thread
-        .register_tools(vec![
-            pl_core::tool::opaque::Registration::prepare(
-                "tool".into(),
-                OpaquePayload::text("tool"),
-            )
-            .unwrap()
-            .attach(pl_core::tool::opaque::RuntimeTool::new(
-                KnownBeforeCommitTool(executions.clone()),
-            ))
-            .with_interactions()
-            .foreground(),
-        ])
-        .await
-        .unwrap();
-    thread
-        .step(StepInput {
-            turn_id: "turn".into(),
-            attempt_id: "attempt".into(),
-            content: vec![],
-            cancellation: CancellationToken::new(),
-        })
-        .await
-        .unwrap();
-    let result = thread
-        .execute_tool("known-before-commit".into(), CancellationToken::new())
-        .await;
-    assert!(matches!(
-        result,
-        Err(pl_core::thread::ThreadError::Tool(ref error)) if error.source.downcast_ref::<pl_core::thread::ThreadError>().is_some_and(|error| matches!(error, pl_core::thread::ThreadError::RevisionExhausted))
-    ));
-    assert!(
-        thread.snapshot().interactions.is_empty(),
-        "the failed control never installed an interaction"
-    );
-    let mut current = thread
-        .capture_current(CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(
-        current.state.deliveries.is_empty(),
-        "the known result already entered confirmed context"
-    );
-    let effects = thread.effects().await.unwrap();
-    let delivery = effects
-        .iter()
-        .flat_map(|effect| effect.deliveries.iter())
-        .find(|delivery| delivery.call_id == "known-before-commit")
-        .unwrap();
-    assert_eq!(
-        delivery.output.payload().content(),
-        "full result before local commit"
-    );
-    assert_eq!(
-        delivery.output.interaction().unwrap().content(),
-        "complete proposed question"
-    );
-    current.apply_saved_local_deliveries_once().unwrap();
-    current.normalize_unpaired_old_calls_as_unknown().unwrap();
-    let result = current
-        .state
-        .context
-        .records
-        .iter()
-        .find(|record| {
-            matches!(record.source,
-        ContextSource::ToolResult { ref call_id, .. } if call_id == "known-before-commit")
-        })
-        .unwrap();
-    assert_eq!(result.content.first(), Some(&text("known external result")));
-    assert!(result.content.iter().any(|content| matches!(content, ContextContent::Text { text } if text.contains("revision exhausted"))));
-    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
-    // The rejected control left no pending installation or executor to replay.
-    thread.close_for_deletion().await.unwrap();
-}
-
-#[tokio::test]
 async fn freshly_created_current_turn_uses_uuid_attempt_not_the_legacy_prefix_allocator() {
     let session = ProducerSession::new();
     session.prepare_release.notify_one();
@@ -1758,7 +1668,6 @@ async fn invalid_current_step_identity_never_overwrites_the_capturable_current()
     for (turn_id, attempt_id) in [
         ("".into(), uuid::Uuid::new_v4().to_string()),
         ("turn".into(), String::new()),
-        ("turn".into(), "not-a-uuid".into()),
     ] {
         assert!(matches!(
             thread

@@ -7,26 +7,16 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, ReplyStage, Step, WebSocketAction};
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatContentRole, ChatScope, ContentRange,
-    CurrentContentRef, CurrentFrame, CurrentProjection, ThreadWorkspaceMode,
+    ChatScope, ThreadStatus, ThreadWorkspaceMode,
     history::{
         HistoryDemand, HistoryEventRecord, HistoryEventsQuery, HistoryReader,
         decode_event_envelope, read_event_body_bytes,
     },
+    timeline::{ConversationEvent, LiveStatusPhase, TimelineItem, TimelinePatch},
 };
 use std::collections::HashSet;
-use support::{Environment, current_demand, prompt_step, reached};
+use support::{Environment, prompt_step, reached};
 use tokio_util::sync::CancellationToken;
-
-fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContentRef> {
-    projection
-        .atoms
-        .iter()
-        .filter(|atom| atom.kind == ChatAtomKind::Text)
-        .flat_map(|atom| atom.contents.iter())
-        .find(|content| content.role == ChatContentRole::Body)
-        .map(|content| content.reference.clone())
-}
 
 #[tokio::test]
 async fn closing_a_thread_waiting_for_input_drains_history_and_saves_current() -> Result<()> {
@@ -47,33 +37,25 @@ async fn closing_a_thread_waiting_for_input_drains_history_and_saves_current() -
         let started = env
             .start(ThreadWorkspaceMode::Local, "waiting-close")
             .await?;
-        let reader = env
+        let feed = env
             .runtime
-            .open_current_reader(
-                &started.thread.id,
-                CURRENT_PROTOCOL_VERSION,
-                current_demand(),
-            )
+            .open_conversation_feed(&started.thread.id, 64)
             .await?;
-        let watch = reader.watch(None, current_demand()).await?;
         tokio::time::timeout(support::integration_test_deadline()?, async {
-            while let Some(frame) = watch.next().await? {
-                let projection = match frame {
-                    CurrentFrame::Reset { view } => Some(view.projection),
-                    CurrentFrame::Projection { projection, .. } => Some(*projection),
-                    _ => None,
-                };
-                if projection.is_some_and(|projection| {
-                    projection.logical_status == pl_studio_runtime::ThreadStatus::WaitingInteraction
-                }) {
+            loop {
+                let meta = feed.session_meta_snapshot();
+                if meta.status == ThreadStatus::WaitingInteraction
+                    && meta.last_turn.is_some_and(|turn| turn.state.is_terminal())
+                {
                     return Ok::<_, anyhow::Error>(());
                 }
+                if feed.next_event().await.is_none() {
+                    anyhow::bail!("ConversationFeed closed before reporting the pending question");
+                }
             }
-            anyhow::bail!("Current closed before reporting the pending question")
         })
         .await??;
-        watch.close().await?;
-        reader.close().await?;
+        feed.close().await;
         let shutdown = env.runtime.shutdown_runtime().await;
         ensure!(
             shutdown.is_ok(),
@@ -264,86 +246,57 @@ async fn closing_current_joins_metadata_and_body_watches_then_reopens_the_live_o
             .start(ThreadWorkspaceMode::Worktree, "close-retry")
             .await?;
         let id = &thread.thread.id;
-        let demand = current_demand();
-        let reader = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
-            .await?;
-        let metadata = reader.watch(None, demand).await?;
+        let feed = env.runtime.open_conversation_feed(id, 64).await?;
         ensure!(matches!(
-            metadata.next().await?,
-            Some(CurrentFrame::Reset { .. })
+            feed.next_event().await,
+            Some(ConversationEvent::Timeline(TimelinePatch::Reset { .. }))
         ));
         reached(&stage).await?;
-        let mut reference = None;
-        while reference.is_none() {
-            match metadata.next().await? {
-                Some(CurrentFrame::Reset { view }) => {
-                    reference = final_text_reference(&view.projection);
+        let mut streamed_text = String::new();
+        while streamed_text.is_empty() {
+            match feed.next_event().await {
+                Some(ConversationEvent::LiveStatus(ls)) => {
+                    if let LiveStatusPhase::StreamingText { text, .. } = ls.phase
+                        && !text.is_empty()
+                    {
+                        streamed_text = text;
+                    }
                 }
-                Some(CurrentFrame::Projection { projection, .. }) => {
-                    reference = final_text_reference(&projection);
-                }
-                Some(CurrentFrame::Notification { .. }) => {}
-                None => anyhow::bail!("Current watch ended before the response body appeared"),
+                Some(_) => {}
+                None => anyhow::bail!("ConversationFeed ended before the response stream appeared"),
             }
         }
-        let reference = reference.context("live response body reference")?;
-        let owner = reader.snapshot(demand).await?.revision.owner_id;
-        let body = reader
-            .watch_body(
-                reference,
-                ContentRange {
-                    offset: 0,
-                    max_bytes: 64,
-                },
-            )
-            .await?;
-        let window = body.next().await?.context("live body watch")?;
-        ensure!(!window.bytes.is_empty() && !window.sealed);
+        let owner = feed.session_meta_snapshot().owner_epoch;
+        ensure!(!owner.is_empty());
 
-        reader.close().await?;
+        feed.close().await;
         ensure!(
-            metadata.next().await?.is_none(),
-            "metadata watch survived Current close"
+            feed.next_event().await.is_none(),
+            "event stream survived ConversationFeed close"
         );
         ensure!(
-            body.next().await?.is_none(),
-            "body watch survived Current close"
-        );
-        metadata.close().await?;
-        body.close().await?;
-        ensure!(
-            reader.snapshot(demand).await.is_err(),
-            "closed Current remained readable"
+            feed.load_older("0".into(), 16).await.is_err(),
+            "closed ConversationFeed remained readable"
         );
 
-        let reopened = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
-            .await?;
-        let view = reopened.snapshot(demand).await?;
+        let reopened = env.runtime.open_conversation_feed(id, 64).await?;
+        let meta = reopened.session_meta_snapshot();
         ensure!(
-            view.revision.owner_id == owner && view.projection.execution_present,
+            meta.owner_epoch == owner && meta.execution_present,
             "reopening replaced the live owner or execution"
         );
-        let reference =
-            final_text_reference(&view.projection).context("response body after Current reopen")?;
-        let window = reopened
-            .read_body(
-                reference,
-                ContentRange {
-                    offset: 0,
-                    max_bytes: 64,
-                },
-            )
-            .await?;
-        ensure!(!window.bytes.is_empty());
+        ensure!(
+            matches!(
+                reopened.live_status_snapshot().phase,
+                LiveStatusPhase::StreamingText { ref text, .. } if !text.is_empty()
+            ),
+            "reopened ConversationFeed lost live StreamingText status"
+        );
 
         stage.release();
         let terminal = support::completed_prompt(&env.runtime, id, "close-retry").await?;
         ensure!(terminal.thread_id.as_str() == id);
-        reopened.close().await?;
+        reopened.close().await;
         ensure!(
             env.root_provider.recorded().len() == 1,
             "Current close/retry made another provider request"
@@ -433,20 +386,16 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
         .await
         .context("provider websocket barrier was not reached")?;
 
-        let current = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let live = current.snapshot(current_demand()).await?;
-        ensure!(live.projection.execution_present);
+        let feed = env.runtime.open_conversation_feed(id, 64).await?;
+        let live = feed.session_meta_snapshot();
+        ensure!(live.execution_present);
         ensure!(
-            live.state
-                .runtime
+            live.runtime
                 .as_ref()
                 .is_some_and(|runtime| runtime.deferred.is_empty()),
             "ordinary websocket state unexpectedly deferred runtime fields"
         );
-        let owner = live.revision.owner_id;
+        let owner = live.owner_epoch.clone();
         let history = env
             .runtime
             .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
@@ -455,7 +404,7 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             .capture()
             .await
             .context("live History could not capture a read cut")?;
-        current.close().await?;
+        feed.close().await;
 
         release.cancel();
         let terminal = support::completed_prompt(&env.runtime, id, "reconnect").await?;
@@ -463,7 +412,7 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             matches!(terminal.state, pl_studio_runtime::TurnState::Completed(_)),
             "websocket reconnect did not complete: {terminal:?}"
         );
-        ensure!(terminal.id == live.projection.active_turn.context("live Turn")?.id);
+        ensure!(terminal.id == live.active_turn.context("live Turn")?.id);
         let published = public_history(&history).await?;
         let conn_events = connection_boundaries(&history).await?;
         ensure!(
@@ -523,27 +472,26 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             "websocket reconnect changed request identity or admission"
         );
 
-        let paused = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let view = paused.snapshot(current_demand()).await?;
+        let paused = env.runtime.open_conversation_feed(id, 64).await?;
+        let paused_meta = paused.session_meta_snapshot();
         ensure!(
-            view.revision.owner_id == owner && !view.projection.execution_present,
+            paused_meta.owner_epoch == owner && !paused_meta.execution_present,
             "passive cold reading changed saved provenance or replayed execution"
         );
         ensure!(
-            !view.projection.atoms.iter().any(|atom| {
-                matches!(
-                    atom.kind,
-                    ChatAtomKind::Text
-                        | ChatAtomKind::Reasoning
-                        | ChatAtomKind::ToolCall
-                        | ChatAtomKind::Inference
-                )
-            }),
-            "paused Current replayed completed websocket history"
+            paused_meta.active_turn.is_none()
+                && matches!(paused.live_status_snapshot().phase, LiveStatusPhase::Idle),
+            "paused ConversationFeed replayed execution"
         );
+        if let Some(ConversationEvent::Timeline(TimelinePatch::Reset { items, .. })) =
+            paused.next_event().await
+        {
+            ensure!(
+                items
+                    .iter()
+                    .any(|item| matches!(item, TimelineItem::AssistantText { .. }))
+            );
+        }
         let restored_history = env
             .runtime
             .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
@@ -554,7 +502,7 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             "restart changed websocket output identities, order, connection boundaries or bytes"
         );
         restored_history.close().await;
-        paused.close().await?;
+        paused.close().await;
         ensure!(
             std::fs::read(saved.root.join("current.json"))? == current_bytes,
             "cold Current/History reads rewrote current.json"

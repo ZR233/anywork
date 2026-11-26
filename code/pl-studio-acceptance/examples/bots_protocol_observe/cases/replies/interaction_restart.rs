@@ -14,10 +14,7 @@ use super::super::Session;
 use super::{CASE_BUDGET, answers_json, ensure_bound_row, optional_title_step};
 use crate::http;
 use crate::report::{self, CaseResult};
-use crate::support::{
-    HISTORY_OBSERVATION_BYTES, charge_history_bytes, current_content_bytes, current_payload_bytes,
-    open_current,
-};
+use crate::support::open_feed;
 use crate::thread_watch::{ThreadWatch, interaction_line};
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::feishu::{
@@ -29,8 +26,7 @@ use pl_provider_fixture::{
 use pl_studio_runtime::ResolveInteractionRequest;
 use pl_studio_runtime::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionContent, InteractionRequest,
-    InteractionResolution, InteractionStatus, ThreadBusinessRefs, UserInputAnswer,
-    UserInputResolution,
+    InteractionResolution, InteractionStatus, UserInputAnswer, UserInputResolution,
 };
 use std::collections::HashMap;
 
@@ -96,7 +92,7 @@ async fn interaction_restart_inner(
 
     // Phase 1: the first model call must really ask the operator.
     let mut watch = ThreadWatch::connect(session.http()?.clone(), &thread_id)?;
-    let snapshot = watch.wait_snapshot(http::PREDICATE_TIMEOUT).await?;
+    let snapshot = watch.wait_session_meta(http::PREDICATE_TIMEOUT).await?;
     evidence.push(format!(
         "snapshot revision={} interactions={}",
         snapshot.revision,
@@ -108,22 +104,10 @@ async fn interaction_restart_inner(
         "q1 interaction scope must stay on the bound Thread"
     );
     evidence.push(format!("q1 {}", interaction_line(&q1)));
-    let q1_refs = watch
-        .wait_business_refs(
-            http::PREDICATE_TIMEOUT,
-            |references| references.interactions.is_some(),
-            "initial interactions State reference",
-        )
-        .await?;
-    let interactions_revision = q1_refs
-        .interactions
-        .as_ref()
-        .context("State omitted the q1 interactions reference")?
-        .revision;
-    assert_interaction_reference_page(session, &thread_id, &q1_refs, &q1).await?;
+    assert_feed_interaction(session, &thread_id, &q1).await?;
     evidence.push(format!(
-        "State businessRefs.interactions revision={} read through pageCurrent",
-        interactions_revision
+        "Feed SessionMeta interaction {} confirmed via GET /feed/meta",
+        q1.interaction_id
     ));
 
     wait_hint_count(session, 1).await?;
@@ -148,7 +132,7 @@ async fn interaction_restart_inner(
 
     // Phase 3: canonical pending rebuild, then resolve q1 over public HTTP.
     let mut watch2 = ThreadWatch::connect(session.http()?.clone(), &thread_id)?;
-    let rebuilt = watch2.wait_snapshot(http::PREDICATE_TIMEOUT).await?;
+    let rebuilt = watch2.wait_session_meta(http::PREDICATE_TIMEOUT).await?;
     let rebuilt_q1 = rebuilt
         .interactions
         .iter()
@@ -162,13 +146,8 @@ async fn interaction_restart_inner(
         interaction_line(&q1),
         interaction_line(rebuilt_q1)
     );
-    assert_interaction_reference_page(session, &thread_id, &rebuilt.business_refs, rebuilt_q1)
-        .await?;
-    let prior_plan_revision = rebuilt
-        .business_refs
-        .plan
-        .as_ref()
-        .map(|plan| plan.revision);
+    assert_feed_interaction(session, &thread_id, rebuilt_q1).await?;
+    let prior_plan_revision = rebuilt.plan.as_ref().map(|plan| plan.revision);
     session
         .http()?
         .resolve_interaction(
@@ -208,27 +187,35 @@ async fn interaction_restart_inner(
         "plan confirmation must stay on the bound Thread"
     );
     evidence.push(format!("plan {}", interaction_line(&plan)));
-    let references = watch2
-        .wait_business_refs(
+    let plan_meta = watch2
+        .wait_session_meta_matching(
             http::PREDICATE_TIMEOUT,
-            |references| {
-                references.plan.as_ref().is_some_and(|plan| {
-                    plan.document.is_some()
+            |meta| {
+                meta.plan.as_ref().is_some_and(|plan| {
+                    plan.document
+                        .as_ref()
+                        .is_some_and(|doc| doc.markdown == PLAN_MD)
                         && prior_plan_revision.is_none_or(|revision| plan.revision > revision)
                 })
             },
-            "current Plan document State reference",
+            "current Plan document SessionMeta",
         )
         .await?;
-    assert_plan_reference(session, &thread_id, &references).await?;
-    let plan_revision = references
+    let plan_snapshot = plan_meta
         .plan
         .as_ref()
-        .context("State omitted the submitted Plan reference")?
-        .revision;
+        .context("SessionMeta omitted the submitted Plan")?;
+    ensure!(
+        plan_snapshot
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.markdown == PLAN_MD),
+        "SessionMeta Plan document did not match the exact accepted Plan markdown"
+    );
     evidence.push(format!(
-        "State businessRefs.plan revision={} document read through readContent",
-        plan_revision
+        "SessionMeta.plan revision={} document verified ({} bytes)",
+        plan_snapshot.revision,
+        PLAN_MD.len()
     ));
 
     wait_hint_count(session, 2).await?;
@@ -346,154 +333,41 @@ async fn interaction_restart_inner(
     Ok(result)
 }
 
-async fn assert_interaction_reference_page(
+async fn assert_feed_interaction(
     session: &Session,
     thread_id: &str,
-    references: &ThreadBusinessRefs,
     expected: &InteractionRequest,
 ) -> Result<()> {
-    let reference = references
-        .interactions
-        .as_ref()
-        .context("State businessRefs omitted the active interactions read reference")?;
-    ensure!(
-        !reference.owner_id.is_empty() && reference.collection == "interactions",
-        "State supplied an invalid interactions collection reference"
-    );
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
-        let current = open_current(session.http()?, thread_id).await?;
+        let feed = open_feed(session.http()?, thread_id).await?;
         let observed = async {
-            let mut remaining = HISTORY_OBSERVATION_BYTES;
-            let mut continuation = None;
-            let mut seen = std::collections::HashSet::new();
-            let mut matched = 0usize;
-            for page_index in 0..256 {
-                let page = tokio::time::timeout_at(
-                    deadline.into(),
-                    current.page_current(
-                        reference,
-                        continuation.as_deref(),
-                        crate::support::current_demand(),
-                    ),
-                )
-                .await
-                .context("pageCurrent exceeded the State reference deadline")??;
-                ensure!(
-                    page.revision == reference.revision
-                        && page.entries.len()
-                            <= usize::try_from(crate::support::current_demand().max_items)?
-                        && serde_json::to_vec(&page)?.len()
-                            <= usize::try_from(crate::support::current_demand().max_bytes)?,
-                    "interactions page did not match the State reference revision or demand"
-                );
-                charge_history_bytes(serde_json::to_vec(&page)?.len(), &mut remaining)?;
-                for entry in &page.entries {
-                    let bytes = current_payload_bytes(
-                        &current,
-                        &entry.payload,
-                        &mut remaining,
-                        deadline,
-                    )
-                    .await?;
-                    let interaction: InteractionRequest =
-                        serde_json::from_slice(&bytes).context("invalid referenced interaction")?;
-                    ensure!(
-                        entry.id == interaction.interaction_id
-                            && interaction.scope.thread_id == thread_id,
-                        "interaction collection entry identity/scope mismatch"
-                    );
-                    if interaction.interaction_id == expected.interaction_id {
-                        ensure!(
-                            interaction.revision == expected.revision
-                                && interaction.status() == expected.status()
-                                && interaction.scope == expected.scope,
-                            "pageCurrent and State disagree about the same interaction revision/status"
-                        );
-                        matched += 1;
-                    }
-                }
-                let Some(next) = page.continuation else {
-                    ensure!(
-                        matched == 1,
-                        "State-referenced interactions collection returned {matched} copies of {}",
-                        expected.interaction_id
-                    );
-                    return Ok::<(), anyhow::Error>(());
-                };
-                ensure!(
-                    page_index + 1 < 256 && seen.insert(next.clone()),
-                    "interactions collection exceeded its bounded page budget or repeated a cursor"
-                );
-                continuation = Some(next);
-            }
-            anyhow::bail!("interactions collection exceeded its bounded page budget")
-        }
-        .await;
-        match (observed, current.close().await) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(error), Err(close_error)) => Err(error.context(format!(
-                "Current close also failed: {close_error:#}"
-            ))),
-        }
-    })
-    .await
-    .context("interaction collection read exceeded its deadline")??;
-    Ok(())
-}
-
-async fn assert_plan_reference(
-    session: &Session,
-    thread_id: &str,
-    references: &ThreadBusinessRefs,
-) -> Result<()> {
-    let plan = references
-        .plan
-        .as_ref()
-        .context("State BusinessRefsChanged omitted the submitted Plan")?;
-    let document = plan
-        .document
-        .as_ref()
-        .context("State Plan omitted its complete-document reference")?;
-    ensure!(
-        !document.owner_id.is_empty()
-            && document.domain == "plan"
-            && document.entity_id == "document"
-            && document.content_key == "document"
-            && !document.generation.is_empty(),
-        "State Plan reference does not identify its exact complete document version"
-    );
-    let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
-    tokio::time::timeout_at(deadline.into(), async {
-        let current = open_current(session.http()?, thread_id).await?;
-        let observed = async {
-            let mut remaining = HISTORY_OBSERVATION_BYTES;
-            let bytes = current_content_bytes(
-                &current,
-                document,
-                PLAN_MD.len() as u64,
-                &mut remaining,
-                deadline,
-            )
-            .await?;
+            let meta = feed.session_meta().await?;
+            let found = meta
+                .interactions
+                .iter()
+                .find(|interaction| interaction.interaction_id == expected.interaction_id)
+                .context("Feed SessionMeta omitted the expected interaction")?;
             ensure!(
-                bytes == PLAN_MD.as_bytes(),
-                "State Plan reference did not read the exact accepted Plan document"
+                found.scope.thread_id == thread_id
+                    && found.revision == expected.revision
+                    && found.status() == expected.status()
+                    && found.scope == expected.scope,
+                "Feed SessionMeta disagreed on interaction revision, status, or scope"
             );
             Ok::<(), anyhow::Error>(())
         }
         .await;
-        match (observed, current.close().await) {
+        match (observed, feed.close().await) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
             (Err(error), Err(close_error)) => {
-                Err(error.context(format!("Current close also failed: {close_error:#}")))
+                Err(error.context(format!("Feed close also failed: {close_error:#}")))
             }
         }
     })
     .await
-    .context("Plan document read exceeded its deadline")??;
+    .context("Feed interaction check exceeded its deadline")??;
     Ok(())
 }
 
@@ -535,25 +409,6 @@ async fn wait_hint_count(session: &Session, expected: usize) -> Result<()> {
 fn is_user_input_question(item: &InteractionRequest, question_id: &str) -> bool {
     matches!(&item.content, InteractionContent::UserInput(value)
         if value.questions().iter().any(|question| question.id == question_id))
-}
-
-impl ThreadWatch {
-    /// Waits for one pending user-input question by question id.
-    async fn interaction(
-        &mut self,
-        budget: std::time::Duration,
-        question_id: &'static str,
-    ) -> Result<InteractionRequest> {
-        self.wait_interaction(
-            budget,
-            |item| {
-                is_user_input_question(item, question_id)
-                    && item.status() == InteractionStatus::Pending
-            },
-            "first question after the inbound prompt",
-        )
-        .await
-    }
 }
 
 pub(crate) fn interaction_restart_model_steps() -> Vec<Step> {

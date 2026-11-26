@@ -10,7 +10,6 @@ import 'package:anywork/src/platform/vscode_launcher.dart';
 import 'package:anywork/src/platform/zed_launcher.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp_sessions.dart';
-import 'package:anywork_client/studio_client.dart' show ThreadRuntimeUpdate;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -159,8 +158,8 @@ void main() {
     final revision = session.state.revision + 1;
     transport.seedConversationState(
       threadId,
-      ThreadRuntimeUpdate(
-        runtime: session.state.runtime!.copyWith(
+      (current) => current.copyWith(
+        runtime: current.runtime.copyWith(
           deferred: [],
           workflow: WorkflowRuntimeView(
             revision: revision,
@@ -184,7 +183,6 @@ void main() {
             TimelineTodoItem(step: 'Native workspace todo', status: 'pending'),
           ],
         ),
-        modelRoute: session.state.modelRoute,
       ),
     );
     await pumpClientFuture(
@@ -194,7 +192,7 @@ void main() {
             state.workflow?.currentRun?.currentStateId == stageId &&
             state.workspace?.todo?.callId == 'native-todo',
       ),
-      'workflow and Todo enter Current State',
+      'workflow enters SessionMeta',
     );
 
     await tester.pumpWidget(

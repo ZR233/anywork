@@ -15,13 +15,14 @@ use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload, ResourceReference},
     model::{DynModelSession, ToolProgressUpdate},
     thread::{
-        AttemptOutcome, ModelStepLimit, ThreadEffectBatch, ThreadError, ThreadHandle,
-        ThreadSnapshot, TurnOutcome, TurnState,
+        AttemptOutcome, HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadError,
+        ThreadHandle, ThreadSnapshot, TurnOutcome, TurnState,
         cold::{
-            ColdStore, ColdStoreError, ColdStoreHandle, OutputRepair, OutputRetryFuture,
-            OutputRetryObligation, OutputRetryOutcome, OutputStorageFault, StorageExecutionPhase,
-            StorageFaultKind, StoragePressure, ThreadWrite,
+            ColdStoreError, OutputRepair, OutputRetryFuture, OutputRetryObligation,
+            OutputRetryOutcome, OutputStorageFault, StorageExecutionPhase, StorageFaultKind,
+            StorageIdleStatus, StoragePressure,
         },
+        history_sink::{HistorySink, HistorySinkHandle},
         input::{InputPurpose, ThreadInput},
         task::TaskStatus,
     },
@@ -75,6 +76,8 @@ struct StoreState {
     reject_terminal: bool,
     terminal_presentations: Vec<Arc<ThreadEffectBatch>>,
     denied_operation: Option<String>,
+    deny_model_attempts: bool,
+    auto_commit_durable: bool,
     deny_receipts: bool,
     reservations: Vec<(String, u64)>,
     charges: Vec<(String, u64)>,
@@ -110,6 +113,8 @@ impl GatedStore {
                 reject_terminal: false,
                 terminal_presentations: Vec::new(),
                 denied_operation: None,
+                deny_model_attempts: false,
+                auto_commit_durable: false,
                 deny_receipts: false,
                 reservations: Vec::new(),
                 charges: Vec::new(),
@@ -255,7 +260,7 @@ async fn sliced_tool_batch_services_control_and_reports_unstarted_capacity_failu
     let (model, requests) = ScriptedModel::new(&ids.iter().map(String::as_str).collect::<Vec<_>>());
     let thread = ThreadHandle::start("sliced-batch".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     let (started, mut starts) = mpsc::unbounded_channel();
@@ -373,12 +378,12 @@ async fn model_output_admission_waits_on_capacity_without_preparing_or_consuming
     {
         let mut state = store.state.lock().unwrap();
         state.armed = false;
-        state.denied_operation = Some("attempt-budget-wait:0".into());
+        state.deny_model_attempts = true;
     }
     let (model, requests) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("model-capacity".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     let run = {
@@ -404,7 +409,11 @@ async fn model_output_admission_waits_on_capacity_without_preparing_or_consuming
         .await
         .unwrap();
     let recovered = tokio::time::Instant::now();
-    store.state.lock().unwrap().denied_operation = None;
+    {
+        let mut state = store.state.lock().unwrap();
+        state.denied_operation = None;
+        state.deny_model_attempts = false;
+    }
     store.notify();
     run.await.unwrap().unwrap();
     assert_eq!(recovered.elapsed(), Duration::ZERO);
@@ -439,7 +448,7 @@ async fn receipt_capacity_recovery_uses_a_notification_without_another_model_req
     let thread =
         ThreadHandle::start("receipt-capacity".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     let (started, mut starts) = mpsc::unbounded_channel();
@@ -490,7 +499,20 @@ async fn receipt_capacity_recovery_uses_a_notification_without_another_model_req
     thread.close().await.unwrap();
 }
 
-impl ColdStore for GatedStore {
+impl HistorySink for GatedStore {
+    fn fold_usage(&self, summary: &mut pl_core::thread::UsageSummary, effect: &ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(
+        &self,
+        _thread_id: &str,
+        _attempt_id: &str,
+        _item_id: &str,
+    ) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
     fn reserve_operation_output(
         &self,
         _thread_id: &str,
@@ -500,7 +522,10 @@ impl ColdStore for GatedStore {
         {
             let mut state = self.state.lock().unwrap();
             state.reservations.push((operation_id.into(), max_bytes));
+            let is_internal = operation_id.starts_with("task-metadata:")
+                || operation_id.starts_with("batch-receipts:");
             if state.denied_operation.as_deref() == Some(operation_id)
+                || (state.deny_model_attempts && !is_internal)
                 || (state.deny_receipts && operation_id.starts_with("batch-receipts:"))
             {
                 return Err(storage_error());
@@ -579,6 +604,13 @@ impl ColdStore for GatedStore {
         }
     }
 
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: None,
+        }
+    }
+
     fn subscribe_pressure(&self, _thread_id: &str) -> Option<watch::Receiver<()>> {
         self.subscriptions.fetch_add(1, Ordering::SeqCst);
         self.subscription_changed.notify_one();
@@ -589,7 +621,7 @@ impl ColdStore for GatedStore {
             .map(watch::Sender::subscribe)
     }
 
-    fn admit(&self, _thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+    fn admit(&self, _thread_id: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         let mut state = self.state.lock().unwrap();
         let terminal = write
             .effect
@@ -629,22 +661,12 @@ impl ColdStore for GatedStore {
             .known_deliveries
             .extend(write.effect.deliveries.iter().cloned());
         state.accepted.insert(write.effect.sequence);
-        Ok(())
-    }
-
-    async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        let mut state = self.state.lock().unwrap();
-        if state.active && self.failure == Failure::Admission {
-            return Err(storage_error());
-        }
-        if (1..=sequence).all(|number| state.accepted.contains(&number)) {
-            state.durable = state.durable.max(sequence);
+        if state.auto_commit_durable {
+            state.durable = state.durable.max(write.effect.sequence);
             drop(state);
             self.notify();
-            Ok(())
-        } else {
-            Err(storage_error())
         }
+        Ok(())
     }
 }
 
@@ -766,7 +788,7 @@ async fn concurrent_tool_results_remain_owned_until_storage_recovers() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -851,8 +873,9 @@ async fn concurrent_tool_results_remain_owned_until_storage_recovers() {
     assert!(deliveries.contains(&"two-in-flight-first".to_owned()));
     assert!(deliveries.contains(&"two-in-flight-second".to_owned()));
 
+    store.state.lock().unwrap().auto_commit_durable = true;
     store.repair();
-    thread.flush().await.unwrap();
+    store.commit_durable();
     assert_eq!(executions.lock().unwrap().len(), 2);
     await_snapshot(&thread, |snapshot| {
         snapshot.persistence.durable_sequence >= pending.commit_sequence
@@ -871,7 +894,7 @@ async fn paused_turn_resumes_without_replaying_model_or_tool(failure: Failure) {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -943,8 +966,7 @@ async fn paused_turn_resumes_without_replaying_model_or_tool(failure: Failure) {
     assert_eq!(completed.model_steps, 2);
     assert_eq!(requests.lock().unwrap().len(), 2);
     assert_eq!(*executions.lock().unwrap(), ["first-write".to_string()]);
-    within(thread.flush()).await.unwrap();
-    // The caller owns flush completion; the owner folds the backend's real receipt separately.
+    store.commit_durable();
     let snapshot = await_snapshot(&thread, |snapshot| {
         snapshot.persistence.durable_sequence >= snapshot.commit_sequence
     })
@@ -985,7 +1007,7 @@ async fn a_typed_fault_needs_its_own_verified_recovery_before_the_continue_is_of
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -1055,7 +1077,7 @@ async fn a_typed_fault_needs_its_own_verified_recovery_before_the_continue_is_of
     assert_eq!(completed.model_steps, 2);
     assert_eq!(requests.lock().unwrap().len(), 2);
     assert_eq!(*executions.lock().unwrap(), ["verified-write".to_string()]);
-    within(thread.flush()).await.unwrap();
+    store.commit_durable();
     within(thread.close()).await.unwrap();
 }
 
@@ -1076,7 +1098,7 @@ async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -1121,7 +1143,7 @@ async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
     // The continue the caller now issues is the same verdict, revalidated at the command.
     within(thread.resume_storage(1)).await.unwrap();
     assert!(!thread.snapshot().persistence.resume_required);
-    within(thread.flush()).await.unwrap();
+    store.commit_durable();
     within(thread.close()).await.unwrap();
 }
 
@@ -1137,7 +1159,7 @@ async fn an_idle_owner_retries_the_same_terminal_effect_without_a_command() {
     let (model, requests) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("idle-terminal".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -1218,7 +1240,7 @@ async fn an_idle_owner_does_not_resubscribe_a_closed_storage_watch_and_can_close
     let (model, requests) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("closed-watch".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     within(store.await_subscriptions(1)).await;
@@ -1242,7 +1264,7 @@ async fn interrupt_paused_turn(failure: Failure) {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -1289,7 +1311,7 @@ async fn interrupt_paused_turn(failure: Failure) {
         store.commit_durable();
         within(thread.resume_storage(0)).await.unwrap();
     }
-    within(thread.flush()).await.unwrap();
+    store.commit_durable();
     let completed = within(thread.run_turn(turn("after-interrupt")))
         .await
         .unwrap();
@@ -1381,7 +1403,7 @@ async fn streaming_output_over_the_reliable_budget_cancels_with_a_typed_fault() 
     )
     .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -1569,7 +1591,7 @@ async fn archive_retry_keeps_polling_the_original_model_future() {
     let store = GatedStore::new(Failure::Admission);
     store.state.lock().unwrap().armed = false;
     thread
-        .attach_storage(ColdStoreHandle::new(store))
+        .attach_history(HistorySinkHandle::new(store))
         .await
         .unwrap();
     thread
@@ -1652,7 +1674,7 @@ async fn blocked_archive_retry_keeps_control_reachable_and_serializes_overlappin
     let thread =
         ThreadHandle::start("blocked-archive".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store))
+        .attach_history(HistorySinkHandle::new(store))
         .await
         .unwrap();
     let obligation = Arc::new(BlockingObligation {
@@ -1787,7 +1809,7 @@ async fn a_healthy_history_write_cannot_stand_in_for_a_failed_archive() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -1960,7 +1982,7 @@ async fn a_retried_archive_attaches_its_reference_to_the_committed_result() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -2112,7 +2134,7 @@ async fn a_retry_before_the_result_commits_still_supplements_it_once() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -2366,7 +2388,7 @@ async fn parallel_failed_archives_keep_independent_obligations() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -2514,7 +2536,7 @@ async fn a_running_calls_storage_fault_blocks_admission_before_it_returns() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -2563,7 +2585,7 @@ async fn flush_remains_reachable_during_a_storage_pause() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 
@@ -2573,9 +2595,8 @@ async fn flush_remains_reachable_during_a_storage_pause() {
     });
     paused(&thread).await;
     assert!(!runner.is_finished());
-    // The paused owner still services the flush at its safety point: the admitted watermark is
-    // already durable in this fake, so the fixed-target barrier resolves instead of waiting on a
-    // Turn that cannot end on its own.
+    // The paused owner still services the flush at its safety point without resuming the Turn.
+    store.commit_durable();
     within(thread.flush()).await.unwrap();
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert!(executions.lock().unwrap().is_empty());
@@ -2681,7 +2702,7 @@ async fn refused_tool_preview_publishes_the_fault_before_the_tool_returns() {
         .await
         .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
 

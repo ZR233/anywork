@@ -8,7 +8,8 @@ import 'package:anywork/src/features/conversation/timeline/connectors/file_readi
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_file_download.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_feed_body_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_file_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/views/markdown_document_body.dart';
@@ -63,11 +64,8 @@ String artifacts(List<Map<String, Object?>> files, {int version = 1}) =>
       },
     ]);
 
-ChatItemPresentation fileItem(
-  String receipts, {
-  HistoryEventBodyRef? reference,
-}) => ChatItemPresentation.decode(
-  chatEnvelope(
+ChatItemPresentation fileItem(String receipts, {BodyRef? reference}) {
+  final item = chatPresentation(
     'files-call',
     type: 'tool',
     data: {
@@ -83,24 +81,25 @@ ChatItemPresentation fileItem(
     },
     bodies: [
       inlineBody('tool.arguments', '{"files":[]}'),
-      if (reference == null)
-        inlineBody('tool.output-artifacts', receipts)
-      else
-        {
-          'key': 'tool.output-artifacts',
-          'byteLength': utf8.encode(receipts).length,
-          'reference': {
-            'databaseId': reference.databaseId,
-            'ownerEventId': reference.ownerEventId,
-            'bodyKey': reference.bodyKey,
-            'bodyId': reference.bodyId,
-            'byteStart': reference.byteStart,
-            'byteLength': reference.byteLength,
-          },
-        },
+      if (reference == null) inlineBody('tool.output-artifacts', receipts),
     ],
-  ),
-);
+  );
+  return chatItemPresentationOf(
+    timelineFeedMessage(
+      TimelineStandaloneTool(
+        id: 'files-call',
+        seq: 5,
+        callId: 'files-call',
+        toolName: 'show_files',
+        presentationContract: 'builtin.show_files@1',
+        state: 'succeeded',
+        summary: 'Show files',
+        bodies: [?reference],
+        payloadJson: item.raw!,
+      ),
+    ),
+  )!;
+}
 
 Widget app(Widget child) => ProviderScope(
   child: MaterialApp(
@@ -312,7 +311,7 @@ void main() {
             start: ({required itemId, required index, required destination}) {
               expect(
                 (itemId, index, destination),
-                ('files-call', 2, '/picked/renamed.tar.gz'),
+                ('call:files-call', 2, '/picked/renamed.tar.gz'),
               );
               final download = _Download();
               downloads.add(download);
@@ -333,18 +332,27 @@ void main() {
       expect(find.text('无内置预览'), findsNothing);
 
       final button = _downloadButton('下载');
+      expect(tester.widget<IconButton>(button).onPressed, isNotNull);
       await tester.tap(button);
       await tester.pump();
       expect(tester.widget<IconButton>(button).onPressed, isNull);
       expect(downloads, isEmpty);
       choices[0].complete(null);
-      await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () => tester.widget<IconButton>(button).onPressed != null,
+        'native chooser cancellation restores download',
+      );
       expect(downloads, isEmpty);
       expect(tester.widget<IconButton>(button).onPressed, isNotNull);
 
       await tester.tap(button);
       choices[1].complete('/picked/renamed.tar.gz');
-      await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () => downloads.isNotEmpty,
+        'native chooser starts transfer',
+      );
       final first = downloads.single;
       first.written.add(200);
       await tester.pump();
@@ -369,7 +377,11 @@ void main() {
 
       await tester.tap(button);
       choices[2].complete('/picked/renamed.tar.gz');
-      await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () => downloads.length == 2,
+        'native chooser starts retry',
+      );
       expect(downloads, hasLength(2));
       expect(find.textContaining('disk full'), findsNothing);
       downloads.last.result.complete();
@@ -430,6 +442,7 @@ void main() {
 
       await tester.pumpWidget(scene(startOld));
       await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       expect(
@@ -681,29 +694,29 @@ void main() {
       final resources = TimelineImageResources(threadId: 'thread');
       addTearDown(resources.release);
       final receipt = artifacts([readyFile('a', 'old.md', 'archive')]);
-      final reference = HistoryEventBodyRef(
+      final reference = BodyRef(
         databaseId: 'db',
         ownerEventId: 'files-call',
         bodyKey: 'tool.output-artifacts',
         bodyId: 'files-call:tool.output-artifacts',
-        byteStart: 0,
+        role: 'attachment',
         byteLength: utf8.encode(receipt).length,
       );
-      final late = Completer<ContentWindow>();
+      final late = Completer<BodyWindow>();
       var count = 0;
-      final intent = TimelineExpansionIntent()
-        ..readHistoryBody = (_, actualReference, range) {
-          expect(actualReference, reference);
-          count++;
-          if (count == 1) {
-            return Future.error(StateError('read denied'));
-          }
-          return late.future;
-        };
-      addTearDown(intent.dispose);
+      final identity = Object();
       Widget build(ChatItemPresentation item) => app(
-        TimelineGroupBodyIntent(
-          intent: intent,
+        TimelineFeedContent(
+          identity: identity,
+          isActive: () => true,
+          readBodyWindow:
+              (actualReference, {required offset, required maxBytes}) {
+                expect(actualReference, reference);
+                expect(offset, 0);
+                count++;
+                if (count == 1) return Future.error(StateError('read denied'));
+                return late.future;
+              },
           child: TimelineAttachmentsConnector(
             key: const ValueKey('same-connector'),
             item: item,
@@ -728,12 +741,11 @@ void main() {
         build(fileItem(artifacts([readyFile('b', 'new.md', 'archive')]))),
       );
       late.complete(
-        ContentWindow(
+        BodyWindow(
           offset: 0,
-          bytes: utf8.encode(receipt),
-          generation: 'g',
-          availableThrough: utf8.encode(receipt).length,
-          sealed: true,
+          text: receipt,
+          totalBytes: utf8.encode(receipt).length,
+          eof: true,
         ),
       );
       await tester.pump();

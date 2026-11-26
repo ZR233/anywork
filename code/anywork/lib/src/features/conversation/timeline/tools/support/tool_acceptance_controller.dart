@@ -24,10 +24,14 @@ class AcceptanceToolController extends TimelineToolItemController {
   }
 
   @override
-  void onAcceptedOutputWindow(ContentWindow window) {
+  void onAcceptedOutputWindow(BodyWindow window) {
     final ToolAcceptanceProjection projection;
     try {
-      projection = decoder(utf8.decode(window.bytes));
+      final encoded = window.bytesBase64;
+      final text =
+          window.text ??
+          (encoded == null ? '' : utf8.decode(base64Decode(encoded)));
+      projection = decoder(text);
     } on FormatException {
       return;
     }

@@ -1,4 +1,4 @@
-//! Independent immutable-history and mutable-current HTTP read owners.
+//! Independent immutable-history and unified `ConversationFeed` HTTP read owners.
 
 use std::{
     collections::HashMap,
@@ -21,16 +21,19 @@ use axum::{
     },
 };
 use futures::Stream;
+use pl_studio_runtime::history::HistoryReader;
 use pl_studio_runtime::{
-    ContentRange, CurrentCollectionPage, CurrentCollectionRef, CurrentContentRef, CurrentRevision,
-    ReadDemand, StudioError, StudioErrorCode, StudioErrorReason,
+    StudioError, StudioErrorCode, StudioErrorReason,
     history::{
         HistoryAccountingHead, HistoryBodyPage, HistoryBodyWindow, HistoryBusinessPage, HistoryCut,
         HistoryDemand, HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage,
         HistoryEventsQuery, HistoryTimelinePage, HistoryWorkRangePage,
     },
+    timeline::{
+        BodyRef, BodyWindow, ConversationFeed, LiveStatusSnapshot, SessionDetailKind,
+        SessionDetailWindow, SessionMetaSnapshot, TimelinePatch, WorkGroupMember,
+    },
 };
-use pl_studio_runtime::{CurrentReader, CurrentWatch, history::HistoryReader};
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
@@ -77,9 +80,9 @@ enum TimelineOwner {
         tasks: TaskTracker,
         close_gate: tokio::sync::Mutex<()>,
     },
-    Current {
+    Feed {
         thread_id: String,
-        reader: CurrentReader,
+        feed: ConversationFeed,
         permit: Mutex<Option<OwnedSemaphorePermit>>,
         activity: Mutex<tokio::time::Instant>,
         activity_changed: tokio::sync::Notify,
@@ -109,10 +112,10 @@ impl TimelineOwner {
         }
     }
 
-    fn current(thread_id: String, reader: CurrentReader, permit: OwnedSemaphorePermit) -> Self {
-        Self::Current {
+    fn feed(thread_id: String, feed: ConversationFeed, permit: OwnedSemaphorePermit) -> Self {
+        Self::Feed {
             thread_id,
-            reader,
+            feed,
             permit: Mutex::new(Some(permit)),
             activity: Mutex::new(tokio::time::Instant::now()),
             activity_changed: tokio::sync::Notify::new(),
@@ -127,33 +130,33 @@ impl TimelineOwner {
 
     fn thread_id(&self) -> &str {
         match self {
-            Self::History { thread_id, .. } | Self::Current { thread_id, .. } => thread_id,
+            Self::History { thread_id, .. } | Self::Feed { thread_id, .. } => thread_id,
         }
     }
 
     fn history_reader(&self) -> Option<&HistoryReader> {
         match self {
             Self::History { reader, .. } => Some(reader),
-            Self::Current { .. } => None,
+            Self::Feed { .. } => None,
         }
     }
 
-    fn current_reader(&self) -> Option<&CurrentReader> {
+    fn conversation_feed(&self) -> Option<&ConversationFeed> {
         match self {
             Self::History { .. } => None,
-            Self::Current { reader, .. } => Some(reader),
+            Self::Feed { feed, .. } => Some(feed),
         }
     }
 
     fn cancel(&self) -> &CancellationToken {
         match self {
-            Self::History { cancel, .. } | Self::Current { cancel, .. } => cancel,
+            Self::History { cancel, .. } | Self::Feed { cancel, .. } => cancel,
         }
     }
 
     fn tasks(&self) -> &TaskTracker {
         match self {
-            Self::History { tasks, .. } | Self::Current { tasks, .. } => tasks,
+            Self::History { tasks, .. } | Self::Feed { tasks, .. } => tasks,
         }
     }
 
@@ -165,7 +168,7 @@ impl TimelineOwner {
                 tasks,
                 ..
             }
-            | Self::Current {
+            | Self::Feed {
                 admission,
                 cancel,
                 tasks,
@@ -187,7 +190,7 @@ impl TimelineOwner {
                 activity_changed,
                 ..
             }
-            | Self::Current {
+            | Self::Feed {
                 activity,
                 activity_changed,
                 ..
@@ -205,7 +208,7 @@ impl TimelineOwner {
                 tasks,
                 ..
             }
-            | Self::Current {
+            | Self::Feed {
                 admission,
                 cancel,
                 tasks,
@@ -216,7 +219,7 @@ impl TimelineOwner {
         cancel.cancel();
         match self {
             Self::History { reader, .. } => reader.request_close(),
-            Self::Current { reader, .. } => reader.request_close(),
+            Self::Feed { feed, .. } => feed.request_close(),
         }
         tasks.close();
     }
@@ -224,24 +227,17 @@ impl TimelineOwner {
     async fn close(&self) -> Result<(), StudioError> {
         self.request_close();
         let _close = match self {
-            Self::History { close_gate, .. } | Self::Current { close_gate, .. } => {
+            Self::History { close_gate, .. } | Self::Feed { close_gate, .. } => {
                 close_gate.lock().await
             }
         };
-        let result = match self {
-            Self::History { reader, .. } => {
-                reader.close().await;
-                Ok(())
-            }
-            Self::Current { reader, .. } => reader
-                .close()
-                .await
-                .map_err(pl_studio_runtime::studio_error_from_anyhow),
-        };
-        self.tasks().wait().await;
-        result?;
         match self {
-            Self::History { permit, .. } | Self::Current { permit, .. } => {
+            Self::History { reader, .. } => reader.close().await,
+            Self::Feed { feed, .. } => feed.close().await,
+        }
+        self.tasks().wait().await;
+        match self {
+            Self::History { permit, .. } | Self::Feed { permit, .. } => {
                 permit.lock().expect("timeline permit poisoned").take();
             }
         }
@@ -254,7 +250,7 @@ impl TimelineOwner {
                 Self::History {
                     activity_changed, ..
                 }
-                | Self::Current {
+                | Self::Feed {
                     activity_changed, ..
                 } => activity_changed.notified(),
             };
@@ -265,7 +261,7 @@ impl TimelineOwner {
                     active_reads,
                     ..
                 }
-                | Self::Current {
+                | Self::Feed {
                     activity,
                     reads,
                     active_reads,
@@ -303,8 +299,8 @@ impl TimelineReadLease {
         self.owner.history_reader().ok_or_else(stale_scope)
     }
 
-    fn current(&self) -> Result<&CurrentReader, ApiError> {
-        self.owner.current_reader().ok_or_else(stale_scope)
+    fn feed(&self) -> Result<&ConversationFeed, ApiError> {
+        self.owner.conversation_feed().ok_or_else(stale_scope)
     }
 }
 
@@ -313,7 +309,7 @@ impl Drop for TimelineReadLease {
         if self._permit.is_none() {
             match self.owner.as_ref() {
                 TimelineOwner::History { active_reads, .. }
-                | TimelineOwner::Current { active_reads, .. } => {
+                | TimelineOwner::Feed { active_reads, .. } => {
                     active_reads.fetch_sub(1, Ordering::AcqRel);
                 }
             }
@@ -369,15 +365,22 @@ impl Timelines {
         thread_id: &str,
         headers: &HeaderMap,
     ) -> Result<(String, Arc<TimelineOwner>), ApiError> {
-        let id = header_id(headers)?;
+        self.closing_by_id(thread_id, &header_id(headers)?)
+    }
+
+    fn closing_by_id(
+        &self,
+        thread_id: &str,
+        id: &str,
+    ) -> Result<(String, Arc<TimelineOwner>), ApiError> {
         let owners = self.inner.lock().expect("timeline owners poisoned");
         let owner = owners
             .owners
-            .get(&id)
+            .get(id)
             .filter(|owner| owner.thread_id() == thread_id)
             .cloned()
             .ok_or_else(stale_scope)?;
-        Ok((id, owner))
+        Ok((id.to_owned(), owner))
     }
 
     fn borrow(
@@ -386,11 +389,19 @@ impl Timelines {
         headers: &HeaderMap,
         shutdown: &CancellationToken,
     ) -> Result<TimelineReadLease, ApiError> {
-        let id = header_id(headers)?;
+        self.borrow_by_id(thread_id, &header_id(headers)?, shutdown)
+    }
+
+    fn borrow_by_id(
+        &self,
+        thread_id: &str,
+        id: &str,
+        shutdown: &CancellationToken,
+    ) -> Result<TimelineReadLease, ApiError> {
         let owners = self.inner.lock().expect("timeline owners poisoned");
         let owner = owners
             .owners
-            .get(&id)
+            .get(id)
             .filter(|owner| owner.thread_id() == thread_id)
             .cloned()
             .ok_or_else(stale_scope)?;
@@ -406,7 +417,7 @@ impl Timelines {
                 activity_changed,
                 ..
             }
-            | TimelineOwner::Current {
+            | TimelineOwner::Feed {
                 reads,
                 activity,
                 activity_changed,
@@ -438,11 +449,19 @@ impl Timelines {
         headers: &HeaderMap,
         shutdown: &CancellationToken,
     ) -> Result<TimelineReadLease, ApiError> {
-        let id = header_id(headers)?;
+        self.borrow_watch_by_id(thread_id, &header_id(headers)?, shutdown)
+    }
+
+    fn borrow_watch_by_id(
+        &self,
+        thread_id: &str,
+        id: &str,
+        shutdown: &CancellationToken,
+    ) -> Result<TimelineReadLease, ApiError> {
         let owners = self.inner.lock().expect("timeline owners poisoned");
         let owner = owners
             .owners
-            .get(&id)
+            .get(id)
             .filter(|owner| owner.thread_id() == thread_id)
             .cloned()
             .ok_or_else(stale_scope)?;
@@ -453,7 +472,7 @@ impl Timelines {
         }
         match owner.as_ref() {
             TimelineOwner::History { active_reads, .. }
-            | TimelineOwner::Current { active_reads, .. } => {
+            | TimelineOwner::Feed { active_reads, .. } => {
                 active_reads.fetch_add(1, Ordering::AcqRel);
             }
         }
@@ -596,64 +615,63 @@ pub(crate) async fn open_history(
     ))
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct OpenCurrentRequest {
-    current_protocol_version: u32,
-    demand: ReadDemand,
+pub(crate) struct OpenFeedRequest {
+    #[serde(default)]
+    initial_limit: Option<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct OpenCurrentResponse {
-    pub current_protocol_version: u32,
-    pub current_owner_id: String,
-    pub reader_id: String,
+pub(crate) struct OpenFeedResponse {
+    pub feed_id: String,
+    pub thread_id: String,
+    #[schema(value_type = Object)]
+    pub live_status: LiveStatusSnapshot,
+    #[schema(value_type = Object)]
+    pub session_meta: SessionMetaSnapshot,
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/open",
-    operation_id = "thread.openCurrent",
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/open",
+    operation_id = "thread.openFeed",
     params(("thread_id" = String, Path)),
-    request_body = OpenCurrentRequest,
-    responses(StudioApiErrors, (status = 200, body = OpenCurrentResponse)))]
-pub(crate) async fn open_current(
+    request_body = OpenFeedRequest,
+    responses(StudioApiErrors, (status = 200, body = OpenFeedResponse)))]
+pub(crate) async fn open_feed(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
-    ApiJson(request): ApiJson<OpenCurrentRequest>,
+    ApiJson(request): ApiJson<OpenFeedRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let permit = state
         .streams
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::overloaded())?;
-    let reader = state
+    let limit = request.initial_limit.unwrap_or(64).clamp(1, 512);
+    let feed = state
         .runtime
-        .open_current_reader(&thread_id, request.current_protocol_version, request.demand)
+        .open_conversation_feed(&thread_id, limit)
         .await?;
-    let initial = match reader.snapshot(request.demand).await {
-        Ok(view) => view,
-        Err(error) => {
-            reader.request_close();
-            let _ = reader.close().await;
-            return Err(error.into());
-        }
-    };
-    let id = next_owner("current", &thread_id);
-    let owner = Arc::new(TimelineOwner::current(thread_id, reader, permit));
+    let live_status = feed.live_status_snapshot();
+    let session_meta = feed.session_meta_snapshot();
+    let feed_id = next_owner("feed", &thread_id);
+    let owner = Arc::new(TimelineOwner::feed(thread_id.clone(), feed, permit));
     if let Err(error) = state
         .timelines
-        .register(&state, id.clone(), Arc::clone(&owner))
+        .register(&state, feed_id.clone(), Arc::clone(&owner))
     {
         owner.request_close();
         let _ = owner.close().await;
         return Err(error);
     }
     Ok((
-        [(CONVERSATION_HEADER, id.clone())],
-        Json(OpenCurrentResponse {
-            current_protocol_version: request.current_protocol_version,
-            current_owner_id: initial.revision.owner_id,
-            reader_id: id,
+        [(CONVERSATION_HEADER, feed_id.clone())],
+        Json(OpenFeedResponse {
+            feed_id,
+            thread_id,
+            live_status,
+            session_meta,
         }),
     ))
 }
@@ -1006,241 +1024,208 @@ pub(crate) async fn changed(
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CurrentSnapshotRequest {
-    demand: ReadDemand,
+pub(crate) struct FeedOlderRequest {
+    cursor: String,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FeedWorkGroupRequest {
+    after_seq: Option<u64>,
+    before_seq: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CurrentWatchRequest {
-    after: Option<CurrentRevision>,
-    demand: ReadDemand,
+pub(crate) struct FeedBodyRequest {
+    #[schema(value_type = Object)]
+    reference: BodyRef,
+    offset: u64,
+    max_bytes: u32,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CurrentPageRequest {
-    reference: CurrentCollectionRef,
-    continuation: Option<String>,
-    demand: ReadDemand,
+pub(crate) struct FeedDetailRequest {
+    kind: SessionDetailKind,
+    offset: u64,
+    max_bytes: u32,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CurrentBodyRequest {
-    reference: CurrentContentRef,
-    range: ContentRange,
+pub(crate) struct FeedResetRequest {
+    #[serde(default)]
+    limit: Option<u32>,
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/snapshot",
-    operation_id = "thread.snapshotCurrent",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = CurrentSnapshotRequest,
+#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/events",
+    operation_id = "thread.streamFeedEvents",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    responses(StudioApiErrors, (status = 200, body = String, content_type = "text/event-stream")))]
+pub(crate) async fn feed_events(
+    State(state): State<AppState>,
+    Path((thread_id, feed_id)): Path<(String, String)>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let lease = state
+        .timelines
+        .borrow_watch_by_id(&thread_id, &feed_id, &state.shutdown)?;
+    let feed = lease.feed()?.clone();
+    let owner = Arc::clone(&lease.owner);
+    let (sender, receiver) = mpsc::channel(16);
+    let task_owner = Arc::clone(&owner);
+    owner.spawn_task(async move {
+        let _lease = lease;
+        run_feed_events(&state, task_owner.as_ref(), feed, sender).await;
+    })?;
+    Ok(Sse::new(ReceiverStream::new(receiver))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
+async fn run_feed_events(
+    state: &AppState,
+    owner: &TimelineOwner,
+    feed: ConversationFeed,
+    sender: mpsc::Sender<Result<Event, Infallible>>,
+) {
+    loop {
+        let capacity = tokio::select! { biased;
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel().cancelled() => break,
+            capacity = sender.reserve() => match capacity {
+                Ok(capacity) => capacity,
+                Err(_) => break,
+            },
+        };
+        let next = tokio::select! { biased;
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel().cancelled() => break,
+            () = sender.closed() => break,
+            ev = feed.next_event() => ev,
+        };
+        match next {
+            Some(ev) => {
+                let Ok(event) = Event::default().event("event").json_data(ev) else {
+                    break;
+                };
+                capacity.send(Ok(event));
+            }
+            None => break,
+        }
+    }
+    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/older",
+    operation_id = "thread.loadFeedOlder",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    request_body = FeedOlderRequest,
     responses(StudioApiErrors, (status = 200, body = Object)))]
-pub(crate) async fn snapshot(
+pub(crate) async fn feed_older(
     State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<CurrentSnapshotRequest>,
-) -> Result<Json<pl_studio_runtime::CurrentView>, ApiError> {
+    Path((thread_id, feed_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<FeedOlderRequest>,
+) -> Result<Json<TimelinePatch>, ApiError> {
     let lease = state
         .timelines
-        .borrow(&thread_id, &headers, &state.shutdown)?;
-    Ok(Json(lease.current()?.snapshot(request.demand).await?))
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
+    let limit = request.limit.unwrap_or(64).clamp(1, 512);
+    Ok(Json(lease.feed()?.load_older(request.cursor, limit).await?))
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/watch",
-    operation_id = "thread.watchCurrent",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = CurrentWatchRequest,
-    responses(StudioApiErrors, (status = 200, body = String, content_type = "text/event-stream")))]
-pub(crate) async fn watch(
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/work-group",
+    operation_id = "thread.loadFeedWorkGroup",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    request_body = FeedWorkGroupRequest,
+    responses(StudioApiErrors, (status = 200, body = Vec<Object>)))]
+pub(crate) async fn feed_work_group(
     State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<CurrentWatchRequest>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    Path((thread_id, feed_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<FeedWorkGroupRequest>,
+) -> Result<Json<Vec<WorkGroupMember>>, ApiError> {
     let lease = state
         .timelines
-        .borrow_watch(&thread_id, &headers, &state.shutdown)?;
-    let current = lease.current()?.clone();
-    let owner = Arc::clone(&lease.owner);
-    let watch = current.watch(request.after, request.demand).await?;
-    let (sender, receiver) = mpsc::channel(1);
-    let task_owner = Arc::clone(&owner);
-    owner.spawn_task(async move {
-        let _lease = lease;
-        run_current_watch(&state, task_owner.as_ref(), watch, sender).await;
-    })?;
-    Ok(Sse::new(ReceiverStream::new(receiver))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
-}
-
-async fn run_current_watch(
-    state: &AppState,
-    owner: &TimelineOwner,
-    watch: CurrentWatch,
-    sender: mpsc::Sender<Result<Event, Infallible>>,
-) {
-    loop {
-        let capacity = tokio::select! { biased;
-            () = state.shutdown.cancelled() => break,
-            () = owner.cancel().cancelled() => break,
-            capacity = sender.reserve() => match capacity {
-                Ok(capacity) => capacity,
-                Err(_) => break,
-            },
-        };
-        let frame = tokio::select! { biased;
-            () = state.shutdown.cancelled() => break,
-            () = owner.cancel().cancelled() => break,
-            () = sender.closed() => break,
-            frame = watch.next() => frame,
-        };
-        match frame {
-            Ok(Some(frame)) => {
-                let Ok(event) = Event::default().event("current").json_data(frame) else {
-                    break;
-                };
-                capacity.send(Ok(event));
-            }
-            Ok(None) => break,
-            Err(error) => {
-                if let Ok(event) = Event::default()
-                    .event("error")
-                    .json_data(pl_studio_runtime::studio_error_from_anyhow(error))
-                {
-                    capacity.send(Ok(event));
-                }
-                break;
-            }
-        }
-    }
-    watch.request_close();
-    if let Err(error) = watch.close().await {
-        tracing::warn!(%error, "current SSE watch close failed");
-    }
-    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
-}
-
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/page",
-    operation_id = "thread.pageCurrent",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = CurrentPageRequest,
-    responses(StudioApiErrors, (status = 200, body = CurrentCollectionPage)))]
-pub(crate) async fn page(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<CurrentPageRequest>,
-) -> Result<Json<CurrentCollectionPage>, ApiError> {
-    let lease = state
-        .timelines
-        .borrow(&thread_id, &headers, &state.shutdown)?;
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
     Ok(Json(
         lease
-            .current()?
-            .page_collection(request.reference, request.continuation, request.demand)
+            .feed()?
+            .load_work_group_members(request.after_seq, request.before_seq)
             .await?,
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/body/read",
-    operation_id = "thread.readCurrentBody",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = CurrentBodyRequest,
-    responses(StudioApiErrors, (status = 200, body = pl_studio_runtime::ContentWindow)))]
-pub(crate) async fn body_read(
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/body",
+    operation_id = "thread.readFeedBody",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    request_body = FeedBodyRequest,
+    responses(StudioApiErrors, (status = 200, body = Object)))]
+pub(crate) async fn feed_body(
     State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<CurrentBodyRequest>,
-) -> Result<Json<pl_studio_runtime::ContentWindow>, ApiError> {
+    Path((thread_id, feed_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<FeedBodyRequest>,
+) -> Result<Json<BodyWindow>, ApiError> {
     let lease = state
         .timelines
-        .borrow(&thread_id, &headers, &state.shutdown)?;
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
     Ok(Json(
         lease
-            .current()?
-            .read_body(request.reference, request.range)
+            .feed()?
+            .read_body_window(&request.reference, request.offset, request.max_bytes)
             .await?,
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/body/watch",
-    operation_id = "thread.watchCurrentBody",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = CurrentBodyRequest,
-    responses(StudioApiErrors, (status = 200, body = String, content_type = "text/event-stream")))]
-pub(crate) async fn body_watch(
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/detail",
+    operation_id = "thread.readFeedDetail",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    request_body = FeedDetailRequest,
+    responses(StudioApiErrors, (status = 200, body = SessionDetailWindow)))]
+pub(crate) async fn feed_detail(
     State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<CurrentBodyRequest>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    Path((thread_id, feed_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<FeedDetailRequest>,
+) -> Result<Json<SessionDetailWindow>, ApiError> {
     let lease = state
         .timelines
-        .borrow_watch(&thread_id, &headers, &state.shutdown)?;
-    let watch = lease
-        .current()?
-        .watch_body(request.reference, request.range)
-        .await?;
-    let owner = Arc::clone(&lease.owner);
-    let (sender, receiver) = mpsc::channel(1);
-    let task_owner = Arc::clone(&owner);
-    owner.spawn_task(async move {
-        let _lease = lease;
-        run_body_watch(&state, task_owner.as_ref(), watch, sender).await;
-    })?;
-    Ok(Sse::new(ReceiverStream::new(receiver))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
+    Ok(Json(lease.feed()?.read_session_detail(
+        request.kind,
+        request.offset,
+        request.max_bytes,
+    )?))
 }
 
-async fn run_body_watch(
-    state: &AppState,
-    owner: &TimelineOwner,
-    watch: pl_studio_runtime::CurrentBodyWatch,
-    sender: mpsc::Sender<Result<Event, Infallible>>,
-) {
-    loop {
-        let capacity = tokio::select! { biased;
-            () = state.shutdown.cancelled() => break,
-            () = owner.cancel().cancelled() => break,
-            capacity = sender.reserve() => match capacity {
-                Ok(capacity) => capacity,
-                Err(_) => break,
-            },
-        };
-        let window = tokio::select! { biased;
-            () = state.shutdown.cancelled() => break,
-            () = owner.cancel().cancelled() => break,
-            () = sender.closed() => break,
-            window = watch.next() => window,
-        };
-        match window {
-            Ok(Some(window)) => {
-                let Ok(event) = Event::default().event("body").json_data(window) else {
-                    break;
-                };
-                capacity.send(Ok(event));
-            }
-            Ok(None) => break,
-            Err(error) => {
-                if let Ok(event) = Event::default()
-                    .event("error")
-                    .json_data(pl_studio_runtime::studio_error_from_anyhow(error))
-                {
-                    capacity.send(Ok(event));
-                }
-                break;
-            }
-        }
-    }
-    watch.request_close();
-    if let Err(error) = watch.close().await {
-        tracing::warn!(%error, "current body SSE watch close failed");
-    }
-    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/reset",
+    operation_id = "thread.resetFeedToLatest",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    request_body = FeedResetRequest,
+    responses(StudioApiErrors, (status = 200, body = Object)))]
+pub(crate) async fn feed_reset(
+    State(state): State<AppState>,
+    Path((thread_id, feed_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<FeedResetRequest>,
+) -> Result<Json<TimelinePatch>, ApiError> {
+    let lease = state
+        .timelines
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
+    let limit = request.limit.unwrap_or(64).clamp(1, 512);
+    Ok(Json(lease.feed()?.reset_to_latest(limit).await?))
+}
+
+#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/meta",
+    operation_id = "thread.readFeedMeta",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    responses(StudioApiErrors, (status = 200, body = Object)))]
+pub(crate) async fn feed_meta(
+    State(state): State<AppState>,
+    Path((thread_id, feed_id)): Path<(String, String)>,
+) -> Result<Json<SessionMetaSnapshot>, ApiError> {
+    let lease = state
+        .timelines
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
+    Ok(Json(lease.feed()?.session_meta_snapshot()))
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/history/close",
@@ -1252,29 +1237,26 @@ pub(crate) async fn close_history(
     Path(thread_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    close_owner(state, thread_id, headers, false).await
-}
-
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/close",
-    operation_id = "thread.closeCurrent",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    responses(StudioApiErrors, (status = 204)))]
-pub(crate) async fn close_current(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-) -> Result<axum::http::StatusCode, ApiError> {
-    close_owner(state, thread_id, headers, true).await
-}
-
-async fn close_owner(
-    state: AppState,
-    thread_id: String,
-    headers: HeaderMap,
-    current: bool,
-) -> Result<axum::http::StatusCode, ApiError> {
     let (id, owner) = state.timelines.closing(&thread_id, &headers)?;
-    if current != owner.current_reader().is_some() {
+    if owner.history_reader().is_none() {
+        return Err(stale_scope());
+    }
+    owner.request_close();
+    owner.close().await.map_err(ApiError)?;
+    state.timelines.forget(&id);
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/close",
+    operation_id = "thread.closeFeed",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    responses(StudioApiErrors, (status = 204)))]
+pub(crate) async fn close_feed(
+    State(state): State<AppState>,
+    Path((thread_id, feed_id)): Path<(String, String)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let (id, owner) = state.timelines.closing_by_id(&thread_id, &feed_id)?;
+    if owner.conversation_feed().is_none() {
         return Err(stale_scope());
     }
     owner.request_close();
@@ -1371,7 +1353,7 @@ mod tests {
             }),
         )
         .await;
-        let close = close_owner(state.clone(), thread_id.into(), headers, false).await;
+        let close = close_history(State(state.clone()), Path(thread_id.into()), headers).await;
         state.timelines.shutdown().await?;
         runtime.shutdown_runtime().await?;
         store.close().await?;
@@ -1416,28 +1398,17 @@ mod tests {
         );
         assert_eq!(history.into_response().status(), StatusCode::BAD_REQUEST);
 
-        let current = match open_current(
+        let feed = match open_feed(
             State(state.clone()),
             Path("missing-thread".into()),
-            ApiJson(OpenCurrentRequest {
-                current_protocol_version: pl_studio_runtime::CURRENT_PROTOCOL_VERSION + 1,
-                demand: ReadDemand {
-                    max_items: 1,
-                    max_bytes: 1,
-                },
-            }),
+            ApiJson(OpenFeedRequest::default()),
         )
         .await
         {
             Err(error) => error,
-            Ok(_) => panic!("unknown current protocol accepted"),
+            Ok(_) => panic!("missing thread accepted"),
         };
-        assert_eq!(current.0.code, StudioErrorCode::Protocol);
-        assert_eq!(
-            current.0.reason(),
-            Some(StudioErrorReason::ProtocolVersionMismatch.label())
-        );
-        assert_eq!(current.into_response().status(), StatusCode::BAD_REQUEST);
+        assert_eq!(feed.into_response().status(), StatusCode::NOT_FOUND);
 
         runtime
             .shutdown_runtime()

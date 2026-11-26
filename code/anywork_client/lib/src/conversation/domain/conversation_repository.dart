@@ -5,12 +5,13 @@ import '../../lifecycle/close_report.dart' show CloseReport;
 import '../../observation/latest_value.dart';
 import 'conversation_state.dart';
 
-abstract interface class ConversationRepository {
+abstract interface class ConversationRepository
+    implements ConversationFeedPort {
   ConversationSession session(String threadId);
-  Future<HistoryReader> openHistoryReader(String threadId);
-  Future<CurrentReader> openCurrentReader(
+  @override
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required ReadDemand demand,
+    int initialLimit = 50,
   });
   ConversationSession? existingSession(String threadId);
   ThreadSessionState? sessionState(String threadId);
@@ -27,78 +28,11 @@ abstract interface class ConversationSession {
   ValueObservation<ThreadSessionState> get source;
   bool get isActive;
   bool get isClosed;
-  void refresh();
-  Future<ThreadWorkspace> resyncRuntime();
-}
-
-/// Pure immutable-history queries. Results are pages, never an implicit UI apply.
-abstract interface class HistoryQueryScope {
-  Future<HistoryCut> capture();
-  Future<HistoryTimelinePage> timelinePage({
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  });
-  Future<HistoryWorkRangePage> workRangePage({
-    int? afterSeq,
-    int? beforeSeq,
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  });
-  Future<HistoryBusinessPage> turnsPage({
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  });
-  Future<HistoryBusinessPage> costsPage({
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  });
-  Future<HistoryEventsPage> eventsPage({
-    required HistoryEventsQuery query,
-    HistoryCut? cut,
-    String? cursor,
-    required HistoryDemand demand,
-  });
-  Future<HistoryEventRecord> readEvent({
-    required String eventId,
-    required HistoryDemand demand,
-  });
-  Future<HistoryBodyPage> listBodies({
-    required String eventId,
-    String? cursor,
-    required HistoryDemand demand,
-  });
-  Future<HistoryBodyWindow> readBody({
-    required HistoryEventBodyRef reference,
+  Future<SessionDetailWindow> readSessionDetail({
+    required SessionDetailKind kind,
     required int offset,
     required int maxBytes,
   });
-  void retire();
-  Future<CloseReport> close({ClientCloseBudget? budget});
-}
-
-/// One current-owner read scope. Metadata/body watches are independent resources.
-abstract interface class CurrentQueryScope {
-  String get threadId;
-  int get generation;
-  CurrentReader get reader;
-  bool get isActive;
-  Future<CurrentCollectionPage> pageCollection({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  });
-  Future<ContentWindow> readBody({
-    required CurrentContentRef reference,
-    required ContentRange range,
-  });
-  CurrentBodyWatch watchBody({
-    required CurrentContentRef reference,
-    required ContentRange range,
-  });
-  void retire();
-  Future<CloseReport> close({ClientCloseBudget? budget});
+  void refresh();
+  Future<ThreadWorkspace> resyncRuntime();
 }

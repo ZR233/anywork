@@ -18,12 +18,12 @@ use super::{ProjectionError, order};
 /// keeps referencing that input id. The body is therefore legitimately absent although the input
 /// item is already durable, so enumeration must not fail: the identity is reported here and the
 /// durable pass decides from the durable item itself whether the fact is complete.
-pub(in crate::studio) struct EffectProjection {
-    pub(in crate::studio) items: Vec<ExecutionItem>,
+pub(crate) struct EffectProjection {
+    pub(crate) items: Vec<ExecutionItem>,
     /// Pruned inputs without either a visible item or a proven hidden identity.
-    pub(in crate::studio) unresolved_inputs: BTreeSet<String>,
+    pub(crate) unresolved_inputs: BTreeSet<String>,
     /// Calls whose producing attempt was pruned; the original invocation belongs to history.
-    pub(in crate::studio) unresolved_calls: BTreeSet<String>,
+    pub(crate) unresolved_calls: BTreeSet<String>,
 }
 
 impl EffectProjection {
@@ -55,7 +55,7 @@ impl EffectProjection {
     }
 }
 
-pub(in crate::studio) fn project_effect_items(
+pub(crate) fn project_effect_items(
     thread: &crate::Thread,
     state: &ThreadSnapshot,
     effect: &ThreadEffectBatch,

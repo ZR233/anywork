@@ -5,7 +5,7 @@ import '../../studio/stores/domain_sync.dart';
 import '../../../models.dart';
 import 'drafts_dependencies.dart';
 
-/// Register before dispatch. The conversation reducer supplies only minimal
+/// Register before dispatch. The conversation feed supplies only minimal
 /// facts for this input; neither a last patch nor a state cursor is a snapshot.
 InputSubmissionObservation registerSubmittedInput({
   required DraftsDependencies dependencies,
@@ -65,11 +65,18 @@ final class InputSubmissionObservation implements Observation {
     final identity = (threadId: fact.threadId, turnId: fact.turnId);
     if (fact.inputId != inputId ||
         expectedThreadId != null && fact.threadId != expectedThreadId ||
-        _identity != null && _identity != identity ||
+        _identity != null &&
+            (_identity!.threadId != identity.threadId ||
+                _identity!.turnId != null &&
+                    identity.turnId != null &&
+                    _identity!.turnId != identity.turnId) ||
         _receipt != null && fact.threadId != _receipt!.threadId) {
       _conflict ??= StateError('Input Turn evidence identity conflicted');
     } else {
-      _identity = identity;
+      _identity = (
+        threadId: identity.threadId,
+        turnId: identity.turnId ?? _identity?.turnId,
+      );
       _effective |= fact.status != StudioTurnStatus.queued;
       _durable |= fact.saved == true;
     }
@@ -142,7 +149,6 @@ final class InputSubmissionObservation implements Observation {
           // The receipt cursor is the input's accepted commit sequence. Only
           // canonical storage progress in the observed session proves its save.
           if (current.sync.phase == DomainSyncPhase.ready &&
-              current.streamEpoch != null &&
               durableSequence != null &&
               durableSequence >= _receipt!.cursor) {
             _durable = true;

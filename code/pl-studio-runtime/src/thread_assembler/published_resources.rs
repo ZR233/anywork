@@ -700,8 +700,7 @@ mod archive_scope_tests {
             .unwrap();
         let resource = temp.path().join("resource");
         tokio::fs::write(&resource, b"owned").await.unwrap();
-        let child =
-            pl_core::thread::ThreadHandle::resume_without_model("child".into(), None).unwrap();
+        let child = pl_core::thread::ThreadHandle::start_current("child".into(), None).unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let activation =
             crate::thread_assembler::ThreadActivation::native_test("child", Some("root"));

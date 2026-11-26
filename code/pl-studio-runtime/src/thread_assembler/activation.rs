@@ -93,19 +93,22 @@ pub struct ThreadPreparation {
     pub agent_controls: Vec<Registration>,
     /// Root-only strategy read from canonical saved/newly admitted facts before tool preflight.
     pub delegation: Option<crate::DelegationSettings>,
-    /// The same cold document used for root tool preflight. Move it into Core on activation.
-    pub root_current: Option<ThreadCurrent>,
+    /// The complete checkpoint read for this preparation, when present.
+    pub current: Option<ThreadCurrent>,
 }
 
 /// Resolves an existing product task into fresh model/tool resources and saved facts.
 pub trait StudioActivationFactory: std::fmt::Debug + Send + Sync + 'static {
-    /// Reads a root's saved Current and frozen strategy before allocating physical resources.
-    /// Must not inherit current global defaults for an existing Thread.
-    fn prepare_root(
+    /// Reads this generation's complete Current and, for a root, selects its frozen strategy.
+    /// Runs only for the activation owner, before allocating physical resources.
+    fn prepare_execution(
         &self,
         identity: &ThreadActivation,
     ) -> impl Future<
-        Output = Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError>,
+        Output = Result<
+            (Option<crate::DelegationSettings>, Option<ThreadCurrent>),
+            ThreadAssemblyError,
+        >,
     > + Send;
 
     /// Owns cleanup of allocations when preparation fails before returning a spec.
@@ -227,21 +230,20 @@ impl SessionRuntime {
                 let workspace_owner = super::WorkspacePreparationOwner::default();
                 let operation = std::panic::AssertUnwindSafe(async {
                     let _operation = owner.agent_operation(identity.id()).await;
-                    if owner
-                        .0
-                        .state()
-                        .close
-                        .sealed_agents
-                        .contains_key(identity.id())
+                    if cancellation.is_cancelled()
+                        || owner
+                            .0
+                            .state()
+                            .close
+                            .sealed_agents
+                            .contains_key(identity.id())
                     {
                         return Err(ThreadAssemblyError::Closed);
                     }
-                    let (delegation, root_current) = if identity.agent.parent_agent_id.is_none() {
-                        let (delegation, current) = factory.prepare_root(&identity).await?;
-                        (Some(delegation), current)
-                    } else {
-                        (None, None)
-                    };
+                    let (delegation, current) = factory.prepare_execution(&identity).await?;
+                    if cancellation.is_cancelled() {
+                        return Err(ThreadAssemblyError::Closed);
+                    }
                     let resources = owner
                         .0
                         .state()
@@ -273,7 +275,7 @@ impl SessionRuntime {
                             cancellation: cancellation.clone(),
                             agent_controls,
                             delegation,
-                            root_current,
+                            current,
                         })
                         .await?;
                     if spec.id.as_str() != identity.id()
@@ -385,10 +387,10 @@ mod backend_tests {
     }
 
     impl StudioActivationFactory for CountingFactory {
-        async fn prepare_root(
+        async fn prepare_execution(
             &self,
             identity: &ThreadActivation,
-        ) -> Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError>
+        ) -> Result<(Option<crate::DelegationSettings>, Option<ThreadCurrent>), ThreadAssemblyError>
         {
             self.delegation_reads.fetch_add(1, Ordering::SeqCst);
             Err(ThreadAssemblyError::Identity(identity.id().to_owned()))

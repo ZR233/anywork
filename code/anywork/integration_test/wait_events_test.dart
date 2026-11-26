@@ -8,7 +8,8 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
@@ -109,28 +110,55 @@ void main() {
     await tester.tap(find.byKey(StudioDriverKeys.composerSubmit));
 
     String? threadId;
-    await _until(tester, () {
-      final selected = graph.client.selection.state.selectedThreadId;
-      if (selected == null ||
-          graph.client.conversations.visibleThreadId.value != selected) {
-        return false;
-      }
-      threadId = selected;
-      return true;
-    }, 'selected wait Thread');
-    final completed = await waitForCompletedHistoryTurn(
-      conversations: graph.client.conversations,
+    await _until(
+      tester,
+      () {
+        final selected = graph.client.selection.state.selectedThreadId;
+        if (selected == null ||
+            graph.client.conversations.visibleThreadId.value != selected) {
+          return false;
+        }
+        threadId = selected;
+        return true;
+      },
+      'selected wait Thread',
+      diagnostic: () {
+        final selected = graph.client.selection.state.selectedThreadId;
+        final state = selected == null
+            ? null
+            : graph.client.conversations.sessionState(selected);
+        return 'selected=$selected visible=${graph.client.conversations.visibleThreadId.value} '
+            'sync=${state?.sync.phase.name} error=${state?.sync.errorMessage} '
+            'active=${state?.activeTurn?.turnId} last=${state?.lastTurn?.turnId}';
+      },
+    );
+    final completed = await waitForCompletedTurn(
+      feeds: graph.client.transport,
       threadId: threadId!,
       matches: (head) =>
           head.inputId != null &&
           (threadId != priorThreadId || head.turnId != priorTurnId),
-      description: 'completed wait Turn in History',
+      description: 'canonical completed wait Turn',
       timeout: const Duration(minutes: 2),
     );
     expect(completed.inputId, isNotNull);
-    bool isObservedWait(ChatAtom? atom) =>
-        atom?.tool?.name == 'wait' &&
-        atom?.source == ForegroundTurnChatSource(turnId: completed.turnId);
+    bool isObservedWait(WorkGroupMember member) {
+      if (member is! WorkGroupToolCall ||
+          member.toolName != 'wait' ||
+          member.turnId != completed.turnId) {
+        return false;
+      }
+      // The fixture executes two wait calls in this Turn. Select the events
+      // wait with both targets through the production payload reader, then
+      // use its callId for every subsequent identity assertion.
+      final card = timelineFeedMember(member).toolCard;
+      return card is DecodedToolCard &&
+          switch (card.value.wait?.intent) {
+            ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
+            _ => false,
+          };
+    }
+
     await _until(
       tester,
       () => graph.timeline.lease(threadId!) != null,
@@ -141,32 +169,22 @@ void main() {
     final observed = TimelineObservation(tester, () => lease);
     await _until(
       tester,
-      () => observed.main.any((unit) => unit.body is WorkDisplayBlock),
+      () => observed.main.whereType<TimelineWorkGroup>().isNotEmpty,
       'historical Work row',
     );
-    TimelineDisplayUnit? matchingWork;
-    for (final candidate in observed.main) {
-      final body = candidate.body;
-      if (body is! WorkDisplayBlock) continue;
-      String? cursor;
-      do {
-        final page = await lease.history.workRangePage(
-          afterSeq: body.members.afterSeq,
-          beforeSeq: body.members.beforeSeq,
-          cut: body.members.cut,
-          cursor: cursor,
-          demand: const HistoryDemand(maxRows: 32, maxBytes: 64 * 1024),
-        );
-        if (page.events.any((event) {
-          return event.toolName == 'wait' &&
-              event.source ==
-                  ForegroundTurnChatSource(turnId: completed.turnId);
-        })) {
-          matchingWork = candidate;
-          break;
-        }
-        cursor = page.next;
-      } while (cursor != null);
+    TimelineWorkGroup? matchingWork;
+    WorkGroupToolCall? historicalWait;
+    for (final candidate in observed.main.whereType<TimelineWorkGroup>()) {
+      final members = await lease.loadWorkGroupMembers(candidate);
+      final waits = members
+          .whereType<WorkGroupToolCall>()
+          .where(isObservedWait)
+          .toList();
+      expect(waits.length, lessThanOrEqualTo(1));
+      if (waits.isNotEmpty) {
+        historicalWait = waits.single;
+        matchingWork = candidate;
+      }
       if (matchingWork != null) break;
     }
     expect(
@@ -181,7 +199,9 @@ void main() {
 
     await _until(
       tester,
-      () => observed.mountedMembers.any(isObservedWait),
+      () => observed.mountedMembers.whereType<WorkGroupToolCall>().any(
+        (member) => member.callId == historicalWait!.callId,
+      ),
       'historical wait tool member',
     );
     late TimelineToolItemView panel;
@@ -189,24 +209,39 @@ void main() {
     await _until(tester, () {
       final matches = tester
           .widgetList<TimelineToolItemView>(find.byType(TimelineToolItemView))
-          .where(
-            (value) => switch (value.item.wait?.intent) {
-              ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
-              _ => false,
-            },
-          )
+          .where((value) => value.item.toolCallId == historicalWait!.callId)
           .toList();
       if (matches.length != 1) return false;
       panel = matches.single;
       waitItem = tester
           .widget<ChatItemView>(observed.itemRow(panel.item.id))
           .item;
-      expect(isObservedWait(waitItem.atom), isTrue);
+      expect(waitItem.turnId, completed.turnId);
+      expect(waitItem.toolCallId, historicalWait!.callId);
       return waitItem.compatibility == ChatItemCompatibility.current;
     }, 'wait tool canonical original');
-    expect(waitItem.atom!.lifecycle, isA<TerminalChatAtom>());
+    final original = historicalWait!;
+    final mounted = observed.mountedMembers
+        .whereType<WorkGroupToolCall>()
+        .singleWhere((member) => member.callId == original.callId);
+    expect(isObservedWait(mounted), isTrue);
+    expect(mounted, original);
+    expect(waitItem.id, original.id);
+    expect(waitItem.raw, original.payloadJson);
+    final payload = jsonDecode(original.payloadJson) as Map<String, Object?>;
+    final meta = payload['meta'] as Map<String, Object?>;
+    expect(meta['state'], {'kind': 'knownTerminal', 'outcome': 'completed'});
     expect(panel.item.wait!.state, ThreadWaitStateView.ready);
-    expect(waitItem.displayRecord?.contentSource, isA<CompletedOriginal>());
+    final resultBody = waitItem.body('tool.result');
+    expect(resultBody, isNotNull);
+    final resultReference = original.bodies
+        .where((body) => body.bodyKey == 'tool.result')
+        .singleOrNull;
+    expect(resultBody!.feedReference, resultReference);
+    if (resultReference == null) {
+      expect(original.resultPreview, isNotEmpty);
+      expect(resultBody.text, original.resultPreview);
+    }
     final card = find.byKey(StudioDriverKeys.waitingCard(panel.item.id));
     await observed.tap(card);
     await observed.until(
@@ -239,9 +274,16 @@ void main() {
           matching: find.byType(TimelineContentRangeView),
         ),
       )) {
+        final window = view.window;
+        final text =
+            window?.text ??
+            (window?.bytesBase64 == null
+                ? null
+                : utf8.decode(base64Decode(window!.bytesBase64!)));
         if (view.contentKey == 'tool.result' &&
-            (view.window?.bytes.isNotEmpty ?? false)) {
-          rawResult = utf8.decode(view.window!.bytes);
+            text != null &&
+            text.isNotEmpty) {
+          rawResult = text;
           return true;
         }
       }
@@ -269,7 +311,7 @@ void main() {
     expect(result['timedOut'], isFalse);
     expect(result['messagesReady'], panel.item.wait!.messagesReady);
 
-    expect(completed.state, HistoryTurnState.completed);
+    expect(completed.state.status, StudioTurnStatus.completed);
     graph.setConversationPageVisible(false);
     await tester.pumpWidget(const SizedBox.shrink());
     await _until(tester, () => lease.isReleased, 'timeline released');
@@ -296,11 +338,12 @@ Future<void> _until(
   bool Function() ready,
   String description, {
   Duration timeout = const Duration(seconds: 60),
+  String Function()? diagnostic,
 }) async {
   final clock = Stopwatch()..start();
   while (!ready()) {
     if (clock.elapsed >= timeout) {
-      fail('Timed out waiting for $description');
+      fail('Timed out waiting for $description; ${diagnostic?.call() ?? ''}');
     }
     await tester.pump(const Duration(milliseconds: 50));
     expect(tester.takeException(), isNull);

@@ -8,6 +8,10 @@ use pl_studio_runtime::history::{
     HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
     HistoryTimelinePage, HistoryWorkRangePage,
 };
+use pl_studio_runtime::timeline::{
+    BodyRef, BodyWindow, ConversationEvent, LiveStatusSnapshot, SessionMetaSnapshot, TimelinePatch,
+    WorkGroupMember,
+};
 use pl_studio_runtime::{
     BotConversationPage, BotConversationThreadReply, BotMessagePage, BotSendResult,
     BotsCommandReply, BotsStateSnapshot, CancelBotRegistrationRequest,
@@ -15,11 +19,6 @@ use pl_studio_runtime::{
     ReadBotMessagesRequest, ResolveInteractionRequest, SaveBotRequest, SendBotMessageRequest,
     SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
     StartBotRegistrationRequest, StudioError,
-};
-use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ContentRange, ContentWindow, CurrentCollectionPage,
-    CurrentCollectionRef, CurrentContentRef, CurrentFrame, CurrentRevision, CurrentView,
-    ReadDemand,
 };
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -58,19 +57,22 @@ pub(crate) struct HistoryRead {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct OpenCurrentResponse {
-    current_protocol_version: u32,
-    current_owner_id: String,
-    reader_id: String,
+struct OpenFeedResponse {
+    feed_id: String,
+    thread_id: String,
+    live_status: LiveStatusSnapshot,
+    session_meta: SessionMetaSnapshot,
 }
 
-/// One live-current read scope. It is independent of immutable history and does not replay it.
+/// Unified `ConversationFeed` HTTP handle backed by `/api/v1/threads/{thread_id}/feed/{feed_id}/*`.
 #[derive(Clone)]
-pub(crate) struct CurrentRead {
+pub(crate) struct FeedRead {
     http: StudioHttp,
     thread_id: String,
-    owner_id: String,
-    capability: String,
+    feed_id: String,
+    #[allow(dead_code)]
+    initial_live_status: LiveStatusSnapshot,
+    initial_session_meta: SessionMetaSnapshot,
 }
 
 /// Preserves the typed public failure for revision-qualified reads; callers must not parse text.
@@ -208,17 +210,34 @@ impl HistoryRead {
     }
 }
 
-impl CurrentRead {
-    pub async fn snapshot(&self, demand: ReadDemand) -> Result<CurrentView> {
-        self.post("current/snapshot", &serde_json::json!({ "demand": demand }))
-            .await
+impl FeedRead {
+    #[allow(dead_code)]
+    pub fn feed_id(&self) -> &str {
+        &self.feed_id
     }
-    pub async fn watch(
-        &self,
-        after: Option<CurrentRevision>,
-        demand: ReadDemand,
-    ) -> Result<CurrentWatchStream> {
-        let path = format!("/api/v1/threads/{}/current/watch", self.thread_id);
+
+    #[allow(dead_code)]
+    pub fn initial_live_status(&self) -> &LiveStatusSnapshot {
+        &self.initial_live_status
+    }
+
+    pub fn initial_session_meta(&self) -> &SessionMetaSnapshot {
+        &self.initial_session_meta
+    }
+
+    pub async fn session_meta(&self) -> Result<SessionMetaSnapshot> {
+        let path = format!(
+            "/api/v1/threads/{}/feed/{}/meta",
+            self.thread_id, self.feed_id
+        );
+        self.http.get_json(&path).await
+    }
+
+    pub async fn events(&self) -> Result<FeedEventStream> {
+        let path = format!(
+            "/api/v1/threads/{}/feed/{}/events",
+            self.thread_id, self.feed_id
+        );
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(RedirectPolicy::none())
@@ -227,20 +246,18 @@ impl CurrentRead {
         let response = tokio::time::timeout(
             ACK_BUDGET,
             client
-                .post(format!("{}{path}", self.http.base))
-                .header(CONVERSATION_HEADER, &self.capability)
+                .get(format!("{}{path}", self.http.base))
                 .header(reqwest::header::ACCEPT, "text/event-stream")
-                .json(&serde_json::json!({ "after": after, "demand": demand }))
                 .send(),
         )
         .await
-        .context("current watch headers timed out")??;
+        .context("feed events headers timed out")??;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return match decode_json::<serde_json::Value>(status, &body, &path) {
                 Err(error) => Err(error),
-                Ok(_) => bail!("current watch returned a successful body with HTTP {status}"),
+                Ok(_) => bail!("feed events returned a successful body with HTTP {status}"),
             };
         }
         ensure!(
@@ -249,7 +266,7 @@ impl CurrentRead {
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("text/event-stream")),
-            "current watch response is not text/event-stream"
+            "feed events response is not text/event-stream"
         );
         let mut bytes = 0usize;
         let stream = response
@@ -258,82 +275,69 @@ impl CurrentRead {
                 let chunk = chunk?;
                 bytes = bytes
                     .checked_add(chunk.len())
-                    .context("current watch byte count overflow")?;
+                    .context("feed events byte count overflow")?;
                 ensure!(
-                    bytes <= 4 * 1024 * 1024,
-                    "current watch exceeded its cumulative byte budget"
+                    bytes <= 8 * 1024 * 1024,
+                    "feed events exceeded its cumulative byte budget"
                 );
                 Ok(chunk)
             })
             .eventsource()
             .boxed();
-        Ok(CurrentWatchStream {
-            stream,
-            owner_id: self.owner_id.clone(),
-            demand,
-            saw_reset: false,
-            revision: None,
-        })
-    }
-    pub async fn page_current(
-        &self,
-        reference: &CurrentCollectionRef,
-        continuation: Option<&str>,
-        demand: ReadDemand,
-    ) -> Result<CurrentCollectionPage> {
-        let page: CurrentCollectionPage = self
-            .post(
-                "current/page",
-                &serde_json::json!({
-                    "reference": reference, "continuation": continuation, "demand": demand
-                }),
-            )
-            .await?;
-        ensure!(
-            page.revision == reference.revision
-                && page.entries.len() <= usize::try_from(demand.max_items)?
-                && serde_json::to_vec(&page)?.len() <= usize::try_from(demand.max_bytes)?,
-            "current collection response exceeded its qualified demand"
-        );
-        Ok(page)
+        Ok(FeedEventStream { stream })
     }
 
-    pub async fn read_body(
-        &self,
-        reference: &CurrentContentRef,
-        range: ContentRange,
-    ) -> Result<ContentWindow> {
+    #[allow(dead_code)]
+    pub async fn older(&self, cursor: &str, limit: Option<u32>) -> Result<TimelinePatch> {
         self.post(
-            "current/body/read",
-            &serde_json::json!({ "reference": reference, "range": range }),
+            "older",
+            &serde_json::json!({ "cursor": cursor, "limit": limit }),
         )
         .await
     }
-    pub async fn close(&self) -> Result<()> {
-        self.post_empty("current/close").await
+
+    #[allow(dead_code)]
+    pub async fn work_group(
+        &self,
+        after_seq: Option<u64>,
+        before_seq: Option<u64>,
+    ) -> Result<Vec<WorkGroupMember>> {
+        self.post(
+            "work-group",
+            &serde_json::json!({ "afterSeq": after_seq, "beforeSeq": before_seq }),
+        )
+        .await
     }
-    async fn post<T: DeserializeOwned, B: Serialize>(&self, suffix: &str, body: &B) -> Result<T> {
-        let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
-        let response = self
-            .http
-            .client
-            .post(format!("{}{path}", self.http.base))
-            .header(CONVERSATION_HEADER, &self.capability)
-            .json(body)
-            .send()
+
+    #[allow(dead_code)]
+    pub async fn read_body(
+        &self,
+        reference: &BodyRef,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<BodyWindow> {
+        self.post(
+            "body",
+            &serde_json::json!({ "reference": reference, "offset": offset, "maxBytes": max_bytes }),
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn reset(&self, limit: Option<u32>) -> Result<TimelinePatch> {
+        self.post("reset", &serde_json::json!({ "limit": limit }))
             .await
-            .with_context(|| format!("POST {path}"))?;
-        let status = response.status();
-        let text = response.text().await?;
-        decode_json(status, &text, &path)
     }
-    async fn post_empty(&self, suffix: &str) -> Result<()> {
-        let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
+
+    pub async fn close(&self) -> Result<()> {
+        let path = format!(
+            "/api/v1/threads/{}/feed/{}/close",
+            self.thread_id, self.feed_id
+        );
         let response = self
             .http
             .client
             .post(format!("{}{path}", self.http.base))
-            .header(CONVERSATION_HEADER, &self.capability)
             .send()
             .await
             .with_context(|| format!("POST {path}"))?;
@@ -345,69 +349,53 @@ impl CurrentRead {
             decode_json::<serde_json::Value>(status, &text, &path).map(|_| ())
         }
     }
+
+    async fn post<T: DeserializeOwned, B: Serialize>(&self, suffix: &str, body: &B) -> Result<T> {
+        let path = format!(
+            "/api/v1/threads/{}/feed/{}/{suffix}",
+            self.thread_id, self.feed_id
+        );
+        let response = self
+            .http
+            .client
+            .post(format!("{}{path}", self.http.base))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
+        let text = response.text().await?;
+        decode_json(status, &text, &path)
+    }
 }
 
-type CurrentSseItem = Result<Event, EventStreamError<anyhow::Error>>;
+type FeedSseItem = Result<Event, EventStreamError<anyhow::Error>>;
 
-pub(crate) struct CurrentWatchStream {
-    stream: BoxStream<'static, CurrentSseItem>,
-    owner_id: String,
-    demand: ReadDemand,
-    saw_reset: bool,
-    revision: Option<u64>,
+pub(crate) struct FeedEventStream {
+    stream: BoxStream<'static, FeedSseItem>,
 }
 
-impl CurrentWatchStream {
-    pub async fn next(&mut self, deadline: Instant) -> Result<Option<CurrentFrame>> {
+impl FeedEventStream {
+    pub async fn next(&mut self, deadline: Instant) -> Result<Option<ConversationEvent>> {
         let event =
             tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.stream.next())
                 .await
-                .context("current watch exceeded observation deadline")?;
+                .context("feed events exceeded observation deadline")?;
         let Some(event) = event else {
             return Ok(None);
         };
         let event = event?;
-        ensure!(
-            event.data.len() <= usize::try_from(self.demand.max_bytes)?,
-            "current watch frame exceeded its byte demand"
-        );
         match event.event.as_str() {
-            "current" => {
-                let frame: CurrentFrame = serde_json::from_str(&event.data)?;
-                let (owner_id, revision) = match &frame {
-                    CurrentFrame::Reset { view } => {
-                        ensure!(
-                            !view.revision.owner_id.is_empty(),
-                            "current Reset has no owner"
-                        );
-                        self.saw_reset = true;
-                        self.owner_id = view.revision.owner_id.clone();
-                        self.revision = None;
-                        (&view.revision.owner_id, view.revision.revision)
-                    }
-                    CurrentFrame::Notification { revision, .. }
-                    | CurrentFrame::Projection { revision, .. } => {
-                        ensure!(self.saw_reset, "current watch sent a frame before Reset");
-                        (&revision.owner_id, revision.revision)
-                    }
-                };
-                ensure!(
-                    owner_id == &self.owner_id,
-                    "current watch changed owner identity"
-                );
-                ensure!(
-                    self.revision.is_none_or(|previous| revision >= previous),
-                    "current watch revision moved backwards"
-                );
-                self.revision = Some(revision);
-                Ok(Some(frame))
+            "event" => {
+                let decoded: ConversationEvent = serde_json::from_str(&event.data)?;
+                Ok(Some(decoded))
             }
             "error" => {
                 let error: StudioError = serde_json::from_str(&event.data)?;
-                bail!("current watch: {} ({:?})", error.message, error.code);
+                bail!("feed events: {} ({:?})", error.message, error.code);
             }
             "closed" => Ok(None),
-            other => bail!("unexpected current watch event {other}"),
+            other => bail!("unexpected feed event {other}"),
         }
     }
 }
@@ -626,40 +614,38 @@ impl StudioHttp {
         })
     }
 
-    /// Opens one live-current owner. Its initial snapshot is bounded by the supplied demand.
-    pub async fn open_current(&self, thread_id: &str, demand: ReadDemand) -> Result<CurrentRead> {
-        let path = format!("/api/v1/threads/{thread_id}/current/open");
+    /// Opens one unified `ConversationFeed` handle.
+    pub async fn open_feed(&self, thread_id: &str, initial_limit: Option<u32>) -> Result<FeedRead> {
+        let path = format!("/api/v1/threads/{thread_id}/feed/open");
         let response = self
             .client
             .post(format!("{}{path}", self.base))
             .json(&serde_json::json!({
-                "currentProtocolVersion": CURRENT_PROTOCOL_VERSION,
-                "demand": demand,
+                "initialLimit": initial_limit,
             }))
             .send()
             .await
             .with_context(|| format!("POST {path}"))?;
         let status = response.status();
-        let capability = response
+        let header_feed_id = response
             .headers()
             .get(CONVERSATION_HEADER)
             .map(|value| value.to_str().map(str::to_owned))
             .transpose()?;
         let text = response.text().await?;
-        let opened: OpenCurrentResponse = decode_json(status, &text, &path)?;
-        let capability = capability.context("current open omitted its reader capability")?;
+        let opened: OpenFeedResponse = decode_json(status, &text, &path)?;
         ensure!(
-            opened.current_protocol_version == CURRENT_PROTOCOL_VERSION
-                && opened.reader_id == capability
-                && !capability.is_empty()
-                && !opened.current_owner_id.is_empty(),
-            "current open returned inconsistent protocol, owner, or reader identity"
+            opened.thread_id == thread_id
+                && !opened.feed_id.is_empty()
+                && header_feed_id.as_deref() == Some(opened.feed_id.as_str()),
+            "feed open returned inconsistent thread or feed identity"
         );
-        Ok(CurrentRead {
+        Ok(FeedRead {
             http: self.clone(),
-            thread_id: thread_id.to_owned(),
-            owner_id: opened.current_owner_id,
-            capability,
+            thread_id: opened.thread_id,
+            feed_id: opened.feed_id,
+            initial_live_status: opened.live_status,
+            initial_session_meta: opened.session_meta,
         })
     }
 

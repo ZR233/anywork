@@ -78,7 +78,7 @@ impl ThreadHandle {
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Err(CurrentError::Cancelled),
-                result = self.commands.send(crate::thread::Command::Control(MailboxCommand::ReadCurrent { captured: captured.take(), reply })) => {
+                result = self.events.send(crate::thread::handle::LoopEvent::Mailbox(MailboxCommand::ReadCurrent { captured: captured.take(), reply })) => {
                     if result.is_err() {
                         return self.final_current.borrow().as_ref().cloned()
                             .ok_or(CurrentError::Closed)?.map_err(CurrentError::Final);
@@ -135,14 +135,14 @@ impl Owner {
         self.state = state;
         self.published = self.state.clone();
         self.current_call = current.model_call.clone();
-        self.current_task_start_ordinal = Some(current.state.task_start_ordinal);
+        self.current_task_start_ordinal = current.state.task_start_ordinal;
         self.current_retired_previews = current.state.tool_previews.clone();
         self.current_snapshot_missing = false;
         Ok(())
     }
 
     pub(in crate::thread) fn turn_attempt_identity(&self, prefix: &str, step: u32) -> String {
-        if self.current_task_start_ordinal.is_none() {
+        if !self.is_current_owner {
             return format!("{prefix}:{step}");
         }
         Uuid::new_v4().to_string()
@@ -304,10 +304,8 @@ impl Owner {
             return Err(CurrentError::MissingStream);
         }
         let mut state = ThreadCurrentState::from_snapshot(&self.state, self.runtime_epoch)?;
-        if let Some(ordinal) = self.current_task_start_ordinal {
-            state.tasks = self.state.tasks.clone();
-            state.task_start_ordinal = ordinal;
-        }
+        state.tasks = self.state.tasks.clone();
+        state.task_start_ordinal = self.current_task_start_ordinal;
         if let Some(lifecycle) = self.current_saved_lifecycle {
             if self.state.lifecycle == ThreadLifecycle::Open {
                 state.lifecycle = lifecycle;

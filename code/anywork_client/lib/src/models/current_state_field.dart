@@ -1,6 +1,4 @@
-import 'chat_models.dart';
-
-/// A State field whose complete value is available through CurrentReader.
+/// Deferred State metadata retained from the canonical Rust runtime snapshot.
 ///
 /// Body fields are exact JSON windows. Collection fields are real paged
 /// collections; their inline array is only a bounded placeholder while this
@@ -104,3 +102,50 @@ CurrentCollectionRef _collectionRef(Map<String, dynamic> json) =>
       collection: _requiredString(json, 'collection'),
       revision: _requiredInt(json, 'revision'),
     );
+
+final class CurrentContentRef {
+  const CurrentContentRef({
+    required this.ownerId,
+    required this.domain,
+    required this.entityId,
+    required this.contentKey,
+    required this.generation,
+  });
+
+  final String ownerId;
+  final String domain;
+  final String entityId;
+  final String contentKey;
+  final String generation;
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentContentRef &&
+      ownerId == other.ownerId &&
+      domain == other.domain &&
+      entityId == other.entityId &&
+      contentKey == other.contentKey &&
+      generation == other.generation;
+  @override
+  int get hashCode =>
+      Object.hash(ownerId, domain, entityId, contentKey, generation);
+}
+
+final class CurrentCollectionRef {
+  const CurrentCollectionRef({
+    required this.ownerId,
+    required this.collection,
+    required this.revision,
+  });
+
+  final String ownerId;
+  final String collection;
+  final int revision;
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentCollectionRef &&
+      ownerId == other.ownerId &&
+      collection == other.collection &&
+      revision == other.revision;
+  @override
+  int get hashCode => Object.hash(ownerId, collection, revision);
+}

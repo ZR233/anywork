@@ -26,34 +26,32 @@ ChatItemPresentation imageItem(
   String id, {
   String? marker = 'generic@1',
   bool attachment = true,
-}) => ChatItemPresentation.decode(
-  chatEnvelope(
-    id,
-    type: 'tool',
-    data: {
-      'invocation': {
-        'toolCallId': id,
-        'name': 'show_image',
-        'presentationContract': ?marker,
-      },
-      'state': {
-        'kind': 'succeeded',
-        'output': {
-          'attachments': [
-            if (attachment)
-              {
-                'id': 'shared-image',
-                'modality': 'image',
-                'mediaType': 'image/png',
-                'byteSize': _png.length,
-                'filename': 'terrace.png',
-              },
-          ],
-        },
+}) => chatPresentation(
+  id,
+  type: 'tool',
+  data: {
+    'invocation': {
+      'toolCallId': id,
+      'name': 'show_image',
+      'presentationContract': ?marker,
+    },
+    'state': {
+      'kind': 'succeeded',
+      'output': {
+        'attachments': [
+          if (attachment)
+            {
+              'id': 'shared-image',
+              'modality': 'image',
+              'mediaType': 'image/png',
+              'byteSize': _png.length,
+              'filename': 'terrace.png',
+            },
+        ],
       },
     },
-    bodies: [inlineBody('tool.arguments', '{"caption":"not a guessed card"}')],
-  ),
+  },
+  bodies: [inlineBody('tool.arguments', '{"caption":"not a guessed card"}')],
 );
 
 Widget imageApp(Widget child) => MaterialApp(

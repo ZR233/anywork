@@ -9,12 +9,12 @@
 | 一、总览与架构 | | |
 | 01 | [系统总览](./01-overview.md) | 系统定位、核心概念与事实源、运行路径、恢复与关闭流程摘要 |
 | 02 | [Crate 边界](./02-crates.md) | 依赖方向与各 crate 的稳定职责（唯一权威源） |
-| 03 | [会话线程、轮次与条目流程](./03-pipeline.md) | 输入受理、模型循环、工具批处理与交互模型 |
+| 03 | [会话线程、轮次与条目流程](./03-pipeline.md) | 输入受理、串行主循环、分级优先级事件窗口、工具批处理与交互模型 |
 | 04 | [安全边界](./04-security.md) | 权限模式（唯一权威源）、路径与凭据边界、传输层边界 |
 | 05 | [通用约定](./05-conventions.md) | 参数与类型设计、模块导出、生命周期状态机模式、后台进程与外部服务 |
 | 二、模型与流 | | |
 | 06 | [模型层](./06-model.md) | 厂商协议组合适配、账号模型目录、传输层、流式归一化、推理强度机制与计量 |
-| 07 | [会话线程实时流](./07-streaming.md) | CurrentReader/watch、HistoryReader/page/body、HTTP/FRB 资源、产品主题与关闭边界 |
+| 07 | [会话线程实时流](./07-streaming.md) | 单一 `ConversationFeed` 观察流、HTTP/FRB 边界、产品主题与关闭生命周期 |
 | 三、工具与扩展 | | |
 | 08 | [扩展点索引](./08-extension.md) | 账号、厂商协议、技能、工作模式、智能体预设与工具的扩展入口 |
 | 09 | [工具调用运行时](./09-tool-runtime.md) | 不透明工具身份、注册与撤销、并发调度声明、MCP 租约与文件缓存 |
@@ -25,7 +25,7 @@
 | 13 | [计划状态机](./13-plan.md) | 计划聚合模型、`plan_*` 工具契约、确认界面边界与恢复授权 |
 | 五、运行时与存储 | | |
 | 14 | [运行时宿主](./14-runtime-host.md) | 统一装配、按需激活、输入受理、停止与继续、步数限制、后台任务与消息唤醒 |
-| 15 | [会话状态与历史存储](./15-session-storage.md) | 独立 `current.json`、schema 26 原子事件历史与 16 KiB 混合正文、Current/History reader、冷恢复与调用记录 |
+| 15 | [会话状态与历史存储](./15-session-storage.md) | 实时纯内存零读库边界、Schema 27 异步写沉与 `UnflushedLog`、冷恢复与调用记录 |
 | 16 | [内核契约](./16-core-contracts.md) | 不透明载荷、模型调用、扩展比较并交换（CAS）、能力归属与计量回执 |
 | 17 | [Studio 存储与诊断](./17-studio-storage.md) | 数据布局、schema 24/25→26 迁移、Current/History 文件、滚动日志与退出诊断 |
 | 18 | [Studio 状态查询](./18-studio-state.md) | CQS、public snapshot、Current/History 按需激活、优雅关闭、标题生成与产品投影 |
@@ -36,8 +36,8 @@
 | 22 | [SSH 远程开发](./22-ssh-remote.md) | 远端辅助进程能力代理、最小传输协议、连接管理、凭据与路径规则、随包资源分发 |
 | 23 | [发布与更新](./23-release-update.md) | 发布渠道与信任根、项目级 Linux 构建环境、Windows/DEB 安装边界、更新清单与状态机、安装诊断 |
 | 24 | [测试与人工验收](./24-testing.md) | 测试基础设施、证据/截图合同、CI 职责与人工验收边界 |
-| 25 | [客户端、前端状态与资源生命周期](./25-frontend-state.md) | 纯 SDK 客户端、FRB/Riverpod 边界、单一写入端、命令回执、草稿与资源关闭契约（唯一权威源） |
-| 26 | [时间线内容源与原生列表](./26-timeline-content.md) | Current overlay、schema 26 原子事件与索引派生 `WorkRange`、工作组 ViewModel 折叠、单条回退与唯一 Flutter apply（唯一权威源） |
+| 25 | [客户端、前端状态与资源生命周期](./25-frontend-state.md) | 纯 SDK 客户端、单 `ConversationFeed` 边界、FRB/Riverpod 唯一写入端与资源关闭契约（唯一权威源） |
+| 26 | [时间线内容源与原生列表](./26-timeline-content.md) | `MetaEventBus`、`timeline_role` 天然封组、双状态机与 Flyer Chat 增量接入（唯一权威源） |
 | 27 | [外部机器人与飞书接入](./27-bots.md) | 原生飞书协议、扫码首配、可信联系人与群组、会话工具、统一发送与连接生命周期（唯一权威源） |
 | 28 | [ACP 接入、服务器准备与认证](./28-acp.md) | 受管 Antigravity `1.x`（`>= 1.5.2, < 2.0.0`）自动安装、接入、认证检查与资源生命周期（独立于原生模型协议） |
 | 29 | [命令行宿主与 Harbor 接入](./29-cli-harbor.md) | anywk 单任务执行、V3/schema 3 归档、Harbor 本地评测、桌面分发与 PATH |
@@ -48,7 +48,7 @@
 
 - Material 3 账号设计稿按界面分目录：[账号列表](./prototypes/accounts-list/index.html)、[账号详情](./prototypes/account-details/index.html)、[模型详情、价格与评价](./prototypes/model-details/index.html)。对应 [#168](https://github.com/ZR233/anywork/issues/168)，包含 62 个账户场景、计费方式选择后保存及带评价模型标识的模拟评价。三个入口共用 `prototypes/accounts-shared/` 中的样式、示例数据与交互代码，分别从对应界面打开；维护时修改共享文件，避免页面间漂移。浏览器直接打开即可交互，需要联网加载固定版本的 MDUI 和图标库；金额、价格、性能和评价均为设计样例，不连接真实账户，也不作为原生实现或验收证据。
 - Material 3 SSH 远程开发与服务器专属配置设计稿按界面分目录：[SSH 服务器列表与添加向导](./prototypes/ssh-servers/index.html)、[服务器配置中心与扩展模块](./prototypes/ssh-server-details/index.html)、[服务器专属 MCP 服务创建与维护专页](./prototypes/ssh-server-mcp/index.html)。三个入口共用 `prototypes/ssh-shared/` 中的暹罗浅色主题样式、18 个交互场景与模拟数据，覆盖 `~/.ssh/config` 受管块与手写只读条目、五态连接状态机；原型中的旧辅助进程租约展示仅为历史设计参考，当前连接契约以 [22](./22-ssh-remote.md) 为准、服务器专属 MCP 服务的创建/编辑/删除/工具检视与全局 MCP 按机覆盖，以及面向未来的服务器级环境变量、工具链路径覆盖、远端 LSP 监督、共享技能源与 SSH 端口转发。
-- 统一组件化会话与项目侧边栏交互概念稿按职责与生命周期视角分目录：[项目与会话侧边栏共享组件](./prototypes/project-sidebar/index.html)、[新会话起始页与工作区输入布局](./prototypes/session-start/index.html)、[会话运行时输入框与配置锁定](./prototypes/session-composer/index.html)、[会话时间线与实时状态栏](./prototypes/live-status/index.html)（设计说明见 [session-start-layout](./concepts/session-start-layout.md)，共享模块见 [conversation-shared](./prototypes/conversation-shared/README.md) 与 `prototypes/sidebar-shared/`）。四个入口页均为纯声明式薄壳，统一挂载独立的 `StudioSidebar` 侧边栏组件与同一套暹罗浅色上下文顶栏、`PromptComposerCard`、时间线与状态栏实现，消除跨页复制与样式漂移：侧边栏统一采用“全局新建会话 → 实时搜索 → 三态筛选 → 项目树 → 非项目会话 → 双栏底栏”顺序，保留温暖拿铁选中底色与左侧眼眸蓝竖条，挂载窗口级跨栏二级「打开方式 ▶」子菜单与已归档恢复（覆盖 5 个侧栏交互场景）；起始页采用“外层会话环境栏（项目身份、`local`「本地目录」/ `worktree`「新建工作树」切换、子智能体分发单层菜单）+ 同心内层主输入卡”双层结构（覆盖 6 个创建期场景）；进入已建会话后外层创建栏退役、冻结项上移顶栏只读徽标，输入区完整呈现运行中选择器锁定与就地原因提示、活动工作流仅锁模式而开放换模、并发拟稿与六态唯一主按钮、模型不可用原地换模自愈、机器人统一路由及子智能体只读底栏（覆盖运行期输入与独立发送失败场景）；时间线与问答演示覆盖 13 个场景。生产合同见 [26](./26-timeline-content.md)：Current 与 schema 26 History 独立交付，History 无状态记录原子事件，主时间线由索引派生 `divider` 与 `WorkRange`，工作组内由 Flutter ViewModel 按 `call_id` 合并为最新态单行并支持单条不兼容回退；Flutter 持唯一有界历史窗口与 Current overlay，按稳定行身份串行 apply。概念稿为本地模拟与视觉交互参照，不作为原生或真实供应商验收证据。
+- 统一组件化会话与项目侧边栏交互概念稿按职责与生命周期视角分目录：[项目与会话侧边栏共享组件](./prototypes/project-sidebar/index.html)、[新会话起始页与工作区输入布局](./prototypes/session-start/index.html)、[会话运行时输入框与配置锁定](./prototypes/session-composer/index.html)、[会话时间线与实时状态栏](./prototypes/live-status/index.html)（设计说明见 [session-start-layout](./concepts/session-start-layout.md)，共享模块见 [conversation-shared](./prototypes/conversation-shared/README.md) 与 `prototypes/sidebar-shared/`）。四个入口页均为纯声明式薄壳，统一挂载独立的 `StudioSidebar` 侧边栏组件与同一套暹罗浅色上下文顶栏、`PromptComposerCard`、时间线与状态栏实现，消除跨页复制与样式漂移：侧边栏统一采用“全局新建会话 → 实时搜索 → 三态筛选 → 项目树 → 非项目会话 → 双栏底栏”顺序，保留温暖拿铁选中底色与左侧眼眸蓝竖条，挂载窗口级跨栏二级「打开方式 ▶」子菜单与已归档恢复（覆盖 5 个侧栏交互场景）；起始页采用“外层会话环境栏（项目身份、`local`「本地目录」/ `worktree`「新建工作树」切换、子智能体分发单层菜单）+ 同心内层主输入卡”双层结构（覆盖 6 个创建期场景）；进入已建会话后外层创建栏退役、冻结项上移顶栏只读徽标，输入区完整呈现运行中选择器锁定与就地原因提示、活动工作流仅锁模式而开放换模、并发拟稿与六态唯一主按钮、模型不可用原地换模自愈、机器人统一路由及子智能体只读底栏（覆盖运行期输入与独立发送失败场景）；时间线与问答演示覆盖 13 个场景。生产合同见 [26](./26-timeline-content.md)：Native 会话通过单一 `ConversationFeed` 接收时间线增量、实时状态与元数据。Rust 以 Schema 27 的 `Boundary` 分类封组，实时消费内存事件，历史查询沿用同一规则。工作组成员在按需查询时由 Rust 折叠，Flutter 用稳定行身份串行应用补丁。概念稿为本地模拟与视觉交互参照，不作为原生或真实供应商验收证据。
 
 ## 写作规范
 

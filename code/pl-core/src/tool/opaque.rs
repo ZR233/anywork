@@ -659,18 +659,6 @@ impl FrozenTool {
             if let Some(error) = cold_error {
                 return Err(fence_error(cold.as_ref(), &context.thread_id, error));
             }
-            if let Some(store) = cold {
-                let result = tokio::select! {
-                    biased;
-                    _ = context.cancellation.cancelled() => {
-                        return Err(ToolError::new(crate::thread::ThreadError::Cancelled));
-                    }
-                    result = store.flush(&context.thread_id, context.history_fence) => result,
-                };
-                result.map_err(|error| {
-                    fence_error(Some(&store), &context.thread_id, Arc::new(error))
-                })?;
-            }
             if context.cancellation.is_cancelled() {
                 return Err(ToolError::new(crate::thread::ThreadError::Cancelled));
             }

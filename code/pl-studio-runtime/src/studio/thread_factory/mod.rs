@@ -311,17 +311,38 @@ impl std::fmt::Debug for StudioThreadFactory {
 }
 
 impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
-    async fn prepare_root(
+    async fn prepare_execution(
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
     ) -> Result<
         (
-            crate::DelegationSettings,
+            Option<crate::DelegationSettings>,
             Option<pl_core::thread::current::ThreadCurrent>,
         ),
         crate::thread_assembler::ThreadAssemblyError,
     > {
-        self.prepare_root_state(identity).await
+        use crate::thread_assembler::ThreadAssemblyError;
+        let thread = self.thread_record(identity.id()).await?;
+        if thread.parent_thread_id.as_deref() != identity.parent_id() {
+            return Err(ThreadAssemblyError::Identity(thread.id));
+        }
+        self.ensure_member_execution_allowed(identity.id())
+            .await
+            .map_err(|error| errors::resource_error("saved Thread admission", error))?;
+        let protocol = crate::Thread::from(thread.clone());
+        self.services
+            .recovery
+            .ensure_thread_read_access(&protocol)
+            .map_err(|error| errors::resource_error("saved Thread read admission", error))?;
+        let current = recovery::load_current_for_recovery(&self.services.store, &protocol)
+            .await
+            .map_err(|error| errors::resource_error("load Thread current", error))?;
+        let delegation = if identity.parent_id().is_none() {
+            Some(root_resources::root_delegation(&thread, current.as_ref())?)
+        } else {
+            None
+        };
+        Ok((delegation, current))
     }
 
     async fn prepare(
@@ -412,17 +433,17 @@ mod review_archive_tests {
     }
 
     impl StudioActivationFactory for CapturedPreparation {
-        async fn prepare_root(
+        async fn prepare_execution(
             &self,
             _: &ThreadActivation,
         ) -> Result<
             (
-                crate::DelegationSettings,
+                Option<crate::DelegationSettings>,
                 Option<pl_core::thread::current::ThreadCurrent>,
             ),
             ThreadAssemblyError,
         > {
-            Ok((Default::default(), None))
+            Ok((Some(Default::default()), None))
         }
 
         async fn prepare(

@@ -113,9 +113,9 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
         .save(current)
         .await?;
 
-    let saved = fixture
-        .sink
-        .read_tool_task(&id, &task.id)
+    let history = fixture.store.history(&id).await?;
+    let reader = history.reader();
+    let saved = crate::studio::storage::tool_task::read(&reader, &task.id)
         .await?
         .context("completed task must be read from its original History fact")?;
     assert_eq!(saved.task.id, task.id);
@@ -124,12 +124,11 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
     assert_eq!(result.output.payload().format(), "pl.tool.lua");
     assert_eq!(result.output.payload().content(), expected);
     assert!(
-        fixture
-            .sink
-            .read_tool_task(&id, "task:unknown")
+        crate::studio::storage::tool_task::read(&reader, "task:unknown")
             .await?
             .is_none()
     );
+    reader.close().await;
     Ok(())
 }
 

@@ -16,29 +16,18 @@ impl StudioRuntime {
             execution_activation = 1,
             "execution owner requested"
         );
-        // A resident owner is the current authority. Cold preparation belongs only to the
-        // materialization branch below, never to the admission of an already loaded Thread.
-        if let Some(thread) = self.session_of(id).and_then(|session| session.thread(id)) {
+        if let Some(session) = self.session_of(id)
+            && let Some(thread) = session.thread(id)
+        {
             self.check_thread_execution_access(&self.read_owned_thread(id).await?.into())?;
-            self.require_session(id)?.ensure_agent_admission_open(id)?;
+            session.ensure_agent_admission_open(id)?;
             self.residency.touch(id);
             return Ok(thread);
         }
         let requested_activation = self.thread_factory.activation(id)?;
-        // Keep the preflight snapshot and its platform-dependent IO state out of ancestry
-        // activation's inline future, while retaining this caller's cancellation ownership.
-        let preflight_started = std::time::Instant::now();
-        tracing::debug!(target: "thread_preparation", stage = "activation_preflight", "starting");
-        Box::pin(self.verify_activation_preflight(id)).await?;
-        tracing::debug!(target: "thread_preparation", stage = "activation_preflight", elapsed_ms = preflight_started.elapsed().as_millis() as u64, "completed");
         // This operation already borrows the runtime. Retain only the residency owner, not
         // another full StudioRuntime clone, across activation/recovery awaits.
         let _activation_pin = self.residency.pin_many([id.to_owned()]);
-        if let Some(thread) = self.session_of(id).and_then(|session| session.thread(id)) {
-            self.residency.touch(id);
-            self.enforce_residency_limit().await;
-            return Ok(thread);
-        }
         let mut ancestry: Vec<(ThreadActivation, ThreadRecord)> = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut cursor = id.to_owned();
@@ -80,16 +69,11 @@ impl StudioRuntime {
                 break;
             }
             let record = self.read_owned_thread(&cursor).await?;
-            // The requested target was just verified by preflight (also for hot owners).
-            // Only additional cold ancestors need their own physical workspace check.
-            if cursor != id {
-                self.verify_thread_execution_preparation(
-                    &crate::Thread::from(record.clone()),
-                    None,
-                )
-                .await?;
+            // Denied targets must stop before their ancestry is materialized. Each cold
+            // member's workspace and execution access are then checked by its preparation.
+            if cursor == id {
+                self.check_thread_read_access(&crate::Thread::from(record.clone()))?;
             }
-            self.check_thread_execution_access(&crate::Thread::from(record.clone()))?;
             anyhow::ensure!(
                 record.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot be activated for execution"
@@ -137,22 +121,13 @@ impl StudioRuntime {
         }
         self.residency.touch(id);
         self.enforce_residency_limit().await;
-        self.session_of(id)
-            .and_then(|session| session.thread(id))
-            .context("Thread activation did not publish its owner")
-    }
-
-    async fn verify_activation_preflight(&self, id: &str) -> Result<()> {
-        let record = self.read_protocol_thread(id).await?;
-        self.check_thread_read_access(&record)?;
-        let live = self
-            .session_of(id)
-            .and_then(|session| session.observed_thread(id))
-            .map(|thread| thread.snapshot());
-        self.verify_thread_execution_preparation(&record, live.as_ref())
-            .await?;
-        self.check_thread_execution_access(&record)?;
-        Ok(())
+        let session = self.require_session(id)?;
+        let thread = session
+            .thread(id)
+            .context("Thread activation did not publish its owner")?;
+        self.check_thread_execution_access(&self.read_owned_thread(id).await?.into())?;
+        session.ensure_agent_admission_open(id)?;
+        Ok(thread)
     }
 }
 

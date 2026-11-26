@@ -13,7 +13,7 @@ mod runtime_stop;
 mod send_outcomes;
 
 use super::Session;
-use crate::support::{HISTORY_OBSERVATION_BYTES, open_current, turn_detail, turn_head};
+use crate::support::{HISTORY_OBSERVATION_BYTES, open_feed, turn_detail, turn_head};
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
 use std::path::Path;
@@ -169,16 +169,11 @@ pub(super) async fn wait_running_turn(
 ) -> Result<pl_studio_runtime::RunningTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
-        let current = open_current(session.http()?, thread_id).await?;
+        let feed = open_feed(session.http()?, thread_id).await?;
         let observed = async {
             loop {
-                let view = current.snapshot(crate::support::current_demand()).await?;
-                if let Some(turn) = view
-                    .state
-                    .active_turn
-                    .as_ref()
-                    .filter(|turn| turn.id == turn_id)
-                {
+                let meta = feed.session_meta().await?;
+                if let Some(turn) = meta.active_turn.as_ref().filter(|turn| turn.id == turn_id) {
                     match &turn.state {
                         pl_studio_runtime::TurnState::Running(state) => return Ok(state.clone()),
                         terminal if terminal.is_terminal() => anyhow::bail!(
@@ -190,17 +185,17 @@ pub(super) async fn wait_running_turn(
                 }
                 ensure!(
                     std::time::Instant::now() < deadline,
-                    "Current never showed Turn {turn_id} running"
+                    "Feed never showed Turn {turn_id} running"
                 );
                 tokio::time::sleep(crate::http::POLL).await;
             }
         }
         .await;
-        match (observed, current.close().await) {
+        match (observed, feed.close().await) {
             (Ok(state), Ok(())) => Ok(state),
             (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
             (Err(error), Err(close_error)) => {
-                Err(error.context(format!("Current close also failed: {close_error:#}")))
+                Err(error.context(format!("Feed close also failed: {close_error:#}")))
             }
         }
     })

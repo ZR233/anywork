@@ -133,9 +133,6 @@ class _StartedItemsConnectorState extends ConsumerState<StartedItemsConnector> {
     return state.when(
       data: (value) => StartedItemsPanel(
         state: value,
-        onLoadMoreSkills: () => unawaited(commands.loadNextSkills()),
-        onLoadMoreMcpState: () => unawaited(commands.loadNextMcpServers()),
-        onLoadMoreLspState: () => unawaited(commands.loadNextLspServers()),
         onReconnectMcp: (id) => unawaited(commands.reconnectMcp(id)),
         onReconnectLsp: (id) => unawaited(commands.reconnectLsp(id)),
       ),
@@ -156,18 +153,18 @@ class _StartedItemsConnectorState extends ConsumerState<StartedItemsConnector> {
 class StartedItemsPanel extends StatelessWidget {
   const StartedItemsPanel({
     required this.state,
-    required this.onLoadMoreSkills,
-    required this.onLoadMoreMcpState,
-    required this.onLoadMoreLspState,
+    this.onLoadMoreSkills,
+    this.onLoadMoreMcpState,
+    this.onLoadMoreLspState,
     required this.onReconnectMcp,
     required this.onReconnectLsp,
     super.key,
   });
 
   final StartedItemsState state;
-  final VoidCallback onLoadMoreSkills;
-  final VoidCallback onLoadMoreMcpState;
-  final VoidCallback onLoadMoreLspState;
+  final VoidCallback? onLoadMoreSkills;
+  final VoidCallback? onLoadMoreMcpState;
+  final VoidCallback? onLoadMoreLspState;
   final void Function(String? id) onReconnectMcp;
   final void Function(String id) onReconnectLsp;
 

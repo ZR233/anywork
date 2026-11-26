@@ -1,8 +1,6 @@
 //! Per-Thread execution, Current publication and archive-admission lifetime.
 //! Current has no history cursor or completion publication allocator.
-use super::runtime::thread_observation::{
-    RetainedProjection, publication::ConversationPublication,
-};
+use super::runtime::thread_observation::RetainedProjection;
 use super::storage::{
     state::StateStore,
     thread_writer::{HistoryChannel, ThreadStorageBinding},
@@ -32,7 +30,6 @@ pub(crate) struct ConversationStore {
     history: HistoryStore,
     state: tokio::sync::Mutex<StateStore>,
     persistence: super::storage::coordinator::ThreadPersistenceCoordinator,
-    pub(in crate::studio) publication: Arc<ConversationPublication>,
     retained: Mutex<Option<RetainedProjection>>,
     mutation: Mutex<()>,
     database_id: std::sync::OnceLock<String>,
@@ -80,19 +77,8 @@ impl ConversationStore {
                         Arc::new(anyhow::anyhow!("conversation closed during initialization"))
                     })?;
                     let _gate = store.lifecycle.lock().await;
-                    let result = result.and_then(|mut retained| {
-                        let baseline = retained
-                            .baseline
-                            .take()
-                            .map(|current| store.publication.prepare(current))
-                            .transpose()?;
-                        Ok((retained, baseline))
-                    });
                     match result {
-                        Ok((retained, baseline)) => {
-                            if let Some(baseline) = baseline {
-                                store.publication.apply(baseline);
-                            }
+                        Ok(retained) => {
                             *store
                                 .retained
                                 .lock()
@@ -140,7 +126,6 @@ impl ConversationStore {
             history,
             state: tokio::sync::Mutex::new(state),
             persistence,
-            publication: Arc::new(ConversationPublication::new()),
             retained: Mutex::new(None),
             mutation: Mutex::new(()),
             database_id: std::sync::OnceLock::new(),
@@ -419,7 +404,6 @@ impl ConversationStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if execution.1 == Some(binding.incarnation) {
             execution.1 = None;
-            self.publication.retire_execution();
         }
     }
 

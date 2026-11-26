@@ -12,30 +12,44 @@ mod activity;
 pub(in crate::studio) use activity::project_activity;
 mod completions;
 mod content;
-mod current;
-mod current_page;
-pub(in crate::studio) use content::{ContentError, InputView, input_presentation, input_view};
-pub(in crate::studio) use current::CurrentState;
-pub(in crate::studio) use current::FrozenCurrentProjection;
-pub(in crate::studio) use current::{CurrentEntryWrite, CurrentPositionIndex};
-pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
+pub(in crate::studio) use content::{ContentError, InputView, input_view};
 mod effect;
-pub(in crate::studio) use effect::project_effect_items;
-pub(in crate::studio) mod live;
+pub(crate) use effect::project_effect_items;
+pub(crate) mod live;
 pub(crate) use live::provenance::{hidden, work};
-pub(in crate::studio) use live::{
-    LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult,
-};
+pub(in crate::studio) use live::{LiveProjection, PreparedEffect, TurnResult};
+
+pub(in crate::studio) fn project_interactions(
+    thread_id: &str,
+    state: &pl_core::thread::ThreadSnapshot,
+) -> Result<Vec<crate::InteractionRequest>, ProjectionError> {
+    let mut interactions = Vec::new();
+    for id in state.permissions.keys().chain(state.interactions.keys()) {
+        if let Some(interaction) =
+            crate::thread_assembler::project_thread_interaction(thread_id, id, state)
+                .map_err(|error| ProjectionError::History(error.to_string()))?
+        {
+            interactions.push(interaction);
+        }
+    }
+    interactions.sort_by_key(
+        |interaction| match (interaction.status(), interaction.kind()) {
+            (crate::InteractionStatus::Pending, crate::InteractionKind::ToolApproval) => 0_u8,
+            (crate::InteractionStatus::Pending, crate::InteractionKind::UserInput) => 1_u8,
+            _ => 2_u8,
+        },
+    );
+    Ok(interactions)
+}
 mod runtime;
 mod usage_projection;
 pub(in crate::studio) use runtime::{
-    project_cold_runtime, project_runtime, workflow_graph_from_definition,
-    workflow_graph_from_saved_mode,
+    project_runtime, workflow_graph_from_definition, workflow_graph_from_saved_mode,
 };
 pub(in crate::studio) use usage_projection::usage_status;
 mod snapshot;
 pub(in crate::studio) use snapshot::{saved_mode, status, storage_state};
-pub(in crate::studio) mod order;
+pub(crate) mod order;
 mod tool_media;
 pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
 mod inputs;

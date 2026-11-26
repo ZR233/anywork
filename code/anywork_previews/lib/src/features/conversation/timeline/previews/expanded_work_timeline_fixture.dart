@@ -4,6 +4,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
@@ -14,7 +15,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reas
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/latest_scroll.dart';
-import 'package:anywork_client/models.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -55,29 +55,17 @@ class ExpandedWorkTimelineFixtureState
   @override
   void initState() {
     super.initState();
-    unit = TimelineDisplayUnit(
-      block: DisplayBlock(
-        id: 'expanded-preview-work',
-        blockOrder: 2,
-        body: WorkDisplayBlock(
-          timing: WorkTiming(
-            startedAtMillis: isHistory ? 100_000 : null,
-            finishedAtMillis: isHistory ? 225_000 : null,
-          ),
-          executionPresent: !isHistory,
-          memberCount: 120,
-          unfinishedCount: isHistory ? 0 : 120,
-          groupClosed: isHistory,
-          members: const DisplayBlockRef(
-            cut: HistoryCut('preview'),
-            anchorSeq: 1,
-            headSeq: 1,
-            blockId: 'expanded-preview-work',
-          ),
-        ),
+    unit = TimelinePreviewFixtures.runUnit(
+      TimelinePreviewFixtures.runEntry(
+        'expanded-preview-work',
+        2,
+        count: widget.initialCount,
+        active: !isHistory,
+        startedAtMs: isHistory ? 100_000 : null,
+        finishedAtMs: isHistory ? 225_000 : null,
       ),
-      expansion: TimelineExpansionIntent()..expanded = widget.initiallyExpanded,
     );
+    unit.expansion.expanded = widget.initiallyExpanded;
     controls.controller.setMessages([
       _textMessage('before-work', '工作组之前：先核对代码、接口与验证范围。'),
       _workMessage(),
@@ -99,11 +87,8 @@ class ExpandedWorkTimelineFixtureState
     );
   }
 
-  Message _workMessage() => Message.custom(
-    id: unit.id,
-    authorId: 'assistant',
-    metadata: {chatItemPresentationKey: ChatItemPresentation.forUnit(unit)},
-  );
+  Message _workMessage() =>
+      timelineFeedMessage(unit.body.feedGroup!, expansion: unit.expansion);
 
   void appendMember() => setState(() => count++);
   Future<void> growMiddle() async {

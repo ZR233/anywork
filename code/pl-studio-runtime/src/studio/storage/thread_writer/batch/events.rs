@@ -9,12 +9,12 @@ use crate::history::{
     pack_bodies,
 };
 
-pub(super) fn millis(at: i64) -> Result<i64> {
+pub(crate) fn millis(at: i64) -> Result<i64> {
     crate::history::milliseconds_from_seconds(at)
         .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
-pub(super) fn turn_event(
+pub(crate) fn turn_event(
     event_id: String,
     turn: &HistoryTurnHead,
     detail: Option<&crate::Turn>,
@@ -75,13 +75,13 @@ pub(super) fn turn_event(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct BatchWriteContext<'a> {
-    pub(super) recorded_at: i64,
-    pub(super) anchor: bool,
-    pub(super) database_id: &'a str,
+pub(crate) struct BatchWriteContext<'a> {
+    pub(crate) recorded_at: i64,
+    pub(crate) anchor: bool,
+    pub(crate) database_id: &'a str,
 }
 
-pub(super) fn source_event(
+pub(crate) fn source_event(
     source: &crate::history::HistorySourceHead,
     continuation_payload: Option<Vec<u8>>,
     entity_override: Option<&str>,
@@ -136,7 +136,7 @@ pub(super) fn source_event(
     Ok(event)
 }
 
-pub(super) fn run_event(run: &str, recorded_at: i64) -> Result<HistoryEvent> {
+pub(crate) fn run_event(run: &str, recorded_at: i64) -> Result<HistoryEvent> {
     let mut event = HistoryEvent::new(
         format!("run:{run}:started"),
         HistoryEventKind::RunStarted,
@@ -153,7 +153,7 @@ pub(super) fn run_event(run: &str, recorded_at: i64) -> Result<HistoryEvent> {
     Ok(event)
 }
 
-pub(super) fn delivery_event(
+pub(crate) fn delivery_event(
     thread_id: &str,
     prefix: &str,
     message_id: &str,

@@ -27,7 +27,7 @@ use crate::history::{
     HistorySingleVisibility, HistoryStore, HistoryTimelineRole, PendingBody, decode_event_envelope,
     pack_bodies,
 };
-use crate::studio::thread_projection::{CurrentState, PreparedAccounting};
+use crate::studio::thread_projection::PreparedAccounting;
 
 fn export_options(
     cwd: &std::path::Path,
@@ -56,15 +56,6 @@ struct ThreadUsageInput<'a> {
     through_effect_seq: u64,
     summary: &'a UsageSummary,
     receipts: &'a [PreparedAccounting],
-}
-
-fn test_current(thread_id: &str, revision: u64) -> Result<Arc<CurrentState>> {
-    CurrentState::cold(
-        "fixture-database".into(),
-        thread_id.into(),
-        revision,
-        &pl_core::thread::ThreadSnapshot::default(),
-    )
 }
 
 fn read_contents_manifest(
@@ -869,21 +860,19 @@ async fn missing_effects_and_conflicting_blobs_cannot_be_sealed() -> Result<()> 
     Ok(())
 }
 
-async fn idempotency_fixture(
-    root: &std::path::Path,
-) -> Result<(crate::history::HistoryReader, Arc<CurrentState>)> {
+async fn idempotency_fixture(root: &std::path::Path) -> Result<crate::history::HistoryReader> {
     let studio_home = root.join("home");
     std::fs::create_dir_all(&studio_home)?;
     std::fs::write(studio_home.join("config.toml"), "[models]\n")?;
     let history =
         HistoryStore::open(&root.join("h.sqlite"), "t-idem", HistoryLimits::default()).await?;
-    Ok((history.reader(), test_current("t-idem", 0)?))
+    Ok(history.reader())
 }
 
 #[tokio::test]
 async fn producer_timeout_reclaims_writer_and_retained_history() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (history, _) = idempotency_fixture(dir.path()).await?;
+    let history = idempotency_fixture(dir.path()).await?;
     let exporter = RunExporter::start(export_options(
         dir.path(),
         dir.path().join("home"),
@@ -961,7 +950,7 @@ fn idempotency_accounting() -> Result<(PreparedAccounting, PreparedAccounting, U
 #[tokio::test]
 async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (history_reader, current) = idempotency_fixture(dir.path()).await?;
+    let history_reader = idempotency_fixture(dir.path()).await?;
     let (non_billing, billing, summary) = idempotency_accounting()?;
     let exporter = RunExporter::start(export_options(
         dir.path(),
@@ -1047,7 +1036,8 @@ async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> 
             &non_billing,
             &start,
             &summary,
-            &current,
+            "fixture-database",
+            0,
             &history_reader,
         )
         .await;
@@ -1057,7 +1047,8 @@ async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> 
             &billing,
             &end,
             &summary,
-            &current,
+            "fixture-database",
+            0,
             &history_reader,
         )
         .await;
@@ -1067,7 +1058,8 @@ async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> 
             &billing,
             &end,
             &summary,
-            &current,
+            "fixture-database",
+            0,
             &history_reader,
         )
         .await; // idempotent redelivery
@@ -1129,7 +1121,7 @@ async fn identical_redelivery_preserves_single_lifecycle_and_billing_facts() -> 
 #[tokio::test]
 async fn conflicting_same_effect_redelivery_cancels_run() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (history_reader, current) = idempotency_fixture(dir.path()).await?;
+    let history_reader = idempotency_fixture(dir.path()).await?;
     let (_, billing, summary) = idempotency_accounting()?;
     let exp_conflict = RunExporter::start(export_options(
         dir.path(),
@@ -1173,7 +1165,8 @@ async fn conflicting_same_effect_redelivery_cancels_run() -> Result<()> {
         &billing,
         &Arc::from([]),
         &summary,
-        &current,
+        "fixture-database",
+        0,
         &history_reader,
     )
     .await;
@@ -1182,7 +1175,8 @@ async fn conflicting_same_effect_redelivery_cancels_run() -> Result<()> {
         &changed_billing,
         &Arc::from([]),
         &summary,
-        &current,
+        "fixture-database",
+        0,
         &history_reader,
     )
     .await;
@@ -1212,7 +1206,7 @@ async fn event_file_failure_preserves_reconciled_usage() -> Result<()> {
 
 async fn verify_finalize_failure(missing_events: bool) -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (history_reader, current) = idempotency_fixture(dir.path()).await?;
+    let history_reader = idempotency_fixture(dir.path()).await?;
     let (non_billing, billing, summary) = idempotency_accounting()?;
     let out_dir = dir.path().join("export");
     let exporter = RunExporter::start(export_options(
@@ -1242,7 +1236,8 @@ async fn verify_finalize_failure(missing_events: bool) -> Result<()> {
             &non_billing,
             &Arc::from([]),
             &summary,
-            &current,
+            "fixture-database",
+            0,
             &history_reader,
         )
         .await;
@@ -1252,7 +1247,8 @@ async fn verify_finalize_failure(missing_events: bool) -> Result<()> {
             &billing,
             &Arc::from([]),
             &summary,
-            &current,
+            "fixture-database",
+            0,
             &history_reader,
         )
         .await;
@@ -1278,7 +1274,8 @@ async fn verify_finalize_failure(missing_events: bool) -> Result<()> {
                 &repeated,
                 &Arc::from([]),
                 &final_summary,
-                &current,
+                "fixture-database",
+                0,
                 &history_reader,
             )
             .await;

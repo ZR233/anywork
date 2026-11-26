@@ -1,5 +1,6 @@
 import 'support/timeline_transport.dart';
 import 'support/conversation_delivery.dart';
+import 'support/sdk_conversation_page_lifecycle.dart';
 
 import 'dart:async';
 
@@ -91,15 +92,14 @@ final class _DraftTransport extends AccountsTestTransport
   Completer<void>? removeAttachmentGate;
   Object? removeAttachmentFailure;
   @override
-  Future<CurrentReader> openCurrentReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
+    int initialLimit = 50,
   }) => Future.value(
-    ScriptedCurrentReader(
+    ScriptedConversationFeed(
       threadId: threadId,
       states: frames.stream,
-      initialView: currentViewForWorkspace(
+      initialMeta: sessionMetaForWorkspace(
         _workspace(thread: _thread(threadId)),
       ),
     ),
@@ -107,9 +107,9 @@ final class _DraftTransport extends AccountsTestTransport
 
   /// State turns enter through the production Current reader.
   Future<void> emitTurn(StudioTurnView turn) async {
-    final feed = await scriptedCurrentReader(turn.threadId);
+    final feed = await scriptedConversationFeed(turn.threadId);
     await feed.deliver(
-      testCurrentEvent(
+      testConversationEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: threadSchemaVersion,
           workspace: _workspace(
@@ -393,7 +393,6 @@ ThreadWorkspace _workspace({
   ThreadStorageStateView? storage,
   StudioThread? thread,
 }) => ThreadWorkspace(
-  businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
   thread: thread ?? _thread(),
   revision: revision,
   interactions: const [],
@@ -545,8 +544,9 @@ Future<AnyworkClient> _client(
     domains.acceptFrame(frame);
   }
   client.selection.selectProject(_project.id);
+  observeTestConversationPage(client);
   client.conversations.setVisibleThread('thread');
-  await scriptedCurrentReader('thread');
+  await scriptedConversationFeed('thread');
   return client;
 }
 
@@ -606,6 +606,10 @@ void main() {
       final submitting = owner.submit();
       final input = await transport.promptEntered.future;
       final operation = client.mutations.lookup(OperationId(input.inputId))!;
+      final feed = await scriptedConversationFeed('thread');
+      await feed.deliver(
+        ConversationInputPresented(inputId: input.inputId, itemId: 'msg:1'),
+      );
       await transport.emitTurn(
         _inputTurn(
           input.inputId,
@@ -683,7 +687,7 @@ void main() {
         ),
       ),
     );
-    await scriptedCurrentReader('new-thread');
+    await scriptedConversationFeed('new-thread');
     final newSession = client.conversations.session('new-thread');
     await newSession.deliverWorkspace(
       _workspace(

@@ -100,11 +100,6 @@ impl EffectWindow {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Retains one committed batch until its durable handoff releases it.
-    pub(super) fn push(&self, batch: Arc<ThreadEffectBatch>) {
-        self.write().batches.push_back(batch);
-    }
-
     pub(super) fn push_current(&self, export: Arc<HistoryExport>) {
         let mut state = self.write();
         state.batches.push_back(export.effect.clone());
@@ -595,7 +590,7 @@ impl ThreadSnapshot {
     /// This is the part shared by every captured state: the restart DTO additionally drops
     /// terminal facts with [`Self::retain_live_facts`], while the effect-matched transfer state
     /// keeps them so a history writer can project its own effect.
-    pub(crate) fn clear_ephemeral(&mut self) {
+    pub fn clear_ephemeral(&mut self) {
         self.observation_revision = 0;
         self.model_progress = None;
         self.model_execution = None;
@@ -611,7 +606,7 @@ impl ThreadSnapshot {
     /// After this call the snapshot holds only facts that current execution and live observation
     /// still own. The matching [`super::ThreadEffectBatch`] remains the only copy of everything
     /// dropped here, so history and call records are unaffected.
-    pub(crate) fn retain_live_facts(&mut self) -> Result<(), ThreadError> {
+    pub fn retain_live_facts(&mut self) -> Result<(), ThreadError> {
         // Check before clearing any export buffer or pruning any fact: callers retain the complete
         // original state on exhaustion, including the reliable effect facts it has not handed off.
         let revision = self
@@ -1172,6 +1167,25 @@ impl RequestAttempt {
             facts: None,
         }
     }
+    /// Creates a lightweight resident record from a complete attempt outcome.
+    pub fn from_outcome_summary(
+        turn_id: String,
+        attempt_id: String,
+        retry_of: Option<String>,
+        input_revision: u64,
+        outcome: &AttemptOutcome,
+    ) -> Self {
+        Self {
+            turn_id,
+            attempt_id,
+            retry_of,
+            input_revision,
+            status: AttemptStatus::from_outcome(outcome),
+            usage: attempt_outcome_usage(outcome).cloned(),
+            facts: None,
+        }
+    }
+
     /// Returns usage observed for this attempt, including cancelled and rejected responses.
     pub fn usage(&self) -> Option<&crate::model::ModelUsage> {
         self.usage.as_ref()
@@ -1412,8 +1426,6 @@ pub enum ThreadError {
     CurrentPaused,
     #[error("user-authorized Current resume failed: {0}")]
     CurrentResume(#[source] Arc<current::CurrentError>),
-    #[error("current owners do not attach the legacy checkpoint store")]
-    CurrentCheckpointStore,
     #[error("tool registration was rejected and cleanup remains pending: {0}")]
     RejectedTools(#[source] Box<crate::tool::opaque::RejectedTools>),
     #[error("input requires an idle Thread with no pending input")]

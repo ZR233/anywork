@@ -37,7 +37,18 @@ mod origin;
 mod summary;
 mod tools;
 
-use super::current::ActiveTextPart;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::studio::thread_projection) struct ModelPartLocation {
+    pub generation: u32,
+    pub index: usize,
+}
+
+#[cfg(test)]
+pub(super) struct ActiveTextPart {
+    pub(super) id: String,
+    pub(super) model_part: Option<ModelPartLocation>,
+}
+
 use super::observation_parts::{ObservedKind, classify};
 use origin::*;
 pub(in crate::studio::thread_projection) use summary::bounded_summary;
@@ -47,11 +58,13 @@ pub(in crate::studio::thread_projection) use tools::{call_arguments, command_lin
 
 /// A frame-local view of the original current owner's admitted activity and part locations.
 /// It borrows the same immutable observation as current content; it owns no retained history.
+#[cfg(test)]
 struct AdmittedActivity<'a> {
     atoms: &'a [crate::ChatAtom],
     parts: Vec<&'a ObservedPart>,
 }
 
+#[cfg(test)]
 impl<'a> AdmittedActivity<'a> {
     fn new(
         state: &'a ThreadSnapshot,
@@ -105,6 +118,7 @@ impl<'a> AdmittedActivity<'a> {
     }
 }
 
+#[cfg(test)]
 fn activity_parts<'a>(
     progress: &'a ModelProgress,
     admitted: Option<&'a AdmittedActivity<'a>>,
@@ -119,6 +133,20 @@ fn activity_parts<'a>(
                 .into_iter()
                 .flatten(),
         )
+}
+
+#[cfg(not(test))]
+enum AdmittedActivity<'a> {
+    #[allow(dead_code)]
+    Never(std::marker::PhantomData<&'a ()>),
+}
+
+#[cfg(not(test))]
+fn activity_parts<'a>(
+    progress: &'a ModelProgress,
+    _admitted: Option<&'a AdmittedActivity<'a>>,
+) -> impl DoubleEndedIterator<Item = &'a ObservedPart> {
+    progress.parts().iter()
 }
 
 /// 当前执行活动的权威小摘要；`None` 表示该 Thread 当前没有活动。
@@ -231,6 +259,7 @@ fn same_body(left: &ThreadActivity, right: &ThreadActivity) -> bool {
 }
 
 /// Changes to source versions invalidate the activity without retaining another copy of it.
+#[cfg(test)]
 #[derive(PartialEq, Eq)]
 struct ObservedVersions {
     attempt_id: Option<String>,
@@ -238,6 +267,7 @@ struct ObservedVersions {
     tools: Vec<Option<u64>>,
 }
 
+#[cfg(test)]
 impl ObservedVersions {
     fn capture(state: &ThreadSnapshot, activity: &ThreadActivity) -> Self {
         let attempt = activity_attempt(state, activity);
@@ -275,6 +305,7 @@ impl ObservedVersions {
     }
 }
 
+#[cfg(test)]
 fn activity_attempt<'a>(
     state: &'a ThreadSnapshot,
     activity: &ThreadActivity,
@@ -304,6 +335,7 @@ fn activity_attempt<'a>(
 ///
 /// 活动本体是有界 typed 摘要（稳定身份 + 前台 kind + 有界最新逻辑行 + 活跃工具条目），版本覆盖这些
 /// 已发布事实及正文的共享进度版本，不按整段正文比较，也不重复保留正文。
+#[cfg(test)]
 #[derive(Default)]
 pub(in crate::studio) struct ActivityProjection {
     previous: Option<ThreadActivity>,
@@ -311,6 +343,7 @@ pub(in crate::studio) struct ActivityProjection {
     thinking_started_at: Option<ThinkingStartedAt>,
 }
 
+#[cfg(test)]
 struct ThinkingStartedAt {
     turn_id: Option<String>,
     execution_id: Option<String>,
@@ -318,6 +351,7 @@ struct ThinkingStartedAt {
     at: i64,
 }
 
+#[cfg(test)]
 impl ActivityProjection {
     pub(super) fn current(&self) -> Option<&ThreadActivity> {
         self.previous.as_ref()
@@ -327,25 +361,12 @@ impl ActivityProjection {
     ///
     /// `None` 表示当前没有活动，此时来源被清除；已完成正文不会回填当前态。
     /// 来源不变时只刷新有界活动本体与共享观察句柄，不物化正文。
-    #[cfg(test)]
     pub(in crate::studio) fn observe(
         &mut self,
         thread_id: &str,
         state: &ThreadSnapshot,
     ) -> Option<ThreadActivity> {
         self.observe_using(thread_id, state, None, 0)
-    }
-
-    pub(super) fn observe_admitted(
-        &mut self,
-        thread_id: &str,
-        state: &ThreadSnapshot,
-        atoms: &[crate::ChatAtom],
-        active: &[ActiveTextPart],
-        observed_at: i64,
-    ) -> Option<ThreadActivity> {
-        let admitted = AdmittedActivity::new(state, atoms, active);
-        self.observe_using(thread_id, state, Some(&admitted), observed_at)
     }
 
     fn observe_using(
@@ -416,36 +437,6 @@ impl ActivityProjection {
         self.previous = activity.clone();
         activity
     }
-
-    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        let activity = self.previous.as_ref().map_or(0, activity_bytes);
-        let versions = self.versions.as_ref().map_or(0, |versions| {
-            let attempt = versions.attempt_id.as_ref().map_or(0, |id| id.len() as u64);
-            let tools = (versions.tools.capacity() * std::mem::size_of::<Option<u64>>()) as u64;
-            attempt.saturating_add(tools)
-        });
-        activity.saturating_add(versions)
-    }
-}
-
-/// 一条活动摘要与工具条目的文本字节。
-fn activity_bytes(activity: &ThreadActivity) -> u64 {
-    let mut bytes = activity.summary.len() as u64
-        + activity
-            .thinking_summary
-            .as_ref()
-            .map_or(0, |summary| summary.len() as u64);
-    for tool in activity
-        .tools
-        .active
-        .iter()
-        .chain(activity.tools.latest_started.iter())
-    {
-        bytes = bytes
-            .saturating_add(tool.summary.len() as u64)
-            .saturating_add(tool.name.len() as u64);
-    }
-    bytes
 }
 
 #[cfg(test)]

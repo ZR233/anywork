@@ -67,20 +67,20 @@ pub use protocol::*;
 
 pub(crate) use studio::StudioDatabaseError;
 pub use studio::{
-    AttachmentRecord, CurrentBodyWatch, CurrentReader, CurrentWatch, DisplayDownloadOutcome,
-    DisplayDownloadRequest, PersistenceState, PersistenceStateSnapshot, ProductEventBus,
-    ProductTopicReceiver, ProductTopicRecvError, ProductTopicTryRecvError, SkillSearchResult,
-    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioHostKind, StudioInstance,
-    StudioInstanceLease, StudioProductTopicSubscription, StudioReadyUpdate, StudioRecoveryImpact,
-    StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
-    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
-    StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
-    StudioRuntimeStateKind, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
-    StudioStartupError, StudioStartupErrorKind, StudioStartupPolicy, StudioStartupRecovery,
-    StudioStore, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
-    StudioUpdateActivity, StudioUpdatePreparationResult, StudioUpdateStateSnapshot,
-    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
-    ThreadPreparationObserver, ThreadRecord, ThreadsObservation, WorkspaceRecord,
+    AttachmentRecord, DisplayDownloadOutcome, DisplayDownloadRequest, PersistenceState,
+    PersistenceStateSnapshot, ProductEventBus, ProductTopicReceiver, ProductTopicRecvError,
+    ProductTopicTryRecvError, SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate,
+    SshServerRuntimeEntry, StudioHostKind, StudioInstance, StudioInstanceLease,
+    StudioProductTopicSubscription, StudioReadyUpdate, StudioRecoveryImpact, StudioRecoveryIssue,
+    StudioRecoveryIssueAction, StudioRecoveryIssueCategory, StudioRecoveryIssueScope,
+    StudioRecoveryWorktreeOwner, StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions,
+    StudioRuntimeSnapshot, StudioRuntimeStateKind, StudioStartNewThreadRequest,
+    StudioStartNewThreadResponse, StudioStartupError, StudioStartupErrorKind, StudioStartupPolicy,
+    StudioStartupRecovery, StudioStore, StudioSubmitPromptOptions, StudioSubmitPromptRequest,
+    StudioSubmitPromptResponse, StudioUpdateActivity, StudioUpdatePreparationResult,
+    StudioUpdateStateSnapshot, StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
+    ThreadMetadataObservation, ThreadPreparationObserver, ThreadRecord, ThreadsObservation,
+    WorkspaceRecord,
 };
 pub use studio::{
     BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3, EventBodyV3,
@@ -91,6 +91,11 @@ pub use studio::{
     SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3,
     UsageCoverage, UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
     export_sha256_hex, format_export_utc_rfc3339, validate_export_output_dir_preflight,
+};
+pub use timeline::{
+    BodyRef, BodyWindow, ConversationEvent, ConversationFeed, LiveAttention, LiveStatusPhase,
+    LiveStatusSnapshot, LiveWorkItem, SessionDetailKind, SessionDetailWindow, SessionMetaSnapshot,
+    TimelineItem, TimelinePatch, WorkGroupMember, WorkGroupStatus,
 };
 pub use worker_assets::RemoteHelperSource;
 
@@ -140,6 +145,8 @@ pub use pl_tool::todo::{TodoItem, TodoListSnapshot, TodoStatus};
 mod programmatic;
 
 pub mod plan_tool;
+
+pub mod timeline;
 
 pub mod workflow_tool;
 

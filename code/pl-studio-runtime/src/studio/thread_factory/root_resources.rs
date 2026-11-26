@@ -14,35 +14,6 @@ use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::collections::BTreeMap;
 
 impl StudioThreadFactory {
-    pub(super) async fn prepare_root_state(
-        &self,
-        identity: &crate::thread_assembler::ThreadActivation,
-    ) -> Result<
-        (
-            crate::DelegationSettings,
-            Option<pl_core::thread::current::ThreadCurrent>,
-        ),
-        ThreadAssemblyError,
-    > {
-        let thread = self.thread_record(identity.id()).await?;
-        if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
-            return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
-        }
-        self.verify_saved_bot_execution_workspace(&thread.clone().into(), None)
-            .await?;
-        let current = super::recovery::load_current_for_recovery(
-            &self.services.store,
-            &thread.clone().into(),
-        )
-        .await
-        .map_err(|error| resource_error("load root delegation current", error))?;
-        let saved = current
-            .as_ref()
-            .map(|current| current.state.to_paused_snapshot());
-        let delegation = root_delegation(&thread, saved.as_ref())?;
-        Ok((delegation, current))
-    }
-
     pub(in crate::studio) async fn prepare_root_thread(
         &self,
         request: ThreadPreparation,
@@ -65,28 +36,37 @@ impl StudioThreadFactory {
             cancellation,
             agent_controls,
             delegation: preflight_delegation,
-            root_current: mut current,
+            mut current,
         } = request;
         let id = identity.id();
         self.bind_resource_scope(id, &workspace_owner.native_resources())?;
         let thread = self.thread_record(id).await?;
+        if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
+            return Err(ThreadAssemblyError::Identity(id.into()));
+        }
+        if thread.visibility != crate::studio::ThreadVisibility::Active {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        let protocol_thread: crate::Thread = thread.clone().into();
+        let saved_snapshot = current
+            .as_ref()
+            .map(|current| current.state.to_paused_snapshot());
+        self.admit_saved_execution(&protocol_thread, saved_snapshot.as_ref())
+            .await?;
+        // This activation already knows whether the root has a saved publication baseline.
         self.services
             .store
-            .begin_thread_preparation(
+            .record_thread_preparation(
                 crate::studio::store::thread_preparation::PreparationIdentity {
                     thread_id: thread.id.clone(),
                     workspace_id: thread.workspace_id.clone(),
                     parent_id: None,
                     root_id: thread.id.clone(),
                 },
+                current.is_some(),
             )
             .await
             .map_err(|error| resource_error("record root assembly owner", error))?;
-        if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
-            return Err(ThreadAssemblyError::Identity(id.into()));
-        }
-        self.verify_saved_bot_execution_workspace(&thread.clone().into(), None)
-            .await?;
         let mut project = self.project_record(&thread.workspace_id).await?;
         let workspace_usage = self
             .reserve_native_workspace(id, id, &project, &workspace_owner)
@@ -98,13 +78,9 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("resolve bot ownership", error))?;
         let config = self.services.config_runtime.read()?.config;
-        let protocol_thread: crate::Thread = thread.clone().into();
         // Only decoded, validated ownership selects the bot definition: the live binding and the
         // fact frozen in this session must agree when both exist. Titles, user text, paths and
         // arbitrary metadata never decide the Agent role.
-        let saved_snapshot = current
-            .as_ref()
-            .map(|current| current.state.to_paused_snapshot());
         let bot_owner = crate::studio::bot_owner::verified_bot_owner(
             bot.as_ref().map(|bot| bot.id.as_str()),
             saved_snapshot.as_ref(),
@@ -121,35 +97,28 @@ impl StudioThreadFactory {
             Some(_) => VerifiedAgentIdentity::BotRoot,
             None => VerifiedAgentIdentity::GenericRoot,
         };
+        let is_new = current.is_none();
+        let mut saved = saved_snapshot.unwrap_or_default();
         if let Some(current) = &mut current {
             // These migrations only rewrite frozen extension payloads. Keep the complete current
             // state (including model_call and tool previews) intact instead of replacing it from
             // the paused product snapshot.
-            let mut state = current.state.to_paused_snapshot();
-            crate::mode::migrate_mode_snapshot(&mut state, &self.services.thread_modes)
+            crate::mode::migrate_mode_snapshot(&mut saved, &self.services.thread_modes)
                 .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
-            if !state.extensions.contains_key("studio.mode") {
+            if !saved.extensions.contains_key("studio.mode") {
                 return Err(ThreadAssemblyError::Identity(
                     "root Thread has no saved Mode identity; original current preserved".into(),
                 ));
             }
-            crate::instruction::migrate_saved_representation(&mut state, &saved_identity)
+            crate::instruction::migrate_saved_representation(&mut saved, &saved_identity)
                 .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
-            crate::plan_tool::migrate_saved_plan(&mut state)
-                .map_err(|error| resource_error("migrate saved plan", error))?;
             debug_assert!(
-                state.extensions.contains_key("studio.mode"),
+                saved.extensions.contains_key("studio.mode"),
                 "saved Mode migration preserved its identity"
             );
-            current.state.extensions = state.extensions;
-            current.state.extension_sequence = state.extension_sequence;
+            current.state.extensions = saved.extensions.clone();
+            current.state.extension_sequence = saved.extension_sequence;
         }
-        let saved = current
-            .as_ref()
-            .map_or_else(pl_core::thread::ThreadSnapshot::default, |current| {
-                current.state.to_paused_snapshot()
-            });
-        let is_new = current.is_none();
         let delegation = preflight_delegation.ok_or_else(|| {
             ThreadAssemblyError::Identity(
                 "root preparation is missing its frozen delegation".into(),
@@ -437,12 +406,17 @@ impl StudioThreadFactory {
     }
 }
 
-fn root_delegation(
+pub(super) fn root_delegation(
     thread: &crate::studio::ThreadRecord,
-    saved: Option<&pl_core::thread::ThreadSnapshot>,
+    current: Option<&pl_core::thread::current::ThreadCurrent>,
 ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
-    match saved {
-        Some(saved) => crate::studio::delegation::saved(saved)
+    match current {
+        Some(current) => current
+            .state
+            .extensions
+            .get(crate::studio::delegation::EXTENSION)
+            .map(|record| crate::studio::delegation::decode(&record.payload))
+            .transpose()
             .map_err(|error| resource_error("read saved delegation", error))?
             .ok_or_else(|| {
                 ThreadAssemblyError::Identity("saved root has no delegation selection".into())

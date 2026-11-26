@@ -2,7 +2,6 @@ pub(crate) mod acp;
 pub(crate) mod acp_business;
 pub(crate) mod acp_detection;
 pub(crate) mod acp_install;
-pub(crate) mod chat;
 pub(crate) mod chatgpt_auth;
 pub(crate) mod commands;
 pub(crate) mod delegation;

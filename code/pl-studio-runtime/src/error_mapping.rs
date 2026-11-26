@@ -66,9 +66,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     if let Some(error) = error.downcast_ref::<crate::history::HistoryError>() {
         return history_error(error);
     }
-    if error.downcast_ref::<StudioDatabaseError>().is_some()
-        || error.downcast_ref::<std::io::Error>().is_some()
-    {
+    if error.downcast_ref::<StudioDatabaseError>().is_some() {
         return StudioError::storage();
     }
     if let Some(error) = error.downcast_ref::<pl_core::chat::ChatError>() {
@@ -110,6 +108,15 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     }
     if let Some(error) = error.downcast_ref::<PureError>() {
         return pure_error(error);
+    }
+
+    // Factory and activation errors retain IO causes through Error::source. Classify those
+    // causes after the domain errors above so their more specific public meanings win.
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+    {
+        return StudioError::storage();
     }
 
     let studio_error = StudioError::internal();
@@ -628,6 +635,40 @@ mod typed_mapping_tests {
     use super::*;
     use crate::agent::worktree::WorktreeError;
     use crate::{StudioStartupError, StudioStartupErrorKind};
+
+    #[test]
+    fn nested_io_keeps_storage_classification_without_overriding_domain_errors() {
+        use crate::thread_assembler::ThreadAssemblyError;
+
+        let private = "private-workspace-path";
+        for (failure, code, retryable) in [
+            (
+                anyhow::Error::new(ThreadAssemblyError::ActivationFailed(Arc::new(
+                    ThreadAssemblyError::Resource {
+                        operation: "workspace physical usage admission",
+                        source: Box::new(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            private,
+                        )),
+                    },
+                ))),
+                StudioErrorCode::Storage,
+                true,
+            ),
+            (
+                anyhow::Error::new(ConfigRuntimeError::RequiredConfiguration {
+                    source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, private),
+                }),
+                StudioErrorCode::InvalidArgument,
+                false,
+            ),
+        ] {
+            let mapped = studio_error_from_anyhow(failure.context(private));
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.retryable, retryable);
+            assert!(!serde_json::to_string(&mapped).unwrap().contains(private));
+        }
+    }
 
     #[test]
     fn worktree_causes_keep_priority_codes_and_redaction_through_startup() {

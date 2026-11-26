@@ -1,7 +1,8 @@
-//! Thread-tool reads over independent Current and History ports.
+//! Thread-tool reads over unified ConversationFeed and immutable History ports.
 
 use super::{StudioRuntime, output};
-use crate::{ChatScope, ContentRange, CurrentCollectionRef, CurrentContentRef, ReadDemand};
+use crate::timeline::{BodyRef, ConversationFeed};
+use crate::{ChatScope, ContentRange, ReadDemand};
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,7 @@ pub(super) struct ReadOwners {
 }
 
 struct ReadResource {
-    current: crate::studio::CurrentReader,
+    feed: ConversationFeed,
     history: crate::history::HistoryReader,
     cancel: CancellationToken,
     closing: AtomicBool,
@@ -36,14 +37,14 @@ impl ReadResource {
     fn request_close(&self) {
         self.closing.store(true, Ordering::Release);
         self.cancel.cancel();
-        self.current.request_close();
+        self.feed.request_close();
         self.history.request_close();
     }
 
     async fn close(&self) -> Result<()> {
         self.request_close();
-        let (current, _) = tokio::join!(self.current.close(), self.history.close());
-        current
+        tokio::join!(self.feed.close(), self.history.close());
+        Ok(())
     }
 }
 
@@ -113,9 +114,9 @@ impl ReadOwners {
                 "close an existing tool read scope before opening another".into(),
             )
         })?;
-        let current = tokio::select! { biased;
+        let feed = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
-            result=runtime.open_current_reader(session, crate::CURRENT_PROTOCOL_VERSION, demand)=>result?
+            result=runtime.open_conversation_feed(session, demand.max_items)=>result?
         };
         let history_result = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
@@ -124,13 +125,14 @@ impl ReadOwners {
         let history = match history_result {
             Ok(history) => history,
             Err(error) => {
-                return operation_and_cleanup(Err(error), current.close().await);
+                feed.close().await;
+                return Err(error);
             }
         };
         let resource = Arc::new(ReadResource {
-            current: current.clone(),
+            feed: feed.clone(),
             history: history.clone(),
-            cancel: current.cancellation_token(),
+            cancel: feed.cancellation_token(),
             closing: AtomicBool::new(false),
             _permit: permit,
         });
@@ -154,7 +156,7 @@ impl ReadOwners {
             .cloned()
             .ok_or_else(stale_scope)?;
         ensure!(
-            !resource.closing.load(Ordering::Acquire) && resource.current.thread_id() == session,
+            !resource.closing.load(Ordering::Acquire) && resource.feed.thread_id() == session,
             stale_scope()
         );
         Ok(resource)
@@ -181,7 +183,7 @@ impl ReadOwners {
 
     async fn close_target(&self, id: &str, session: &str) -> Result<()> {
         let resource = self.get(id, session).await?;
-        ensure!(resource.current.thread_id() == session, stale_scope());
+        ensure!(resource.feed.thread_id() == session, stale_scope());
         self.close(id).await
     }
 
@@ -225,9 +227,7 @@ pub(super) struct ReadInput {
     item_id: Option<String>,
     continuation: Option<String>,
     #[schemars(with = "Option<serde_json::Value>")]
-    reference: Option<CurrentContentRef>,
-    #[schemars(with = "Option<serde_json::Value>")]
-    collection: Option<CurrentCollectionRef>,
+    body_ref: Option<BodyRef>,
     #[schemars(with = "Option<serde_json::Value>")]
     range: Option<ContentRange>,
     #[serde(default)]
@@ -241,13 +241,12 @@ pub(super) fn read_schema() -> serde_json::Value {
     schema["properties"]["demand"] = serde_json::json!({"anyOf":[{"type":"object","required":["maxItems","maxBytes"],"additionalProperties":false,"properties":{
         "maxItems":{"type":"integer","minimum":1,"maximum":crate::CHAT_READ_MAX_ITEMS},
         "maxBytes":{"type":"integer","minimum":1,"maximum":crate::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
-    schema["properties"]["reference"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a CurrentContentRef unchanged."},{"type":"null"}]});
+    schema["properties"]["bodyRef"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a BodyRef unchanged."},{"type":"null"}]});
     schema["properties"]["scope"]["description"] = serde_json::json!(
         "History original scope for a new read. Existing readScope continues the same immutable cut."
     );
-    schema["properties"]["collection"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a canonical CurrentCollectionRef unchanged."},{"type":"null"}]});
     schema["properties"]["readBusinessRefs"]["description"] = serde_json::json!(
-        "Read the current Plan and interaction resource heads; no history or demand is required."
+        "Read the current Plan and interaction snapshots; no history or demand is required."
     );
     schema
 }
@@ -281,38 +280,12 @@ pub(super) async fn get(
 ) -> Result<pl_core::tool::ToolOutput> {
     let (id, resource) = owners.open(runtime, session, demand(16)?).await?;
     let result = async {
-        let view = resource.current.snapshot(demand(16)?).await?;
-        let mut pending = Vec::new();
-        let mut pending_has_more = false;
-        if let Some(reference) = &view.projection.interactions {
-            let page = resource
-                .current
-                .page_collection(
-                    reference.clone(),
-                    None,
-                    ReadDemand {
-                        max_items: 32,
-                        max_bytes: 64 * 1024,
-                    },
-                )
-                .await?;
-            pending_has_more = page.continuation.is_some();
-            for entry in page.entries {
-                pending.push(match entry.payload {
-                    crate::CurrentPayloadData::Inline { bytes } => {
-                        serde_json::from_slice::<serde_json::Value>(&bytes)?
-                    }
-                    crate::CurrentPayloadData::Deferred { reference, .. } => {
-                        serde_json::json!({"id":entry.id,"detailsDeferred":true,"reference":reference})
-                    }
-                });
-            }
-        }
+        let meta = resource.feed.session_meta_snapshot();
         output(&serde_json::json!({
             "readScope": id,
-            "current": view,
-            "pending": pending,
-            "pendingHasMore": pending_has_more,
+            "current": meta,
+            "pending": meta.interactions,
+            "pendingHasMore": false,
         }))
     }
     .await;
@@ -340,7 +313,10 @@ pub(super) async fn read(
         (id.clone(), owners.get(&id, &args.session_id).await?, false)
     } else {
         ensure!(
-            args.scope.is_some() || args.read_business_refs || args.collection.is_some(),
+            args.scope.is_some()
+                || args.read_business_refs
+                || args.body_ref.is_some()
+                || args.item_id.is_some(),
             "scope is required when opening a history read"
         );
         let (id, resource) = owners.open(runtime, &args.session_id, page_demand).await?;
@@ -348,39 +324,36 @@ pub(super) async fn read(
     };
     let result = async {
         if args.read_business_refs {
-            let view = resource.current.snapshot(page_demand).await?;
+            let meta = resource.feed.session_meta_snapshot();
             return output(&serde_json::json!({
-                "readScope":id,
-                "businessRefs":{"plan":view.projection.plan,"interactions":view.projection.interactions},
-                "currentRevision":view.revision,
+                "readScope": id,
+                "businessRefs": { "plan": meta.plan, "interactions": meta.interactions },
+                "currentRevision": meta.revision,
             }));
         }
-        if let Some(reference) = args.reference {
-            let range = args.range.context("range is required for a current reference")?;
-            let window = resource.current.read_body(reference, range).await?;
-            return output(&serde_json::json!({"readScope":id,"window":window}));
-        }
-        if let Some(reference) = args.collection {
-            let page = resource
-                .current
-                .page_collection(reference, args.continuation, page_demand)
-                .await
-                .map_err(|error| stale_scope().context(error))?;
-            return output(&serde_json::json!({"readScope":id,"currentPage":page}));
+        if let Some(body_ref) = args.body_ref {
+            let range = args.range.context("range is required for a bodyRef read")?;
+            let window = resource
+                .feed
+                .read_body_window(&body_ref, range.offset, range.max_bytes)
+                .await?;
+            return output(&serde_json::json!({"readScope": id, "window": window}));
         }
         if let Some(item_id) = args.item_id {
             let page = resource
                 .history
-                .list_bodies(item_id.clone(), args.continuation, crate::history::HistoryDemand {
-                    max_rows: page_demand.max_items,
-                    max_bytes: page_demand.max_bytes,
-                })
+                .list_bodies(
+                    item_id.clone(),
+                    args.continuation,
+                    crate::history::HistoryDemand {
+                        max_rows: page_demand.max_items,
+                        max_bytes: page_demand.max_bytes,
+                    },
+                )
                 .await?;
             return output(&serde_json::json!({"readScope":id,"itemId":item_id,"manifest":page}));
         }
-        let scope = args
-            .scope
-            .unwrap_or(ChatScope::conversation(None));
+        let scope = args.scope.unwrap_or(ChatScope::conversation(None));
         let page = resource
             .history
             .events_page(
@@ -602,10 +575,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_schema_uses_current_references() {
+    fn read_schema_uses_body_references() {
         let schema = read_schema();
-        assert!(schema["properties"]["reference"].is_object());
-        assert!(schema["properties"]["collection"].is_object());
+        assert!(schema["properties"]["bodyRef"].is_object());
+        assert!(schema["properties"]["readBusinessRefs"].is_object());
     }
 
     #[test]

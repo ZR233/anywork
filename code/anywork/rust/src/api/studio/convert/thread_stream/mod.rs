@@ -6,16 +6,15 @@ pub(crate) use interaction::child_interaction as bridge_child_interaction;
 pub(crate) use interaction::interaction as bridge_interaction;
 
 use super::presentation::current_state_field;
-use anyhow::Result;
 use pl_studio_runtime::plan_tool::{
     AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
 };
 use pl_studio_runtime::{
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
-    McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadNotification,
-    ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
-    ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus, TodoItem, TodoListSnapshot, TodoStatus,
-    Turn, TurnCancellationCause, TurnCompletion, TurnPhase, TurnRolloverOutcome, TurnState,
+    McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread,
+    ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage, ThreadRuntimeUsageState,
+    ThreadStatus, TodoItem, TodoListSnapshot, TodoStatus, Turn, TurnCancellationCause,
+    TurnCompletion, TurnPhase, TurnRolloverOutcome, TurnState,
 };
 
 use pl_studio_runtime::workflow_tool::{
@@ -24,106 +23,7 @@ use pl_studio_runtime::workflow_tool::{
     WorkflowStateKind,
 };
 
-use crate::api::studio::convert::chat;
 use crate::api::studio::types::*;
-
-pub(super) fn thread_notification(
-    envelope: ThreadNotificationEnvelope,
-) -> Result<BridgeThreadNotificationEnvelope> {
-    let notification = match envelope.notification {
-        ThreadNotification::TurnStarted { turn: value } => BridgeThreadNotification::TurnStarted {
-            turn: Box::new(bridge_turn(value)),
-        },
-        ThreadNotification::TurnUpdated { turn: value } => BridgeThreadNotification::TurnUpdated {
-            turn: Box::new(bridge_turn(value)),
-        },
-        ThreadNotification::TurnCompleted { turn: value } => {
-            BridgeThreadNotification::TurnCompleted {
-                turn: Box::new(bridge_turn(value)),
-            }
-        }
-        ThreadNotification::InteractionChanged { interaction: value } => {
-            BridgeThreadNotification::InteractionChanged {
-                interaction: Box::new(interaction::interaction(*value)?),
-            }
-        }
-        ThreadNotification::BusinessRefsChanged { references } => {
-            BridgeThreadNotification::BusinessRefsChanged {
-                references: chat::business_refs(references),
-            }
-        }
-        ThreadNotification::ThreadRuntimeUpdated {
-            runtime: value,
-            model_route,
-        } => BridgeThreadNotification::ThreadRuntimeUpdated {
-            runtime: Box::new(runtime_snapshot(*value)),
-            model_route: model_route.map(model_route_snapshot),
-        },
-        ThreadNotification::ActivityChanged { activity: value } => {
-            BridgeThreadNotification::ActivityChanged {
-                activity: value.map(|current| Box::new(activity::activity(*current))),
-            }
-        }
-        ThreadNotification::StorageChanged { storage: value } => {
-            BridgeThreadNotification::StorageChanged {
-                storage: value.map(|current| Box::new(activity::storage(*current))),
-            }
-        }
-        ThreadNotification::Lagged { dropped } => BridgeThreadNotification::Lagged { dropped },
-    };
-    Ok(BridgeThreadNotificationEnvelope {
-        thread_id: envelope.thread_id,
-        epoch: envelope.epoch,
-        base_revision: envelope.base_revision,
-        revision: envelope.revision,
-        emitted_at: envelope.emitted_at,
-        notification,
-    })
-}
-
-pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThreadSnapshot> {
-    if value.schema_version != pl_studio_runtime::THREAD_SCHEMA_VERSION {
-        return Err(protocol_version_mismatch(
-            "unsupported thread snapshot schema",
-        ));
-    }
-    let runtime_availability = if value.runtime.is_some() {
-        BridgeThreadRuntimeAvailability::Active
-    } else {
-        BridgeThreadRuntimeAvailability::Inactive
-    };
-    Ok(BridgeThreadSnapshot {
-        schema_version: value.schema_version,
-        revision: value.revision,
-        thread: bridge_thread(value.thread),
-        business_refs: chat::business_refs(value.business_refs),
-        active_turn: value.active_turn.map(bridge_turn),
-        interactions: value
-            .interactions
-            .into_iter()
-            .map(interaction::interaction)
-            .collect::<Result<Vec<_>>>()?,
-        runtime: value.runtime.map(runtime_snapshot),
-        model_route: value.model_route.map(model_route_snapshot),
-        activity: value.activity.map(activity::activity),
-        storage: value.storage.map(activity::storage),
-        runtime_availability,
-    })
-}
-
-fn protocol_version_mismatch(message: &str) -> anyhow::Error {
-    anyhow::Error::new(
-        pl_studio_runtime::StudioError::new(
-            pl_studio_runtime::StudioErrorCode::Protocol,
-            message,
-            false,
-        )
-        .with_reason(
-            pl_studio_runtime::StudioErrorReason::ProtocolVersionMismatch,
-            serde_json::Value::Null,
-        ),
-    )
-}
 
 pub(crate) fn bridge_session_row(
     value: pl_studio_runtime::SessionDirectoryRow,
@@ -189,7 +89,7 @@ pub(crate) fn bridge_thread(value: Thread) -> BridgeThread {
     }
 }
 
-fn bridge_thread_status(status: ThreadStatus) -> BridgeThreadStatus {
+pub(super) fn bridge_thread_status(status: ThreadStatus) -> BridgeThreadStatus {
     match status {
         ThreadStatus::Idle => BridgeThreadStatus::Idle,
         ThreadStatus::Queued => BridgeThreadStatus::Queued,
@@ -434,7 +334,7 @@ fn wait_target(value: &pl_studio_runtime::ThreadWaitTarget) -> BridgeThreadWaitT
 }
 
 /// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。
-fn model_route_snapshot(
+pub(super) fn model_route_snapshot(
     route: pl_studio_runtime::ThreadModelRouteSnapshot,
 ) -> BridgeThreadModelRouteSnapshot {
     BridgeThreadModelRouteSnapshot {
@@ -638,7 +538,7 @@ pub(crate) fn workflow_runtime_graph_snapshot(
     }
 }
 
-fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
+pub(super) fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
     BridgeThreadRuntimeUsage {
         diagnostics: value.diagnostics.into(),
         has_incomplete_usage: value.has_incomplete_usage,
@@ -1070,76 +970,5 @@ mod tests {
             matches!(&mapped, BridgeAgentBinding::Acp { account_id } if account_id == "profile-account")
         );
         assert_eq!(pl_studio_runtime::AgentBinding::from(mapped), source);
-    }
-
-    fn business_refs() -> pl_studio_runtime::ThreadBusinessRefs {
-        pl_studio_runtime::ThreadBusinessRefs {
-            plan: Some(pl_studio_runtime::CurrentPlanHead {
-                revision: 4,
-                phase: AgentSessionPlanPhase::Approved,
-                document: None,
-            }),
-            interactions: Some(pl_studio_runtime::CurrentCollectionRef {
-                owner_id: "runtime-owner".into(),
-                collection: "interactions".into(),
-                revision: 9,
-            }),
-        }
-    }
-
-    fn assert_version_mismatch(error: anyhow::Error) {
-        let typed = error
-            .downcast_ref::<pl_studio_runtime::StudioError>()
-            .expect("version rejection preserves typed StudioError");
-        assert_eq!(
-            typed.reason(),
-            Some(pl_studio_runtime::StudioErrorReason::ProtocolVersionMismatch.label())
-        );
-    }
-
-    #[test]
-    fn snapshot_carries_explicit_empty_or_nonempty_business_refs() {
-        let empty = bridge_thread_snapshot(ThreadSnapshot::empty("thread")).unwrap();
-        assert_eq!(
-            empty.business_refs,
-            BridgeThreadBusinessRefs {
-                plan: None,
-                interactions: None,
-            }
-        );
-
-        let mut populated = ThreadSnapshot::empty("thread");
-        populated.business_refs = business_refs();
-        let mapped = bridge_thread_snapshot(populated).unwrap();
-        assert_eq!(mapped.business_refs.plan.as_ref().unwrap().revision, 4);
-        assert_eq!(mapped.business_refs.interactions.unwrap().revision, 9);
-    }
-
-    #[test]
-    fn business_refs_notification_is_mapped_without_changing_its_payload() {
-        let envelope = ThreadNotificationEnvelope::new(
-            "thread",
-            3,
-            10,
-            11,
-            123,
-            ThreadNotification::BusinessRefsChanged {
-                references: business_refs(),
-            },
-        );
-        let mapped = thread_notification(envelope).unwrap();
-        let BridgeThreadNotification::BusinessRefsChanged { references } = mapped.notification
-        else {
-            panic!("business refs notification changed kind");
-        };
-        assert_eq!(references.plan.as_ref().unwrap().revision, 4);
-        assert_eq!(references.interactions.unwrap().owner_id, "runtime-owner");
-    }
-
-    #[test]
-    fn unsupported_schema_is_rejected_typed() {
-        let mut snapshot = ThreadSnapshot::empty("thread");
-        snapshot.schema_version -= 1;
-        assert_version_mismatch(bridge_thread_snapshot(snapshot).unwrap_err());
     }
 }

@@ -45,7 +45,6 @@ use worker::{
 };
 
 use crate::history::{HistoryCut, HistoryEvent, HistoryReader};
-use crate::studio::thread_projection::CurrentState;
 use crate::studio::thread_projection::PreparedAccounting;
 
 /// Host handle enabling atomic run export across `StudioRuntime` lifecycle stages.
@@ -436,13 +435,15 @@ impl RunExportCoordinator {
 
     /// Admits one frozen `PreparedAccounting` handoff from `LiveOwner::finish_pending` before
     /// `handover_pending`. Never propagates errors to abort Studio's own handoff.
+    #[allow(clippy::too_many_arguments)]
     pub async fn admit_live_handoff(
         &self,
         thread_id: &str,
         accounting: &PreparedAccounting,
         events: &Arc<[HistoryEvent]>,
         latest_usage: &UsageSummary,
-        current: &CurrentState,
+        current_owner_id: &str,
+        current_revision: u64,
         history: &HistoryReader,
     ) {
         let effect_seq = accounting.sequence;
@@ -520,8 +521,7 @@ impl RunExportCoordinator {
                 return;
             }
         };
-        let current_owner_id = current.owner_id().to_owned();
-        let current_revision = current.revision();
+        let current_owner_id = current_owner_id.to_owned();
         {
             let mut guard = self
                 .shared_members

@@ -14,7 +14,7 @@ use pl_core::{
     thread::{inbox::InboxRecord, input::InputRecord},
 };
 
-pub(in crate::studio) fn accepted_input_draft(
+pub(crate) fn accepted_input_draft(
     thread: &Thread,
     record: &InputRecord,
     accepted_at: ChatFactPosition,
@@ -66,7 +66,7 @@ pub(in crate::studio) fn accepted_input_draft(
     .map(Some)
 }
 
-pub(in crate::studio) fn accepted_inbox_draft(
+pub(crate) fn accepted_inbox_draft(
     thread: &Thread,
     record: &InboxRecord,
     accepted_at: ChatFactPosition,

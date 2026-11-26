@@ -1,289 +1,15 @@
-//! Mechanical FRB types for the independent history and current read ports.
+//! FRB DTOs for the Native conversation feed and shared thread snapshot references.
+
+use serde::Deserialize;
 
 use super::{
-    BridgeCacheUsageSummary, BridgeChatAtomKind, BridgeChatAtomLifecycle, BridgeChatContentRole,
-    BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState, BridgeChatTerminalOutcome,
-    BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeThreadActivityKind,
-    BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope, BridgeThreadSnapshot,
-    BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation,
-    BridgeTurnFailureDto, BridgeTurnPhase,
+    BridgeInteractionRequest, BridgePlanRuntimeSnapshot, BridgeRuntimeCostAmount,
+    BridgeThreadActivity, BridgeThreadModelRouteSnapshot, BridgeThreadRuntimeSnapshot,
+    BridgeThreadRuntimeUsage, BridgeThreadStatus, BridgeThreadStorageState, BridgeTurn,
+    BridgeTurnFailureDto, BridgeUsageGapIssue, BridgeUsageIssueCountSnapshot,
+    BridgeUsageOutcomeCountSnapshot, BridgeUsagePurposeCountSnapshot, BridgeUsageReport,
+    BridgeUsageReportStatus, BridgeUsageTerminalStatus,
 };
-
-pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 3;
-pub const BRIDGE_CURRENT_PROTOCOL_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryCut {
-    pub token: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BridgeHistoryDemand {
-    pub max_rows: u32,
-    pub max_bytes: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeHistoryEventsQuery {
-    AllEvents,
-    Entity {
-        entity_id: String,
-    },
-    Turn {
-        turn_id: String,
-    },
-    Source {
-        source: BridgeChatSourceId,
-    },
-    Call {
-        call_id: String,
-    },
-    Originals {
-        query_class: String,
-        parent_id: Option<String>,
-    },
-    TextOriginals,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeHistoryTimelineRole {
-    Boundary,
-    Work,
-    Hidden,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeHistoryBusinessRowScope {
-    Turn,
-    Source,
-    Cost,
-    Accounting,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryTurnHead {
-    pub turn_id: String,
-    pub input_id: Option<String>,
-    pub run_id: Option<String>,
-    pub state: BridgeHistoryTurnState,
-    pub phase: Option<BridgeTurnPhase>,
-    pub context_disposition: BridgeHistoryContextDisposition,
-    pub queued_at: Option<i64>,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub updated_at: i64,
-    pub detail_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeHistoryTurnState {
-    Unknown,
-    Queued,
-    Running,
-    Completed,
-    Cancelled,
-    Failed,
-    BudgetLimited,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeHistoryContextDisposition {
-    Active,
-    RolledBack,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistorySourceHead {
-    pub source: BridgeChatSourceId,
-    pub lifecycle: BridgeHistorySourceLifecycle,
-    pub started_at: Option<i64>,
-    pub ended_at: Option<i64>,
-    pub observed_at: Option<i64>,
-    pub detail_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeHistorySourceLifecycle {
-    Unknown,
-    Active,
-    Ended { outcome: BridgeChatTerminalOutcome },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryCostHead {
-    pub purpose: Option<String>,
-    pub currency: String,
-    pub cost_delta: Option<f64>,
-    pub cost_total: f64,
-    pub cache_savings_delta: Option<f64>,
-    pub cache_savings_total: Option<f64>,
-    pub updated_at: i64,
-    pub detail_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryAccountingHead {
-    pub prompt_tokens: u64,
-    pub completion_tokens: u64,
-    pub cached_prompt_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub reasoning_tokens: u64,
-    pub inference_count: u64,
-    pub total_tokens: u64,
-    pub cache_usage: BridgeCacheUsageSummary,
-    pub has_incomplete_usage: bool,
-    pub has_unpriced_usage: bool,
-    pub updated_at: i64,
-    pub detail_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryTimelineEntry {
-    pub event: BridgeHistoryEventRecord,
-    pub has_folded_after: bool,
-    pub tail_folded_ended_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryTimelinePage {
-    pub cut: BridgeHistoryCut,
-    pub entries: Vec<BridgeHistoryTimelineEntry>,
-    pub has_folded_before_oldest: bool,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryWorkRangePage {
-    pub cut: BridgeHistoryCut,
-    pub after_seq: Option<u64>,
-    pub before_seq: Option<u64>,
-    pub events: Vec<BridgeHistoryEventRecord>,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BridgeHistoryBusinessRowHead {
-    Turn(BridgeHistoryTurnHead),
-    Source(BridgeHistorySourceHead),
-    Cost(BridgeHistoryCostHead),
-    Accounting(BridgeHistoryAccountingHead),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryBusinessRowEntry {
-    pub row_key: String,
-    pub anchor_seq: u64,
-    pub head_seq: u64,
-    pub head: BridgeHistoryBusinessRowHead,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryBusinessPage {
-    pub cut: BridgeHistoryCut,
-    pub entries: Vec<BridgeHistoryBusinessRowEntry>,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryOriginalInfo {
-    pub query_class: String,
-    pub parent_id: Option<String>,
-    pub original_kind: BridgeChatAtomKind,
-    pub tool_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryEventBodyRef {
-    pub database_id: String,
-    pub owner_event_id: String,
-    pub body_key: String,
-    pub body_id: String,
-    pub byte_start: u64,
-    pub byte_length: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryEventRecord {
-    pub seq: u64,
-    pub event_id: String,
-    pub kind: String,
-    pub timeline_role: BridgeHistoryTimelineRole,
-    pub occurred_at: Option<i64>,
-    pub recorded_at: i64,
-    pub run_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub call_id: Option<String>,
-    pub entity_id: Option<String>,
-    pub message_id: Option<String>,
-    pub tool_name: Option<String>,
-    pub source: Option<BridgeChatSourceId>,
-    pub original: Option<BridgeHistoryOriginalInfo>,
-    pub row_scope: Option<BridgeHistoryBusinessRowScope>,
-    pub row_key: Option<String>,
-    pub payload_schema: String,
-    pub payload_json: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryEventsPage {
-    pub cut: BridgeHistoryCut,
-    pub entries: Vec<BridgeHistoryEventRecord>,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryBodyWindow {
-    pub offset: u64,
-    pub bytes: Vec<u8>,
-    pub total_length: u64,
-    pub media_type: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeHistoryBodyRole {
-    CanonicalPayload,
-    CanonicalMetadata,
-    Body,
-    ReasoningSummary,
-    ToolArguments,
-    ToolOutput,
-    Attachment,
-    WaitPresentation,
-    Other { name: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryBodyEntry {
-    pub ordinal: u64,
-    pub body_key: String,
-    pub role: BridgeHistoryBodyRole,
-    pub reference: BridgeHistoryEventBodyRef,
-    pub media_type: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryBodyPage {
-    pub owner_event_id: String,
-    pub entries: Vec<BridgeHistoryBodyEntry>,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryAccounting {
-    pub head: BridgeHistoryAccountingHead,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeOpenHistoryReader {
-    pub reader_id: String,
-    pub history_protocol_version: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentRevision {
-    pub owner_id: String,
-    pub revision: u64,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeCurrentContentRef {
@@ -315,70 +41,6 @@ pub struct BridgeCurrentCollectionRef {
     pub revision: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeCurrentPayloadData {
-    Inline {
-        bytes: Vec<u8>,
-    },
-    Deferred {
-        reference: BridgeCurrentContentRef,
-        byte_length: u64,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentCollectionEntry {
-    pub id: String,
-    pub position: i64,
-    pub payload: BridgeCurrentPayloadData,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentCollectionPage {
-    pub revision: u64,
-    pub entries: Vec<BridgeCurrentCollectionEntry>,
-    pub continuation: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeCurrentContentRole {
-    Reasoning,
-    Response,
-    ToolArguments,
-    ToolOutput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentContentPreview {
-    pub id: String,
-    pub role: BridgeCurrentContentRole,
-    pub text_channel: Option<BridgeThreadTextChannel>,
-    pub text: String,
-    pub reference: BridgeCurrentContentRef,
-}
-
-/// Current atoms carry business identity only. History qualification is never inferred here.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeCurrentAtom {
-    pub id: String,
-    pub source: BridgeChatSourceId,
-    pub source_state: Option<BridgeChatSourceState>,
-    pub source_order: Option<u64>,
-    pub kind: BridgeChatAtomKind,
-    pub delivery: BridgeChatDeliveryKind,
-    pub lifecycle: BridgeChatAtomLifecycle,
-    pub turn_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub tool: Option<BridgeChatToolIdentity>,
-    pub wait: Option<BridgeThreadWaitPresentation>,
-    pub text_channel: Option<BridgeThreadTextChannel>,
-    pub model_recovery: Option<BridgeModelRecoveryNotice>,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub content_present: Option<bool>,
-    pub contents: Vec<BridgeCurrentAtomContent>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeModelRecoveryPhase {
     Repairing,
@@ -401,83 +63,443 @@ pub struct BridgeModelRecoveryNotice {
     pub failure: Option<BridgeTurnFailureDto>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentAtomContent {
-    pub role: BridgeChatContentRole,
-    pub reference: BridgeCurrentContentRef,
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BridgeBodyRef {
+    pub database_id: String,
+    pub body_id: String,
+    pub owner_event_id: String,
+    pub body_key: String,
+    pub role: String,
+    pub byte_length: u64,
+    pub media_type: Option<String>,
+    pub inline_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BridgeBodyWindow {
+    pub offset: u64,
+    pub text: Option<String>,
+    pub bytes_base64: Option<String>,
+    pub total_bytes: u64,
+    pub eof: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BridgeSessionDetailKind {
+    Plan,
+    Interactions,
+    Todo,
+    Workflow,
+    ActiveSkills,
+    ActiveMcpServers,
+    ActiveLspServers,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BridgeSessionDetailWindow {
+    pub owner_epoch: String,
+    pub revision: u64,
+    pub offset: u64,
+    pub total_bytes: u64,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BridgeWorkGroupStatus {
+    Active,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeCurrentProjection {
-    pub logical_status: BridgeThreadStatus,
-    pub execution_present: bool,
-    pub active: Option<BridgeCurrentActivityHead>,
-    pub active_turn: Option<BridgeCurrentTurnHead>,
-    pub sources: Vec<BridgeChatSourceState>,
-    pub atoms: Vec<BridgeCurrentAtom>,
-    pub plan: Option<BridgeCurrentPlanHead>,
-    pub interactions: Option<BridgeCurrentCollectionRef>,
-    pub previews: Vec<BridgeCurrentContentPreview>,
-    pub collections: Vec<BridgeCurrentCollectionRef>,
-    pub model_recovery: Option<BridgeCurrentModelRecovery>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentModelRecovery {
-    pub attempt: u32,
-    pub max_attempts: u32,
-    pub reason: Option<String>,
+pub enum BridgeTimelineItem {
+    UserMessage {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        input_id: Option<String>,
+        channel: String,
+        text: String,
+        attachments_json: String,
+        occurred_at_ms: Option<i64>,
+    },
+    AssistantText {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        attempt_id: Option<String>,
+        channel: String,
+        text: String,
+        body_ref: Option<BridgeBodyRef>,
+        is_final_turn_delivery: bool,
+        outcome: String,
+        model_recovery: Option<Box<BridgeModelRecoveryNotice>>,
+        occurred_at_ms: Option<i64>,
+    },
+    WorkGroup {
+        id: String,
+        first_seq: u64,
+        last_seq: u64,
+        after_boundary_seq: Option<u64>,
+        before_boundary_seq: Option<u64>,
+        member_count: u32,
+        summary: String,
+        status: BridgeWorkGroupStatus,
+        started_at_ms: Option<i64>,
+        finished_at_ms: Option<i64>,
+    },
+    Compaction {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        summary: String,
+        outcome: String,
+        tokens_before: Option<u64>,
+        tokens_after: Option<u64>,
+        occurred_at_ms: Option<i64>,
+    },
+    PlanResolution {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        decision: String,
+        document: Option<String>,
+        document_ref: Option<BridgeBodyRef>,
+        feedback: Option<String>,
+        occurred_at_ms: Option<i64>,
+    },
+    ConnectionNotice {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        scope: String,
+        state: String,
+        transport: String,
+        fallback_transport: Option<String>,
+        attempt: u32,
+        max_attempts: u32,
+        recoverable: bool,
+        reason: Option<String>,
+        duration_ms: Option<u64>,
+        occurred_at_ms: Option<i64>,
+    },
+    TurnOutcome {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        input_id: Option<String>,
+        outcome: String,
+        message: Option<String>,
+        turn_failure: Option<Box<BridgeTurnFailureDto>>,
+        occurred_at_ms: Option<i64>,
+    },
+    StandaloneTool {
+        id: String,
+        seq: u64,
+        turn_id: Option<String>,
+        call_id: String,
+        tool_name: String,
+        presentation_contract: Option<String>,
+        state: String,
+        summary: String,
+        payload_json: String,
+        bodies: Vec<BridgeBodyRef>,
+        occurred_at_ms: Option<i64>,
+    },
+    Fallback {
+        id: String,
+        seq: u64,
+        event_id: String,
+        event_kind: String,
+        reason: String,
+        raw_preview: Option<String>,
+        occurred_at_ms: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeCurrentActivityHead {
-    pub id: String,
-    pub kind: BridgeThreadActivityKind,
-    pub summary: String,
-    pub thinking_summary: Option<String>,
-    pub thinking_seconds: Option<u64>,
-    pub tool_count: u32,
-    pub background_tool_count: u32,
-    pub latest_tool: Option<BridgeCurrentToolHead>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentToolHead {
-    pub call_id: String,
-    pub name: String,
-    pub state: BridgeThreadActivityToolState,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentTurnHead {
-    pub id: String,
-    pub phase: BridgeTurnPhase,
+pub enum BridgeWorkGroupMember {
+    Reasoning {
+        id: String,
+        seq: u64,
+        text: String,
+        summary: String,
+        body_ref: Option<BridgeBodyRef>,
+        outcome: String,
+        started_at_ms: Option<i64>,
+        finished_at_ms: Option<i64>,
+    },
+    ToolCall {
+        id: String,
+        seq: u64,
+        call_id: String,
+        turn_id: Option<String>,
+        tool_name: String,
+        presentation_contract: Option<String>,
+        status: String,
+        summary: String,
+        arguments: Option<String>,
+        result_preview: Option<String>,
+        payload_json: String,
+        bodies: Vec<BridgeBodyRef>,
+        wait_json: Option<String>,
+        started_at_ms: Option<i64>,
+        finished_at_ms: Option<i64>,
+    },
+    Agent {
+        id: String,
+        seq: u64,
+        agent_id: String,
+        name: String,
+        status: String,
+        summary: String,
+        payload_json: String,
+        started_at_ms: Option<i64>,
+        finished_at_ms: Option<i64>,
+    },
+    FileChange {
+        id: String,
+        seq: u64,
+        summary: String,
+        payload_json: String,
+        bodies: Vec<BridgeBodyRef>,
+        occurred_at_ms: Option<i64>,
+    },
+    Skill {
+        id: String,
+        seq: u64,
+        name: String,
+        summary: String,
+        payload_json: String,
+        occurred_at_ms: Option<i64>,
+    },
+    Fallback {
+        id: String,
+        seq: u64,
+        event_id: String,
+        event_kind: String,
+        reason: String,
+        occurred_at_ms: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeCurrentView {
-    pub revision: BridgeCurrentRevision,
-    pub state: Box<BridgeThreadSnapshot>,
-    pub projection: BridgeCurrentProjection,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BridgeCurrentFrame {
+pub enum BridgeTimelinePatch {
     Reset {
-        view: Box<BridgeCurrentView>,
+        items: Vec<BridgeTimelineItem>,
+        has_more_older: bool,
+        older_cursor: Option<String>,
+        revision: u64,
     },
-    Notification {
-        revision: BridgeCurrentRevision,
-        notification: Box<BridgeThreadNotificationEnvelope>,
+    PrependOlder {
+        items: Vec<BridgeTimelineItem>,
+        has_more_older: bool,
+        older_cursor: Option<String>,
     },
-    Projection {
-        revision: BridgeCurrentRevision,
-        projection: Box<BridgeCurrentProjection>,
+    Append {
+        items: Vec<BridgeTimelineItem>,
+    },
+    Update {
+        item: Box<BridgeTimelineItem>,
+    },
+    Remove {
+        item_id: String,
     },
 }
 
-pub struct BridgeOpenCurrentReader {
-    pub reader_id: String,
-    pub current_protocol_version: u32,
-    pub current_owner_id: String,
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BridgeLiveWorkItem {
+    pub id: String,
+    pub call_id: Option<String>,
+    pub kind: String,
+    pub tool_name: String,
+    pub status: String,
+    pub summary: String,
+    pub started_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BridgeLiveAttention {
+    pub id: String,
+    pub kind: String,
+    pub summary: String,
+    pub call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum BridgeLiveStatusPhase {
+    Idle,
+    Working {
+        items: Vec<BridgeLiveWorkItem>,
+        reasoning_preview: Option<String>,
+        started_at_ms: Option<i64>,
+    },
+    StreamingText {
+        attempt_id: String,
+        item_id: String,
+        text: String,
+        started_at_ms: Option<i64>,
+    },
+    Compacting {
+        manual: bool,
+        started_at_ms: Option<i64>,
+    },
+    Reconnecting {
+        attempt_id: String,
+        message: String,
+        retry_after_ms: Option<u64>,
+        attempt: u32,
+    },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BridgeLiveStatusSnapshot {
+    pub revision: u64,
+    pub phase: BridgeLiveStatusPhase,
+    pub attentions: Vec<BridgeLiveAttention>,
+    pub suppressed_by_interaction: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeUsageSummary {
+    pub applied_sequence: u64,
+    pub binding: Option<BridgeUsageBinding>,
+    pub totals: BridgeUsageTotals,
+    pub cache: BridgeUsageCacheSummary,
+    pub context: BridgeUsageContextSummary,
+    pub throughput: BridgeUsageThroughputSummary,
+    pub diagnostics: BridgeUsageDiagnostics,
+    pub pricing: BridgeUsagePricingSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeUsageBinding {
+    pub route_identity: Option<String>,
+    pub model: String,
+    pub context_window: Option<u64>,
+    pub max_context_window: Option<u64>,
+    pub auto_compact_limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeUsageTotals {
+    pub inference_count: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cached_prompt_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeUsageCacheSummary {
+    pub input_tokens: u64,
+    pub read_tokens: u64,
+    pub sample_count: u64,
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeUsageContextSummary {
+    pub tokens: u64,
+    pub latest_call: Option<BridgeUsageObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeUsageThroughputSummary {
+    pub turn_id: String,
+    pub completion_tokens: u64,
+    pub response_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageDiagnostics {
+    pub incomplete_calls: u64,
+    pub missing_calls: u64,
+    pub partial_calls: u64,
+    pub invalid_calls: u64,
+    pub overflow_calls: u64,
+    pub by_outcome: Vec<BridgeUsageOutcomeCountSnapshot>,
+    pub by_purpose: Vec<BridgeUsagePurposeCountSnapshot>,
+    pub other_purpose_calls: u64,
+    pub by_issue: Vec<BridgeUsageIssueCountSnapshot>,
+    pub recent_gaps: Vec<BridgeUsageObservation>,
+    pub legacy_unknown: bool,
+    pub legacy_incomplete: bool,
+    pub counts_overflowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageObservation {
+    pub source: BridgeUsageSource,
+    pub status: BridgeUsageReportStatus,
+    pub usage: BridgeUsageReport,
+    pub issues: Vec<BridgeUsageGapIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeUsageSource {
+    pub thread_id: String,
+    pub call_id: String,
+    pub turn_id: Option<String>,
+    pub effect_sequence: u64,
+    pub observed_at: i64,
+    pub purpose: Option<String>,
+    pub outcome: BridgeUsageTerminalStatus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeUsagePricingSummary {
+    pub incomplete: bool,
+    pub estimated_costs: Vec<BridgeRuntimeCostAmount>,
+    pub estimated_cache_savings: Vec<BridgeRuntimeCostAmount>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeSessionMetaSnapshot {
+    pub thread_id: String,
+    pub status: BridgeThreadStatus,
+    pub title: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub root_thread_id: String,
+    pub owner_epoch: String,
+    pub revision: u64,
+    pub active_turn: Option<BridgeTurn>,
+    pub last_turn: Option<BridgeTurn>,
+    pub activity: Option<BridgeThreadActivity>,
+    pub usage: BridgeUsageSummary,
+    pub context_metrics: Option<BridgeThreadRuntimeUsage>,
+    pub model_route: Option<BridgeThreadModelRouteSnapshot>,
+    pub runtime: Option<BridgeThreadRuntimeSnapshot>,
+    pub storage_state: Option<BridgeThreadStorageState>,
+    pub interactions: Vec<BridgeInteractionRequest>,
+    pub pending_interaction_count: u32,
+    pub plan: Option<BridgePlanRuntimeSnapshot>,
+    pub mode: Option<String>,
+    pub execution_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeConversationEvent {
+    Timeline {
+        patch: BridgeTimelinePatch,
+    },
+    LiveStatus {
+        snapshot: BridgeLiveStatusSnapshot,
+    },
+    SessionMeta {
+        snapshot: Box<BridgeSessionMetaSnapshot>,
+    },
+    InputPresented {
+        input_id: String,
+        item_id: String,
+    },
+    ResyncRequired {
+        reason: String,
+    },
 }

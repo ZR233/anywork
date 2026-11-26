@@ -2,10 +2,8 @@
 
 use super::super::ModelPerformanceOwner;
 use super::directory;
-use super::live_feed::ThreadLiveFeed;
 use super::slot::ObservationSlot;
 use super::worker::{Progress, WorkerState, await_history_durable, run};
-use crate::studio::thread_projection::storage_state;
 use crate::studio::{ProductEventBus, StudioStore};
 use anyhow::{Context, Result, bail};
 use pl_core::thread::{ThreadHandle, ThreadLifecycle, ThreadSnapshot};
@@ -14,10 +12,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct Observation {
     owner: std::sync::Weak<crate::session::NativeResources>,
     thread: ThreadHandle,
-    feed: Arc<ThreadLiveFeed>,
     state: Arc<WorkerState>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -115,6 +115,8 @@ struct Shared {
     delivery_closed: tokio_util::sync::CancellationToken,
     projector: ObservationServices,
     observations: Mutex<BTreeMap<String, Vec<std::sync::Weak<Observation>>>>,
+    #[cfg(test)]
+    source_selection_pause: Mutex<Option<tests::SourceSelectionPause>>,
     /// Stable passive slots survive absent → live → absent transitions.
     live: Mutex<BTreeMap<String, Arc<ObservationSlot>>>,
 }
@@ -143,18 +145,104 @@ impl ThreadObservations {
             delivery_closed: Default::default(),
             projector,
             observations: Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            source_selection_pause: Mutex::default(),
             live: Mutex::new(BTreeMap::new()),
         }))
     }
 
-    /// The live feed of one observed Thread, if its projection owner was installed.
-    pub(in crate::studio::runtime) fn live_feed(&self, id: &str) -> Option<Arc<ThreadLiveFeed>> {
+    /// The live `MetaEventBus` of one observed Thread, if its projection owner was installed.
+    pub(in crate::studio::runtime) fn meta_bus(
+        &self,
+        id: &str,
+    ) -> Option<crate::timeline::MetaEventBus> {
         self.0
             .live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
-            .and_then(|slot| slot.source())
+            .and_then(|slot| slot.meta_bus())
+    }
+
+    /// Borrows the registered projection's source without activating execution or waiting for disk.
+    pub(in crate::studio::runtime) async fn ready_bus(
+        &self,
+        id: &str,
+        bus: &mut watch::Receiver<Option<crate::timeline::MetaEventBus>>,
+    ) -> Result<Option<crate::timeline::MetaEventBus>> {
+        loop {
+            anyhow::ensure!(
+                !self.0.delivery_closed.is_cancelled(),
+                "Thread observation delivery closed"
+            );
+            let observation = self.observations(Some(id)).pop().map(|(_, owner)| owner);
+            #[cfg(test)]
+            {
+                let pause = self
+                    .0
+                    .source_selection_pause
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(pause) = pause {
+                    pause.selected.cancel();
+                    pause.resume.cancelled().await;
+                }
+            }
+            let current = bus.borrow_and_update().clone();
+            // A reader's old Arc does not prevent close and a new incarnation. Do not apply the
+            // old owner's finished/error state to a source published while sampling the bus.
+            let same_observation = {
+                let all = self
+                    .0
+                    .observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let registered = all
+                    .get(id)
+                    .and_then(|entries| entries.iter().rev().find_map(std::sync::Weak::upgrade));
+                match (observation.as_ref(), registered.as_ref()) {
+                    (Some(selected), Some(registered)) => Arc::ptr_eq(selected, registered),
+                    (None, None) => true,
+                    _ => false,
+                }
+            };
+            if !same_observation {
+                continue;
+            }
+            anyhow::ensure!(
+                observation
+                    .as_ref()
+                    .is_none_or(|owner| !owner.state.deletion.is_cancelled()),
+                "Thread observation deleted"
+            );
+            if let Some(current) = current
+                && observation
+                    .as_ref()
+                    .is_none_or(|owner| owner.thread.runtime_epoch() == current.runtime_epoch())
+            {
+                return Ok(Some(current));
+            }
+            let Some(observation) = observation else {
+                return Ok(None);
+            };
+            let mut progress = observation.state.progress.subscribe();
+            let current = progress.borrow_and_update().clone();
+            if let Some(error) = current.error {
+                bail!("Thread {id} product observation failed: {error:#}");
+            }
+            if current.finished {
+                return Ok(None);
+            }
+            tokio::select! {
+                biased;
+                () = self.0.delivery_closed.cancelled() => bail!("Thread observation delivery closed"),
+                () = observation.state.deletion.cancelled() => bail!("Thread observation deleted"),
+                changed = bus.changed() => changed.context("Thread observation source closed")?,
+                changed = progress.changed() => changed.context("Thread observation progress closed")?,
+                joined = observation.join() => joined?,
+            }
+        }
     }
 
     /// End outward delivery before joining producers; their original save
@@ -163,15 +251,9 @@ impl ThreadObservations {
         self.0.delivery_closed.cancel();
     }
 
-    pub(in crate::studio::runtime) fn read_lifetime(&self) -> tokio_util::sync::CancellationToken {
-        self.0.delivery_closed.clone()
-    }
-
-    fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
-        for (_, observation) in self.observations(Some(id)) {
-            if observation.thread.same_instance(thread) {
-                observation.feed.close_delivery();
-            }
+    fn close_delivery(&self, id: &str, _thread: &ThreadHandle) {
+        if let Some(bus) = self.meta_bus(id) {
+            self.observation_slot(id).retire_bus(&bus);
         }
     }
 
@@ -240,11 +322,7 @@ impl ThreadObservations {
             },
             Some(Arc::new(move |id: &str| {
                 let owner = terminal.upgrade()?;
-                let (position, _) = ThreadObservations(owner).observation_slot(id).capture();
-                let feed = position
-                    .source
-                    .filter(|source| !source.is_delivery_closed())?;
-                feed.current_last_turn()
+                ThreadObservations(owner).observation_slot(id).last_turn()
             })),
             move |id, thread, purpose| {
                 if let Some(owner) = closing.upgrade() {
@@ -292,7 +370,7 @@ impl ThreadObservations {
             .into_iter()
             .map(|(_, observation)| observation)
             .collect::<Vec<_>>();
-        let feed = self.live_feed(id);
+        let slot = self.observation_slot(id);
         for observation in &observations {
             anyhow::ensure!(
                 observation.thread.snapshot().lifecycle == ThreadLifecycle::Closed,
@@ -318,24 +396,26 @@ impl ThreadObservations {
                     .retain(|current| !Arc::ptr_eq(current, observation));
             }
         }
-        let mut all = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entries) = all.get_mut(id) {
-            entries.retain(|entry| {
-                entry
-                    .upgrade()
-                    .is_some_and(|entry| !observations.iter().any(|old| Arc::ptr_eq(&entry, old)))
-            });
-            if entries.is_empty() {
-                all.remove(id);
+        {
+            let mut all = self
+                .0
+                .observations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entries) = all.get_mut(id) {
+                entries.retain(|entry| {
+                    entry.upgrade().is_some_and(|entry| {
+                        !observations.iter().any(|old| Arc::ptr_eq(&entry, old))
+                    })
+                });
+                if entries.is_empty() {
+                    all.remove(id);
+                }
             }
         }
-        drop(all);
-        if let Some(feed) = feed {
-            self.observation_slot(id).retire(&feed);
+        if let Some(bus) = slot.meta_bus() {
+            slot.retire_bus(&bus);
+            bus.close().await;
         }
         Ok(())
     }
@@ -385,33 +465,20 @@ impl ThreadObservations {
             reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(recovered_through)),
             observed_before_execution,
         });
-        // Seed the feed with the newest typed storage state the coordinator already reports, so a
-        // subscriber that opens before this owner's first pass mirrors a real fact instead of an
-        // unset placeholder. The owner republishes its own derivation on the first pass.
-        let initial_storage = self
-            .0
-            .projector
-            .store
-            .thread_persistence()
-            .snapshot()
-            .threads
-            .iter()
-            .find(|detail| detail.thread_id == id)
-            .map(|detail| storage_state(&thread.snapshot(), detail));
-        // Register the non-replayable catalog source before publishing the feed.
+        let slot = self.observation_slot(&id);
         let catalogs = self.0.projector.config.subscribe_model_catalogs();
-        let feed = Arc::new(ThreadLiveFeed::new(
-            initial_storage,
-            state.progress.subscribe(),
-            self.0.delivery_closed.child_token(),
-        ));
-        self.observation_slot(&id).install(feed.clone());
         let worker_state = state.clone();
         let projector = self.0.projector.clone();
         let worker_thread = thread.clone();
         let worker_id = id.clone();
-        let observed_feed = feed.clone();
         let deletion = state.deletion.clone();
+        // Registering and starting the original worker share this admission boundary: readers
+        // cannot observe a published source before its lifecycle is available to wait on.
+        let mut all = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let task = tokio::spawn(async move {
             tokio::select! {
                 biased;
@@ -422,7 +489,7 @@ impl ThreadObservations {
                 worker_thread,
                 worker_state,
                 recovered_through,
-                feed,
+                slot,
                 catalogs,
                 ) => {},
             }
@@ -430,7 +497,6 @@ impl ThreadObservations {
         let observation = Arc::new(Observation {
             owner: Arc::downgrade(&resources),
             thread,
-            feed: observed_feed,
             state,
             task: tokio::sync::Mutex::new(Some(task)),
         });
@@ -439,11 +505,6 @@ impl ThreadObservations {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(observation.clone());
-        let mut all = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = all.entry(id).or_default();
         previous.retain(|entry| entry.strong_count() > 0);
         previous.push(Arc::downgrade(&observation));
@@ -480,6 +541,11 @@ impl ThreadObservations {
             await_history_durable(&observation.state.channel, &id, durable_through)
                 .await
                 .with_context(|| format!("Thread {id} product observation barrier"))?;
+            if let Some(bus) = self.meta_bus(&id) {
+                bus.flush_through_commit(target)
+                    .await
+                    .with_context(|| format!("Thread {id} MetaEventBus durability barrier"))?;
+            }
         }
         // The observation worker no longer waits on disk for each projected batch, so the explicit
         // sync barrier carries the durability: every product write admitted up to the watermark this

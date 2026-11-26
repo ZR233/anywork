@@ -20,10 +20,11 @@ use super::{
 
 struct ReaderState {
     closed: bool,
+    source: Option<Arc<Inner>>,
 }
 
 struct ReaderInner {
-    store: Arc<Inner>,
+    database_id: String,
     codec: Codec,
     cancel: CancellationToken,
     tasks: TaskTracker,
@@ -33,6 +34,13 @@ struct ReaderInner {
 #[derive(Clone)]
 pub struct HistoryReader {
     inner: Arc<ReaderInner>,
+}
+
+// Admission pins the entire source, including cancellation and operation accounting.
+// Queries never consult ReaderState again after an await or a source attachment.
+struct ReaderQuery {
+    inner: Arc<ReaderInner>,
+    store: Arc<Inner>,
 }
 
 struct Snapshot {
@@ -46,19 +54,50 @@ impl HistoryReader {
         Self {
             inner: Arc::new(ReaderInner {
                 codec: Codec::new(&store.database_id),
-                store,
+                database_id: store.database_id.clone(),
                 cancel: CancellationToken::new(),
                 tasks: TaskTracker::new(),
-                state: Mutex::new(ReaderState { closed: false }),
+                state: Mutex::new(ReaderState {
+                    closed: false,
+                    source: Some(store),
+                }),
             }),
         }
     }
 
     pub fn database_id(&self) -> &str {
-        &self.inner.store.database_id
+        &self.inner.database_id
     }
 
-    async fn run<T, F>(&self, make: impl FnOnce(Self) -> F + Send + 'static) -> Result<T>
+    /// Keeps this reader's token identity while attaching the execution owner's pending source.
+    pub(crate) fn attach_store(&self, store: &HistoryStore) -> Result<()> {
+        let previous = {
+            let mut reader = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if reader.closed {
+                return Err(HistoryError::Closed);
+            }
+            if store.database_id() != self.database_id() {
+                return Err(HistoryError::InvalidCursor);
+            }
+            let source = store
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if source.closing {
+                return Err(HistoryError::Closed);
+            }
+            reader.source.replace(store.inner.clone())
+        };
+        drop(previous);
+        Ok(())
+    }
+
+    async fn run<T, F>(&self, make: impl FnOnce(ReaderQuery) -> F + Send + 'static) -> Result<T>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
@@ -66,32 +105,40 @@ impl HistoryReader {
         let request_cancel = CancellationToken::new();
         let _cancel = request_cancel.clone().drop_guard();
         let task = {
-            let store = self
-                .inner
-                .store
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let reader = self
                 .inner
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if reader.closed || store.closing {
+            if reader.closed {
                 return Err(HistoryError::Closed);
             }
-            let store_task = self.inner.store.operations.token();
-            let owner = self.clone();
+            let source = reader.source.as_ref().ok_or(HistoryError::Closed)?;
+            let store = source
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if store.closing {
+                return Err(HistoryError::Closed);
+            }
+            let store_task = source.operations.token();
+            let owner = ReaderQuery {
+                inner: self.inner.clone(),
+                store: source.clone(),
+            };
             self.inner.tasks.spawn(async move {
+                let cancel = owner.inner.cancel.clone();
+                let source_cancel = owner.store.cancel.clone();
+                let span = tracing::debug_span!(
+                    target: "conversation_work", "history_read",
+                    thread_id = owner.store.thread_id,
+                );
                 let result = tokio::select! {
                     biased;
                     _ = request_cancel.cancelled() => Err(HistoryError::Closed),
-                    _ = owner.inner.cancel.cancelled() => Err(HistoryError::Closed),
-                    _ = owner.inner.store.cancel.cancelled() => Err(HistoryError::Closed),
-                    result = make(owner.clone()).instrument(tracing::debug_span!(
-                        target: "conversation_work", "history_read",
-                        thread_id = owner.inner.store.thread_id,
-                    )) => result,
+                    _ = cancel.cancelled() => Err(HistoryError::Closed),
+                    _ = source_cancel.cancelled() => Err(HistoryError::Closed),
+                    result = make(owner).instrument(span) => result,
                 };
                 drop(store_task);
                 result
@@ -101,49 +148,21 @@ impl HistoryReader {
             .map_err(|error| HistoryError::Storage(error.into()))?
     }
 
-    async fn snapshot(&self) -> Result<Snapshot> {
-        let (head, pending) = {
-            let state = self
-                .inner
-                .store
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (state.head, state.pending.clone())
-        };
-        let tx = self.inner.store.reader.begin().await?;
-        let head = if self.inner.store.read_only {
-            db::event_head(&tx).await?
-        } else {
-            head
-        };
-        Ok(Snapshot { head, pending, tx })
-    }
-
     pub async fn capture(&self) -> Result<HistoryCut> {
         self.capture_position().await.map(|(cut, _)| cut)
     }
 
     /// The opaque accepted cut and its event position; this is not a persistence ACK.
     pub async fn capture_position(&self) -> Result<(HistoryCut, u64)> {
-        if !self.inner.store.read_only {
-            let state = self
-                .inner
-                .store
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let reader = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if reader.closed || state.closing {
-                return Err(HistoryError::Closed);
-            }
-            return Ok((self.inner.codec.cut(state.head)?, state.head));
-        }
         self.run(move |reader| async move {
+            if !reader.store.read_only {
+                let state = reader
+                    .store
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                return Ok((reader.inner.codec.cut(state.head)?, state.head));
+            }
             let snapshot = reader.snapshot().await?;
             let cut = reader.inner.codec.cut(snapshot.head)?;
             let head = snapshot.head;
@@ -160,7 +179,7 @@ impl HistoryReader {
     /// An append-only cut at the SQLite commit head, excluding pending admissions.
     pub(crate) async fn capture_committed_position(&self) -> Result<(HistoryCut, u64)> {
         self.run(|reader| async move {
-            let through = db::event_head(&reader.inner.store.reader).await?;
+            let through = db::event_head(&reader.store.reader).await?;
             Ok((reader.inner.codec.cut(through)?, through))
         })
         .await
@@ -481,6 +500,33 @@ impl HistoryReader {
         })
         .await
     }
+}
+
+impl ReaderQuery {
+    fn database_id(&self) -> &str {
+        &self.inner.database_id
+    }
+
+    async fn snapshot(&self) -> Result<Snapshot> {
+        let (head, pending) = {
+            let state = self
+                .store
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.head, state.pending.clone())
+        };
+        self.store
+            .read_query_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tx = self.store.reader.begin().await?;
+        let head = if self.store.read_only {
+            db::event_head(&tx).await?
+        } else {
+            head
+        };
+        Ok(Snapshot { head, pending, tx })
+    }
 
     async fn business_rows(
         &self,
@@ -616,7 +662,9 @@ impl HistoryReader {
             before,
         })
     }
+}
 
+impl HistoryReader {
     pub async fn events_page(
         &self,
         query: HistoryEventsQuery,
@@ -1124,7 +1172,7 @@ impl HistoryReader {
     pub async fn wait_changed(&self, after: HistoryCut) -> Result<HistoryCut> {
         self.run(move |reader| async move {
             let after = reader.inner.codec.through(&after)?;
-            let mut changed = reader.inner.store.changed.subscribe();
+            let mut changed = reader.store.changed.subscribe();
             let mut poll = tokio::time::interval(std::time::Duration::from_millis(50));
             loop {
                 let snapshot = reader.snapshot().await?;
@@ -1136,13 +1184,12 @@ impl HistoryReader {
                 if head > after {
                     return reader.inner.codec.cut(head);
                 }
-                if reader.inner.store.read_only {
+                if reader.store.read_only {
                     // Cold readers can observe a writer in another process. Poll only while an
                     // explicit change request is outstanding; there is no extra store task.
                     poll.tick().await;
                 } else {
                     if !reader
-                        .inner
                         .store
                         .state
                         .lock()
@@ -1174,6 +1221,14 @@ impl HistoryReader {
     pub async fn close(&self) {
         self.request_close();
         self.inner.tasks.wait().await;
+        let source = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .source
+            .take();
+        drop(source);
     }
 }
 
@@ -1291,4 +1346,176 @@ fn validate_body_ref(reference: &HistoryEventBodyRef, body: &Body) -> Result<()>
         return Err(HistoryError::InvalidCursor);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn admitted_query_keeps_source_and_cut_when_owner_attaches() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "source", HistoryLimits::default()).await?;
+        let reader = HistoryStore::open_reader(&path, "source", HistoryLimits::default()).await?;
+        let cut = reader.capture().await?;
+        let cold = Arc::downgrade(reader.inner.state.lock().unwrap().source.as_ref().unwrap());
+        let paused_flush = store.pause_flush().await;
+        let (admitted_tx, admitted_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        let query_reader = reader.clone();
+        let old_cut = cut.clone();
+        let query = tokio::spawn(async move {
+            query_reader
+                .run(|query| async move {
+                    admitted_tx.send(()).unwrap();
+                    resume_rx.await.unwrap();
+                    let snapshot = query.snapshot().await?;
+                    let head = snapshot.head;
+                    snapshot.tx.commit().await?;
+                    Ok((head, query.inner.codec.through(&old_cut)?))
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), admitted_rx).await??;
+        let mut event = HistoryEvent::new(
+            "new-owner-event",
+            HistoryEventKind::RunStarted,
+            HistoryTimelineRole::Hidden,
+            1,
+        );
+        event.run_id = Some("run".into());
+        store.accept_in_memory(&[event]).await?;
+        reader.attach_store(&store)?;
+        assert_eq!(reader.head().await?, 1);
+        assert!(
+            cold.upgrade().is_some(),
+            "in-flight query must retain its source"
+        );
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), query).await???,
+            (0, 0)
+        );
+        assert!(
+            cold.upgrade().is_none(),
+            "completed query must release the old source"
+        );
+        let old_page = reader
+            .events_page(
+                HistoryEventsQuery::AllEvents,
+                Some(cut),
+                None,
+                HistoryDemand {
+                    max_rows: 4,
+                    max_bytes: 64 * 1024,
+                },
+            )
+            .await?;
+        assert!(
+            old_page.entries.is_empty(),
+            "old cut must exclude the new owner event"
+        );
+        reader.close().await;
+        drop(paused_flush);
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn source_close_cancels_and_joins_its_query_after_owner_attachment() -> anyhow::Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "source", HistoryLimits::default()).await?;
+        let reader = HistoryStore::open_reader(&path, "source", HistoryLimits::default()).await?;
+        let cold = HistoryStore {
+            inner: reader
+                .inner
+                .state
+                .lock()
+                .unwrap()
+                .source
+                .as_ref()
+                .unwrap()
+                .clone(),
+        };
+        let (admitted_tx, admitted_rx) = oneshot::channel();
+        let query_reader = reader.clone();
+        let query = tokio::spawn(async move {
+            query_reader
+                .run(|query| async move {
+                    let _source = query;
+                    admitted_tx.send(()).unwrap();
+                    std::future::pending::<Result<()>>().await
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), admitted_rx).await??;
+        assert_eq!(cold.inner.operations.len(), 1);
+        reader.attach_store(&store)?;
+        tokio::time::timeout(Duration::from_secs(2), cold.close()).await??;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), query).await??,
+            Err(HistoryError::Closed)
+        ));
+        assert!(cold.inner.operations.is_empty());
+        assert_eq!(
+            reader.head().await?,
+            0,
+            "new queries must use the attached owner"
+        );
+        reader.close().await;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reader_close_revokes_queries_and_attachment_without_closing_owner()
+    -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            temp.path().join("history.sqlite"),
+            "source",
+            HistoryLimits::default(),
+        )
+        .await?;
+        let owner_operations = store.inner.operations.len();
+        let reader = store.reader();
+        let (admitted_tx, admitted_rx) = oneshot::channel();
+        let query_reader = reader.clone();
+        let query = tokio::spawn(async move {
+            query_reader
+                .run(|query| async move {
+                    let _source = query;
+                    admitted_tx.send(()).unwrap();
+                    std::future::pending::<Result<()>>().await
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), admitted_rx).await??;
+        assert_eq!(store.inner.operations.len(), owner_operations + 1);
+        reader.request_close();
+        assert!(matches!(
+            reader.attach_store(&store),
+            Err(HistoryError::Closed)
+        ));
+        assert!(matches!(reader.head().await, Err(HistoryError::Closed)));
+        tokio::time::timeout(Duration::from_secs(2), reader.close()).await?;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), query).await??,
+            Err(HistoryError::Closed)
+        ));
+        assert!(reader.inner.state.lock().unwrap().source.is_none());
+        assert!(reader.inner.tasks.is_empty());
+        assert_eq!(store.inner.operations.len(), owner_operations);
+        assert!(!store.inner.cancel.is_cancelled());
+        let owner_reader = store.reader();
+        assert_eq!(owner_reader.head().await?, 0);
+        owner_reader.close().await;
+        store.close().await?;
+        Ok(())
+    }
 }

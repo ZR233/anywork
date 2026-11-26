@@ -80,15 +80,16 @@ struct RefusedFactory {
     panic: bool,
 }
 impl StudioActivationFactory for RefusedFactory {
-    async fn prepare_root(
+    async fn prepare_execution(
         &self,
         identity: &ThreadActivation,
-    ) -> Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError> {
+    ) -> Result<(Option<crate::DelegationSettings>, Option<ThreadCurrent>), ThreadAssemblyError>
+    {
         register_member(
             &self.owner,
             identity.id(),
             None,
-            ThreadHandle::resume_without_model(identity.id().into(), None).unwrap(),
+            ThreadHandle::start_current(identity.id().into(), None).unwrap(),
         );
         {
             let mut state = self.owner.0.state();
@@ -106,7 +107,7 @@ impl StudioActivationFactory for RefusedFactory {
         ))
     }
     async fn prepare(&self, _: ThreadPreparation) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-        unreachable!("root delegation refuses before physical tool preparation")
+        unreachable!("execution preflight refuses before physical tool preparation")
     }
 }
 
@@ -400,7 +401,7 @@ async fn s2_close_cancels_parent_before_child_shutdown_and_preserves_other_sessi
         register_member(&other, "unrelated-thread", None, unrelated.clone());
         let unrelated_run = start_turn(unrelated);
         let unrelated_cancel = model_started.await.unwrap();
-        let child = ThreadHandle::resume_without_model("child-thread".into(), None).unwrap();
+        let child = ThreadHandle::start_current("child-thread".into(), None).unwrap();
         register_member(&owner, "child-thread", Some("parent-thread"), child);
         let report = owner.close_session().await;
         assert!(

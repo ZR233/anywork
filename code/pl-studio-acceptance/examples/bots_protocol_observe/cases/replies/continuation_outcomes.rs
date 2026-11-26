@@ -123,7 +123,7 @@ async fn continuation_outcomes_inner(
         .await?;
     let thread_id = super::wait_thread_binding(&session.home, &bot_id, DIRECT_CHAT_ID).await?;
     let mut watch = ThreadWatch::connect(session.http()?.clone(), &thread_id)?;
-    watch.wait_snapshot(http::PREDICATE_TIMEOUT).await?;
+    watch.wait_session_meta(http::PREDICATE_TIMEOUT).await?;
     wait_gate(fail_preview_stage(), "failing continuation preview").await?;
     let preview = wait_preview(session, "CARD_CONT_FAIL_PREVIEW").await?;
     fail_preview_stage().release();
@@ -633,12 +633,11 @@ async fn wait_execution_of_turn(
     turn_id: &str,
 ) -> Result<String> {
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
-    let current = crate::support::open_current(session.http()?, thread_id).await?;
+    let feed = crate::support::open_feed(session.http()?, thread_id).await?;
     let observed = async {
         loop {
-            let view = current.snapshot(crate::support::current_demand()).await?;
-            if let Some(execution) = view
-                .state
+            let meta = feed.session_meta().await?;
+            if let Some(execution) = meta
                 .runtime
                 .as_ref()
                 .and_then(|runtime| runtime.execution.as_ref())
@@ -653,22 +652,22 @@ async fn wait_execution_of_turn(
         }
     }
     .await;
-    match (observed, current.close().await) {
+    match (observed, feed.close().await) {
         (Ok(id), Ok(())) => Ok(id),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(close_error)) => {
-            Err(error.context(format!("Current close also failed: {close_error:#}")))
+            Err(error.context(format!("Feed close also failed: {close_error:#}")))
         }
     }
 }
 
 async fn wait_active_turn(session: &Session, thread_id: &str) -> Result<String> {
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
-    let current = crate::support::open_current(session.http()?, thread_id).await?;
+    let feed = crate::support::open_feed(session.http()?, thread_id).await?;
     let observed = async {
         loop {
-            let view = current.snapshot(crate::support::current_demand()).await?;
-            if let Some(turn) = view.state.active_turn.as_ref()
+            let meta = feed.session_meta().await?;
+            if let Some(turn) = meta.active_turn.as_ref()
                 && !turn.id.is_empty()
             {
                 return Ok(turn.id.clone());
@@ -680,11 +679,11 @@ async fn wait_active_turn(session: &Session, thread_id: &str) -> Result<String> 
         }
     }
     .await;
-    match (observed, current.close().await) {
+    match (observed, feed.close().await) {
         (Ok(id), Ok(())) => Ok(id),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(close_error)) => {
-            Err(error.context(format!("Current close also failed: {close_error:#}")))
+            Err(error.context(format!("Feed close also failed: {close_error:#}")))
         }
     }
 }

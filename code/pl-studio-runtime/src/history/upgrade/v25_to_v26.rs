@@ -712,6 +712,11 @@ async fn convert_row(
 
         let envelope = payload_envelope.expect("payload_envelope built");
         let atomic_kind = map_entity_kind(row, entity, &envelope);
+        let timeline_role = if atomic_kind == HistoryEventKind::CompactionCompleted {
+            HistoryTimelineRole::Boundary
+        } else {
+            timeline_role
+        };
         let payload_json = serde_json::to_string(&envelope)?;
 
         return Ok(Some(ConvertedV26Row {

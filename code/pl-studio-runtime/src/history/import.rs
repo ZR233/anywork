@@ -365,7 +365,8 @@ impl V24HistorySource {
     pub(crate) async fn checkpoint(
         &self,
         thread_id: &str,
-    ) -> Result<Option<Box<pl_core::thread::ThreadCheckpoint>>> {
+    ) -> Result<Option<Box<crate::studio::storage::legacy_checkpoint::ThreadCheckpoint>>> {
+        use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
         use pl_core::context::content_hash;
         let Some(row) = self
             .query_one(
@@ -390,8 +391,7 @@ impl V24HistorySource {
                 "schema 24 checkpoint hash mismatch".into(),
             ));
         }
-        let mut checkpoint: Box<pl_core::thread::ThreadCheckpoint> =
-            serde_json::from_str(&payload)?;
+        let mut checkpoint: Box<ThreadCheckpoint> = serde_json::from_str(&payload)?;
         let fence = self
             .query_one(
                 "SELECT applied_write_seq FROM history_meta WHERE id=1",
@@ -403,7 +403,7 @@ impl V24HistorySource {
         let count = usize::try_from(row.try_get::<i64>("", "context_count")?)
             .map_err(|_| HistoryError::Integrity("negative context count".into()))?;
         if checkpoint.thread_id != thread_id
-            || checkpoint.schema_version != pl_core::thread::ThreadCheckpoint::SCHEMA_VERSION
+            || checkpoint.schema_version != ThreadCheckpoint::SCHEMA_VERSION
             || !checkpoint.state.context.records.is_empty()
             || checkpoint.state_revision != checkpoint.state.commit_sequence
             || db::number(checkpoint.state_revision)? != row.try_get::<i64>("", "revision")?

@@ -3,24 +3,19 @@ use crate::tool_support;
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 
 use pl_core::context::{ContextContent, ContextSource, OpaquePayload};
 use pl_core::model::DynModelSession;
 use pl_core::thread::{
-    ModelStepLimit, ThreadError, ThreadHandle, TurnOutcome, TurnState,
-    cold::{
-        ColdStore, ColdStoreError, ColdStoreHandle, StorageFaultKind, StoragePressure, ThreadWrite,
-    },
-    inbox::ThreadMessage,
+    ModelStepLimit, ThreadError, ThreadHandle, TurnOutcome, TurnState, inbox::ThreadMessage,
     input::InputDriverOptions,
 };
 use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, Registration, ToolError},
 };
-use tokio::sync::watch;
 
 use support::{ScriptedModel, turn};
 use tool_support::tool;
@@ -430,6 +425,37 @@ async fn mixed_batch_receipts_distinguish_running_calls_from_an_instant_result()
     }
 }
 
+#[derive(Debug)]
+struct SideEffectTool(Arc<AtomicBool>);
+
+impl pl_agent_tool::Tool for SideEffectTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = pl_core::tool::opaque::CallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "SideEffectTool",
+                    "Text tool for core runtime tests",
+                )
+                .expect("valid definition")
+            });
+        &DEFINITION
+    }
+
+    async fn execute(
+        &self,
+        input: OpaquePayload,
+        _context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.0.store(true, Ordering::SeqCst);
+        Ok(ToolOutput::new(input, vec![]))
+    }
+}
+
 #[tokio::test]
 async fn stopping_at_a_foreground_barrier_keeps_unstarted_results_in_call_order() {
     let (model, _) = ScriptedModel::new(&["gate", "z-later", "a-later"]);
@@ -584,428 +610,15 @@ async fn tool_receives_the_committed_start_fact_as_its_history_fence() {
         .await
         .unwrap()
         .into_iter()
-        .flat_map(|effect| effect.tasks.to_vec())
-        .find_map(|task| task.started_sequence)
+        .find(|effect| {
+            effect
+                .tasks
+                .iter()
+                .any(|task| task.tool_id == "fenced" && task.started_sequence.is_some())
+        })
+        .map(|effect| effect.sequence)
         .unwrap();
     assert_eq!(*fences.lock().unwrap(), vec![started]);
-    thread.close().await.unwrap();
-}
-
-#[derive(Debug, Clone)]
-struct FenceStore {
-    entered: watch::Sender<Option<u64>>,
-    released: watch::Sender<bool>,
-    admitted: Arc<Mutex<Vec<ThreadWrite>>>,
-    durable: Arc<AtomicU64>,
-    fail_once: Arc<AtomicBool>,
-}
-
-impl ColdStore for FenceStore {
-    fn admit(&self, _thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        self.admitted.lock().unwrap().push(write);
-        Ok(())
-    }
-
-    fn pressure(&self, _thread_id: &str) -> StoragePressure {
-        StoragePressure {
-            durable_sequence: self.durable.load(Ordering::SeqCst),
-            ..Default::default()
-        }
-    }
-
-    async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        self.entered.send_replace(Some(sequence));
-        let mut released = self.released.subscribe();
-        while !*released.borrow_and_update() {
-            released.changed().await.unwrap();
-        }
-        assert!(
-            self.admitted
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|write| write.effect.sequence == sequence)
-        );
-        if self.fail_once.swap(false, Ordering::SeqCst) {
-            return Err(ColdStoreError {
-                source: Box::new(std::io::Error::other("fence write failed")),
-            });
-        }
-        self.durable.fetch_max(sequence, Ordering::SeqCst);
-        Ok(())
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn close_cancels_background_task_before_a_blocked_save_finishes() {
-    use pl_core::thread::{ThreadLifecycle, ToolOutcome, task::TaskStatus};
-    use std::time::Duration;
-    use tokio_util::sync::CancellationToken;
-
-    #[derive(Debug)]
-    struct HeldUntilCancelled {
-        started: tokio::sync::mpsc::UnboundedSender<CancellationToken>,
-        closed: Arc<AtomicBool>,
-    }
-
-    impl pl_agent_tool::Tool for HeldUntilCancelled {
-        type Input = pl_core::context::OpaquePayload;
-        type Context = pl_core::tool::opaque::CallContext;
-        type Output = pl_core::tool::ToolOutput;
-        type Error = pl_core::tool::opaque::ToolError;
-
-        fn definition(&self) -> &pl_agent_tool::ToolDefinition {
-            static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
-                std::sync::LazyLock::new(|| {
-                    pl_agent_tool::ToolDefinition::text(
-                        "HeldUntilCancelled",
-                        "Text tool for core runtime tests",
-                    )
-                    .expect("valid definition")
-                });
-            &DEFINITION
-        }
-
-        async fn execute(
-            &self,
-            _: OpaquePayload,
-            context: CallContext,
-        ) -> Result<ToolOutput, ToolError> {
-            let _ = self.started.send(context.cancellation.clone());
-            context.cancellation.cancelled().await;
-            Err(ToolError::new(ThreadError::Cancelled))
-        }
-
-        async fn close(&self) -> Result<(), ToolError> {
-            self.closed.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
-    let (model, _) = ScriptedModel::new(&["held"]);
-    let thread =
-        ThreadHandle::start("close-save-fence".into(), DynModelSession::new(model)).unwrap();
-    let (entered, mut entered_rx) = watch::channel(None);
-    let (released, _) = watch::channel(true);
-    let store = FenceStore {
-        entered,
-        released,
-        admitted: Arc::new(Mutex::new(Vec::new())),
-        durable: Arc::new(AtomicU64::new(0)),
-        fail_once: Arc::new(AtomicBool::new(false)),
-    };
-    let (started, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
-    let tool_closed = Arc::new(AtomicBool::new(false));
-    let mut saving = None;
-    let mut closing = Box::pin(thread.close());
-    let mut early_close = None;
-
-    // Every observation error is deferred until the original save and close owners have joined.
-    // In particular, the expected regression failure must not drop a blocked owner or its result.
-    let observations: Result<_, String> = async {
-        thread
-            .attach_storage(ColdStoreHandle::new(store.clone()))
-            .await
-            .map_err(|error| error.to_string())?;
-        thread
-            .register_tools(vec![
-                Registration::prepare("held".into(), OpaquePayload::text("held until cancelled"))
-                    .map_err(|error| error.to_string())?
-                    .attach(pl_core::tool::opaque::RuntimeTool::new(
-                        HeldUntilCancelled {
-                            started,
-                            closed: tool_closed.clone(),
-                        },
-                    )),
-            ])
-            .await
-            .map_err(|error| error.to_string())?;
-        thread
-            .run_turn(turn("background-before-close"))
-            .await
-            .map_err(|error| error.to_string())?;
-        let cancellation = started_rx.recv().await.ok_or("tool never started")?;
-        let task = thread
-            .snapshot()
-            .tasks
-            .values()
-            .find(|task| task.tool_id == "held")
-            .cloned()
-            .ok_or("running task missing")?;
-        if task.status != TaskStatus::Running || task.acknowledgement.is_none() {
-            return Err("the real task did not receive a running acknowledgement".into());
-        }
-        thread.interrupt();
-        if cancellation.is_cancelled()
-            || thread
-                .snapshot()
-                .tasks
-                .get(&task.id)
-                .is_none_or(|task| task.status != TaskStatus::Running)
-        {
-            return Err("ordinary interrupt cancelled the independent background task".into());
-        }
-
-        let durable_before = store.durable.load(Ordering::SeqCst);
-        store.released.send_replace(false);
-        store.entered.send_replace(None);
-        saving = Some(tokio::spawn({
-            let thread = thread.clone();
-            async move { thread.flush().await }
-        }));
-        let sequence = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(sequence) = *entered_rx.borrow_and_update() {
-                    break Ok::<_, String>(sequence);
-                }
-                entered_rx
-                    .changed()
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        if sequence <= durable_before {
-            return Err("save gate did not block an unconfirmed admitted fact".into());
-        }
-
-        // Poll the actual public close, so begin_close has sealed admission and sent its request.
-        // Observe the token received by the real executor, not a test-created cancellation token.
-        if let std::task::Poll::Ready(result) = futures::poll!(&mut closing) {
-            early_close = Some(result);
-        }
-        let stopped_before_release =
-            tokio::time::timeout(Duration::from_secs(5), cancellation.cancelled())
-                .await
-                .is_ok();
-        let save_still_pending = !saving.as_ref().unwrap().is_finished()
-            && store.durable.load(Ordering::SeqCst) == durable_before
-            && !*store.released.borrow();
-        Ok((
-            task,
-            stopped_before_release,
-            save_still_pending,
-            early_close.is_none(),
-        ))
-    }
-    .await;
-
-    store.released.send_replace(true);
-    let saved = match saving {
-        Some(saving) => Some(saving.await),
-        None => None,
-    };
-    let closed = match early_close {
-        Some(result) => result,
-        None => closing.await,
-    };
-    // No assertion above can abandon a held save. Both original owners have now returned.
-    closed.expect("original Thread owner must finish close after save release");
-    if let Some(saved) = saved {
-        saved
-            .expect("save waiter must join")
-            .expect("save must finish");
-    }
-    let (task, stopped_before_release, save_still_pending, close_still_pending) =
-        observations.expect("regression setup must exercise a running task and a real save gate");
-    let snapshot = thread.snapshot();
-    assert_eq!(snapshot.lifecycle, ThreadLifecycle::Closed);
-    assert!(tool_closed.load(Ordering::SeqCst));
-    let terminal = snapshot
-        .tasks
-        .get(&task.id)
-        .expect("accepted task retained");
-    assert_eq!(terminal.status, TaskStatus::Cancelled);
-    assert_eq!(terminal.acknowledgement, task.acknowledgement);
-    let acknowledgement = task.acknowledgement.as_ref().unwrap();
-    assert!(
-        snapshot
-            .context
-            .records
-            .iter()
-            .any(|record| record.id == acknowledgement.record_id)
-    );
-    let writes = store.admitted.lock().unwrap();
-    assert!(
-        writes
-            .windows(2)
-            .all(|pair| pair[0].effect.sequence < pair[1].effect.sequence)
-    );
-    assert!(
-        writes
-            .iter()
-            .any(|write| write.effect.tasks.contains(&task))
-    );
-    assert!(
-        writes
-            .iter()
-            .any(|write| write.effect.tasks.contains(terminal))
-    );
-    assert_eq!(
-        writes
-            .iter()
-            .flat_map(|write| write.effect.deliveries.iter())
-            .filter(|delivery| delivery.call_id == task.call_id
-                && matches!(delivery.outcome, ToolOutcome::Cancelled))
-            .count(),
-        1,
-        "the same real task must have one retained terminal delivery"
-    );
-    assert_eq!(
-        store.durable.load(Ordering::SeqCst),
-        writes.last().unwrap().effect.sequence
-    );
-    eprintln!(
-        "save_pending={save_still_pending} close_pending={close_still_pending} \
-         cancelled_before_release={stopped_before_release}; save/close joined, \
-         task acknowledgement and terminal delivery retained"
-    );
-    assert!(save_still_pending && close_still_pending);
-    assert!(
-        stopped_before_release,
-        "global Thread close must signal the running background task before the blocked save finishes"
-    );
-}
-
-#[derive(Debug)]
-struct SideEffectTool(Arc<AtomicBool>);
-
-impl pl_agent_tool::Tool for SideEffectTool {
-    type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
-    type Output = pl_core::tool::ToolOutput;
-    type Error = pl_core::tool::opaque::ToolError;
-
-    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
-        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
-            std::sync::LazyLock::new(|| {
-                pl_agent_tool::ToolDefinition::text(
-                    "SideEffectTool",
-                    "Text tool for core runtime tests",
-                )
-                .expect("valid definition")
-            });
-        &DEFINITION
-    }
-
-    async fn execute(
-        &self,
-        input: OpaquePayload,
-        _context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        self.0.store(true, Ordering::SeqCst);
-        Ok(ToolOutput::new(input, vec![]))
-    }
-}
-
-#[tokio::test]
-async fn attached_store_must_flush_the_start_fact_before_a_tool_runs() {
-    let (model, _) = ScriptedModel::new(&["fenced"]);
-    let thread = ThreadHandle::start("durable-fence".into(), DynModelSession::new(model)).unwrap();
-    let (entered, mut observed) = watch::channel(None);
-    let (released, _) = watch::channel(false);
-    let executed = Arc::new(AtomicBool::new(false));
-    let store = FenceStore {
-        entered,
-        released: released.clone(),
-        admitted: Arc::new(Mutex::new(Vec::new())),
-        durable: Arc::new(AtomicU64::new(0)),
-        fail_once: Arc::new(AtomicBool::new(false)),
-    };
-    thread
-        .attach_storage(ColdStoreHandle::new(store))
-        .await
-        .unwrap();
-    thread
-        .register_tools(vec![
-            Registration::prepare("fenced".into(), OpaquePayload::text("fenced tool"))
-                .unwrap()
-                .attach(pl_core::tool::opaque::RuntimeTool::new(SideEffectTool(
-                    executed.clone(),
-                )))
-                .foreground_coexisting(),
-        ])
-        .await
-        .unwrap();
-
-    let runner = tokio::spawn({
-        let thread = thread.clone();
-        async move { thread.run_turn(turn("fenced-turn")).await }
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while observed.borrow().is_none() {
-            observed.changed().await.unwrap();
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!executed.load(Ordering::SeqCst));
-    assert!(!runner.is_finished());
-    released.send_replace(true);
-    tokio::time::timeout(std::time::Duration::from_secs(5), runner)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(executed.load(Ordering::SeqCst));
-    thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn failed_tool_fence_blocks_the_executor_and_latches_storage_fault() {
-    let (model, _) = ScriptedModel::new(&["fenced"]);
-    let thread = ThreadHandle::start("failed-fence".into(), DynModelSession::new(model)).unwrap();
-    let (entered, _) = watch::channel(None);
-    let (released, _) = watch::channel(true);
-    let executed = Arc::new(AtomicBool::new(false));
-    let store = FenceStore {
-        entered,
-        released,
-        admitted: Arc::new(Mutex::new(Vec::new())),
-        durable: Arc::new(AtomicU64::new(0)),
-        fail_once: Arc::new(AtomicBool::new(true)),
-    };
-    thread
-        .attach_storage(ColdStoreHandle::new(store))
-        .await
-        .unwrap();
-    thread
-        .register_tools(vec![
-            Registration::prepare("fenced".into(), OpaquePayload::text("fenced tool"))
-                .unwrap()
-                .attach(pl_core::tool::opaque::RuntimeTool::new(SideEffectTool(
-                    executed.clone(),
-                )))
-                .foreground_coexisting(),
-        ])
-        .await
-        .unwrap();
-
-    let mut snapshots = thread.subscribe();
-    let runner = tokio::spawn({
-        let thread = thread.clone();
-        async move { thread.run_turn(turn("failed-turn")).await }
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let snapshot = snapshots.next().await.unwrap();
-            if snapshot.persistence.fault == Some(StorageFaultKind::WriteFailed) {
-                assert!(snapshot.persistence.resume_required);
-                break;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!executed.load(Ordering::SeqCst));
-    if !runner.is_finished() {
-        let _ = thread.interrupt_turn(Some("failed-turn".into())).await;
-    }
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), runner)
-        .await
-        .unwrap();
-    thread.flush().await.unwrap();
     thread.close().await.unwrap();
 }
 

@@ -23,21 +23,11 @@ impl StudioRuntime {
         thread: &crate::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
     ) -> Result<()> {
-        // Resource validation can retain a cold checkpoint while composing local/SSH IO.
-        // Keep that state out of both the live preflight and the ancestry loop's future.
-        let result = Box::pin(self.thread_factory.verify_execution_workspace(
-            thread,
-            snapshot,
-            crate::studio::thread_factory::ExecutionWorkspaceCheck::Prepare,
-        ))
-        .await;
-        let state = self
-            .recovery
-            .apply_execution_workspace_check(thread, result.as_ref().err());
-        self.agent_facility
-            .product_events
-            .emit_recovery_state(state);
-        result
+        Box::pin(
+            self.thread_factory
+                .verify_and_report_execution_workspace(thread, snapshot),
+        )
+        .await
     }
 
     pub(in crate::studio::runtime) async fn read_protocol_thread(

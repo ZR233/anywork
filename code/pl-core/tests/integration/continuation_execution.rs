@@ -1,5 +1,4 @@
 //! Production control, recovery, input delivery and physical cancellation contracts.
-use crate::legacy_usage;
 use crate::preparation;
 use crate::support;
 use crate::tool_support;
@@ -15,9 +14,11 @@ use pl_core::model::{
     PreparedModelCall,
 };
 use pl_core::thread::{
-    ContinuationReason, ModelStepLimit, StepInput, ThreadCheckpoint, ThreadError, ThreadHandle,
-    ThreadLifecycle, ToolOutcome, TurnOutcome, TurnState,
-    cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
+    ContinuationReason, HistoryExport, ModelStepLimit, StepInput, ThreadEffectBatch, ThreadError,
+    ThreadHandle, ThreadLifecycle, ThreadSnapshot, TurnOutcome, TurnState, UsageSummary,
+    cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+    current::{RuntimeEpoch, ThreadCurrent, ThreadCurrentState},
+    history_sink::{HistorySink, HistorySinkHandle},
     inbox::ThreadMessage,
     input::{InputDriverOptions, InputExecution, InputPurpose, InputState, ThreadInput},
 };
@@ -189,6 +190,7 @@ impl ModelSession for OneToolCall {
 struct ManualStore {
     admitted: Arc<AtomicU64>,
     durable: Arc<AtomicU64>,
+    auto_durable: Arc<AtomicBool>,
     retained: Arc<AtomicU64>,
     reclaimable: Arc<AtomicU64>,
     unfinished: Arc<AtomicBool>,
@@ -201,6 +203,7 @@ impl ManualStore {
         Self {
             admitted: Arc::new(AtomicU64::new(0)),
             durable: Arc::new(AtomicU64::new(0)),
+            auto_durable: Arc::new(AtomicBool::new(false)),
             retained: Arc::new(AtomicU64::new(0)),
             reclaimable: Arc::new(AtomicU64::new(0)),
             unfinished: Arc::new(AtomicBool::new(false)),
@@ -216,10 +219,33 @@ impl ManualStore {
     }
 }
 
-impl ColdStore for ManualStore {
-    fn admit(&self, _thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+impl HistorySink for ManualStore {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn release_operation_output(&self, _: &str, _: &str) {}
+
+    fn admit(&self, _thread_id: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         self.admitted
             .fetch_max(write.effect.sequence, Ordering::SeqCst);
+        if self.auto_durable.load(Ordering::SeqCst) {
+            self.durable
+                .fetch_max(write.effect.sequence, Ordering::SeqCst);
+            let _ = self.changed.send(());
+        }
         Ok(())
     }
 
@@ -231,8 +257,8 @@ impl ColdStore for ManualStore {
         }
     }
 
-    fn idle_status(&self, thread_id: &str) -> pl_core::thread::cold::StorageIdleStatus {
-        pl_core::thread::cold::StorageIdleStatus {
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
             pressure: self.pressure(thread_id),
             reclaimable_thread_bytes: (!self.unfinished.load(Ordering::SeqCst))
                 .then(|| self.reclaimable.load(Ordering::SeqCst)),
@@ -241,12 +267,6 @@ impl ColdStore for ManualStore {
 
     fn subscribe_pressure(&self, _thread_id: &str) -> Option<watch::Receiver<()>> {
         Some(self.changed.subscribe())
-    }
-
-    async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        self.durable.fetch_max(sequence, Ordering::SeqCst);
-        let _ = self.changed.send(());
-        Ok(())
     }
 }
 
@@ -258,7 +278,7 @@ async fn idle_close_requires_durable_facts_and_only_reclaims_proven_residents() 
     let (model, _) = support::ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("idle-retention".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     thread
@@ -297,6 +317,11 @@ async fn idle_close_requires_durable_facts_and_only_reclaims_proven_residents() 
         "an invalid reclaimable count must fail closed"
     );
     store.reclaimable.store(128, Ordering::SeqCst);
+    store.auto_durable.store(true, Ordering::SeqCst);
+    store
+        .durable
+        .fetch_max(thread.snapshot().commit_sequence, Ordering::SeqCst);
+    let _ = store.changed.send(());
     assert!(
         thread.close_if_idle().await.unwrap(),
         "durable reconstructible residents may be released"
@@ -399,21 +424,21 @@ async fn recovery_offers_a_continuation_without_running_or_repeating_anything() 
         .unwrap();
     assert_eq!(output.tool_calls.len(), 1);
     assert!(log.lock().unwrap().is_empty());
-    let checkpoint = thread
-        .checkpoint(thread.snapshot().commit_sequence)
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
         .unwrap();
-    let serialized = serde_json::to_vec(&checkpoint).unwrap();
+    let serialized = serde_json::to_vec(&current).unwrap();
     thread.close().await.unwrap();
 
     let restored_requests = Arc::new(Mutex::new(Vec::new()));
-    let restored = ThreadHandle::resume(
-        "restart".into(),
-        DynModelSession::new(OneToolCall {
+    let restored = ThreadHandle::restore_current(
+        serde_json::from_slice(&serialized).unwrap(),
+        Some(DynModelSession::new(OneToolCall {
             requests: restored_requests.clone(),
             tool_id: "write".into(),
             answered: true,
-        }),
-        Some(serde_json::from_slice(&serialized).unwrap()),
+        })),
     )
     .unwrap();
     let snapshot = restored.snapshot();
@@ -426,12 +451,12 @@ async fn recovery_offers_a_continuation_without_running_or_repeating_anything() 
     assert!(paused(&restored));
     assert!(restored_requests.lock().unwrap().is_empty());
     assert!(log.lock().unwrap().is_empty());
-    // The interrupted call keeps its interrupted result instead of being replayed.
-    assert!(restored.effects().await.unwrap().iter().any(|effect| {
-        effect.deliveries.iter().any(|delivery| {
-            delivery.call_id == "interrupted-turn-write"
-                && matches!(delivery.outcome, ToolOutcome::Interrupted)
-        })
+    // The interrupted call stays unpaired before explicit continuation (nothing replayed on restore).
+    assert!(restored.snapshot().context.records.iter().any(|record| {
+        record
+            .tool_calls
+            .iter()
+            .any(|call| call.call_id == "interrupted-turn-write")
     }));
 
     let receipt = resume_named(&restored, "after-restart").await.unwrap();
@@ -660,7 +685,7 @@ async fn closing_with_live_work_keeps_it_as_a_host_shutdown_point() {
     )
     .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     thread
@@ -682,22 +707,20 @@ async fn closing_with_live_work_keeps_it_as_a_host_shutdown_point() {
     drop(thread);
     wait_until(|| {
         store
-            .latest_checkpoint()
-            .is_some_and(|checkpoint| checkpoint.state.lifecycle == ThreadLifecycle::Closed)
+            .latest_state()
+            .is_some_and(|state| state.lifecycle == ThreadLifecycle::Closed)
     })
     .await;
-    let checkpoint = store
-        .latest_checkpoint()
-        .expect("the close saved a checkpoint");
-    let point = checkpoint
-        .state
+    let shutdown_state = store
+        .latest_state()
+        .expect("the close exported final snapshot");
+    let point = shutdown_state
         .continuation
         .clone()
         .expect("a shutdown that cut live work leaves a point");
     assert_eq!(point.reason, Some(ContinuationReason::HostShutdown));
     assert!(
-        checkpoint
-            .state
+        shutdown_state
             .turns
             .iter()
             .all(|turn| turn.state != TurnState::Running),
@@ -706,15 +729,17 @@ async fn closing_with_live_work_keeps_it_as_a_host_shutdown_point() {
     let requests_after_shutdown = requests.lock().unwrap().len();
 
     // Restoring runs nothing; only an explicit continuation resumes the owed work.
+    let epoch = RuntimeEpoch::new();
+    let mut restored_current = ThreadCurrent::new("shutdown".into(), epoch);
+    restored_current.state = ThreadCurrentState::from_snapshot(&shutdown_state, epoch).unwrap();
     let resumed_requests = Arc::new(Mutex::new(Vec::new()));
-    let resumed = ThreadHandle::resume(
-        "shutdown".into(),
-        DynModelSession::new(HeldModel {
+    let resumed = ThreadHandle::restore_current(
+        restored_current,
+        Some(DynModelSession::new(HeldModel {
             requests: resumed_requests.clone(),
             entered: None,
             release: None,
-        }),
-        Some(checkpoint),
+        })),
     )
     .unwrap();
     assert!(paused(&resumed));
@@ -822,94 +847,12 @@ async fn ordinary_content_may_not_claim_the_control_format() {
 }
 
 #[tokio::test]
-async fn a_schema_4_checkpoint_defaults_the_new_fields_and_invents_no_continuation() {
-    let (model, _) = support::ScriptedModel::new(&[]);
-    let thread = ThreadHandle::start("legacy-v4".into(), DynModelSession::new(model)).unwrap();
-    thread
-        .submit_input_and_run(
-            message_input("asked", "Please handle this request"),
-            options(),
-        )
-        .await
-        .unwrap();
-    wait_until(|| {
-        matches!(
-            input_state(&thread, "asked"),
-            Some(InputState::Consumed { .. })
-        )
-    })
-    .await;
-    let checkpoint = thread
-        .checkpoint(thread.snapshot().commit_sequence)
-        .unwrap();
-    thread.close().await.unwrap();
-
-    // Rewrite the envelope into the schema-4 shape: every field this schema never had is absent.
-    let mut value = serde_json::to_value(&checkpoint).unwrap();
-    value["schemaVersion"] = serde_json::json!(4);
-    legacy_usage::flatten(&mut value);
-    {
-        let state = value["state"].as_object_mut().expect("state object");
-        state.remove("continuation");
-        state.remove("execution");
-        state.remove("executionSequence");
-        state.remove("requiredDurableSequence");
-        for key in ["inputs", "terminalInputs"] {
-            if let Some(records) = state.get_mut(key).and_then(serde_json::Value::as_array_mut) {
-                for record in records {
-                    let record = record.as_object_mut().expect("input object");
-                    record.remove("purpose");
-                    record.remove("continuation");
-                }
-            }
-        }
-    }
-    let envelope = serde_json::to_string(&value).unwrap();
-    assert!(ThreadCheckpoint::is_legacy_schema(4));
-    let decoded = ThreadCheckpoint::decode_legacy(&envelope).unwrap();
-    assert_eq!(decoded.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
-    assert!(decoded.state.continuation.is_none());
-    assert!(decoded.state.execution.is_none());
-    assert_eq!(decoded.state.execution_sequence, 0);
-    assert!(
-        decoded
-            .state
-            .inputs
-            .iter()
-            .all(|record| record.input.purpose == InputPurpose::Message)
-    );
-    assert!(
-        decoded
-            .state
-            .terminal_inputs
-            .iter()
-            .all(|identity| { identity.purpose == InputPurpose::Message })
-    );
-    assert!(
-        !decoded.state.terminal_inputs.is_empty(),
-        "the fixture must really carry the consumed input it strips"
-    );
-
-    // Settling the same facts invents no continuation: this Thread finished its work normally.
-    let (model, _) = support::ScriptedModel::new(&[]);
-    let resumed = ThreadHandle::resume(
-        "legacy-v4".into(),
-        DynModelSession::new(model),
-        Some(decoded),
-    )
-    .unwrap();
-    assert!(resumed.snapshot().continuation.is_none());
-    assert!(paused(&resumed));
-    resumed.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn an_idle_close_does_not_make_the_thread_continuable() {
     let store = RecordingStore::new();
     let (model, _) = support::ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("idle-close".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     thread
@@ -927,12 +870,12 @@ async fn an_idle_close_does_not_make_the_thread_continuable() {
     })
     .await;
     thread.close().await.unwrap();
-    let checkpoint = store
-        .latest_checkpoint()
-        .expect("the close saved a checkpoint");
-    assert_eq!(checkpoint.state.lifecycle, ThreadLifecycle::Closed);
+    let closed_state = store
+        .latest_state()
+        .expect("the close exported final snapshot");
+    assert_eq!(closed_state.lifecycle, ThreadLifecycle::Closed);
     assert!(
-        checkpoint.state.continuation.is_none(),
+        closed_state.continuation.is_none(),
         "a normally finished Thread does not become continuable just because it closed"
     );
 }
@@ -1293,7 +1236,7 @@ struct RecordingStore {
     admitted: Arc<AtomicU64>,
     durable: Arc<AtomicU64>,
     changed: watch::Sender<()>,
-    last: Arc<Mutex<Option<ThreadWrite>>>,
+    last: Arc<Mutex<Option<Arc<HistoryExport>>>>,
 }
 
 impl RecordingStore {
@@ -1307,18 +1250,36 @@ impl RecordingStore {
         }
     }
 
-    /// The newest checkpoint the backend received, cloned out of the recorded batch.
-    fn latest_checkpoint(&self) -> Option<ThreadCheckpoint> {
+    /// The newest exported snapshot the backend received, cloned out of the recorded batch.
+    fn latest_state(&self) -> Option<ThreadSnapshot> {
         self.last
             .lock()
             .expect("recorded write")
             .as_ref()
-            .map(|write| write.checkpoint.clone())
+            .map(|write| write.state.clone())
     }
 }
 
-impl ColdStore for RecordingStore {
-    fn admit(&self, _thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+impl HistorySink for RecordingStore {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn release_operation_output(&self, _: &str, _: &str) {}
+
+    fn admit(&self, _thread_id: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         self.admitted
             .fetch_max(write.effect.sequence, Ordering::SeqCst);
         *self.last.lock().expect("recorded write") = Some(write);
@@ -1332,13 +1293,14 @@ impl ColdStore for RecordingStore {
         }
     }
 
-    fn subscribe_pressure(&self, _thread_id: &str) -> Option<watch::Receiver<()>> {
-        Some(self.changed.subscribe())
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: None,
+        }
     }
 
-    async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        self.durable.fetch_max(sequence, Ordering::SeqCst);
-        let _ = self.changed.send(());
-        Ok(())
+    fn subscribe_pressure(&self, _thread_id: &str) -> Option<watch::Receiver<()>> {
+        Some(self.changed.subscribe())
     }
 }

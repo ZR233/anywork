@@ -148,7 +148,7 @@ void main() {
           )
           .text,
       planMarkdown,
-      reason: '计划正文必须经 State 业务引用和原 reader 到达阅读区',
+      reason: '计划正文必须经原会话 Feed 的详情查询到达阅读区',
     );
 
     final dock = tester.state<State<PlanConfirmationView>>(
@@ -644,8 +644,8 @@ Future<void> _publishPlanDocument(
   );
   transport.seedConversationState(
     threadId,
-    ThreadRuntimeUpdate(
-      runtime: session.state.runtime!.copyWith(
+    (current) => current.copyWith(
+      runtime: current.runtime.copyWith(
         plan: PlanRuntimeView(
           revision: 1,
           state: PlanRuntimePhase.awaitingConfirmation,
@@ -657,14 +657,12 @@ Future<void> _publishPlanDocument(
           updatedAt: DateTime.utc(2026),
         ),
       ),
-      todo: null,
-      modelRoute: session.state.modelRoute,
     ),
   );
   await pumpClientUntil(
     tester,
-    () => session.state.businessRefs?.plan?.document != null,
-    'State 计划文档引用',
+    () => session.state.meta?.plan?.revision == 1,
+    'Plan metadata head',
   );
 }
 

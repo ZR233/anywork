@@ -432,10 +432,15 @@ final class LiveStatusHeaderSpec {
     String? detail, {
     int? attempt,
     int? maxAttempts,
+    int? retrySeconds,
   }) {
     final label = attempt != null && maxAttempts != null
         ? context.l10n.liveStatusModelReconnecting(attempt, maxAttempts)
         : context.l10n.liveStatusConnectionReconnecting;
+    final retry = retrySeconds == null
+        ? null
+        : context.l10n.timelineRetryAfterSeconds('$retrySeconds');
+    final meta = [detail, retry].nonNulls.join(' · ');
     return LiveStatusHeaderSpec(
       label: label,
       icon: Icons.sync_outlined,
@@ -443,9 +448,9 @@ final class LiveStatusHeaderSpec {
       active: !(MediaQuery.maybeDisableAnimationsOf(context) ?? false),
       tone: StudioTone.warning,
       iconColor: StudioTone.warning.indicator(context),
-      meta: detail,
-      tooltip: detail ?? label,
-      semanticsLabel: detail ?? label,
+      meta: meta.isEmpty ? null : meta,
+      tooltip: meta.isEmpty ? label : meta,
+      semanticsLabel: meta.isEmpty ? label : meta,
     );
   }
 

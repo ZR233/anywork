@@ -76,7 +76,7 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
             MessageGroupStatus? groupStatus,
           }) {
             final presentation = chatItemPresentationOf(message)!;
-            if (presentation.atom != null && widget.atomBuilder != null) {
+            if (widget.atomBuilder != null) {
               return widget.atomBuilder!(presentation);
             }
             return ChatItemView(

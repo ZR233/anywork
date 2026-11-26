@@ -19,18 +19,22 @@ impl BridgeObservationFactory {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::task::Poll;
     use std::time::Duration;
 
     use anyhow::{Context, Result, ensure};
     use futures::poll;
     use pl_lifecycle::ScopeOwner;
+    use pl_studio_runtime::{ConversationEvent, ConversationFeed, Turn, TurnState};
 
     use crate::api::studio::{
         accounts::types::BridgeAccountObservationTarget,
         directory::types::{
             BridgeThreadDirectoryFilter, BridgeThreadDirectoryQuery, BridgeThreadDirectoryWindow,
         },
-        types::{BridgeErrorCode, BridgeProductTopic, BridgeReadDemand},
+        types::{
+            BridgeConversationEvent, BridgeErrorCode, BridgeProductTopic, BridgeTimelinePatch,
+        },
     };
 
     const MODEL: &str = "bridge-chat-fixture";
@@ -38,6 +42,28 @@ pub(crate) mod tests {
     const INITIAL_PROMPT: &str = "conversation read lease";
     const INITIAL_INPUT: &str = "input-bridge-chat";
     const FOLLOWUP_PROMPT: &str = "conversation live range";
+    const FOLLOWUP_INPUT: &str = "input-bridge-live";
+
+    async fn completed_turn(feed: &ConversationFeed, input_id: &str) -> Result<Turn> {
+        loop {
+            let event = feed.next_event().await.context("conversation feed ended")?;
+            if let ConversationEvent::SessionMeta(meta) = event
+                && let Some(turn) = [meta.active_turn, meta.last_turn]
+                    .into_iter()
+                    .flatten()
+                    .find(|turn| {
+                        turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
+                    })
+            {
+                ensure!(
+                    matches!(turn.state, TurnState::Completed(_)),
+                    "fixture failed: {:?}",
+                    turn.state
+                );
+                return Ok(turn);
+            }
+        }
+    }
 
     /// Isolated real Runtime assembled through public product commands and the existing provider
     /// fixture. `BridgeObservationFactory` itself is the only substituted connection point.
@@ -60,9 +86,8 @@ pub(crate) mod tests {
             };
             use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
             use pl_studio_runtime::{
-                CURRENT_PROTOCOL_VERSION, CreateThreadRequest, CurrentFrame, DelegationMode,
-                NewThreadModelRoute, ReadDemand, StudioHostKind, StudioPromptInput, StudioRuntime,
-                StudioRuntimeOptions, ThreadNotification, ThreadWorkspaceMode, TurnState,
+                CreateThreadRequest, DelegationMode, NewThreadModelRoute, StudioHostKind,
+                StudioPromptInput, StudioRuntime, StudioRuntimeOptions, ThreadWorkspaceMode,
                 config::{ConfigPaths, ConfigStore, StudioConfig},
                 mode::ThreadModeId,
             };
@@ -169,46 +194,16 @@ pub(crate) mod tests {
                 ))
                 .await?;
                 let thread_id = started.thread.id;
-                let demand = ReadDemand {
-                    max_items: 16,
-                    max_bytes: 64 * 1024,
-                };
-                let current = runtime
-                    .open_current_reader(&thread_id, CURRENT_PROTOCOL_VERSION, demand)
-                    .await?;
-                let baseline = current.snapshot(demand).await?;
-                let watch = current.watch(Some(baseline.revision), demand).await?;
-                loop {
-                    let update = watch
-                        .next()
-                        .await?
-                        .context("fixture Current stream ended")?;
-                    let turn = match update {
-                        CurrentFrame::Reset { view } => view.state.active_turn,
-                        CurrentFrame::Notification { notification, .. } => {
-                            match notification.notification {
-                                ThreadNotification::TurnCompleted { turn } => Some(turn),
-                                _ => None,
-                            }
-                        }
-                        CurrentFrame::Projection { .. } => None,
-                    };
-                    if let Some(turn) = turn
-                        && turn.input_id.as_deref() == Some(INITIAL_INPUT)
-                        && turn.state.is_terminal()
-                    {
-                        ensure!(
-                            matches!(turn.state, TurnState::Completed(_)),
-                            "fixture failed: {:?}",
-                            turn.state
-                        );
-                        break;
-                    }
-                }
-                watch.request_close();
-                watch.close().await?;
-                current.request_close();
-                current.close().await?;
+                let feed = runtime.open_conversation_feed(&thread_id, 16).await?;
+                let completion = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    completed_turn(&feed, INITIAL_INPUT),
+                )
+                .await
+                .context("fixture initial turn did not settle");
+                feed.request_close();
+                feed.close().await;
+                completion??;
                 runtime.synchronize_thread_observation(&thread_id).await?;
                 Ok(thread_id)
             }
@@ -240,7 +235,7 @@ pub(crate) mod tests {
                     self.thread_id.clone(),
                     SubmitPromptRequest {
                         input: StudioPromptInput {
-                            input_id: "input-bridge-live".into(),
+                            input_id: FOLLOWUP_INPUT.into(),
                             text: FOLLOWUP_PROMPT.into(),
                             attachment_draft_ids: Vec::new(),
                         },
@@ -307,23 +302,24 @@ pub(crate) mod tests {
             let product = factory
                 .open_product_topic(BridgeProductTopic::Updater)
                 .await?;
-            let demand = BridgeReadDemand {
-                max_items: 2,
-                max_bytes: 64 * 1024,
+            let conversation = factory.open_conversation(env.thread_id.clone(), 2).await?;
+
+            ensure!(conversation.thread_id() == env.thread_id);
+            ensure!(conversation.session_meta_snapshot()?.thread_id == env.thread_id);
+            ensure!(matches!(
+                conversation.next_event().await?,
+                Some(BridgeConversationEvent::Timeline {
+                    patch: BridgeTimelinePatch::Reset { .. }
+                })
+            ));
+            let conversation_next = loop {
+                let mut next = Box::pin(conversation.next_event());
+                match poll!(next.as_mut()) {
+                    Poll::Pending => break next,
+                    Poll::Ready(result) => ensure!(result?.is_some()),
+                }
             };
-            let current = factory
-                .open_current(
-                    env.thread_id.clone(),
-                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
-                    demand,
-                )
-                .await?;
-            let history = factory
-                .open_history(
-                    env.thread_id.clone(),
-                    pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION,
-                )
-                .await?;
+            ensure!(conversation.next_event().await.unwrap_err().code == BridgeErrorCode::Busy);
 
             ensure!(account.next().await?.is_some());
             ensure!(directory.next().await?.is_some());
@@ -346,6 +342,11 @@ pub(crate) mod tests {
             ensure!(rejected.code == BridgeErrorCode::RuntimeStopped);
             ensure!(account_next.await?.is_none());
             ensure!(directory_next.await?.is_none());
+            ensure!(conversation_next.await?.is_none());
+            ensure!(
+                conversation.reset_to_latest(2).await.unwrap_err().code
+                    == BridgeErrorCode::StaleRevision
+            );
             let report = scope
                 .close(tokio::time::Instant::now() + Duration::from_secs(10))
                 .await;
@@ -355,8 +356,7 @@ pub(crate) mod tests {
             metadata.close().await?;
             statistics.close().await?;
             product.cancel().await?;
-            current.close().await?;
-            history.close().await?;
+            conversation.close().await?;
             ensure!(
                 env.runtime.runtime_snapshot().await?.state.kind()
                     == pl_studio_runtime::StudioRuntimeStateKind::Ready
@@ -370,8 +370,9 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn closing_bridge_observations_keeps_admitted_execution_and_persistence() -> Result<()> {
         use pl_provider_fixture::{ReplyStage, responses_text_chunks};
-        use pl_studio_runtime::{ReadDemand, ThreadNotification, TurnState};
-        use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
+        use pl_studio_runtime::{
+            StudioHostKind, StudioRuntime, StudioRuntimeOptions, TimelineItem, TimelinePatch,
+        };
 
         let stage = ReplyStage::new();
         let frames = responses_text_chunks(
@@ -387,36 +388,19 @@ pub(crate) mod tests {
             let topic = factory
                 .open_product_topic(BridgeProductTopic::Updater)
                 .await?;
-            let bridge_state = factory
-                .open_current(
-                    env.thread_id.clone(),
-                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
-                    BridgeReadDemand {
-                        max_items: 16,
-                        max_bytes: 64 * 1024,
-                    },
-                )
+            let bridge_feed = factory
+                .open_conversation(env.thread_id.clone(), 16)
                 .await?;
             // 独立状态读取只用于核对原业务执行，不属于待关闭的桥接作用域。
-            let demand = ReadDemand {
-                max_items: 16,
-                max_bytes: 64 * 1024,
-            };
-            let state = env
+            let independent = env
                 .runtime
-                .open_current_reader(
-                    &env.thread_id,
-                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
-                    demand,
-                )
+                .open_conversation_feed(&env.thread_id, 16)
                 .await?;
-            let baseline = state.snapshot(demand).await?;
-            let state = state.watch(Some(baseline.revision), demand).await?;
             env.submit_followup().await?;
             stage.wait_reached().await;
             let before = env.runtime.thread_snapshot(&env.thread_id).await?;
             let active = before.active_turn.context("admitted turn")?;
-            ensure!(active.input_id.as_deref() == Some("input-bridge-live"));
+            ensure!(active.input_id.as_deref() == Some(FOLLOWUP_INPUT));
             ensure!(!active.state.is_terminal());
 
             scope.request_close();
@@ -425,7 +409,7 @@ pub(crate) mod tests {
                 .await;
             ensure!(report.is_clean(), "bridge scope did not close: {report:?}");
             topic.cancel().await?;
-            bridge_state.close().await?;
+            bridge_feed.close().await?;
             let after = env.runtime.thread_snapshot(&env.thread_id).await?;
             let still_running = after.active_turn.context("original turn remains active")?;
             ensure!(still_running.id == active.id && !still_running.state.is_terminal());
@@ -439,28 +423,11 @@ pub(crate) mod tests {
                 )
                 .await?;
             stage.release();
-            let completed_id = loop {
-                let update = state.next().await?.context("Current watch ended")?;
-                let turn = match update {
-                    pl_studio_runtime::CurrentFrame::Reset { view } => view.state.active_turn,
-                    pl_studio_runtime::CurrentFrame::Notification { notification, .. } => {
-                        match notification.notification {
-                            ThreadNotification::TurnCompleted { turn } => Some(turn),
-                            _ => None,
-                        }
-                    }
-                    pl_studio_runtime::CurrentFrame::Projection { .. } => None,
-                };
-                if let Some(turn) = turn
-                    && turn.id == active.id
-                    && turn.state.is_terminal()
-                {
-                    ensure!(matches!(turn.state, TurnState::Completed(_)));
-                    break turn.id;
-                }
-            };
-            state.request_close();
-            state.close().await?;
+            let completed = completed_turn(&independent, FOLLOWUP_INPUT).await;
+            independent.request_close();
+            independent.close().await;
+            let completed_id = completed?.id;
+            ensure!(completed_id == active.id);
             env.runtime
                 .synchronize_thread_observation(&env.thread_id)
                 .await?;
@@ -473,35 +440,26 @@ pub(crate) mod tests {
             })
             .await?;
             ensure!(env.runtime.read_thread(&env.thread_id).await?.title == title);
-            let history = env
+            let restored = env
                 .runtime
-                .open_history_reader(
-                    &env.thread_id,
-                    pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION,
-                )
+                .open_conversation_feed(&env.thread_id, 100)
                 .await?;
-            let page = history
-                .turns_page(
-                    None,
-                    None,
-                    pl_studio_runtime::history::HistoryDemand {
-                        max_rows: 100,
-                        max_bytes: 256 * 1024,
-                    },
-                )
-                .await?;
+            let initial = restored.next_event().await;
+            restored.request_close();
+            restored.close().await;
+            let Some(ConversationEvent::Timeline(TimelinePatch::Reset { items, .. })) = initial else {
+                anyhow::bail!("restored conversation did not start with a timeline Reset");
+            };
             ensure!(
-                page.entries.iter().any(|entry| {
+                items.iter().any(|item| {
                     matches!(
-                        &entry.head,
-                        pl_studio_runtime::history::HistoryBusinessRowHead::Turn(turn)
-                            if turn.turn_id == completed_id
+                        item,
+                        TimelineItem::AssistantText { turn_id: Some(turn), text, .. }
+                            if turn == &completed_id && text == "execution continues after observation closes"
                     )
                 }),
-                "completed turn was not recovered from durable history"
+                "completed reply was not recovered from durable history"
             );
-            history.request_close();
-            history.close().await;
             Ok(())
         })
         .await

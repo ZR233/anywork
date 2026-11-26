@@ -1,10 +1,11 @@
 //! Streaming History previews and their short-key version index.
+use super::super::activity::ModelPartLocation;
 use super::super::observation_parts::{aggregate_id, observation_preview};
 use super::memory_budget::{
     RETAINED_ENTRY_OVERHEAD, RETAINED_ITEM_OVERHEAD, RetainedBytes, state_body_bytes,
 };
 use super::{
-    ProjectionError, current,
+    ProjectionError,
     placement_window::{Fact, PlacementWindow},
     provenance::ProvenanceLedger,
 };
@@ -59,7 +60,7 @@ pub(super) struct LivePreview {
     /// Position in the producer's current generation, not lexical preview or execution order.
     /// Checked against that snapshot before activity reads the part; replacement/reordering
     /// invalidates the observation version even when its bytes did not change.
-    pub(super) model_part: Option<super::super::current::ModelPartLocation>,
+    pub(super) model_part: Option<ModelPartLocation>,
 }
 
 /// Cheap stable identity of one provider/aggregate streaming observation.
@@ -84,7 +85,7 @@ pub(super) enum ObservedKey {
 struct ObservedVersion {
     content: u64,
     ended: bool,
-    model_part: Option<super::super::current::ModelPartLocation>,
+    model_part: Option<ModelPartLocation>,
 }
 
 /// Cheap key of one observation identity, derived without building its projection id.
@@ -417,7 +418,7 @@ impl PreviewCache {
             let observed_version = ObservedVersion {
                 content: part.version(),
                 ended: failure.is_some(),
-                model_part: Some(super::super::current::ModelPartLocation { generation, index }),
+                model_part: Some(ModelPartLocation { generation, index }),
             };
             if self.observed.get(&key) == Some(&observed_version) {
                 continue;
@@ -533,7 +534,7 @@ impl PreviewCache {
             let id = super::super::order::tool_id(&task.call_id);
             // The original task invocation and the snapshot's shared progress block are sufficient;
             // History archive progress cannot decide whether this live producer still exists.
-            let Some(committed) = current::task_tool_item(thread, state, task)? else {
+            let Some(committed) = task_tool_item(thread, state, task)? else {
                 continue;
             };
             // A terminal item is never pulled back by a late streaming observation.
@@ -684,4 +685,34 @@ pub(super) fn fields_equal(
                 .get(field)
                 .is_some_and(|other| ContentBlock::text_eq(block, other))
         })
+}
+
+fn task_tool_item(
+    thread: &crate::Thread,
+    state: &ThreadSnapshot,
+    task: &pl_core::thread::task::TaskRecord,
+) -> Result<Option<crate::ExecutionItem>, ProjectionError> {
+    let Some(invocation) = task.invocation.as_ref() else {
+        return Ok(None);
+    };
+    if invocation.call_id != task.call_id || invocation.tool_id != task.tool_id {
+        return Err(ProjectionError::UnsupportedOutput(
+            "current task invocation differs from its task identity".into(),
+        ));
+    }
+    let items = super::super::tools::project_tool_call(
+        state,
+        invocation,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Borrowed(thread.id.as_str()),
+            turn_id: std::borrow::Cow::Borrowed(task.turn_id.as_str()),
+            ordinal: task.started_sequence.unwrap_or(0),
+            created_at: 0,
+            revision: task.revision.max(1),
+            updated_at: 0,
+        },
+    )?;
+    Ok(items
+        .into_iter()
+        .find(|item| item.id == super::super::order::tool_id(&task.call_id)))
 }

@@ -5,26 +5,26 @@ use anyhow::Result;
 use pl_core::thread::ThreadSnapshot;
 
 impl StudioRuntime {
-    /// Uses the original bounded State assembler through the independent Current port.
+    /// Reads a point-in-time `ThreadSnapshot` derived from live `MetaEventBus` / `ThreadHandle`
+    /// state (pure RAM) or cold `Thread` directory + `HistoryReader` metadata.
     pub async fn thread_snapshot(&self, thread_id: &str) -> Result<crate::ThreadSnapshot> {
-        let reader = self
-            .open_current_reader(
-                thread_id,
-                crate::CURRENT_PROTOCOL_VERSION,
-                crate::ReadDemand {
-                    max_items: 128,
-                    max_bytes: crate::CHAT_BATCH_MAX_BYTES,
-                },
-            )
-            .await?;
-        let result = reader
-            .snapshot(crate::ReadDemand {
-                max_items: 128,
-                max_bytes: crate::CHAT_BATCH_MAX_BYTES,
-            })
-            .await;
-        reader.close().await?;
-        Ok(*result?.state)
+        let mut thread = self.read_protocol_thread(thread_id).await?;
+        let meta = self.thread_session_meta(thread_id).await?;
+        thread.status = meta.status;
+        thread.title = meta.title.clone().unwrap_or_default();
+        thread.mode = meta.mode;
+        Ok(crate::ThreadSnapshot {
+            schema_version: crate::THREAD_SCHEMA_VERSION,
+            revision: meta.revision,
+            thread,
+            business_refs: crate::ThreadBusinessRefs::empty(),
+            active_turn: meta.active_turn,
+            interactions: meta.interactions,
+            model_route: meta.model_route,
+            runtime: meta.runtime,
+            activity: meta.activity,
+            storage: meta.storage_state,
+        })
     }
 
     pub(in crate::studio) async fn read_thread_state(

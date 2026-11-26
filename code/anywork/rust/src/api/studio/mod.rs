@@ -22,10 +22,7 @@ pub use self::handlers::acp_business::{
 pub use self::handlers::file_download::{
     BridgeFileDownload, BridgeFileDownloadPhase, BridgeFileDownloadStatus, start_file_download,
 };
-pub use self::handlers::timeline::{
-    BridgeCurrentBodyWatch, BridgeCurrentReader, BridgeCurrentWatch, BridgeHistoryReader,
-    open_current_reader, open_history_reader,
-};
+pub use self::handlers::timeline::{BridgeConversationFeed, open_conversation_feed};
 pub use self::handlers::{
     BridgeStudioUpdateOperation, activate_project, admit_attachment_drafts, apply_settings_field,
     archive_project, archive_thread, authenticate_ssh_server, browse_remote_directories,

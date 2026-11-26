@@ -1,4 +1,4 @@
-//! Durable input admission and serial queue execution commands.
+//! Priority Tier-1 user input admission and serial queue execution commands.
 use super::*;
 
 impl ThreadHandle {
@@ -12,8 +12,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::ContinueInput(input, options, reply),
             ))
             .await
@@ -28,8 +28,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<ContinuationOperation, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::Resume(request, options, reply),
             ))
             .await
@@ -42,8 +42,8 @@ impl ThreadHandle {
         request: ResumeRequest,
     ) -> Result<ContinuationRead, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 crate::thread::mailbox::MailboxCommand::ReadResume(request, reply),
             ))
             .await
@@ -61,8 +61,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::ResumeInputs(options, reply),
             ))
             .await
@@ -76,8 +76,8 @@ impl ThreadHandle {
     /// Returns an error if the owner is no longer reachable.
     pub async fn pause_inputs(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::PauseInputs(reply),
             ))
             .await
@@ -94,8 +94,8 @@ impl ThreadHandle {
         input: input::ThreadInput,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::Input(input, None, reply),
             ))
             .await
@@ -115,8 +115,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::Input(input, Some(options), reply),
             ))
             .await
@@ -130,8 +130,8 @@ impl ThreadHandle {
     /// Rejects missing, consumed or currently preparing input identities.
     pub async fn discard_input(&self, id: String) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 crate::thread::mailbox::MailboxCommand::DiscardInput(id, reply),
             ))
             .await
@@ -149,8 +149,8 @@ impl ThreadHandle {
         request: input::QueuedTurn,
     ) -> Result<Option<TurnCompletion>, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::QueuedTurn(request, reply))
+        self.user_commands
+            .send(UserCommand::QueuedTurn(request, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?

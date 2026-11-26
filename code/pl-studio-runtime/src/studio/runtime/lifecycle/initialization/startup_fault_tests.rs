@@ -335,7 +335,25 @@ async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_a
             .is_err()
     );
     assert_eq!(runtime.store.catalog().sessions().len(), before);
-    runtime.ensure_thread_owner(&ordinary.id).await?;
+    let current_path = runtime
+        .store
+        .registered_session_paths(&ordinary.id)?
+        .current_file();
+    let resident = runtime
+        .require_session(&ordinary.id)?
+        .thread(&ordinary.id)
+        .unwrap();
+    runtime
+        .store
+        .conversation_store(&ordinary.id)
+        .await?
+        .flush_current(resident.runtime_epoch())
+        .await?;
+    let saved_bytes = tokio::fs::read(&current_path).await?;
+    tokio::fs::write(&current_path, b"invalid current while owner is resident").await?;
+    let admitted = runtime.ensure_thread_owner(&ordinary.id).await;
+    tokio::fs::write(&current_path, saved_bytes).await?;
+    assert!(admitted?.same_instance(&resident));
     runtime.retry_recovery().await?;
     crate::studio::runtime::background_task::finish(&runtime.recovery_task)
         .await

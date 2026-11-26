@@ -8,15 +8,12 @@ part of 'live_status_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// Current state and business facts are projected directly through [LiveStatusMachine].
 
 @ProviderFor(LiveStatusViewModel)
 final liveStatusViewModelProvider = LiveStatusViewModelFamily._();
 
-/// Current state and business facts are projected directly through [LiveStatusMachine].
 final class LiveStatusViewModelProvider
     extends $NotifierProvider<LiveStatusViewModel, LiveStatusView?> {
-  /// Current state and business facts are projected directly through [LiveStatusMachine].
   LiveStatusViewModelProvider._({
     required LiveStatusViewModelFamily super.from,
     required String super.argument,
@@ -62,9 +59,7 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'3736fe124891874badab07d863e856211dba54bf';
-
-/// Current state and business facts are projected directly through [LiveStatusMachine].
+    r'3cf211da33b49e8cd5be5e430dab11f19d1102c3';
 
 final class LiveStatusViewModelFamily extends $Family
     with
@@ -84,16 +79,12 @@ final class LiveStatusViewModelFamily extends $Family
         isAutoDispose: true,
       );
 
-  /// Current state and business facts are projected directly through [LiveStatusMachine].
-
   LiveStatusViewModelProvider call(String threadId) =>
       LiveStatusViewModelProvider._(argument: threadId, from: this);
 
   @override
   String toString() => r'liveStatusViewModelProvider';
 }
-
-/// Current state and business facts are projected directly through [LiveStatusMachine].
 
 abstract class _$LiveStatusViewModel extends $Notifier<LiveStatusView?> {
   late final _$args = ref.$arg as String;

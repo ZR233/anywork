@@ -32,7 +32,7 @@ pl-remote-helper = { workspace = true }
 pl-acp = { workspace = true }
 pl-studio-mcp = { workspace = true }
 pl-model = { workspace = true }
-pl-core = { workspace = true, features = ["sqlite"] }
+pl-core = { workspace = true }
 pl-tool = { workspace = true }
 pl-protocol = { workspace = true }
 pl-lsp = { workspace = true }

@@ -1,10 +1,10 @@
 //! Independent immutable History handoff and the existing reliable-output resource boundary.
 //! The sink never receives a checkpoint and cannot acknowledge a Current save.
 
-use super::cold::{ColdStoreError, DurableToolTask, StorageIdleStatus, StoragePressure};
+use super::cold::{ColdStoreError, StorageIdleStatus, StoragePressure};
 use super::{HistoryExport, ThreadEffectBatch, UsageSummary};
 use futures::future::BoxFuture;
-use std::{fmt, future::Future, sync::Arc};
+use std::{fmt, sync::Arc};
 
 /// Host-owned reliable archive admission. Resource operations are synchronous and share the
 /// producer's original output budget; asynchronous IO belongs to the host's writer.
@@ -36,22 +36,21 @@ pub trait HistorySink: Send + Sync + fmt::Debug + 'static {
     /// Reads only the committed original of an already retired settlement identity.
     fn read_saved_model_settlement(
         &self,
-        thread_id: &str,
-        settlement: &crate::model::ModelSubAttemptSettlement,
+        _thread_id: &str,
+        _settlement: &crate::model::ModelSubAttemptSettlement,
     ) -> impl Future<
         Output = Result<Option<crate::model::ModelSubAttemptSettlement>, ColdStoreError>,
-    > + Send;
+    > + Send {
+        std::future::ready(Ok(None))
+    }
     /// Waits for the writer to commit the ordered effect containing this settlement.
     fn confirm_model_settlement(
         &self,
-        thread_id: &str,
-        effect_sequence: u64,
-    ) -> impl Future<Output = Result<(), ColdStoreError>> + Send;
-    fn read_tool_task(
-        &self,
-        thread_id: &str,
-        task_id: &str,
-    ) -> impl Future<Output = Result<Option<DurableToolTask>, ColdStoreError>> + Send;
+        _thread_id: &str,
+        _effect_sequence: u64,
+    ) -> impl Future<Output = Result<(), ColdStoreError>> + Send {
+        std::future::ready(Ok(()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,21 +63,13 @@ impl HistorySinkHandle {
         ))))
     }
 
-    pub(super) fn into_storage(self) -> super::cold::StorageHandle {
+    pub(crate) fn into_storage(self) -> super::cold::StorageHandle {
         self.0
     }
 }
 
 #[derive(Debug)]
 struct ErasedHistorySink<T>(T);
-
-fn checkpoint_port_error() -> ColdStoreError {
-    ColdStoreError {
-        source: Box::new(std::io::Error::other(
-            "independent History has no checkpoint or Current durability fence",
-        )),
-    }
-}
 
 impl<T: HistorySink> super::cold::ErasedStorage for ErasedHistorySink<T> {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
@@ -120,21 +111,12 @@ impl<T: HistorySink> super::cold::ErasedStorage for ErasedHistorySink<T> {
     fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> {
         self.0.subscribe_pressure(thread)
     }
-    fn is_history(&self) -> bool {
-        true
-    }
-    fn admit(&self, _: &str, _: super::cold::ThreadWrite) -> Result<(), ColdStoreError> {
-        Err(checkpoint_port_error())
-    }
     fn admit_history(
         &self,
         thread: &str,
         export: Arc<HistoryExport>,
     ) -> Result<(), ColdStoreError> {
         self.0.admit(thread, export)
-    }
-    fn flush<'a>(&'a self, _: &'a str, _: u64) -> BoxFuture<'a, Result<(), ColdStoreError>> {
-        Box::pin(async { Err(checkpoint_port_error()) })
     }
     fn read_saved_model_settlement<'a>(
         &'a self,
@@ -150,12 +132,5 @@ impl<T: HistorySink> super::cold::ErasedStorage for ErasedHistorySink<T> {
         sequence: u64,
     ) -> BoxFuture<'a, Result<(), ColdStoreError>> {
         Box::pin(self.0.confirm_model_settlement(thread, sequence))
-    }
-    fn read_tool_task<'a>(
-        &'a self,
-        thread: &'a str,
-        task: &'a str,
-    ) -> BoxFuture<'a, Result<Option<DurableToolTask>, ColdStoreError>> {
-        Box::pin(self.0.read_tool_task(thread, task))
     }
 }

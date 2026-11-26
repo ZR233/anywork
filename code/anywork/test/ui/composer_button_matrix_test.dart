@@ -1,5 +1,6 @@
 import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
+import '../support/conversation_feed_fixtures.dart';
 
 import 'dart:async';
 
@@ -34,23 +35,15 @@ final class _ScriptedTransport extends RecordingDemoTransport {
   PendingInteraction? restoredPlan;
 
   @override
-  ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) {
+  SessionMetaSnapshot testMapSessionMeta(SessionMetaSnapshot snapshot) {
     final plan = restoredPlan;
-    if (plan == null) return frame;
-    if (frame case ThreadSnapshotFrame(:final workspace)) {
-      return ThreadSnapshotFrame(
-        workspace: workspace.copyWith(
-          thread: workspace.thread.copyWith(status: ThreadStatusView.closed),
-          interactions: [plan],
-          runtime: workspace.runtime.copyWith(
-            execution: null,
-            continuation: null,
-          ),
-        ),
-        schemaVersion: frame.schemaVersion,
-      );
-    }
-    return frame;
+    if (plan == null) return snapshot;
+    return sessionMetaFixture(
+      snapshot,
+      status: ThreadStatusView.closed,
+      interactions: [plan],
+      clearExecution: true,
+    );
   }
 
   @override
@@ -714,6 +707,54 @@ void main() {
         composing: TextRange(start: 7, end: 12),
       ),
     );
+    final inputId = composer.transport.submittedInputs.single.inputId;
+    final feed = composer.transport.feedFor(_threadId);
+    await pumpClientFuture(
+      tester,
+      timelineReady(composer.graph.timeline, _threadId),
+      'timeline ready',
+    );
+    feed.emit(
+      ConversationTimeline(
+        patch: TimelineAppend(
+          items: [
+            feedUser(
+              'unrelated-input-row',
+              100,
+              'Another prompt',
+              inputId: 'other-input',
+            ),
+            feedUser('first-input-row', 101, 'first input', inputId: inputId),
+          ],
+        ),
+      ),
+    );
+    await pumpClientUntil(
+      tester,
+      () => composer.graph.timeline
+          .lease(_threadId)!
+          .controller
+          .messages
+          .any((row) => row.id == 'first-input-row'),
+      'durable user row',
+    );
+    feed.emit(
+      const ConversationInputPresented(
+        inputId: 'other-input',
+        itemId: 'unrelated-input-row',
+      ),
+    );
+    await tester.pump();
+    expect(owner.submissions.value.single.inputId, inputId);
+    feed.emit(
+      ConversationInputPresented(inputId: inputId, itemId: 'first-input-row'),
+    );
+    await pumpClientUntil(
+      tester,
+      () => owner.submissions.value.isEmpty,
+      'matching input presented',
+    );
+    expect(field.controller!.text, 'second zhong');
     await _close(tester, composer);
   });
 

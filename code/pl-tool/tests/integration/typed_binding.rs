@@ -339,7 +339,8 @@ async fn host_keeps_internal_id_distinct_and_only_explicitly_grants_completion()
         assert_eq!(requests.lock().unwrap().len(), if allowed { 1 } else { 2 });
         let saved = serde_json::to_string(
             &thread
-                .checkpoint(thread.snapshot().commit_sequence)
+                .capture_current(tokio_util::sync::CancellationToken::new())
+                .await
                 .unwrap(),
         )
         .unwrap();

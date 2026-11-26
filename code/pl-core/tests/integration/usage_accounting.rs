@@ -1,5 +1,5 @@
 use pl_core::model::ModelUsage;
-use pl_core::thread::{ThreadCheckpoint, UsageSummary};
+use pl_core::thread::UsageSummary;
 use pl_core::usage::{
     RECENT_USAGE_GAP_LIMIT, USAGE_PURPOSE_LIMIT, UsageField, UsageIssue, UsageIssueReason,
     UsageOutcome, UsageSource, UsageStatus, UsageThroughputSample, analyze_usage,
@@ -25,73 +25,6 @@ fn complete() -> ModelUsage {
         cache_write_tokens: Some(2),
         reasoning_tokens: Some(2),
         total_tokens: Some(6),
-    }
-}
-
-#[test]
-fn legacy_accounting_is_converted_only_at_the_explicit_boundary() {
-    let checkpoint = ThreadCheckpoint::capture("thread".into(), 0, Default::default()).unwrap();
-    for (schema, timing) in (1..=5).flat_map(|schema| {
-        [
-            serde_json::json!({}),
-            serde_json::json!({"turnDecodeMillis": 99}),
-            serde_json::json!({"turnResponseMillis": 101}),
-            serde_json::json!({"turnDecodeMillis": 99, "turnResponseMillis": 101}),
-        ]
-        .into_iter()
-        .map(move |timing| (schema, timing))
-    }) {
-        let mut root = serde_json::to_value(&checkpoint).unwrap();
-        root["schemaVersion"] = serde_json::json!(schema);
-        root["state"]["usageSummary"] = serde_json::json!({
-            "inferenceCount": 7, "totalTokens": 500,
-            "hasIncompleteUsage": true, "cacheIncomplete": true,
-            "turnId": "old-turn", "turnCompletionTokens": 9
-        });
-        root["state"]["usageSummary"]
-            .as_object_mut()
-            .unwrap()
-            .extend(timing.as_object().unwrap().clone());
-        let envelope = serde_json::to_string(&root).unwrap();
-        // The normal schema-6 reader cannot silently default away the saved flat counters.
-        assert!(serde_json::from_str::<ThreadCheckpoint>(&envelope).is_err());
-        let upgraded = ThreadCheckpoint::decode_legacy(&envelope).unwrap();
-        assert_eq!(upgraded.schema_version, 6);
-        assert_eq!(upgraded.state.usage_summary.totals.total_tokens, 500);
-        assert_eq!(upgraded.state.usage_summary.totals.inference_count, 7);
-        assert!(upgraded.state.usage_summary.diagnostics.legacy_unknown);
-        assert!(upgraded.state.usage_summary.diagnostics.legacy_incomplete);
-        assert!(upgraded.state.usage_summary.cache.incomplete);
-        assert_eq!(
-            upgraded.state.usage_summary.throughput,
-            if timing.get("turnResponseMillis").is_some() {
-                pl_core::usage::UsageThroughputSummary {
-                    turn_id: "old-turn".into(),
-                    completion_tokens: 9,
-                    response_millis: 101,
-                }
-            } else {
-                Default::default()
-            }
-        );
-        assert!(upgraded.state.usage_summary.context.latest_call.is_none());
-        assert_eq!(upgraded.state.usage_summary.diagnostics.incomplete_calls, 0);
-        for malformed in [
-            serde_json::json!({"totalTokens": "not-a-counter"}),
-            serde_json::json!({"totals": {"totalTokens": 500}}),
-            serde_json::json!({"turnDecodeMillis": "not-a-counter"}),
-            serde_json::json!({"futureTiming": 10}),
-            serde_json::json!([]),
-        ] {
-            root["state"]["usageSummary"] = malformed;
-            assert!(
-                ThreadCheckpoint::decode_legacy(&serde_json::to_string(&root).unwrap()).is_err(),
-                "schema {schema}: {}",
-                root["state"]["usageSummary"]
-            );
-        }
-        root["state"] = serde_json::json!(123);
-        assert!(ThreadCheckpoint::decode_legacy(&serde_json::to_string(&root).unwrap()).is_err());
     }
 }
 

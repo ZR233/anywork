@@ -1,8 +1,7 @@
-//! Handle operations submit bounded commands; only the owner mutates Thread state.
+//! Handle operations submit bounded priority commands; only the owner mutates Thread state.
 use super::*;
 
 enum InitialState {
-    Checkpoint(Option<Box<ThreadCheckpoint>>),
     FreshCurrent(Box<current::ThreadCurrent>),
     RestoredCurrent(Box<current::ThreadCurrent>),
 }
@@ -10,7 +9,14 @@ enum InitialState {
 impl ThreadHandle {
     /// Returns whether both handles address the same physical owner incarnation.
     pub fn same_instance(&self, other: &Self) -> bool {
-        self.commands.same_channel(&other.commands)
+        self.user_commands.same_channel(&other.user_commands)
+    }
+
+    /// Subscribes to the unified CoreEvent broadcast stream (durable commits + live events).
+    pub fn subscribe_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<super::super::events::CoreEvent> {
+        self.core_events.subscribe()
     }
 
     /// Releases immutable exports only after the independent history consumer accepted them.
@@ -49,8 +55,8 @@ impl ThreadHandle {
             cancellation,
         };
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::CurrentResume {
+        self.user_commands
+            .send(UserCommand::CurrentResume {
                 epoch: self.runtime_epoch,
                 expected_stop_generation: self.interrupt.stops(),
                 input,
@@ -66,7 +72,16 @@ impl ThreadHandle {
     /// # Errors
     /// Rejects an empty Thread identity before spawning the owner.
     pub fn start(id: String, model: DynModelSession) -> Result<Self, ThreadError> {
-        Self::resume(id, model, None)
+        if id.is_empty() {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
+        Self::spawn_owner(
+            id,
+            Some(model),
+            InitialState::FreshCurrent(Box::new(current)),
+            false,
+        )
     }
 
     /// Starts one fresh Current owner under a new runtime epoch. A resource-only owner may
@@ -76,8 +91,13 @@ impl ThreadHandle {
         model: Option<DynModelSession>,
     ) -> Result<Self, current::CurrentError> {
         let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
-        Self::spawn_owner(id, model, InitialState::FreshCurrent(Box::new(current)))
-            .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+        Self::spawn_owner(
+            id,
+            model,
+            InitialState::FreshCurrent(Box::new(current)),
+            true,
+        )
+        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
     }
 
     /// Installs only logical current data under a fresh paused owner. No history is read, no old
@@ -88,71 +108,38 @@ impl ThreadHandle {
     ) -> Result<Self, current::CurrentError> {
         let id = current.thread_id.clone();
         let current = current.activate_paused(&id)?;
-        Self::spawn_owner(id, model, InitialState::RestoredCurrent(Box::new(current)))
-            .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
-    }
-
-    /// Starts or resumes one owner from a direct current-state checkpoint.
-    pub fn resume(
-        id: String,
-        model: DynModelSession,
-        checkpoint: Option<ThreadCheckpoint>,
-    ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, Some(model), checkpoint)
-    }
-
-    /// Starts or resumes one owner without opening a physical model session.
-    pub fn resume_without_model(
-        id: String,
-        checkpoint: Option<ThreadCheckpoint>,
-    ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, None, checkpoint)
-    }
-
-    fn resume_with_model(
-        id: String,
-        model: Option<DynModelSession>,
-        checkpoint: Option<ThreadCheckpoint>,
-    ) -> Result<Self, ThreadError> {
         Self::spawn_owner(
             id,
             model,
-            InitialState::Checkpoint(checkpoint.map(Box::new)),
+            InitialState::RestoredCurrent(Box::new(current)),
+            true,
         )
+        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
     }
 
     fn spawn_owner(
         id: String,
         model: Option<DynModelSession>,
         initial: InitialState,
+        is_current_owner: bool,
     ) -> Result<Self, ThreadError> {
         if id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
         }
-        let resumed = matches!(
-            &initial,
-            InitialState::Checkpoint(Some(_)) | InitialState::RestoredCurrent(_)
-        );
+        let resumed = matches!(&initial, InitialState::RestoredCurrent(_));
         let current_paused = matches!(&initial, InitialState::RestoredCurrent(_));
-        let current_owner = !matches!(&initial, InitialState::Checkpoint(_));
         let (published, state, restored_current) = match initial {
-            InitialState::Checkpoint(Some(checkpoint)) => {
-                let history_fence = checkpoint.history_fence;
-                let (published, mut state) = checkpoint.into_states(&id)?;
-                state.persistence.durable_sequence = history_fence;
-                state.persistence.admitted_sequence = history_fence;
-                (published, state, None)
-            }
-            InitialState::Checkpoint(None) => {
-                (ThreadSnapshot::default(), ThreadSnapshot::default(), None)
-            }
             InitialState::FreshCurrent(current) | InitialState::RestoredCurrent(current) => {
                 let state = current.state.to_paused_snapshot();
                 (state.clone(), state, Some(current))
             }
         };
-        let (commands, receiver) = mpsc::channel(64);
-        let (mailbox, mailbox_receiver) = mpsc::channel(64);
+        let (user_commands, user_rx) = mpsc::channel(64);
+        let (events, event_rx) = mpsc::channel(128);
+        let (event_bus, core_events) = super::super::events::EventBus::new();
+        let completed_tasks = Arc::new(std::sync::RwLock::new(
+            super::super::task_access::CompletedTaskLedger::default(),
+        ));
         let interrupt = cancellation::InterruptHandle::default();
         let (publish, snapshots) = watch::channel(super::super::subscription::OwnerPublication {
             snapshot: published.clone(),
@@ -162,7 +149,6 @@ impl ThreadHandle {
             watch::channel::<Option<crate::model::OutputRefusal>>(None);
         let tools = crate::tool::opaque::ToolManager::with_discovery(&state.discovered_tools);
         let effect_window = Arc::new(EffectWindow::new());
-        let thread_id = id.clone();
         let runtime_epoch = restored_current
             .as_ref()
             .map_or_else(current::RuntimeEpoch::new, |current| {
@@ -181,6 +167,7 @@ impl ThreadHandle {
             current_dirty,
             current_model_running: false,
             current_snapshot_missing: false,
+            is_current_owner,
             current_saved_execution: restored_current
                 .as_ref()
                 .filter(|_| current_paused)
@@ -191,7 +178,7 @@ impl ThreadHandle {
                 .map(|current| current.state.lifecycle),
             current_task_start_ordinal: restored_current
                 .as_ref()
-                .map(|current| current.state.task_start_ordinal),
+                .map_or(0, |current| current.state.task_start_ordinal),
             current_retired_previews: restored_current
                 .as_ref()
                 .map(|current| current.state.tool_previews.clone())
@@ -224,8 +211,10 @@ impl ThreadHandle {
                 input::ExecutionPolicy::Paused(input::PauseReason::Initial)
             },
             interrupt: interrupt.clone(),
-            mailbox: mailbox_receiver,
-            task_commands: mailbox.downgrade(),
+            task_commands: events.downgrade(),
+            event_bus,
+            progress_tracker: Default::default(),
+            completed_tasks,
             id,
             model,
             state,
@@ -273,16 +262,15 @@ impl ThreadHandle {
         owner.current_call = restored_current.and_then(|current| current.model_call);
         owner.publish()?;
         owner.publish_snapshot();
-        tokio::spawn(owner.run(receiver));
+        tokio::spawn(owner.run(user_rx, event_rx));
         Ok(Self {
-            current_owner,
             runtime_epoch,
             final_current: final_current_rx,
             current_dirty: current_dirty_rx,
-            thread_id,
             _lifetime: Arc::new(HandleLifetime(interrupt.clone())),
-            commands,
-            _producer_facts: mailbox,
+            user_commands,
+            events,
+            core_events,
             interrupt,
             snapshots,
             authorization_dirty,
@@ -299,8 +287,8 @@ impl ThreadHandle {
             return Ok(true);
         }
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 super::mailbox::MailboxCommand::BeginIdleClose(reply),
             ))
             .await
@@ -319,8 +307,8 @@ impl ThreadHandle {
     /// Returns `InvalidIdentity` when another Turn is active, or `Closed` when the owner has exited.
     pub async fn interrupt_turn(&self, expected: Option<String>) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 super::mailbox::MailboxCommand::InterruptTurn { expected, reply },
             ))
             .await
@@ -344,8 +332,8 @@ impl ThreadHandle {
         expected_execution_id: String,
     ) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 super::mailbox::MailboxCommand::InterruptExecution {
                     expected: expected_execution_id,
                     reply,
@@ -364,8 +352,8 @@ impl ThreadHandle {
     /// Returns task cleanup errors or `Closed` when the owner is no longer reachable.
     pub async fn cancel_running_turn(&self, expected: String) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 super::mailbox::MailboxCommand::CancelRunningTurn { expected, reply },
             ))
             .await
@@ -420,8 +408,8 @@ impl ThreadHandle {
         preparation: Option<context_preparation::ContextPreparer>,
     ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::ContextPreparation(preparation, reply))
+        self.events
+            .send(LoopEvent::ContextPreparation(preparation, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -436,8 +424,8 @@ impl ThreadHandle {
         resources: crate::context::ResourceAccess,
     ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Resources(resources, reply))
+        self.events
+            .send(LoopEvent::Resources(resources, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -452,8 +440,8 @@ impl ThreadHandle {
         update: extensions::ApplicationUpdate,
     ) -> Result<ThreadSnapshot, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Application(update, reply))
+        self.events
+            .send(LoopEvent::Application(update, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -470,8 +458,8 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::Extensions(
                     super::mailbox::ExtensionRequest::Mutate(mutations, reply),
                 ),
@@ -488,8 +476,8 @@ impl ThreadHandle {
     ) -> Result<ModelSettlementPort, crate::model::ModelMemberError> {
         use crate::model::ModelMemberError;
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::OpenAuxiliaryModel {
                     caller: None,
                     turn_id,
@@ -508,8 +496,8 @@ impl ThreadHandle {
     ) -> Result<(), crate::model::ModelMemberError> {
         use crate::model::ModelMemberError;
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::VerifyModelSettlement { settlement, reply },
             ))
             .await
@@ -523,8 +511,8 @@ impl ThreadHandle {
     /// Rejects changed content under an existing ID, invalid identities or a closed owner.
     pub async fn send_message(&self, message: inbox::ThreadMessage) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(super::mailbox::MailboxCommand::Message(
+        self.events
+            .send(LoopEvent::Mailbox(super::mailbox::MailboxCommand::Message(
                 message, None, reply,
             )))
             .await
@@ -545,8 +533,8 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::MessageWithExtensions {
                     message,
                     mutations,
@@ -569,8 +557,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(super::mailbox::MailboxCommand::Message(
+        self.events
+            .send(LoopEvent::Mailbox(super::mailbox::MailboxCommand::Message(
                 message,
                 Some(options),
                 reply,
@@ -593,8 +581,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::WakeAcceptedMessage {
                     id: id.to_owned(),
                     sequence,
@@ -618,8 +606,8 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::ContinueMessage(message, options, None, reply),
             ))
             .await
@@ -641,8 +629,8 @@ impl ThreadHandle {
         receipt_extension_id: String,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::ContinueMessage(
                     message,
                     options,
@@ -718,8 +706,8 @@ impl ThreadHandle {
     /// Returns the original commit boundary failure if the state still cannot accept the result.
     pub async fn retry_history_admission(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::RetryHistoryAdmission(reply),
             ))
             .await
@@ -736,8 +724,8 @@ impl ThreadHandle {
         id: String,
     ) -> Result<task::TaskCancellationReceipt, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 super::mailbox::MailboxCommand::CancelTask(id, reply),
             ))
             .await
@@ -755,8 +743,8 @@ impl ThreadHandle {
         resolution: permissions::PermissionResolution,
     ) -> Result<permissions::PermissionRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.user_commands
+            .send(UserCommand::Mailbox(
                 mailbox::MailboxCommand::ResolvePermission(resolution, reply),
             ))
             .await
@@ -773,8 +761,8 @@ impl ThreadHandle {
         submission: input::InputSubmission,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(mailbox::MailboxCommand::SubmitInput(
+        self.user_commands
+            .send(UserCommand::Mailbox(mailbox::MailboxCommand::SubmitInput(
                 submission, reply,
             )))
             .await
@@ -791,14 +779,14 @@ impl ThreadHandle {
         request: interactions::InteractionRequest,
     ) -> Result<interactions::InteractionRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::RequestInteraction(request, reply))
+        self.events
+            .send(LoopEvent::RequestInteraction(request, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
-    /// Resolves an interaction and commits its actual context in the same checkpoint.
+    /// Resolves an interaction and commits its actual context atomically.
     ///
     /// # Errors
     /// Rejects stale or terminal interactions, invalid context and pending tool batches.
@@ -807,8 +795,8 @@ impl ThreadHandle {
         resolution: interactions::InteractionResolution,
     ) -> Result<interactions::InteractionRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::ResolveInteraction(resolution, reply))
+        self.user_commands
+            .send(UserCommand::ResolveInteraction(resolution, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -824,8 +812,8 @@ impl ThreadHandle {
         cancellation: interactions::InteractionCancellation,
     ) -> Result<interactions::InteractionRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::CancelInteraction(cancellation, reply))
+        self.user_commands
+            .send(UserCommand::CancelInteraction(cancellation, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -837,8 +825,8 @@ impl ThreadHandle {
     /// Returns an unavailable or closing owner.
     pub async fn set_capacity(&self, capacity: ContextCapacity) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Capacity(capacity, reply))
+        self.events
+            .send(LoopEvent::Capacity(capacity, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -850,8 +838,8 @@ impl ThreadHandle {
     /// Rejects unknown IDs atomically or a closed owner.
     pub async fn reveal_tools(&self, ids: Vec<String>) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Reveal(ids, reply))
+        self.events
+            .send(LoopEvent::Reveal(ids, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -870,7 +858,7 @@ impl ThreadHandle {
     pub fn runtime_binding(&self) -> RuntimeBindingReader {
         RuntimeBindingReader {
             snapshots: self.snapshots.clone(),
-            commands: self.commands.downgrade(),
+            commands: self.events.downgrade(),
             authorization_dirty: self.authorization_dirty.clone(),
         }
     }
@@ -889,8 +877,8 @@ impl ThreadHandle {
         let batch = crate::tool::opaque::RegistrationBatch::new(registrations);
         let (reply, response) = oneshot::channel();
         let result = match self
-            .commands
-            .send(Command::Control(
+            .events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::InstallRuntimeBundle(
                     Box::new(update),
                     batch.clone(),
@@ -916,11 +904,10 @@ impl ThreadHandle {
         let batch = crate::tool::opaque::RegistrationBatch::new(tools);
         let (reply, response) = oneshot::channel();
         let result = match self
-            .commands
-            .send(Command::Control(super::mailbox::MailboxCommand::Register(
-                batch.clone(),
-                reply,
-            )))
+            .events
+            .send(LoopEvent::Mailbox(
+                super::mailbox::MailboxCommand::Register(batch.clone(), reply),
+            ))
             .await
         {
             Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
@@ -936,8 +923,8 @@ impl ThreadHandle {
     /// Returns `Closed` when the owner no longer accepts operations.
     pub async fn retry_tool_cleanup(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::RetryToolCleanup(reply),
             ))
             .await
@@ -956,8 +943,8 @@ impl ThreadHandle {
         let batch = crate::tool::opaque::RegistrationBatch::new(tools);
         let (reply, response) = oneshot::channel();
         let result = match self
-            .commands
-            .send(Command::Control(
+            .events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::RetireTools(batch.clone(), reply),
             ))
             .await
@@ -978,8 +965,8 @@ impl ThreadHandle {
         cancellation: CancellationToken,
     ) -> Result<ToolDispatch, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Execute(call_id, cancellation, reply))
+        self.events
+            .send(LoopEvent::Execute(call_id, cancellation, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -993,8 +980,8 @@ impl ThreadHandle {
     /// Rejects empty or duplicate source identities and a closing owner.
     pub async fn queue_runtime_facts(&self, facts: Vec<RuntimeFact>) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::QueueRuntimeFacts(facts, reply),
             ))
             .await
@@ -1012,8 +999,8 @@ impl ThreadHandle {
         facts: Vec<RuntimeFact>,
     ) -> Result<ContextSnapshot, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::PatchRuntimeFacts(facts, reply))
+        self.events
+            .send(LoopEvent::PatchRuntimeFacts(facts, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1029,8 +1016,8 @@ impl ThreadHandle {
         facts: Vec<RuntimeFact>,
     ) -> Result<ContextSnapshot, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::UpdateFacts(facts, reply))
+        self.events
+            .send(LoopEvent::UpdateFacts(facts, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1045,8 +1032,8 @@ impl ThreadHandle {
         cancellation: CancellationToken,
     ) -> Result<ContextSnapshot, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::CompactContext(
+        self.events
+            .send(LoopEvent::CompactContext(
                 expected_revision,
                 cancellation,
                 reply,
@@ -1066,21 +1053,8 @@ impl ThreadHandle {
         replacement: ReplaceContext,
     ) -> Result<ContextSnapshot, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::ReplaceContext(replacement, reply))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
-    }
-
-    /// Attaches a store once and admits retained commits without waiting for database IO.
-    ///
-    /// # Errors
-    /// Rejects replacement of an attached store or a closed owner.
-    pub async fn attach_storage(&self, store: cold::ColdStoreHandle) -> Result<(), ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::AttachCold(store, reply))
+        self.events
+            .send(LoopEvent::ReplaceContext(replacement, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1094,33 +1068,31 @@ impl ThreadHandle {
         store: super::super::history_sink::HistorySinkHandle,
     ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::AttachHistory(store, reply))
+        self.events
+            .send(LoopEvent::AttachHistory(store, reply))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Installs a host CoreEventSink to receive every CoreEvent directly on commit/live update.
+    pub async fn attach_event_sink(
+        &self,
+        sink: Arc<dyn super::super::events::CoreEventSink>,
+    ) -> Result<(), ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.events
+            .send(LoopEvent::AttachEventSink(sink, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
     /// Continues new model/tool admission after a hard storage fault was recovered.
-    ///
-    /// `generation` is the fault generation the caller verified, taken from the reported typed
-    /// storage state. A stale generation, a store that still reports a fault, a batch the store has
-    /// not admitted or a fence that is not durable yet is refused: releasing the pause is a fact
-    /// about the recovery, not a button. A caller that was refused because the fence is not durable
-    /// retries the save (`flush`/history retry) and asks again instead of waiting inside this call.
-    /// Pressure-only pauses need no resume and resume by themselves.
-    ///
-    /// The request travels the bounded mailbox rather than the outer command channel so an owner
-    /// that is paused *inside* a running Turn can still receive it: the paused Turn services the
-    /// mailbox at its storage safety point and never returns to the outer loop until it is released.
-    ///
-    /// # Errors
-    /// Rejects a stale generation, an unhealthy store, an unfinished durability fence or a released
-    /// owner.
     pub async fn resume_storage(&self, generation: u64) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
+        self.events
+            .send(LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::ResumeStorage { generation, reply },
             ))
             .await
@@ -1129,27 +1101,11 @@ impl ThreadHandle {
     }
 
     /// Re-runs the accepted output the current storage fault owes, without releasing the pause.
-    ///
-    /// A failed capture write or archive leaves a typed, retriable obligation (see
-    /// [`crate::thread::cold::OutputStorageFault`]): the bytes the producer accepted are kept, and
-    /// this call re-saves exactly those bytes under their stable identity. It never reruns the tool
-    /// and a repeated call is idempotent, so a caller can retry safely. Success only clears the
-    /// obligation; the explicit [`Self::resume_storage`] still verifies the fault generation, the
-    /// backend's own recovery verdict and the durability fence, so the pause is never released by
-    /// the retry alone. With no owed obligation this is a no-op.
-    ///
-    /// The request travels the bounded mailbox so an owner that is paused *inside* a running Turn can
-    /// still receive it.
-    ///
-    /// # Errors
-    /// Returns the retry's own typed storage failure (the obligation stays owed) or
-    /// [`ThreadError::StorageRecoveryUnverified`] when the attached backend cannot own the
-    /// obligation, or [`ThreadError::Closed`] when the owner is gone.
     pub async fn retry_output_storage(&self) -> Result<(), ThreadError> {
         loop {
             let (reply, response) = oneshot::channel();
-            self.commands
-                .send(Command::Control(
+            self.events
+                .send(LoopEvent::Mailbox(
                     super::mailbox::MailboxCommand::RetryOutputStorage(reply),
                 ))
                 .await
@@ -1161,28 +1117,15 @@ impl ThreadHandle {
         }
     }
 
-    /// Retries pending admissions and waits for durability without rolling back runtime facts.
-    ///
-    /// A released Thread already satisfies this barrier: closing only confirms after the admitted
-    /// watermark covered the final commit, so live observation can finish projecting a closed
-    /// Thread without a live owner.
-    ///
-    /// The owner fixes the durability target when it handles this command. Its maintenance
-    /// future remains independent of model/tool work and of subsequent admissions.
-    ///
-    /// # Errors
-    /// Returns storage failure, temporary admission backpressure for an unhanded tail (without
-    /// certifying a smaller prefix), or an owner that never confirmed a durable close.
+    /// Checks storage health without blocking live execution on database durability.
     pub async fn flush(&self) -> Result<(), ThreadError> {
         if self.durably_released() {
             return Ok(());
         }
         let (reply, response) = oneshot::channel();
-        // The owner fixes this target in its single command loop and retains the original
-        // writer future independently of execution and of this caller's response lifetime.
         if self
-            .commands
-            .send(Command::Control(super::mailbox::MailboxCommand::Flush(
+            .user_commands
+            .send(UserCommand::Mailbox(super::mailbox::MailboxCommand::Flush(
                 reply,
             )))
             .await
@@ -1196,18 +1139,9 @@ impl ThreadHandle {
         }
     }
 
-    /// Reports whether the owner was released after its admitted effects became durable.
+    /// Reports whether the owner was released after its physical close settled.
     fn durably_released(&self) -> bool {
-        let snapshot = self.snapshot();
-        if self.current_owner {
-            // This acknowledges physical Core shutdown only. Current JSON and immutable History
-            // have independent host owners and report their own failures.
-            return snapshot.lifecycle == ThreadLifecycle::Closed;
-        }
-        snapshot.lifecycle == ThreadLifecycle::Closed
-            && snapshot.persistence.error.is_none()
-            && (!snapshot.persistence.attached
-                || snapshot.persistence.durable_sequence >= snapshot.commit_sequence)
+        self.snapshot().lifecycle == ThreadLifecycle::Closed
     }
 
     fn settled_flush(&self) -> Result<(), ThreadError> {
@@ -1228,10 +1162,6 @@ impl ThreadHandle {
 
     /// Reads the transient live effect window after a known sequence.
     ///
-    /// The window retains only commits that are not durable yet: once a fixed durable watermark is
-    /// confirmed the covered batches are released, so a reader behind [`Self::effect_window_start`]
-    /// must resynchronize from durable history instead of expecting the live body.
-    ///
     /// # Errors
     /// Rejects a future watermark. Closing execution does not revoke read access.
     pub async fn effect_page(
@@ -1242,8 +1172,6 @@ impl ThreadHandle {
         if after > self.snapshot().commit_sequence {
             return Err(ThreadError::InvalidContext);
         }
-        // The gap check and the copy share one lock, so a durable release running right now cannot
-        // turn a valid request into a silently empty page.
         match self.effect_window.page_after(after, limit.get()) {
             WindowPage::Page(page) => Ok(page),
             WindowPage::Gap => Err(ThreadError::InvalidContext),
@@ -1252,28 +1180,13 @@ impl ThreadHandle {
 
     /// Returns every commit still retained by the transient live effect window.
     ///
-    /// Durable commits have already been released to history/calls, so this is not a history
-    /// reader; it exists for the transient write batches the owner has not handed off yet.
-    ///
     /// # Errors
     /// This in-memory read currently cannot fail.
     pub async fn effects(&self) -> Result<Vec<Arc<ThreadEffectBatch>>, ThreadError> {
         Ok(self.effect_window.retained())
     }
 
-    /// Captures current owner state after the caller fixed and flushed the matching history fence.
-    pub fn checkpoint(&self, history_fence: u64) -> Result<ThreadCheckpoint, ThreadError> {
-        let state = self.snapshot();
-        if history_fence > state.commit_sequence {
-            return Err(ThreadError::InvalidContext);
-        }
-        ThreadCheckpoint::capture(self.thread_id.clone(), history_fence, state)
-    }
-
     /// Returns the first effect sequence the live window can still serve.
-    ///
-    /// Every released commit below it is durable, so a consumer that falls behind this frontier
-    /// resynchronizes from durable history/calls before it continues consuming effects.
     pub fn effect_window_start(&self) -> Option<u64> {
         self.effect_window.start()
     }
@@ -1289,8 +1202,8 @@ impl ThreadHandle {
     /// Returns model/admission/cancellation errors; committed tool failures remain available to the next step.
     pub async fn run_turn(&self, input: TurnInput) -> Result<TurnCompletion, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Turn(input, reply))
+        self.user_commands
+            .send(UserCommand::Turn(input, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1307,8 +1220,8 @@ impl ThreadHandle {
         cancellation: CancellationToken,
     ) -> Result<ModelStepOutput, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Retry {
+        self.events
+            .send(LoopEvent::Retry {
                 source,
                 attempt,
                 cancellation,
@@ -1325,8 +1238,8 @@ impl ThreadHandle {
     /// Returns admission, model or output-validation failures. Admitted failures remain in history.
     pub async fn step(&self, input: StepInput) -> Result<ModelStepOutput, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Step(input, reply))
+        self.events
+            .send(LoopEvent::Step(input, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1370,8 +1283,8 @@ impl ThreadHandle {
             crate::thread::owner::ClosePurpose::Delete => self.interrupt.begin_delete(),
         }
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Close(purpose, reply))
+        self.user_commands
+            .send(UserCommand::Close(purpose, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1410,7 +1323,7 @@ mod history_handoff_tests {
         published.commit_sequence = sequence;
         let export = Arc::new(HistoryExport {
             effect: Arc::new(ThreadEffectBatch {
-                thread_id: handle.thread_id.clone(),
+                thread_id: "history-publication-race".into(),
                 sequence,
                 ..Default::default()
             }),

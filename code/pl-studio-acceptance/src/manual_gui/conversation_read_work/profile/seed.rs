@@ -242,28 +242,13 @@ async fn seed_batches(
         .await?;
     let id = created.thread.id;
     inventory.thread_id = Some(id.clone());
-    let demand = current_demand();
-    let current = runtime
-        .open_current_reader(&id, pl_studio_runtime::CURRENT_PROTOCOL_VERSION, demand)
-        .await?;
-    let mut watch = match current.watch(None, demand).await {
-        Ok(watch) => watch,
-        Err(error) => {
-            return match current.close().await {
-                Ok(()) => Err(error),
-                Err(close_error) => {
-                    Err(error.context(format!("Current close also failed: {close_error:#}")))
-                }
-            };
-        }
-    };
+    let feed = runtime.open_conversation_feed(&id, 64).await?;
     let mut saw_baseline = false;
     let first_input = input_id(1);
     let outcome: Result<()> = async {
         let first = Box::pin(wait_initial_turn(
             runtime,
-            &current,
-            &mut watch,
+            &feed,
             &mut saw_baseline,
             &id,
             first_input.as_str(),
@@ -297,8 +282,7 @@ async fn seed_batches(
                 .await?;
             let current_input = input_id(batch);
             let observed = Box::pin(wait_notified_turn(
-                &current,
-                &mut watch,
+                &feed,
                 &mut saw_baseline,
                 &id,
                 current_input.as_str(),
@@ -319,32 +303,9 @@ async fn seed_batches(
         Ok(())
     }
     .await;
-    let closed_watch = watch.close().await;
-    let closed_current = current.close().await;
-    let mut close_errors = Vec::new();
-    if let Err(error) = closed_watch {
-        close_errors.push(format!("watch: {error:#}"));
-    }
-    if let Err(error) = closed_current {
-        close_errors.push(format!("reader: {error:#}"));
-    }
-    match outcome {
-        Ok(()) if close_errors.is_empty() => Ok(id),
-        Err(error) => {
-            let mut message = format!("{error:#}");
-            if !close_errors.is_empty() {
-                message.push_str(&format!(
-                    "; Current close also failed: {}",
-                    close_errors.join("; ")
-                ));
-            }
-            Err(anyhow::anyhow!(message))
-        }
-        Ok(()) => Err(anyhow::anyhow!(
-            "Current close failed: {}",
-            close_errors.join("; ")
-        )),
-    }
+    feed.close().await;
+    outcome?;
+    Ok(id)
 }
 
 async fn persist_completed_batch(
@@ -427,7 +388,7 @@ async fn count(
 ) -> Result<MainInventory> {
     let demand = HistoryDemand {
         max_rows: 128,
-        max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
+        max_bytes: pl_studio_runtime::CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     };
     let reader = cancellable(
         interrupt,
@@ -597,13 +558,6 @@ fn count_entity(
             inventory.inputs.insert(input_id.clone());
         }
         _ => {}
-    }
-}
-
-fn current_demand() -> ReadDemand {
-    ReadDemand {
-        max_items: 128,
-        max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     }
 }
 

@@ -10,8 +10,10 @@ import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_feed_body_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_file_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_outcome_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
@@ -368,27 +370,10 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
         'preview-group-$index',
         index * 4 + 2,
         count: index == 0 ? (widget.live ? 2 : 3) : 1,
+        active: widget.live && widget.executionPresent,
+        startedAtMs: widget.live ? null : 100_000,
       ),
     );
-    if (index == 0 && (!widget.live || widget.waitingForBoundary)) {
-      unit.expansion.current = unit;
-      unit.expansion.readHistoryBody = (_, reference, range) async {
-        if (reference.ownerEventId !=
-                TimelinePreviewFixtures.completedReasoning.id ||
-            reference.bodyKey != TimelinePreviewFixtures.workSummaryKey ||
-            range.offset != 0) {
-          throw StateError('Unexpected preview body request');
-        }
-        final summary = TimelinePreviewFixtures.workSummaryBytes;
-        return ContentWindow(
-          offset: 0,
-          bytes: summary,
-          generation: reference.bodyId,
-          availableThrough: summary.length,
-          sealed: true,
-        );
-      };
-    }
     return unit;
   }
 
@@ -413,7 +398,7 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
               children: [
                 if (index == 0)
                   _chatItem(
-                    ChatItemPresentation.decode(
+                    timelineFeedMember(
                       TimelinePreviewFixtures.completedCommand,
                     ),
                   ),
@@ -421,7 +406,7 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
                   _activeReasoningWindow()
                 else
                   _chatItem(
-                    ChatItemPresentation.decode(
+                    timelineFeedMember(
                       index == 0
                           ? TimelinePreviewFixtures.completedReasoning
                           : TimelinePreviewFixtures.secondCompletedReasoning,
@@ -453,16 +438,16 @@ class _AtomicGroupPreviewState extends State<_AtomicGroupPreview> {
   );
 }
 
-// This is exactly the pure window view used by TimelineMemberAtom for an active
-// reasoning member. There is no preview content owner, subscription or query.
+// Already accepted live text mounted through the production window view.
+// No preview content owner, subscription or query is reconstructed here.
 Widget _activeReasoningWindow() {
   final window = TimelinePreviewFixtures.activeReasoningWindow;
   return ConversationCurrentWindowView(
     id: TimelinePreviewFixtures.activeReasoning.id,
-    text: utf8.decode(window.bytes),
+    text: window.text!,
     offset: window.offset,
-    end: window.offset + window.bytes.length,
-    availableThrough: window.availableThrough,
+    end: window.offset + utf8.encode(window.text!).length,
+    availableThrough: window.totalBytes,
   );
 }
 
@@ -484,43 +469,19 @@ Widget timelineAtomicOverlapNarrowPreview() =>
 
 /// Only the local group + following text composition, not a complete current
 /// dock. R → T is the fixture's given order, never a computed committed prefix.
-class _OverlapCurrentPreview extends StatefulWidget {
+class _OverlapCurrentPreview extends StatelessWidget {
   const _OverlapCurrentPreview();
-  @override
-  State<_OverlapCurrentPreview> createState() => _OverlapCurrentPreviewState();
-}
-
-class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
-  late final units = [
-    TimelineDisplayUnit(
-      block: DisplayBlock(
-        id: 'overlap-text',
-        blockOrder: 1,
-        body: SingleDisplayBlock(
-          visibility: HistorySingleVisibility.content,
-          record: DisplayRecord(
-            atom: TimelinePreviewFixtures.overlapTextAtom,
-            contentSource: const CurrentAtomSource(),
-          ),
-        ),
-      ),
-    ),
-  ];
-
-  @override
-  void dispose() {
-    for (final unit in units) {
-      unit.expansion.dispose();
-    }
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) => SingleChildScrollView(
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _chatItem(ChatItemPresentation.forUnit(units[0])),
+        _chatItem(
+          chatItemPresentationOf(
+            timelineFeedMessage(TimelinePreviewFixtures.overlapTextAtom),
+          )!,
+        ),
         _activeReasoningWindow(),
       ],
     ),
@@ -566,18 +527,12 @@ class _MediaGroupPreviewState extends State<_MediaGroupPreview> {
       childBuilder: (_) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _chatItem(timelineFeedMember(TimelinePreviewFixtures.mediaTool)),
           _chatItem(
-            ChatItemPresentation.decode(TimelinePreviewFixtures.mediaTool),
+            timelineFeedMember(TimelinePreviewFixtures.failedImageTool),
           ),
           _chatItem(
-            ChatItemPresentation.decode(
-              TimelinePreviewFixtures.failedImageTool,
-            ),
-          ),
-          _chatItem(
-            ChatItemPresentation.decode(
-              TimelinePreviewFixtures.resourceErrorTool,
-            ),
+            timelineFeedMember(TimelinePreviewFixtures.resourceErrorTool),
             resourceErrorAttachmentId: 'preview-resource-error-image',
           ),
         ],
@@ -1083,29 +1038,35 @@ class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
   }
 
   @override
-  Widget build(BuildContext context) => TimelineView(
-    threadId: 'preview-thread',
-    view: const TimelineSessionViewState(
+  Widget build(BuildContext context) => TimelineFeedContent(
+    identity: controls,
+    isActive: () => mounted,
+    readBodyWindow: TimelinePreviewFixtures.readCopyBodyWindow,
+    child: TimelineView(
       threadId: 'preview-thread',
-      generation: 1,
-      mode: TimelineDisplayMode.live,
-      connection: TimelineConnectionPhase.ready,
+      view: const TimelineSessionViewState(
+        threadId: 'preview-thread',
+        generation: 1,
+        mode: TimelineDisplayMode.live,
+        connection: TimelineConnectionPhase.ready,
+      ),
+      controls: controls,
+      onLoadOlder: () async {},
+      onRetryOlder: () async {},
+      onReturnLive: () async => true,
+      onEnterHistory: () {},
+      onRetryConnection: () {},
+      onLink: (_) {},
+      isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
+      remoteImageBuilder: (_, _) => const Text('外部图片需要显式加载'),
+      groupMembersBuilder: (_) => TimelineChildrenView(
+        controller: members,
+        generation: 1,
+        isDisplayActive: () => true,
+      ),
+      attachmentBuilder: (item) =>
+          _previewAttachments(item.id, item.attachments),
     ),
-    controls: controls,
-    onLoadOlder: () async {},
-    onRetryOlder: () async {},
-    onReturnLive: () async => true,
-    onEnterHistory: () {},
-    onRetryConnection: () {},
-    onLink: (_) {},
-    isSafeLink: (url) => Uri.tryParse(url)?.scheme == 'https',
-    remoteImageBuilder: (_, _) => const Text('外部图片需要显式加载'),
-    groupMembersBuilder: (_) => TimelineChildrenView(
-      controller: members,
-      generation: 1,
-      isDisplayActive: () => true,
-    ),
-    attachmentBuilder: (item) => _previewAttachments(item.id, item.attachments),
   );
 
   late final members = InMemoryChatController(

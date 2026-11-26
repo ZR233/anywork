@@ -7,7 +7,11 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use pl_core::{
     context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload},
-    thread::{ThreadCheckpoint, ThreadSnapshot, extensions::ExtensionRecord},
+    thread::{
+        ThreadSnapshot,
+        current::{RuntimeEpoch, ThreadCurrent, ThreadCurrentState},
+        extensions::ExtensionRecord,
+    },
 };
 
 use crate::agent::definition::{AgentDefinitionOrigin, AgentDefinitionScope};
@@ -70,10 +74,7 @@ fn snapshot_payload(snapshot: &crate::instruction::InstructionSnapshot) -> Resul
 #[tokio::test]
 async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<()> {
     use crate::instruction::{InstructionSnapshot, InstructionSourceKind};
-    use pl_core::{
-        model::ModelFactory,
-        thread::{StepInput, ThreadHandle},
-    };
+    use pl_core::{model::ModelFactory, thread::ThreadHandle};
     use pl_model::{
         completion::OpenAiCompactionMode,
         config::{AccountId, ResolvedModelRoute},
@@ -263,12 +264,12 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
         .join("\n");
     assert_eq!(original_instruction_text, snapshot.trusted_text());
 
-    let checkpoint =
-        ThreadCheckpoint::capture("migration".into(), original.commit_sequence, original)?;
-    let thread = ThreadHandle::resume(
-        "migration".into(),
-        ModelFactory::new(model.clone()).open_session().await?,
-        Some(checkpoint),
+    let epoch = RuntimeEpoch::new();
+    let mut current = ThreadCurrent::new("migration".into(), epoch);
+    current.state = ThreadCurrentState::from_snapshot(&original, epoch)?;
+    let thread = ThreadHandle::restore_current(
+        current,
+        Some(ModelFactory::new(model.clone()).open_session().await?),
     )?;
     thread
         .set_context_preparation(Some(crate::context_preparation::preparer(
@@ -280,13 +281,16 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
         )))
         .await?;
 
-    let step = |attempt: &str| StepInput {
-        turn_id: "restore-instructions".into(),
-        attempt_id: attempt.into(),
-        content: Vec::new(),
-        cancellation: Default::default(),
-    };
-    assert!(thread.step(step("normalize-once")).await.is_err());
+    assert!(
+        thread
+            .resume_current(
+                "restore-instructions".into(),
+                pl_core::thread::ModelStepLimit::Limited(std::num::NonZeroU32::new(1).unwrap()),
+                Default::default(),
+            )
+            .await
+            .is_err()
+    );
     let normalized = thread.snapshot().context;
     let instruction_records = normalized
         .records
@@ -312,8 +316,8 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
     if let ContextSource::InstructionSnapshot { content_hash, .. } = &instruction_records[0].source
     {
         assert_eq!(
-            content_hash,
-            &pl_core::context::content_hash(snapshot.trusted_text().as_bytes())
+            content_hash.as_str(),
+            pl_core::context::content_hash(snapshot.trusted_text().as_bytes()).as_str()
         );
     }
     assert!(normalized.records.iter().any(|record| {
@@ -341,7 +345,16 @@ async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<(
                 })
     }));
 
-    assert!(thread.step(step("prepare-again")).await.is_err());
+    assert!(
+        thread
+            .resume_current(
+                "prepare-again".into(),
+                pl_core::thread::ModelStepLimit::Limited(std::num::NonZeroU32::new(1).unwrap()),
+                Default::default(),
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(thread.snapshot().context, normalized);
     thread.close().await?;
     Ok(())

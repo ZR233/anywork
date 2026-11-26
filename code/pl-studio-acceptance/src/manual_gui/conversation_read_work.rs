@@ -10,17 +10,17 @@ use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{ModelDefinition, ModelTransportProfile};
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
-    CHAT_BATCH_MAX_BYTES, CurrentFrame, ReadDemand, ThreadNotification, ThreadStatus,
-    ThreadWorkspaceMode,
-};
-use pl_studio_runtime::{
     CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
 };
 use pl_studio_runtime::{
-    CurrentReader, CurrentWatch, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
+    StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
     history::{HISTORY_PROTOCOL_VERSION, HistoryBusinessRowHead, HistoryDemand, HistoryTurnState},
     mode::ThreadModeId,
+};
+use pl_studio_runtime::{
+    ThreadStatus, ThreadWorkspaceMode,
+    timeline::{ConversationEvent, ConversationFeed, TimelinePatch},
 };
 use serde::Serialize;
 use std::fs;
@@ -188,32 +188,13 @@ async fn write_history(home: &Path, project: &Path) -> Result<(Vec<String>, Vec<
 
 async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) -> Result<String> {
     let created = Box::pin(create_seed_thread(runtime, workspace_id, index)).await?;
-    let demand = current_demand();
-    let current = runtime
-        .open_current_reader(
-            &created,
-            pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
-            demand,
-        )
-        .await?;
-    let mut watch = match current.watch(None, demand).await {
-        Ok(watch) => watch,
-        Err(error) => {
-            return match current.close().await {
-                Ok(()) => Err(error),
-                Err(close_error) => {
-                    Err(error.context(format!("Current close also failed: {close_error:#}")))
-                }
-            };
-        }
-    };
+    let feed = runtime.open_conversation_feed(&created, 64).await?;
     let mut saw_baseline = false;
     let outcome: Result<()> = async {
         let first_input = format!("read-input-{index}-00");
         let mut route_revision = Box::pin(wait_initial_turn(
             runtime,
-            &current,
-            &mut watch,
+            &feed,
             &mut saw_baseline,
             &created,
             &first_input,
@@ -236,8 +217,7 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
                 )
                 .await?;
             route_revision = Box::pin(wait_notified_turn(
-                &current,
-                &mut watch,
+                &feed,
                 &mut saw_baseline,
                 &created,
                 &input_id,
@@ -248,54 +228,29 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
         Ok(())
     }
     .await;
-    let closed_watch = watch.close().await;
-    let closed_current = current.close().await;
-    let mut close_errors = Vec::new();
-    if let Err(error) = closed_watch {
-        close_errors.push(format!("watch: {error:#}"));
-    }
-    if let Err(error) = closed_current {
-        close_errors.push(format!("reader: {error:#}"));
-    }
-    match outcome {
-        Ok(()) if close_errors.is_empty() => Ok(created),
-        Err(error) => {
-            let mut message = format!("{error:#}");
-            if !close_errors.is_empty() {
-                message.push_str(&format!(
-                    "; Current close also failed: {}",
-                    close_errors.join("; ")
-                ));
-            }
-            Err(anyhow::anyhow!(message))
-        }
-        Ok(()) => Err(anyhow::anyhow!(
-            "Current close failed: {}",
-            close_errors.join("; ")
-        )),
-    }
+    feed.close().await;
+    outcome?;
+    Ok(created)
 }
 
 pub(super) async fn wait_initial_turn(
     runtime: &StudioRuntime,
-    current: &CurrentReader,
-    watch: &mut CurrentWatch,
+    feed: &ConversationFeed,
     saw_baseline: &mut bool,
     thread_id: &str,
     input_id: &str,
 ) -> Result<CompletedTurnObservation> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let result = async {
-        let Some(CurrentFrame::Reset { view }) =
-            tokio::time::timeout_at(deadline.into(), watch.next())
-                .await
-                .context("Current baseline timed out")??
-        else {
-            bail!("Current watch did not begin with Reset");
+        let first_event = tokio::time::timeout_at(deadline.into(), feed.next_event())
+            .await
+            .context("ConversationFeed baseline timed out")?;
+        let Some(ConversationEvent::Timeline(TimelinePatch::Reset { .. })) = first_event else {
+            bail!("ConversationFeed did not begin with Reset");
         };
         ensure!(
-            view.state.thread.id == thread_id,
-            "Current Reset belonged to another Thread"
+            feed.session_meta_snapshot().thread_id == thread_id,
+            "ConversationFeed Reset belonged to another Thread"
         );
         *saw_baseline = true;
         let history = runtime
@@ -325,19 +280,15 @@ pub(super) async fn wait_initial_turn(
             _ => None,
         });
         if let Some(completed) = already_completed {
-            let view = tokio::time::timeout_at(deadline.into(), current.snapshot(current_demand()))
-                .await
-                .context("initial Current snapshot timed out")??;
+            let meta = feed.session_meta_snapshot();
             ensure!(
-                view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                    && view.state.thread.id == thread_id
-                    && view.state.active_turn.is_none()
-                    && view.state.thread.status == ThreadStatus::Idle,
-                "History completed Turn {} but Current is not idle",
+                meta.thread_id == thread_id
+                    && meta.active_turn.is_none()
+                    && meta.status == ThreadStatus::Idle,
+                "History completed Turn {} but SessionMeta is not idle",
                 completed.turn_id
             );
-            let route_revision = view
-                .state
+            let route_revision = meta
                 .model_route
                 .as_ref()
                 .map(|route| route.revision)
@@ -345,64 +296,58 @@ pub(super) async fn wait_initial_turn(
             return Ok(CompletedTurnObservation {
                 turn_id: completed.turn_id,
                 route_revision,
-                snapshot_revision: view.state.revision,
+                snapshot_revision: meta.revision,
             });
         }
-        Box::pin(wait_notified_turn(
-            current,
-            watch,
-            saw_baseline,
-            thread_id,
-            input_id,
-        ))
-        .await
+        Box::pin(wait_notified_turn(feed, saw_baseline, thread_id, input_id)).await
     }
     .await;
     result.with_context(|| format!("initial Turn not observed for {input_id}"))
 }
 
 pub(super) async fn wait_notified_turn(
-    current: &CurrentReader,
-    watch: &mut CurrentWatch,
+    feed: &ConversationFeed,
     saw_baseline: &mut bool,
     thread_id: &str,
     input_id: &str,
 ) -> Result<CompletedTurnObservation> {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let Some(frame) = watch.next().await? else {
-                bail!("Current watch ended before Turn completion");
+            let meta = feed.session_meta_snapshot();
+            if let Some(turn) = meta
+                .last_turn
+                .as_ref()
+                .filter(|turn| turn.input_id.as_deref() == Some(input_id))
+                && meta.active_turn.is_none()
+                && meta.status == ThreadStatus::Idle
+            {
+                ensure!(*saw_baseline, "SessionMeta completed before Reset");
+                ensure!(
+                    meta.thread_id == thread_id
+                        && matches!(turn.state, pl_studio_runtime::TurnState::Completed(_)),
+                    "TurnCompleted and SessionMeta disagree"
+                );
+                let route_revision = meta
+                    .model_route
+                    .as_ref()
+                    .map(|route| route.revision)
+                    .context("completed Turn has no model route")?;
+                return Ok(CompletedTurnObservation {
+                    turn_id: turn.id.clone(),
+                    route_revision,
+                    snapshot_revision: meta.revision,
+                });
+            }
+            let Some(event) = feed.next_event().await else {
+                bail!("ConversationFeed ended before Turn completion");
             };
-            match frame {
-                CurrentFrame::Reset { .. } => *saw_baseline = true,
-                CurrentFrame::Projection { .. } => {}
-                CurrentFrame::Notification { notification, .. } => {
-                    ensure!(*saw_baseline, "Current notification arrived before Reset");
-                    if let ThreadNotification::TurnCompleted { turn } = notification.notification
-                        && turn.input_id.as_deref() == Some(input_id)
-                    {
-                        let view = current.snapshot(current_demand()).await?;
-                        ensure!(
-                            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                                && view.state.thread.id == thread_id
-                                && matches!(turn.state, pl_studio_runtime::TurnState::Completed(_))
-                                && view.state.active_turn.is_none()
-                                && view.state.thread.status == ThreadStatus::Idle,
-                            "TurnCompleted and Current State disagree"
-                        );
-                        let route_revision = view
-                            .state
-                            .model_route
-                            .as_ref()
-                            .map(|route| route.revision)
-                            .context("completed Turn has no model route")?;
-                        return Ok(CompletedTurnObservation {
-                            turn_id: turn.id,
-                            route_revision,
-                            snapshot_revision: view.state.revision,
-                        });
-                    }
-                }
+            match event {
+                ConversationEvent::Timeline(TimelinePatch::Reset { .. }) => *saw_baseline = true,
+                ConversationEvent::SessionMeta(_) => {}
+                ConversationEvent::Timeline(_)
+                | ConversationEvent::LiveStatus(_)
+                | ConversationEvent::InputPresented { .. }
+                | ConversationEvent::ResyncRequired { .. } => {}
             }
         }
     })
@@ -548,7 +493,7 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
 async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<usize> {
     let demand = HistoryDemand {
         max_rows: 32,
-        max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
+        max_bytes: pl_studio_runtime::CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     };
     let reader = runtime
         .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
@@ -599,11 +544,4 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         "seeded conversation is too small for a bounded first page: {total}"
     );
     Ok(total)
-}
-
-fn current_demand() -> ReadDemand {
-    ReadDemand {
-        max_items: 128,
-        max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
-    }
 }

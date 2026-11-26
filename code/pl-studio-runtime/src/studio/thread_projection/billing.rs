@@ -5,7 +5,7 @@ use pl_core::model::ModelSubAttemptSettlement;
 use pl_core::thread::ThreadEffectBatch;
 
 #[derive(Debug, Clone)]
-pub(in crate::studio) struct BillingFact {
+pub(crate) struct BillingFact {
     pub status: super::super::storage::calls::CallStatus,
     pub record: InferenceBillingRecord,
     pub auxiliary: bool,
@@ -38,7 +38,7 @@ fn sub_attempt_fact(settlement: &ModelSubAttemptSettlement) -> Result<BillingFac
     })
 }
 
-pub(in crate::studio) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec<BillingFact>> {
+pub(crate) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec<BillingFact>> {
     commit
         .model_sub_attempt_settlements
         .iter()

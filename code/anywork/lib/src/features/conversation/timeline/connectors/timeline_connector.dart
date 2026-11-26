@@ -23,7 +23,7 @@ import 'timeline_media_connector.dart';
 import 'timeline_file_download.dart';
 import 'timeline_read_demand_viewport.dart';
 import 'completion_run_connector.dart';
-import 'timeline_canonical_payload_connector.dart';
+import 'timeline_feed_body_connector.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -158,6 +158,14 @@ class _TimelineConnectorBodyState
       );
     }
 
+    Widget markdown(String id, String text) => TimelineMarkdown(
+      id: id,
+      text: text,
+      onLink: link,
+      isSafeLink: (raw) => safeExternalWebUrl(raw) != null,
+      imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
+    );
+
     void retry() => ref.read(timelineSessionOwnerProvider).refresh(threadId);
     if (view == null || lease == null) {
       final failedView =
@@ -206,14 +214,7 @@ class _TimelineConnectorBodyState
                           ),
                           submission: submission,
                         ),
-                    bodyBuilder: (id, text) => TimelineMarkdown(
-                      id: id,
-                      text: text,
-                      onLink: link,
-                      isSafeLink: (raw) => safeExternalWebUrl(raw) != null,
-                      imageBuilder: (_, url) =>
-                          TimelineRemoteImageConnector(url: url),
-                    ),
+                    bodyBuilder: markdown,
                   ),
                 ),
               ),
@@ -246,17 +247,19 @@ class _TimelineConnectorBodyState
         .read(anyworkClientProvider)
         .readAttachmentBytes;
     Future<Uint8List> readAttachment(String id) async {
-      if (!active()) throw const StaleConversationScope();
+      if (!active()) throw StateError('Timeline display retired');
       final bytes = await readAttachmentBytes(threadId, id);
-      if (!active()) throw const StaleConversationScope();
+      if (!active()) throw StateError('Timeline display retired');
       return bytes;
     }
 
     final plan = widget.planConfirmation;
-    final timeline = TimelineInitialHistoryContent(
-      content: lease.initialHistoryContent,
+    final timeline = TimelineFeedContent(
+      identity: lease,
+      isActive: () => active() && lease.canRead,
+      readBodyWindow: lease.readBodyWindow,
       child: TimelineView(
-        key: lease.chatKey,
+        key: ObjectKey(lease),
         threadId: threadId,
         view: view,
         submissions: _submissions,
@@ -265,35 +268,15 @@ class _TimelineConnectorBodyState
           submission: submission,
         ),
         controls: lease,
-        canonicalPresentationBuilder: (item, render) =>
-            TimelineCanonicalPayloadConnector(
-              key: ValueKey((lease.generation, item.id)),
-              item: item,
-              threadId: threadId,
-              openHistory: () => lease.openHistoryScope(),
-              retirement: lease.retirement,
-              isActive: active,
-              render: render,
-            ),
         groupMembersBuilder: (unit) => CompletionRunConnector(
           unit: unit,
-          threadId: threadId,
           content: lease,
           images: lease.imageResources,
           readAttachment: readAttachment,
+          bodyBuilder: markdown,
           monotonicMicros: () => owner.monotonicMicros,
           onContentLayout: (itemId, micros) {
             if (active()) owner.recordContentLayout(lease, itemId, micros);
-          },
-          onCurrentContentLayout: (itemId, micros) {
-            if (active()) {
-              owner.recordCurrentContentLayout(lease, itemId, micros);
-            }
-          },
-          onCurrentContentUnmounted: (itemId) {
-            if (active()) {
-              owner.recordCurrentContentUnmounted(lease, itemId);
-            }
           },
         ),
         monotonicMicros: () => owner.monotonicMicros,
@@ -302,14 +285,6 @@ class _TimelineConnectorBodyState
           if (active()) {
             owner.recordContentLayout(lease, itemId, completedMicros);
           }
-        },
-        onCurrentContentLayout: (itemId, completedMicros) {
-          if (active()) {
-            owner.recordCurrentContentLayout(lease, itemId, completedMicros);
-          }
-        },
-        onCurrentContentUnmounted: (itemId) {
-          if (active()) owner.recordCurrentContentUnmounted(lease, itemId);
         },
         onLoadOlder: () => active()
             ? owner.loadOlder(threadId, generation: lease.generation)

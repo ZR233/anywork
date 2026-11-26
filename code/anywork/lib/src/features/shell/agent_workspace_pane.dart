@@ -110,7 +110,17 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
       threadId,
       needsOpen: widget.needsOpen,
     );
-    final workspace = ref.watch(workspaceProvider);
+    final workspace = ref.watch(
+      workspaceProvider.select(
+        (state) => state == null
+            ? null
+            : (
+                pendingPlan: state.activeInteraction?.planConfirmation,
+                loadError: state.loadError,
+                isLoading: state.isLoading,
+              ),
+      ),
+    );
     if (workspace == null) {
       return Column(
         children: [
@@ -123,7 +133,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         ? null
         : ref.watch(
             threadSessionStoreProvider(threadId)
-                .select((state) => state.businessRefs?.plan),
+                .select((state) => state.meta?.plan),
           );
     final workflow = ref.watch(threadWorkflowRunProvider(threadId));
     final hasWorkflow =
@@ -136,10 +146,10 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
         : ref.watch(todoProvider);
     final todo = todoState.isLoading ? null : todoState.asData?.value;
     final hasTodo = todo != null || todoState.hasError;
-    final pendingPlan = workspace.activeInteraction?.planConfirmation;
+    final pendingPlan = workspace.pendingPlan;
     final referencedPlan = _referencedPlanPresentation(planHead);
     // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
-    // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
+    // 起草 / 要求修订 / 已批准按真实状态提供只读入口。
     final presentedPlan = pendingPlan != null
         ? _WorkspacePlanPresentation.fromPending(pendingPlan)
         : referencedPlan;
@@ -177,7 +187,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
           badge: PlanDetailStatusBadge(
             status: planHead == null
                 ? presentedPlan.status
-                : planDetailStatusFromRuntime(planHead.phase),
+                : planDetailStatusFromRuntime(planHead.state),
           ),
           defaultLayoutMode: pendingPlan != null
               ? ConversationSidebarLayoutMode.expanded
@@ -397,11 +407,11 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
   /// 并先标 reconnecting，避免失败条在新帧到达前一直盖住时间线。
   /// `selectThread` 对已选中会话只 `markOpened`，不能重开已关闭的流。
   void _retryThreadLoad(String threadId) {
-    ref.read(anyworkClientProvider).conversations.session(threadId).refresh();
+    ref.read(timelineSessionOwnerProvider).refresh(threadId);
   }
 
   static _WorkspacePlanPresentation? _referencedPlanPresentation(
-    CurrentPlanHead? plan,
+    PlanRuntimeView? plan,
   ) {
     if (plan == null) {
       return null;
@@ -423,10 +433,10 @@ class _WorkspacePlanPresentation {
     );
   }
 
-  factory _WorkspacePlanPresentation.fromHead(CurrentPlanHead plan) {
+  factory _WorkspacePlanPresentation.fromHead(PlanRuntimeView plan) {
     return _WorkspacePlanPresentation(
       identity: 'plan:${plan.revision}',
-      status: planDetailStatusFromRuntime(plan.phase),
+      status: planDetailStatusFromRuntime(plan.state),
     );
   }
 

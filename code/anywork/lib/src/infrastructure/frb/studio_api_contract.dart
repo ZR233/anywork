@@ -114,7 +114,7 @@ abstract class _FrbPortProxy<R extends _FrbRawResource>
 }
 
 /// Retains a raw pull handle and the existing single-next protocol guard.
-final class _FrbRawPull<H, T> extends _FrbRawResource {
+base class _FrbRawPull<H, T> extends _FrbRawResource {
   _FrbRawPull(
     super.resourceId,
     H handle,
@@ -1717,61 +1717,26 @@ class FrbStudioTransport
   }
 
   @override
-  Future<HistoryReader> openHistoryReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int historyProtocolVersion,
+    int initialLimit = 50,
   }) {
-    final entry = contentScope.open<_FrbRawHistoryReader>('history', (
-      operation,
-    ) async {
-      await _ensureReady();
-      final handle = await _bridgeCall(
-        () => frb_timeline.openHistoryReader(
-          threadId: threadId,
-          historyProtocolVersion: historyProtocolVersion,
-        ),
-      );
-      return _FrbRawHistoryReader(operation.resourceId, handle);
-    });
+    final entry = contentScope.open<_FrbRawConversationFeed>(
+      'conversation-feed',
+      (operation) async {
+        await _ensureReady();
+        final handle = await _bridgeCall(
+          () => frb_timeline.openConversationFeed(
+            threadId: threadId,
+            initialLimit: initialLimit,
+          ),
+        );
+        return _FrbRawConversationFeed(operation.resourceId, handle);
+      },
+    );
     return _publishRaw(entry, (raw) {
-      final reader = FrbHistoryReader._(entry, raw);
-      reader.metadata;
-      reader.threadId;
-      return reader;
-    });
-  }
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) {
-    final watchesScope = contentScope.child('current-watches');
-    final entry = contentScope.open<_FrbRawCurrentReader>('current', (
-      operation,
-    ) async {
-      await _ensureReady();
-      final handle = await _bridgeCall(
-        () => frb_timeline.openCurrentReader(
-          threadId: threadId,
-          currentProtocolVersion: currentProtocolVersion,
-          demand: _readDemandToFrb(demand),
-        ),
-      );
-      return _FrbRawCurrentReader(
-        operation.resourceId,
-        handle,
-        watchesScope,
-        _ensureReady,
-      );
-    }, onFailure: (_, _) => watchesScope.requestClose());
-    return _publishRaw(entry, (raw) {
-      final reader = FrbCurrentReader._(entry, raw);
-      reader.metadata;
-      reader.threadId;
-      reader.initialView;
-      return reader;
+      raw.bind(entry);
+      return FrbConversationFeedHandle._(entry, raw);
     });
   }
 

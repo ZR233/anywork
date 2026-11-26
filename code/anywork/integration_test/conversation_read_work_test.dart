@@ -7,7 +7,6 @@ import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -333,7 +332,7 @@ Future<void> _until(
   }
 }
 
-Future<TimelineDisplayUnit> _showVisibleSeedSingle(
+Future<TimelineAssistantText> _showVisibleSeedSingle(
   WidgetTester tester,
   TimelineDisplayLease? Function() borrowLease,
   String expectedText,
@@ -346,14 +345,11 @@ Future<TimelineDisplayUnit> _showVisibleSeedSingle(
         display.loadedCount > 0;
   }, '$description initial History set');
   final observed = TimelineObservation(tester, () => borrowLease()!);
-  late TimelineDisplayUnit seed;
+  late TimelineAssistantText seed;
   await _until(tester, () {
-    final candidates = observed.singleBlocks
-        .where(
-          (unit) =>
-              unit.atom?.kind == ChatAtomKind.text &&
-              unit.atom?.source is ForegroundTurnChatSource,
-        )
+    final candidates = observed.main
+        .whereType<TimelineAssistantText>()
+        .where((item) => item.turnId != null)
         .toList();
     if (candidates.isEmpty) return false;
     seed = candidates.last;

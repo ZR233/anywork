@@ -20,22 +20,6 @@ pub(in crate::studio) fn project_runtime(
     project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
 }
 
-/// Cold reads require saved run facts, not a recoverable executable graph.
-pub(in crate::studio) fn project_cold_runtime(
-    thread_id: &str,
-    state: &ThreadSnapshot,
-    updated_at: i64,
-    summary: &pl_core::thread::UsageSummary,
-) -> Result<ThreadRuntimeSnapshot, ProjectionError> {
-    let mode = state
-        .extensions
-        .get("studio.mode")
-        .map(|record| crate::mode::presentation_mode(&record.payload))
-        .transpose()?
-        .flatten();
-    project_with_mode(thread_id, state, updated_at, summary, mode.as_ref())
-}
-
 pub(crate) fn workflow_graph_from_definition(
     definition: &crate::mode::ThreadModeDefinition,
     mode_deleted: bool,

@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import 'package:anywork_client/studio_client.dart' show AnyworkClient;
+import 'package:anywork_client/studio_client.dart'
+    show AnyworkClient, PlanRuntimeView;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';

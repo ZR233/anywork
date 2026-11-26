@@ -1141,17 +1141,21 @@ impl std::fmt::Debug for ColdNativeLeaf {
 }
 
 impl crate::thread_assembler::StudioActivationFactory for ColdNativeLeaf {
-    async fn prepare_root(
+    async fn prepare_execution(
         &self,
-        _: &crate::thread_assembler::ThreadActivation,
+        identity: &crate::thread_assembler::ThreadActivation,
     ) -> Result<
         (
-            crate::DelegationSettings,
+            Option<crate::DelegationSettings>,
             Option<pl_core::thread::current::ThreadCurrent>,
         ),
         crate::thread_assembler::ThreadAssemblyError,
     > {
-        panic!("cold ACP parent must not become a Native root");
+        assert!(
+            identity.parent_id().is_some(),
+            "cold ACP parent became a Native root"
+        );
+        Ok((None, None))
     }
 
     async fn prepare(

@@ -1,81 +1,5 @@
 part of 'studio_api.dart';
 
-ThreadNotificationFrame _currentNotificationFrameFromEnvelope(
-  frb.BridgeThreadNotificationEnvelope envelope,
-) {
-  final threadId = envelope.threadId;
-  final revision = exactTimelineInt(envelope.revision, 'state counter');
-  final epoch = exactTimelineInt(envelope.epoch, 'state counter');
-  final baseRevision = exactTimelineInt(envelope.baseRevision, 'state counter');
-  final update = envelope.notification.when<ThreadWorkspaceUpdate>(
-    turnStarted: (turn) => ThreadTurnUpdate(_turnFromFrb(turn)),
-    turnUpdated: (turn) => ThreadTurnUpdate(_turnFromFrb(turn)),
-    turnCompleted: (turn) => ThreadTurnUpdate(_turnFromFrb(turn)),
-    interactionChanged: (interaction) => ThreadInteractionUpdate(
-      interaction: _interactionFromFrb(interaction),
-      pending: _interactionIsPending(interaction),
-    ),
-    threadRuntimeUpdated: (runtime, modelRoute) => ThreadRuntimeUpdate(
-      runtime: _threadRuntimeFromFrb(runtime),
-      todo: _todoFromFrb(runtime.todo),
-      modelRoute: _threadModelRouteFromFrb(modelRoute),
-    ),
-    activityChanged: (activity) => ThreadActivityUpdate(
-      activity: activity == null ? null : _threadActivityFromFrb(activity),
-    ),
-    storageChanged: (storage) => ThreadStorageUpdate(
-      storage: storage == null ? null : _threadStorageFromFrb(storage),
-    ),
-    businessRefsChanged: (references) =>
-        ThreadBusinessRefsUpdate(references: _businessRefsFromFrb(references)),
-    lagged: (dropped) => throw ConversationContinuityError(
-      'Current notification gap (thread=$threadId, dropped=$dropped)',
-    ),
-  );
-  return ThreadNotificationFrame(
-    threadId: threadId,
-    revision: revision,
-    epoch: epoch,
-    baseRevision: baseRevision,
-    update: update,
-  );
-}
-
-/// 订阅首帧只投影当前状态；条目正文由独立的 Timeline 内容尾部（一致小页基线 +
-/// 连续补丁）交付，因此这里不产生条目正文、Turn 摘要或回源锚点。
-ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
-  if (value.schemaVersion != threadSchemaVersion) {
-    throw ProtocolVersionMismatch(
-      received: value.schemaVersion,
-      supported: threadSchemaVersion,
-      field: 'threadSchemaVersion',
-    );
-  }
-  return ThreadWorkspace(
-    thread: _threadFromFrb(value.thread),
-    revision: exactTimelineInt(value.revision, 'state counter'),
-    businessRefs: _businessRefsFromFrb(value.businessRefs),
-    interactions: value.interactions
-        .where(_interactionIsPending)
-        .map(_interactionFromFrb)
-        .toList(),
-    runtime: value.runtime == null
-        ? _emptyRuntimeView()
-        : _threadRuntimeFromFrb(value.runtime!),
-    modelRoute: _threadModelRouteFromFrb(value.modelRoute),
-    activeTurn: value.activeTurn == null
-        ? null
-        : _turnFromFrb(value.activeTurn!),
-    todo: _todoFromFrb(value.runtime?.todo),
-    activity: value.activity == null
-        ? null
-        : _threadActivityFromFrb(value.activity!),
-    storage: value.storage == null
-        ? null
-        : _threadStorageFromFrb(value.storage!),
-  );
-}
-
 ThreadActivityKind _threadActivityKindFromFrb(
   frb_activity.BridgeThreadActivityKind value,
 ) => switch (value) {
@@ -405,99 +329,40 @@ StudioTurnFailureView _turnFailureFromFrb(frb.BridgeTurnFailureDto value) {
 }
 
 ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
-  final usage = value.usage;
-  final estimatedCosts = usage.estimatedCosts
-      .map(_runtimeCostFromFrb)
-      .toList(growable: false);
-  final costLabel = formatRuntimeCosts(estimatedCosts);
+  final usage = _conversationRuntimeUsageFromFrb(value.usage);
   return ThreadRuntimeView(
-    deferred: [
-      for (final field in value.deferred_) _currentStateFieldFromFrb(field),
-    ],
-    usageDiagnostics: threadUsageDiagnosticsFromFrb(usage.diagnostics),
+    deferred: value.deferred_.map(_currentStateFieldFromFrb).toList(),
+    usageDiagnostics: usage.diagnostics,
     modelId: usage.modelId,
-    liveUsage: value.liveUsage == null
-        ? null
-        : ThreadRuntimeLiveUsageView(
-            turnId: value.liveUsage!.turnId,
-            attemptId: value.liveUsage!.attemptId,
-            completionTokens: _exactNullableTimelineInt(
-              value.liveUsage!.completionTokens,
-              'state counter',
-            ),
-            responseMillis: _exactNullableTimelineInt(
-              value.liveUsage!.responseMillis,
-              'state counter',
-            ),
-            latestContextTokens: _exactNullableTimelineInt(
-              value.liveUsage!.latestContextTokens,
-              'state counter',
-            ),
-            state:
-                value.liveUsage!.state == frb.BridgeThreadRuntimeUsageState.live
-                ? ThreadRuntimeUsageState.live
-                : ThreadRuntimeUsageState.authoritative,
-            observationSequence: exactTimelineInt(
-              value.liveUsage!.observationSequence,
-              'state counter',
-            ),
-          ),
-    contextTokens: exactTimelineInt(usage.latestContextTokens, 'state counter'),
-    contextWindow:
-        _exactNullableTimelineInt(usage.contextWindow, 'state counter') ?? 0,
-    maxContextWindow: _exactNullableTimelineInt(
-      usage.maxContextWindow,
-      'state counter',
-    ),
-    autoCompactLimit: _exactNullableTimelineInt(
-      usage.autoCompactLimit,
-      'state counter',
-    ),
-    totalTokens: exactTimelineInt(usage.totalTokens, 'state counter'),
-    promptTokens: exactTimelineInt(usage.promptTokens, 'state counter'),
-    completionTokens: exactTimelineInt(usage.completionTokens, 'state counter'),
-    cachedPromptTokens: exactTimelineInt(
-      usage.cachedPromptTokens,
-      'state counter',
-    ),
-    cacheWriteTokens: exactTimelineInt(usage.cacheWriteTokens, 'state counter'),
-    reasoningTokens: exactTimelineInt(usage.reasoningTokens, 'state counter'),
-    inferenceCount: exactTimelineInt(usage.inferenceCount, 'state counter'),
-    cacheUsage: CacheUsageView(
-      sampleCount: usage.cacheUsage.sampleCount.toInt(),
-      legacySampleCountUnknown: usage.cacheUsage.legacySampleCountUnknown,
-      inputTokens: exactTimelineInt(
-        usage.cacheUsage.inputTokens,
-        'state counter',
-      ),
-      cacheReadTokens: exactTimelineInt(
-        usage.cacheUsage.cacheReadTokens,
-        'state counter',
-      ),
-      hitRate: usage.cacheUsage.hitRate,
-      hasIncompleteUsage: usage.cacheUsage.hasIncompleteUsage,
-    ),
-    estimatedCosts: estimatedCosts,
-    estimatedCacheSavings: usage.estimatedCacheSavings
-        .map(_runtimeCostFromFrb)
-        .toList(growable: false),
+    liveUsage: _liveUsageFromFrb(value.liveUsage),
+    contextTokens: usage.latestContextTokens,
+    contextWindow: usage.contextWindow ?? 0,
+    maxContextWindow: usage.maxContextWindow,
+    autoCompactLimit: usage.autoCompactLimit,
+    totalTokens: usage.totalTokens,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    cachedPromptTokens: usage.cachedPromptTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    reasoningTokens: usage.reasoningTokens,
+    inferenceCount: usage.inferenceCount,
+    cacheUsage: usage.cacheUsage,
+    estimatedCosts: usage.estimatedCosts,
+    estimatedCacheSavings: usage.estimatedCacheSavings,
     hasUnpricedUsage: usage.hasUnpricedUsage,
     hasIncompleteUsage: usage.hasIncompleteUsage,
-    promptGeneration: _exactNullableTimelineInt(
-      usage.promptGeneration,
-      'state counter',
-    ),
+    promptGeneration: usage.promptGeneration,
     promptCachePolicy: usage.promptCachePolicy,
     prefixChangedReason: usage.prefixChangedReason?.name,
     turnCompletionTokens: exactTimelineInt(
       value.turnCompletionTokens,
-      'state counter',
+      'turn completion tokens',
     ),
     turnResponseMillis: exactTimelineInt(
       value.turnResponseMillis,
-      'state counter',
+      'turn response duration',
     ),
-    costLabel: costLabel,
+    costLabel: formatRuntimeCosts(usage.estimatedCosts),
     activeSkills: value.activeSkills,
     activeMcpServers: value.activeMcpServers,
     activeLspServers: value.activeLspServers,
@@ -511,6 +376,188 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     continuation: value.continuation == null
         ? null
         : _continuationFromFrb(value.continuation!),
+  );
+}
+
+ConversationRuntimeUsage _conversationRuntimeUsageFromFrb(
+  frb.BridgeThreadRuntimeUsage value,
+) => ConversationRuntimeUsage(
+  diagnostics: threadUsageDiagnosticsFromFrb(value.diagnostics),
+  hasIncompleteUsage: value.hasIncompleteUsage,
+  modelId: value.modelId,
+  contextWindow: _exactNullableTimelineInt(
+    value.contextWindow,
+    'context window',
+  ),
+  maxContextWindow: _exactNullableTimelineInt(
+    value.maxContextWindow,
+    'maximum context window',
+  ),
+  autoCompactLimit: _exactNullableTimelineInt(
+    value.autoCompactLimit,
+    'compaction threshold',
+  ),
+  latestContextTokens: exactTimelineInt(
+    value.latestContextTokens,
+    'context tokens',
+  ),
+  promptTokens: exactTimelineInt(value.promptTokens, 'prompt tokens'),
+  completionTokens: exactTimelineInt(
+    value.completionTokens,
+    'completion tokens',
+  ),
+  cachedPromptTokens: exactTimelineInt(
+    value.cachedPromptTokens,
+    'cached prompt tokens',
+  ),
+  cacheWriteTokens: exactTimelineInt(
+    value.cacheWriteTokens,
+    'cache write tokens',
+  ),
+  reasoningTokens: exactTimelineInt(value.reasoningTokens, 'reasoning tokens'),
+  inferenceCount: exactTimelineInt(value.inferenceCount, 'inference count'),
+  totalTokens: exactTimelineInt(value.totalTokens, 'total tokens'),
+  cacheUsage: CacheUsageView(
+    sampleCount: exactTimelineInt(
+      value.cacheUsage.sampleCount,
+      'cache sample count',
+    ),
+    legacySampleCountUnknown: value.cacheUsage.legacySampleCountUnknown,
+    inputTokens: exactTimelineInt(
+      value.cacheUsage.inputTokens,
+      'cache input tokens',
+    ),
+    cacheReadTokens: exactTimelineInt(
+      value.cacheUsage.cacheReadTokens,
+      'cache read tokens',
+    ),
+    hitRate: value.cacheUsage.hitRate,
+    hasIncompleteUsage: value.cacheUsage.hasIncompleteUsage,
+  ),
+  estimatedCosts: value.estimatedCosts.map(_runtimeCostFromFrb),
+  estimatedCacheSavings: value.estimatedCacheSavings.map(_runtimeCostFromFrb),
+  hasUnpricedUsage: value.hasUnpricedUsage,
+  promptGeneration: _exactNullableTimelineInt(
+    value.promptGeneration,
+    'prompt generation',
+  ),
+  promptCachePolicy: value.promptCachePolicy,
+  prefixChangedReason: switch (value.prefixChangedReason) {
+    final reason? => ConversationPromptPrefixChangedReason.values.byName(
+      reason.name,
+    ),
+    null => null,
+  },
+  updatedAt: _exactSignedTimelineInt(value.updatedAt),
+);
+
+ThreadRuntimeLiveUsageView? _liveUsageFromFrb(
+  frb.BridgeThreadRuntimeLiveUsage? value,
+) {
+  if (value == null) return null;
+  return ThreadRuntimeLiveUsageView(
+    turnId: value.turnId,
+    attemptId: value.attemptId,
+    completionTokens: _exactNullableTimelineInt(
+      value.completionTokens,
+      'live completion tokens',
+    ),
+    responseMillis: _exactNullableTimelineInt(
+      value.responseMillis,
+      'live response duration',
+    ),
+    latestContextTokens: _exactNullableTimelineInt(
+      value.latestContextTokens,
+      'live context tokens',
+    ),
+    state: switch (value.state) {
+      frb.BridgeThreadRuntimeUsageState.live => ThreadRuntimeUsageState.live,
+      frb.BridgeThreadRuntimeUsageState.authoritative =>
+        ThreadRuntimeUsageState.authoritative,
+    },
+    observationSequence: exactTimelineInt(
+      value.observationSequence,
+      'observation sequence',
+    ),
+  );
+}
+
+ConversationRuntimeSnapshot _conversationRuntimeFromFrb(
+  frb.BridgeThreadRuntimeSnapshot value,
+) => ConversationRuntimeSnapshot(
+  threadId: value.threadId,
+  deferred: value.deferred_.map(_currentStateFieldFromFrb),
+  usage: _conversationRuntimeUsageFromFrb(value.usage),
+  liveUsage: _liveUsageFromFrb(value.liveUsage),
+  turnCompletionTokens: exactTimelineInt(
+    value.turnCompletionTokens,
+    'turn completion tokens',
+  ),
+  turnResponseMillis: exactTimelineInt(
+    value.turnResponseMillis,
+    'turn response duration',
+  ),
+  todo: _todoFromFrb(value.todo),
+  activeSkills: value.activeSkills,
+  activeMcpServers: value.activeMcpServers,
+  activeLspServers: value.activeLspServers,
+  progress: value.progress,
+  mcpHealth: _conversationMcpHealthFromFrb(value.mcpHealth),
+  workflow: value.workflow == null
+      ? null
+      : _workflowRuntimeFromFrb(value.workflow!),
+  plan: value.plan == null ? null : planRuntimeFromFrb(value.plan!),
+  execution: value.execution == null
+      ? null
+      : _agentExecutionFromFrb(value.execution!),
+  continuation: value.continuation == null
+      ? null
+      : _continuationFromFrb(value.continuation!),
+  updatedAt: _exactSignedTimelineInt(value.updatedAt),
+);
+
+TimelineTodoListUpdate? _todoFromFrb(frb.BridgeTodoListSnapshot? value) {
+  if (value == null) return null;
+  return TimelineTodoListUpdate(
+    callId: value.callId,
+    agentId: value.agentId,
+    path: value.path,
+    parentPath: value.parentPath,
+    explanation: value.explanation,
+    items: [
+      for (final item in value.items)
+        TimelineTodoItem(step: item.step, status: item.status.name),
+    ],
+  );
+}
+
+ConversationMcpHealthSnapshot? _conversationMcpHealthFromFrb(
+  frb.BridgeThreadMcpHealthSnapshot? value,
+) {
+  if (value == null) return null;
+  return ConversationMcpHealthSnapshot(
+    generation: exactTimelineInt(value.generation, 'MCP health generation'),
+    servers: [
+      for (final entry in value.servers)
+        ConversationMcpAvailabilityDescriptor(
+          server: ConversationMcpServerDescriptor(
+            id: entry.server.id,
+            source: entry.server.source,
+            transport: entry.server.transport,
+            endpoint: entry.server.endpoint,
+            builtIn: entry.server.builtIn,
+          ),
+          availability: entry.availability,
+          message: entry.message,
+          lastCheckedAt: entry.lastCheckedAt == null
+              ? null
+              : _exactSignedTimelineInt(entry.lastCheckedAt!),
+          toolCount: _exactNullableTimelineInt(
+            entry.toolCount,
+            'MCP tool count',
+          ),
+        ),
+    ],
   );
 }
 
@@ -557,21 +604,6 @@ WorkflowRuntimeView _workflowRuntimeFromFrb(
   return WorkflowRuntimeView(
     revision: exactTimelineInt(value.revision, 'state counter'),
     currentRun: run == null ? null : workflowRunFromFrb(run),
-  );
-}
-
-TimelineTodoListUpdate? _todoFromFrb(frb.BridgeTodoListSnapshot? value) {
-  if (value == null) return null;
-  return TimelineTodoListUpdate(
-    callId: value.callId,
-    agentId: value.agentId,
-    path: value.path,
-    parentPath: value.parentPath,
-    explanation: value.explanation,
-    items: [
-      for (final item in value.items)
-        TimelineTodoItem(step: item.step, status: item.status.name),
-    ],
   );
 }
 
@@ -647,7 +679,6 @@ bool _interactionIsPending(frb.BridgeInteractionRequest value) {
 
 Object _studioFailure(Object error) {
   return switch (error) {
-    final ProtocolVersionMismatch mismatch => mismatch,
     // 已是领域错误：保持身份与堆栈，不二次包装。
     final StudioFailure failure => failure,
     final frb.BridgeError bridge => StudioFailure(

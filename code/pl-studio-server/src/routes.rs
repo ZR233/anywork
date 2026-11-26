@@ -49,14 +49,7 @@ use pl_studio_runtime::{
         version = "0.1.0",
         description = "Loopback adapter over the canonical StudioRuntime"
     ),
-    components(schemas(
-        StudioError,
-        pl_studio_runtime::CurrentView,
-        pl_studio_runtime::CurrentFrame,
-        pl_studio_runtime::CurrentProjection,
-        pl_studio_runtime::CurrentCollectionPage,
-        pl_studio_runtime::ChatScope
-    ))
+    components(schemas(StudioError, pl_studio_runtime::ChatScope))
 )]
 struct StudioApi;
 
@@ -368,13 +361,15 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(timeline::accounting))
         .routes(routes!(timeline::changed))
         .routes(routes!(timeline::close_history))
-        .routes(routes!(timeline::open_current))
-        .routes(routes!(timeline::snapshot))
-        .routes(routes!(timeline::watch))
-        .routes(routes!(timeline::page))
-        .routes(routes!(timeline::body_read))
-        .routes(routes!(timeline::body_watch))
-        .routes(routes!(timeline::close_current))
+        .routes(routes!(timeline::open_feed))
+        .routes(routes!(timeline::feed_events))
+        .routes(routes!(timeline::feed_older))
+        .routes(routes!(timeline::feed_work_group))
+        .routes(routes!(timeline::feed_body))
+        .routes(routes!(timeline::feed_detail))
+        .routes(routes!(timeline::feed_reset))
+        .routes(routes!(timeline::feed_meta))
+        .routes(routes!(timeline::close_feed))
         .routes(routes!(submit_prompt))
         .routes(routes!(admit_attachment_drafts))
         .routes(routes!(remove_attachment_draft))
