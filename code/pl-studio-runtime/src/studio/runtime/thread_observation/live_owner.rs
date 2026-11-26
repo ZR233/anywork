@@ -1,30 +1,25 @@
 //! Single realtime projection and retained reliable handoff.
 
-use super::live_feed::{ThreadLiveEvent, ThreadLiveFeed};
 use super::registry::ObservationServices;
+use super::slot::ObservationSlot;
 use super::worker::WorkerState;
 use super::{billing, reports};
 use crate::studio::storage::thread_writer::{
     HistoryChannel, PendingProjectionRetention, ProjectionRetention, ProjectionTransfer,
 };
-use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
+use crate::studio::thread_projection::{
+    LiveProjection, project_activity, project_interactions, storage_state,
+};
 use crate::thread_assembler::agent_review::ReviewDeliverySource;
+use crate::timeline::{MetaEventBus, SessionMetaSnapshot};
 use anyhow::{Context, Result};
 use pl_core::thread::{HistoryExport, ThreadHandle, ThreadSnapshot, UsageSummary};
 use std::sync::Arc;
 
 /// 同一稳定 Store 的串行执行驱动；借用投影，退出时将原批次归还 Store。
-///
-/// It lives in the Thread's observation worker, so a GUI opening and closing never changes who
-/// projects or who publishes content: every committed effect is projected exactly once into the
-/// shared chat session, and its typed changes are broadcast to whichever subscribers exist. The same
-/// batch is handed to the Thread's reliable admission channel, so the history writer commits the
-/// content this owner published instead of projecting the effect a second time.
-/// Store 保留投影和至多一个原交接批次；执行驱动仅在租约期间借用它。
 pub(in crate::studio) struct RetainedProjection {
     pub(in crate::studio) projection: LiveProjection,
     pub(in crate::studio) pending: Option<PendingHandoff>,
-    pub(in crate::studio) baseline: Option<Arc<crate::studio::thread_projection::CurrentState>>,
     pub(super) usage: UsageSummary,
 }
 
@@ -68,22 +63,17 @@ pub(super) struct LiveOwner {
     qualification_revision: u64,
     pub(super) retained: ProjectionLease,
     pub(super) binding: Arc<crate::studio::ThreadStorageBinding>,
-    /// The Thread's only activity projection: the same owner derives it from the snapshot it just
-    /// published, so activity never becomes a second fact source and never reads SQL.
-    /// Last activity already broadcast, so an unchanged projection does not produce a frame.
     activity_published: Option<crate::ThreadActivity>,
     runtime_published: Option<crate::ThreadRuntimeSnapshot>,
     model_route_published: Option<crate::ThreadModelRouteSnapshot>,
-    /// Last typed storage state this owner published to its feed.
-    ///
-    /// The owner derives it from the owner snapshot plus the coordinator's typed watch, so a
-    /// subscriber mirrors the value instead of recomputing it from its own copies. It is kept as one
-    /// value so a change of fault kind, generation, watermark or phase is all one comparison.
     storage_published: Option<crate::ThreadStorageState>,
-    /// The Thread's reliable admission channel, shared with the history writer.
+    last_turn_published: Option<crate::Turn>,
+    meta_revision: u64,
     pub(super) channel: Arc<HistoryChannel>,
     thread: crate::Thread,
-    feed: Arc<ThreadLiveFeed>,
+    pub(super) bus: MetaEventBus,
+    slot: Arc<ObservationSlot>,
+    attached_commit_floor: u64,
 }
 
 /// Which path a retained handoff batch came from; a retry never re-decides it.
@@ -98,77 +88,31 @@ pub(super) enum HandoffMode {
 }
 
 /// One committed batch this projection owner prepared but has not handed to the writer yet.
-///
-/// This is not a second ledger: it is the single in-flight handoff of the owner's serial pass, at
-/// most one batch, holding the very `ThreadWrite` the reliable queue admitted and the prepared
-/// content the writer will commit. Retaining it closes the window between the report preparation
-/// and the handoff — a failure, a cancelled wait or an explicit retry re-enters this same batch
-/// instead of projecting the same commit a second time and bumping its content revisions.
 pub(in crate::studio) struct PendingHandoff {
     pub(in crate::studio) write: Arc<HistoryExport>,
     pub(in crate::studio) prepared: Arc<crate::studio::thread_projection::PreparedEffect>,
     pub(in crate::studio) admitted: bool,
-    /// Managed terminal delivery prepared from the same frozen report, still owned here until the
-    /// reliable channel accepts this batch (or proves the same sequence already durable).
     terminal: Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>,
-    /// The delivery changes the live path decided when it projected the commit; `None` on the
-    /// behind path and when the projection produced no frame.
-    changes: Option<Vec<LiveEvent>>,
     pub(super) mode: HandoffMode,
 }
 
 impl PendingHandoff {
-    /// Delivery changes owned here in addition to the shared prepared batch.
     pub(in crate::studio) fn extra_retained_bytes(&self) -> u64 {
-        // The prepared batch is measured by its owning projection (`PreparedEffect::retained_bytes`,
-        // the one implementation the writer shares); the delivery changes are this owner's own
-        // residents and are charged element by element.
-        let mut bytes = 0_u64;
-        if let Some(changes) = self.changes.as_ref() {
-            for event in changes {
-                bytes = bytes.saturating_add(event.retained_bytes());
-            }
-            // The Vec's spare capacity is resident too: every used element's shell is already part
-            // of its own estimate, so only the unused slots add their element size here.
-            let spare = changes.capacity() - changes.len();
-            bytes = bytes.saturating_add(
-                u64::try_from(spare)
-                    .unwrap_or(u64::MAX)
-                    .saturating_mul(std::mem::size_of::<LiveEvent>() as u64),
-            );
-        }
-        bytes
+        0
     }
 
-    /// Attaches the prepared batch to the reliable queue and publishes the accepted facts.
-    ///
-    /// # Errors
-    /// The channel refused the handoff — the sequence is already durable or is not an admitted
-    /// commit of this channel. The batch stays fully retained with its identity, so the refusal
-    /// reaches the caller instead of a silent loss or a re-projection.
     fn hand_over(
         &self,
         channel: &HistoryChannel,
-        feed: &ThreadLiveFeed,
+        slot: &ObservationSlot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let sequence = self.prepared.sequence;
         if !self.admitted && !channel.prepare(Arc::clone(&self.prepared)) {
             anyhow::bail!("reliable channel refused the handoff of live Thread commit {sequence}");
         }
-        // Only the prepared content is authoritative for the terminal fact — never the optional
-        // delivery changes, which a zero-subscriber commit may not carry at all.
         if let Some(turn) = crate::studio::thread_projection::prepared_terminal_turn(&self.prepared)
         {
-            feed.publish_last_turn(Arc::new(turn));
-        }
-        if self.mode == HandoffMode::Live {
-            feed.publish(|| match self.changes.as_ref() {
-                Some(changes) => ThreadLiveEvent::Committed {
-                    sequence,
-                    changes: changes.clone(),
-                },
-                None => ThreadLiveEvent::UnframedCommit { sequence },
-            });
+            slot.set_last_turn(Arc::new(turn));
         }
         Ok(self.prepared.parent_report.clone())
     }
@@ -180,7 +124,7 @@ impl LiveOwner {
         handle: &ThreadHandle,
         snapshot: &ThreadSnapshot,
         thread: crate::Thread,
-        feed: Arc<ThreadLiveFeed>,
+        slot: Arc<ObservationSlot>,
         state: Arc<WorkerState>,
         persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) -> Result<Self> {
@@ -195,9 +139,16 @@ impl LiveOwner {
             .context("execution has no storage binding")?;
         conversation.attach_execution(&binding).await?;
         conversation.attach_current(handle.clone()).await?;
-        feed.bind_conversation(&conversation, handle.runtime_epoch().to_string());
         let history = projector.store.history(id).await?;
         let history_reader = history.reader();
+        let runtime_epoch = handle.runtime_epoch();
+        let bus = MetaEventBus::open(thread.clone(), history.clone(), runtime_epoch);
+        match handle.attach_event_sink(Arc::new(bus.sink())).await {
+            Ok(()) | Err(pl_core::thread::ThreadError::Closed) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let attached_commit_floor = handle.snapshot().commit_sequence;
+        slot.install_bus(bus.clone());
         let usage = snapshot.usage_summary.clone();
         let runtime_epoch = handle.runtime_epoch();
         let initialized = conversation
@@ -222,14 +173,11 @@ impl LiveOwner {
                             runtime_epoch,
                             history.database_id().to_owned(),
                         )?;
-                        // Current starts a new runtime epoch; it must not replay R1 history into
-                        // R2's live publication rights. Late facts query HistoryReader by owner.
+                        projection.mark_bus_admitted();
                         projection.restore_current(&thread, &snapshot)?;
-                        let baseline = projection.current_state();
                         Ok(RetainedProjection {
                             projection,
                             pending: None,
-                            baseline,
                             usage,
                         })
                     })
@@ -237,6 +185,8 @@ impl LiveOwner {
             }))
             .await;
         if let Err(error) = initialized {
+            slot.retire_bus(&bus);
+            bus.close().await;
             return match conversation
                 .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
                 .await
@@ -250,6 +200,8 @@ impl LiveOwner {
         let retained = match ProjectionLease::claim(conversation.clone()) {
             Ok(retained) => retained,
             Err(error) => {
+                slot.retire_bus(&bus);
+                bus.close().await;
                 return match conversation
                     .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
                     .await
@@ -261,16 +213,7 @@ impl LiveOwner {
                 };
             }
         };
-        // Publish the first activity only after this snapshot's admitted completions have been
-        // folded below. Seeding the summary here would suppress that first shared content publish.
-        let activity_published = None;
-        // The owner is the single source of the typed storage state: publish the value it was
-        // installed with, so a subscriber that opened before this first pass sees the authoritative
-        // fact instead of an unset placeholder.
         let storage_published = persistence.map(|detail| storage_state(snapshot, detail));
-        // A subscriber may already have an older catalog baseline while this
-        // owner initializes. Publish the initial qualification too; its source
-        // stamps let a current subscriber discard it without manufacturing a gap.
         let runtime = crate::studio::thread_projection::project_runtime(
             id,
             snapshot,
@@ -284,17 +227,10 @@ impl LiveOwner {
             &thread,
             &config.config,
         )?;
-        let compact_runtime = feed.compact_runtime(runtime.clone())?;
-        feed.publish(|| ThreadLiveEvent::Runtime {
-            observation_revision: snapshot.observation_revision,
-            catalog_revision: catalog.revision,
-            runtime: Arc::new(compact_runtime),
-            model_route: model_route.clone(),
-        });
         let runtime_published = Some(runtime);
         let model_route_published = model_route;
-        feed.publish_storage(storage_published.clone());
-        let owner = Self {
+        let last_turn_published = slot.last_turn().map(|turn| (*turn).clone());
+        let mut owner = Self {
             history_reader,
             native_directory: state.native_directory.clone(),
             terminal_transfer: state.terminal_transfer.clone(),
@@ -305,19 +241,20 @@ impl LiveOwner {
             qualification_revision: catalog.revision,
             retained,
             binding,
-            activity_published,
+            activity_published: None,
             runtime_published,
             model_route_published,
             storage_published,
+            last_turn_published,
+            meta_revision: 1,
             channel,
             thread,
-            feed,
+            bus,
+            slot,
+            attached_commit_floor,
         };
-        // The seeded facts are already resident, so the Thread's budget covers them from the moment
-        // the owner is installed instead of only after its first commit.
         owner.publish_retained()?;
-        // Terminal Turn history is served by the independent HistoryReader. Replaying it into the
-        // new runtime epoch would recreate presentation restore and can publish an old run's fact.
+        owner.publish_session_meta(snapshot)?;
         Ok(owner)
     }
 
@@ -381,20 +318,23 @@ impl LiveOwner {
             self.retained.pending.is_none(),
             "a retained handoff must finish before projecting another effect"
         );
-        // A receiver may register while this effect is being prepared or retained before handoff.
-        // Freeze its typed State facts in the original charged slot regardless of current demand;
-        // only the outward envelope is optional. Otherwise that receiver loses a reliable commit.
         let started = std::time::Instant::now();
-        let projected = self
+        if effect.sequence <= self.attached_commit_floor {
+            self.bus.emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
+                pl_core::thread::CoreCommitEvent {
+                    thread_id: self.thread.id.clone(),
+                    sequence: effect.sequence,
+                    export: Arc::clone(write),
+                },
+            )));
+        }
+        let prepared = match self
             .retained
             .projection
-            .prepare(&self.thread, effect, &write.state, true);
-        let (changes, prepared) = match projected {
-            Ok(projected) => projected,
+            .prepare_committed(&self.thread, effect, &write.state)
+        {
+            Ok(prepared) => prepared,
             Err(error) => {
-                // The writer saves exactly what this owner projects, so a projection this owner cannot
-                // complete is a fact that cannot be handed over or saved. Report it so the durable
-                // barrier fails closed with the real reason instead of waiting forever.
                 self.channel.fail_projection(
                     effect.sequence,
                     format!("live Thread projection failed: {error}"),
@@ -403,24 +343,11 @@ impl LiveOwner {
             }
         };
         prepared.accounting.fold_into(&mut self.retained.usage);
-        // The folded commit is already resident in the shared session, so this owner retains the
-        // whole handoff — the original write, the prepared batch, the delivery decision it made and
-        // its mode — before the first await of the parent-report preparation. A failure, a
-        // cancellation or a retry inside that window re-enters the same retained batch instead of
-        // projecting the commit a second time, which would bump content revisions for the same fact.
-        if let Some(pending) = self.retained.pending.as_ref() {
-            anyhow::bail!(
-                "live projection still owes the handoff of commit {} before projecting commit {}",
-                pending.write.effect.sequence,
-                effect.sequence
-            );
-        }
         self.retained.pending = Some(PendingHandoff {
             admitted: false,
             write: Arc::clone(write),
             prepared,
             terminal: None,
-            changes,
             mode: HandoffMode::Live,
         });
         self.publish_retained()?;
@@ -428,11 +355,6 @@ impl LiveOwner {
         tracing::debug!(
             target: "conversation_work",
             thread_id = self.thread.id,
-            current_revision = self
-                .retained
-                .projection
-                .current_state()
-                .map_or(0, |current| current.revision()),
             projection_handoff_elapsed_us = started.elapsed().as_micros() as u64,
             success = result.is_ok(),
             "live owner projection and handoff"
@@ -440,15 +362,11 @@ impl LiveOwner {
         result
     }
 
-    /// Prepares the retained batch's original parent report, then hands the batch over.
-    /// The snapshot is the current cut of this worker's original ThreadHandle, including on retry;
-    /// the frozen transfer remains the source of the report and content, never of runtime versions.
     pub(super) async fn finish_pending(
         &mut self,
         services: &ObservationServices,
         snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
-        // 原批次先保留，全部可失败准备先完成；发布与可靠交接只推进同一冻结批次。
         self.publish_retained()?;
         self.prepare_parent_report()?;
         self.prepare_terminal_delivery(services)?;
@@ -463,22 +381,30 @@ impl LiveOwner {
             && (pending.mode == HandoffMode::Live
                 || exporter.should_admit_behind_effect(&self.thread.id, pending.prepared.sequence))
         {
-            let export_current = self
+            self.bus.wait_admitted_commit(pending.prepared.sequence).await;
+            let owner_id = self
                 .retained
                 .projection
-                .current_state()
-                .context("export current owner is missing")?;
+                .owner_id()
+                .unwrap_or(&self.thread.id);
             Box::pin(exporter.admit_live_handoff(
                 &self.thread.id,
                 &pending.prepared.accounting,
                 &pending.prepared.history_events,
                 &self.retained.usage,
-                export_current.as_ref(),
+                owner_id,
+                snapshot.commit_sequence,
                 &self.history_reader,
             ))
             .await;
         }
-        self.handover_pending(services)
+        let report = self.handover_pending(services)?;
+        let latest_last_turn = self.slot.last_turn().map(|turn| (*turn).clone());
+        if latest_last_turn != self.last_turn_published {
+            self.last_turn_published = latest_last_turn;
+            self.publish_session_meta(snapshot)?;
+        }
+        Ok(report)
     }
 
     /// Freezes the managed terminal-delivery authority beside the retained batch.
@@ -595,14 +521,14 @@ impl LiveOwner {
             snapshot,
             None,
         )?;
-        if accepted.is_none()
+        if self.native_directory.is_some()
+            && accepted.is_none()
             && !services
                 .events
                 .native_observation_covers(self.native_directory.as_ref(), snapshot)
         {
-            // A revoked token or resource is not an accepted cut. End only this obsolete feed's
-            // outward delivery; its original reliable content and parent-transfer duties continue.
-            self.feed.close_delivery();
+            // A revoked token or resource is not an accepted cut.
+            self.slot.retire_bus(&self.bus);
         }
         Ok(())
     }
@@ -652,7 +578,7 @@ impl LiveOwner {
             return Ok(None);
         };
         let sequence = pending.prepared.sequence;
-        let handed_over = pending.hand_over(&self.channel, &self.feed);
+        let handed_over = pending.hand_over(&self.channel, &self.slot);
         let report = match handed_over {
             Ok(report) => report,
             Err(error) => {
@@ -779,6 +705,15 @@ impl LiveOwner {
         write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
+        if write.effect.sequence <= self.attached_commit_floor {
+            self.bus.emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
+                pl_core::thread::CoreCommitEvent {
+                    thread_id: self.thread.id.clone(),
+                    sequence: write.effect.sequence,
+                    export: Arc::clone(write),
+                },
+            )));
+        }
         let projected =
             self.retained
                 .projection
@@ -793,8 +728,6 @@ impl LiveOwner {
                 return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
             }
         };
-        // The behind batch is retained the same way before its report await; its mode keeps it from
-        // ever gaining realtime publication rights on a retry.
         if let Some(pending) = self.retained.pending.as_ref() {
             anyhow::bail!(
                 "live projection still owes the handoff of commit {} before taking over commit {}",
@@ -807,7 +740,6 @@ impl LiveOwner {
             write: Arc::clone(write),
             prepared,
             terminal: None,
-            changes: None,
             mode: HandoffMode::Behind,
         });
         self.publish_retained()?;
@@ -815,26 +747,18 @@ impl LiveOwner {
         Ok(())
     }
 
-    /// Projects the uncommitted streaming preview of the current owner snapshot.
-    ///
-    /// The preview is written into the shared session — the one content window — and emits no
-    /// content frame; current activity and runtime facts are published separately.
-    pub(super) async fn stream(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
-        self.retained
-            .projection
-            .stream(&self.thread, snapshot)
-            .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
+    pub(super) async fn stream(
+        &mut self,
+        snapshot: &ThreadSnapshot,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
+    ) -> Result<()> {
         self.observe_runtime(snapshot).await?;
-        self.observe_activity(snapshot).await?;
-        if let Some(current) = self.retained.projection.current_state() {
-            self.feed.publish_conversation(current)?;
-        }
+        self.observe_activity(snapshot);
+        self.observe_storage(snapshot, persistence);
+        self.publish_session_meta(snapshot)?;
         Ok(())
     }
 
-    /// Execution residency is live-only; next-admission availability also consumes current config.
-    /// Derive runtime from the latest owner snapshot after folding all admitted usage,
-    /// never from an effect's storage checkpoint. Stable timestamps allow deduplication.
     async fn observe_runtime(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
         let at = self
             .runtime_published
@@ -887,47 +811,18 @@ impl LiveOwner {
         runtime.usage.updated_at = runtime.updated_at;
         self.qualification_revision = qualification_revision;
         self.model_route_published.clone_from(&model_route);
-        let runtime = self.runtime_published.insert(runtime);
-        let compact_runtime = self.feed.compact_runtime(runtime.clone())?;
-        self.feed.publish(|| ThreadLiveEvent::Runtime {
-            observation_revision: snapshot.observation_revision,
-            catalog_revision: self.qualification_revision,
-            runtime: Arc::new(compact_runtime),
-            model_route,
-        });
+        self.runtime_published = Some(runtime);
         Ok(())
     }
 
-    /// Re-derives the Thread's current activity from the snapshot this owner just published.
-    ///
-    /// The activity is an independent projection of the same facts: a phase change, a new foreground
-    /// tool or an interaction change reaches it through the owner snapshot, never through `effect`.
-    /// Shared producer versions cover body changes even when the bounded summary stays identical.
-    /// The completion ceiling also advances independently of the activity summary.
-    async fn observe_activity(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
-        let activity = self.retained.projection.current_activity();
-        let activity_changed = activity != self.activity_published;
-        if !activity_changed {
-            return Ok(());
+    fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
+        let activity =
+            project_activity(&self.thread.id, snapshot, self.activity_published.as_ref());
+        if activity != self.activity_published {
+            self.activity_published = activity;
         }
-        self.activity_published = activity;
-        let compact_activity = self
-            .feed
-            .compact_activity(self.activity_published.clone())?;
-        // One shared handle per published change: every subscriber clones that handle, never the body.
-        self.feed.publish(|| ThreadLiveEvent::Activity {
-            observation_revision: snapshot.observation_revision,
-            activity: compact_activity.map(Arc::new),
-        });
-        Ok(())
     }
 
-    /// Republishes the typed storage state this owner derives, only when it really changed.
-    ///
-    /// A storage pause, a pressure warning, the explicit-resume latch or a durable receipt change
-    /// nothing about the content or the activity, so they need their own fact: the owner watches the
-    /// coordinator's typed status directly and republishes here even when no other frame arrived, so
-    /// a parked subscriber learns about a save failure without waiting for an unrelated commit.
     pub(super) fn observe_storage(
         &mut self,
         snapshot: &ThreadSnapshot,
@@ -937,16 +832,66 @@ impl LiveOwner {
             self.retained.projection.confirm_sources(through);
         }
         let storage = persistence.map(|detail| storage_state(snapshot, detail));
-        if storage == self.storage_published {
-            return;
+        if storage != self.storage_published {
+            self.storage_published = storage;
+            let _ = self.publish_session_meta(snapshot);
         }
-        self.storage_published = storage.clone();
-        self.feed.publish_storage(storage);
+    }
+
+    fn publish_session_meta(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
+        self.meta_revision = self.meta_revision.saturating_add(1);
+        let active_turn = crate::studio::thread_projection::project_active_turn(
+            &self.thread.id,
+            snapshot,
+            crate::studio::unix_seconds(),
+        )?;
+        let last_turn = self
+            .slot
+            .last_turn()
+            .map(|turn| (*turn).clone())
+            .or_else(|| self.last_turn_published.clone());
+        let interactions = project_interactions(&self.thread.id, snapshot)?;
+        let pending_interaction_count = u32::try_from(interactions.len()).unwrap_or(u32::MAX);
+        let plan = self
+            .runtime_published
+            .as_ref()
+            .and_then(|runtime| runtime.plan.clone());
+        let context_metrics = self
+            .runtime_published
+            .as_ref()
+            .map(|runtime| runtime.usage.clone());
+        let status = crate::studio::thread_projection::status(snapshot);
+        let mode = crate::studio::thread_projection::saved_mode(snapshot).ok().flatten();
+        let meta = SessionMetaSnapshot {
+            thread_id: self.thread.id.clone(),
+            status,
+            title: Some(self.thread.title.clone()),
+            parent_thread_id: self.thread.parent_thread_id.clone(),
+            root_thread_id: self.thread.root_thread_id.clone(),
+            owner_epoch: self.bus.runtime_epoch().to_string(),
+            revision: self.meta_revision,
+            active_turn,
+            last_turn,
+            activity: self.activity_published.clone(),
+            usage: snapshot.usage_summary.clone(),
+            context_metrics,
+            model_route: self.model_route_published.clone(),
+            runtime: self.runtime_published.clone(),
+            storage_state: self.storage_published.clone(),
+            interactions,
+            pending_interaction_count,
+            plan,
+            mode,
+            execution_present: snapshot.execution.is_some(),
+        };
+        self.bus.update_session_meta(meta);
+        Ok(())
     }
 }
 
 impl Drop for LiveOwner {
     fn drop(&mut self) {
+        self.slot.retire_bus(&self.bus);
         self.binding.conversation.detach_execution(&self.binding);
     }
 }

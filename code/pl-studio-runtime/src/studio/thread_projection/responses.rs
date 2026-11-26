@@ -1081,8 +1081,9 @@ mod recovery_tests {
         use crate::studio::runtime::chat_item::{atom, build_event_from_draft, completion_draft};
         use pl_core::model::{CancellationToken, Model};
         use pl_core::thread::{
-            StepInput, ThreadError, ThreadHandle,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+            HistoryExport, StepInput, ThreadEffectBatch, ThreadError, ThreadHandle, UsageSummary,
+            cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+            history_sink::{HistorySink, HistorySinkHandle},
             journal::AttemptUpdate,
         };
         use std::sync::{
@@ -1103,8 +1104,41 @@ mod recovery_tests {
         }
         #[derive(Debug)]
         struct Sink(Arc<Gate>);
-        impl ColdStore for Sink {
-            fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+        impl HistorySink for Sink {
+            fn fold_usage(&self, _: &mut UsageSummary, _: &ThreadEffectBatch) {}
+            fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+                Ok(())
+            }
+            fn reserve_operation_output(
+                &self,
+                _: &str,
+                _: &str,
+                max: u64,
+            ) -> Result<u64, ColdStoreError> {
+                Ok(max)
+            }
+            fn charge_operation_output(
+                &self,
+                _: &str,
+                _: &str,
+                _: u64,
+            ) -> Result<(), ColdStoreError> {
+                Ok(())
+            }
+            fn release_operation_output(&self, _: &str, _: &str) {}
+            fn pressure(&self, _: &str) -> StoragePressure {
+                StoragePressure::default()
+            }
+            fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+                StorageIdleStatus {
+                    pressure: self.pressure(thread_id),
+                    reclaimable_thread_bytes: None,
+                }
+            }
+            fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+                None
+            }
+            fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
                 if write
                     .effect
                     .model_sub_attempt_settlements
@@ -1122,7 +1156,11 @@ mod recovery_tests {
                 }
                 Ok(())
             }
-            async fn flush(&self, _: &str, sequence: u64) -> Result<(), ColdStoreError> {
+            async fn confirm_model_settlement(
+                &self,
+                _: &str,
+                sequence: u64,
+            ) -> Result<(), ColdStoreError> {
                 if sequence == self.0.settlement.load(Ordering::Acquire) {
                     self.0.entered.notify_one();
                     self.0.release.notified().await;
@@ -1198,7 +1236,7 @@ mod recovery_tests {
             ..Default::default()
         });
         thread
-            .attach_storage(ColdStoreHandle::new(Sink(gate.clone())))
+            .attach_history(HistorySinkHandle::new(Sink(gate.clone())))
             .await?;
         let cancellation = CancellationToken::new();
         let running = tokio::spawn({

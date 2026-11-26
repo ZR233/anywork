@@ -352,7 +352,7 @@ fn retain_active_atom(
 async fn active_atoms(
     db: &impl ConnectionTrait,
     current: &CurrentProjection,
-    checkpoint: Option<&pl_core::thread::ThreadCheckpoint>,
+    checkpoint: Option<&crate::studio::storage::legacy_checkpoint::ThreadCheckpoint>,
     database: &str,
 ) -> Result<Vec<ChatAtom>> {
     struct ActiveContent {

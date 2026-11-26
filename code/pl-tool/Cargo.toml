@@ -63,7 +63,7 @@ serde = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 image = { workspace = true }
-pl-core = { workspace = true, features = ["sqlite"] }
+pl-core = { workspace = true }
 axum = { workspace = true }
 libc = { workspace = true }
 anyhow = { workspace = true }

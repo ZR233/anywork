@@ -6,17 +6,13 @@
 
 `pl-core` 拥有 Thread、Turn、模型调用、工具执行治理、通用上下文、交互、后台任务、消息收件箱、完整 Current 对象及不可变 effect window；`pl-model` 实现模型接口，具体工具由 `pl-agent-tool`、`pl-tool` 或 Studio 适配。`pl-trace` 只读观察。Studio 拥有配置、项目、Profile、Mode、Workflow、Plan、子智能体协调和唯一会话装配入口。内核不提供默认工具、Git、技能扫描或预设安装；本地/远端进程能力归 `pl-tool` 与 `pl-remote-helper`。每个 Thread 独占工具管理器、模型会话和执行绑定。
 
-Native 会话装配把 Core 的完整 Current 交 Current writer，把 effect window 中的 `HistoryExport { effect, original ThreadSnapshot cut }` 交既有 HistoryChannel，再由 schema 25 History writer 保存 immutable event/body。Core 不负责产品历史 SQL、Work/Single 分组或 GUI 窗口；History/Current reader 的接口见 [15](./15-session-storage.md) 与 [26](./26-timeline-content.md)。读取冷 History 不构造模型、工具或执行 owner。宿主不得因 GUI 未订阅而丢弃未交出的 original，也不能把 `release_history_through` 当作 Current 保存或历史 durable 确认。
+Native 会话装配采用单一事件出口：Core 的串行主循环在每次原子状态跃迁与流式回调时向产品层的 `CoreEventSink` 发射有序 `CoreEvent`（区分 `Durable` 业务事实与 `Ephemeral` 瞬态流信号），同时向独立 `CurrentWriter` 通知脏版本号以供 2s 节流异步保存完整 `current.json`。Core 不再维护 `EffectWindow`、`HistoryExport`、两份快照 diff（`ThreadEffectBatch`）或旧 `ThreadCheckpoint`/`ColdStore` 双轨实现，也不在运行期读取数据库或 `current.json`。
 
-Thread 快照的 `observation_revision` 标记同一物理 owner 的每次内存发布，包括未形成提交的模型与工具预览。它随快照原子发布，仅用于判断订阅首帧已覆盖的瞬时状态；不序列化、不跨 owner 比较，也不参与历史提交、落盘确认或传输 ACK。
+每个 Native Thread 只有一个串行执行决策循环：一份确认状态、一份 `Enabled`／`Paused(reason)` 授权和一个 ActiveRun。主循环采用三层优先级窗口：Tier 0（非阻塞取消与关闭令牌）→ Tier 1（`user_rx` 用户消息、打断继续、精确停止、交互/权限决议与手动压缩）→ Tier 2（`event_rx` 模型流事件、工具完成与进度、邮箱消息与后台维护完成）。模型调用、上下文压缩（单一在途 `PrimaryIO`）与并发工具执行（`ToolTasks`）均在外部异步任务中运行并通过 `event_rx` 回流，主循环处理事件与派发从不阻塞在外部 I/O 上。
 
-Core effect window 只保留尚未交给产品 History 的有界 original。`HistoryExport` 绑定 effect 与原 `ThreadSnapshot` 观察 cut，通过单条或 128 条页交给 HistoryChannel；接纳后 Core 仅释放该窗口。canonical History 的 event ID、event seq、row anchor、body ref 和 Work/Single 身份归 schema 25 History，不属于 Current revision 或旧 Core completion seq。
+模型流式输出通过单一有序端口（`ModelStreamSender`）交付流式增量、part 开始/完成与连接恢复态，不再并存 `ModelProgressSender` 与 `ModelMemberSender` 双通道。运行期工具任务结果在内核内存表中保留供 `TaskAccess` 直接查询，严禁在实时主循环中回查历史数据库。
 
-每个 Native Thread 只有一个执行决策循环：一份确认状态、一份 `Enabled`／`Paused(reason)` 授权和一个 ActiveRun。Turn 只记运行来源、身份与步数预算。具体模型打开／关闭、准备、压缩和调用由一个 primary 在途操作持有；工具复用原执行任务所有者，归档重试／保存归 maintenance。三者的完成都返回同一 owner，同步校验身份、候选与授权后归并；事件处理与派发不等待外部 I/O。模型 session、Future 和 lease 保留到原操作真实终态，不因其他事件到来重建调用。
-
-控制入口和生产者事实入口各有界 64；模型 member 与压缩开始保留单槽。一轮最多归并 32 项 ready 工作，开始新付费请求前处理当时已接纳的固定批次；持续到来的通知不能延长这批次。关闭的 watch／channel 与空 Future 集合停用，取消只观察一次，容量变化通过事件唤醒。工具启动的公平性与容量规则归 [09](./09-tool-runtime.md) §9.4。
-
-Resume 是 `operationId` 与一次性 continuation token 的控制转移，不创建输入记录。在最近 64 条控制回执中，同 ID 同请求返回原接纳回执，不清除后来 Stop；冲突拒绝。有效的新控制在同一次转移中消费 token 并预约全新 execution／Turn，即使 pending 为空也继续确认上下文。正式 API 准入才标 `Effective`，准备失败或准入前取消标 `NotExecuted`。冷恢复的新 token 与旧 Scheduled 反馈见 [15](./15-session-storage.md)，外部只读 DTO 见 [14](./14-runtime-host.md)。权限／交互及真实清理是独立准入条件。
+Resume 是 `operationId` 与一次性 continuation token 的控制转移，不创建输入记录。在最近 64 条控制回执中，同 ID 同请求返回原接纳回执，不清除后来 Stop；冲突拒绝。有效的新控制在同一次转移中消费 token 并预约全新 execution／Turn，即使 pending 为空也继续确认上下文。正式 API 准入才标 `Effective`，准备失败或准入前取消标 `NotExecuted`。冷恢复从 `current.json` 读取一次并停留在 `Paused` 态，外部只读 DTO 见 [14](./14-runtime-host.md)。权限／交互及真实清理是独立准入条件。
 
 Stop 的取消请求和外部操作实际退出是两个事实；定向 Stop 先在 owner 边界比较执行身份，再取消目标。Stop 后普通消息、权限答复与迟到结果不改变暂停授权；新的显式输入或有效 Resume 才能授权后续执行，且须等旧 primary 与目标工具真实退出。已知结果先成为 Current 事实，再形成独立 History 义务；保存失败不回滚或再次业务安装，迟到观察与资源清理不能被过期执行资格丢弃。
 

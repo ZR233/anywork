@@ -623,7 +623,7 @@ pub(super) async fn insert(db: &impl ConnectionTrait, event: &HistoryEvent) -> R
         }
         for (chunk_no, chunk) in raw.chunks(BODY_CHUNK_BYTES).enumerate() {
             db.execute_raw(statement(
-                "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,?,?)",
+                "INSERT OR IGNORE INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,?,?)",
                 vec![
                     header.id.clone().into(),
                     number(chunk_no as u64)?.into(),
@@ -660,7 +660,7 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
     let row_scope = event.row_scope.map(|scope| scope.as_str().to_owned());
     db.execute_raw(statement(
         &format!(
-            "INSERT INTO history_events({COLUMNS}) \
+            "INSERT OR IGNORE INTO history_events({COLUMNS}) \
              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         ),
         vec![
@@ -695,7 +695,7 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
 
 pub(super) async fn insert_body_header(db: &impl ConnectionTrait, body: &Body) -> Result<()> {
     db.execute_raw(statement(
-        "INSERT INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) \
+        "INSERT OR IGNORE INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) \
          VALUES(?,?,?,?,?,?,?,?)",
         vec![
             body.id.clone().into(),
@@ -733,6 +733,80 @@ pub(super) fn dedup_records_desc(
     merged.sort_by_key(|a| std::cmp::Reverse(a.record.seq));
     merged.truncate(limit);
     merged
+}
+
+pub(super) struct KnownBodyMeta {
+    pub(super) owner: String,
+    pub(super) key: String,
+    pub(super) length: u64,
+}
+
+#[derive(Default)]
+pub(super) struct KnownIndex {
+    pub(super) events: std::collections::HashSet<String>,
+    pub(super) anchors: std::collections::HashSet<String>,
+    pub(super) bodies: std::collections::HashMap<String, KnownBodyMeta>,
+    pub(super) latest_accounting: Option<HistoryAccountingHead>,
+    pub(super) latest_costs: std::collections::BTreeMap<String, HistoryCostHead>,
+}
+
+pub(super) async fn load_known_index(db: &impl ConnectionTrait) -> Result<KnownIndex> {
+    let mut index = KnownIndex::default();
+    let event_rows = db
+        .query_all_raw(statement(
+            "SELECT event_id, is_anchor, row_scope, row_key, seq, payload_schema, payload_json FROM history_events ORDER BY seq ASC",
+            vec![],
+        ))
+        .await?;
+    for row in event_rows {
+        let event_id: String = row.try_get("", "event_id")?;
+        index.events.insert(event_id);
+        let is_anchor: i64 = row.try_get("", "is_anchor")?;
+        let row_key: Option<String> = row.try_get("", "row_key")?;
+        if is_anchor == 1
+            && let Some(row_key) = &row_key
+        {
+            index.anchors.insert(row_key.clone());
+        }
+        let row_scope: Option<String> = row.try_get("", "row_scope")?;
+        if matches!(row_scope.as_deref(), Some("accounting" | "cost"))
+            && let Some(row_key) = row_key
+        {
+            let schema: String = row.try_get("", "payload_schema")?;
+            let json_str: String = row.try_get("", "payload_json")?;
+            if schema == "anywork.accounting/1" {
+                if let Ok(env) =
+                    serde_json::from_str::<super::body::BusinessEnvelope<HistoryAccountingHead>>(
+                        &json_str,
+                    )
+                {
+                    index.latest_accounting = Some(env.head);
+                }
+            } else if schema == "anywork.cost/1"
+                && let Ok(env) =
+                    serde_json::from_str::<super::body::BusinessEnvelope<HistoryCostHead>>(&json_str)
+            {
+                index.latest_costs.insert(row_key, env.head);
+            }
+        }
+    }
+    let body_rows = db
+        .query_all_raw(statement(
+            "SELECT body_id, owner_event_id, body_key, byte_length FROM history_bodies",
+            vec![],
+        ))
+        .await?;
+    for row in body_rows {
+        let body_id: String = row.try_get("", "body_id")?;
+        let owner: String = row.try_get("", "owner_event_id")?;
+        let key: String = row.try_get("", "body_key")?;
+        let length = u64::try_from(row.try_get::<i64>("", "byte_length")?)
+            .map_err(|_| HistoryError::Integrity("negative history body length".into()))?;
+        index
+            .bodies
+            .insert(body_id, KnownBodyMeta { owner, key, length });
+    }
+    Ok(index)
 }
 
 pub(super) fn dedup_records_asc(

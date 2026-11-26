@@ -121,19 +121,16 @@ impl Owner {
         }
         if input.turn_id.is_empty()
             || input.attempt_id.is_empty()
-            || (self.current_task_start_ordinal.is_some()
-                && !current::is_uuid_v4(&input.attempt_id))
             || self.state.context.records.iter().any(|record| {
                 record.id == format!("{}:input", input.attempt_id)
                     || record.id == format!("{}:output", input.attempt_id)
             })
             || self.state.attempt_ids.contains_key(&input.attempt_id)
-            || (self.current_task_start_ordinal.is_some()
-                && self
-                    .state
-                    .attempts
-                    .iter()
-                    .any(|attempt| attempt.attempt_id == input.attempt_id))
+            || self
+                .state
+                .attempts
+                .iter()
+                .any(|attempt| attempt.attempt_id == input.attempt_id)
         {
             return Err(ThreadError::InvalidIdentity);
         }
@@ -293,7 +290,7 @@ impl Owner {
                     .and_then(|error| error.context_recovery.as_deref())
                     .cloned(),
             );
-        let members = if self.cold.is_some() || self.current_task_start_ordinal.is_none() {
+        let members = if self.cold.is_some() || !self.is_current_owner {
             members.with_settlement(self.register_model_settlement(
                 Some(input.turn_id.clone()),
                 input.attempt_id.clone(),
@@ -627,8 +624,15 @@ impl Owner {
         } else {
             Some(input.attempt_id.clone())
         };
-        let published = self.publish();
+        self.current_snapshot_missing = false;
+        if let Some((attempt_id, receiver)) = &self.model_progress {
+            let progress = receiver.borrow().clone();
+            self.progress_tracker.observe(attempt_id, &progress, &self.event_bus);
+        }
+        self.progress_tracker
+            .finish_attempt(&input.attempt_id, &self.event_bus);
         self.model_progress = None;
+        let published = self.publish();
         published?;
         // Keep bounded member validation through the final output checks and terminal handoff.
         // Closing ingress above is not permission to release its identity/metadata obligation early.
@@ -647,9 +651,13 @@ impl Owner {
 
     pub(super) fn finish_step(&mut self, attempt_id: &str) {
         self.retire_model_settlement(attempt_id);
+        self.settle_operation_output(attempt_id);
+        self.progress_tracker
+            .finish_attempt(attempt_id, &self.event_bus);
         self.model_progress = None;
         self.model_members = None;
         self.state.model_execution = None;
+        self.current_snapshot_missing = false;
         if !self.current_model_running {
             self.current_capture = None;
         }

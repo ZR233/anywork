@@ -7,7 +7,7 @@ mod current;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use pl_core::thread::ThreadCheckpoint;
+use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
 
 /// Frozen continuation provenance decoded only during schema-24 import.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -275,7 +275,7 @@ impl StateStore {
             .and_then(toml::Value::as_integer)
             .context("checkpoint schemaVersion is missing")?;
         if ThreadCheckpoint::is_legacy_schema(u32::try_from(version)?) {
-            let mut legacy = pl_core::thread::LegacyThreadCheckpoint::decode_json(
+            let mut legacy = super::legacy_checkpoint::LegacyThreadCheckpoint::decode_json(
                 &serde_json::to_string(&value)?,
             )?;
             // Even bodies discarded by the new layout are checked before deleting the old manifest.
@@ -365,9 +365,9 @@ impl StateStore {
             {
                 for entry in entries {
                     if let Ok(entry) = serde_json::from_value::<
-                        pl_core::thread::LegacyCheckpointExternalBody,
+                        super::legacy_checkpoint::LegacyCheckpointExternalBody,
                     >(entry.clone())
-                        && matches!(entry.slot, pl_core::thread::LegacyCheckpointBodySlot::AttemptMetadata { attempt_index } if attempt_index == index)
+                        && matches!(entry.slot, super::legacy_checkpoint::LegacyCheckpointBodySlot::AttemptMetadata { attempt_index } if attempt_index == index)
                     {
                         let bytes =
                             tokio::fs::read(self.blob_path(entry.reference.digest())?).await?;

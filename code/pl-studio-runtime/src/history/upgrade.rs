@@ -1022,7 +1022,7 @@ async fn prepare_current(
 
 async fn build_current(
     source: &V24HistorySource,
-    mut checkpoint: Box<pl_core::thread::ThreadCheckpoint>,
+    mut checkpoint: Box<crate::studio::storage::legacy_checkpoint::ThreadCheckpoint>,
     thread_id: &str,
     session_dir: &Path,
 ) -> Result<ThreadCurrent> {
@@ -1043,7 +1043,7 @@ async fn build_current(
 
 async fn materialize_checkpoint_bodies(
     session_dir: &Path,
-    checkpoint: &mut pl_core::thread::ThreadCheckpoint,
+    checkpoint: &mut crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> Result<()> {
     while let Some(entry) = checkpoint.pending_body().cloned() {
         let path = checkpoint_blob_path(session_dir, entry.reference.digest())?;
@@ -1083,7 +1083,7 @@ fn checkpoint_blob_path(session_dir: &Path, digest: &str) -> Result<PathBuf> {
 
 async fn verify_saved_pending_originals(
     source: &V24HistorySource,
-    checkpoint: &pl_core::thread::ThreadCheckpoint,
+    checkpoint: &crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> Result<()> {
     for resident in checkpoint.state.tasks.values() {
         let row = source
@@ -1140,7 +1140,7 @@ async fn verify_saved_pending_originals(
 
 async fn verify_pending_identities(
     source: &V24HistorySource,
-    checkpoint: &pl_core::thread::ThreadCheckpoint,
+    checkpoint: &crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> Result<()> {
     for input in checkpoint.state.inputs.iter() {
         let row = source
@@ -4243,6 +4243,7 @@ mod tests {
 mod migration_tests {
     use std::sync::Arc;
 
+    use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
     use super::*;
     use crate::history::{
         HistoryBusinessRowHead, HistoryDelivery, HistoryEntityKind, HistoryEntityState,
@@ -4276,8 +4277,7 @@ mod migration_tests {
             content_hash,
         },
         thread::{
-            ThreadCheckpoint, ThreadLifecycle, ThreadSnapshot, ToolDelivery, ToolDeliveryTarget,
-            ToolOutcome,
+            ThreadLifecycle, ThreadSnapshot, ToolDelivery, ToolDeliveryTarget, ToolOutcome,
             extensions::ExtensionRecord,
             task::{TaskRecord, TaskStatus},
         },
@@ -6156,9 +6156,9 @@ mod migration_tests {
     }
 
     #[tokio::test]
-    async fn cold_current_reader_prepares_schema24_before_history_is_opened() -> anyhow::Result<()>
+    async fn cold_conversation_feed_prepares_schema24_before_history_is_opened() -> anyhow::Result<()>
     {
-        use crate::runtime_test_support::{Environment, current_demand};
+        use crate::runtime_test_support::Environment;
         let mut env = Environment::new(vec![], vec![]).await?;
         let result = async {
             let thread = env
@@ -6180,18 +6180,13 @@ mod migration_tests {
             assert!(!paths.current_file().exists());
             env.restart().await?;
             assert!(!paths.current_file().exists());
-            let reader = env
+            let feed = env
                 .runtime
-                .open_current_reader(
-                    &thread.id,
-                    crate::CURRENT_PROTOCOL_VERSION,
-                    current_demand(),
-                )
+                .open_conversation_feed(&thread.id, 16)
                 .await?;
-            let view = reader.snapshot(current_demand()).await?;
-            assert!(!view.projection.execution_present);
-            assert!(paths.current_file().is_file());
-            reader.close().await?;
+            let meta = feed.session_meta_snapshot();
+            assert!(!meta.execution_present);
+            feed.close().await;
             assert!(env.root_provider.recorded().is_empty());
             Ok(())
         }

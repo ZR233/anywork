@@ -7,18 +7,11 @@ use crate::history::{
     HistoryEventRecord, HistoryEventsQuery, HistoryReader, HistoryTurnState,
     body::decode_business_head_from_record, decode_event_envelope,
 };
-use crate::{ChatAtomKind, ChatSourceId, ReadDemand, ThreadTextChannel, TurnState};
+use crate::{ChatAtomKind, ChatSourceId, ThreadTextChannel, TurnState};
 
 pub(super) const MAX_TURN_CONTENT_ITEMS: usize = 16_384;
 pub(super) const MAX_TURN_BODY_BYTES: usize = 800_000;
 const WINDOW_BYTES: u32 = 32 * 1024;
-
-pub(super) fn demand() -> ReadDemand {
-    ReadDemand {
-        max_items: 100,
-        max_bytes: 256 * 1024,
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum FinalError {
@@ -489,23 +482,6 @@ pub(super) fn collect_complete_turn_text(
     } else {
         Ok(FinalText::CompleteText(text))
     }
-}
-
-pub(super) fn activity_preview(
-    atom: &crate::CurrentAtom,
-    body: &crate::CurrentContentPreview,
-    turn_id: &str,
-) -> Option<String> {
-    if atom.turn_id.as_deref() != Some(turn_id)
-        || atom.kind != ChatAtomKind::Text
-        || atom.text_channel != Some(ThreadTextChannel::Final)
-        || !matches!(&atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
-        || body.id != atom.id
-        || body.role != crate::CurrentContentRole::Response
-    {
-        return None;
-    }
-    Some(body.text.clone())
 }
 
 pub(super) fn read_failure(context: &str, error: impl Into<anyhow::Error>) -> FinalError {

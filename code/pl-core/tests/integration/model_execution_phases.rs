@@ -366,7 +366,9 @@ async fn context_preparation_transitions_to_compacting_context_when_compaction_e
     let store = CompactionStore::default();
     *store.thread.lock().unwrap() = Some(thread.clone());
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(store.clone()))
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
+            store.clone(),
+        ))
         .await
         .unwrap();
     thread
@@ -447,13 +449,58 @@ struct CompactionStoreState {
     replacement_admissions: std::sync::atomic::AtomicUsize,
 }
 
-impl pl_core::thread::cold::ColdStore for CompactionStore {
+impl pl_core::thread::history_sink::HistorySink for CompactionStore {
+    fn fold_usage(
+        &self,
+        summary: &mut pl_core::thread::UsageSummary,
+        effect: &pl_core::thread::ThreadEffectBatch,
+    ) {
+        let _ = (summary, effect);
+    }
+    fn reserve_observed_item(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+        Ok(())
+    }
+    fn reserve_operation_output(
+        &self,
+        _: &str,
+        _: &str,
+        max: u64,
+    ) -> Result<u64, pl_core::thread::cold::ColdStoreError> {
+        Ok(max)
+    }
+    fn charge_operation_output(
+        &self,
+        _: &str,
+        _: &str,
+        _: u64,
+    ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+        Ok(())
+    }
+    fn release_operation_output(&self, _: &str, _: &str) {}
+    fn pressure(&self, _: &str) -> pl_core::thread::cold::StoragePressure {
+        Default::default()
+    }
+    fn idle_status(&self, _: &str) -> pl_core::thread::cold::StorageIdleStatus {
+        pl_core::thread::cold::StorageIdleStatus {
+            pressure: Default::default(),
+            reclaimable_thread_bytes: Some(0),
+        }
+    }
+    fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
     fn admit(
         &self,
         _: &str,
-        write: pl_core::thread::cold::ThreadWrite,
+        export: Arc<pl_core::thread::HistoryExport>,
     ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
-        if write.effect.replacements.iter().any(|replacement| {
+        let write_effect = &export.effect;
+        if write_effect.replacements.iter().any(|replacement| {
             replacement.reason == pl_core::thread::ContextReplacementReason::Compaction
         }) {
             use std::sync::atomic::Ordering;
@@ -467,7 +514,7 @@ impl pl_core::thread::cold::ColdStore for CompactionStore {
             }
             self.replacement_admissions.fetch_add(1, Ordering::SeqCst);
         }
-        for event in write.effect.context_compactions.iter() {
+        for event in write_effect.context_compactions.iter() {
             match event {
                 ContextCompactionEvent::Started { .. } => {
                     let thread = self.thread.lock().unwrap();
@@ -494,11 +541,7 @@ impl pl_core::thread::cold::ColdStore for CompactionStore {
         self.events
             .lock()
             .unwrap()
-            .extend(write.effect.context_compactions.iter().cloned());
-        Ok(())
-    }
-
-    async fn flush(&self, _: &str, _: u64) -> Result<(), pl_core::thread::cold::ColdStoreError> {
+            .extend(write_effect.context_compactions.iter().cloned());
         Ok(())
     }
 }
@@ -814,7 +857,7 @@ async fn force_and_host_share_one_operation_and_idle_does_not_borrow_an_old_turn
         let store = CompactionStore::default();
         *store.thread.lock().unwrap() = Some(thread.clone());
         thread
-            .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(store))
+            .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(store))
             .await
             .unwrap();
         install_lifecycle_hook(&thread, CompactionEnd::Changed, true).await;
@@ -883,7 +926,9 @@ async fn compaction_save_failure_keeps_the_finished_obligation_and_does_not_repo
     let store = CompactionStore::default();
     *store.thread.lock().unwrap() = Some(thread.clone());
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(store.clone()))
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
+            store.clone(),
+        ))
         .await
         .unwrap();
     install_lifecycle_hook(&thread, CompactionEnd::Unchanged, false).await;
@@ -917,7 +962,9 @@ async fn replacement_save_refusal_survives_finished_retry_without_provider_execu
     let store = CompactionStore::default();
     *store.thread.lock().unwrap() = Some(thread.clone());
     thread
-        .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(store.clone()))
+        .attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(
+            store.clone(),
+        ))
         .await
         .unwrap();
     install_lifecycle_hook(&thread, CompactionEnd::Changed, false).await;

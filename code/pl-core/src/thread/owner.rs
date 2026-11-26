@@ -26,13 +26,11 @@ pub(super) struct NestedScope {
 }
 
 pub(super) enum PendingWrite {
-    Checkpoint(Box<cold::ThreadWrite>),
     History(Arc<HistoryExport>),
 }
 impl PendingWrite {
     pub(super) fn effect(&self) -> &Arc<ThreadEffectBatch> {
         match self {
-            Self::Checkpoint(write) => &write.effect,
             Self::History(export) => &export.effect,
         }
     }
@@ -59,9 +57,10 @@ pub(super) struct Owner {
     pub(super) current_dirty: watch::Sender<u64>,
     pub(super) current_model_running: bool,
     pub(super) current_snapshot_missing: bool,
+    pub(super) is_current_owner: bool,
     pub(super) current_saved_execution: Option<ActiveExecution>,
     pub(super) current_saved_lifecycle: Option<ThreadLifecycle>,
-    pub(super) current_task_start_ordinal: Option<u64>,
+    pub(super) current_task_start_ordinal: u64,
     pub(super) current_retired_previews:
         std::collections::BTreeMap<String, current::SavedToolProgress>,
     pub(super) final_current:
@@ -102,7 +101,10 @@ pub(super) struct Owner {
     pub(super) frozen_turn: Option<String>,
     pub(super) interrupted_turn: Option<String>,
     pub(super) policy: input::ExecutionPolicy,
-    pub(super) task_commands: mpsc::WeakSender<mailbox::MailboxCommand>,
+    pub(super) task_commands: mpsc::WeakSender<handle::LoopEvent>,
+    pub(super) event_bus: events::EventBus,
+    pub(super) progress_tracker: events::ModelProgressTracker,
+    pub(super) completed_tasks: Arc<std::sync::RwLock<task_access::CompletedTaskLedger>>,
     pub(super) background:
         futures::stream::FuturesUnordered<super::tool_execution::ToolExecutionFuture>,
     pub(super) nested_sequence: u64,
@@ -113,7 +115,6 @@ pub(super) struct Owner {
         String,
         oneshot::Sender<Result<crate::tool::ToolOutput, ThreadError>>,
     >,
-    pub(super) mailbox: mpsc::Receiver<super::mailbox::MailboxCommand>,
     pub(super) interrupt: cancellation::InterruptHandle,
     pub(super) id: String,
     pub(super) model: Option<DynModelSession>,
@@ -256,6 +257,10 @@ impl Owner {
             phase: ExecutionPhase::Preparing,
             turn_id: None,
         });
+        self.event_bus
+            .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+                execution: self.state.execution.clone(),
+            }));
         self.publish_snapshot();
         Ok(())
     }
@@ -276,6 +281,10 @@ impl Owner {
             Some(_) | None => false,
         };
         if changed {
+            self.event_bus
+                .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+                    execution: self.state.execution.clone(),
+                }));
             self.publish_snapshot();
         }
     }
@@ -295,6 +304,10 @@ impl Owner {
             Some(_) | None => false,
         };
         if changed {
+            self.event_bus
+                .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+                    execution: self.state.execution.clone(),
+                }));
             self.publish_snapshot();
         }
     }
@@ -304,12 +317,22 @@ impl Owner {
     /// The owner is serial and owns at most one execution, so the execution this Turn ran is the one
     /// that either already names the Turn or is still preparing for it.
     pub(super) fn finish_execution(&mut self, turn_id: &str) {
+        self.finish_execution_with_emit(turn_id, true);
+    }
+
+    pub(super) fn finish_execution_with_emit(&mut self, turn_id: &str, emit: bool) {
         let owned = self.state.execution.as_ref().is_some_and(|execution| {
             execution.turn_id.is_none() || execution.turn_id.as_deref() == Some(turn_id)
         });
         if owned {
             self.state.execution = None;
-            self.publish_snapshot();
+            if emit {
+                self.event_bus
+                    .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+                        execution: None,
+                    }));
+                self.publish_snapshot();
+            }
         }
     }
 
@@ -356,32 +379,37 @@ impl Owner {
         self.form_continuation(ContinuationReason::HostShutdown, source_turn, &source);
     }
 
-    pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+    pub(super) async fn run(
+        mut self,
+        mut user_rx: mpsc::Receiver<UserCommand>,
+        mut event_rx: mpsc::Receiver<LoopEvent>,
+    ) {
         use futures::{FutureExt, StreamExt};
         let mut pressure_updates = self.subscribe_pressure();
         let mut pressure_subscribed = self.cold.is_some();
-        let mut commands_open = true;
+        let mut user_open = true;
         let mut admitted_batch: Option<(usize, usize, usize)> = None;
         loop {
-            let (mut control_remaining, mut producer_remaining, mut results_remaining) =
+            let (mut user_remaining, mut event_remaining, mut results_remaining) =
                 admitted_batch.take().unwrap_or_else(|| {
                     (
-                        commands.len(),
-                        self.mailbox.len(),
+                        user_rx.len(),
+                        event_rx.len(),
                         self.background.len() + self.maintenance.len(),
                     )
                 });
             let mut ready = 0;
-            while ready < 31 && (control_remaining > 0 || producer_remaining > 0) {
-                if control_remaining > 0 {
-                    control_remaining -= 1;
-                    if let Ok(command) = commands.try_recv() {
-                        self.handle_command(command);
+            // Bounded priority window: Tier 1 user commands always drain before Tier 2 events.
+            while ready < 31 && (user_remaining > 0 || event_remaining > 0) {
+                if user_remaining > 0 {
+                    user_remaining -= 1;
+                    if let Ok(command) = user_rx.try_recv() {
+                        self.handle_user_command(command);
                     }
                 } else {
-                    producer_remaining -= 1;
-                    if let Ok(message) = self.mailbox.try_recv() {
-                        self.process_mailbox(message);
+                    event_remaining -= 1;
+                    if let Ok(event) = event_rx.try_recv() {
+                        self.handle_loop_event(event);
                     }
                 }
                 ready += 1;
@@ -398,17 +426,13 @@ impl Owner {
                 ready += 1;
                 results_remaining -= 1;
             }
-            if control_remaining > 0 || producer_remaining > 0 || results_remaining > 0 {
-                // A ready slice cannot stop the original primary from being polled. Keep the
-                // frozen admission batch finite even when more producer traffic arrives.
+            if user_remaining > 0 || event_remaining > 0 || results_remaining > 0 {
                 if let Some(work) = self.primary.as_mut()
                     && let Some(completion) = (&mut work.future).now_or_never()
                 {
-                    // Retain the completed operation and its session. In particular, preparation
-                    // cannot admit a new paid request before this frozen control/result batch ends.
                     work.future = Box::pin(std::future::ready(completion));
                 }
-                admitted_batch = Some((control_remaining, producer_remaining, results_remaining));
+                admitted_batch = Some((user_remaining, event_remaining, results_remaining));
                 tokio::task::yield_now().await;
                 continue;
             }
@@ -437,7 +461,7 @@ impl Owner {
             if self.closing.is_none()
                 && self.primary.is_none()
                 && self.active.is_none()
-                && ((!commands_open)
+                && ((!user_open)
                     || (self.state.lifecycle == ThreadLifecycle::Closed
                         && self.final_current.borrow().is_some()))
             {
@@ -447,25 +471,40 @@ impl Owner {
             let cancelled = self.interrupt.active_token().filter(|t| !t.is_cancelled());
             let deadline = self.batch_deadline();
             tokio::select! {
-                command = commands.recv(), if commands_open => match command {
-                    Some(command) => self.handle_command(command),
-                    None => { commands_open = false; self.begin_closing(ClosePurpose::Preserve, None); }
+                biased;
+                // Tier 0: immediate cancellation
+                () = async { match cancelled { Some(token) => token.cancelled().await, None => std::future::pending().await } } => self.publish_snapshot(),
+                // Tier 1: user commands & lifecycle control
+                command = user_rx.recv(), if user_open => match command {
+                    Some(command) => self.handle_user_command(command),
+                    None => { user_open = false; self.begin_closing(ClosePurpose::Preserve, None); }
                 },
-                message = self.mailbox.recv(), if !self.mailbox.is_closed() || !self.mailbox.is_empty() => if let Some(message) = message { self.process_mailbox(message); },
+                // Tier 2: internal runtime, model, tool, inbox events
+                event = event_rx.recv(), if !event_rx.is_closed() || !event_rx.is_empty() => if let Some(event) = event { self.handle_loop_event(event); },
                 completion = async { match self.primary.as_mut() { Some(work) => (&mut work.future).await, None => std::future::pending().await } } => {
                     self.primary = None;
                     if let Err(error) = self.accept_primary(completion) { self.fail_owner_work(error); }
                 },
                 Some(completion) = self.background.next(), if !self.background.is_empty() => self.finish_background(completion),
                 Some(completion) = self.maintenance.next(), if !self.maintenance.is_empty() => self.finish_maintenance(completion),
-                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
-                () = async { match cancelled { Some(token) => token.cancelled().await, None => std::future::pending().await } } => self.publish_snapshot(),
-                () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => (),
                 Some(admission) = async { match self.model_members.as_mut() { Some(call) => call.receiver.recv().await, None => std::future::pending().await } }, if self.model_members.as_ref().is_some_and(|call| !call.receiver.is_closed() || !call.receiver.is_empty()) => self.admit_model_member(admission),
                 Some(reply) = async { match self.compaction_call.as_mut() { Some(call) => call.receiver.recv().await, None => std::future::pending().await } }, if self.compaction_call.as_ref().is_some_and(|call| !call.receiver.is_closed() || !call.receiver.is_empty()) => self.admit_context_compaction(reply),
                 changed = async { match self.model_progress.as_mut() { Some((_, receiver)) => receiver.changed().await, None => std::future::pending().await } } => {
-                    if changed.is_ok() { self.publish_snapshot(); } else {
-                        if let Some(call) = self.model_members.as_mut() && let Some((_, receiver)) = self.model_progress.as_ref() { call.generation = receiver.borrow().observation().generation; }
+                    if changed.is_ok() {
+                        if let Some((attempt_id, receiver)) = &self.model_progress {
+                            let progress = receiver.borrow().clone();
+                            self.progress_tracker.observe(attempt_id, &progress, &self.event_bus);
+                        }
+                        self.publish_snapshot();
+                    } else {
+                        if let Some((attempt_id, receiver)) = &self.model_progress {
+                            let progress = receiver.borrow().clone();
+                            self.progress_tracker.observe(attempt_id, &progress, &self.event_bus);
+                            if let Some(call) = self.model_members.as_mut() {
+                                call.generation = progress.observation().generation;
+                            }
+                        }
+                        self.progress_tracker.clear(&self.event_bus);
                         self.model_progress = None;
                     }
                 },
@@ -473,6 +512,8 @@ impl Owner {
                     let refusal = self.output_refusal_rx.borrow_and_update().clone();
                     if let Some(refusal) = refusal && self.operation_budgets.contains_key(&refusal.operation_id) { self.latch_output_budget_fault(&refusal.operation_id, refusal.accepted, refusal.limit); }
                 },
+                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
+                () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => (),
                 changed = async { match pressure_updates.as_mut() { Some(updates) => updates.changed().await.is_ok(), None => std::future::pending::<bool>().await } } => {
                     if !changed { pressure_updates = None; self.pressure_watch_closed = true; }
                     self.admit_cold(); self.refresh_storage_pressure();
@@ -483,18 +524,18 @@ impl Owner {
         }
     }
 
-    fn handle_command(&mut self, command: Command) {
-        if let Command::Control(command) = command {
-            self.process_mailbox(command);
+    fn handle_user_command(&mut self, command: UserCommand) {
+        if let UserCommand::Mailbox(mailbox_cmd) = command {
+            self.process_mailbox(mailbox_cmd);
             return;
         }
-        if self.interrupt.is_closing() && !matches!(command, Command::Close(_, _)) {
+        if self.interrupt.is_closing() && !matches!(command, UserCommand::Close(_, _)) {
             command.reject();
             return;
         }
         match command {
-            Command::Control(_) => unreachable!("control already handled"),
-            Command::CurrentResume {
+            UserCommand::Mailbox(_) => unreachable!("mailbox already handled"),
+            UserCommand::CurrentResume {
                 epoch,
                 expected_stop_generation,
                 input,
@@ -510,101 +551,13 @@ impl Owner {
                     let _ = reply.send(Err(error));
                 }
             },
-            Command::ContextPreparation(preparation, reply) => {
-                self.context_preparation = preparation;
-                let _ = reply.send(Ok(()));
-            }
-            Command::Reveal(ids, reply) => {
-                let result = self
-                    .tools
-                    .reveal(&ids)
-                    .map_err(ThreadError::from)
-                    .and_then(|()| {
-                        self.state.discovered_tools = self.tools.discovery();
-                        self.publish()
-                    });
-                let _ = reply.send(result);
-            }
-
-            Command::RequestInteraction(request, reply) => {
-                let _ = reply.send(self.request_interaction(request));
-            }
-            Command::CancelInteraction(cancellation, reply) => {
-                let _ = reply.send(self.cancel_interaction(cancellation));
-            }
-            Command::ResolveInteraction(resolution, reply) => {
+            UserCommand::ResolveInteraction(resolution, reply) => {
                 let _ = reply.send(self.resolve_interaction(resolution));
             }
-
-            Command::Application(update, reply) => {
-                let _ = reply.send(self.update_application(update));
+            UserCommand::CancelInteraction(cancellation, reply) => {
+                let _ = reply.send(self.cancel_interaction(cancellation));
             }
-            Command::Resources(resources, reply) => {
-                let result = if self.state.lifecycle == ThreadLifecycle::Open {
-                    if !self
-                        .resources
-                        .as_ref()
-                        .is_some_and(|current| current.same_service(&resources))
-                    {
-                        self.retry_plan = None;
-                    }
-                    self.resources = Some(resources);
-                    Ok(())
-                } else {
-                    Err(ThreadError::Closed)
-                };
-                let _ = reply.send(result);
-            }
-
-            Command::Retry {
-                source,
-                attempt,
-                cancellation,
-                reply,
-            } => {
-                self.schedule_retry(source, attempt, cancellation, reply);
-            }
-            Command::AttachCold(store, reply) => {
-                let store = store.0;
-                let result = if self.current_task_start_ordinal.is_some() {
-                    Err(ThreadError::CurrentCheckpointStore)
-                } else if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
-                    Err(ThreadError::InvalidIdentity)
-                } else {
-                    let pressure = store.pressure(&self.id);
-                    // Legacy checkpoints belong to their existing History prefix. This validates
-                    // attachment once; independent Current owners never carry this watermark.
-                    if pressure.durable_sequence < self.state.persistence.durable_sequence {
-                        let _ = reply.send(Err(ThreadError::StorageRecoveryPending {
-                            durable: pressure.durable_sequence,
-                            required: self.state.persistence.durable_sequence,
-                        }));
-                        return;
-                    }
-                    self.state.persistence.admitted_sequence = pressure.durable_sequence;
-                    self.state.persistence.durable_sequence = pressure.durable_sequence;
-                    self.cold = Some(store);
-                    self.admit_cold();
-                    self.publish_snapshot();
-                    Ok(())
-                };
-                let _ = reply.send(result);
-            }
-            Command::AttachHistory(store, reply) => {
-                let result = if self.current_task_start_ordinal.is_none()
-                    || self.cold.is_some()
-                    || self.state.lifecycle != ThreadLifecycle::Open
-                {
-                    Err(ThreadError::InvalidIdentity)
-                } else {
-                    self.cold = Some(store.into_storage());
-                    self.admit_cold();
-                    self.publish_snapshot();
-                    Ok(())
-                };
-                let _ = reply.send(result);
-            }
-            Command::QueuedTurn(request, reply) => {
+            UserCommand::QueuedTurn(request, reply) => {
                 if self.active.is_some() {
                     let _ = reply.send(Err(ThreadError::InputRequiresIdle));
                 } else if let Some(content) = self.freeze_next_input_batch() {
@@ -624,14 +577,91 @@ impl Owner {
                     let _ = reply.send(Ok(None));
                 }
             }
-            Command::Turn(input, reply) => {
+            UserCommand::Turn(input, reply) => {
                 if let Err((error, reply)) =
                     self.start_run(input, super::execution::RunReply::Turn(reply))
                 {
                     reply.reject(error);
                 }
             }
-            Command::Capacity(capacity, reply) => {
+            UserCommand::Close(purpose, reply) => {
+                self.begin_closing(purpose, Some(reply));
+            }
+        }
+    }
+
+    fn handle_loop_event(&mut self, event: LoopEvent) {
+        if let LoopEvent::Mailbox(mailbox_cmd) = event {
+            self.process_mailbox(mailbox_cmd);
+            return;
+        }
+        if self.interrupt.is_closing() {
+            event.reject();
+            return;
+        }
+        match event {
+            LoopEvent::Mailbox(_) => unreachable!("mailbox already handled"),
+            LoopEvent::ContextPreparation(preparation, reply) => {
+                self.context_preparation = preparation;
+                let _ = reply.send(Ok(()));
+            }
+            LoopEvent::Reveal(ids, reply) => {
+                let result = self
+                    .tools
+                    .reveal(&ids)
+                    .map_err(ThreadError::from)
+                    .and_then(|()| {
+                        self.state.discovered_tools = self.tools.discovery();
+                        self.publish()
+                    });
+                let _ = reply.send(result);
+            }
+            LoopEvent::RequestInteraction(request, reply) => {
+                let _ = reply.send(self.request_interaction(request));
+            }
+            LoopEvent::Application(update, reply) => {
+                let _ = reply.send(self.update_application(update));
+            }
+            LoopEvent::Resources(resources, reply) => {
+                let result = if self.state.lifecycle == ThreadLifecycle::Open {
+                    if !self
+                        .resources
+                        .as_ref()
+                        .is_some_and(|current| current.same_service(&resources))
+                    {
+                        self.retry_plan = None;
+                    }
+                    self.resources = Some(resources);
+                    Ok(())
+                } else {
+                    Err(ThreadError::Closed)
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::Retry {
+                source,
+                attempt,
+                cancellation,
+                reply,
+            } => {
+                self.schedule_retry(source, attempt, cancellation, reply);
+            }
+            LoopEvent::AttachHistory(store, reply) => {
+                let result = if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
+                    Err(ThreadError::InvalidIdentity)
+                } else {
+                    self.cold = Some(store.into_storage());
+                    self.admit_cold();
+                    self.publish_snapshot();
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
+            LoopEvent::AttachEventSink(sink, reply) => {
+                self.event_bus.attach_sink(sink);
+                let _ = reply.send(Ok(()));
+            }
+            LoopEvent::Capacity(capacity, reply) => {
                 let result = if self.state.lifecycle == ThreadLifecycle::Open {
                     self.capacity = capacity;
                     Ok(())
@@ -640,27 +670,23 @@ impl Owner {
                 };
                 let _ = reply.send(result);
             }
-
-            Command::PatchRuntimeFacts(facts, reply) => {
+            LoopEvent::PatchRuntimeFacts(facts, reply) => {
                 let _ = reply.send(self.patch_runtime_facts(facts));
             }
-            Command::UpdateFacts(facts, reply) => {
+            LoopEvent::UpdateFacts(facts, reply) => {
                 let _ = reply.send(self.update_facts(facts));
             }
-            Command::CompactContext(revision, cancellation, reply) => {
+            LoopEvent::CompactContext(revision, cancellation, reply) => {
                 self.schedule_compaction(revision, cancellation, reply);
             }
-            Command::ReplaceContext(replacement, reply) => {
+            LoopEvent::ReplaceContext(replacement, reply) => {
                 let _ = reply.send(self.replace_context(replacement));
             }
-            Command::Execute(id, cancellation, reply) => {
+            LoopEvent::Execute(id, cancellation, reply) => {
                 self.schedule_tool(id, cancellation, reply);
             }
-            Command::Step(input, reply) => {
+            LoopEvent::Step(input, reply) => {
                 self.schedule_step(input, None, super::execution::RunReply::Step(reply));
-            }
-            Command::Close(purpose, reply) => {
-                self.begin_closing(purpose, Some(reply));
             }
         }
     }
@@ -743,16 +769,6 @@ impl Owner {
             DynModelSession::is_available,
         );
 
-        if snapshot.lifecycle == ThreadLifecycle::Closed
-            && self.current_task_start_ordinal.is_none()
-            && !self.interrupt.is_deleting()
-            && snapshot.persistence.attached
-            && snapshot.persistence.durable_sequence < snapshot.commit_sequence
-        {
-            // Only the legacy checkpoint port owns a close durability barrier. Current
-            // closes physically before the host drains its independent History queue.
-            snapshot.lifecycle = ThreadLifecycle::Closing;
-        }
         snapshot.observation_revision = self
             .publish
             .borrow()
@@ -764,13 +780,11 @@ impl Owner {
                 snapshot,
                 binding: self.runtime_binding.clone(),
             });
-        if self.current_task_start_ordinal.is_some() {
-            self.current_dirty.send_modify(|revision| {
-                *revision = revision
-                    .checked_add(1)
-                    .expect("current dirty revision exhausted");
-            });
-        }
+        self.current_dirty.send_modify(|revision| {
+            *revision = revision
+                .checked_add(1)
+                .expect("current dirty revision exhausted");
+        });
     }
 
     pub(super) fn publish(&mut self) -> Result<(), ThreadError> {
@@ -822,14 +836,9 @@ impl Owner {
         Ok((self.state.commit_sequence > previous).then_some(self.state.commit_sequence))
     }
 
-    /// Commits the resident facts as exactly one effect batch.
+    /// Commits the resident facts as exactly one effect batch and emits `CoreEvent::Durable`.
     fn publish_once(&mut self) -> Result<(), ThreadError> {
-        // A just-ended task may still have the last real producer preview needed at this history
-        // boundary. Current retires it below; the immutable export keeps that original cut.
-        let history_progress = self
-            .current_task_start_ordinal
-            .is_some()
-            .then(|| self.state.tool_progress.clone());
+        let history_progress = self.state.tool_progress.clone();
         let revision = self.state.interaction_collection_revision_for(
             &self.published,
             &self.state.interactions,
@@ -869,8 +878,6 @@ impl Owner {
             },
             std::mem::take(&mut self.pending_context_compactions).into(),
         ) else {
-            // Nothing was committed, so no fact can take a reservation over: the claim is dropped
-            // and the operation's own boundary releases its ceiling instead.
             self.pending_output_claim = None;
             return Ok(());
         };
@@ -881,8 +888,6 @@ impl Owner {
             .and_then(|operation| self.operation_budgets.get(operation))
             .filter(|budget| budget.tracks_member_claims())
         {
-            // Register every claim before it enters the pending queue, not just member writes.
-            // Earlier refused claims can otherwise consume later members' resident allocation.
             let funded = crate::model::encoded_member_bytes(&effect)
                 .map_err(|source| cold::ColdStoreError {
                     source: Box::new(source),
@@ -892,8 +897,6 @@ impl Owner {
                     budget.register_output_claim(bytes)
                 });
             if funded.is_err() {
-                // A claim that lacks separate funding must use ordinary reliable admission; it
-                // must never transfer the operation's still-live resident member funds.
                 output_claim = None;
             }
         }
@@ -903,57 +906,57 @@ impl Owner {
         if let Some(store) = &self.cold {
             store.fold_usage(&mut self.state.usage_summary, &effect);
         } else {
-            // RAM-only current still has cumulative usage; no history receipt is needed.
             super::usage::fold_effect(&mut self.state.usage_summary, &effect);
         }
-        if self.current_task_start_ordinal.is_some() {
-            // The explicit current owner exports facts independently. It never creates a
-            // transfer checkpoint, queues a second current body, or waits for its history receipt.
-            let mut history_state = self.state.clone();
-            if let Some(progress) = history_progress {
-                history_state.tool_progress = progress;
-            }
-            history_state.model_progress = self.model_progress.as_ref().map(|(id, receiver)| {
-                crate::model::ActiveModelProgress {
-                    attempt_id: id.clone(),
-                    progress: receiver.borrow().clone(),
+        // Record settled tasks in the bounded in-memory ledger before retain_live_facts prunes deliveries.
+        {
+            let mut ledger = self
+                .completed_tasks
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for task in self
+                .state
+                .tasks
+                .values()
+                .chain(self.state.terminal_tasks.iter())
+            {
+                if task.status != task::TaskStatus::Running {
+                    let delivery = self
+                        .state
+                        .deliveries
+                        .iter()
+                        .find(|d| d.call_id == task.call_id)
+                        .cloned();
+                    ledger.record(task.clone(), delivery);
                 }
-            });
-            let export = Arc::new(HistoryExport {
-                effect,
-                state: history_state,
-                output_claim,
-            });
-            self.retain_live_facts()?;
-            self.published = self.state.clone();
-            self.effect_window.push_current(export.clone());
-            self.pending_effects.push_back(PendingEffect {
-                write: PendingWrite::History(export),
-                encoded_bytes,
-            });
-            self.admit_cold();
-            self.publish_snapshot();
-            return Ok(());
+            }
         }
-        // The effect above is the only copy of this commit's facts: the write below persists a
-        // transfer state that still carries them so the writer projects the effect without reading
-        // back a pruned checkpoint; the resident state drops the same facts right after.
-        let checkpoint =
-            ThreadCheckpoint::capture_transfer(self.id.clone(), sequence, self.state.clone());
+        let mut history_state = self.state.clone();
+        history_state.tool_progress = history_progress;
+        history_state.model_progress = self.model_progress.as_ref().map(|(id, receiver)| {
+            crate::model::ActiveModelProgress {
+                attempt_id: id.clone(),
+                progress: receiver.borrow().clone(),
+            }
+        });
+        let export = Arc::new(HistoryExport {
+            effect,
+            state: history_state,
+            output_claim,
+        });
         self.retain_live_facts()?;
         self.published = self.state.clone();
-        // The operation about to see its result committed names the reservation that funds it; a
-        // publish that commits no effect (handled above) drops the claim, so the operation's own
-        // boundary releases its still-untransferred ceiling instead.
+        self.effect_window.push_current(export.clone());
         self.pending_effects.push_back(PendingEffect {
-            write: PendingWrite::Checkpoint(Box::new(cold::ThreadWrite {
-                effect: effect.clone(),
-                checkpoint,
-                output_claim,
-            })),
+            write: PendingWrite::History(export.clone()),
             encoded_bytes,
         });
-        self.effect_window.push(effect);
+        self.event_bus
+            .emit(events::CoreEvent::Durable(Arc::new(events::CoreCommitEvent {
+                thread_id: self.id.clone(),
+                sequence,
+                export,
+            })));
         self.admit_cold();
         self.publish_snapshot();
         Ok(())
@@ -995,8 +998,10 @@ mod close_tests {
             ModelToolCall, PreparedModelCall,
         },
         thread::{
-            ModelStepLimit, ThreadError, ThreadHandle, ThreadLifecycle, TurnInput,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
+            HistoryExport, ModelStepLimit, ThreadError, ThreadHandle, ThreadLifecycle, TurnInput,
+            UsageSummary,
+            cold::{ColdStoreError, StorageAdmissionBackpressure, StorageIdleStatus, StoragePressure},
+            history_sink::{HistorySink, HistorySinkHandle},
             input::{InputPurpose, ThreadInput},
         },
         tool::{
@@ -1107,45 +1112,65 @@ mod close_tests {
         admitted: AtomicU64,
         durable: AtomicU64,
         admissions: AtomicUsize,
-        flushes: AtomicUsize,
-        fail_flush: AtomicBool,
-        block_flush: AtomicBool,
-        flush_entered: CancellationToken,
-        flush_exited: Arc<AtomicBool>,
+        fail_admit: AtomicBool,
+        block_backpressure: AtomicBool,
     }
 
-    impl ColdStore for Arc<SaveProbe> {
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            self.admissions.fetch_add(1, Ordering::SeqCst);
-            self.admitted
-                .fetch_max(write.effect.sequence, Ordering::SeqCst);
+    impl HistorySink for Arc<SaveProbe> {
+        fn fold_usage(
+            &self,
+            summary: &mut UsageSummary,
+            effect: &crate::thread::ThreadEffectBatch,
+        ) {
+            crate::thread::usage::fold_effect(summary, effect);
+        }
+        fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
             Ok(())
         }
-
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
+            Ok(max)
+        }
+        fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn release_operation_output(&self, _: &str, _: &str) {}
+        fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            None
+        }
+        fn admit(&self, _: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+            self.admissions.fetch_add(1, Ordering::SeqCst);
+            if self.block_backpressure.load(Ordering::SeqCst) {
+                return Err(ColdStoreError {
+                    source: Box::new(StorageAdmissionBackpressure("queue full".into())),
+                });
+            }
+            if self.fail_admit.load(Ordering::SeqCst) {
+                return Err(ColdStoreError {
+                    source: Box::new(std::io::Error::other(
+                        "final save must be skipped for deletion",
+                    )),
+                });
+            }
+            let seq = export.effect.sequence;
+            self.admitted.fetch_max(seq, Ordering::SeqCst);
+            self.durable.fetch_max(seq, Ordering::SeqCst);
+            Ok(())
+        }
         fn pressure(&self, _: &str) -> StoragePressure {
             StoragePressure {
                 durable_sequence: self.durable.load(Ordering::SeqCst),
                 ..Default::default()
             }
         }
-
-        async fn flush(&self, _: &str, through: u64) -> Result<(), ColdStoreError> {
-            self.flushes.fetch_add(1, Ordering::SeqCst);
-            if self.block_flush.load(Ordering::SeqCst) {
-                let _waiting = CallDrop(self.flush_exited.clone());
-                self.flush_entered.cancel();
-                return std::future::pending().await;
-            }
-            if self.fail_flush.load(Ordering::SeqCst) {
-                Err(ColdStoreError {
-                    source: Box::new(std::io::Error::other(
-                        "final save must be skipped for deletion",
-                    )),
-                })
-            } else {
-                assert!(through <= self.admitted.load(Ordering::SeqCst));
-                self.durable.fetch_max(through, Ordering::SeqCst);
-                Ok(())
+        fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+            StorageIdleStatus {
+                pressure: self.pressure(thread_id),
+                reclaimable_thread_bytes: Some(0),
             }
         }
     }
@@ -1169,7 +1194,7 @@ mod close_tests {
         .unwrap();
         let store = Arc::new(SaveProbe::default());
         thread
-            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .attach_history(HistorySinkHandle::new(store.clone()))
             .await
             .unwrap();
         let registration =
@@ -1206,9 +1231,8 @@ mod close_tests {
             .await
             .unwrap();
         assert!(thread.snapshot().continuation.is_none());
-        let flushes = store.flushes.load(Ordering::SeqCst);
         let admissions = store.admissions.load(Ordering::SeqCst);
-        store.fail_flush.store(true, Ordering::SeqCst);
+        store.fail_admit.store(true, Ordering::SeqCst);
         let mut closing = Box::pin(close(&thread, purpose));
         tokio::select! {
             result = &mut closing => panic!("close skipped the real task join: {result:?}"),
@@ -1220,12 +1244,10 @@ mod close_tests {
         assert!(closing.await.is_err(), "first resource close must fail");
         assert!(tool.joined.load(Ordering::SeqCst));
         assert_eq!(model_closed.load(Ordering::SeqCst), 1);
-        assert_eq!(store.flushes.load(Ordering::SeqCst), flushes);
 
         match purpose {
             ClosePurpose::Delete => {
                 close(&thread, purpose).await.unwrap();
-                assert_eq!(store.flushes.load(Ordering::SeqCst), flushes);
                 assert_eq!(store.admissions.load(Ordering::SeqCst), admissions);
                 assert!(thread.snapshot().continuation.is_none());
             }
@@ -1234,9 +1256,9 @@ mod close_tests {
                     close(&thread, purpose).await.is_err(),
                     "save failure is retained"
                 );
-                assert!(store.flushes.load(Ordering::SeqCst) > flushes);
+                assert!(store.admissions.load(Ordering::SeqCst) > admissions);
                 assert!(thread.snapshot().continuation.is_some());
-                store.fail_flush.store(false, Ordering::SeqCst);
+                store.fail_admit.store(false, Ordering::SeqCst);
                 close(&thread, purpose).await.unwrap();
             }
         }
@@ -1333,7 +1355,7 @@ mod close_tests {
         .unwrap();
         let store = Arc::new(SaveProbe::default());
         thread
-            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .attach_history(HistorySinkHandle::new(store.clone()))
             .await
             .unwrap();
         let running = {
@@ -1354,9 +1376,8 @@ mod close_tests {
         };
         started.cancelled().await;
         assert!(thread.snapshot().execution.is_some());
-        let flushes = store.flushes.load(Ordering::SeqCst);
         let admissions = store.admissions.load(Ordering::SeqCst);
-        store.fail_flush.store(true, Ordering::SeqCst);
+        store.fail_admit.store(true, Ordering::SeqCst);
         let mut closing_thread = Box::pin(close(&thread, purpose));
         tokio::select! {
             result = &mut closing_thread => panic!("close skipped model cleanup: {result:?}"),
@@ -1379,19 +1400,18 @@ mod close_tests {
         match purpose {
             ClosePurpose::Delete => {
                 result.unwrap();
-                assert_eq!(store.flushes.load(Ordering::SeqCst), flushes);
                 assert_eq!(store.admissions.load(Ordering::SeqCst), admissions);
                 assert!(thread.snapshot().continuation.is_none());
             }
             ClosePurpose::Preserve => {
                 assert!(result.is_err());
-                assert!(store.flushes.load(Ordering::SeqCst) > flushes);
+                assert!(store.admissions.load(Ordering::SeqCst) > admissions);
                 let continuation = thread.snapshot().continuation.clone().unwrap();
                 assert_eq!(
                     continuation.reason,
                     Some(crate::thread::ContinuationReason::HostShutdown)
                 );
-                store.fail_flush.store(false, Ordering::SeqCst);
+                store.fail_admit.store(false, Ordering::SeqCst);
                 thread.close().await.unwrap();
             }
         }
@@ -1420,10 +1440,13 @@ mod close_tests {
     #[tokio::test]
     async fn deletion_seal_releases_an_existing_preservation_wait_without_confirming_it() {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let thread = ThreadHandle::resume_without_model("blocked-flush".into(), None).unwrap();
-            let store = Arc::new(SaveProbe::default());
+            let thread = ThreadHandle::start_current("blocked-flush".into(), None).unwrap();
+            let store = Arc::new(SaveProbe {
+                block_backpressure: AtomicBool::new(true),
+                ..Default::default()
+            });
             thread
-                .attach_storage(ColdStoreHandle::new(store.clone()))
+                .attach_history(HistorySinkHandle::new(store.clone()))
                 .await
                 .unwrap();
             thread
@@ -1437,22 +1460,10 @@ mod close_tests {
                 })
                 .await
                 .unwrap();
-            store.block_flush.store(true, Ordering::SeqCst);
-            let flushing = {
-                let thread = thread.clone();
-                tokio::spawn(async move { thread.flush().await })
-            };
-            store.flush_entered.cancelled().await;
-            assert!(
-                !flushing.is_finished(),
-                "ordinary preservation waits for the real backend"
-            );
-            let flushes = store.flushes.load(Ordering::SeqCst);
+            let admissions = store.admissions.load(Ordering::SeqCst);
             thread.prepare_close_for_deletion();
-            assert!(matches!(flushing.await.unwrap(), Err(ThreadError::Closed)));
-            assert!(store.flush_exited.load(Ordering::SeqCst));
             thread.close_for_deletion().await.unwrap();
-            assert_eq!(store.flushes.load(Ordering::SeqCst), flushes);
+            assert_eq!(store.admissions.load(Ordering::SeqCst), admissions);
             assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Closed);
         })
         .await
@@ -1467,18 +1478,29 @@ mod close_tests {
         changes: tokio::sync::watch::Sender<()>,
     }
 
-    impl ColdStore for Arc<AdmissionRetryProbe> {
+    impl HistorySink for Arc<AdmissionRetryProbe> {
+        fn fold_usage(&self, _: &mut UsageSummary, _: &crate::thread::ThreadEffectBatch) {}
+        fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+            Ok(max)
+        }
+        fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+        fn release_operation_output(&self, _: &str, _: &str) {}
         fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
             Some(self.changes.subscribe())
         }
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+        fn admit(&self, _: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
             self.admissions.fetch_add(1, Ordering::SeqCst);
             if self.rejected.load(Ordering::SeqCst) {
                 return Err(ColdStoreError {
-                    source: Box::new(std::io::Error::other("first batch was rejected")),
+                    source: Box::new(StorageAdmissionBackpressure("first batch delayed".into())),
                 });
             }
-            self.durable.store(write.effect.sequence, Ordering::SeqCst);
+            self.durable.store(export.effect.sequence, Ordering::SeqCst);
             Ok(())
         }
         fn pressure(&self, _: &str) -> StoragePressure {
@@ -1487,14 +1509,16 @@ mod close_tests {
                 ..Default::default()
             }
         }
-        async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
-            Ok(())
+        fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+            StorageIdleStatus {
+                pressure: self.pressure(thread_id),
+                reclaimable_thread_bytes: Some(0),
+            }
         }
     }
 
     async fn pressure_after_close_seal(purpose: ClosePurpose) {
-        let thread =
-            ThreadHandle::resume_without_model("pressure-close-seal".into(), None).unwrap();
+        let thread = ThreadHandle::start_current("pressure-close-seal".into(), None).unwrap();
         let store = Arc::new(AdmissionRetryProbe {
             rejected: AtomicBool::new(true),
             admissions: AtomicUsize::new(0),
@@ -1502,7 +1526,7 @@ mod close_tests {
             changes: tokio::sync::watch::channel(()).0,
         });
         thread
-            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .attach_history(HistorySinkHandle::new(store.clone()))
             .await
             .unwrap();
         thread
@@ -1518,9 +1542,8 @@ mod close_tests {
         let admissions = store.admissions.load(Ordering::SeqCst);
         assert!(
             admissions > 0,
-            "the first batch must really have been rejected"
+            "the first batch must really have been offered"
         );
-        assert!(before.persistence.error.is_some());
         let mut updates = thread.subscribe();
         let mut preserving_close = Box::pin(thread.close());
         match purpose {

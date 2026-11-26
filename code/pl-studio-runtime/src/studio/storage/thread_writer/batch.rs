@@ -10,9 +10,11 @@ use crate::history::{HistoryEvent, HistoryUsageFact, PreparedHistoryUsage};
 use pl_core::usage::UsageOutcome;
 use std::collections::BTreeSet;
 
-mod events;
+pub(crate) mod events;
 
-use events::{BatchWriteContext, delivery_event, millis, run_event, source_event, turn_event};
+pub(crate) use events::{
+    BatchWriteContext, delivery_event, millis, run_event, source_event, turn_event,
+};
 
 /// Local acknowledgement of one durable append-only history cut.
 pub(in crate::studio) struct CommittedBatch {
@@ -300,30 +302,34 @@ async fn prepare_basic_events(
     let mut events = Vec::new();
     let run_candidate = run_event(run, recorded_at)?;
     let mut append_run = false;
-    match history
-        .reader()
-        .read_event(
-            run_candidate.event_id.clone(),
-            crate::history::HistoryDemand {
-                max_rows: 1,
-                max_bytes: 4096,
-            },
-        )
-        .await
-    {
-        Ok(existing) => {
-            ensure!(
-                existing.event_id == run_candidate.event_id
-                    && existing.kind == run_candidate.kind
-                    && existing.timeline_role == run_candidate.timeline_role
-                    && existing.run_id == run_candidate.run_id
-                    && existing.payload_schema == run_candidate.payload_schema
-                    && existing.payload_json == run_candidate.payload_json,
-                "run start identity conflicts"
-            );
+    if !history.event_exists_in_memory(&run_candidate.event_id) {
+        append_run = true;
+    } else {
+        match history
+            .reader()
+            .read_event(
+                run_candidate.event_id.clone(),
+                crate::history::HistoryDemand {
+                    max_rows: 1,
+                    max_bytes: 4096,
+                },
+            )
+            .await
+        {
+            Ok(existing) => {
+                ensure!(
+                    existing.event_id == run_candidate.event_id
+                        && existing.kind == run_candidate.kind
+                        && existing.timeline_role == run_candidate.timeline_role
+                        && existing.run_id == run_candidate.run_id
+                        && existing.payload_schema == run_candidate.payload_schema
+                        && existing.payload_json == run_candidate.payload_json,
+                    "run start identity conflicts"
+                );
+            }
+            Err(crate::history::HistoryError::NotFound(_)) => append_run = true,
+            Err(error) => return Err(error.into()),
         }
-        Err(crate::history::HistoryError::NotFound(_)) => append_run = true,
-        Err(error) => return Err(error.into()),
     }
     if append_run {
         events.push(run_candidate);
@@ -555,7 +561,47 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<History
             continue;
         }
         ensure_effect_state(inner, index)?;
-        admit_effect(inner, &history, effect, index).await?;
+        if effect.prepared.bus_admitted {
+            if let Some(report) = &effect.prepared.parent_report {
+                let recorded_at = millis(effect.prepared.committed_at)?;
+                let report_event = delivery_event(
+                    &inner.thread.id,
+                    "parent_report",
+                    &report.id,
+                    serde_json::to_string(report)?,
+                    effect.prepared.run_id,
+                    BatchWriteContext {
+                        recorded_at,
+                        anchor: false,
+                        database_id: &database_id,
+                    },
+                )?;
+                let report_events = [report_event];
+                let mut accepted = history.accept_in_memory(&report_events).await;
+                if matches!(accepted, Err(crate::history::HistoryError::Capacity)) {
+                    history.flush().await?;
+                    accepted = history.accept_in_memory(&report_events).await;
+                }
+                accepted.map_err(anyhow::Error::new)?;
+            }
+            {
+                let mut progress = lock_progress(inner);
+                let batch = progress
+                    .in_flight
+                    .as_mut()
+                    .context("history prefix was not selected")?;
+                let state = batch
+                    .prepared_effects
+                    .get_mut(index)
+                    .context("history effect preparation slot disappeared")?;
+                state.basic_done = true;
+                state.usage_done = true;
+                state.complete = true;
+            }
+            mark_effect_accepted(inner, index)?;
+        } else {
+            admit_effect(inner, &history, effect, index).await?;
+        }
     }
 
     let database_started = Instant::now();

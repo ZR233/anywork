@@ -1445,16 +1445,16 @@ async fn active_turn_state(
     bot_id: &str,
 ) -> Result<Option<pl_studio_runtime::TurnState>> {
     let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
-    let current = crate::support::open_current(session.http()?, &thread_id).await?;
-    let observed = current
-        .snapshot(crate::support::current_demand())
+    let feed = crate::support::open_feed(session.http()?, &thread_id).await?;
+    let observed = feed
+        .session_meta()
         .await
-        .map(|view| view.state.active_turn.map(|turn| turn.state));
-    match (observed, current.close().await) {
+        .map(|meta| meta.active_turn.map(|turn| turn.state));
+    match (observed, feed.close().await) {
         (Ok(state), Ok(())) => Ok(state),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(close_error)) => {
-            Err(error.context(format!("Current close also failed: {close_error:#}")))
+            Err(error.context(format!("Feed close also failed: {close_error:#}")))
         }
     }
 }

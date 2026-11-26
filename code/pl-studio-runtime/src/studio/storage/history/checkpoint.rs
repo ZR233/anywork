@@ -1,11 +1,9 @@
 //! The latest recovery state shares the history transaction; context records are incremental.
 
 use super::{HistoryStore, applied_write_seq, begin_write, integer, statement};
+use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
 use anyhow::{Context, Result, ensure};
-use pl_core::{
-    context::{ContextRecord, content_hash},
-    thread::ThreadCheckpoint,
-};
+use pl_core::context::{ContextRecord, content_hash};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 
 impl HistoryStore {

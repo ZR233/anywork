@@ -2452,7 +2452,6 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
         resolved.extra.binding.transport,
         ModelTransportProfile::responses_websocket()
     );
-    let mut manual = manual;
     manual
         .extra
         .binding

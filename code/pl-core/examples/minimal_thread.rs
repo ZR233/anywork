@@ -101,8 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cancellation: CancellationToken::new(),
         })
         .await?;
-    let checkpoint = thread.checkpoint(thread.snapshot().commit_sequence)?;
-    assert_eq!(checkpoint.state.context, thread.snapshot().context);
+    let current = thread.capture_current(CancellationToken::new()).await?;
+    assert_eq!(current.state.context, thread.snapshot().context);
     let deliveries = thread
         .effects()
         .await?
@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .sum::<usize>();
     println!(
         "{} model steps, {} tool deliveries, {} commits",
-        completed.model_steps, deliveries, checkpoint.state_revision
+        completed.model_steps, deliveries, current.snapshot_revision
     );
     thread.close().await?;
     Ok(())

@@ -1002,10 +1002,11 @@ fn bot_checkpoint(
     bot: &str,
     root: &str,
     child: bool,
-) -> Result<pl_core::thread::ThreadCheckpoint> {
+) -> Result<crate::studio::storage::legacy_checkpoint::ThreadCheckpoint> {
+    use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
     use pl_core::{
         context::OpaquePayload,
-        thread::{ThreadCheckpoint, ThreadSnapshot, extensions::ExtensionRecord},
+        thread::{ThreadSnapshot, extensions::ExtensionRecord},
     };
     let mut extensions = BTreeMap::from([
         (
@@ -1076,7 +1077,7 @@ fn bot_checkpoint(
 
 async fn checkpoint_family(
     target: &Path,
-    checkpoint: &pl_core::thread::ThreadCheckpoint,
+    checkpoint: &crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> Result<()> {
     let donor = tempfile::tempdir()?;
     let live = donor.path().join("history.sqlite");

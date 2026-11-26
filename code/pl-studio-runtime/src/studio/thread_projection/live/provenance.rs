@@ -284,17 +284,6 @@ impl ProvenanceLedger {
         self.atom_starts.contains_key(id)
     }
 
-    pub(super) fn merge_current_sources(
-        &self,
-        sources: Vec<ChatSourceState>,
-    ) -> Vec<ChatSourceState> {
-        let mut merged = self.source_states.clone();
-        for source in sources {
-            merged.entry(source.source.clone()).or_insert(source);
-        }
-        merged.into_values().collect()
-    }
-
     pub(super) fn retain(
         &mut self,
         state: &ThreadSnapshot,

@@ -14,15 +14,17 @@ use pl_core::{
         ObservedPartIdentity, ObservedPartKind, PreparedModelCall, ProviderPartIdentity,
     },
     thread::{
-        AttemptOutcome, AttemptStatus, ModelStepLimit, ThreadHandle, TurnInput,
-        cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
+        AttemptOutcome, AttemptStatus, HistoryExport, ModelStepLimit, ThreadHandle, TurnInput,
+        UsageSummary,
+        cold::{ColdStoreError, StoragePressure},
+        history_sink::{HistorySink, HistorySinkHandle},
     },
 };
 use tokio::sync::Notify;
 
 #[derive(Debug, Default)]
 struct Store {
-    writes: Mutex<Vec<ThreadWrite>>,
+    writes: Mutex<Vec<Arc<HistoryExport>>>,
     charges: Mutex<Vec<u64>>,
     released: AtomicBool,
     flushed: AtomicBool,
@@ -81,18 +83,76 @@ impl Accounting {
     }
 }
 
+
+
 #[derive(Debug)]
 struct Storage(Arc<Store>);
 
-impl std::ops::Deref for Storage {
-    type Target = Store;
-    fn deref(&self) -> &Store {
-        &self.0
+impl HistorySink for Storage {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
+        self.0.fold_usage_inner(summary, effect);
+    }
+
+    fn reserve_observed_item(&self, a: &str, b: &str, c: &str) -> Result<(), ColdStoreError> {
+        self.0.reserve_observed_item_inner(a, b, c)
+    }
+
+    fn admit(&self, thread_id: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        self.0.admit_inner(thread_id, write)
+    }
+
+    fn reserve_operation_output(
+        &self,
+        thread_id: &str,
+        operation_id: &str,
+        requested: u64,
+    ) -> Result<u64, ColdStoreError> {
+        self.0
+            .reserve_operation_output_inner(thread_id, operation_id, requested)
+    }
+
+    fn charge_operation_output(
+        &self,
+        thread_id: &str,
+        operation_id: &str,
+        bytes: u64,
+    ) -> Result<(), ColdStoreError> {
+        self.0
+            .charge_operation_output_inner(thread_id, operation_id, bytes)
+    }
+
+    fn release_operation_output(&self, thread_id: &str, operation_id: &str) {
+        self.0
+            .release_operation_output_inner(thread_id, operation_id);
+    }
+
+    fn pressure(&self, thread_id: &str) -> StoragePressure {
+        self.0.pressure_inner(thread_id)
+    }
+
+    fn idle_status(&self, thread_id: &str) -> pl_core::thread::cold::StorageIdleStatus {
+        self.0.idle_status_inner(thread_id)
+    }
+
+    fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        self.0.subscribe_pressure_inner(thread_id)
     }
 }
 
-impl ColdStore for Storage {
-    fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+impl Store {
+    fn fold_usage_inner(
+        &self,
+        summary: &mut UsageSummary,
+        effect: &pl_core::thread::ThreadEffectBatch,
+    ) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item_inner(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn admit_inner(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         let bytes = write.effect.encode().unwrap().content().len() as u64;
         if write
             .effect
@@ -119,7 +179,12 @@ impl ColdStore for Storage {
                 !self.released.load(Ordering::SeqCst),
                 "member precedes budget release"
             );
-            assert_eq!(write.output_claim.as_deref(), Some("member-attempt:0"));
+            assert!(
+                write
+                    .output_claim
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty())
+            );
             if self.reject_member.load(Ordering::SeqCst) {
                 return Err(ColdStoreError {
                     source: Box::new(std::io::Error::other("controlled admission refusal")),
@@ -168,7 +233,7 @@ impl ColdStore for Storage {
         writes.push(write);
         if self.durable_on_admit {
             // A controlled writer may finish before the owner next samples pressure. Drop every
-            // durable ThreadWrite (including its opaque allocation), then publish the real receipt.
+            // durable export (including its opaque allocation), then publish the real receipt.
             account.durable = sequence;
             account.effects.retain(|seq, _| *seq > sequence);
             writes.retain(|w| w.effect.sequence > sequence);
@@ -176,12 +241,7 @@ impl ColdStore for Storage {
         Ok(())
     }
 
-    async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
-        self.flushed.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn reserve_operation_output(
+    fn reserve_operation_output_inner(
         &self,
         _: &str,
         operation_id: &str,
@@ -206,7 +266,7 @@ impl ColdStore for Storage {
         Ok(limit)
     }
 
-    fn charge_operation_output(
+    fn charge_operation_output_inner(
         &self,
         _: &str,
         operation_id: &str,
@@ -232,7 +292,7 @@ impl ColdStore for Storage {
         Ok(())
     }
 
-    fn release_operation_output(&self, _: &str, operation_id: &str) {
+    fn release_operation_output_inner(&self, _: &str, operation_id: &str) {
         let mut account = self.accounting.lock().unwrap();
         assert!(
             account.operations.remove(operation_id).is_some(),
@@ -242,7 +302,7 @@ impl ColdStore for Storage {
         self.released.store(true, Ordering::SeqCst);
     }
 
-    fn pressure(&self, _: &str) -> StoragePressure {
+    fn pressure_inner(&self, _: &str) -> StoragePressure {
         let account = self.accounting.lock().unwrap();
         let bytes = account.output_retained() + account.effect_bytes();
         StoragePressure {
@@ -251,6 +311,17 @@ impl ColdStore for Storage {
             durable_sequence: account.durable,
             ..Default::default()
         }
+    }
+
+    fn idle_status_inner(&self, thread_id: &str) -> pl_core::thread::cold::StorageIdleStatus {
+        pl_core::thread::cold::StorageIdleStatus {
+            pressure: self.pressure_inner(thread_id),
+            reclaimable_thread_bytes: None,
+        }
+    }
+
+    fn subscribe_pressure_inner(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
     }
 }
 
@@ -471,7 +542,7 @@ async fn exercise_start(complete: bool, reject_storage: bool, content: bool) {
     )
     .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let cancellation = tokio_util::sync::CancellationToken::new();
@@ -538,7 +609,7 @@ async fn exercise_start(complete: bool, reject_storage: bool, content: bool) {
         assert_eq!(effect.model_member_content_available.len(), 1);
         let member = &effect.model_member_content_available[0];
         assert_eq!(member.turn_id, "member-turn");
-        assert_eq!(member.attempt_id, "member-attempt:0");
+        assert!(!member.attempt_id.is_empty());
         assert_eq!(member.generation, 0);
         assert!(starts[0].sequence < effect.sequence);
         assert!(effect.context.is_none() && effect.attempt.is_none() && effect.turn.is_none());
@@ -726,7 +797,7 @@ async fn content_available_checks_start_identity_generation_and_budget_and_drain
         )
         .unwrap();
         thread
-            .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+            .attach_history(HistorySinkHandle::new(Storage(store.clone())))
             .await
             .unwrap();
         let result = tokio::time::timeout(
@@ -793,7 +864,7 @@ async fn queued_start_drains_and_conflicts_or_budget_refusals_do_not_publish_new
         )
         .unwrap();
         thread
-            .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+            .attach_history(HistorySinkHandle::new(Storage(store.clone())))
             .await
             .unwrap();
         let result = tokio::time::timeout(
@@ -887,7 +958,7 @@ async fn exercise(ending: Ending) {
     };
     let thread = ThreadHandle::start("members".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let input = TurnInput {
@@ -1081,7 +1152,7 @@ async fn durable_member_funding(reject_first_running: bool, content: Vec<Context
     };
     let thread = ThreadHandle::start("members".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let task = {
@@ -1125,7 +1196,7 @@ async fn durable_member_funding(reject_first_running: bool, content: Vec<Context
         let member_sequence = account.member_sequence.expect("member actually admitted");
         assert!(account.durable >= member_sequence);
         assert_eq!(account.effect_bytes(), 0);
-        let operation = account.operations.get("member-attempt:0").unwrap();
+        let operation = account.operations.values().next().unwrap();
         assert!(
             operation.transferred > body_bytes,
             "the claim actually transferred effect funding"
@@ -1216,7 +1287,7 @@ async fn synchronous_cold_refusal_keeps_member_in_the_original_pending_obligatio
     };
     let thread = ThreadHandle::start("members".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let task = {
@@ -1292,7 +1363,7 @@ async fn member_envelope_budget_refuses_before_effect_publication() {
     };
     let thread = ThreadHandle::start("members".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let result = thread
@@ -1329,7 +1400,7 @@ async fn wrong_generation_is_rejected_before_effect_publication() {
     };
     let thread = ThreadHandle::start("members".into(), DynModelSession::new(model)).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let result = thread

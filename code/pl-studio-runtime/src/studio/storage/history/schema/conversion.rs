@@ -22,7 +22,8 @@ pub(super) async fn migrate_context_sources(
     tx: &impl ConnectionTrait,
     thread_id: &str,
 ) -> Result<()> {
-    use pl_core::{context::content_hash, thread::ThreadCheckpoint};
+    use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
+    use pl_core::context::content_hash;
     let Some(row) = tx
         .query_one_raw(statement(
             "SELECT payload,payload_hash FROM session_checkpoint WHERE id=1",

@@ -1,95 +1,7 @@
-//! Nonblocking effect admission and explicit durability barriers for Thread persistence.
+//! Nonblocking effect admission and storage-pressure accounting for Thread persistence.
 use super::*;
 use futures::future::BoxFuture;
-use std::{fmt, future::Future, sync::Arc};
-use tracing::Instrument;
-
-/// A fixed barrier handed to the caller without retaining the serial owner.
-#[derive(Debug)]
-pub(super) enum ColdFlushTicket {
-    AlreadySatisfied,
-    Pending {
-        store: StorageHandle,
-        thread_id: String,
-        through: u64,
-        deletion: CancellationToken,
-    },
-}
-
-impl ColdFlushTicket {
-    pub(super) fn pending_target(&self) -> Option<u64> {
-        match self {
-            Self::AlreadySatisfied => None,
-            Self::Pending { through, .. } => Some(*through),
-        }
-    }
-
-    pub(super) async fn wait(self) -> Result<(), ThreadError> {
-        let Self::Pending {
-            store,
-            thread_id,
-            through,
-            deletion,
-        } = self
-        else {
-            return Ok(());
-        };
-        let started = std::time::Instant::now();
-        let span = tracing::info_span!(
-            "cold_flush",
-            stage = "durability_wait",
-            thread_id,
-            flush_target = through,
-            stage_started_at = ?started,
-        );
-        async {
-            // Dropping this wait never retracts the writer's accepted facts. Only permanent
-            // deletion cancels preservation, and its owner still owes the real writer join.
-            let result = tokio::select! {
-                biased;
-                () = deletion.cancelled() => Err(ThreadError::Closed),
-                result = store.0.flush(&thread_id, through) => {
-                    result.map_err(|error| ThreadError::Storage(Arc::new(error)))
-                },
-            };
-            let pressure = store.0.pressure(&thread_id);
-            let (error_source, reason) = match &result {
-                Ok(()) => (None, "fixed_watermark_saved"),
-                Err(ThreadError::Storage(_)) => (Some("ColdStoreError"), "cold_store_failed"),
-                Err(ThreadError::Closed) => (Some("deletion"), "permanent_deletion"),
-                Err(_) => (None, "unknown"),
-            };
-            tracing::debug!(
-                elapsed_ms = started.elapsed().as_millis(),
-                success = result.is_ok(),
-                durable_sequence = pressure.durable_sequence,
-                fault_kind = ?pressure.fault,
-                fault_generation = pressure.fault_generation,
-                error_source,
-                reason,
-                "fixed durability wait settled"
-            );
-            result
-        }
-        .instrument(span)
-        .await
-    }
-}
-
-/// One fixed persistence ticket. The checkpoint may only publish after the effect fence is durable.
-#[derive(Debug, Clone)]
-pub struct ThreadWrite {
-    pub effect: Arc<ThreadEffectBatch>,
-    pub checkpoint: ThreadCheckpoint,
-    /// Operation whose reliable output reservation funds this batch, if any.
-    ///
-    /// Transient budgeting metadata, not a durable fact: the batch is written exactly as the
-    /// projection published it. A backend that reserved a live-output ceiling for `operation_id`
-    /// transfers it onto this batch at admission, so the output the operation produced is charged
-    /// once — as the reservation while it was in flight, as this batch's own charge afterwards —
-    /// instead of needing a second charge the process may not have.
-    pub output_claim: Option<String>,
-}
+use std::{fmt, sync::Arc};
 
 /// Storage-boundary error retains its typed source; it never rolls back a Thread commit.
 #[derive(Debug, thiserror::Error)]
@@ -334,125 +246,13 @@ pub enum StorageFaultKind {
 /// backend when it has one, so a Thread under pressure is granted less than this ceiling.
 pub const MAX_OPERATION_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 
-/// One durable tool-task fact read back from the host store.
-///
-/// It is the authority a repeated read-only task query uses after the owner has released the
-/// finished result from its transient window: the task identity/status come from the host's durable
-/// call facts and `delivery` carries the full committed result body when the call reached a
-/// terminal delivery. It is a read of durable facts, never a resident second history.
+/// One completed tool-task snapshot answered from the Thread's bounded in-memory ledger.
 #[derive(Debug, Clone)]
 pub struct DurableToolTask {
     pub task: super::task::TaskRecord,
     pub delivery: Option<ToolDelivery>,
 }
 
-/// Injected asynchronous sink. `admit` only queues immutable effect data and must not block.
-pub trait ColdStore: Send + Sync + fmt::Debug + 'static {
-    /// Folds a committed effect into the live cumulative usage before capturing its checkpoint.
-    ///
-    /// The plain SQLite store accounts for portable model usage here. Product stores that own
-    /// richer pricing and timing may leave this untouched and fold the same effect in their writer.
-    /// A synchronous implementation must advance `applied_sequence` and be idempotent on retry.
-    fn fold_usage(&self, _summary: &mut UsageSummary, _effect: &ThreadEffectBatch) {}
-    /// Reserves an observed presentation identity synchronously, before a coalescing preview
-    /// can discard it. Backends without ordered presentation storage need not reserve anything.
-    /// `attempt_id` is the real source lifecycle; backends must not infer it from `item_id`.
-    fn reserve_observed_item(
-        &self,
-        _thread_id: &str,
-        _attempt_id: &str,
-        _item_id: &str,
-    ) -> Result<(), ColdStoreError> {
-        Ok(())
-    }
-    /// Reserves a bounded reliable quota for one in-flight operation's live output.
-    ///
-    /// The returned ceiling never exceeds `max_bytes` and bounds cumulative output. The producer
-    /// charges each accepted increment before retaining it. Registering an unused ceiling need not
-    /// consume resident budget. A batch naming its operation in [`ThreadWrite::output_claim`]
-    /// transfers already charged bytes instead of charging the same output twice.
-    /// A backend without a reliable budget grants the request unchanged.
-    ///
-    /// # Errors
-    /// Refuses with typed backpressure when the backend cannot admit an operation. A granted
-    /// ceiling does not guarantee future headroom; each charge must still succeed before retention.
-    fn reserve_operation_output(
-        &self,
-        _thread_id: &str,
-        _operation_id: &str,
-        max_bytes: u64,
-    ) -> Result<u64, ColdStoreError> {
-        Ok(max_bytes)
-    }
-    /// Charges the bytes one operation really accepted against its reserved quota.
-    ///
-    /// Repeated charges are monotonic in `accepted_bytes` and idempotent. A charge the quota cannot
-    /// hold is refused (typed) and is what makes the producer cancel the operation with the bytes it
-    /// already accepted instead of buffering more; the backend reports the matching typed fault. The
-    /// cumulative count includes output already transferred to a fact, without charging those bytes
-    /// twice. Transfers do not reset the operation limit.
-    ///
-    /// # Errors
-    /// Refuses (typed) a body beyond the reserved quota.
-    fn charge_operation_output(
-        &self,
-        _thread_id: &str,
-        _operation_id: &str,
-        _accepted_bytes: u64,
-    ) -> Result<(), ColdStoreError> {
-        Ok(())
-    }
-    /// Releases one operation's remaining quota once the call ended.
-    ///
-    /// The accepted bytes became the charge of the facts the call produced, so only the part no fact
-    /// took over is given back here; releasing the whole original ceiling would drop the charge of
-    /// those facts, and keeping it would leave a residue on every call.
-    fn release_operation_output(&self, _thread_id: &str, _operation_id: &str) {}
-    /// Reports current retained-byte pressure and the durable receipt without blocking on IO.
-    ///
-    /// The receipt is the newest effect sequence the backend already holds durably for this Thread;
-    /// the owner folds it at a storage safety point and releases the covered live batches there.
-    fn pressure(&self, _thread_id: &str) -> StoragePressure {
-        StoragePressure::default()
-    }
-    /// Reports which retained bytes can be released with a fully settled idle owner.
-    ///
-    /// Backends that cannot prove a reconstructible subset report zero. This is a conservative
-    /// statement of their capability, not evidence that other retained bytes have been saved.
-    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
-        StorageIdleStatus {
-            pressure: self.pressure(thread_id),
-            reclaimable_thread_bytes: Some(0),
-        }
-    }
-    /// Optional notification for a change in durable progress or fault state.
-    ///
-    /// A Thread waits for this signal at a storage safety point while still servicing its
-    /// control and producer channels. Backends which can regain capacity must notify the owner;
-    /// there is no periodic budget polling.
-    fn subscribe_pressure(&self, _thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
-        None
-    }
-    /// Accepts exactly this encoded effect batch; repeated admission is idempotent.
-    fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError>;
-    /// Waits for previously admitted records to become durable, retaining failed writes for retry.
-    fn flush(
-        &self,
-        thread_id: &str,
-        sequence: u64,
-    ) -> impl Future<Output = Result<(), ColdStoreError>> + Send;
-    /// Reads one finished tool task by its core task identity from the durable store.
-    ///
-    /// A backend that keeps no task facts returns `Ok(None)`. Returning a non-terminal record means
-    /// the delivery is not durable yet; callers must not present that as a finished result.
-    fn read_tool_task(
-        &self,
-        _thread_id: &str,
-        _task_id: &str,
-    ) -> impl Future<Output = Result<Option<DurableToolTask>, ColdStoreError>> + Send {
-        async { Ok(None) }
-    }
-}
 pub(crate) trait ErasedStorage: Send + Sync + fmt::Debug {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch);
     fn reserve_observed_item(
@@ -477,112 +277,28 @@ pub(crate) trait ErasedStorage: Send + Sync + fmt::Debug {
     fn pressure(&self, thread_id: &str) -> StoragePressure;
     fn idle_status(&self, thread_id: &str) -> StorageIdleStatus;
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>>;
-    fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError>;
     fn admit_history(
         &self,
-        _thread_id: &str,
-        _export: Arc<super::HistoryExport>,
-    ) -> Result<(), ColdStoreError> {
-        Err(ColdStoreError {
-            source: Box::new(std::io::Error::other(
-                "checkpoint backend cannot accept independent History exports",
-            )),
-        })
-    }
+        thread_id: &str,
+        export: Arc<super::HistoryExport>,
+    ) -> Result<(), ColdStoreError>;
     fn is_history(&self) -> bool {
-        false
+        true
     }
-    fn flush<'a>(
-        &'a self,
-        thread_id: &'a str,
-        sequence: u64,
-    ) -> BoxFuture<'a, Result<(), ColdStoreError>>;
     fn read_saved_model_settlement<'a>(
         &'a self,
         _thread: &'a str,
         _settlement: &'a crate::model::ModelSubAttemptSettlement,
     ) -> BoxFuture<'a, Result<Option<crate::model::ModelSubAttemptSettlement>, ColdStoreError>>
     {
-        Box::pin(async { Ok(None) })
+        Box::pin(std::future::ready(Ok(None)))
     }
     fn confirm_model_settlement<'a>(
         &'a self,
-        thread_id: &'a str,
-        sequence: u64,
+        _thread_id: &'a str,
+        _sequence: u64,
     ) -> BoxFuture<'a, Result<(), ColdStoreError>> {
-        self.flush(thread_id, sequence)
-    }
-    fn read_tool_task<'a>(
-        &'a self,
-        thread_id: &'a str,
-        task_id: &'a str,
-    ) -> BoxFuture<'a, Result<Option<DurableToolTask>, ColdStoreError>>;
-}
-impl<T: ColdStore> ErasedStorage for T {
-    fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
-        ColdStore::fold_usage(self, summary, effect);
-    }
-    fn reserve_observed_item(
-        &self,
-        thread_id: &str,
-        attempt_id: &str,
-        item_id: &str,
-    ) -> Result<(), ColdStoreError> {
-        ColdStore::reserve_observed_item(self, thread_id, attempt_id, item_id)
-    }
-    fn reserve_operation_output(
-        &self,
-        thread_id: &str,
-        operation_id: &str,
-        max_bytes: u64,
-    ) -> Result<u64, ColdStoreError> {
-        ColdStore::reserve_operation_output(self, thread_id, operation_id, max_bytes)
-    }
-    fn charge_operation_output(
-        &self,
-        thread_id: &str,
-        operation_id: &str,
-        accepted_bytes: u64,
-    ) -> Result<(), ColdStoreError> {
-        ColdStore::charge_operation_output(self, thread_id, operation_id, accepted_bytes)
-    }
-    fn release_operation_output(&self, thread_id: &str, operation_id: &str) {
-        ColdStore::release_operation_output(self, thread_id, operation_id)
-    }
-    fn pressure(&self, thread_id: &str) -> StoragePressure {
-        ColdStore::pressure(self, thread_id)
-    }
-    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
-        ColdStore::idle_status(self, thread_id)
-    }
-    fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
-        ColdStore::subscribe_pressure(self, thread_id)
-    }
-    fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        ColdStore::admit(self, thread_id, write)
-    }
-    fn flush<'a>(
-        &'a self,
-        thread_id: &'a str,
-        sequence: u64,
-    ) -> BoxFuture<'a, Result<(), ColdStoreError>> {
-        Box::pin(ColdStore::flush(self, thread_id, sequence))
-    }
-    fn read_tool_task<'a>(
-        &'a self,
-        thread_id: &'a str,
-        task_id: &'a str,
-    ) -> BoxFuture<'a, Result<Option<DurableToolTask>, ColdStoreError>> {
-        Box::pin(ColdStore::read_tool_task(self, thread_id, task_id))
-    }
-}
-
-/// Legacy checkpoint backend. Current owners explicitly reject this port.
-#[derive(Debug, Clone)]
-pub struct ColdStoreHandle(pub(super) StorageHandle);
-impl ColdStoreHandle {
-    pub fn new(store: impl ColdStore) -> Self {
-        Self(StorageHandle(Arc::new(store)))
+        Box::pin(std::future::ready(Ok(())))
     }
 }
 
@@ -643,25 +359,6 @@ impl StorageHandle {
 
     pub(crate) fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
         self.0.idle_status(thread_id)
-    }
-
-    /// Waits for the fixed effect fence, without transferring store ownership to a tool.
-    pub(crate) async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        if self.0.is_history() {
-            // This internal legacy fence has no meaning for Current owners. The host joins its
-            // independent History queue explicitly and Current has its own capture/save port.
-            return Ok(());
-        }
-        self.0.flush(thread_id, sequence).await
-    }
-
-    /// Reads one finished tool task from the durable store, if the backend keeps task facts.
-    pub(crate) async fn read_tool_task(
-        &self,
-        thread_id: &str,
-        task_id: &str,
-    ) -> Result<Option<DurableToolTask>, ColdStoreError> {
-        self.0.read_tool_task(thread_id, task_id).await
     }
 }
 
@@ -1501,23 +1198,9 @@ impl Owner {
             if self.interrupt.is_deleting() {
                 return;
             }
-            // A legacy transfer folds its own checkpoint. Independent History exports already
-            // carry the original Current observation and never create or mutate a checkpoint.
-            if let super::owner::PendingWrite::Checkpoint(write) = &mut pending.write
-                && write.effect.sequence > write.checkpoint.state.usage_summary.applied_sequence
-            {
-                store.fold_usage(&mut self.state.usage_summary, &write.effect);
-                write.checkpoint.state.usage_summary = self.state.usage_summary.clone();
-            }
             let sequence = pending.write.effect().sequence;
-            let accepted = match &pending.write {
-                super::owner::PendingWrite::Checkpoint(write) => {
-                    store.0.admit(&self.id, write.as_ref().clone())
-                }
-                super::owner::PendingWrite::History(export) => {
-                    store.0.admit_history(&self.id, export.clone())
-                }
-            };
+            let super::owner::PendingWrite::History(export) = &pending.write;
+            let accepted = store.0.admit_history(&self.id, export.clone());
             match accepted {
                 Ok(()) => {
                     self.state.persistence.admitted_sequence = sequence;
@@ -1551,10 +1234,7 @@ impl Owner {
         self.release_retired_task_metadata();
     }
 
-    pub(super) fn prepare_flush(&mut self) -> Result<ColdFlushTicket, ThreadError> {
-        if self.current_task_start_ordinal.is_some() {
-            return Ok(ColdFlushTicket::AlreadySatisfied);
-        }
+    pub(super) fn check_flush_health(&mut self) -> Result<(), ThreadError> {
         if self.interrupt.is_deleting() {
             return Err(ThreadError::Closed);
         }
@@ -1576,16 +1256,7 @@ impl Owner {
                 )),
             })));
         }
-        let Some(store) = &self.cold else {
-            return Ok(ColdFlushTicket::AlreadySatisfied);
-        };
-        let through = self.state.persistence.admitted_sequence;
-        Ok(ColdFlushTicket::Pending {
-            store: store.clone(),
-            thread_id: self.id.clone(),
-            through,
-            deletion: self.interrupt.deletion_token(),
-        })
+        Ok(())
     }
 
     pub(super) fn confirm_flush(&mut self, through: u64) {

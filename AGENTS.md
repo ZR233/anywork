@@ -230,7 +230,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   ```powershell
   cargo fmt --all --check
   cargo clippy --workspace --all-targets -- -D warnings
-  cargo test --locked --workspace --features pl-core/sqlite
+  cargo test --locked --workspace
   cargo xtask verify-client
   cargo xtask verify-gui
   cargo xtask test-project --suite desktop --set smoke

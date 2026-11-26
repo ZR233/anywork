@@ -2,10 +2,8 @@
 
 use super::super::ModelPerformanceOwner;
 use super::directory;
-use super::live_feed::ThreadLiveFeed;
 use super::slot::ObservationSlot;
 use super::worker::{Progress, WorkerState, await_history_durable, run};
-use crate::studio::thread_projection::storage_state;
 use crate::studio::{ProductEventBus, StudioStore};
 use anyhow::{Context, Result, bail};
 use pl_core::thread::{ThreadHandle, ThreadLifecycle, ThreadSnapshot};
@@ -17,7 +15,6 @@ use tokio::task::JoinHandle;
 pub(crate) struct Observation {
     owner: std::sync::Weak<crate::session::NativeResources>,
     thread: ThreadHandle,
-    feed: Arc<ThreadLiveFeed>,
     state: Arc<WorkerState>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -147,14 +144,17 @@ impl ThreadObservations {
         }))
     }
 
-    /// The live feed of one observed Thread, if its projection owner was installed.
-    pub(in crate::studio::runtime) fn live_feed(&self, id: &str) -> Option<Arc<ThreadLiveFeed>> {
+    /// The live `MetaEventBus` of one observed Thread, if its projection owner was installed.
+    pub(in crate::studio::runtime) fn meta_bus(
+        &self,
+        id: &str,
+    ) -> Option<crate::timeline::MetaEventBus> {
         self.0
             .live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
-            .and_then(|slot| slot.source())
+            .and_then(|slot| slot.meta_bus())
     }
 
     /// End outward delivery before joining producers; their original save
@@ -163,15 +163,9 @@ impl ThreadObservations {
         self.0.delivery_closed.cancel();
     }
 
-    pub(in crate::studio::runtime) fn read_lifetime(&self) -> tokio_util::sync::CancellationToken {
-        self.0.delivery_closed.clone()
-    }
-
-    fn close_delivery(&self, id: &str, thread: &ThreadHandle) {
-        for (_, observation) in self.observations(Some(id)) {
-            if observation.thread.same_instance(thread) {
-                observation.feed.close_delivery();
-            }
+    fn close_delivery(&self, id: &str, _thread: &ThreadHandle) {
+        if let Some(bus) = self.meta_bus(id) {
+            self.observation_slot(id).retire_bus(&bus);
         }
     }
 
@@ -240,11 +234,7 @@ impl ThreadObservations {
             },
             Some(Arc::new(move |id: &str| {
                 let owner = terminal.upgrade()?;
-                let (position, _) = ThreadObservations(owner).observation_slot(id).capture();
-                let feed = position
-                    .source
-                    .filter(|source| !source.is_delivery_closed())?;
-                feed.current_last_turn()
+                ThreadObservations(owner).observation_slot(id).last_turn()
             })),
             move |id, thread, purpose| {
                 if let Some(owner) = closing.upgrade() {
@@ -292,7 +282,7 @@ impl ThreadObservations {
             .into_iter()
             .map(|(_, observation)| observation)
             .collect::<Vec<_>>();
-        let feed = self.live_feed(id);
+        let slot = self.observation_slot(id);
         for observation in &observations {
             anyhow::ensure!(
                 observation.thread.snapshot().lifecycle == ThreadLifecycle::Closed,
@@ -318,24 +308,26 @@ impl ThreadObservations {
                     .retain(|current| !Arc::ptr_eq(current, observation));
             }
         }
-        let mut all = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entries) = all.get_mut(id) {
-            entries.retain(|entry| {
-                entry
-                    .upgrade()
-                    .is_some_and(|entry| !observations.iter().any(|old| Arc::ptr_eq(&entry, old)))
-            });
-            if entries.is_empty() {
-                all.remove(id);
+        {
+            let mut all = self
+                .0
+                .observations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entries) = all.get_mut(id) {
+                entries.retain(|entry| {
+                    entry
+                        .upgrade()
+                        .is_some_and(|entry| !observations.iter().any(|old| Arc::ptr_eq(&entry, old)))
+                });
+                if entries.is_empty() {
+                    all.remove(id);
+                }
             }
         }
-        drop(all);
-        if let Some(feed) = feed {
-            self.observation_slot(id).retire(&feed);
+        if let Some(bus) = slot.meta_bus() {
+            slot.retire_bus(&bus);
+            bus.close().await;
         }
         Ok(())
     }
@@ -385,32 +377,12 @@ impl ThreadObservations {
             reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(recovered_through)),
             observed_before_execution,
         });
-        // Seed the feed with the newest typed storage state the coordinator already reports, so a
-        // subscriber that opens before this owner's first pass mirrors a real fact instead of an
-        // unset placeholder. The owner republishes its own derivation on the first pass.
-        let initial_storage = self
-            .0
-            .projector
-            .store
-            .thread_persistence()
-            .snapshot()
-            .threads
-            .iter()
-            .find(|detail| detail.thread_id == id)
-            .map(|detail| storage_state(&thread.snapshot(), detail));
-        // Register the non-replayable catalog source before publishing the feed.
+        let slot = self.observation_slot(&id);
         let catalogs = self.0.projector.config.subscribe_model_catalogs();
-        let feed = Arc::new(ThreadLiveFeed::new(
-            initial_storage,
-            state.progress.subscribe(),
-            self.0.delivery_closed.child_token(),
-        ));
-        self.observation_slot(&id).install(feed.clone());
         let worker_state = state.clone();
         let projector = self.0.projector.clone();
         let worker_thread = thread.clone();
         let worker_id = id.clone();
-        let observed_feed = feed.clone();
         let deletion = state.deletion.clone();
         let task = tokio::spawn(async move {
             tokio::select! {
@@ -422,7 +394,7 @@ impl ThreadObservations {
                 worker_thread,
                 worker_state,
                 recovered_through,
-                feed,
+                slot,
                 catalogs,
                 ) => {},
             }
@@ -430,7 +402,6 @@ impl ThreadObservations {
         let observation = Arc::new(Observation {
             owner: Arc::downgrade(&resources),
             thread,
-            feed: observed_feed,
             state,
             task: tokio::sync::Mutex::new(Some(task)),
         });
@@ -480,6 +451,11 @@ impl ThreadObservations {
             await_history_durable(&observation.state.channel, &id, durable_through)
                 .await
                 .with_context(|| format!("Thread {id} product observation barrier"))?;
+            if let Some(bus) = self.meta_bus(&id) {
+                bus.flush_through_commit(target)
+                    .await
+                    .with_context(|| format!("Thread {id} MetaEventBus durability barrier"))?;
+            }
         }
         // The observation worker no longer waits on disk for each projected batch, so the explicit
         // sync barrier carries the durability: every product write admitted up to the watermark this

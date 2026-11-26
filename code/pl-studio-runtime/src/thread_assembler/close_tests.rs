@@ -88,7 +88,7 @@ impl StudioActivationFactory for RefusedFactory {
             &self.owner,
             identity.id(),
             None,
-            ThreadHandle::resume_without_model(identity.id().into(), None).unwrap(),
+            ThreadHandle::start_current(identity.id().into(), None).unwrap(),
         );
         {
             let mut state = self.owner.0.state();
@@ -400,7 +400,7 @@ async fn s2_close_cancels_parent_before_child_shutdown_and_preserves_other_sessi
         register_member(&other, "unrelated-thread", None, unrelated.clone());
         let unrelated_run = start_turn(unrelated);
         let unrelated_cancel = model_started.await.unwrap();
-        let child = ThreadHandle::resume_without_model("child-thread".into(), None).unwrap();
+        let child = ThreadHandle::start_current("child-thread".into(), None).unwrap();
         register_member(&owner, "child-thread", Some("parent-thread"), child);
         let report = owner.close_session().await;
         assert!(

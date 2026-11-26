@@ -808,14 +808,6 @@ impl ThreadCurrent {
     }
 }
 
-pub(crate) fn is_uuid_v4(id: &str) -> bool {
-    Uuid::parse_str(id).is_ok_and(|uuid| {
-        uuid.get_version_num() == 4
-            && uuid.get_variant() == uuid::Variant::RFC4122
-            && uuid.to_string() == id
-    })
-}
-
 fn deliver_message(
     state: &mut ThreadCurrentState,
     id: &str,

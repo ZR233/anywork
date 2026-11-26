@@ -544,6 +544,15 @@ impl Owner {
                     turn_id: call.turn_id.clone(),
                     attempt_id: call.attempt_id.clone(),
                 });
+            let revision = self.state.context.revision;
+            let manual = call.turn_id.is_none();
+            let turn_id = call.turn_id.clone();
+            self.event_bus
+                .emit(events::CoreEvent::Live(events::CoreLiveEvent::CompactionStarted {
+                    turn_id,
+                    revision,
+                    manual,
+                }));
             if let Err(error) = self.publish() {
                 let _ = reply.send(Err(error));
                 return;
@@ -595,7 +604,7 @@ impl Owner {
         let (sender, receiver) =
             crate::model::ModelMemberSender::channel(&input.turn_id, &input.attempt_id);
         let mut sender = sender.with_output(budget.clone());
-        if self.cold.is_some() || self.current_task_start_ordinal.is_none() {
+        if self.cold.is_some() || !self.is_current_owner {
             sender = sender.with_settlement(self.register_model_settlement(
                 source_turn,
                 input.attempt_id.clone(),

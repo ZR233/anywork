@@ -8,7 +8,7 @@ use pl_model::{
 };
 use pl_provider_fixture::{RealtimeToolCall, responses_text, responses_tool_calls};
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, CreateThreadRequest, DelegationMode, NewThreadModelRoute,
+    CreateThreadRequest, DelegationMode, NewThreadModelRoute,
     StudioHostKind, StudioPromptInput, StudioRuntime, StudioRuntimeOptions,
     StudioSubmitPromptOptions, StudioSubmitPromptRequest, ThreadWorkspaceMode,
     config::{ConfigPaths, ConfigStore, StudioConfig},
@@ -288,15 +288,8 @@ async fn native_workflow_and_plan_state_recover_after_shutdown_and_restart() -> 
     runtime.shutdown_runtime().await?;
     let restarted = Box::pin(StudioRuntime::initialize(options)).await?;
 
-    let reader = restarted
-        .open_current_reader(
-            &thread_id,
-            CURRENT_PROTOCOL_VERSION,
-            support::current_demand(),
-        )
-        .await?;
-    let view = reader.snapshot(support::current_demand()).await?;
-    let rt = view.state.runtime.context("restored runtime state")?;
+    let meta = restarted.thread_session_meta(&thread_id).await?;
+    let rt = meta.runtime.context("restored runtime state")?;
     let wf = rt.workflow.context("restored workflow snapshot")?;
     let run = wf.current_run.context("restored workflow run")?;
     assert_eq!(run.mode_id, ThreadModeId::auto());
@@ -334,7 +327,6 @@ async fn native_workflow_and_plan_state_recover_after_shutdown_and_restart() -> 
     )?;
     assert_eq!(persisted_plan.plan.history.len(), 1);
     assert!(persisted_plan.plan.history[0].forced);
-    reader.close().await?;
 
     // Send turn 2 after restart and verify the active `planning` run was preserved (NOT reset to `triage`).
     restarted
@@ -350,16 +342,8 @@ async fn native_workflow_and_plan_state_recover_after_shutdown_and_restart() -> 
         .await?;
     support::terminal(&restarted, &thread_id, Some("turn-2")).await?;
 
-    let reader2 = restarted
-        .open_current_reader(
-            &thread_id,
-            CURRENT_PROTOCOL_VERSION,
-            support::current_demand(),
-        )
-        .await?;
-    let view2 = reader2.snapshot(support::current_demand()).await?;
-    let wf2 = view2
-        .state
+    let meta2 = restarted.thread_session_meta(&thread_id).await?;
+    let wf2 = meta2
         .runtime
         .context("post-restart runtime")?
         .workflow
@@ -371,7 +355,6 @@ async fn native_workflow_and_plan_state_recover_after_shutdown_and_restart() -> 
         run2.visited_state_ids,
         vec!["triage", "planning", "working"]
     );
-    reader2.close().await?;
 
     restarted.shutdown_runtime().await?;
     server_handle.abort();

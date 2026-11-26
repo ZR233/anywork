@@ -373,7 +373,7 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
         .context("blocked Current save failure")?;
     let channel = runtime.store.thread_persistence().history_channel(&root.id);
     let unsaved_sequence = owner.snapshot().commit_sequence;
-    assert!(runtime.thread_observations.live_feed(&root.id).is_some());
+    assert!(runtime.thread_observations.meta_bus(&root.id).is_some());
 
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -409,7 +409,7 @@ async fn permanent_delete_releases_live_failed_save_and_failed_terminal_without_
             .and_then(|session| session.observed_thread(&root.id))
             .is_none()
     );
-    assert!(runtime.thread_observations.live_feed(&root.id).is_none());
+    assert!(runtime.thread_observations.meta_bus(&root.id).is_none());
     assert!(
         runtime
             .store
@@ -710,16 +710,7 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
                 .await?
                 .context("archive reply")?;
         }
-        let old_current = runtime
-            .open_current_reader(
-                &root.id,
-                crate::CURRENT_PROTOCOL_VERSION,
-                crate::ReadDemand {
-                    max_items: 16,
-                    max_bytes: 65536,
-                },
-            )
-            .await?;
+        let old_feed = runtime.open_conversation_feed(&root.id, 16).await?;
         let root_host = runtime.store.session_paths(&project.id, &root.id)?;
         let child_host = runtime.store.session_paths(&project.id, &child.id)?;
         let grandchild_host = runtime.store.session_paths(&project.id, &grandchild.id)?;
@@ -754,14 +745,8 @@ async fn permanent_delete_removes_active_or_archived_tree_private_files_and_revo
             Some(neighbor.id.as_str())
         );
         assert!(
-            old_current
-                .snapshot(crate::ReadDemand {
-                    max_items: 16,
-                    max_bytes: 65536,
-                })
-                .await
-                .is_err(),
-            "an old CurrentReader must lose its read qualification"
+            old_feed.reset_to_latest(16).await.is_err(),
+            "an old ConversationFeed must lose its read qualification"
         );
         for host in [root_host, child_host, grandchild_host, private_host] {
             assert!(!host.root().exists());

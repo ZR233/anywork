@@ -3,17 +3,14 @@ use crate::support;
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ObservedResourceKind, StudioErrorCode,
-    StudioPromptInput, StudioRecoveryImpact, StudioRecoveryIssueAction,
-    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
-    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, SubmitPromptRequest,
-    ThreadWorkspaceMode,
+    ChatAtomKind, ChatScope, ObservedResourceKind, StudioErrorCode, StudioPromptInput,
+    StudioRecoveryImpact, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
+    StudioWorktreeRecoveryPreview, SubmitPromptRequest, ThreadWorkspaceMode,
     history::{HistoryDemand, HistoryEventsQuery, decode_event_envelope, read_event_body_bytes},
 };
 use std::{path::Path, time::Duration};
-use support::{
-    Environment, completed_prompt, current_demand, git, held_reply, prompt_step, reached,
-};
+use support::{Environment, completed_prompt, git, held_reply, prompt_step, reached};
 
 #[derive(Debug, PartialEq)]
 struct PublicHistoryItem {
@@ -724,15 +721,15 @@ async fn changed_root_is_rebound_in_place_and_restart_keeps_the_observed_branch(
         ensure!(observed_status.lines().any(|line| line == "!! ignored.txt"));
         let subscription = env
             .runtime
-            .open_current_reader(&root.thread.id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .open_conversation_feed(&root.thread.id, 64)
             .await?;
-        let snapshot = subscription.snapshot(current_demand()).await?;
+        let snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
         ensure!(
-            snapshot.state.thread.id == root.thread.id
-                && snapshot.state.thread.workspace_path == root.thread.workspace_path,
-            "cold Current binding changed Thread identity"
+            snapshot.thread.id == root.thread.id
+                && snapshot.thread.workspace_path == root.thread.workspace_path,
+            "cold feed binding changed Thread identity"
         );
-        subscription.close().await?;
+        subscription.close().await;
         ensure!(
             git(path, &["rev-parse", "HEAD"])? == head
                 && git(path, &["branch", "--show-current"])? == "renamed-business",
@@ -858,14 +855,11 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         );
         let root_subscription = env
             .runtime
-            .open_current_reader(&root.thread.id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .open_conversation_feed(&root.thread.id, 64)
             .await?;
-        let child_subscription = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        root_subscription.close().await?;
-        child_subscription.close().await?;
+        let child_subscription = env.runtime.open_conversation_feed(id, 64).await?;
+        root_subscription.close().await;
+        child_subscription.close().await;
         ensure!(
             git(child_path, &["rev-parse", "HEAD"])? == head
                 && git(child_path, &["branch", "--show-current"])?.is_empty(),
@@ -930,21 +924,21 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         std::fs::remove_dir_all(&root.thread.workspace_path)?;
         let subscription = env
             .runtime
-            .open_current_reader(&root.thread.id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .open_conversation_feed(&root.thread.id, 64)
             .await?;
-        let snapshot = subscription.snapshot(current_demand()).await?;
+        let snapshot = env.runtime.thread_snapshot(&root.thread.id).await?;
         ensure!(
-            *snapshot.state == original_snapshot,
-            "missing-worktree Current changed the complete saved snapshot"
+            snapshot == original_snapshot,
+            "missing-worktree feed changed the complete saved snapshot"
         );
         ensure!(
-            snapshot.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                && snapshot.state.thread.id == root.thread.id
-                && snapshot.state.thread.workspace_id == env.project.id
-                && snapshot.state.thread.root_thread_id == root.thread.root_thread_id
-                && snapshot.state.thread.workspace_mode == ThreadWorkspaceMode::Worktree
-                && snapshot.state.thread.workspace_path == root.thread.workspace_path,
-            "Current lost the original Thread/workspace identity"
+            snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
+                && snapshot.thread.id == root.thread.id
+                && snapshot.thread.workspace_id == env.project.id
+                && snapshot.thread.root_thread_id == root.thread.root_thread_id
+                && snapshot.thread.workspace_mode == ThreadWorkspaceMode::Worktree
+                && snapshot.thread.workspace_path == root.thread.workspace_path,
+            "ConversationFeed lost the original Thread/workspace identity"
         );
         let subscribed_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
@@ -953,10 +947,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
              before={original_page:?}; after={subscribed_page:?}"
         );
         ensure!(
-            snapshot.state.active_turn.is_none()
-                && snapshot.state.activity.is_none()
-                && snapshot.state.storage.is_none()
-                && snapshot.state.runtime.as_ref().is_some_and(|runtime| {
+            snapshot.active_turn.is_none()
+                && snapshot.activity.is_none()
+                && snapshot.storage.is_none()
+                && snapshot.runtime.as_ref().is_some_and(|runtime| {
                     runtime.thread_id == root.thread.id
                         && runtime.execution.is_none()
                         && runtime.live_usage.is_none()
@@ -968,9 +962,9 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                     .iter()
                     .any(|thread| thread.thread_id == root.thread.id)
                 && env.root_provider.recorded().len() == 1,
-            "read-only Current activated execution or a persistence writer"
+            "read-only feed activated execution or a persistence writer"
         );
-        subscription.close().await?;
+        subscription.close().await;
 
         let failure = env
             .runtime

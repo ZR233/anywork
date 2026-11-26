@@ -377,6 +377,101 @@ impl HistoryStore {
             .map_err(HistoryError::from)
     }
 
+    /// Pure-RAM usage & cost event synthesis using `KnownIndex` seeded on cold open,
+    /// performing ZERO SQLite read queries during live turns.
+    pub(crate) fn prepare_usage_in_memory(
+        &self,
+        facts: &[HistoryUsageFact],
+    ) -> Result<Vec<HistoryEvent>> {
+        if facts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut identities = BTreeSet::new();
+        for fact in facts {
+            if !identities.insert(fact.event_id.as_str()) {
+                return Err(HistoryError::Conflict(
+                    "duplicate usage event identity within a batch".into(),
+                ));
+            }
+        }
+        let (
+            pending_acc_anchor,
+            known_events,
+            previous,
+            latest_accounting_missing,
+            costs,
+            accounting_anchor,
+        ) = {
+            let state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.accepting || state.closing {
+                return Err(HistoryError::Closed);
+            }
+            let pending_acc_anchor = state.pending.anchors.contains_key("accounting:session");
+            let known = self
+                .inner
+                .known
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut unknown_facts = Vec::new();
+            for fact in facts {
+                if !known.events.contains(&fact.event_id)
+                    && state.pending.event(&fact.event_id).is_none()
+                {
+                    unknown_facts.push(fact);
+                }
+            }
+            (
+                pending_acc_anchor,
+                unknown_facts.len(),
+                known.latest_accounting.clone().unwrap_or_default(),
+                known.latest_accounting.is_none(),
+                known.latest_costs.clone(),
+                pending_acc_anchor || known.anchors.contains("accounting:session"),
+            )
+        };
+        if known_events == 0 {
+            return Ok(Vec::new());
+        }
+        let _ = pending_acc_anchor;
+        let mut fold = UsageFold {
+            events: Vec::new(),
+            summary: UsageSummary {
+                totals: UsageTotals {
+                    prompt_tokens: previous.prompt_tokens,
+                    completion_tokens: previous.completion_tokens,
+                    cached_prompt_tokens: previous.cached_prompt_tokens,
+                    cache_write_tokens: previous.cache_write_tokens,
+                    reasoning_tokens: previous.reasoning_tokens,
+                    inference_count: previous.inference_count,
+                    total_tokens: previous.total_tokens,
+                },
+                cache: UsageCacheSummary {
+                    input_tokens: previous.cache_usage.input_tokens,
+                    read_tokens: previous.cache_usage.cache_read_tokens,
+                    sample_count: previous.cache_usage.sample_count,
+                    incomplete: previous.cache_usage.has_incomplete_usage,
+                },
+                ..Default::default()
+            },
+            has_incomplete_usage: previous.has_incomplete_usage
+                || (latest_accounting_missing && !costs.is_empty()),
+            has_unpriced_usage: previous.has_unpriced_usage,
+            legacy_cache_count_unknown: previous.cache_usage.legacy_sample_count_unknown,
+            accounting_anchor,
+            costs,
+        };
+        for fact in facts {
+            if !self.event_exists_in_memory(&fact.event_id) {
+                fold.record(fact, self.database_id())?;
+            }
+        }
+        Ok(fold.events)
+    }
+
     async fn accepted_usage_sequence(&self, fact: &HistoryUsageFact) -> Result<Option<u64>> {
         let payload = serde_json::to_vec(&fact.record)?;
         let pending = {

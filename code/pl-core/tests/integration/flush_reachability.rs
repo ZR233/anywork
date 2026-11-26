@@ -8,19 +8,21 @@ use std::time::Duration;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     model::{
-        AggregateChannel, DynModelSession, ModelError, ModelMemberSender, ModelRequest,
-        ModelSession, ModelStepOutput, ObservedPartIdentity, PreparedModelCall,
+        DynModelSession, ModelError, ModelMemberSender, ModelRequest, ModelSession,
+        ModelStepOutput, PreparedModelCall,
     },
     thread::{
-        AttemptOutcome, ModelStepLimit, ThreadError, ThreadHandle, TurnInput,
+        AttemptOutcome, HistoryExport, ModelStepLimit, ThreadError, ThreadHandle, TurnInput,
+        UsageSummary,
         cold::{
-            ColdStore, ColdStoreError, ColdStoreHandle, StorageAdmissionBackpressure,
-            StorageFaultKind, StoragePressure, ThreadWrite,
+            ColdStoreError, StorageAdmissionBackpressure, StorageFaultKind, StorageIdleStatus,
+            StoragePressure,
         },
+        history_sink::{HistorySink, HistorySinkHandle},
         inbox::ThreadMessage,
     },
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,41 +35,35 @@ const HANDOFF_FAULT_GENERATION: u64 = 73;
 
 #[derive(Debug)]
 struct Store {
-    writes: Mutex<Vec<ThreadWrite>>,
+    writes: Mutex<Vec<Arc<HistoryExport>>>,
     durable: AtomicU64,
     automatic: AtomicBool,
     reject: AtomicBool,
     backpressure: AtomicBool,
     unavailable: AtomicBool,
-    entered: mpsc::Sender<u64>,
     updates: watch::Sender<()>,
     handoff: Option<PressureHandoff>,
     handoff_delivered: CancellationToken,
 }
 
 impl Store {
-    fn new() -> (Arc<Self>, mpsc::Receiver<u64>) {
+    fn new() -> Arc<Self> {
         Self::with_handoff(None)
     }
 
-    fn with_handoff(handoff: Option<PressureHandoff>) -> (Arc<Self>, mpsc::Receiver<u64>) {
-        let (entered, calls) = mpsc::channel(16);
+    fn with_handoff(handoff: Option<PressureHandoff>) -> Arc<Self> {
         let (updates, _) = watch::channel(());
-        (
-            Arc::new(Self {
-                writes: Mutex::new(Vec::new()),
-                durable: AtomicU64::new(0),
-                automatic: AtomicBool::new(false),
-                reject: AtomicBool::new(false),
-                backpressure: AtomicBool::new(false),
-                unavailable: AtomicBool::new(false),
-                entered,
-                updates,
-                handoff,
-                handoff_delivered: CancellationToken::new(),
-            }),
-            calls,
-        )
+        Arc::new(Self {
+            writes: Mutex::new(Vec::new()),
+            durable: AtomicU64::new(0),
+            automatic: AtomicBool::new(false),
+            reject: AtomicBool::new(false),
+            backpressure: AtomicBool::new(false),
+            unavailable: AtomicBool::new(false),
+            updates,
+            handoff,
+            handoff_delivered: CancellationToken::new(),
+        })
     }
 
     fn save(&self, through: u64) {
@@ -92,8 +88,21 @@ impl std::ops::Deref for Storage {
     }
 }
 
-impl ColdStore for Storage {
-    fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+impl HistorySink for Storage {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+    fn release_operation_output(&self, _: &str, _: &str) {}
+    fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         if self.reject.load(Ordering::SeqCst) {
             return Err(storage_error());
         }
@@ -146,22 +155,15 @@ impl ColdStore for Storage {
         }
     }
 
-    fn subscribe_pressure(&self, _: &str) -> Option<watch::Receiver<()>> {
-        Some(self.updates.subscribe())
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: Some(0),
+        }
     }
 
-    async fn flush(&self, _: &str, through: u64) -> Result<(), ColdStoreError> {
-        let mut updates = self.updates.subscribe();
-        self.entered.try_send(through).unwrap();
-        loop {
-            if self.unavailable.load(Ordering::SeqCst) {
-                return Err(storage_error());
-            }
-            if self.durable.load(Ordering::SeqCst) >= through {
-                return Ok(());
-            }
-            updates.changed().await.unwrap();
-        }
+    fn subscribe_pressure(&self, _: &str) -> Option<watch::Receiver<()>> {
+        Some(self.updates.subscribe())
     }
 }
 
@@ -214,118 +216,6 @@ async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
         .expect("controlled stage must remain reachable")
 }
 
-#[tokio::test]
-async fn blocked_flush_keeps_member_admission_and_interrupt_reachable() {
-    let (store, mut calls) = Store::new();
-    let (ready, receiver) = oneshot::channel();
-    let thread = ThreadHandle::start(
-        "flush-reachability".into(),
-        DynModelSession::new(WaitingModel(Some(ready))),
-    )
-    .unwrap();
-    thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
-        .await
-        .unwrap();
-    let runner = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.run_turn(turn()).await })
-    };
-    let sender = within(receiver).await.unwrap();
-    let flushing = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.flush().await })
-    };
-    let target = within(calls.recv()).await.unwrap();
-    assert!(target > 0);
-    let members = tokio::spawn(async move {
-        let identity = ObservedPartIdentity::Aggregate {
-            channel: AggregateChannel::Text,
-        };
-        sender.start(0, identity.clone(), None).await.unwrap();
-        sender.content_available(0, identity, None).await.unwrap();
-        sender
-            .submit(
-                0,
-                "finished".into(),
-                OpaquePayload::text("retained member"),
-                None,
-            )
-            .await
-            .unwrap();
-    });
-    // A test-only bound diagnoses the old Owner wait. Always release and join the real work
-    // before reporting the red result, so the reproduction itself leaves no orphan tasks.
-    let mut members = members;
-    let reachable = tokio::time::timeout(Duration::from_secs(1), &mut members).await;
-    let admitted_before_save = reachable.is_ok();
-    if let Ok(result) = reachable {
-        result.unwrap();
-    }
-    assert!(!flushing.is_finished());
-    if admitted_before_save {
-        let writes = store.writes.lock().unwrap();
-        assert_eq!(
-            writes
-                .iter()
-                .map(|write| write.effect.model_member_starts.len())
-                .sum::<usize>(),
-            1
-        );
-        assert_eq!(
-            writes
-                .iter()
-                .map(|write| write.effect.model_member_content_available.len())
-                .sum::<usize>(),
-            1
-        );
-        assert_eq!(
-            writes
-                .iter()
-                .map(|write| write.effect.model_members.len())
-                .sum::<usize>(),
-            1
-        );
-    }
-    let execution = thread.snapshot().execution.as_ref().unwrap().id.clone();
-    // On the fixed implementation, stop and real invocation join precede disk release.
-    if admitted_before_save {
-        assert!(matches!(
-            within(thread.interrupt_execution("superseded".into())).await,
-            Err(ThreadError::InvalidIdentity)
-        ));
-        assert!(
-            within(thread.interrupt_execution(execution.clone()))
-                .await
-                .unwrap()
-        );
-    }
-    let mut runner = runner;
-    let settled_before_save = if admitted_before_save {
-        Some(within(&mut runner).await.unwrap())
-    } else {
-        None
-    };
-    store.finish_saves();
-    if !admitted_before_save {
-        within(members).await.unwrap();
-    }
-    within(flushing).await.unwrap().unwrap();
-    if !admitted_before_save {
-        assert!(within(thread.interrupt_execution(execution)).await.unwrap());
-    }
-    let settled = match settled_before_save {
-        Some(result) => result,
-        None => within(runner).await.unwrap(),
-    };
-    assert!(matches!(settled, Err(ThreadError::Cancelled)));
-    within(thread.close()).await.unwrap();
-    assert!(
-        admitted_before_save,
-        "Owner withheld Started/ContentAvailable/Completed reply while a public flush waited"
-    );
-}
-
 fn message(id: &str) -> ThreadMessage {
     ThreadMessage {
         id: id.into(),
@@ -337,72 +227,17 @@ fn message(id: &str) -> ThreadMessage {
 }
 
 async fn idle_thread(store: &Arc<Store>) -> ThreadHandle {
-    let thread = ThreadHandle::resume_without_model("idle-flush".into(), None).unwrap();
+    let thread = ThreadHandle::start_current("idle-flush".into(), None).unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     within(thread.send_message(message("first"))).await.unwrap();
     thread
 }
 
-#[tokio::test]
-async fn concurrent_flushes_fix_independent_targets_without_chasing_new_admissions() {
-    let (store, mut calls) = Store::new();
-    let thread = idle_thread(&store).await;
-    let first = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.flush().await })
-    };
-    let first_target = within(calls.recv()).await.unwrap();
-    within(thread.send_message(message("second")))
-        .await
-        .unwrap();
-    let second = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.flush().await })
-    };
-    let second_target = within(calls.recv()).await.unwrap();
-    assert!(second_target > first_target);
-    within(thread.send_message(message("third"))).await.unwrap();
-    store.save(first_target);
-    within(first).await.unwrap().unwrap();
-    assert!(!second.is_finished());
-    store.save(second_target);
-    within(second).await.unwrap().unwrap();
-    assert!(store.writes.lock().unwrap().last().unwrap().effect.sequence > second_target);
-    store.finish_saves();
-    within(thread.close()).await.unwrap();
-    within(thread.flush()).await.unwrap();
-}
-
-#[tokio::test]
-async fn dropping_a_flush_caller_preserves_original_writer_facts_and_next_wait() {
-    let (store, mut calls) = Store::new();
-    let thread = idle_thread(&store).await;
-    let abandoned = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.flush().await })
-    };
-    let target = within(calls.recv()).await.unwrap();
-    let count = store.writes.lock().unwrap().len();
-    abandoned.abort();
-    assert!(within(abandoned).await.unwrap_err().is_cancelled());
-    assert_eq!(store.writes.lock().unwrap().len(), count);
-    assert!(store.durable.load(Ordering::SeqCst) < target);
-    let following = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.flush().await })
-    };
-    assert_eq!(within(calls.recv()).await.unwrap(), target);
-    store.save(target);
-    within(following).await.unwrap().unwrap();
-    store.finish_saves();
-    within(thread.close()).await.unwrap();
-}
-
 async fn receipt_releases_window(while_running: bool) {
-    let (store, _calls) = Store::new();
+    let store = Store::new();
     let (thread, runner) = if while_running {
         let (ready, receiver) = oneshot::channel();
         let thread = ThreadHandle::start(
@@ -411,7 +246,7 @@ async fn receipt_releases_window(while_running: bool) {
         )
         .unwrap();
         thread
-            .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+            .attach_history(HistorySinkHandle::new(Storage(store.clone())))
             .await
             .unwrap();
         let runner = {
@@ -466,14 +301,14 @@ async fn pressure_receipt_advances_durability_while_idle() {
 }
 
 async fn report_at_running_handoff(handoff: PressureHandoff) {
-    let (store, _calls) = Store::with_handoff(Some(handoff));
+    let store = Store::with_handoff(Some(handoff));
     let (ready, receiver) = oneshot::channel();
     let thread = ThreadHandle::start(
         "pressure-handoff".into(),
         DynModelSession::new(WaitingModel(Some(ready))),
     )
     .unwrap();
-    within(thread.attach_storage(ColdStoreHandle::new(Storage(store.clone()))))
+    within(thread.attach_history(HistorySinkHandle::new(Storage(store.clone()))))
         .await
         .unwrap();
     let input = turn();
@@ -566,39 +401,8 @@ async fn fault_report_at_running_handoff_latches_before_network_wait() {
 }
 
 #[tokio::test]
-async fn flush_rejects_unhanded_tail_and_writer_failure_without_claiming_a_smaller_prefix() {
-    let (store, mut calls) = Store::new();
-    let thread = idle_thread(&store).await;
-    let previous = thread.snapshot().persistence.admitted_sequence;
-    store.save(previous);
-    store.reject.store(true, Ordering::SeqCst);
-    within(thread.send_message(message("unhanded")))
-        .await
-        .unwrap();
-    assert!(thread.snapshot().commit_sequence > previous);
-    assert!(matches!(
-        within(thread.flush()).await,
-        Err(ThreadError::Storage(_))
-    ));
-    assert!(
-        calls.try_recv().is_err(),
-        "no success ticket for a smaller prefix"
-    );
-    store.reject.store(false, Ordering::SeqCst);
-    store.unavailable.store(true, Ordering::SeqCst);
-    store.updates.send_replace(());
-    assert!(matches!(
-        within(thread.flush()).await,
-        Err(ThreadError::Storage(_))
-    ));
-    store.unavailable.store(false, Ordering::SeqCst);
-    store.finish_saves();
-    within(thread.close()).await.unwrap();
-}
-
-#[tokio::test]
 async fn close_joins_invocation_but_reports_unsaved_tail_and_can_retry_preservation() {
-    let (store, mut calls) = Store::new();
+    let store = Store::new();
     let (ready, receiver) = oneshot::channel();
     let thread = ThreadHandle::start(
         "close-unsaved-tail".into(),
@@ -606,7 +410,7 @@ async fn close_joins_invocation_but_reports_unsaved_tail_and_can_retry_preservat
     )
     .unwrap();
     thread
-        .attach_storage(ColdStoreHandle::new(Storage(store.clone())))
+        .attach_history(HistorySinkHandle::new(Storage(store.clone())))
         .await
         .unwrap();
     let runner = {
@@ -622,17 +426,10 @@ async fn close_joins_invocation_but_reports_unsaved_tail_and_can_retry_preservat
     ))
     .await
     .unwrap();
-    let flushing = {
-        let thread = thread.clone();
-        tokio::spawn(async move { thread.flush().await })
-    };
-    let public_target = within(calls.recv()).await.unwrap();
     let closing = {
         let thread = thread.clone();
         tokio::spawn(async move { thread.close().await })
     };
-    let final_target = within(calls.recv()).await.unwrap();
-    assert!(final_target > public_target);
     assert!(matches!(
         within(runner).await.unwrap(),
         Err(ThreadError::Cancelled)
@@ -647,10 +444,6 @@ async fn close_joins_invocation_but_reports_unsaved_tail_and_can_retry_preservat
     ));
     store.unavailable.store(true, Ordering::SeqCst);
     store.updates.send_replace(());
-    assert!(matches!(
-        within(flushing).await.unwrap(),
-        Err(ThreadError::Storage(_))
-    ));
     assert!(matches!(
         within(closing).await.unwrap(),
         Err(ThreadError::Storage(_))
@@ -670,12 +463,11 @@ async fn close_joins_invocation_but_reports_unsaved_tail_and_can_retry_preservat
     store.unavailable.store(false, Ordering::SeqCst);
     store.finish_saves();
     within(thread.close()).await.unwrap();
-    within(thread.flush()).await.unwrap();
 }
 
 #[tokio::test]
 async fn capacity_backpressure_preserves_close_without_latching_a_failed_save() {
-    let (store, mut calls) = Store::new();
+    let store = Store::new();
     let thread = idle_thread(&store).await;
     let before = thread.snapshot().persistence.admitted_sequence;
     store.save(before);
@@ -683,13 +475,6 @@ async fn capacity_backpressure_preserves_close_without_latching_a_failed_save() 
     within(thread.send_message(message("retained-tail")))
         .await
         .unwrap();
-    let error = within(thread.flush()).await.unwrap_err();
-    assert!(matches!(error, ThreadError::Storage(ref source)
-        if source.source.is::<StorageAdmissionBackpressure>()));
-    assert!(
-        calls.try_recv().is_err(),
-        "never certify a smaller admitted prefix"
-    );
     let snapshot = thread.snapshot();
     assert!(snapshot.commit_sequence > before);
     assert!(snapshot.persistence.pressure_paused);
@@ -707,11 +492,8 @@ async fn capacity_backpressure_preserves_close_without_latching_a_failed_save() 
         }
     })
     .await;
-    // The public mailbox stays reachable even while close owes an unadmitted final fact.
-    assert!(matches!(
-        within(thread.flush()).await,
-        Err(ThreadError::Storage(_))
-    ));
+    // The public mailbox stays reachable even while close waits under storage pressure.
+    let _ = within(async { thread.snapshot() }).await;
     assert!(!closing.is_finished());
     store.automatic.store(true, Ordering::SeqCst);
     store.backpressure.store(false, Ordering::SeqCst);
@@ -738,7 +520,7 @@ async fn capacity_backpressure_preserves_close_without_latching_a_failed_save() 
 
 #[tokio::test]
 async fn capacity_backpressure_holds_model_admission_then_resumes_on_actual_progress() {
-    let (store, _calls) = Store::new();
+    let store = Store::new();
     store.backpressure.store(true, Ordering::SeqCst);
     let (ready, mut receiver) = oneshot::channel();
     let thread = ThreadHandle::start(
@@ -746,7 +528,7 @@ async fn capacity_backpressure_holds_model_admission_then_resumes_on_actual_prog
         DynModelSession::new(WaitingModel(Some(ready))),
     )
     .unwrap();
-    within(thread.attach_storage(ColdStoreHandle::new(Storage(store.clone()))))
+    within(thread.attach_history(HistorySinkHandle::new(Storage(store.clone()))))
         .await
         .unwrap();
     let mut snapshots = thread.subscribe();

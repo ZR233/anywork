@@ -1,6 +1,6 @@
 use super::{Observation, config, http, saved, sqlite, wire};
 use crate::support::{
-    HISTORY_OBSERVATION_BYTES, assert_completed_turn, body_text, open_current, originals_for_turn,
+    HISTORY_OBSERVATION_BYTES, assert_completed_turn, body_text, open_feed, originals_for_turn,
     read_original, scan_main, turn_detail, turn_head_for_input,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -521,21 +521,20 @@ impl Observation<'_> {
     }
 
     pub(super) async fn submit(&self, id: &str, phase: AgentPhase) -> Result<()> {
-        let current = open_current(self.session.http()?, id).await?;
-        let observed = current.snapshot(crate::support::current_demand()).await;
-        let view = match (observed, current.close().await) {
-            (Ok(view), Ok(())) => view,
+        let feed = open_feed(self.session.http()?, id).await?;
+        let observed = feed.session_meta().await;
+        let meta = match (observed, feed.close().await) {
+            (Ok(meta), Ok(())) => meta,
             (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
             (Err(error), Err(close_error)) => {
-                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+                return Err(error.context(format!("Feed close also failed: {close_error:#}")));
             }
         };
         ensure!(
-            view.state.active_turn.is_none(),
+            meta.active_turn.is_none(),
             "submit {phase:?} while previous Turn is active"
         );
-        let route = view
-            .state
+        let route = meta
             .model_route
             .as_ref()
             .context("public root route revision missing")?;
@@ -568,25 +567,18 @@ impl Observation<'_> {
             let input_id = input(phase).input_id;
             let mut remaining = HISTORY_OBSERVATION_BYTES;
             let history = self.session.http()?.open_history(id).await?;
-            let current =
-                match open_current(self.session.http()?, id).await {
-                    Ok(current) => current,
-                    Err(error) => {
-                        return match history.close().await {
-                            Ok(()) => Err(error),
-                            Err(close_error) => Err(error
-                                .context(format!("History close also failed: {close_error:#}"))),
-                        };
-                    }
-                };
+            let feed = match open_feed(self.session.http()?, id).await {
+                Ok(feed) => feed,
+                Err(error) => {
+                    return match history.close().await {
+                        Ok(()) => Err(error),
+                        Err(close_error) => Err(error
+                            .context(format!("History close also failed: {close_error:#}"))),
+                    };
+                }
+            };
             let observed = async {
-                let initial = current.snapshot(crate::support::current_demand()).await?;
-                let mut watch = current
-                    .watch(
-                        Some(initial.revision.clone()),
-                        crate::support::current_demand(),
-                    )
-                    .await?;
+                let mut stream = feed.events().await?;
                 let mut head = loop {
                     if let Some(head) =
                         turn_head_for_input(&history, &input_id, &mut remaining, deadline).await?
@@ -605,19 +597,25 @@ impl Observation<'_> {
                         | pl_studio_runtime::history::HistoryTurnState::Queued
                         | pl_studio_runtime::history::HistoryTurnState::Running
                 ) {
-                    let frame = watch
+                    let event = stream
                         .next(deadline)
                         .await?
-                        .context("Current watch ended before the submitted Turn completed")?;
-                    if let pl_studio_runtime::CurrentFrame::Notification { notification, .. } =
-                        frame
-                        && let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
-                            notification.notification
-                        && turn.input_id.as_deref() == Some(input_id.as_str())
+                        .context("Feed stream ended before the submitted Turn completed")?;
+                    if let pl_studio_runtime::timeline::ConversationEvent::SessionMeta(meta) = event
+                        && let Some(turn) = meta
+                            .last_turn
+                            .as_ref()
+                            .filter(|t| t.input_id.as_deref() == Some(input_id.as_str()))
+                            .or_else(|| {
+                                meta.active_turn.as_ref().filter(|t| {
+                                    t.input_id.as_deref() == Some(input_id.as_str())
+                                        && t.state.is_terminal()
+                                })
+                            })
                     {
                         ensure!(
                             turn.id == head.turn_id,
-                            "Current completion named a different Turn"
+                            "Feed completion named a different Turn"
                         );
                         loop {
                             head =
@@ -649,24 +647,22 @@ impl Observation<'_> {
                                 && matches!(turn.state, TurnState::Completed(_)),
                             "History Turn head completed but immutable detail did not"
                         );
-                        let view = loop {
-                            let view = current.snapshot(crate::support::current_demand()).await?;
-                            if view.state.active_turn.is_none()
-                                && view.state.thread.status == ThreadStatus::Idle
-                            {
-                                break view;
+                        let meta = loop {
+                            let meta = feed.session_meta().await?;
+                            if meta.active_turn.is_none() && meta.status == ThreadStatus::Idle {
+                                break meta;
                             }
                             ensure!(
                                 Instant::now() < deadline,
-                                "Current did not settle to idle after Turn {}",
+                                "Feed did not settle to idle after Turn {}",
                                 head.turn_id
                             );
                             tokio::time::sleep(http::POLL).await;
                         };
                         ensure!(
-                            view.state.thread.id == id
-                                && view.state.active_turn.is_none()
-                                && view.state.thread.status == ThreadStatus::Idle,
+                            meta.thread_id == id
+                                && meta.active_turn.is_none()
+                                && meta.status == ThreadStatus::Idle,
                             "successful Turn State did not leave the target Thread idle"
                         );
                         Ok(())
@@ -679,11 +675,11 @@ impl Observation<'_> {
             }
             .await;
             let closed_history = history.close().await;
-            let closed_current = current.close().await;
+            let closed_feed = feed.close().await;
             combine_closed(
                 observed,
                 closed_history,
-                closed_current,
+                closed_feed,
                 "Agent completion reads",
             )
         })
@@ -702,18 +698,18 @@ impl Observation<'_> {
                 }
             }
         };
-        let current = open_current(self.session.http()?, id).await?;
-        let observed = current.snapshot(crate::support::current_demand()).await;
-        let view = match (observed, current.close().await) {
-            (Ok(view), Ok(())) => view,
+        let feed = open_feed(self.session.http()?, id).await?;
+        let observed = feed.session_meta().await;
+        let meta = match (observed, feed.close().await) {
+            (Ok(meta), Ok(())) => meta,
             (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
             (Err(error), Err(close_error)) => {
-                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+                return Err(error.context(format!("Feed close also failed: {close_error:#}")));
             }
         };
         self.write(
             &format!("agent-definition-{label}.json"),
-            &serde_json::json!({"current": view, "saved": &value}),
+            &serde_json::json!({"feed": meta, "saved": &value}),
         )?;
         Ok(value)
     }
@@ -930,26 +926,24 @@ impl Observation<'_> {
         committed
             .instructions
             .assert_mode_update_preserves_agent_and_non_model_sources(&previous.instructions)?;
-        let current = open_current(self.session.http()?, id).await?;
-        let observed = current.snapshot(crate::support::current_demand()).await;
-        let view = match (observed, current.close().await) {
-            (Ok(view), Ok(())) => view,
+        let feed = open_feed(self.session.http()?, id).await?;
+        let observed = feed.session_meta().await;
+        let meta = match (observed, feed.close().await) {
+            (Ok(meta), Ok(())) => meta,
             (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
             (Err(error), Err(close_error)) => {
-                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+                return Err(error.context(format!("Feed close also failed: {close_error:#}")));
             }
         };
         ensure!(
-            view.state
-                .thread
-                .mode
+            meta.mode
                 .as_ref()
                 .is_some_and(|current| current.as_str() == mode),
             "canonical Thread did not adopt selected Mode"
         );
         self.write(
             &format!("agent-definition-mode-{id}-{mode}.json"),
-            &serde_json::json!({"reply":reply, "current":view, "saved":committed}),
+            &serde_json::json!({"reply":reply, "feed":meta, "saved":committed}),
         )?;
         Ok(())
     }

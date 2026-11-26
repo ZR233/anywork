@@ -57,18 +57,18 @@ mod tests {
 /// Validated, body-free accounting belonging to exactly one effect.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedAccounting {
-    pub(in crate::studio) thread_id: String,
-    pub(in crate::studio) sequence: u64,
+    pub(crate) thread_id: String,
+    pub(crate) sequence: u64,
     committed_at: i64,
     binding: Option<Option<ModelUsageBinding>>,
     primary_turn_id: Option<String>,
     committed_context: Option<crate::InferenceBillingRecord>,
-    pub(in crate::studio) facts: Arc<[BillingFact]>,
+    pub(crate) facts: Arc<[BillingFact]>,
     retained_bytes: u64,
 }
 
 impl PreparedAccounting {
-    pub(in crate::studio) fn shared(
+    pub(crate) fn shared(
         effect: &ThreadEffectBatch,
     ) -> Result<Arc<Self>, ProjectionError> {
         effect
@@ -76,7 +76,7 @@ impl PreparedAccounting {
             .get_or_prepare(|| Self::prepare(effect))
     }
 
-    pub(in crate::studio) fn prepare(effect: &ThreadEffectBatch) -> Result<Self, ProjectionError> {
+    pub(crate) fn prepare(effect: &ThreadEffectBatch) -> Result<Self, ProjectionError> {
         let facts = super::billing::billing_facts(effect)
             .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
         let mut identities = std::collections::BTreeSet::new();

@@ -36,7 +36,7 @@ use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf,
 #[cfg(test)]
 async fn write_published_checkpoint(
     db: &impl ConnectionTrait,
-    checkpoint: &pl_core::thread::ThreadCheckpoint,
+    checkpoint: &crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> Result<()> {
     use pl_core::context::content_hash;
     for (ordinal, record) in checkpoint.state.context.records.iter().enumerate() {
@@ -194,7 +194,7 @@ const PROJECT_KIND: &str = "m20261027_000004_history_project_kind";
 pub(crate) async fn seed_pre24_fixture(
     db: &DatabaseConnection,
     version: i64,
-    checkpoint: &pl_core::thread::ThreadCheckpoint,
+    checkpoint: &crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> Result<()> {
     let milestone = match version {
         8 => RETIRE_ORDINALS,
@@ -735,7 +735,7 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         {
             let checkpoint_version: i64 = row.try_get("", "version")?;
             ensure!(
-                (1..=i64::from(pl_core::thread::ThreadCheckpoint::SCHEMA_VERSION))
+                (1..=i64::from(crate::studio::storage::legacy_checkpoint::ThreadCheckpoint::SCHEMA_VERSION))
                     .contains(&checkpoint_version),
                 "unsupported checkpoint schema {checkpoint_version}; existing data preserved"
             );

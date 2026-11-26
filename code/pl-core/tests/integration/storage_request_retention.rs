@@ -6,8 +6,9 @@ use pl_core::{
         PreparedModelCall,
     },
     thread::{
-        ModelStepLimit, ThreadHandle, TurnInput,
-        cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
+        HistoryExport, ModelStepLimit, ThreadHandle, TurnInput, UsageSummary,
+        cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+        history_sink::{HistorySink, HistorySinkHandle},
     },
     tool::{
         ToolOutput,
@@ -85,12 +86,31 @@ struct ObserveCheckpoint {
     copies: Arc<AtomicUsize>,
     durable: Arc<AtomicU64>,
 }
-impl ColdStore for ObserveCheckpoint {
-    fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        let encoded = serde_json::to_string(&write.checkpoint.pruned().unwrap()).unwrap();
+impl HistorySink for ObserveCheckpoint {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+    fn release_operation_output(&self, _: &str, _: &str) {}
+    fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+    fn admit(&self, _: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        let mut pruned = export.state.clone();
+        pruned.retain_live_facts().unwrap();
+        pruned.clear_ephemeral();
+        let encoded = serde_json::to_string(&pruned).unwrap();
         self.copies
             .fetch_max(encoded.matches(MARKER).count(), Ordering::SeqCst);
-        self.durable.store(write.effect.sequence, Ordering::SeqCst);
+        self.durable.store(export.effect.sequence, Ordering::SeqCst);
         Ok(())
     }
     fn pressure(&self, _: &str) -> StoragePressure {
@@ -99,8 +119,11 @@ impl ColdStore for ObserveCheckpoint {
             ..Default::default()
         }
     }
-    async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
-        Ok(())
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: Some(0),
+        }
     }
 }
 #[tokio::test]
@@ -112,7 +135,7 @@ async fn long_turn_checkpoint_keeps_one_current_input() {
     .unwrap();
     let store = ObserveCheckpoint::default();
     thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .attach_history(HistorySinkHandle::new(store.clone()))
         .await
         .unwrap();
     thread
@@ -213,27 +236,8 @@ async fn compacted_tool_identity_survives_turn_completion_and_restart() {
         })
         .await
         .unwrap();
-    let checkpoint = thread
-        .checkpoint(thread.snapshot().commit_sequence)
-        .unwrap();
-    assert!(checkpoint.state.live_calls.contains_key("fixed-call"));
-    thread.close().await.unwrap();
-    let restored = ThreadHandle::resume(
-        "deduplicate".into(),
-        DynModelSession::new(ReusedCallModel),
-        Some(checkpoint),
-    )
-    .unwrap();
-    restored
-        .register_tools(vec![
-            Registration::prepare("tick".into(), OpaquePayload::text("tick"))
-                .unwrap()
-                .attach(pl_core::tool::opaque::RuntimeTool::new(Tick))
-                .foreground_coexisting(),
-        ])
-        .await
-        .unwrap();
-    let error = restored
+    assert!(thread.snapshot().live_calls.contains_key("fixed-call"));
+    let error = thread
         .step(StepInput {
             turn_id: "next".into(),
             attempt_id: "next".into(),
@@ -246,7 +250,7 @@ async fn compacted_tool_identity_survives_turn_completion_and_restart() {
         error,
         ThreadError::ModelOutput(ModelOutputViolation::DuplicateCallIdentity { .. })
     ));
-    restored.close().await.unwrap();
+    thread.close().await.unwrap();
 }
 
 struct FailsOnce(bool);

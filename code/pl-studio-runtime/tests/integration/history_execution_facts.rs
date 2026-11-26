@@ -2,14 +2,14 @@ use crate::support;
 
 use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ThreadWorkspaceMode,
+    ChatAtomKind, ChatScope, ThreadWorkspaceMode,
     history::{
         HistoryBusinessRowHead, HistoryDemand, HistoryEventsQuery, decode_event_envelope,
         read_event_body_bytes,
     },
 };
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
-use support::{Environment, completed_prompt, current_demand, prompt_step, text_reply};
+use support::{Environment, completed_prompt, prompt_step, text_reply};
 
 #[tokio::test]
 async fn durable_reopen_uses_original_records_without_execution_or_run_copies() -> Result<()> {
@@ -30,23 +30,15 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
         env.restart().await?;
         let saved = support::saved(&env.home, id).await?;
 
-        let current = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let view = current.snapshot(current_demand()).await?;
+        let meta = env.runtime.thread_session_meta(id).await?;
         ensure!(
-            !view.projection.execution_present,
-            "cold Current replayed an execution"
+            !meta.execution_present,
+            "cold SessionMeta replayed an execution"
         );
         ensure!(
-            !view.projection
-                .atoms
-                .iter()
-                .any(|atom| atom.kind == ChatAtomKind::Text),
-            "cold Current replayed completed history into its live owner"
+            meta.active_turn.is_none(),
+            "cold SessionMeta exposed an active Turn after completed history"
         );
-        current.close().await?;
 
         let demand = HistoryDemand {
             max_rows: 128,

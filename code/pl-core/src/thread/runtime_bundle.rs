@@ -30,7 +30,7 @@ impl std::fmt::Debug for RuntimeBinding {
 #[derive(Debug, Clone)]
 pub struct RuntimeBindingReader {
     pub(super) snapshots: watch::Receiver<super::subscription::OwnerPublication>,
-    pub(super) commands: mpsc::WeakSender<super::handle::Command>,
+    pub(super) commands: mpsc::WeakSender<super::handle::LoopEvent>,
     pub(super) authorization_dirty: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -47,7 +47,7 @@ impl RuntimeBindingReader {
         self.authorization_dirty
             .store(true, std::sync::atomic::Ordering::Release);
         if let Some(commands) = self.commands.upgrade() {
-            let _ = commands.try_send(super::handle::Command::Control(
+            let _ = commands.try_send(super::handle::LoopEvent::Mailbox(
                 super::mailbox::MailboxCommand::RuntimeAuthorizationChanged,
             ));
         }

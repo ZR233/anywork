@@ -1,10 +1,11 @@
 //! Pure producer normalization shared by named history migrations and TOML import.
 use crate::context_preparation::CompactionReceipt;
 use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
+use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    thread::{ThreadCheckpoint, permissions::PermissionRecord},
+    thread::permissions::PermissionRecord,
 };
 use serde_json::value::{RawValue, to_raw_value};
 
@@ -129,7 +130,7 @@ pub(crate) fn checkpoint(checkpoint: &mut ThreadCheckpoint) -> Result<()> {
             if let ContextContent::Opaque { payload } = content
                 && let Some(current) = normalize(payload)?
             {
-                *payload = current;
+                *content = ContextContent::Opaque { payload: current };
             }
         }
     }

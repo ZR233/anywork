@@ -47,10 +47,6 @@ pub(super) enum PrimaryCompletion {
         tools: crate::tool::opaque::ToolManager,
         result: Result<(), crate::tool::opaque::ToolError>,
     },
-    Flushed {
-        through: Option<u64>,
-        result: Result<(), ThreadError>,
-    },
 }
 
 pub(super) enum RunReply {
@@ -139,7 +135,6 @@ pub(super) enum CloseStage {
     Model,
     Tools,
     Flush,
-    WaitingForFlush,
     Finish,
 }
 
@@ -151,11 +146,6 @@ pub(super) enum MaintenanceCompletion {
     RetiredRuntimeModel {
         model: DynModelSession,
         result: Result<(), ModelError>,
-    },
-    Flush {
-        through: Option<u64>,
-        result: Result<(), ThreadError>,
-        reply: oneshot::Sender<Result<(), ThreadError>>,
     },
     ModelSettlement {
         sequence: u64,
@@ -182,22 +172,6 @@ impl Owner {
             }
             MaintenanceCompletion::RetiredRuntimeModel { model, result } => {
                 self.finish_retired_runtime_model(model, result);
-            }
-            MaintenanceCompletion::Flush {
-                through,
-                result,
-                reply,
-            } => {
-                if result.is_ok() {
-                    if let Some(through) = through {
-                        self.confirm_flush(through);
-                    }
-                } else if let Err(ThreadError::Storage(error)) = &result {
-                    self.cold_error = Some(error.clone());
-                    self.state.persistence.error = Some(error.to_string());
-                }
-                self.publish_snapshot();
-                let _ = reply.send(result);
             }
             MaintenanceCompletion::OutputRetry {
                 results,
@@ -228,21 +202,9 @@ impl Owner {
     }
 
     pub(super) fn start_flush(&mut self, reply: oneshot::Sender<Result<(), ThreadError>>) {
-        match self.prepare_flush() {
-            Err(error) => {
-                let _ = reply.send(Err(error));
-            }
-            Ok(ticket) => {
-                let through = ticket.pending_target();
-                self.maintenance.push(Box::pin(async move {
-                    MaintenanceCompletion::Flush {
-                        through,
-                        result: ticket.wait().await,
-                        reply,
-                    }
-                }));
-            }
-        }
+        let result = self.check_flush_health();
+        self.publish_snapshot();
+        let _ = reply.send(result);
     }
 
     pub(super) fn fail_owner_work(&mut self, error: ThreadError) {
@@ -704,25 +666,19 @@ impl Owner {
                     self.state.lifecycle = ThreadLifecycle::Closing;
                     self.publish_snapshot();
                     publication?;
-                    let ticket = match self.prepare_flush() {
-                        Ok(ticket) => ticket,
+                    match self.check_flush_health() {
+                        Ok(()) => {
+                            self.closing.as_mut().unwrap().stage = CloseStage::Finish;
+                        }
                         Err(ThreadError::Storage(error))
                             if error.source.is::<cold::StorageAdmissionBackpressure>() =>
                         {
                             return Ok(false);
                         }
                         Err(error) => return Err(error),
-                    };
-                    self.closing.as_mut().unwrap().stage = CloseStage::WaitingForFlush;
-                    self.primary = Some(PrimaryWork::new(false, async move {
-                        PrimaryCompletion::Flushed {
-                            through: ticket.pending_target(),
-                            result: ticket.wait().await,
-                        }
-                    }));
+                    }
                 }
             }
-            CloseStage::WaitingForFlush => return Ok(false),
             CloseStage::Finish => {
                 if !self.maintenance.is_empty() {
                     return Ok(false);
@@ -1108,13 +1064,6 @@ impl Owner {
                 self.tools = tools;
                 result.map_err(|error| ThreadError::Tool(Arc::new(error)))?;
             }
-            PrimaryCompletion::Flushed { through, result } => {
-                result?;
-                if let Some(through) = through {
-                    self.confirm_flush(through);
-                }
-                self.closing.as_mut().unwrap().stage = CloseStage::Finish;
-            }
         }
         Ok(())
     }
@@ -1289,7 +1238,10 @@ impl Owner {
         }
         self.frozen_turn = None;
         self.active_inputs.clear();
-        self.finish_execution(turn_id);
+        let cleared_execution = self.state.execution.as_ref().is_some_and(|execution| {
+            execution.turn_id.is_none() || execution.turn_id.as_deref() == Some(turn_id)
+        });
+        self.finish_execution_with_emit(turn_id, false);
         self.finish_current_work_if_idle();
         let result = match self.publish() {
             Ok(()) => result,
@@ -1298,6 +1250,13 @@ impl Owner {
                 Err(error)
             }
         };
+        if cleared_execution {
+            self.event_bus
+                .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+                    execution: None,
+                }));
+            self.publish_snapshot();
+        }
         match run.reply {
             RunReply::Driver => match result {
                 Ok(TurnCompletion {

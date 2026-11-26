@@ -2154,21 +2154,17 @@ async fn running_turn_id(
     http: &crate::http::StudioHttp,
     thread_id: &str,
 ) -> Result<Option<String>> {
-    let current = crate::support::open_current(http, thread_id).await?;
-    let observed = current
-        .snapshot(crate::support::current_demand())
-        .await
-        .map(|view| {
-            view.state.active_turn.as_ref().and_then(|turn| {
-                matches!(turn.state, pl_studio_runtime::TurnState::Running(_))
-                    .then(|| turn.id.clone())
-            })
-        });
-    match (observed, current.close().await) {
+    let feed = crate::support::open_feed(http, thread_id).await?;
+    let observed = feed.session_meta().await.map(|meta| {
+        meta.active_turn.as_ref().and_then(|turn| {
+            matches!(turn.state, pl_studio_runtime::TurnState::Running(_)).then(|| turn.id.clone())
+        })
+    });
+    match (observed, feed.close().await) {
         (Ok(id), Ok(())) => Ok(id),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(close_error)) => {
-            Err(error.context(format!("Current close also failed: {close_error:#}")))
+            Err(error.context(format!("Feed close also failed: {close_error:#}")))
         }
     }
 }

@@ -1,7 +1,7 @@
 //! The flat accounting layout is decoded only at an explicit checkpoint migration boundary.
-use super::{UsageCost, UsageSummary};
-use crate::model::ModelUsageBinding;
-use crate::usage::{
+use pl_core::thread::{UsageCost, UsagePricingSummary, UsageSummary};
+use pl_core::model::ModelUsageBinding;
+use pl_core::usage::{
     UsageCacheSummary, UsageContextSummary, UsageDiagnostics, UsageThroughputSummary, UsageTotals,
 };
 
@@ -87,7 +87,7 @@ impl From<LegacyUsageSummary> for UsageSummary {
                 legacy_incomplete: old.has_incomplete_usage,
                 ..Default::default()
             },
-            pricing: super::UsagePricingSummary {
+            pricing: UsagePricingSummary {
                 incomplete: old.has_unpriced_usage,
                 estimated_costs: old.estimated_costs,
                 estimated_cache_savings: old.estimated_cache_savings,

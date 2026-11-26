@@ -4,11 +4,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
 use pl_core::{
     context::{
         ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload, content_hash,
     },
-    thread::{ThreadCheckpoint, ThreadLifecycle, ThreadSnapshot, extensions::ExtensionRecord},
+    thread::{ThreadLifecycle, ThreadSnapshot, extensions::ExtensionRecord},
 };
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, Statement};
 

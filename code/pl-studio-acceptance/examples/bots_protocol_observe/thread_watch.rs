@@ -1,22 +1,13 @@
-//! Typed Current observation for reply cases that wait on interactions.
-//!
-//! The previous thread State SSE route is not a current product port. Every wait opens a public
-//! CurrentReader, consumes ordered CurrentFrame values, reads complete interaction resources through
-//! their typed collection references, and closes the capability before returning.
+//! Typed `ConversationFeed` observation for reply cases that wait on interactions and Plan state.
 
 use anyhow::{Context, Result, ensure};
-use pl_studio_runtime::{
-    CurrentFrame, CurrentView, InteractionRequest, InteractionStatus, ThreadBusinessRefs,
-    ThreadNotification, ThreadSnapshot,
-};
+use pl_studio_runtime::timeline::{ConversationEvent, SessionMetaSnapshot};
+use pl_studio_runtime::{InteractionRequest, InteractionStatus};
 use std::time::{Duration, Instant};
 
-use crate::http::{CurrentRead, StudioHttp};
-use crate::support::{
-    HISTORY_OBSERVATION_BYTES, charge_history_bytes, current_demand, current_payload_bytes,
-};
+use crate::http::{FeedEventStream, FeedRead, StudioHttp};
 
-const MAX_EVENTS: usize = 256;
+const MAX_EVENTS: usize = 512;
 
 pub(crate) struct ThreadWatch {
     http: StudioHttp,
@@ -24,11 +15,10 @@ pub(crate) struct ThreadWatch {
 }
 
 impl ThreadWatch {
-    /// Prepares a public Current reader target. No history or State SSE is opened here.
     pub(crate) fn connect(http: StudioHttp, thread_id: &str) -> Result<Self> {
         ensure!(
             http.origin().starts_with("http://127.0.0.1:"),
-            "Current observation must stay on loopback"
+            "Feed observation must stay on loopback"
         );
         Ok(Self {
             http,
@@ -36,270 +26,142 @@ impl ThreadWatch {
         })
     }
 
-    /// Waits for the first Current Reset and returns its complete State snapshot.
-    pub(crate) async fn wait_snapshot(&mut self, budget: Duration) -> Result<ThreadSnapshot> {
+    pub(crate) async fn wait_session_meta(&mut self, budget: Duration) -> Result<SessionMetaSnapshot> {
         let deadline = Instant::now() + budget;
-        let current = self.open().await?;
-        let observed = async {
-            let mut watch = current.watch(None, current_demand()).await?;
-            let mut events = 0usize;
-            let frame = next_frame(&mut watch, &mut events, deadline).await?;
-            match frame {
-                CurrentFrame::Reset { view } => {
-                    validate_view(&view, &self.thread_id)?;
-                    Ok(*view.state)
-                }
-                CurrentFrame::Notification { .. } | CurrentFrame::Projection { .. } => {
-                    anyhow::bail!("Current watch delivered a frame before Reset")
-                }
-            }
-        }
-        .await;
-        finish_current(current, observed).await
+        let feed = self.open().await?;
+        let observed = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+            let meta = feed.initial_session_meta().clone();
+            validate_meta(&meta, &self.thread_id)?;
+            Ok::<_, anyhow::Error>(meta)
+        })
+        .await
+        .context("Feed sessionMeta exceeded its deadline")?;
+        finish_feed(feed, observed).await
     }
 
-    /// Waits for State business references, starting from the Current Reset baseline.
-    pub(crate) async fn wait_business_refs(
+    pub(crate) async fn wait_session_meta_matching(
         &mut self,
         budget: Duration,
-        predicate: impl Fn(&ThreadBusinessRefs) -> bool,
+        predicate: impl Fn(&SessionMetaSnapshot) -> bool,
         phase: &'static str,
-    ) -> Result<ThreadBusinessRefs> {
+    ) -> Result<SessionMetaSnapshot> {
         let deadline = Instant::now() + budget;
-        let current = self.open().await?;
+        let feed = self.open().await?;
         let observed = async {
-            let mut watch = current.watch(None, current_demand()).await?;
+            let mut stream = feed.events().await?;
+            let initial = feed.initial_session_meta().clone();
+            validate_meta(&initial, &self.thread_id)?;
+            if predicate(&initial) {
+                return Ok(initial);
+            }
             let mut events = 0usize;
-            let mut saw_reset = false;
             loop {
-                let frame = next_frame(&mut watch, &mut events, deadline).await?;
-                match frame {
-                    CurrentFrame::Reset { view } => {
-                        validate_view(&view, &self.thread_id)?;
-                        saw_reset = true;
-                        if predicate(&view.state.business_refs) {
-                            return Ok(view.state.business_refs.clone());
+                match next_event(&mut stream, &mut events, deadline).await? {
+                    ConversationEvent::SessionMeta(meta) => {
+                        validate_meta(&meta, &self.thread_id)?;
+                        if predicate(&meta) {
+                            return Ok(meta);
                         }
                     }
-                    CurrentFrame::Notification { notification, .. } => {
-                        ensure!(saw_reset, "{phase}: notification arrived before Reset");
-                        if let ThreadNotification::BusinessRefsChanged { references } =
-                            notification.notification
-                        {
-                            validate_business_refs(&references)?;
-                            if predicate(&references) {
-                                return Ok(references);
-                            }
-                        }
+                    ConversationEvent::ResyncRequired { reason } => {
+                        anyhow::bail!("{phase}: feed required resync: {reason}");
                     }
-                    CurrentFrame::Projection { .. } => {}
+                    _ => {}
                 }
             }
         }
         .await;
-        finish_current(current, observed).await
+        finish_feed(feed, observed).await
     }
 
-    /// Waits for an interaction from Reset/Current notifications or its typed collection resource.
     pub(crate) async fn wait_interaction(
         &mut self,
         budget: Duration,
         predicate: impl Fn(&InteractionRequest) -> bool,
         phase: &'static str,
     ) -> Result<InteractionRequest> {
-        let deadline = Instant::now() + budget;
-        let current = self.open().await?;
-        let observed = async {
-            let mut watch = current.watch(None, current_demand()).await?;
-            let mut events = 0usize;
-            let mut saw_reset = false;
-            loop {
-                let frame = next_frame(&mut watch, &mut events, deadline).await?;
-                match frame {
-                    CurrentFrame::Reset { view } => {
-                        validate_view(&view, &self.thread_id)?;
-                        saw_reset = true;
-                        if let Some(found) =
-                            view.state.interactions.iter().find(|item| predicate(item))
-                        {
-                            return Ok(found.clone());
-                        }
-                        if let Some(found) = find_referenced_interaction(
-                            &current,
-                            &view.state.business_refs,
-                            &self.thread_id,
-                            &predicate,
-                            deadline,
-                        )
-                        .await?
-                        {
-                            return Ok(found);
-                        }
-                    }
-                    CurrentFrame::Notification { notification, .. } => {
-                        ensure!(saw_reset, "{phase}: notification arrived before Reset");
-                        match notification.notification {
-                            ThreadNotification::InteractionChanged { interaction }
-                                if predicate(&interaction) =>
-                            {
-                                ensure!(
-                                    interaction.scope.thread_id == self.thread_id,
-                                    "{phase}: interaction belonged to another Thread"
-                                );
-                                return Ok(*interaction);
-                            }
-                            ThreadNotification::BusinessRefsChanged { references } => {
-                                validate_business_refs(&references)?;
-                                if let Some(found) = find_referenced_interaction(
-                                    &current,
-                                    &references,
-                                    &self.thread_id,
-                                    &predicate,
-                                    deadline,
-                                )
-                                .await?
-                                {
-                                    return Ok(found);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    CurrentFrame::Projection { .. } => {}
-                }
-            }
-        }
-        .await;
-        finish_current(current, observed).await
+        let meta = self
+            .wait_session_meta_matching(
+                budget,
+                |meta| meta.interactions.iter().any(&predicate),
+                phase,
+            )
+            .await?;
+        let found = meta
+            .interactions
+            .into_iter()
+            .find(|item| predicate(item))
+            .with_context(|| format!("{phase}: matched interaction disappeared"))?;
+        ensure!(
+            found.scope.thread_id == self.thread_id,
+            "{phase}: interaction belonged to another Thread"
+        );
+        Ok(found)
     }
 
-    async fn open(&self) -> Result<CurrentRead> {
-        self.http
-            .open_current(&self.thread_id, current_demand())
-            .await
+    pub(crate) async fn interaction(&mut self, budget: Duration, question_id: &str) -> Result<InteractionRequest> {
+        self.wait_interaction(
+            budget,
+            |item| {
+                item.status() == InteractionStatus::Pending
+                    && match &item.content {
+                        pl_studio_runtime::InteractionContent::UserInput(value) => {
+                            value.questions().iter().any(|q| q.id == question_id)
+                        }
+                        pl_studio_runtime::InteractionContent::ToolApproval(_) => false,
+                    }
+            },
+            "wait pending question interaction",
+        )
+        .await
+    }
+
+    async fn open(&self) -> Result<FeedRead> {
+        self.http.open_feed(&self.thread_id, Some(64)).await
     }
 }
 
-async fn next_frame(
-    watch: &mut crate::http::CurrentWatchStream,
+async fn next_event(
+    stream: &mut FeedEventStream,
     events: &mut usize,
     deadline: Instant,
-) -> Result<CurrentFrame> {
+) -> Result<ConversationEvent> {
     *events = (*events)
         .checked_add(1)
-        .context("Current event count overflow")?;
+        .context("Feed event count overflow")?;
     ensure!(
         *events <= MAX_EVENTS,
-        "Current watch exceeded {MAX_EVENTS} events"
+        "Feed event stream exceeded {MAX_EVENTS} events"
     );
-    watch
+    stream
         .next(deadline)
         .await?
-        .context("Current watch ended before the expected frame")
+        .context("Feed event stream ended before the expected event")
 }
 
-fn validate_view(view: &CurrentView, thread_id: &str) -> Result<()> {
+fn validate_meta(meta: &SessionMetaSnapshot, thread_id: &str) -> Result<()> {
     ensure!(
-        view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-            && view.state.thread.id == thread_id,
-        "Current Reset belonged to another Thread or schema"
+        meta.thread_id == thread_id,
+        "Feed SessionMeta belonged to another Thread"
     );
-    validate_business_refs(&view.state.business_refs)?;
     ensure!(
-        view.state
-            .interactions
+        meta.interactions
             .iter()
             .all(|interaction| interaction.scope.thread_id == thread_id),
-        "Current Reset interaction belonged to another Thread"
-    );
-    ensure!(
-        !view.revision.owner_id.is_empty(),
-        "Current Reset omitted its owner identity"
+        "Feed SessionMeta interaction belonged to another Thread"
     );
     Ok(())
 }
 
-async fn find_referenced_interaction(
-    current: &CurrentRead,
-    references: &ThreadBusinessRefs,
-    thread_id: &str,
-    predicate: &impl Fn(&InteractionRequest) -> bool,
-    deadline: Instant,
-) -> Result<Option<InteractionRequest>> {
-    let Some(reference) = references.interactions.as_ref() else {
-        return Ok(None);
-    };
-    let mut remaining = HISTORY_OBSERVATION_BYTES;
-    let mut continuation = None;
-    let mut seen = std::collections::HashSet::new();
-    for page_index in 0..256 {
-        let page = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            current.page_current(reference, continuation.as_deref(), current_demand()),
-        )
-        .await
-        .context("Current interaction page exceeded its deadline")??;
-        ensure!(
-            page.revision == reference.revision,
-            "Current interaction page revision changed"
-        );
-        charge_history_bytes(serde_json::to_vec(&page)?.len(), &mut remaining)?;
-        for entry in &page.entries {
-            let bytes =
-                current_payload_bytes(current, &entry.payload, &mut remaining, deadline).await?;
-            let interaction: InteractionRequest =
-                serde_json::from_slice(&bytes).context("invalid Current interaction payload")?;
-            ensure!(
-                entry.id == interaction.interaction_id && interaction.scope.thread_id == thread_id,
-                "Current interaction entry identity or scope mismatch"
-            );
-            if predicate(&interaction) {
-                return Ok(Some(interaction));
-            }
-        }
-        let Some(next) = page.continuation else {
-            return Ok(None);
-        };
-        ensure!(
-            page_index + 1 < 256 && seen.insert(next.clone()),
-            "Current interaction collection exceeded its page budget or repeated a cursor"
-        );
-        continuation = Some(next);
-    }
-    anyhow::bail!("Current interaction collection exceeded its page budget")
-}
-
-async fn finish_current<T>(current: CurrentRead, observed: Result<T>) -> Result<T> {
-    let closed = current.close().await;
+async fn finish_feed<T>(feed: FeedRead, observed: Result<T>) -> Result<T> {
+    let closed = feed.close().await;
     match (observed, closed) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(close_error)) => {
-            Err(error.context(format!("Current close also failed: {close_error:#}")))
+            Err(error.context(format!("Feed close also failed: {close_error:#}")))
         }
     }
-}
-
-fn validate_business_refs(references: &ThreadBusinessRefs) -> Result<()> {
-    if let Some(interactions) = &references.interactions {
-        ensure!(
-            !interactions.owner_id.is_empty() && interactions.collection == "interactions",
-            "Current interaction reference is not a canonical interactions collection"
-        );
-    }
-    if let Some(plan) = &references.plan
-        && let Some(document) = &plan.document
-    {
-        ensure!(
-            !document.owner_id.is_empty()
-                && document.domain == "plan"
-                && document.entity_id == "document"
-                && document.content_key == "document"
-                && !document.generation.is_empty(),
-            "Current Plan reference did not match its exact current document version"
-        );
-    }
-    Ok(())
 }
 
 /// Safe typed summary used in case evidence lines.

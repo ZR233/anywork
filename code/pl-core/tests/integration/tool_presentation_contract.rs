@@ -5,7 +5,7 @@ use pl_core::{
         DynModelSession, ModelError, ModelRequest, ModelSession, ModelToolCall, PreparedModelCall,
         ToolPresentationContract,
     },
-    thread::{ThreadCheckpoint, ThreadHandle, TurnOutcome},
+    thread::{ThreadHandle, TurnOutcome, current::ThreadCurrent},
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, ToolError},
@@ -13,6 +13,7 @@ use pl_core::{
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use crate::support;
 
@@ -184,7 +185,8 @@ async fn hot_refresh_preserves_frozen_marker_executor_and_saved_context() {
     assert_eq!(calls[0].arguments.content(), "  original bytes\n");
     let saved = serde_json::to_vec(
         &thread
-            .checkpoint(thread.snapshot().commit_sequence)
+            .capture_current(CancellationToken::new())
+            .await
             .unwrap(),
     )
     .unwrap();
@@ -195,15 +197,18 @@ async fn hot_refresh_preserves_frozen_marker_executor_and_saved_context() {
         ["execute:original", "close:original", "close:replacement"]
     );
     let (model, observed) = support::ScriptedModel::new(&[]);
-    let restored = ThreadHandle::resume(
-        "presentation".into(),
-        DynModelSession::new(model),
-        Some(serde_json::from_slice(&saved).unwrap()),
+    let restored = ThreadHandle::restore_current(
+        serde_json::from_slice(&saved).unwrap(),
+        Some(DynModelSession::new(model)),
     )
     .unwrap();
     assert_eq!(restored.snapshot().context, before);
     restored
-        .run_turn(support::turn("after-restore"))
+        .resume_current(
+            "after-restore".into(),
+            pl_core::thread::ModelStepLimit::Limited(4.try_into().unwrap()),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -236,8 +241,8 @@ async fn hot_refresh_preserves_frozen_marker_executor_and_saved_context() {
         }
     }
     assert_eq!(removed, 1);
-    let legacy: ThreadCheckpoint = serde_json::from_value(legacy).unwrap();
-    let restored = ThreadHandle::resume_without_model("presentation".into(), Some(legacy)).unwrap();
+    let legacy: ThreadCurrent = serde_json::from_value(legacy).unwrap();
+    let restored = ThreadHandle::restore_current(legacy, None).unwrap();
     let context = restored.snapshot().context;
     let calls = context
         .records

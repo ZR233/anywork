@@ -335,8 +335,9 @@ mod admission_tests {
             PreparedModelCall,
         },
         thread::{
-            ModelStepLimit, ThreadHandle, TurnInput,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+            HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput, UsageSummary,
+            cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+            history_sink::{HistorySink, HistorySinkHandle},
         },
     };
     use std::sync::Arc;
@@ -352,19 +353,23 @@ mod admission_tests {
         cancellation: Mutex<Option<CancellationToken>>,
         after_content: AtomicBool,
         cancellations: AtomicUsize,
-        writes: Mutex<Vec<ThreadWrite>>,
+        writes: Mutex<Vec<Arc<HistoryExport>>>,
     }
 
     #[derive(Debug)]
     struct Storage(Arc<State>);
 
-    impl ColdStore for Storage {
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            if !write.effect.model_member_content_available.is_empty() {
-                self.0.after_content.store(true, Ordering::SeqCst);
-            }
-            self.0.writes.lock().unwrap().push(write);
+    impl HistorySink for Storage {
+        fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
+            let _ = (summary, effect);
+        }
+
+        fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
             Ok(())
+        }
+
+        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+            Ok(max)
         }
 
         fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
@@ -381,7 +386,28 @@ mod admission_tests {
             Ok(())
         }
 
-        async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        fn release_operation_output(&self, _: &str, _: &str) {}
+
+        fn pressure(&self, _: &str) -> StoragePressure {
+            StoragePressure::default()
+        }
+
+        fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+            StorageIdleStatus {
+                pressure: self.pressure(thread_id),
+                reclaimable_thread_bytes: None,
+            }
+        }
+
+        fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            None
+        }
+
+        fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+            if !write.effect.model_member_content_available.is_empty() {
+                self.0.after_content.store(true, Ordering::SeqCst);
+            }
+            self.0.writes.lock().unwrap().push(write);
             Ok(())
         }
     }
@@ -472,7 +498,7 @@ mod admission_tests {
         )
         .unwrap();
         thread
-            .attach_storage(ColdStoreHandle::new(Storage(state.clone())))
+            .attach_history(HistorySinkHandle::new(Storage(state.clone())))
             .await
             .unwrap();
         let result = tokio::time::timeout(

@@ -1,20 +1,22 @@
 //! Direct restart state for one Thread owner.
+#![allow(dead_code)]
+
+mod usage;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::extensions::ExtensionMutation;
-use super::inbox::InboxRecord;
-use super::input::InputRecord;
-use super::interactions::{InteractionRecord, InteractionResponse, InteractionState};
-use super::permissions::PermissionRecord;
-use super::{
-    AttemptOutcome, AttemptStatus, RequestAttempt, RuntimeFact, ThreadError, ThreadSnapshot,
-    ToolDelivery, attempt_outcome_usage, recovery,
+use pl_core::context::{ContextContent, ContextRecord, ContextSnapshot, OpaquePayload};
+use pl_core::model::ModelToolDeclaration;
+use pl_core::thread::extensions::ExtensionMutation;
+use pl_core::thread::inbox::InboxRecord;
+use pl_core::thread::input::InputRecord;
+use pl_core::thread::interactions::{InteractionRecord, InteractionResponse, InteractionState};
+use pl_core::thread::permissions::PermissionRecord;
+use pl_core::thread::{
+    AttemptOutcome, RequestAttempt, RuntimeFact, ThreadError, ThreadSnapshot, ToolDelivery,
 };
-use crate::context::{ContextContent, ContextRecord, ContextSnapshot, OpaquePayload};
-use crate::model::ModelToolDeclaration;
-use crate::tool::{ToolControl, ToolOutput};
+use pl_core::tool::{ToolControl, ToolOutput};
 
 /// Bodies larger than this leave the checkpoint file and are named by a blob reference instead.
 ///
@@ -48,7 +50,7 @@ impl CheckpointBodyReference {
     pub fn of(bytes: &[u8]) -> Self {
         Self {
             reference_version: Self::VERSION,
-            digest: crate::context::content_hash(bytes),
+            digest: pl_core::context::content_hash(bytes),
             byte_len: bytes.len() as u64,
         }
     }
@@ -91,7 +93,7 @@ impl CheckpointBodyReference {
     /// Rejects replaced or truncated bytes, and malformed reference metadata.
     pub fn verify(&self, bytes: &[u8]) -> Result<(), CheckpointBodyError> {
         self.validate()?;
-        if bytes.len() as u64 != self.byte_len || crate::context::content_hash(bytes) != self.digest
+        if bytes.len() as u64 != self.byte_len || pl_core::context::content_hash(bytes) != self.digest
         {
             return Err(CheckpointBodyError::ContentMismatch);
         }
@@ -242,6 +244,7 @@ pub enum CheckpointLegacyError {
     tag = "kind",
     rename_all_fields = "camelCase"
 )]
+#[allow(clippy::enum_variant_names)]
 pub enum LegacyCheckpointBodySlot {
     /// The provider request metadata of one resident attempt.
     AttemptMetadata { attempt_index: usize },
@@ -317,7 +320,7 @@ pub struct LegacyRequestAttempt {
     #[serde(default)]
     pub request_metadata: Option<OpaquePayload>,
     #[serde(default)]
-    pub usage_binding: Option<crate::model::ModelUsageBinding>,
+    pub usage_binding: Option<pl_core::model::ModelUsageBinding>,
     #[serde(default)]
     pub tool_projection: Option<OpaquePayload>,
     pub turn_id: String,
@@ -328,7 +331,7 @@ pub struct LegacyRequestAttempt {
     pub tools: Arc<[ModelToolDeclaration]>,
     pub outcome: AttemptOutcome,
     #[serde(default)]
-    pub input_estimate: Option<crate::model::TokenEstimate>,
+    pub input_estimate: Option<pl_core::model::TokenEstimate>,
 }
 
 impl LegacyRequestAttempt {
@@ -338,15 +341,13 @@ impl LegacyRequestAttempt {
     /// observed usage survive: the frozen request snapshot is the matching effect batch's copy, so
     /// it is intentionally dropped here.
     fn into_current(self) -> RequestAttempt {
-        RequestAttempt {
-            turn_id: self.turn_id,
-            attempt_id: self.attempt_id,
-            retry_of: self.retry_of,
-            input_revision: self.input.revision,
-            status: AttemptStatus::from_outcome(&self.outcome),
-            usage: attempt_outcome_usage(&self.outcome).cloned(),
-            facts: None,
-        }
+        RequestAttempt::from_outcome_summary(
+            self.turn_id,
+            self.attempt_id,
+            self.retry_of,
+            self.input.revision,
+            &self.outcome,
+        )
     }
 }
 
@@ -384,7 +385,7 @@ impl LegacyThreadCheckpoint {
             ));
         }
         let mut root: serde_json::Value = serde_json::from_str(envelope)?;
-        super::checkpoint_usage::upgrade(&mut root)?;
+        usage::upgrade(&mut root)?;
         if header.schema_version >= 3 {
             // Schemas 3 and 4 already use the lightweight resident attempt shape, so their only
             // conversion is the current envelope: a version-4 checkpoint simply has no continuation,
@@ -524,19 +525,19 @@ impl LegacyThreadCheckpoint {
             .map(|fact| fact.source_id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
         for record in std::sync::Arc::make_mut(&mut checkpoint.state.context.records) {
-            if let crate::context::ContextSource::Runtime { source_id } = &record.source
+            if let pl_core::context::ContextSource::Runtime { source_id } = &record.source
                 && record.id.starts_with("inbox:")
             {
-                record.source = crate::context::ContextSource::AgentMessage {
+                record.source = pl_core::context::ContextSource::AgentMessage {
                     source_id: source_id.clone(),
-                    purpose: crate::context::AgentMessageKind::Unclassified,
+                    purpose: pl_core::context::AgentMessageKind::Unclassified,
                 };
             }
-            if let crate::context::ContextSource::Runtime { source_id } = &record.source
+            if let pl_core::context::ContextSource::Runtime { source_id } = &record.source
                 && record.id.starts_with("runtime:")
                 && sources.contains(source_id.as_str())
             {
-                record.source = crate::context::ContextSource::RuntimeFact {
+                record.source = pl_core::context::ContextSource::RuntimeFact {
                     source_id: source_id.clone(),
                 };
             }
@@ -586,7 +587,7 @@ impl ThreadCheckpoint {
     /// identity, the input purpose and the durable watermark a claimed continuation owes; schema 4
     /// added typed host facts, message purpose and usage provenance. The lightweight resident attempt
     /// shape introduced by schema 3 still excludes the frozen input context and the complete attempt
-    /// outcome, because the matching [`super::ThreadEffectBatch`] is their only durable copy.
+    /// outcome, because the matching historical effect batch is their only durable copy.
     pub const SCHEMA_VERSION: u32 = 6;
 
     /// Schema versions this build no longer interprets in its normal path, but can still convert
@@ -657,7 +658,7 @@ impl ThreadCheckpoint {
             state_revision: state.commit_sequence,
             thread_id,
             history_fence,
-            saved_at: crate::time::unix_seconds(),
+            saved_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs().min(i64::MAX as u64) as i64),
             external_bodies: Vec::new(),
             state,
         }
@@ -697,7 +698,7 @@ impl ThreadCheckpoint {
     /// runtime facts, application records, tool declarations and the current private context. A
     /// resident attempt keeps only its identity, `input_revision`, status and usage, so it names no
     /// body at all: an attempt's frozen input, tool plan and produced step are the matching
-    /// [`super::ThreadEffectBatch`]'s copy. No field keeps an unbounded body just because it is
+    /// historical effect batch's copy. No field keeps an unbounded body just because it is
     /// nested.
     ///
     /// This is a pure transformation: the receiver keeps its complete bodies, so the live owner and
@@ -1254,32 +1255,6 @@ impl ThreadCheckpoint {
         self.state.discovered_tools = tools.into();
         Ok(())
     }
-
-    /// Validates identity and consistency, then returns the persisted state and its restart
-    /// settlement.
-    ///
-    /// Activating a Thread is an explicit host operation, so resuming always produces a live owner:
-    /// a checkpoint captured while the previous owner was closing is settled back into execution
-    /// instead of leaving the Thread permanently released. Running work still settles into
-    /// interrupted facts before the new owner publishes.
-    pub(crate) fn into_states(
-        self,
-        expected_thread_id: &str,
-    ) -> Result<(ThreadSnapshot, ThreadSnapshot), ThreadError> {
-        if !Self::supports_schema(self.schema_version)
-            || !self.external_bodies.is_empty()
-            || self.thread_id.is_empty()
-            || self.thread_id != expected_thread_id
-            || self.state_revision != self.state.commit_sequence
-            || self.history_fence > self.state_revision
-            || self.state.usage_summary.applied_sequence > self.state_revision
-        {
-            return Err(ThreadError::InvalidIdentity);
-        }
-        let published = self.state;
-        let state = recovery::settle(published.clone())?;
-        Ok((published, state))
-    }
 }
 
 /// Replaces the oversized bodies of one record list with references.
@@ -1801,4 +1776,47 @@ fn rebuild_tool_output(
         }
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_core::thread::{UsageSummary, input::InputPurpose};
+
+    #[test]
+    fn schema_4_checkpoint_decode_legacy_defaults_new_fields_and_flattens_usage() {
+        let seed = ThreadCheckpoint::capture(
+            "legacy-v4".into(),
+            1,
+            ThreadSnapshot::default(),
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&seed).unwrap();
+        value["schemaVersion"] = serde_json::json!(4);
+        let flat_usage = usage::LegacyUsageSummary::from(UsageSummary::default());
+        let state = value["state"].as_object_mut().expect("state object");
+        state.insert(
+            "usageSummary".into(),
+            serde_json::to_value(flat_usage).unwrap(),
+        );
+        state.remove("continuation");
+        state.remove("execution");
+        state.remove("executionSequence");
+        state.remove("requiredDurableSequence");
+        let envelope = serde_json::to_string(&value).unwrap();
+        assert!(ThreadCheckpoint::is_legacy_schema(4));
+        let decoded = ThreadCheckpoint::decode_legacy(&envelope).unwrap();
+        assert_eq!(decoded.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
+        assert!(decoded.state.continuation.is_none());
+        assert!(decoded.state.execution.is_none());
+        assert_eq!(decoded.state.execution_sequence, 0);
+        assert!(
+            decoded
+                .state
+                .inputs
+                .iter()
+                .all(|record| record.input.purpose == InputPurpose::Message)
+        );
+        assert!(decoded.state.usage_summary.diagnostics.legacy_unknown);
+    }
 }

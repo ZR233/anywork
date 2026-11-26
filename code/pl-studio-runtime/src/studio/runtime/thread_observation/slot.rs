@@ -3,169 +3,108 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
-use super::ThreadLiveFeed;
-
-#[derive(Clone)]
-pub(in crate::studio::runtime) struct SourcePosition {
-    pub epoch: u64,
-    pub source: Option<Arc<ThreadLiveFeed>>,
+struct SlotState {
+    bus: Option<crate::timeline::MetaEventBus>,
+    last_turn: Option<Arc<crate::Turn>>,
+    feeds: Option<Vec<crate::timeline::FeedCloseHandle>>,
 }
 
-/// 执行状态观察的登记屏障及会话读取的显式撤销入口。
-/// 内容读取由稳定 Store 持有，不用这里的执行代际判断内容连续性。
+/// Passive per-thread handle slot linking resident `MetaEventBus` instances and active
+/// `ConversationFeed` handles for seamless cold->live attachment, deletion, and shutdown.
 pub(in crate::studio::runtime) struct ObservationSlot {
-    state: Mutex<SourcePosition>,
-    changed: watch::Sender<u64>,
-    readers: Mutex<Option<Vec<ReadRegistration>>>,
-}
-
-/// A registered reader is only tracked while its owner is still alive.
-struct ReadRegistration(std::sync::Weak<super::super::current_reader::Inner>);
-
-impl ReadRegistration {
-    fn upgrade(&self) -> Option<super::super::CurrentReader> {
-        self.0
-            .upgrade()
-            .map(|inner| super::super::CurrentReader { inner })
-    }
-    fn alive(&self) -> bool {
-        self.0.strong_count() > 0
-    }
+    state: Mutex<SlotState>,
+    bus_tx: watch::Sender<Option<crate::timeline::MetaEventBus>>,
 }
 
 impl Default for ObservationSlot {
     fn default() -> Self {
+        let (bus_tx, _) = watch::channel(None);
         Self {
-            state: Mutex::new(SourcePosition {
-                epoch: 0,
-                source: None,
+            state: Mutex::new(SlotState {
+                bus: None,
+                last_turn: None,
+                feeds: Some(Vec::new()),
             }),
-            changed: watch::channel(0).0,
-            readers: Mutex::new(Some(Vec::new())),
+            bus_tx,
         }
     }
 }
 
 impl ObservationSlot {
-    pub(in crate::studio::runtime) fn register_current_reader(
-        &self,
-        reader: &super::super::CurrentReader,
-    ) {
-        let mut readers = self
-            .readers
+    pub(in crate::studio::runtime) fn register_feed(&self, handle: crate::timeline::FeedCloseHandle) {
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(readers) = readers.as_mut() {
-            readers.retain(ReadRegistration::alive);
-            readers.push(ReadRegistration(Arc::downgrade(&reader.inner)));
+        if let Some(feeds) = state.feeds.as_mut() {
+            feeds.retain(|entry| !entry.is_closed());
+            feeds.push(handle);
         } else {
-            reader.request_close();
+            drop(state);
+            handle.request_close();
         }
     }
 
     pub(in crate::studio::runtime) async fn close_readers(&self) -> anyhow::Result<()> {
-        let readers = self
-            .readers
+        let feeds = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .feeds
             .take()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|reader| reader.upgrade())
-            .collect::<Vec<_>>();
-        for reader in &readers {
-            reader.request_close();
-        }
-        for reader in readers {
-            reader.close().await?;
+            .unwrap_or_default();
+        for handle in feeds {
+            handle.close().await;
         }
         Ok(())
     }
 
-    pub(in crate::studio::runtime) fn capture(&self) -> (SourcePosition, watch::Receiver<u64>) {
-        let state = self
+    pub(in crate::studio::runtime) fn install_bus(&self, bus: crate::timeline::MetaEventBus) {
+        let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Subscribe under the publication lock, before releasing the captured position.
-        (state.clone(), self.changed.subscribe())
+        state.bus = Some(bus.clone());
+        self.bus_tx.send_replace(Some(bus));
     }
 
-    pub(in crate::studio::runtime) fn is_current(&self, epoch: u64) -> bool {
-        let state = self
+    pub(in crate::studio::runtime) fn retire_bus(&self, bus: &crate::timeline::MetaEventBus) {
+        let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Overflow permanently closes continuity; it never reuses a readable incarnation.
-        epoch != u64::MAX && state.epoch == epoch
+        if state.bus.as_ref().is_some_and(|current| current.ptr_eq(bus)) {
+            state.bus = None;
+            self.bus_tx.send_replace(None);
+        }
     }
 
-    pub(super) fn source(&self) -> Option<Arc<ThreadLiveFeed>> {
+    pub(in crate::studio::runtime) fn meta_bus(&self) -> Option<crate::timeline::MetaEventBus> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .source
+            .bus
             .clone()
     }
 
-    pub(in crate::studio::runtime) fn install(&self, source: Arc<ThreadLiveFeed>) {
-        let mut state = self
-            .state
+    pub(in crate::studio::runtime) fn subscribe_bus(
+        &self,
+    ) -> watch::Receiver<Option<crate::timeline::MetaEventBus>> {
+        self.bus_tx.subscribe()
+    }
+
+    pub(in crate::studio::runtime) fn set_last_turn(&self, turn: Arc<crate::Turn>) {
+        self.state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.epoch = state.epoch.saturating_add(1);
-        state.source = (state.epoch != u64::MAX).then_some(source);
-        self.changed.send_replace(state.epoch);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_turn = Some(turn);
     }
 
-    pub(in crate::studio::runtime) fn retire(&self, source: &Arc<ThreadLiveFeed>) {
-        let mut state = self
-            .state
+    pub(in crate::studio::runtime) fn last_turn(&self) -> Option<Arc<crate::Turn>> {
+        self.state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state
-            .source
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, source))
-        {
-            state.epoch = state.epoch.saturating_add(1);
-            state.source = None;
-            self.changed.send_replace(state.epoch);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn absent_live_absent_never_reuses_a_cold_read_position() {
-        let slot = ObservationSlot::default();
-        let (absent, mut changes) = slot.capture();
-        let (_owner, progress) = watch::channel(Default::default());
-        let source = Arc::new(ThreadLiveFeed::new(None, progress, Default::default()));
-        slot.install(source.clone());
-        slot.retire(&source);
-        assert!(!slot.is_current(absent.epoch));
-        let (after, _) = slot.capture();
-        assert!(after.source.is_none());
-        assert_eq!(after.epoch, absent.epoch + 2);
-        assert_eq!(*changes.borrow_and_update(), after.epoch);
-    }
-
-    #[test]
-    fn retiring_an_old_owner_cannot_clear_a_new_incarnation() {
-        let slot = ObservationSlot::default();
-        let (_old_owner, old_progress) = watch::channel(Default::default());
-        let (_new_owner, new_progress) = watch::channel(Default::default());
-        let old = Arc::new(ThreadLiveFeed::new(None, old_progress, Default::default()));
-        let new = Arc::new(ThreadLiveFeed::new(None, new_progress, Default::default()));
-        slot.install(old.clone());
-        slot.install(new.clone());
-        let (position, _) = slot.capture();
-        slot.retire(&old);
-        assert!(slot.is_current(position.epoch));
-        assert!(Arc::ptr_eq(&slot.source().unwrap(), &new));
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_turn
+            .clone()
     }
 }

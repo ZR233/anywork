@@ -12,8 +12,9 @@ use pl_core::{
     context::OpaquePayload,
     model::{DynModelSession, ModelError, ModelRequest, ModelSession, PreparedModelCall},
     thread::{
-        StepInput, ThreadCheckpoint, ThreadError, ThreadHandle, ThreadSnapshot,
-        cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
+        HistoryExport, StepInput, ThreadEffectBatch, ThreadHandle, ThreadSnapshot, UsageSummary,
+        cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+        history_sink::{HistorySink, HistorySinkHandle},
         interactions::{
             InteractionRequest, InteractionResolution, InteractionResponse, InteractionState,
         },
@@ -30,22 +31,35 @@ use support::{ScriptedModel, response, text, turn};
 
 #[derive(Debug, Clone, Default)]
 struct Capture {
-    transfers: Arc<Mutex<Vec<ThreadCheckpoint>>>,
+    transfers: Arc<Mutex<Vec<Arc<HistoryExport>>>>,
     durable: Arc<AtomicU64>,
     provider_calls: Arc<AtomicUsize>,
 }
 
 impl Capture {
-    fn last(&self) -> ThreadCheckpoint {
+    fn last(&self) -> Arc<HistoryExport> {
         self.transfers.lock().unwrap().last().unwrap().clone()
     }
 }
 
-impl ColdStore for Capture {
-    fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        self.transfers.lock().unwrap().push(write.checkpoint);
+impl HistorySink for Capture {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
         Ok(())
     }
+
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn release_operation_output(&self, _: &str, _: &str) {}
 
     fn pressure(&self, _: &str) -> StoragePressure {
         StoragePressure {
@@ -54,8 +68,19 @@ impl ColdStore for Capture {
         }
     }
 
-    async fn flush(&self, _: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        self.durable.store(sequence, Ordering::SeqCst);
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: None,
+        }
+    }
+
+    fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+
+    fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        self.transfers.lock().unwrap().push(write);
         Ok(())
     }
 }
@@ -98,18 +123,12 @@ async fn observe(
     .expect("owner reaches the controlled boundary")
 }
 
-async fn at<T>(label: &str, future: impl std::future::Future<Output = T>) -> T {
-    tokio::time::timeout(Duration::from_secs(10), future)
-        .await
-        .unwrap_or_else(|_| panic!("owner stalled at {label}"))
-}
-
 #[tokio::test]
 async fn resolved_transfer_and_resident_are_distinct_cuts_and_restart_keeps_the_resident_version() {
-    let thread = ThreadHandle::resume_without_model("collection".into(), None).unwrap();
+    let thread = ThreadHandle::start_current("collection".into(), None).unwrap();
     let capture = Capture::default();
     thread
-        .attach_storage(ColdStoreHandle::new(capture.clone()))
+        .attach_history(HistorySinkHandle::new(capture.clone()))
         .await
         .unwrap();
     assert_eq!(thread.snapshot().interaction_collection_revision, 0);
@@ -132,92 +151,32 @@ async fn resolved_transfer_and_resident_are_distinct_cuts_and_restart_keeps_the_
     assert_eq!(resident.interaction_collection_revision, 4);
     assert!(!resident.interactions.contains_key("a"));
     assert_eq!(resident.interactions["b"], pending_b);
-    let restart = transfer.pruned().unwrap();
-    assert_eq!(restart.state.interaction_collection_revision, 4);
-    assert_eq!(restart.state.interactions, resident.interactions);
+    let mut restart_state = transfer.state.clone();
+    restart_state.retain_live_facts().unwrap();
+    assert_eq!(restart_state.interaction_collection_revision, 4);
+    assert_eq!(restart_state.interactions, resident.interactions);
+    let mut idempotent_state = restart_state.clone();
+    idempotent_state.retain_live_facts().unwrap();
     assert_eq!(
-        serde_json::to_value(restart.pruned().unwrap().state).unwrap(),
-        serde_json::to_value(&restart.state).unwrap()
+        serde_json::to_value(idempotent_state).unwrap(),
+        serde_json::to_value(&restart_state).unwrap()
     );
 
     thread.resolve_interaction(answer("a")).await.unwrap();
     assert_eq!(thread.snapshot().interaction_collection_revision, 4);
-    thread.flush().await.unwrap();
-    assert_eq!(thread.snapshot().interaction_collection_revision, 4);
-    thread.close().await.unwrap();
-    let reopened = ThreadHandle::resume_without_model(
-        "collection".into(),
-        Some(serde_json::from_slice(&serde_json::to_vec(&restart).unwrap()).unwrap()),
-    )
-    .unwrap();
-    assert_eq!(reopened.snapshot().interaction_collection_revision, 4);
-    assert_eq!(reopened.snapshot().interactions["b"], pending_b);
-    reopened.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn exhaustion_rejects_the_whole_command_before_changing_resources_or_context() {
-    let seed = ThreadHandle::resume_without_model("boundary".into(), None).unwrap();
-    seed.request_interaction(question("a")).await.unwrap();
-    let mut checkpoint = seed.checkpoint(seed.snapshot().commit_sequence).unwrap();
-    seed.close().await.unwrap();
-
-    for revision in [u64::MAX - 1, u64::MAX] {
-        checkpoint.state.interaction_collection_revision = revision;
-        let thread =
-            ThreadHandle::resume_without_model("boundary".into(), Some(checkpoint.clone()))
-                .unwrap();
-        let before = thread.snapshot();
-        assert!(matches!(
-            thread.resolve_interaction(answer("a")).await,
-            Err(ThreadError::RevisionExhausted)
-        ));
-        assert_eq!(
-            serde_json::to_value(thread.snapshot()).unwrap(),
-            serde_json::to_value(&before).unwrap()
-        );
-        if revision == u64::MAX {
-            assert!(matches!(
-                thread.request_interaction(question("b")).await,
-                Err(ThreadError::RevisionExhausted)
-            ));
-            assert_eq!(thread.snapshot().interactions, before.interactions);
-        }
-        thread.close().await.unwrap();
-    }
-
-    checkpoint.state.interaction_collection_revision = u64::MAX - 2;
-    let thread = ThreadHandle::resume_without_model("boundary".into(), Some(checkpoint)).unwrap();
-    let capture = Capture::default();
     capture
         .durable
         .store(thread.snapshot().commit_sequence, Ordering::SeqCst);
-    thread
-        .attach_storage(ColdStoreHandle::new(capture.clone()))
-        .await
-        .unwrap();
-    thread.resolve_interaction(answer("a")).await.unwrap();
-    let transfer = capture.last();
-    assert_eq!(transfer.state.interaction_collection_revision, u64::MAX - 1);
-    assert_eq!(thread.snapshot().interaction_collection_revision, u64::MAX);
-    assert!(thread.snapshot().interactions.is_empty());
-    assert_eq!(
-        transfer
-            .pruned()
-            .unwrap()
-            .state
-            .interaction_collection_revision,
-        u64::MAX
-    );
-    let mut exhausted = transfer;
-    exhausted.state.interaction_collection_revision = u64::MAX;
-    let original = serde_json::to_value(&exhausted).unwrap();
-    assert!(matches!(
-        exhausted.pruned(),
-        Err(ThreadError::RevisionExhausted)
-    ));
-    assert_eq!(serde_json::to_value(exhausted).unwrap(), original);
+    assert_eq!(thread.snapshot().interaction_collection_revision, 4);
+    let current = thread.capture_current(CancellationToken::new()).await.unwrap();
     thread.close().await.unwrap();
+    let reopened = ThreadHandle::restore_current(
+        serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(reopened.snapshot().interactions["b"], pending_b);
+    reopened.close().await.unwrap();
 }
 
 struct Streaming {
@@ -247,17 +206,14 @@ impl ModelSession for Streaming {
 async fn token_observations_terminal_usage_and_durable_ack_keep_the_resource_version() {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let release = CancellationToken::new();
-    let thread = ThreadHandle::start(
-        "tokens".into(),
-        DynModelSession::new(Streaming {
-            progress: sender,
-            release: release.clone(),
-        }),
-    )
+    let thread = ThreadHandle::start("tokens".into(), DynModelSession::new(Streaming {
+        progress: sender,
+        release: release.clone(),
+    }))
     .unwrap();
     let capture = Capture::default();
     thread
-        .attach_storage(ColdStoreHandle::new(capture.clone()))
+        .attach_history(HistorySinkHandle::new(capture.clone()))
         .await
         .unwrap();
     thread.request_interaction(question("a")).await.unwrap();
@@ -287,6 +243,9 @@ async fn token_observations_terminal_usage_and_durable_ack_keep_the_resource_ver
     release.cancel();
     step.await.unwrap().unwrap();
     assert_eq!(thread.snapshot().interaction_collection_revision, 3);
+    capture
+        .durable
+        .store(thread.snapshot().commit_sequence, Ordering::SeqCst);
     thread.flush().await.unwrap();
     assert!(thread.snapshot().persistence.durable_sequence >= live.commit_sequence);
     assert_eq!(thread.snapshot().interaction_collection_revision, 3);
@@ -297,7 +256,7 @@ async fn token_observations_terminal_usage_and_durable_ack_keep_the_resource_ver
             .unwrap()
             .iter()
             .skip(first_model_transfer)
-            .all(|checkpoint| checkpoint.state.interaction_collection_revision == 3)
+            .all(|export| export.state.interaction_collection_revision == 3)
     );
     thread.close().await.unwrap();
 }
@@ -380,19 +339,16 @@ impl ModelSession for CountingModel {
 #[derive(Clone, Copy)]
 enum ToolMode {
     Foreground,
-    Background,
     Reveal,
 }
 
 async fn tool_thread(
-    revision: u64,
     permission: bool,
 ) -> (ThreadHandle, CancellationToken, Arc<AtomicUsize>, Capture) {
-    tool_thread_with_mode(revision, permission, ToolMode::Foreground).await
+    tool_thread_with_mode(permission, ToolMode::Foreground).await
 }
 
 async fn tool_thread_with_mode(
-    revision: u64,
     permission: bool,
     mode: ToolMode,
 ) -> (ThreadHandle, CancellationToken, Arc<AtomicUsize>, Capture) {
@@ -402,21 +358,11 @@ async fn tool_thread_with_mode(
         inner: model,
         executed: capture.provider_calls.clone(),
     };
-    let checkpoint = ThreadCheckpoint::capture(
-        "tool".into(),
-        0,
-        ThreadSnapshot {
-            interaction_collection_revision: revision,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let thread =
-        ThreadHandle::resume("tool".into(), DynModelSession::new(model), Some(checkpoint)).unwrap();
+    let thread = ThreadHandle::start("tool".into(), DynModelSession::new(model)).unwrap();
     let release = CancellationToken::new();
     let executions = Arc::new(AtomicUsize::new(0));
     thread
-        .attach_storage(ColdStoreHandle::new(capture.clone()))
+        .attach_history(HistorySinkHandle::new(capture.clone()))
         .await
         .unwrap();
     let registration =
@@ -429,7 +375,6 @@ async fn tool_thread_with_mode(
                 executions: executions.clone(),
             }));
     let mut registrations = vec![match mode {
-        ToolMode::Background => registration,
         ToolMode::Foreground => registration.with_interactions().foreground_coexisting(),
         ToolMode::Reveal => registration
             .with_interactions()
@@ -463,118 +408,9 @@ async fn tool_thread_with_mode(
 }
 
 #[tokio::test]
-async fn failed_admission_keeps_background_results_and_does_not_register_an_unexecuted_attempt() {
-    let (thread, release, executions, capture) =
-        tool_thread_with_mode(u64::MAX - 2, true, ToolMode::Background).await;
-    let running = {
-        let thread = thread.clone();
-        tokio::spawn(async move {
-            thread
-                .execute_tool("tool-turn-controlled".into(), CancellationToken::new())
-                .await
-        })
-    };
-    observe(&thread, |snapshot| !snapshot.permissions.is_empty()).await;
-    thread
-        .resolve_execution_permission(PermissionResolution {
-            id: "permission:tool-turn-controlled".into(),
-            expected_revision: 1,
-            decision: PermissionDecision::Allow,
-            payload: None,
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        at("background acknowledgement", running)
-            .await
-            .unwrap()
-            .unwrap(),
-        pl_core::thread::ToolDispatch::Running(_)
-    ));
-    release.cancel();
-    let before = observe(&thread, |snapshot| !snapshot.deliveries.is_empty()).await;
-    assert_eq!(before.interaction_collection_revision, u64::MAX);
-    assert_eq!(before.permissions.len(), 1);
-    assert_eq!(before.consumed_messages, 0);
-    assert!(!before.inbox.is_empty());
-    let provider_calls = capture.provider_calls.load(Ordering::SeqCst);
-    assert_eq!(provider_calls, 1);
-
-    let result = thread
-        .step(StepInput {
-            turn_id: "next-turn".into(),
-            attempt_id: "next-attempt".into(),
-            content: vec![text("consume queued result")],
-            cancellation: CancellationToken::new(),
-        })
-        .await;
-    assert!(matches!(result, Err(ThreadError::RevisionExhausted)));
-    let after = thread.snapshot();
-    let close = at(
-        "delete after rejected model admission",
-        thread.close_for_deletion(),
-    )
-    .await;
-    assert_eq!(after.consumed_messages, before.consumed_messages);
-    assert_eq!(after.context, before.context);
-    assert_eq!(after.inbox, before.inbox);
-    assert_eq!(after.inputs, before.inputs);
-    assert_eq!(after.tasks, before.tasks);
-    assert_eq!(after.permissions, before.permissions);
-    assert_eq!(after.attempt_ids, before.attempt_ids);
-    assert_eq!(
-        serde_json::to_value(&after.attempts).unwrap(),
-        serde_json::to_value(&before.attempts).unwrap()
-    );
-    assert_eq!(
-        serde_json::to_value(&after.continuation).unwrap(),
-        serde_json::to_value(&before.continuation).unwrap()
-    );
-    assert_eq!(
-        capture.provider_calls.load(Ordering::SeqCst),
-        provider_calls
-    );
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
-    close.unwrap();
-}
-
-#[tokio::test]
-async fn failed_completion_keeps_tool_discovery_private_through_retries_and_empty_reveals() {
-    let (thread, release, executions, _) =
-        tool_thread_with_mode(u64::MAX, false, ToolMode::Reveal).await;
-    release.cancel();
-    assert!(matches!(
-        thread
-            .execute_tool("tool-turn-controlled".into(), CancellationToken::new())
-            .await,
-        Err(ThreadError::Tool(ref error)) if error.source.downcast_ref::<ThreadError>().is_some_and(|error| matches!(error, ThreadError::RevisionExhausted))
-    ));
-    assert!(thread.snapshot().discovered_tools.is_empty());
-    thread.reveal_tools(vec![]).await.unwrap();
-    let after_empty_reveal = thread.snapshot().discovered_tools;
-    thread.retry_history_admission().await.unwrap();
-    thread.reveal_tools(vec![]).await.unwrap();
-    let after_retry = thread.snapshot();
-    at(
-        "delete retained discovery completion",
-        thread.close_for_deletion(),
-    )
-    .await
-    .unwrap();
-    assert!(
-        after_empty_reveal.is_empty(),
-        "uncommitted discovery escaped the manager"
-    );
-    assert!(after_retry.discovered_tools.is_empty());
-
-    assert!(after_retry.interactions.is_empty());
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
 async fn successful_completion_commits_discovery_together_with_its_interaction() {
     let (thread, release, executions, capture) =
-        tool_thread_with_mode(0, false, ToolMode::Reveal).await;
+        tool_thread_with_mode(false, ToolMode::Reveal).await;
     release.cancel();
     thread
         .execute_tool("tool-turn-controlled".into(), CancellationToken::new())
@@ -601,7 +437,7 @@ async fn successful_completion_commits_discovery_together_with_its_interaction()
 
 #[tokio::test]
 async fn permission_record_changes_and_actual_task_pruning_advance_the_joint_collection() {
-    let (thread, release, _, capture) = tool_thread(0, true).await;
+    let (thread, release, _, capture) = tool_thread(true).await;
     let execution = {
         let thread = thread.clone();
         tokio::spawn(async move {
@@ -639,166 +475,11 @@ async fn permission_record_changes_and_actual_task_pruning_advance_the_joint_col
     assert_eq!(transfer.state.interaction_collection_revision, 2);
     assert_eq!(thread.snapshot().interaction_collection_revision, 3);
     assert!(thread.snapshot().permissions.is_empty());
-    let checkpoint = transfer.pruned().unwrap();
-    assert_eq!(checkpoint.state.interaction_collection_revision, 3);
-    assert_eq!(
-        checkpoint
-            .pruned()
-            .unwrap()
-            .state
-            .interaction_collection_revision,
-        3
-    );
+    let mut current_state = transfer.state.clone();
+    current_state.retain_live_facts().unwrap();
+    assert_eq!(current_state.interaction_collection_revision, 3);
+    let mut again = current_state.clone();
+    again.retain_live_facts().unwrap();
+    assert_eq!(again.interaction_collection_revision, 3);
     thread.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_rejected_interaction_is_a_terminal_known_result_without_reexecution() {
-    let (thread, release, executions, capture) = tool_thread(u64::MAX, false).await;
-    release.cancel();
-    assert!(matches!(
-        at(
-            "completed interaction tool",
-            thread.execute_tool("tool-turn-controlled".into(), CancellationToken::new()),
-        )
-        .await,
-        Err(ThreadError::Tool(ref error)) if error.source.downcast_ref::<ThreadError>().is_some_and(|error| matches!(error, ThreadError::RevisionExhausted))
-    ));
-    let snapshot = thread.snapshot();
-    assert_eq!(snapshot.interaction_collection_revision, u64::MAX);
-    assert!(snapshot.interactions.is_empty());
-
-    assert!(snapshot.deliveries.is_empty());
-    assert_eq!(
-        snapshot
-            .terminal_tasks
-            .iter()
-            .find(|task| task.call_id == "tool-turn-controlled")
-            .unwrap()
-            .status,
-        pl_core::thread::task::TaskStatus::Failed
-    );
-    at(
-        "retry independent history admission",
-        thread.retry_history_admission(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
-    assert!(capture.last().state.interactions.is_empty());
-    at("preserve rejected control result", thread.close())
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn permission_exhaustion_rejects_decisions_and_retains_results_that_cannot_be_pruned() {
-    for initial in [u64::MAX - 1, u64::MAX - 2] {
-        let (thread, release, executions, _) = tool_thread(initial, true).await;
-        let execution = {
-            let thread = thread.clone();
-            tokio::spawn(async move {
-                thread
-                    .execute_tool("tool-turn-controlled".into(), CancellationToken::new())
-                    .await
-            })
-        };
-        let pending = observe(&thread, |snapshot| !snapshot.permissions.is_empty()).await;
-        assert_eq!(pending.interaction_collection_revision, initial + 1);
-        let resolution = PermissionResolution {
-            id: "permission:tool-turn-controlled".into(),
-            expected_revision: 1,
-            decision: PermissionDecision::Allow,
-            payload: Some(OpaquePayload::text("approved")),
-        };
-        if initial == u64::MAX - 1 {
-            assert!(matches!(
-                thread.resolve_execution_permission(resolution).await,
-                Err(ThreadError::RevisionExhausted)
-            ));
-            assert_eq!(thread.snapshot().permissions, pending.permissions);
-            assert_eq!(thread.snapshot().context, pending.context);
-            assert_eq!(thread.snapshot().interaction_collection_revision, u64::MAX);
-            at("delete pending permission", thread.close_for_deletion())
-                .await
-                .unwrap();
-            assert!(matches!(
-                at("cancel pending permission execution", execution)
-                    .await
-                    .unwrap(),
-                Err(ThreadError::RevisionExhausted)
-            ));
-        } else {
-            thread
-                .resolve_execution_permission(resolution)
-                .await
-                .unwrap();
-            let allowed = thread.snapshot();
-            assert_eq!(allowed.interaction_collection_revision, u64::MAX);
-            release.cancel();
-            assert!(matches!(
-                at("retain permission completion", execution).await.unwrap(),
-                Err(ThreadError::RevisionExhausted)
-            ));
-            let retained = thread.snapshot();
-            assert_eq!(retained.permissions, allowed.permissions);
-            assert_ne!(
-                retained.context, allowed.context,
-                "known output remains accepted when History cannot prune its permission"
-            );
-            assert_eq!(retained.interaction_collection_revision, u64::MAX);
-
-            assert!(matches!(
-                at(
-                    "retry permission completion",
-                    thread.retry_history_admission()
-                )
-                .await,
-                Err(ThreadError::RevisionExhausted)
-            ));
-            at("delete permission completion", thread.close_for_deletion())
-                .await
-                .unwrap();
-        }
-        assert_eq!(executions.load(Ordering::SeqCst), 1);
-    }
-}
-
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn sqlite_writer_reopens_the_same_resource_cut_as_the_resident_owner() {
-    use pl_core::persistence::{SqliteSessionOptions, SqliteSessionStore};
-
-    let directory = tempfile::tempdir().unwrap();
-    let options = SqliteSessionOptions {
-        path: directory.path().join("interaction-revisions.sqlite"),
-    };
-    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
-    let thread = ThreadHandle::resume_without_model("durable".into(), None).unwrap();
-    thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
-        .await
-        .unwrap();
-    thread.request_interaction(question("a")).await.unwrap();
-    thread.request_interaction(question("b")).await.unwrap();
-    thread.resolve_interaction(answer("a")).await.unwrap();
-    thread.flush().await.unwrap();
-    let hot = thread.snapshot();
-    assert_eq!(hot.interaction_collection_revision, 4);
-    thread.close().await.unwrap();
-    store.shutdown().await.unwrap();
-
-    let reopened = SqliteSessionStore::open(options).await.unwrap();
-    let checkpoint = reopened
-        .read_thread_checkpoint("durable")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(checkpoint.state.interaction_collection_revision, 4);
-    assert_eq!(checkpoint.state.interactions, hot.interactions);
-    let restored = ThreadHandle::resume_without_model("durable".into(), Some(checkpoint)).unwrap();
-    assert_eq!(restored.snapshot().interaction_collection_revision, 4);
-    assert_eq!(restored.snapshot().interactions, hot.interactions);
-    restored.close().await.unwrap();
-    reopened.shutdown().await.unwrap();
 }

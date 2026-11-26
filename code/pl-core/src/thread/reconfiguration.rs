@@ -3,7 +3,7 @@ use super::*;
 
 impl Owner {
     pub(super) fn ensure_idle(&self) -> Result<(), ThreadError> {
-        if self.current_task_start_ordinal.is_some() && self.current_model_running {
+        if self.current_model_running {
             return Err(ThreadError::InputRequiresIdle);
         }
         // A newly loaded current has pending logical work but owns no executing resources. The

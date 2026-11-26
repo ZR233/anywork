@@ -111,6 +111,10 @@ impl HistoryReader {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             (state.head, state.pending.clone())
         };
+        self.inner
+            .store
+            .read_query_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tx = self.inner.store.reader.begin().await?;
         let head = if self.inner.store.read_only {
             db::event_head(&tx).await?

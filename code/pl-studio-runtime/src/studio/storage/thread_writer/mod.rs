@@ -30,7 +30,7 @@ use crate::studio::storage::coordinator::{
 use crate::studio::storage::sqlite_util::is_retryable_write;
 use crate::studio::thread_projection::PreparedEffect;
 
-mod batch;
+pub(crate) mod batch;
 pub(in crate::studio) use batch::CommittedBatch;
 
 #[cfg(feature = "benchmarks")]

@@ -5,7 +5,7 @@ use pl_model::{
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
 use pl_studio_runtime::{
-    AgentWorkspaceMode, CreateThreadRequest, NewThreadModelRoute, ReadDemand, StudioHostKind,
+    AgentWorkspaceMode, CreateThreadRequest, NewThreadModelRoute, StudioHostKind,
     StudioPromptInput, StudioRuntime, StudioRuntimeOptions, ThreadWorkspaceMode,
     config::{ConfigPaths, ConfigStore, StudioConfig, UserAgentProfile, save_user_agent_profile},
 };
@@ -151,13 +151,6 @@ fn ensure_completed(prompt: &str, turn: &pl_studio_runtime::Turn) -> Result<()> 
         turn.state
     );
     Ok(())
-}
-
-pub fn current_demand() -> ReadDemand {
-    ReadDemand {
-        max_items: 64,
-        max_bytes: 64 * 1024,
-    }
 }
 
 pub async fn terminal(

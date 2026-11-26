@@ -54,11 +54,57 @@ mod tests {
             DynModelSession, ModelError, ModelRequest, ModelSession, ModelStepOutput,
             ModelToolCall, PreparedModelCall,
         },
-        persistence::{SqliteSessionOptions, SqliteSessionStore, ThreadEffectQuery},
-        thread::{StepInput, ThreadHandle, ToolDispatch, cold::ColdStoreHandle},
+        thread::{
+            HistoryExport, StepInput, ThreadEffectBatch, ThreadHandle, ToolDispatch, UsageSummary,
+            cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+            history_sink::{HistorySink, HistorySinkHandle},
+        },
     };
     use pl_tool::binding::{ToolCallPolicy, prepare_native_tool, prepare_registration};
-    use std::{collections::VecDeque, io::Cursor};
+    use std::{collections::VecDeque, io::Cursor, sync::Mutex};
+
+    #[derive(Debug, Clone, Default)]
+    struct RecordingSink(Arc<Mutex<Vec<Arc<HistoryExport>>>>);
+
+    impl HistorySink for RecordingSink {
+        fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
+            let _ = (summary, effect);
+        }
+
+        fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+
+        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+            Ok(max)
+        }
+
+        fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+            Ok(())
+        }
+
+        fn release_operation_output(&self, _: &str, _: &str) {}
+
+        fn pressure(&self, _: &str) -> StoragePressure {
+            StoragePressure::default()
+        }
+
+        fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+            StorageIdleStatus {
+                pressure: self.pressure(thread_id),
+                reclaimable_thread_bytes: None,
+            }
+        }
+
+        fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            None
+        }
+
+        fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+            self.0.lock().unwrap().push(write);
+            Ok(())
+        }
+    }
 
     struct MediaCalls(VecDeque<(&'static str, &'static str)>);
     impl ModelSession for MediaCalls {
@@ -166,10 +212,7 @@ mod tests {
         let show = show_registration.attach(ToolHandle::new(show.attach(
             pl_tool::file_display::ThreadShowFilesTool::new(backend, host),
         )));
-        let options = SqliteSessionOptions {
-            path: root.path().join("history.sqlite"),
-        };
-        let history = SqliteSessionStore::open(options.clone()).await?;
+        let history = RecordingSink::default();
         let thread = ThreadHandle::start(
             "media-bindings".into(),
             DynModelSession::new(MediaCalls(
@@ -181,7 +224,7 @@ mod tests {
             )),
         )?;
         thread
-            .attach_storage(ColdStoreHandle::new(history.clone()))
+            .attach_history(HistorySinkHandle::new(history.clone()))
             .await?;
         thread.register_tools(vec![view, show]).await?;
         // This test verifies media and cold persistence, independently of automatic Turn scheduling.
@@ -202,24 +245,13 @@ mod tests {
             }
         }
         thread.close().await?;
-        history.shutdown().await.unwrap();
+        let recorded = history.0.lock().unwrap().clone();
         drop((thread, history, store));
 
-        // No current tool, model or renderer is called during this cold read.
-        let history = SqliteSessionStore::open(options).await?;
-        let page = history
-            .query_thread_effects(
-                "media-bindings",
-                ThreadEffectQuery {
-                    before_sequence: None,
-                    limit: 64,
-                },
-            )
-            .await?;
-        let deliveries = page
-            .effects
+        // No current tool, model or renderer is called during this replay read.
+        let deliveries = recorded
             .iter()
-            .flat_map(|effect| effect.deliveries.iter())
+            .flat_map(|export| export.effect.deliveries.iter())
             .collect::<Vec<_>>();
         assert_eq!(deliveries.len(), 2);
         let viewed = deliveries
@@ -271,7 +303,6 @@ mod tests {
                 ContextContent::Text { text }, ContextContent::Resource { reference }
             ] if text.as_ref() == "File display: 1 archived, 0 network previews, 0 deferred, 0 failed."
                 && reference == &attachment.reference));
-        history.shutdown().await.unwrap();
         Ok(())
     }
 }

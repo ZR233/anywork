@@ -1,6 +1,50 @@
 //! Restricted task capabilities; weak commands never keep their Thread alive.
 use super::*;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::RwLock,
+    time::Duration,
+};
+
+const COMPLETED_LEDGER_CAPACITY: usize = 256;
+
+/// Bounded in-memory ledger of recently completed tasks and their deliveries.
+#[derive(Debug, Default)]
+pub(super) struct CompletedTaskLedger {
+    order: VecDeque<String>,
+    by_id: BTreeMap<String, cold::DurableToolTask>,
+    by_call_id: BTreeMap<String, cold::DurableToolTask>,
+}
+
+impl CompletedTaskLedger {
+    pub(super) fn record(&mut self, task: task::TaskRecord, delivery: Option<ToolDelivery>) {
+        if task.status == task::TaskStatus::Running {
+            return;
+        }
+        let id = task.id.clone();
+        let call_id = task.call_id.clone();
+        let entry = cold::DurableToolTask { task, delivery };
+        if !self.by_id.contains_key(&id) {
+            self.order.push_back(id.clone());
+            while self.order.len() > COMPLETED_LEDGER_CAPACITY {
+                if let Some(evicted_id) = self.order.pop_front()
+                    && let Some(removed) = self.by_id.remove(&evicted_id)
+                {
+                    self.by_call_id.remove(&removed.task.call_id);
+                }
+            }
+        }
+        self.by_call_id.insert(call_id, entry.clone());
+        self.by_id.insert(id, entry);
+    }
+
+    pub(super) fn get(&self, id: &str) -> Option<cold::DurableToolTask> {
+        self.by_id
+            .get(id)
+            .or_else(|| self.by_call_id.get(id))
+            .cloned()
+    }
+}
 
 /// A coherent wait result; pending messages remain unconsumed until model admission.
 #[derive(Debug, Clone)]
@@ -18,10 +62,8 @@ pub struct TaskAccess {
     authorization: Option<crate::tool::opaque::ToolAuthorization>,
     snapshots: watch::Receiver<super::subscription::OwnerPublication>,
     effect_window: Arc<EffectWindow>,
-    thread_id: String,
-    /// Durable store handle, if this Thread is persisted. Reads only; it never keeps the owner alive.
-    cold: Option<cold::StorageHandle>,
-    commands: mpsc::WeakSender<mailbox::MailboxCommand>,
+    completed_tasks: Arc<RwLock<CompletedTaskLedger>>,
+    commands: mpsc::WeakSender<handle::LoopEvent>,
     caller: String,
     may_wait: bool,
     may_cancel: bool,
@@ -84,14 +126,16 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::InvokeNested {
-                caller: self.caller.clone(),
-                executor: self.executor.clone(),
-                tool_id,
-                arguments,
-                cancellation,
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::InvokeNested {
+                    caller: self.caller.clone(),
+                    executor: self.executor.clone(),
+                    tool_id,
+                    arguments,
+                    cancellation,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -124,8 +168,7 @@ impl TaskAccess {
             authorization: permissions.authorization,
             snapshots: owner.publish.subscribe(),
             effect_window: owner.effect_window.clone(),
-            thread_id: owner.id.clone(),
-            cold: owner.cold.clone(),
+            completed_tasks: owner.completed_tasks.clone(),
             commands: owner.task_commands.clone(),
             caller: format!("task:{caller}"),
             may_wait: permissions.wait,
@@ -136,22 +179,22 @@ impl TaskAccess {
     }
 
     /// Publishes an opaque execution receipt through the reliable Thread effect queue.
-    /// Only the latest receipt per producer format remains in the checkpoint; the host folds
-    /// each committed receipt into durable accounting. It never changes the model context.
+    /// The host folds each committed receipt into durable accounting; it never changes model context.
     ///
     /// # Errors
     /// Rejects completed callers and closed owners. Cancellation or revoked execution permission does
     /// not reject an already incurred receipt; this operation grants no execution permission.
     pub async fn record_observation(&self, payload: OpaquePayload) -> Result<(), ThreadError> {
+        let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
-        self.commands
-            .upgrade()
-            .ok_or(ThreadError::Closed)?
-            .send(mailbox::MailboxCommand::RecordTaskObservation {
-                caller: self.caller.clone(),
-                payload,
-                reply,
-            })
+        commands
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::RecordTaskObservation {
+                    caller: self.caller.clone(),
+                    payload,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -166,11 +209,13 @@ impl TaskAccess {
         self.commands
             .upgrade()
             .ok_or(ModelMemberError::Closed)?
-            .send(mailbox::MailboxCommand::OpenAuxiliaryModel {
-                caller: Some(self.caller.clone()),
-                turn_id: None,
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::OpenAuxiliaryModel {
+                    caller: Some(self.caller.clone()),
+                    turn_id: None,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ModelMemberError::Closed)?;
         response.await.map_err(|_| ModelMemberError::Closed)?
@@ -180,11 +225,13 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::ValidateExecution {
-                caller: self.caller.clone(),
-                executor: self.executor.clone(),
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::ValidateExecution {
+                    caller: self.caller.clone(),
+                    executor: self.executor.clone(),
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -205,12 +252,14 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::RequestPermission {
-                caller: self.caller.clone(),
-                authority: self.executor.clone(),
-                payload,
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::RequestPermission {
+                    caller: self.caller.clone(),
+                    authority: self.executor.clone(),
+                    payload,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         let record = response.await.map_err(|_| ThreadError::Closed)??;
@@ -264,12 +313,14 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::ToolProgress {
-                caller: self.caller.clone(),
-                executor: self.executor.clone(),
-                update,
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::ToolProgress {
+                    caller: self.caller.clone(),
+                    executor: self.executor.clone(),
+                    update,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -294,12 +345,14 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::ToolOutputStorageFault {
-                caller: self.caller.clone(),
-                executor: self.executor.clone(),
-                fault,
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::ToolOutputStorageFault {
+                    caller: self.caller.clone(),
+                    executor: self.executor.clone(),
+                    fault,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -375,23 +428,13 @@ impl TaskAccess {
         }
     }
 
-    /// Reads a task's durable fact when the owner no longer retains its transient identity/result.
-    ///
-    /// The resident task ledgers and the live effect window are both bounded, so a finished task
-    /// that left the window must be answered by the host's durable call facts instead of being
-    /// reported as unknown or revived. This is a read-only lookup: it grants no permission, starts no
-    /// execution and does not keep the owner alive. `Ok(None)` means the durable store does not know
-    /// the identity either, and a non-terminal record must not be presented as a finished result.
-    ///
-    /// # Errors
-    /// Surfaces storage failures; it never fabricates a terminal state.
+    /// Reads a completed task fact from the owner's bounded in-memory ledger without database IO.
     pub async fn durable(&self, id: &str) -> Result<Option<cold::DurableToolTask>, ThreadError> {
-        let Some(cold) = &self.cold else {
-            return Ok(None);
-        };
-        cold.read_tool_task(&self.thread_id, id)
-            .await
-            .map_err(|error| ThreadError::Storage(Arc::new(error)))
+        let ledger = self
+            .completed_tasks
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(ledger.get(id))
     }
 
     /// Waits for any selected task to finish or for a pending Thread message.
@@ -544,12 +587,14 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::ToolCancelTask {
-                caller: self.caller.clone(),
-                authorization: self.authorization.clone(),
-                target: id.clone(),
-                reply,
-            })
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::ToolCancelTask {
+                    caller: self.caller.clone(),
+                    authorization: self.authorization.clone(),
+                    target: id.clone(),
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         match response.await.map_err(|_| ThreadError::Closed)? {

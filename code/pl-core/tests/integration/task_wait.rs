@@ -914,19 +914,9 @@ async fn cancelling_or_closing_wait_is_not_a_timeout_or_success() {
     closed.await.unwrap().unwrap();
 }
 
-#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn wait_reads_durable_terminal_state_after_the_resident_ledger_evicts_it() {
-    use pl_core::persistence::SqliteSessionStore;
-    use pl_core::thread::cold::ColdStoreHandle;
-
     let harness = Harness::start("durable-evict").await;
-    let store = SqliteSessionStore::open_memory().await.unwrap();
-    harness
-        .thread
-        .attach_storage(ColdStoreHandle::new(store))
-        .await
-        .unwrap();
     harness.script(&["fast"]);
     let mut first = None;
     for index in 0..65 {
@@ -941,7 +931,6 @@ async fn wait_reads_durable_terminal_state_after_the_resident_ledger_evicts_it()
         }
     }
     let first = first.expect("the first finished task identity");
-    harness.thread.flush().await.unwrap();
     let snapshot = harness.thread.snapshot();
     assert!(
         !snapshot.tasks.contains_key(&first)

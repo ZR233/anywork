@@ -3,7 +3,7 @@ use super::compaction::LATEST_RECEIPT;
 
 /// Producer payload conversion is confined to the persisted checkpoint migration boundary.
 pub(crate) fn migrate_checkpoint_sources(
-    checkpoint: &mut pl_core::thread::ThreadCheckpoint,
+    checkpoint: &mut crate::studio::storage::legacy_checkpoint::ThreadCheckpoint,
 ) -> anyhow::Result<()> {
     use pl_core::context::ContextSource;
     for record in std::sync::Arc::make_mut(&mut checkpoint.state.context.records) {

@@ -14,6 +14,7 @@ use pl_core::{
 };
 use std::sync::{Arc, Mutex};
 use support::{ScriptedModel, text, turn};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 struct ObserveTurnInput(Arc<Mutex<Vec<Option<pl_core::thread::input::ThreadInput>>>>);
@@ -406,25 +407,29 @@ async fn unmeasured_failure_preserves_bound_usage_across_checkpoint_and_next_tur
     .unwrap();
     thread.run_turn(turn("measured-input")).await.unwrap();
     assert!(thread.run_turn(turn("failed-input")).await.is_err());
-    let checkpoint = thread
-        .checkpoint(thread.snapshot().commit_sequence)
+    let saved = thread
+        .capture_current(CancellationToken::new())
+        .await
         .unwrap();
-    let checkpoint: pl_core::thread::ThreadCheckpoint =
-        serde_json::from_str(&serde_json::to_string(&checkpoint).unwrap()).unwrap();
+    let saved: pl_core::thread::current::ThreadCurrent =
+        serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
     thread.close().await.unwrap();
     let (model, _) = ScriptedModel::new(&[]);
-    let thread = ThreadHandle::resume(
-        "measured".into(),
-        DynModelSession::new(model),
-        Some(checkpoint),
-    )
-    .unwrap();
+    let thread =
+        ThreadHandle::restore_current(saved, Some(DynModelSession::new(model))).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     thread
         .set_context_preparation(Some(ContextPreparer::new(ObserveUsage(seen.clone()))))
         .await
         .unwrap();
-    thread.run_turn(turn("next-input")).await.unwrap();
+    thread
+        .resume_current(
+            "next-input".into(),
+            pl_core::thread::ModelStepLimit::Limited(4.try_into().unwrap()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     {
         let observations = seen.lock().unwrap();
         let previous = observations[0]
@@ -466,14 +471,14 @@ async fn independent_sessions_keep_facts_inputs_extensions_and_checkpoints_priva
         let mut input = turn(marker);
         input.content = vec![text(marker)];
         thread.run_turn(input).await.unwrap();
-        let checkpoint = thread
-            .checkpoint(thread.snapshot().commit_sequence)
+        let saved = thread
+            .capture_current(CancellationToken::new())
+            .await
             .unwrap();
         thread.close().await.unwrap();
-        let restored = ThreadHandle::resume(
-            marker.into(),
-            DynModelSession::new(ScriptedModel::new(&[]).0),
-            Some(checkpoint),
+        let restored = ThreadHandle::restore_current(
+            saved,
+            Some(DynModelSession::new(ScriptedModel::new(&[]).0)),
         )
         .unwrap();
         assert_eq!(

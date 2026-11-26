@@ -81,7 +81,7 @@ fn extract_presentation_contract(data: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(in crate::studio) fn build_event_from_draft(
+pub(crate) fn build_event_from_draft(
     event: &mut HistoryEvent,
     atom: &crate::ChatAtom,
     draft: &ChatDraft,
@@ -183,7 +183,7 @@ pub(in crate::studio) fn build_event_from_draft(
     Ok(())
 }
 
-pub(in crate::studio) fn build_active_tool_event(
+pub(crate) fn build_active_tool_event(
     event: &mut HistoryEvent,
     atom: &crate::ChatAtom,
     item: &ExecutionItem,
@@ -245,7 +245,7 @@ pub(in crate::studio) fn build_active_tool_event(
     Ok(())
 }
 
-pub(in crate::studio) fn build_active_state_event(
+pub(crate) fn build_active_state_event(
     event: &mut HistoryEvent,
     atom: &crate::ChatAtom,
     item_type: &str,
@@ -266,7 +266,7 @@ pub(in crate::studio) fn build_active_state_event(
     Ok(())
 }
 
-pub(in crate::studio) fn build_connection_event(
+pub(crate) fn build_connection_event(
     event: &mut HistoryEvent,
     data: serde_json::Value,
 ) -> Result<()> {

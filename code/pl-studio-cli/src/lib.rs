@@ -22,8 +22,7 @@ use pl_studio_runtime::{
     StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
 };
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ReadDemand, StudioPromptInput, ThreadStatus, ThreadWorkspaceMode,
-    Turn, TurnCompletion, TurnState,
+    StudioPromptInput, ThreadStatus, ThreadWorkspaceMode, Turn, TurnCompletion, TurnState,
 };
 use std::future::Future;
 use std::time::{Instant, SystemTime};
@@ -623,58 +622,37 @@ async fn wait_for_input(
             return Err(error);
         }
     };
-    let demand = ReadDemand {
-        max_items: 128,
-        max_bytes: 256 * 1024,
-    };
-    let current = match runtime
-        .open_current_reader(thread_id, CURRENT_PROTOCOL_VERSION, demand)
-        .await
-    {
-        Ok(current) => current,
+    let feed = match runtime.open_conversation_feed(thread_id, 64).await {
+        Ok(feed) => feed,
         Err(error) => {
             history.close().await;
             return Err(error);
         }
     };
-    let result = async {
-        let watch = current.watch(None, demand).await?;
-        let observed = async {
-            let mut cut = initial_cut;
-            loop {
-                if let Some(turn) = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await? {
-                    return Ok(InputObservation::Terminal(Box::new(turn)));
-                }
-                let view = current.snapshot(demand).await?;
-                if view.projection.logical_status == ThreadStatus::WaitingInteraction {
-                    // This CLI owns one freshly submitted root input. The owner can retain an
-                    // unanswered interaction after retiring its active Turn; do not invent one.
-                    return Ok(InputObservation::WaitingForInteraction);
-                }
-                // Either domain can change independently. Current can require a human while the
-                // Turn is still running; only History can establish its immutable terminal facts.
-                tokio::select! {
-                    changed = history.wait_changed(cut.clone()) => cut = changed?,
-                    frame = watch.next() => { ensure!(frame?.is_some(), "Current ended before the input settled"); }
-                }
+    let observed = async {
+        let mut cut = initial_cut;
+        loop {
+            if let Some(turn) = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await? {
+                return Ok(InputObservation::Terminal(Box::new(turn)));
             }
-        }.await;
-        let closed = watch.close().await;
-        match (observed, closed) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Err(error), Err(close)) => Err(error.context(format!("Current watch close also failed: {close}"))),
-        }
-    }.await;
-    history.close().await;
-    let closed = current.close().await;
-    match (result, closed) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(close)) => {
-            Err(error.context(format!("Current reader close also failed: {close}")))
+            let meta = feed.session_meta_snapshot();
+            if meta.status == ThreadStatus::WaitingInteraction {
+                // This CLI owns one freshly submitted root input. The owner can retain an
+                // unanswered interaction after retiring its active Turn; do not invent one.
+                return Ok(InputObservation::WaitingForInteraction);
+            }
+            // Either domain can change independently. SessionMeta can require a human while the
+            // Turn is still running; only History can establish its immutable terminal facts.
+            tokio::select! {
+                changed = history.wait_changed(cut.clone()) => cut = changed?,
+                event = feed.next_event() => { ensure!(event.is_some(), "ConversationFeed ended before the input settled"); }
+            }
         }
     }
+    .await;
+    feed.close().await;
+    history.close().await;
+    observed
 }
 
 fn is_target_terminal(turn: &Turn, input_id: &str) -> bool {

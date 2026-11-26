@@ -9,20 +9,14 @@
 //! channel's RAM identity/index; it never reads History to rebuild execution or report material.
 mod billing;
 mod directory;
-mod live_feed;
 mod live_owner;
-pub(in crate::studio) mod publication;
 mod registry;
 mod reports;
 mod slot;
-pub(super) mod state_resources;
 mod worker;
-pub(in crate::studio) use live_feed::{StateReceiver, ThreadLiveEvent, ThreadLiveFeed};
 pub(in crate::studio) use live_owner::RetainedProjection;
-pub(super) use publication::ConversationSource;
 pub(crate) use registry::Observation;
 pub(super) use registry::{ObservationServices, ThreadObservations};
-pub(super) use worker::Progress;
 
 use super::StudioRuntime;
 use anyhow::Result;

@@ -1140,52 +1140,6 @@ impl ThreadStorageSink {
         self.0.changed.notify_one();
         Ok(())
     }
-
-    pub(crate) fn read_tool_task(
-        &self,
-        thread_id: &str,
-        task_id: &str,
-    ) -> impl std::future::Future<
-        Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>,
-    > + Send {
-        let store = self.0.store.clone();
-        let owner = self.0.thread.id.clone();
-        let task_id = task_id.to_owned();
-        // Before flush the original reliable queue still owns these exact producer facts.
-        // Cloning under its lock bridges reclamation into the immutable History read below.
-        let pending = lock_progress(&self.0)
-            .effects
-            .iter()
-            .rev()
-            .find_map(|queued| {
-                let effect = &queued.write.effect;
-                let task = effect.tasks.iter().find(|task| task.id == task_id)?;
-                let delivery = effect
-                    .deliveries
-                    .iter()
-                    .find(|delivery| delivery.call_id == task.call_id)?;
-                Some(pl_core::thread::cold::DurableToolTask {
-                    task: task.clone(),
-                    delivery: Some(delivery.clone()),
-                })
-            });
-        async move {
-            if thread_id != owner {
-                return Err(cold_error("Thread persistence owner mismatch"));
-            }
-            if let Some(pending) = pending {
-                return Ok(Some(pending));
-            }
-            let history = store
-                .history(&owner)
-                .await
-                .map_err(|error| cold_error(&error.to_string()))?;
-            let reader = history.reader();
-            let result = crate::studio::storage::tool_task::read(&reader, &task_id).await;
-            reader.close().await;
-            result.map_err(|error| cold_error(&error.to_string()))
-        }
-    }
 }
 
 fn storage_error(message: &str) -> Arc<ColdStoreError> {
@@ -1310,14 +1264,5 @@ impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
             return Err(cold_error("model settlement belongs to another Thread"));
         }
         self.0.channel.confirm_model_settlement(sequence).await
-    }
-    fn read_tool_task(
-        &self,
-        thread: &str,
-        task: &str,
-    ) -> impl std::future::Future<
-        Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>,
-    > + Send {
-        ThreadStorageSink::read_tool_task(self, thread, task)
     }
 }

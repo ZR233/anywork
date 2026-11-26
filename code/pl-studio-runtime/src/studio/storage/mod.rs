@@ -4,6 +4,7 @@ mod current_file;
 pub(crate) use current_file::{read_for_upgrade, verify_for_upgrade};
 pub(crate) mod current_writer;
 pub(crate) mod history;
+pub(crate) mod legacy_checkpoint;
 pub(crate) mod sqlite_util;
 pub(crate) mod state;
 pub(crate) mod thread_writer;
@@ -12,6 +13,7 @@ pub(in crate::studio) mod write_behind;
 
 #[cfg(test)]
 mod schema_admission_tests {
+    use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
     use anyhow::Result;
     use sea_orm::ConnectionTrait;
 
@@ -31,7 +33,7 @@ mod schema_admission_tests {
     async fn v2_toml_import_preserves_source_and_recovers_external_context() -> Result<()> {
         use pl_core::{
             context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
-            thread::{ThreadCheckpoint, ThreadSnapshot, current::ThreadCurrent},
+            thread::{ThreadSnapshot, current::ThreadCurrent},
         };
         use std::sync::Arc;
 

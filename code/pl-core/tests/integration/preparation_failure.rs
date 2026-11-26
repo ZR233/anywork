@@ -12,6 +12,7 @@ use pl_core::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use support::{ScriptedModel, turn};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 struct FailOnce(AtomicBool);
@@ -94,21 +95,25 @@ async fn preadmission_failure_retains_model_facts_and_continues_without_replayin
     ));
     thread.run_turn(turn("continue")).await.unwrap();
     assert_eq!(observed.lock().unwrap().len(), 1);
-    let checkpoint = thread
-        .checkpoint(thread.snapshot().commit_sequence)
+    let saved = thread
+        .capture_current(CancellationToken::new())
+        .await
         .unwrap();
     let context = thread.snapshot().context;
     thread.close().await.unwrap();
     let (model, observed) = ScriptedModel::new(&[]);
-    let resumed = ThreadHandle::resume(
-        "preparation".into(),
-        DynModelSession::new(model),
-        Some(checkpoint),
-    )
-    .unwrap();
+    let resumed =
+        ThreadHandle::restore_current(saved, Some(DynModelSession::new(model))).unwrap();
     assert_eq!(resumed.snapshot().context, context);
     assert!(observed.lock().unwrap().is_empty());
-    resumed.run_turn(turn("after-reopen")).await.unwrap();
+    resumed
+        .resume_current(
+            "after-reopen".into(),
+            pl_core::thread::ModelStepLimit::Limited(4.try_into().unwrap()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
     assert_eq!(observed.lock().unwrap().len(), 1);
     resumed.close().await.unwrap();
 }

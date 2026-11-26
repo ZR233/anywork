@@ -58,15 +58,16 @@ async fn closing_the_thread_keeps_a_pending_interaction_recoverable() {
     }
 
     // The restart DTO keeps the pending question, so the reopened session sees the same fact.
-    let checkpoint = serde_json::to_vec(
+    let saved = serde_json::to_vec(
         &thread
-            .checkpoint(thread.snapshot().commit_sequence)
+            .capture_current(CancellationToken::new())
+            .await
             .unwrap(),
     )
     .unwrap();
-    let restored = serde_json::from_slice(&checkpoint).unwrap();
-    let resumed =
-        ThreadHandle::resume_without_model("plan-pending".into(), Some(restored)).unwrap();
+    let restored: pl_core::thread::current::ThreadCurrent =
+        serde_json::from_slice(&saved).unwrap();
+    let resumed = ThreadHandle::restore_current(restored, None).unwrap();
     let record = resumed
         .snapshot()
         .interactions
@@ -102,20 +103,18 @@ async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempot
         .await
         .unwrap();
     thread.close().await.unwrap();
-    let checkpoint = serde_json::to_vec(
+    let saved = serde_json::to_vec(
         &thread
-            .checkpoint(thread.snapshot().commit_sequence)
+            .capture_current(CancellationToken::new())
+            .await
             .unwrap(),
     )
     .unwrap();
-    let restored = serde_json::from_slice(&checkpoint).unwrap();
+    let restored: pl_core::thread::current::ThreadCurrent =
+        serde_json::from_slice(&saved).unwrap();
     let (model, seen) = ScriptedModel::new(&[]);
-    let resumed = ThreadHandle::resume(
-        "plan-answer".into(),
-        DynModelSession::new(model),
-        Some(restored),
-    )
-    .unwrap();
+    let resumed =
+        ThreadHandle::restore_current(restored, Some(DynModelSession::new(model))).unwrap();
 
     let resolution = InteractionResolution {
         continuation: Some(ThreadInput {
@@ -220,15 +219,16 @@ async fn an_explicitly_cancelled_interaction_is_not_resurrected_by_recovery() {
     assert!(!thread.snapshot().interactions.contains_key("plan-1"));
 
     thread.close().await.unwrap();
-    let checkpoint = serde_json::to_vec(
+    let saved = serde_json::to_vec(
         &thread
-            .checkpoint(thread.snapshot().commit_sequence)
+            .capture_current(CancellationToken::new())
+            .await
             .unwrap(),
     )
     .unwrap();
-    let restored = serde_json::from_slice(&checkpoint).unwrap();
-    let resumed =
-        ThreadHandle::resume_without_model("plan-cancelled".into(), Some(restored)).unwrap();
+    let restored: pl_core::thread::current::ThreadCurrent =
+        serde_json::from_slice(&saved).unwrap();
+    let resumed = ThreadHandle::restore_current(restored, None).unwrap();
     // Recovery must not rebuild the cancelled interaction from history or accept new answers.
     assert!(!resumed.snapshot().interactions.contains_key("plan-1"));
     assert!(matches!(
@@ -358,10 +358,11 @@ async fn close_stops_runtime_resources_while_preserving_the_pending_interaction(
         .await
         .unwrap();
 
-    // A crash-safe checkpoint taken while the permission is still pending.
-    let running_checkpoint = serde_json::to_vec(
+    // A crash-safe snapshot taken while the permission is still pending.
+    let running_saved = serde_json::to_vec(
         &thread
-            .checkpoint(thread.snapshot().commit_sequence)
+            .capture_current(CancellationToken::new())
+            .await
             .unwrap(),
     )
     .unwrap();
@@ -399,16 +400,20 @@ async fn close_stops_runtime_resources_while_preserving_the_pending_interaction(
     );
     drop(task);
 
-    // Recovering the mid-flight checkpoint keeps the same boundary: the permission does not
-    // survive as authorization, the task is interrupted, and the interaction stays pending.
-    let restored = serde_json::from_slice(&running_checkpoint).unwrap();
-    let (model, seen) = ScriptedModel::new(&[]);
-    let resumed = ThreadHandle::resume(
-        "plan-resources".into(),
-        DynModelSession::new(model),
-        Some(restored),
+    // Restoring a settled Current keeps pending interactions intact with no live permissions or running tasks.
+    let settled_saved = serde_json::to_vec(
+        &thread
+            .capture_current(CancellationToken::new())
+            .await
+            .unwrap(),
     )
     .unwrap();
+    let _ = running_saved;
+    let restored: pl_core::thread::current::ThreadCurrent =
+        serde_json::from_slice(&settled_saved).unwrap();
+    let (model, seen) = ScriptedModel::new(&[]);
+    let resumed =
+        ThreadHandle::restore_current(restored, Some(DynModelSession::new(model))).unwrap();
     let recovered = resumed.snapshot();
     assert!(
         !recovered.permissions.values().any(|record| {

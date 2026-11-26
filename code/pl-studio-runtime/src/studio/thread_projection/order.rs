@@ -3,10 +3,10 @@ pub(super) fn compaction_id(id: &str) -> String {
     format!("compaction:{}:{id}", id.len())
 }
 
-pub(in crate::studio) fn turn_id(id: &str) -> String {
+pub(crate) fn turn_id(id: &str) -> String {
     format!("turn:{}:{id}", id.len())
 }
-pub(in crate::studio) fn message_id(id: &str) -> String {
+pub(crate) fn message_id(id: &str) -> String {
     format!("message:{}:{id}", id.len())
 }
 pub(super) fn skill_id(id: &str) -> String {

@@ -4,8 +4,9 @@ use pl_core::{
     context::{ContextContent, OpaquePayload},
     model::{DynModelSession, ModelSession},
     thread::{
-        ThreadHandle, ToolDeliveryTarget,
-        cold::{ColdStore, ColdStoreHandle},
+        HistoryExport, ThreadEffectBatch, ThreadHandle, ToolDeliveryTarget, UsageSummary,
+        cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+        history_sink::{HistorySink, HistorySinkHandle},
     },
     tool::{
         ToolOutput,
@@ -117,17 +118,54 @@ impl Tool for Child {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct RecordingSink(Arc<Mutex<Vec<Arc<HistoryExport>>>>);
+
+impl HistorySink for RecordingSink {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn release_operation_output(&self, _: &str, _: &str) {}
+
+    fn pressure(&self, _: &str) -> StoragePressure {
+        StoragePressure::default()
+    }
+
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: None,
+        }
+    }
+
+    fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+
+    fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        self.0.lock().unwrap().push(write);
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn real_thread_retains_nested_originals_without_putting_them_into_model_history() {
     for (fail, denied) in [(false, false), (true, false), (false, true)] {
         let expected_calls = if denied { 0 } else { 3 };
-        let directory = tempfile::tempdir().unwrap();
-        let options = pl_core::persistence::SqliteSessionOptions {
-            path: directory.path().join("history.sqlite"),
-        };
-        let store = pl_core::persistence::SqliteSessionStore::open(options.clone())
-            .await
-            .unwrap();
+        let sink = RecordingSink::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let code = if fail || denied {
@@ -145,7 +183,7 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         let thread =
             ThreadHandle::start("lua-test".into(), DynModelSession::new(Projected(model))).unwrap();
         thread
-            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .attach_history(HistorySinkHandle::new(sink.clone()))
             .await
             .unwrap();
         let definition = ToolDefinition::json(
@@ -180,33 +218,16 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         .expect("nested dispatch must not deadlock")
         .unwrap();
         thread.flush().await.unwrap();
-        let checkpoint = thread.checkpoint(0).unwrap();
-        thread.close().await.unwrap();
-        store.shutdown().await.unwrap();
-        let reopened = pl_core::persistence::SqliteSessionStore::open(options)
+        let current = thread
+            .capture_current(tokio_util::sync::CancellationToken::new())
             .await
             .unwrap();
-        let mut deliveries = Vec::new();
-        let mut before_sequence = None;
-        loop {
-            let page = reopened
-                .query_thread_effects(
-                    "lua-test",
-                    pl_core::persistence::ThreadEffectQuery {
-                        before_sequence,
-                        limit: 64,
-                    },
-                )
-                .await
-                .unwrap();
-            for effect in page.effects {
-                deliveries.extend(effect.deliveries.iter().cloned());
-            }
-            before_sequence = page.next_before_sequence;
-            if before_sequence.is_none() {
-                break;
-            }
-        }
+        thread.close().await.unwrap();
+        let exports = sink.0.lock().unwrap().clone();
+        let deliveries: Vec<_> = exports
+            .iter()
+            .flat_map(|export| export.effect.deliveries.iter().cloned())
+            .collect();
         let child = deliveries
             .iter()
             .find(|delivery| delivery.tool_id == "child")
@@ -244,35 +265,23 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
             3
         );
         assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
-        let saved = ColdStore::read_tool_task(&reopened, "lua-test", &format!("task:{call_id}"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(saved.task.parent_call_id.is_some());
+        let saved_task = exports
+            .iter()
+            .flat_map(|export| export.effect.tasks.iter())
+            .find(|task| task.call_id == call_id)
+            .cloned()
+            .expect("nested task exported");
+        assert!(saved_task.parent_call_id.is_some());
         assert_eq!(
-            saved.task.invocation.unwrap().arguments.content(),
+            saved_task.invocation.unwrap().arguments.content(),
             "{\"n\":7}"
-        );
-        assert!(
-            saved
-                .delivery
-                .unwrap()
-                .output
-                .payload()
-                .content()
-                .contains(if denied {
-                    "host policy denied"
-                } else {
-                    "PRIVATE_INTERMEDIATE"
-                })
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             expected_calls,
             "cold reads must not replay tools"
         );
-        let resumed =
-            ThreadHandle::resume_without_model("lua-test".into(), Some(checkpoint)).unwrap();
+        let resumed = ThreadHandle::restore_current(current, None).unwrap();
         resumed
             .register_tools(vec![lua_registration()])
             .await
@@ -284,7 +293,6 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
             expected_calls,
             "restoring the owner must not replay child commands"
         );
-        reopened.shutdown().await.unwrap();
     }
 }
 

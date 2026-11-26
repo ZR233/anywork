@@ -5,12 +5,12 @@ use anyhow::{Context, Result, ensure};
 use pl_model::model::ModelTransportProfile;
 use pl_provider_fixture::ReplyStage;
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest,
+    SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest,
     ThreadActivityToolState, ThreadWaitState, ThreadWorkspaceMode, TurnCancellationCause,
     TurnState,
 };
 use serde_json::json;
-use support::{Environment, current_demand, prompt_step, reached, text_reply, tool_reply};
+use support::{Environment, prompt_step, reached, text_reply, tool_reply};
 
 const OLD_INPUT: &str = "Keep the source-only tool pending until my next message.";
 const NEW_INPUT: &str = "Continue with the newly selected model.";
@@ -56,48 +56,37 @@ async fn active_root_route_save_then_submit_summarizes_source_after_tool_cancell
     let result = tokio::time::timeout(support::integration_test_deadline()?, async {
         let started = env.start(ThreadWorkspaceMode::Local, OLD_INPUT).await?;
         let id = &started.thread.id;
-        let reader = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
+        let feed = env.runtime.open_conversation_feed(id, 64).await?;
         let observation = async {
-            let watch = reader.watch(None, current_demand()).await?;
-            let held = async {
-                loop {
-                    let view = reader.snapshot(current_demand()).await?;
-                    // Current exposes attempt-scoped Core call IDs, whereas WAIT_CALL is
-                    // the provider's wire ID. Bind this barrier to the original input and
-                    // its unique foreground wait instead of comparing the two ID domains.
-                    if view.state.activity.as_ref().is_some_and(|activity| {
-                        activity.input_id.as_deref() == Some(format!("input-{OLD_INPUT}").as_str())
-                            && matches!(activity.tools.active.as_slice(), [tool]
-                                if tool.name == "wait"
-                                    && tool.state == ThreadActivityToolState::Running
-                                    && tool.wait.as_ref().is_some_and(|wait|
-                                        wait.state() == ThreadWaitState::Waiting))
-                    }) {
-                        return Ok::<_, anyhow::Error>(view);
-                    }
-                    ensure!(
-                        watch.next().await?.is_some(),
-                        "Current closed before the source wait started"
-                    );
+            loop {
+                let meta = feed.session_meta_snapshot();
+                // Current exposes attempt-scoped Core call IDs, whereas WAIT_CALL is
+                // the provider's wire ID. Bind this barrier to the original input and
+                // its unique foreground wait instead of comparing the two ID domains.
+                if meta.activity.as_ref().is_some_and(|activity| {
+                    activity.input_id.as_deref() == Some(format!("input-{OLD_INPUT}").as_str())
+                        && matches!(activity.tools.active.as_slice(), [tool]
+                            if tool.name == "wait"
+                                && tool.state == ThreadActivityToolState::Running
+                                && tool.wait.as_ref().is_some_and(|wait|
+                                    wait.state() == ThreadWaitState::Waiting))
+                }) {
+                    return Ok::<_, anyhow::Error>(meta);
                 }
+                ensure!(
+                    feed.next_event().await.is_some(),
+                    "ConversationFeed closed before the source wait started"
+                );
             }
-            .await;
-            watch.close().await?;
-            held
         }
         .await;
-        reader.close().await?;
+        feed.close().await;
         let held = observation?;
         let source_turn = held
-            .state
             .active_turn
             .as_ref()
             .context("source Turn is active")?;
         let revision = held
-            .state
             .model_route
             .as_ref()
             .context("source route")?

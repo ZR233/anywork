@@ -7,11 +7,9 @@ mod support;
 use anyhow::{Context, Result, ensure};
 
 use pl_studio_runtime::history::*;
-use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ContentRange, CurrentContentRef, CurrentFrame, CurrentProjection,
-};
+use pl_studio_runtime::timeline::{ConversationEvent, LiveStatusPhase, TimelineItem, TimelinePatch};
 use std::path::Path;
-use support::{Environment, current_demand, prompt_step, reached};
+use support::{Environment, prompt_step, reached};
 
 fn demand() -> HistoryDemand {
     HistoryDemand::default()
@@ -72,31 +70,13 @@ async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Re
         support::completed_prompt(&env.runtime, &id, "reopened-plan").await?;
         env.runtime.synchronize_thread_observation(&id).await?;
         env.restart().await?;
-        let reader = env
-            .runtime
-            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let view = reader.snapshot(current_demand()).await?;
-        let interactions = view
-            .projection
+        let feed = env.runtime.open_conversation_feed(&id, 64).await?;
+        let pending = feed
+            .session_meta_snapshot()
             .interactions
-            .context("reopened Plan collection")?;
-        let page = reader
-            .page_collection(interactions, None, current_demand())
-            .await?;
-        let entry = page
-            .entries
             .into_iter()
             .next()
             .context("reopened pending Plan")?;
-        let bytes = match entry.payload {
-            pl_studio_runtime::CurrentPayloadData::Inline { bytes } => bytes,
-            pl_studio_runtime::CurrentPayloadData::Deferred { reference, .. } => {
-                read_current_body(&reader, &reference).await?
-            }
-        };
-        let pending: pl_studio_runtime::InteractionRequest = serde_json::from_slice(&bytes)?;
-        let metadata = reader.watch(None, current_demand()).await?;
         ensure!(
             env.root_provider.recorded().len() == 1,
             "passive restore invoked a model"
@@ -120,22 +100,21 @@ async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Re
         reached(&continuation).await?;
         env.runtime.synchronize_thread_observation(&id).await?;
         let input = loop {
-            ensure!(
-                metadata.next().await?.is_some(),
-                "Current ended before the approved continuation"
-            );
-            let active = reader.snapshot(current_demand()).await?;
-            if let Some(input) = active.state.active_turn.and_then(|turn| turn.input_id)
+            let active = feed.session_meta_snapshot();
+            if let Some(input) = active.active_turn.and_then(|turn| turn.input_id)
                 && input != "input-reopened-plan"
             {
                 break input;
             }
+            ensure!(
+                feed.next_event().await.is_some(),
+                "ConversationFeed ended before the approved continuation"
+            );
         };
         continuation.release();
         support::terminal(&env.runtime, &id, Some(&input)).await?;
         env.runtime.synchronize_thread_observation(&id).await?;
-        metadata.close().await?;
-        reader.close().await?;
+        feed.close().await;
         ensure!(
             env.root_provider.recorded().len() == 2,
             "approval did not issue exactly one continuation"
@@ -169,30 +148,13 @@ async fn ordinary_question_answer_continues_from_current_without_history_reconst
         let id = started.thread.id;
         support::completed_prompt(&env.runtime, &id, GUI_QUESTION_HISTORY_PROMPT).await?;
         env.runtime.synchronize_thread_observation(&id).await?;
-        let reader = env
-            .runtime
-            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let reference = reader
-            .snapshot(current_demand())
-            .await?
-            .projection
+        let feed = env.runtime.open_conversation_feed(&id, 64).await?;
+        let pending = feed
+            .session_meta_snapshot()
             .interactions
-            .context("pending question collection")?;
-        let entry = reader
-            .page_collection(reference, None, current_demand())
-            .await?
-            .entries
             .into_iter()
             .next()
             .context("pending question")?;
-        let bytes = match entry.payload {
-            pl_studio_runtime::CurrentPayloadData::Inline { bytes } => bytes,
-            pl_studio_runtime::CurrentPayloadData::Deferred { reference, .. } => {
-                read_current_body(&reader, &reference).await?
-            }
-        };
-        let pending: pl_studio_runtime::InteractionRequest = serde_json::from_slice(&bytes)?;
         let answers: UserInputResolution =
             serde_json::from_str(&pl_provider_fixture::gui_question_history_answers_json())?;
         env.runtime
@@ -207,17 +169,22 @@ async fn ordinary_question_answer_continues_from_current_without_history_reconst
         env.runtime.synchronize_thread_observation(&id).await?;
         reached(&continuation).await?;
         env.runtime.synchronize_thread_observation(&id).await?;
-        let input = reader
-            .snapshot(current_demand())
-            .await?
-            .state
-            .active_turn
-            .and_then(|turn| turn.input_id)
-            .context("running answer continuation")?;
+        let input = loop {
+            let meta = feed.session_meta_snapshot();
+            if let Some(input) = meta.active_turn.and_then(|turn| turn.input_id).filter(|input| {
+                input != "input-Show an interaction request and wait for my choice."
+            }) {
+                break input;
+            }
+            ensure!(
+                feed.next_event().await.is_some(),
+                "ConversationFeed ended before answer continuation"
+            );
+        };
         continuation.release();
         support::terminal(&env.runtime, &id, Some(&input)).await?;
         env.runtime.synchronize_thread_observation(&id).await?;
-        reader.close().await?;
+        feed.close().await;
         Ok(())
     })
     .await
@@ -225,48 +192,6 @@ async fn ordinary_question_answer_continues_from_current_without_history_reconst
     .and_then(std::convert::identity);
     continuation.release();
     env.finish(result).await
-}
-
-fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContentRef> {
-    projection
-        .atoms
-        .iter()
-        .filter(|atom| {
-            atom.kind == pl_studio_runtime::ChatAtomKind::Text
-                && atom.text_channel == Some(pl_studio_runtime::ThreadTextChannel::Final)
-        })
-        .flat_map(|atom| atom.contents.iter())
-        .find(|content| content.role == pl_studio_runtime::ChatContentRole::Body)
-        .map(|content| content.reference.clone())
-}
-
-async fn read_current_body(
-    reader: &pl_studio_runtime::CurrentReader,
-    reference: &CurrentContentRef,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    loop {
-        let window = reader
-            .read_body(
-                reference.clone(),
-                ContentRange {
-                    offset: bytes.len() as u64,
-                    max_bytes: 64 * 1024,
-                },
-            )
-            .await?;
-        ensure!(window.offset == bytes.len() as u64);
-        let finished = window.offset + window.bytes.len() as u64 == window.available_through;
-        ensure!(
-            finished || !window.bytes.is_empty(),
-            "Current body did not advance"
-        );
-        bytes.extend(window.bytes);
-        if finished {
-            break;
-        }
-    }
-    Ok(bytes)
 }
 
 async fn read_history_body(
@@ -343,125 +268,52 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             )
             .await?;
         let id = thread.thread.id;
-        let demand = current_demand();
         let history_demand = HistoryDemand::default();
-        let reader = env
-            .runtime
-            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
-            .await?;
-        let metadata = reader.watch(None, demand).await?;
-        let Some(CurrentFrame::Reset { view }) = metadata.next().await? else {
-            anyhow::bail!("Current watch did not begin with Reset");
-        };
+        let feed = env.runtime.open_conversation_feed(&id, 64).await?;
+        ensure!(matches!(
+            feed.next_event().await,
+            Some(ConversationEvent::Timeline(TimelinePatch::Reset { .. }))
+        ));
+        let initial_meta = feed.session_meta_snapshot();
         ensure!(
-            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
-            "Current did not expose the current Thread schema"
-        );
-        ensure!(
-            view.state
+            initial_meta
                 .runtime
                 .as_ref()
                 .is_none_or(|runtime| runtime.deferred.is_empty()),
             "small runtime snapshot unexpectedly deferred a State field"
         );
         ensure!(
-            view.state
+            initial_meta
                 .activity
                 .as_ref()
                 .is_none_or(|activity| activity.deferred.is_empty()),
             "small activity snapshot unexpectedly deferred a State field"
         );
         reached(&stage).await?;
-        let mut reference = None;
-        while reference.is_none() {
-            match metadata.next().await? {
-                Some(CurrentFrame::Reset { view }) => {
-                    reference = final_text_reference(&view.projection);
+        loop {
+            match feed.next_event().await {
+                Some(ConversationEvent::LiveStatus(ls)) => {
+                    if let LiveStatusPhase::StreamingText { text, .. } = ls.phase
+                        && text.contains(&head)
+                    {
+                        break;
+                    }
                 }
-                Some(CurrentFrame::Projection { projection, .. }) => {
-                    reference = final_text_reference(&projection);
-                }
-                Some(CurrentFrame::Notification { .. }) => {}
-                None => anyhow::bail!("Current watch ended before the response body appeared"),
+                Some(_) => {}
+                None => anyhow::bail!("ConversationFeed ended before the response stream appeared"),
             }
         }
-        let reference = reference.unwrap();
-        for stale_reference in [
-            {
-                let mut stale = reference.clone();
-                stale.owner_id.push_str(":wrong-owner");
-                stale
-            },
-            {
-                let mut stale = reference.clone();
-                stale.generation.push_str(":wrong-generation");
-                stale
-            },
-        ] {
-            let stale = reader
-                .read_body(
-                    stale_reference,
-                    ContentRange {
-                        offset: 0,
-                        max_bytes: 1,
-                    },
-                )
-                .await
-                .unwrap_err();
-            ensure!(
-                stale
-                    .downcast_ref::<pl_studio_runtime::StudioError>()
-                    .and_then(|error| error.reason())
-                    == Some("staleCurrentReference"),
-                "wrong owner or body generation was accepted"
-            );
-        }
-        let live_view = reader.snapshot(demand).await?;
+        let live_meta = feed.session_meta_snapshot();
         ensure!(
-            live_view.state.active_turn.as_ref().is_some_and(|turn| {
+            live_meta.active_turn.as_ref().is_some_and(|turn| {
                 turn.input_id.as_deref() == Some("input-current-history")
                     && matches!(turn.state, pl_studio_runtime::TurnState::Running(_))
             }),
             "held provider lost its actual running Turn: {:?}",
-            live_view.state.active_turn
+            live_meta.active_turn
         );
-        ensure!(
-            live_view
-                .state
-                .runtime
-                .as_ref()
-                .is_some_and(|runtime| runtime.deferred.is_empty()),
-            "live runtime snapshot unexpectedly deferred a State field"
-        );
-        ensure!(
-            live_view
-                .state
-                .activity
-                .as_ref()
-                .is_none_or(|activity| activity.deferred.is_empty()),
-            "live activity snapshot unexpectedly deferred a State field"
-        );
-        ensure!(
-            live_view.state.thread.status == live_view.projection.logical_status,
-            "Current baseline used an older catalog status"
-        );
-        let r1 = live_view.revision.owner_id;
-        let body = reader
-            .watch_body(
-                reference.clone(),
-                ContentRange {
-                    offset: 65_530,
-                    max_bytes: 40,
-                },
-            )
-            .await?;
-        let live_window = body.next().await?.context("live body watch")?;
-        ensure!(live_window.offset == 65_530);
-        ensure!(live_window.bytes == expected[65_530..65_570]);
-        ensure!(
-            !live_window.sealed,
-            "the held provider attempt was still active"
-        );
+        let r1 = live_meta.owner_epoch.clone();
+        ensure!(!r1.is_empty());
 
         // The periodic saver publishes persistence when current.json is written.
         // The test owns this subscription; the runtime still owns the saver.
@@ -497,13 +349,16 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
         stage.release();
         reached(&terminal_stage).await?;
         loop {
-            let window = body
-                .next()
-                .await?
-                .context("Current body ended during pure deltas")?;
-            ensure!(!window.sealed, "provider terminal was still held");
-            if window.available_through == streamed_prefix.len() as u64 {
-                break;
+            match feed.next_event().await {
+                Some(ConversationEvent::LiveStatus(ls)) => {
+                    if let LiveStatusPhase::StreamingText { text, .. } = ls.phase
+                        && text.len() >= streamed_prefix.len()
+                    {
+                        break;
+                    }
+                }
+                Some(_) => {}
+                None => anyhow::bail!("ConversationFeed ended during pure deltas"),
             }
         }
         tokio::time::timeout(
@@ -519,42 +374,52 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
         );
         archive.close().await;
         terminal_stage.release();
-        let terminal = loop {
-            let Some(frame) = metadata.next().await? else {
-                anyhow::bail!("Current watch ended before the provider Turn completed");
-            };
-            if let CurrentFrame::Notification { notification, .. } = frame
-                && let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
-                    notification.notification
-            {
-                break turn;
-            }
-        };
-        ensure!(terminal.input_id.as_deref() == Some("input-current-history"));
-        loop {
-            match body.next().await {
-                Ok(Some(window)) => {
-                    ensure!(window.bytes == expected[65_530..65_570]);
-                    if window.sealed {
-                        break;
+        let terminal_item = loop {
+            match feed.next_event().await {
+                Some(ConversationEvent::Timeline(TimelinePatch::Append { items })) => {
+                    if let Some(found) = items
+                        .into_iter()
+                        .find(|item| matches!(item, TimelineItem::AssistantText { .. }))
+                    {
+                        break found;
                     }
                 }
-                Err(error)
-                    if error
-                        .downcast_ref::<pl_studio_runtime::StudioError>()
-                        .is_some_and(|error| error.reason() == Some("staleCurrentReference")) =>
-                {
+                Some(_) => {}
+                None => anyhow::bail!("ConversationFeed ended before assistant item committed"),
+            }
+        };
+        let TimelineItem::AssistantText {
+            body_ref,
+            text: inline_or_head,
+            ..
+        } = terminal_item
+        else {
+            unreachable!();
+        };
+        let full_text = if let Some(reference) = body_ref {
+            let mut offset = 0u64;
+            let mut collected = Vec::new();
+            loop {
+                let win = feed.read_body_window(&reference, offset, 64 * 1024).await?;
+                if let Some(chunk) = win.text {
+                    collected.extend_from_slice(chunk.as_bytes());
+                    offset += chunk.len() as u64;
+                }
+                if win.eof {
                     break;
                 }
-                Err(error) => return Err(error),
-                Ok(None) => {
-                    anyhow::bail!("body watch ended without sealing or retiring the live reference")
-                }
             }
-        }
-        body.close().await?;
-        metadata.close().await?;
-        reader.close().await?;
+            collected
+        } else {
+            inline_or_head.into_bytes()
+        };
+        ensure!(full_text == expected, "committed assistant body differs from provider output");
+        support::completed_prompt(&env.runtime, &id, "current-history").await?;
+        feed.close().await;
+        ensure!(
+            feed.load_older("0".into(), 10).await.is_err(),
+            "closed ConversationFeed remained readable"
+        );
 
         env.runtime.synchronize_thread_observation(&id).await?;
         let saved = support::saved(&env.home, &id).await?;
@@ -617,39 +482,21 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
 
         std::fs::write(saved.root.join("current.json"), &saved_stream_bytes)?;
         env.restart().await?;
-        std::fs::write(saved.path, b"broken history; Current must not open it")?;
-        tracing::debug!(target: "conversation_work", probe = "current_restore_begin");
-        let current = env
-            .runtime
-            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
-            .await?;
-        let view = current.snapshot(demand).await?;
+        let cold = env.runtime.open_conversation_feed(&id, 64).await?;
+        let cold_meta = cold.session_meta_snapshot();
         ensure!(
-            view.revision.owner_id == r1 && !view.projection.execution_present,
+            cold_meta.owner_epoch == r1 && !cold_meta.execution_present && cold_meta.active_turn.is_none(),
             "passive cold reading must retain saved provenance without activating a new Core owner"
         );
-        let restored = final_text_reference(&view.projection).context("saved streaming body")?;
+        cold.close().await;
+        std::fs::write(saved.path, b"broken history; SessionMeta read must not open it")?;
+        tracing::debug!(target: "conversation_work", probe = "current_restore_begin");
+        let cold_meta_without_history = env.runtime.thread_session_meta(&id).await?;
         ensure!(
-            read_current_body(&current, &restored).await? == head.as_bytes(),
-            "cold Current borrowed the later final body from History"
+            cold_meta_without_history.owner_epoch == r1
+                && !cold_meta_without_history.execution_present,
+            "cold SessionMeta touched broken History or activated execution"
         );
-        let stale = current
-            .read_body(
-                reference,
-                ContentRange {
-                    offset: 0,
-                    max_bytes: 1,
-                },
-            )
-            .await
-            .unwrap_err();
-        ensure!(
-            stale
-                .downcast_ref::<pl_studio_runtime::StudioError>()
-                .and_then(|error| error.reason())
-                == Some("staleCurrentReference")
-        );
-        current.close().await?;
         tracing::debug!(target: "conversation_work", probe = "current_restore_end");
         ensure!(env.root_provider.recorded().len() == provider_requests);
         Ok(())
@@ -693,51 +540,34 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
     let result = tokio::time::timeout(support::integration_test_deadline()?, async {
         let started = env.start(ThreadWorkspaceMode::Local, "restart-r1").await?;
         let id = &started.thread.id;
-        let old = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let old_watch = old.watch(None, current_demand()).await?;
+        let old = env.runtime.open_conversation_feed(id, 64).await?;
         reached(&first_stage).await?;
-        let reference = loop {
-            let projection = match old_watch
-                .next()
-                .await?
-                .context("original Current watch ended")?
-            {
-                CurrentFrame::Reset { view } => view.projection,
-                CurrentFrame::Projection { projection, .. } => *projection,
-                CurrentFrame::Notification { .. } => continue,
-            };
-            if let Some(reference) = final_text_reference(&projection) {
-                break reference;
+        loop {
+            match old.next_event().await {
+                Some(ConversationEvent::LiveStatus(ls))
+                    if matches!(ls.phase, LiveStatusPhase::StreamingText { ref text, .. } if !text.is_empty()) =>
+                {
+                    break;
+                }
+                Some(_) => {}
+                None => anyhow::bail!("original ConversationFeed ended early"),
             }
-        };
-        let r1 = old.snapshot(current_demand()).await?.revision.owner_id;
-        ensure!(reference.owner_id == r1);
-        ensure!(read_current_body(&old, &reference).await? == b"original output");
+        }
+        let r1 = old.session_meta_snapshot().owner_epoch;
         first_stage.release();
         support::completed_prompt(&env.runtime, id, "restart-r1").await?;
         env.restart().await?;
         let saved = support::saved(&env.home, id).await?;
         ensure!(
-            old_watch.next().await?.is_none(),
+            old.next_event().await.is_none(),
             "retired owner still delivered metadata"
         );
-        old_watch.close().await?;
-        old.close().await?;
-        let current = env
-            .runtime
-            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let paused = current.snapshot(current_demand()).await?;
-        ensure!(paused.revision.owner_id == r1 && !paused.projection.execution_present);
+        old.close().await;
+        let current = env.runtime.open_conversation_feed(id, 64).await?;
+        let paused = current.session_meta_snapshot();
         ensure!(
-            !paused.projection.atoms.iter().any(|atom| matches!(
-                atom.kind,
-                pl_studio_runtime::ChatAtomKind::Text | pl_studio_runtime::ChatAtomKind::Reasoning
-            )),
-            "cold Current replayed completed history"
+            paused.owner_epoch == r1 && !paused.execution_present && paused.active_turn.is_none(),
+            "cold ConversationFeed replayed execution"
         );
         ensure!(env.root_provider.recorded().len() == 1);
         let history = env
@@ -775,7 +605,7 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
                 demand(),
             )
             .await?;
-        let route = paused.state.model_route.context("saved route")?.revision;
+        let route = paused.model_route.context("saved route")?.revision;
         env.runtime
             .submit_prompt_command(
                 id.clone(),
@@ -790,30 +620,24 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
             )
             .await?;
         reached(&second_stage).await?;
-        let running = current.snapshot(current_demand()).await?;
-        let r2 = running.revision.owner_id;
+        // Prove the cold-opened ConversationFeed transitions seamlessly to the live epoch R2.
+        let running = loop {
+            let meta = current.session_meta_snapshot();
+            if meta.execution_present && meta.owner_epoch != r1 {
+                break meta;
+            }
+            ensure!(
+                current.next_event().await.is_some(),
+                "cold ConversationFeed closed instead of transitioning to live R2"
+            );
+        };
+        let r2 = running.owner_epoch;
         ensure!(
-            r2 != r1 && running.projection.execution_present,
+            r2 != r1 && running.execution_present,
             "new execution reused the saved owner or remained paused"
         );
-        ensure!(running.state.thread.status == running.projection.logical_status);
-        let stale = current
-            .read_body(
-                reference,
-                ContentRange {
-                    offset: 0,
-                    max_bytes: 1,
-                },
-            )
-            .await
-            .unwrap_err();
-        ensure!(
-            stale
-                .downcast_ref::<pl_studio_runtime::StudioError>()
-                .and_then(|error| error.reason())
-                == Some("staleCurrentReference"),
-            "old owner reference was accepted by R2"
-        );
+        let stale = old.load_older("0".into(), 8).await;
+        ensure!(stale.is_err(), "closed R1 feed remained readable during R2");
         let mut cut = history.capture().await?;
         loop {
             let page = history
@@ -878,7 +702,7 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
         std::fs::remove_dir(&path)?;
         std::fs::write(&path, bytes)?;
         history.close().await;
-        current.close().await?;
+        current.close().await;
         submitted.context("live admission read the saved Current")?;
         support::completed_prompt(&env.runtime, id, "restart-r3").await?;
         ensure!(env.root_provider.recorded().len() == 3);

@@ -753,15 +753,29 @@ mod tests {
     #[derive(Debug)]
     struct CancelOnCharge(CancellationToken);
 
-    impl crate::thread::cold::ColdStore for CancelOnCharge {
-        fn admit(
+    impl crate::thread::history_sink::HistorySink for CancelOnCharge {
+        fn fold_usage(
+            &self,
+            _: &mut crate::thread::UsageSummary,
+            _: &crate::thread::ThreadEffectBatch,
+        ) {
+        }
+        fn reserve_observed_item(
             &self,
             _: &str,
-            _: crate::thread::cold::ThreadWrite,
+            _: &str,
+            _: &str,
         ) -> Result<(), crate::thread::cold::ColdStoreError> {
-            unreachable!("sender does not persist");
+            Ok(())
         }
-
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, crate::thread::cold::ColdStoreError> {
+            Ok(max)
+        }
         fn charge_operation_output(
             &self,
             _: &str,
@@ -771,9 +785,25 @@ mod tests {
             self.0.cancel();
             Ok(())
         }
-
-        async fn flush(&self, _: &str, _: u64) -> Result<(), crate::thread::cold::ColdStoreError> {
-            unreachable!("sender does not flush");
+        fn release_operation_output(&self, _: &str, _: &str) {}
+        fn pressure(&self, _: &str) -> crate::thread::cold::StoragePressure {
+            Default::default()
+        }
+        fn idle_status(&self, _: &str) -> crate::thread::cold::StorageIdleStatus {
+            crate::thread::cold::StorageIdleStatus {
+                pressure: Default::default(),
+                reclaimable_thread_bytes: Some(0),
+            }
+        }
+        fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+            None
+        }
+        fn admit(
+            &self,
+            _: &str,
+            _: Arc<crate::thread::HistoryExport>,
+        ) -> Result<(), crate::thread::cold::ColdStoreError> {
+            unreachable!("sender does not persist");
         }
     }
 
@@ -781,8 +811,10 @@ mod tests {
     async fn cancellation_after_permit_before_send_returns_this_charge_for_all_facts() {
         for kind in 0..3 {
             let cancellation = CancellationToken::new();
-            let storage =
-                crate::thread::cold::StorageHandle(Arc::new(CancelOnCharge(cancellation.clone())));
+            let storage = crate::thread::history_sink::HistorySinkHandle::new(CancelOnCharge(
+                cancellation.clone(),
+            ))
+            .into_storage();
             let output = Arc::new(
                 super::super::OutputBudget::reserve(
                     Some(storage),

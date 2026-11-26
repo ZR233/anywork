@@ -9,7 +9,7 @@ use crate::{
 use crate::{ExecutionItem, ExecutionShape};
 mod history;
 use anyhow::{Result, ensure};
-pub(in crate::studio) use history::{
+pub(crate) use history::{
     build_active_state_event, build_active_tool_event, build_connection_event,
     build_event_from_draft,
 };
@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod accepted;
 mod atom;
-pub(in crate::studio) use accepted::{accepted_inbox_draft, accepted_input_draft};
+pub(crate) use accepted::{accepted_inbox_draft, accepted_input_draft};
 mod descriptor;
 mod payload;
 pub(crate) use atom::atom;

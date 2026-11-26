@@ -1,7 +1,7 @@
-use super::super::content::demand;
 use super::super::session::bot_input_id;
 use crate::studio::StudioRuntime;
-use crate::{CurrentFrame, TurnState};
+use crate::timeline::{ConversationEvent, TimelineItem};
+use crate::TurnState;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -10,30 +10,63 @@ async fn completed_input(
     thread_id: &str,
     input_id: &str,
 ) -> anyhow::Result<crate::Turn> {
-    let read_demand = demand();
-    let reader = runtime
-        .open_current_reader(thread_id, crate::CURRENT_PROTOCOL_VERSION, read_demand)
-        .await?;
-    let watch = reader.watch(None, read_demand).await?;
+    let feed = runtime.open_conversation_feed(thread_id, 64).await?;
     let observed = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let Some(CurrentFrame::Notification { notification, .. }) = watch.next().await? else {
-                continue;
-            };
-            if let crate::ThreadNotification::TurnCompleted { turn } = notification.notification
-                && turn.input_id.as_deref() == Some(input_id)
-            {
-                anyhow::ensure!(
-                    matches!(turn.state, TurnState::Completed(_)),
-                    "bot input failed"
-                );
-                return Ok(turn);
+            match feed.next_event().await {
+                Some(ConversationEvent::SessionMeta(meta)) => {
+                    if let Some(turn) = meta
+                        .last_turn
+                        .filter(|turn| turn.input_id.as_deref() == Some(input_id))
+                    {
+                        anyhow::ensure!(
+                            matches!(turn.state, TurnState::Completed(_)),
+                            "bot input failed"
+                        );
+                        return Ok(turn);
+                    }
+                    if let Some(turn) = meta
+                        .active_turn
+                        .filter(|turn| {
+                            turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
+                        })
+                    {
+                        anyhow::ensure!(
+                            matches!(turn.state, TurnState::Completed(_)),
+                            "bot input failed"
+                        );
+                        return Ok(turn);
+                    }
+                }
+                Some(ConversationEvent::Timeline(patch)) => {
+                    let appended_final = match patch {
+                        crate::timeline::TimelinePatch::Append { items }
+                        | crate::timeline::TimelinePatch::Reset { items, .. } => items
+                            .into_iter()
+                            .any(|item| matches!(item, TimelineItem::TurnOutcome { .. })),
+                        _ => false,
+                    };
+                    if appended_final {
+                        let meta = runtime.thread_session_meta(thread_id).await?;
+                        if let Some(turn) = meta
+                            .last_turn
+                            .filter(|turn| turn.input_id.as_deref() == Some(input_id))
+                        {
+                            anyhow::ensure!(
+                                matches!(turn.state, TurnState::Completed(_)),
+                                "bot input failed"
+                            );
+                            return Ok(turn);
+                        }
+                    }
+                }
+                Some(_) => {}
+                None => anyhow::bail!("conversation feed closed before bot input settled"),
             }
         }
     })
     .await;
-    watch.close().await?;
-    reader.close().await?;
+    feed.close().await;
     observed?
 }
 

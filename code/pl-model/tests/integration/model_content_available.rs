@@ -11,8 +11,9 @@ use pl_core::{
     context::ContextContent,
     model::{ModelFactory, ObservedPartIdentity},
     thread::{
-        AttemptOutcome, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput,
-        cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
+        AttemptOutcome, HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput,
+        cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
+        history_sink::{HistorySink, HistorySinkHandle},
     },
 };
 use pl_model::{
@@ -176,7 +177,8 @@ async fn content_available_covers_empty_whitespace_delta_closed_and_complete_pre
             assert_eq!(available[0].model_member_content_available.len(), 1);
             let fact = &available[0].model_member_content_available[0];
             assert_eq!(fact.turn_id, "content-turn");
-            assert_eq!(fact.attempt_id, "content-attempt:0");
+            assert!(!fact.attempt_id.is_empty());
+            assert_eq!(fact.attempt_id, starts[0].model_member_starts[0].attempt_id);
             assert_eq!(fact.generation, 0);
             assert!(matches!(&fact.identity, ObservedPartIdentity::Provider(p)
                 if p.item_id.as_ref() == "part" && p.content_index == 0));
@@ -407,14 +409,47 @@ struct CancelMemberStore {
     cancellation: tokio_util::sync::CancellationToken,
     after_content: AtomicBool,
     cancelled_charges: AtomicUsize,
-    writes: Mutex<Vec<ThreadWrite>>,
+    writes: Mutex<Vec<Arc<HistoryExport>>>,
 }
 
 #[derive(Debug)]
 struct CancelMemberStorage(Arc<CancelMemberStore>);
 
-impl ColdStore for CancelMemberStorage {
-    fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+impl HistorySink for CancelMemberStorage {
+    fn fold_usage(
+        &self,
+        summary: &mut pl_core::thread::UsageSummary,
+        effect: &pl_core::thread::ThreadEffectBatch,
+    ) {
+        let _ = (summary, effect);
+    }
+
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+
+    fn release_operation_output(&self, _: &str, _: &str) {}
+
+    fn pressure(&self, _: &str) -> StoragePressure {
+        StoragePressure::default()
+    }
+
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: None,
+        }
+    }
+
+    fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+
+    fn admit(&self, _: &str, write: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         if !write.effect.model_member_content_available.is_empty() {
             self.0.after_content.store(true, Ordering::SeqCst);
         }
@@ -429,10 +464,6 @@ impl ColdStore for CancelMemberStorage {
             self.0.cancelled_charges.fetch_add(1, Ordering::SeqCst);
             self.0.cancellation.cancel();
         }
-        Ok(())
-    }
-
-    async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
         Ok(())
     }
 }
@@ -463,7 +494,7 @@ async fn cancellation_during_completed_member_handoff_preserves_full_item_in_ori
         writes: Mutex::new(Vec::new()),
     });
     thread
-        .attach_storage(ColdStoreHandle::new(CancelMemberStorage(store.clone())))
+        .attach_history(HistorySinkHandle::new(CancelMemberStorage(store.clone())))
         .await
         .unwrap();
     assert!(

@@ -44,9 +44,11 @@ pub(in crate::studio) struct PreparedEffect {
     /// Immutable diagnostics produced by application CAS changes in this very effect.
     pub(in crate::studio) review_delivery:
         Arc<[crate::thread_assembler::review_delivery::ReviewDeliveryFact]>,
+    /// True when `MetaEventBus` is already translating & admitting `HistoryEvent`s in RAM.
+    pub(in crate::studio) bus_admitted: bool,
 }
 
-pub(super) fn prepared_turns(
+pub(crate) fn prepared_turns(
     items: &[ExecutionItem],
     run: RuntimeEpoch,
     effect_sequence: u64,
@@ -125,7 +127,7 @@ pub(super) fn history_sources(sources: &[crate::ChatSourceState]) -> Vec<History
         .collect()
 }
 
-pub(super) fn retained_resources(
+pub(crate) fn retained_resources(
     effect: &ThreadEffectBatch,
 ) -> Result<Vec<RetainedResourceFact>, ProjectionError> {
     let mut facts = BTreeMap::new();
@@ -169,7 +171,7 @@ pub(super) fn retained_resources(
         .collect())
 }
 
-pub(super) fn review_delivery_facts(
+pub(crate) fn review_delivery_facts(
     thread_id: &str,
     effect: &ThreadEffectBatch,
 ) -> anyhow::Result<Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>> {
@@ -192,7 +194,7 @@ pub(super) fn review_delivery_facts(
     Ok(facts)
 }
 
-pub(super) fn original_tool_result_body(
+pub(crate) fn original_tool_result_body(
     item: &ExecutionItem,
     state: &ThreadSnapshot,
 ) -> Option<(BodyKey, Arc<ContentBlock>)> {

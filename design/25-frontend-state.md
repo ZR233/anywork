@@ -1,6 +1,6 @@
 # 25 - 客户端、前端状态与资源生命周期
 
-Native Current 与追加历史分别沿原所有权提供读取：状态栏和当前观察来自 `CurrentReader`，历史页来自 `HistoryReader`；两种引用与生命周期不得混用，Current 保存错误和暂停恢复状态不得被 History 成功掩盖。客户端只持页面状态、阅读意图及有界窗口，不重建历史或把完整 `current.json` 镜像进 Flutter。具体合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)，展示合并见 [26](./26-timeline-content.md)。HTTP、FRB、SDK 与 Flutter 使用同一组 Current/History typed DTO 和协议版本，不保留旧完成流 fallback。
+Native 会话通过单一 `ConversationFeed` 观察端口向前端交付时间线增量补丁（`TimelinePatch`）、实时状态栏快照（`LiveStatusSnapshot`）、低频会话元数据（`SessionMetaSnapshot`）与按需大字段/工作组/历史页查询；客户端只持唯一有界展示列表与局部 UI 状态，不在 Dart 侧二次拼接 `Current` 与 `History` 或解析 `payload_json`。具体契约见 [07](./07-streaming.md) 与 [26](./26-timeline-content.md)。HTTP、FRB、SDK 与 Flutter 使用同一组强类型 DTO，不保留旧双 reader 端口或旧完成流 fallback。
 
 Rust 运行时持有业务权威事实；每个应用实例装配独立的纯 Dart 领域资源；`Riverpod` 组织呈现观察与视图模型，界面组件仅渲染与发出意图。性能统计采用 [§25.13](#2513-独立统计领域与呈现模块) 的独立模块，账号功能采用 [§25.14](#2514-账号分域与可预览呈现) 的分域仓储与纯呈现；其余领域保持现有客户端边界，不因局部演进要求全应用重写，也不为已迁移领域保留旧 Client 兼容入口。本文是客户端所有权、命令回执、输入草稿与页面导航的唯一权威契约。可靠历史与迁移见 [17](./17-studio-storage.md)，流协议见 [07](./07-streaming.md)，运行时与关闭见 [18](./18-studio-state.md)，界面见 [19](./19-studio-ui.md)，验证见 [24](./24-testing.md)。
 
@@ -40,9 +40,9 @@ flowchart LR
 | --- | --- | --- | --- |
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度和请求速度档位细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
-| 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| schema 26 原子历史事件、索引派生 `WorkRange` 与 16 KiB 混合正文 | Rust HistoryStore | SDK 机械转发；Flutter 时间线 controller 持唯一有界窗口与展开意图 | database/owner、历史 cut、row/entity 身份、reader generation |
-| Current State、正文、collection 与业务引用 | Rust Current assembler / CurrentReader | Client 会话状态唯一写入口；时间线 Current owner 持一个 run overlay | owner/runtimeEpoch、revision、reference generation、reader generation |
+| 轮次、活动、用量、交互与运行时元数据 | Rust 会话（`Thread`）所有者与 `SessionMetaLayer` | Client 单一 `ConversationSession` 归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
+| 不可变历史与未入库内存拼接、封组 `WorkRange` 与 Flyer 增量补丁 | Rust `HistoryStore` + `TimelineDataLayer` | SDK 机械转发；Flutter `TimelineSessionOwner` 串行驱动 `InMemoryChatController` | `database_id`、稳定 `msg:<seq>`/`work:<first_seq>` 行身份、阅读代次 |
+| 实时状态栏状态机（思考工作组/流式正文/压缩/重连） | Rust `LiveStatusDataLayer` | Client 发布不可变 `LiveStatusSnapshot` | 会话 ID 与状态机修订号；仅驱动 `LiveStatusBar`，不触发主时间线重建 |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
@@ -193,25 +193,13 @@ Notifier 的响应式呈现仍只通过 `state` 观察；命令侧捕获已有�
 
 页面异步动作的后续界面副作用须同时复核官方来源路由仍为当前页面与捕获的业务所有者身份；仅有组件仍挂载不能授权旧删除、确认或保存完成后覆盖较新的导航。失去来源资格后不再发后续命令或跳转，已经准入的领域操作仍由原所有者保责。这种回调内的有限来源核验不保存目的地、页面历史或导航镜像，也不能用于重放失败动作。
 
-## 25.5 会话观察、独立读取与资源退役
+## 25.5 会话观察、单一连接与资源退役
 
-客户端不设置会话句柄、未完成操作、草稿、附件、观察者或只读模型的固定数量准入上限，也不提供容量许可、名额等待或容量不足重试。资源按实际业务与展示需求创建，由原所有者登记任务、取消并等待真实关闭；诊断与 `CloseReport` 反映真实资源状态。分页条数、编码字节、流量控制、缓存淘汰及领域业务校验各自保留，不以移除数量限制推导内存恒定或无限并发性能保证。
+客户端不设置会话句柄、未完成操作、草稿、附件、观察者或只读模型的固定数量准入上限，也不提供容量许可、名额等待或容量不足重试。资源按实际业务与展示需求创建，由原所有者登记任务、取消并等待真实关闭；诊断与 `CloseReport` 反映真实资源状态。
 
-HistoryReader、CurrentReader、History body watch、Current body watch 与界面 controller 是不同资源。SDK 只提供 typed 端口和资源归属，不建立历史镜像或事件归约器；Flutter 时间线会话 owner 持唯一主 controller 与一个 Current overlay。`ChatController` 只保存已加载的历史窗口、展开状态和 generation，局部正文拥有自己的有界读取句柄；资源不跨 AppGraph 共享，生命周期边界见 [§25.15](#2515-会话草稿与呈现分域)。
+每个可见 Native 会话在 Client 中只打开**一条** `ConversationFeed` 观察连接，不再同时开启双路 `CurrentReader` 与 `HistoryReader`。`TimelineSessionOwner` 只保存已加载的强类型 `TimelineItem` 列表（注入 Flyer `InMemoryChatController`）、工作组展开缓存与历史浏览暂停态；`LiveStatusBar` 独立订阅 `LiveStatusSnapshot`，不与主时间线耦合。
 
-范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
-
-会话 State 观察进入重连后，启动后续尝试时保留重连状态及最近已接纳的业务快照。接纳替代快照后更新连接状态，耗尽重试则发布失败。实时状态栏将重连作为与工作组、流式正文互斥的主阶段，显示固定的本地化文案，最近一次失败详情可从提示查看。
-
-首次 await 前冻结 thread/incarnation、reader generation、attempt、operationId、草稿/附件版本并登记原始 open、watch、query、consumer 与清理责任。A→B→A 迟到页、Current reset、命令结果或 finally 只结算原请求，不能覆盖新会话、清新草稿或解除新请求 busy。命令回执与观察各自结算，UnknownOutcome 保留冻结意图，不自动重放；权威当前态仍进入所属 Repository 同一入口。
-
-观察注册与初值读取同一同步边界；可替代快照可合并，可靠完成不能丢中间事实。Provider 构建只读，导航已提交页面身份声明可见需求，不从地址字符串或平行栈猜测。页面仅 detach 自己租约，短暂 observer 重建不销毁仍有所有者的资源；真正释放后以新 handle 的 Set 建展示，不跨会话缓存旧 controller，SDK 不替离屏呈现保存历史。
-
-Current State 观察沿既有有界退避策略统计连续未恢复失败。恢复确认必须实际接纳合法 Reset/snapshot，并在同一 owner 内继续接纳后续有效 notification/projection；仅打开连接、只收到 Reset、重复旧 revision、退役 generation 的迟到结果或 History 成功不能清除失败。Current 出现 owner 更换、Lagged 或不可恢复缺口时由 Reset 重建同一小 State，不 replay 历史；协议或 schema 版本错误立即失败。History、正文或冷读都不能补造 State。
-
-会话 MCP 状态的页面主题需求由 Client 跟随成功准入的可见 `ThreadId` 持有，覆盖主／子成员及机器人绑定会话，不借用全局选择或 `SessionId` 代替页面身份。Client 在该需求边界取得既有主题租约并准备只读镜像，页面隐藏、切换和 Client 关闭时释放自身份额；失败由原资源登记表保留清理责任并发布原错误。MCP Provider 只借用已存在的镜像并观察需求变化，未准入时保持未加载，不能在构建中再次创建读模型或把读取失败伪装成空成功。该状态观察不激活 Native 会话或创建 MCP 连接；执行资源仍归 [09](./09-tool-runtime.md) 的 Thread owner。
-
-requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有的 open、producer、consumer、sink；独立 query 归原 read scope，不挂回 feed credit。失败保留 unresolved owner 与清理责任，丢句柄、Provider dispose 或取消 Future 不是 join。只回收观察，不停止 Session、Turn、后台任务、writer 或其他消费者。应用退出继续由既有唯一协调器承担；业务会话运行代次、Native 实例回收与界面读取租约的区分见 [14](./14-runtime-host.md#1411-生命周期作用域与关闭)。
+FRB 单一句柄的 `requestClose` 同步调用底层生命周期封闭准入并终止推送任务，`close` 必须使用可重试的 `retry_close` 汇合所有在途查询与流任务。页面隐藏或切换仅释放展示租约，绝不停止后台运行的业务 Thread、持久化写入器或其他消费者。应用退出继续由既有唯一协调器承担；业务会话运行代次、Native 实例回收与界面读取租约的区分见 [14](./14-runtime-host.md#1411-生命周期作用域与关闭)。
 
 History page 与 Current State 在 Flutter 的同一时间线应用边界接纳，但保留各自 reader、generation 与生命周期。先把 query/State 结果交给原 controller 串行应用，重新核对 reader 与显示 generation，再公开最新 head 和 Current overlay。History 不设 ACK；Current watch 的交付也不表示 History 已接纳。controller 失败时废弃当前 generation，以新 HistoryReader 的 Set 重建；旧显示保留至新 Set 成功，不清无关草稿或业务状态。Plan、交互和文件阅读分别使用对应 Current/History 引用，不借用其他资源资格。
 

@@ -1,7 +1,11 @@
 use pl_core::{
-    context::{ContextContent, ContextSource},
+    context::{ContextContent, ContextSource, OpaquePayload},
     model::ModelFactory,
-    thread::{AttemptOutcome, ModelStepLimit, ThreadHandle, TurnInput, TurnOutcome},
+    thread::{
+        AttemptOutcome, ModelStepLimit, ThreadHandle, TurnInput, TurnOutcome,
+        current::CurrentError,
+        input::{InputPurpose, ThreadInput},
+    },
 };
 use pl_model::completion::ModelTextChannel;
 use pl_model::completion::{ToolCallCaller, ToolResultRecord};
@@ -753,7 +757,9 @@ async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_ide
             replay_model,
         )
         .unwrap();
-        let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
+        let factory = ModelFactory::new(
+            pl_model::runtime::ThreadModel::new(runtime, None).with_in_memory_settlement(),
+        );
         let session = factory.open_session().await.unwrap();
         let thread = ThreadHandle::start("replay-thread".into(), session).unwrap();
         for (index, prompt) in ["inspect", "continue"].iter().enumerate() {
@@ -771,31 +777,53 @@ async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_ide
                 .unwrap();
         }
         let before = thread.snapshot().context;
-        let checkpoint = thread
-            .checkpoint(thread.snapshot().commit_sequence)
+        let current = thread
+            .capture_current(tokio_util::sync::CancellationToken::new())
+            .await
             .unwrap();
-        let saved = serde_json::to_vec(&checkpoint).unwrap();
+        let saved = serde_json::to_vec(&current).unwrap();
         thread.close().await.unwrap();
-        let restored = ThreadHandle::resume(
-            "replay-thread".into(),
-            factory.open_session().await.unwrap(),
-            Some(serde_json::from_slice(&saved).unwrap()),
+        let restored = ThreadHandle::restore_current(
+            serde_json::from_slice(&saved).unwrap(),
+            Some(factory.open_session().await.unwrap()),
         )
         .unwrap();
         assert_eq!(restored.snapshot().context, before);
         for (index, prompt) in ["resume", "resume again"].iter().enumerate() {
-            restored
-                .run_turn(TurnInput {
-                    turn_id: format!("restored-turn-{index}"),
-                    attempt_prefix: format!("restored-attempt-{index}"),
-                    content: vec![ContextContent::Text {
-                        text: Arc::from(*prompt),
-                    }],
-                    max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
-                    cancellation: Default::default(),
-                })
-                .await
-                .unwrap();
+            if index == 0 {
+                restored
+                    .submit_input(ThreadInput {
+                        id: format!("restored-input-{index}"),
+                        purpose: InputPurpose::Message,
+                        payload: OpaquePayload::text(*prompt),
+                        context: vec![ContextContent::Text {
+                            text: Arc::from(*prompt),
+                        }],
+                    })
+                    .await
+                    .unwrap();
+                restored
+                    .resume_current(
+                        format!("restored-turn-{index}"),
+                        ModelStepLimit::Limited(1.try_into().unwrap()),
+                        Default::default(),
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                restored
+                    .run_turn(TurnInput {
+                        turn_id: format!("restored-turn-{index}"),
+                        attempt_prefix: format!("restored-attempt-{index}"),
+                        content: vec![ContextContent::Text {
+                            text: Arc::from(*prompt),
+                        }],
+                        max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+                        cancellation: Default::default(),
+                    })
+                    .await
+                    .unwrap();
+            }
         }
         restored.close().await.unwrap();
         let requests = fixture.finish().await.unwrap();
@@ -1111,39 +1139,50 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
             .unwrap();
         let saved = serde_json::to_vec(
             &thread
-                .checkpoint(thread.snapshot().commit_sequence)
+                .capture_current(tokio_util::sync::CancellationToken::new())
+                .await
                 .unwrap(),
         )
         .unwrap();
         thread.close().await.unwrap();
         let mut target_model = model("target-model", ModelTransportProfile::responses_http());
         target_model.extra.capabilities.native_context_family = target_family.map(str::to_owned);
-        let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
-            None,
-        ));
-        let restored = ThreadHandle::resume(
-            "model-switch-thread".into(),
-            target.open_session().await.unwrap(),
-            Some(serde_json::from_slice(&saved).unwrap()),
+        let target = ModelFactory::new(
+            pl_model::runtime::ThreadModel::new(
+                pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
+                None,
+            )
+            .with_in_memory_settlement(),
+        );
+        let restored = ThreadHandle::restore_current(
+            serde_json::from_slice(&saved).unwrap(),
+            Some(target.open_session().await.unwrap()),
         )
         .unwrap();
         let before = restored.snapshot().context;
-        let result = restored
-            .run_turn(TurnInput {
-                turn_id: "target-turn".into(),
-                attempt_prefix: "target-attempt".into(),
-                content: vec![ContextContent::Text {
+        restored
+            .submit_input(ThreadInput {
+                id: "target-input".into(),
+                purpose: InputPurpose::Message,
+                payload: OpaquePayload::text("second"),
+                context: vec![ContextContent::Text {
                     text: Arc::from("second"),
                 }],
-                max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
-                cancellation: Default::default(),
             })
+            .await
+            .unwrap();
+        let result = restored
+            .resume_current(
+                "target-turn".into(),
+                ModelStepLimit::Limited(1.try_into().unwrap()),
+                Default::default(),
+            )
             .await;
         if !replay_reasoning {
             assert!(
-                matches!(result, Err(pl_core::thread::ThreadError::Model(ref error))
-                if error.kind == pl_core::model::ModelFailureKind::IncompatibleContext)
+                matches!(result, Err(CurrentError::Owner(ref error))
+                if matches!(error.as_ref(), pl_core::thread::ThreadError::Model(model_err)
+                if model_err.kind == pl_core::model::ModelFailureKind::IncompatibleContext))
             );
             assert_eq!(restored.snapshot().context, before);
             restored.close().await.unwrap();
@@ -2190,7 +2229,9 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
         let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, fixture_model)
             .unwrap()
             .with_pricing_mode(pl_model::model::PricingMode::NoCharge);
-        let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
+        let factory = ModelFactory::new(
+            pl_model::runtime::ThreadModel::new(runtime, None).with_in_memory_settlement(),
+        );
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let contract = pl_core::model::ToolPresentationContract::new(match label {
             "http" => "future.vendor.contract@未知",
@@ -2307,17 +2348,17 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
                 .unwrap()
                 .contains("unfinished replay note")
         );
-        let checkpoint = serde_json::to_vec(
+        let current = serde_json::to_vec(
             &thread
-                .checkpoint(thread.snapshot().commit_sequence)
+                .capture_current(tokio_util::sync::CancellationToken::new())
+                .await
                 .unwrap(),
         )
         .unwrap();
         thread.close().await.unwrap();
-        let restored = ThreadHandle::resume(
-            label.into(),
-            factory.open_session().await.unwrap(),
-            Some(serde_json::from_slice(&checkpoint).unwrap()),
+        let restored = ThreadHandle::restore_current(
+            serde_json::from_slice(&current).unwrap(),
+            Some(factory.open_session().await.unwrap()),
         )
         .unwrap();
         restored
@@ -2331,28 +2372,37 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
                 assert_eq!(call.presentation_contract.as_ref(), Some(&contract));
             }
         }
+        let prompt = format!("Replay resume {label}");
+        restored
+            .submit_input(ThreadInput {
+                id: format!("replay-input-{label}"),
+                purpose: InputPurpose::Message,
+                payload: OpaquePayload::text(prompt.as_str()),
+                context: vec![ContextContent::Text {
+                    text: Arc::from(prompt.as_str()),
+                }],
+            })
+            .await
+            .unwrap();
+        let mut turn = replay_turn(&prompt, Default::default());
+        turn.content.clear();
         let result = restored
-            .run_turn(replay_turn(
-                &format!("Replay resume {label}"),
-                Default::default(),
-            ))
+            .resume_current(turn.turn_id, turn.max_model_steps, turn.cancellation)
             .await
             .unwrap();
         assert_eq!(result.outcome, TurnOutcome::Completed);
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
         let saved = serde_json::to_vec(
             &restored
-                .checkpoint(restored.snapshot().commit_sequence)
+                .capture_current(tokio_util::sync::CancellationToken::new())
+                .await
                 .unwrap(),
         )
         .unwrap();
         let final_context = restored.snapshot().context;
         restored.close().await.unwrap();
-        let recheck = ThreadHandle::resume_without_model(
-            label.into(),
-            Some(serde_json::from_slice(&saved).unwrap()),
-        )
-        .unwrap();
+        let recheck =
+            ThreadHandle::restore_current(serde_json::from_slice(&saved).unwrap(), None).unwrap();
         assert_eq!(recheck.snapshot().context, final_context);
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
         recheck.close().await.unwrap();

@@ -21,7 +21,7 @@ pub struct ModelSettlementPort {
     thread_id: String,
     turn_id: Option<String>,
     attempt_id: String,
-    commands: mpsc::WeakSender<mailbox::MailboxCommand>,
+    commands: mpsc::WeakSender<handle::LoopEvent>,
     stop: Option<CancellationToken>,
     _lifetime: Option<Arc<CallLifetime>>,
 }
@@ -63,15 +63,17 @@ impl ModelSettlementPort {
         let commands = self.commands.upgrade().ok_or(ModelMemberError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(mailbox::MailboxCommand::SettleModel {
-                settlement: ModelSubAttemptSettlement {
-                    turn_id: self.turn_id.clone(),
-                    attempt_id: self.attempt_id.clone(),
-                    generation,
-                    payload,
+            .send(handle::LoopEvent::Mailbox(
+                mailbox::MailboxCommand::SettleModel {
+                    settlement: ModelSubAttemptSettlement {
+                        turn_id: self.turn_id.clone(),
+                        attempt_id: self.attempt_id.clone(),
+                        generation,
+                        payload,
+                    },
+                    reply,
                 },
-                reply,
-            })
+            ))
             .await
             .map_err(|_| ModelMemberError::Closed)?;
         await_settlement(response).await

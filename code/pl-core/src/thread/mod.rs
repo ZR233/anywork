@@ -4,8 +4,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 mod background;
 mod cancellation;
-mod checkpoint;
-pub(crate) mod checkpoint_usage;
 pub mod cold;
 pub mod context_preparation;
 mod continuation;
@@ -14,6 +12,7 @@ pub use continuation::{
     ResumeRequest,
 };
 pub mod current;
+pub mod events;
 mod execution;
 pub mod extensions;
 mod facts;
@@ -24,7 +23,6 @@ pub mod interactions;
 pub mod journal;
 mod owner;
 pub mod permissions;
-mod recovery;
 mod runtime_bundle;
 pub use runtime_bundle::{
     RuntimeApplication, RuntimeBinding, RuntimeBindingReader, RuntimeBundle, RuntimeBundleBase,
@@ -37,12 +35,7 @@ pub use task_access::{NestedToolDeclaration, TaskAccess, TaskWaitSnapshot};
 mod nested;
 mod turn;
 pub(crate) mod usage;
-pub use checkpoint::{
-    CHECKPOINT_BODY_THRESHOLD_BYTES, CheckpointBodyError, CheckpointBodyKind,
-    CheckpointBodyReference, CheckpointBodySlot, CheckpointExternalBody, CheckpointLegacyError,
-    ExtractedCheckpointBody, LegacyCheckpointBodySlot, LegacyCheckpointExternalBody,
-    LegacyRequestAttempt, LegacyThreadCheckpoint, ThreadCheckpoint,
-};
+pub use events::{CoreCommitEvent, CoreEvent, CoreEventSink, CoreLiveEvent};
 pub use journal::{
     ContextCompactionEvent, ContextCompactionOutcome, PreparedAccountingSlot, ThreadEffectBatch,
 };
@@ -58,6 +51,8 @@ use crate::model::{
 };
 
 mod handle;
+pub use handle::ThreadHandle;
+use handle::{LoopEvent, UserCommand};
 mod mailbox;
 mod model_members;
 mod model_settlement;
@@ -66,7 +61,5 @@ mod reconfiguration;
 mod replacement;
 mod tool_execution;
 mod types;
-use handle::Command;
-pub use handle::ThreadHandle;
 pub use model_settlement::ModelSettlementPort;
 pub use types::*;

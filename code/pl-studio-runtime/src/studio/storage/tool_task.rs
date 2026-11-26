@@ -1,12 +1,13 @@
 //! Native task queries read the producer receipt carried by the canonical tool original.
 use std::sync::Arc;
 
-use pl_core::thread::{ToolDelivery, cold::DurableToolTask, task::TaskRecord};
+#[cfg(test)]
+use pl_core::thread::cold::DurableToolTask;
+use pl_core::thread::{ToolDelivery, task::TaskRecord};
 
-use crate::history::{
-    HistoryBody, HistoryBodyRole, HistoryDemand, HistoryError, HistoryReader, Result,
-    read_event_body_bytes,
-};
+use crate::history::{HistoryBody, HistoryBodyRole, HistoryError, Result};
+#[cfg(test)]
+use crate::history::{HistoryDemand, HistoryReader, read_event_body_bytes};
 
 const BODY_KEY: &str = "native.tool-task.v1";
 
@@ -58,6 +59,7 @@ pub(in crate::studio) fn body(task: &TaskRecord, delivery: &ToolDelivery) -> Res
     Ok(body)
 }
 
+#[cfg(test)]
 pub(in crate::studio) async fn read(
     reader: &HistoryReader,
     task_id: &str,
