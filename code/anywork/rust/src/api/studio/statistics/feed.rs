@@ -187,9 +187,10 @@ impl BridgeStatisticsFeed {
         slots.sink.task = Some(tokio::spawn(async move {
             while let Some(event) = receiver.recv().await {
                 if sink.add(event).is_err() {
+                    // Dart can cancel its subscription before requesting native close.
                     sink_cancellation.cancel();
                     sink_feed.request_close();
-                    return Err(statistics_sink_stopped());
+                    break;
                 }
             }
             Ok(())
@@ -384,6 +385,38 @@ mod tests {
             ensure!(inner.sink.lock().await.task.is_none());
             ensure!(inner.producer.lock().await.task.is_none());
             feed.close().await?;
+            ensure!(
+                scope
+                    .close(tokio::time::Instant::now() + Duration::from_secs(5))
+                    .await
+                    .is_clean()
+            );
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn detached_dart_listener_does_not_fail_feed_close() -> Result<()> {
+        let env = Environment::new().await?;
+        let result = async {
+            let scope = ScopeOwner::new("bridge", tokio::runtime::Handle::current());
+            let factory = BridgeObservationFactory::new(env.runtime.clone(), scope.handle());
+            let feed = factory.open_statistics().await?;
+            let inner = feed.inner.get();
+
+            // A port with no Dart listener makes the real FRB send reject the baseline.
+            feed.events(StreamSink::deserialize("0".to_owned())).await?;
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                inner.producer_cancellation.cancelled(),
+            )
+            .await
+            .context("Dart port rejection did not cancel the statistics producer")?;
+            feed.close().await?;
+            ensure!(inner.producer.lock().await.task.is_none());
+            ensure!(inner.sink.lock().await.task.is_none());
             ensure!(
                 scope
                     .close(tokio::time::Instant::now() + Duration::from_secs(5))

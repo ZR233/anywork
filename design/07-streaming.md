@@ -122,7 +122,7 @@ Flutter 时间线应用规则见 [26.8](./26-timeline-content.md#268-flutter-唯
 
 统计读取使用独立 typed feed 交付头部摘要与传输状态，不从 bootstrap 或全量 History 读取统计数据。首帧是当前基线，流能力支持后续已发布统计材料或版本化增量；慢消费者的待发送槽只保留最新可替代版本。桌面统计页每次进入或显式刷新仅物化一份基线，完成确认与资源收束后呈现，停留期间不继续消费后续发布；页面分页与读取生命周期见 [25.13](./25-frontend-state.md#2513-独立统计领域与呈现模块)。
 
-统计 feed 可以在自身协议中保留有界在途帧、delivery sequence 与连续消费确认。该确认属于 StatisticsRepository 与统计 producer，不是 Native Current/History 的保存或历史 ACK。取消、Failure/Closed、reader join 与材料读取仍由统计 owner 管理。
+统计 feed 可以在自身协议中保留有界在途帧、delivery sequence 与连续消费确认。该确认属于 StatisticsRepository 与统计 producer，不是 Native Current/History 的保存或历史 ACK。取消、Failure/Closed、reader join 与材料读取仍由统计 owner 管理。Dart 接收端退出后，推送任务取消生产并请求关闭统计 feed。关闭回执仍等待已登记的任务和读取资源完成清理，并报告真实的清理失败。
 
 <a id="79-账号领域观察与背压"></a>
 
