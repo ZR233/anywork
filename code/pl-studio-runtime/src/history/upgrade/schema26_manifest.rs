@@ -424,6 +424,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn product_conversation_open_prepares_history_from_6_52() -> anyhow::Result<()> {
+        use crate::history::schema;
+        use crate::runtime_test_support::Environment;
+        use crate::studio::paths::StudioPaths;
+
+        let mut env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let thread = env
+                .runtime
+                .create_thread(&env.project.id, "legacy history")
+                .await?;
+            let paths = StudioPaths::from_home(env.home.clone())
+                .session_paths(&thread.workspace_id, &thread.id)?;
+            env.runtime.shutdown_runtime().await?;
+            let path = paths.history_database();
+            std::fs::remove_file(&path)?;
+            let db = schema::connect(&path, false, true).await?;
+            schema::initialize(&db, &thread.id).await?;
+            db.execute_unprepared("PRAGMA user_version=1").await?;
+            let original_database_id = database_id(&db).await?;
+            let turn = legacy_failed_turn(&thread.id, "capacity").to_string();
+            let detail = json!({
+                "head": {
+                    "turnId": "turn-old", "state": "failed",
+                    "contextDisposition": "active", "updatedAt": 20000, "detailEventId": "detail"
+                },
+                "bodies": [{"key": "turn_detail", "role": "canonical_payload",
+                            "byteLength": turn.len(), "inlineText": turn}]
+            })
+            .to_string();
+            insert_event(
+                &db,
+                1,
+                "detail",
+                Some(("turn", "turn:turn-old")),
+                &detail,
+                "anywork.turn/1",
+            )
+            .await?;
+            db.close().await?;
+            let current = std::fs::read(paths.current_file())?;
+            let backups = paths
+                .root()
+                .join(crate::history::upgrade::BACKUP_ROOT_SCHEMA27);
+            env.restart().await?;
+
+            let Err(error) = env.runtime.open_conversation_feed(&thread.id, 16).await else {
+                panic!("read-only open accepted a revision 1 history");
+            };
+            assert!(error.to_string().contains("requires schema 26 maintenance"));
+            assert!(!backups.exists());
+
+            for _ in 0..2 {
+                let feed = env
+                    .runtime
+                    .open_conversation_feed_with_maintenance(&thread.id, 16)
+                    .await?;
+                let meta = feed.session_meta_snapshot();
+                feed.close().await;
+                assert!(!meta.execution_present);
+                let turn = meta.last_turn.expect("saved turn after migration");
+                assert_eq!(turn.id, "turn-old");
+                let mut expected = legacy_failed_turn(&thread.id, "capacity");
+                let failure = &mut expected["state"]["data"]["failure"];
+                failure["providerKind"] = json!("unknown");
+                failure["retry"] =
+                    json!({"kind": "retryable", "retryAfterMs": u64::MAX.to_string()});
+                assert_eq!(turn, serde_json::from_value::<crate::Turn>(expected)?);
+            }
+            let db = schema::connect(&path, true, false).await?;
+            assert_eq!(revision(&db).await?, 2);
+            assert_eq!(database_id(&db).await?, original_database_id);
+            db.close().await?;
+            let operations = std::fs::read_dir(backups)?.collect::<std::io::Result<Vec<_>>>()?;
+            assert_eq!(operations.len(), 1);
+            let backup = schema::connect(
+                &operations[0].path().join("history.v27.sqlite"),
+                true,
+                false,
+            )
+            .await?;
+            assert_eq!(revision(&backup).await?, 1);
+            assert_eq!(payload_json(&backup, "detail").await?, detail);
+            backup.close().await?;
+            assert_eq!(std::fs::read(paths.current_file())?, current);
+            assert!(env.root_provider.recorded().is_empty());
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
     async fn schema26_migrates_legacy_provider_failure_turns() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");

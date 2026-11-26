@@ -14,6 +14,19 @@ use crate::timeline::{ConversationFeed, SessionMetaLayer, SessionMetaSnapshot};
 mod tests;
 
 impl StudioRuntime {
+    /// Opens a product conversation and first runs storage maintenance for saved history when
+    /// needed. This can upgrade an existing database without starting Thread execution.
+    pub async fn open_conversation_feed_with_maintenance(
+        &self,
+        thread_id: &str,
+        initial_limit: u32,
+    ) -> Result<ConversationFeed> {
+        let thread = self.read_protocol_thread(thread_id).await?;
+        self.check_thread_read_access(&thread)?;
+        self.open_conversation_feed_for(&thread, initial_limit, true)
+            .await
+    }
+
     /// Opens a unified `ConversationFeed` for `thread_id` (live `MetaEventBus` if resident +
     /// bounded `HistoryReader` stitching `history.sqlite ∪ Pending` on cold open & paging).
     pub async fn open_conversation_feed(
@@ -23,6 +36,17 @@ impl StudioRuntime {
     ) -> Result<ConversationFeed> {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
+        self.open_conversation_feed_for(&thread, initial_limit, false)
+            .await
+    }
+
+    async fn open_conversation_feed_for(
+        &self,
+        thread: &crate::Thread,
+        initial_limit: u32,
+        prepare_saved_history: bool,
+    ) -> Result<ConversationFeed> {
+        let thread_id = thread.id.as_str();
         let slot = self.thread_observations.observation_slot(thread_id);
         let mut bus_rx = slot.subscribe_bus();
         let bus = self
@@ -35,8 +59,11 @@ impl StudioRuntime {
                 (*bus.latest_meta().expect("published observation metadata")).clone(),
             )
         } else {
+            if prepare_saved_history {
+                self.store.prepare_conversation_history(thread_id).await?;
+            }
             let reader = self.store.open_history_reader(thread_id).await?;
-            match self.build_cold_session_meta(&thread, Some(&reader)).await {
+            match self.build_cold_session_meta(thread, Some(&reader)).await {
                 Ok(meta) => (reader, meta),
                 Err(error) => {
                     reader.close().await;

@@ -125,17 +125,43 @@ impl StudioStore {
             }
         }
         if tokio::fs::try_exists(&path).await? {
-            if crate::history::requires_history_upgrade(&path, thread_id).await? {
-                self.thread_persistence
-                    .retire_history_for_upgrade(thread_id)
-                    .await?;
-            }
-            crate::history::upgrade_history(&path, thread_id, session.root()).await?;
+            self.upgrade_existing_history(&session, thread_id).await?;
         }
         let opened = HistoryStore::open(&path, thread_id, HistoryLimits::default()).await?;
         Ok(self
             .thread_persistence
             .install_shared_history(thread_id, &opened))
+    }
+
+    /// Runs maintenance for a saved conversation without opening a history writer.
+    pub(crate) async fn prepare_conversation_history(&self, thread_id: &str) -> anyhow::Result<()> {
+        let _maintenance = self.history_admission.write().await;
+        self.ensure_delete_read_allowed(thread_id).await?;
+        if self.thread_persistence.shared_history(thread_id).is_some() {
+            return Ok(());
+        }
+        let session = self.registered_session_paths(thread_id)?;
+        if tokio::fs::try_exists(session.history_database()).await? {
+            self.upgrade_existing_history(&session, thread_id).await?;
+        }
+        Ok(())
+    }
+
+    // Both callers hold the history admission gate, so deletion and writer admission cannot race
+    // with checking the source and running the upgrade.
+    async fn upgrade_existing_history(
+        &self,
+        session: &super::paths::SessionPaths,
+        thread_id: &str,
+    ) -> anyhow::Result<()> {
+        let path = session.history_database();
+        if crate::history::requires_history_upgrade(&path, thread_id).await? {
+            self.thread_persistence
+                .retire_history_for_upgrade(thread_id)
+                .await?;
+        }
+        crate::history::upgrade_history(&path, thread_id, session.root()).await?;
+        Ok(())
     }
 
     /// Opens an existing history without preparing or migrating storage.
