@@ -1565,7 +1565,6 @@ mod business_tests {
                                 id: "question".into(),
                                 header: "Question".into(),
                                 question: "Continue?".into(),
-                                is_other: true,
                                 is_secret: false,
                                 options: None,
                             }])?,

@@ -10,6 +10,73 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
+  testWidgets('custom answers survive navigation and submit with choices', (
+    tester,
+  ) async {
+    UserInputResolutionCommand? submitted;
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: UserInputView(
+            payload: const InteractionPayloadSnapshot(
+              rawBody: '',
+              summary: '',
+              toolName: '',
+              formattedArguments: '',
+              workingDirectory: '',
+              questions: [
+                UserQuestionView(
+                  id: 'choices',
+                  header: 'Choose',
+                  question: '',
+                  isSecret: false,
+                  options: [
+                    UserQuestionOptionView(label: 'Alpha', description: ''),
+                  ],
+                ),
+                UserQuestionView(
+                  id: 'secret',
+                  header: 'Enter a secret',
+                  question: '',
+                  isSecret: true,
+                  options: [],
+                ),
+              ],
+            ),
+            enabled: true,
+            onSubmit: (value) => submitted = value,
+          ),
+        ),
+      ),
+    );
+
+    final custom = find.byKey(StudioDriverKeys.userInputFirstText);
+    final secret = find.byKey(StudioDriverKeys.userInputText('secret'));
+    final next = find.byKey(StudioDriverKeys.userInputSubmit);
+    expect(custom, findsOneWidget);
+    await tester.tap(find.text('Alpha'));
+    await tester.enterText(custom, '  Another answer  ');
+    await tester.tap(next);
+    await tester.pump();
+    expect(tester.widget<TextField>(secret).obscureText, isTrue);
+    await tester.enterText(secret, 'secret value');
+    await tester.tap(find.widgetWithIcon(TextButton, Icons.chevron_left));
+    await tester.pump();
+    expect(find.text('  Another answer  '), findsOneWidget);
+    await tester.tap(next);
+    await tester.pump();
+    await tester.tap(next);
+
+    expect(submitted!.answers.map((answer) => answer.questionId), [
+      'choices',
+      'secret',
+    ]);
+    expect(submitted!.answers[0].answers, ['Alpha', 'Another answer']);
+    expect(submitted!.answers[1].answers, ['secret value']);
+  });
+
   testWidgets(
     'question choices support multiple answers and keyboard toggling',
     (tester) async {
@@ -32,7 +99,6 @@ void main() {
                     id: 'choices',
                     header: 'Choose',
                     question: '',
-                    isOther: false,
                     isSecret: false,
                     options: [
                       UserQuestionOptionView(label: 'Alpha', description: ''),

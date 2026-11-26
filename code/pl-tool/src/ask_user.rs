@@ -19,8 +19,6 @@ pub struct UserQuestion {
     pub header: String,
     pub question: String,
     #[serde(default)]
-    pub is_other: bool,
-    #[serde(default)]
     pub is_secret: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<UserQuestionOption>>,
@@ -47,13 +45,10 @@ struct UserQuestionInput {
     header: String,
     /// Question shown to the user.
     question: String,
-    /// Whether a free-form custom answer should be accepted.
-    #[serde(default)]
-    is_other: bool,
     /// Whether the answer is sensitive and should be hidden in UI logs.
     #[serde(default)]
     is_secret: bool,
-    /// Optional predefined choices.
+    /// Optional predefined choices. The user may select multiple choices and add a written answer.
     options: Option<Vec<UserQuestionOptionInput>>,
 }
 
@@ -72,7 +67,6 @@ impl From<UserQuestionInput> for UserQuestion {
             id: question.id,
             header: question.header,
             question: question.question,
-            is_other: question.is_other,
             is_secret: question.is_secret,
             options: question.options.map(|options| {
                 options
@@ -154,5 +148,38 @@ pub fn ask_user_tool_definition() -> pl_agent_tool::ToolDefinition {
 }
 
 const ASK_USER_TOOL_NAME: &str = "request_user_input";
-const ASK_USER_TOOL_DESCRIPTION: &str =
-    "Ask structured questions and suspend until the user answers or cancels.";
+const ASK_USER_TOOL_DESCRIPTION: &str = "Ask structured questions and suspend until the user answers or cancels. Each question accepts a written answer and can offer predefined choices.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn saved_questions_read_without_the_retired_option() {
+        let mut saved = json!({
+            "id": "delivery",
+            "header": "Delivery",
+            "question": "Where should it go?",
+            "isOther": false,
+            "options": [{"label": "Inbox", "description": "Use the inbox"}],
+        });
+        let question: UserQuestion = serde_json::from_value(saved.clone()).unwrap();
+        saved.as_object_mut().unwrap().remove("isOther");
+        saved["isSecret"] = json!(false);
+        assert_eq!(serde_json::to_value(question).unwrap(), saved);
+    }
+
+    #[test]
+    fn tool_questions_accept_choices_without_a_custom_answer_setting() {
+        let mut request = json!({"questions": [{
+            "id": "delivery",
+            "header": "Delivery",
+            "question": "Where should it go?",
+            "options": [{"label": "Inbox", "description": "Use the inbox"}],
+        }]});
+        assert!(serde_json::from_value::<AskUserInput>(request.clone()).is_ok());
+        request["questions"][0]["isOther"] = json!(true);
+        assert!(serde_json::from_value::<AskUserInput>(request).is_err());
+    }
+}

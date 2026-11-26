@@ -70,7 +70,6 @@ fn question_history_arguments() -> String {
                 "id": GUI_QUESTION_HISTORY_STYLE_ID,
                 "header": "展示风格",
                 "question": "这次时间线里的问答回执，你更想要哪种展示？",
-                "isOther": false,
                 "isSecret": false,
                 "options": [
                     {
@@ -87,7 +86,6 @@ fn question_history_arguments() -> String {
                 "id": GUI_QUESTION_HISTORY_NOTES_ID,
                 "header": "交付说明",
                 "question": "还有哪些交付说明需要我记住？",
-                "isOther": true,
                 "isSecret": false,
                 "options": null
             },
@@ -95,7 +93,6 @@ fn question_history_arguments() -> String {
                 "id": GUI_QUESTION_HISTORY_TOKEN_ID,
                 "header": "访问令牌",
                 "question": "请粘贴本次验收的临时令牌。",
-                "isOther": true,
                 "isSecret": true,
                 "options": null
             }

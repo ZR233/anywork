@@ -21709,15 +21709,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeUserQuestion dco_decode_bridge_user_question(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return BridgeUserQuestion(
       id: dco_decode_String(arr[0]),
       header: dco_decode_String(arr[1]),
       question: dco_decode_String(arr[2]),
-      isOther: dco_decode_bool(arr[3]),
-      isSecret: dco_decode_bool(arr[4]),
-      options: dco_decode_opt_list_bridge_user_question_option(arr[5]),
+      isSecret: dco_decode_bool(arr[3]),
+      options: dco_decode_opt_list_bridge_user_question_option(arr[4]),
     );
   }
 
@@ -40365,7 +40364,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_String(deserializer);
     var var_header = sse_decode_String(deserializer);
     var var_question = sse_decode_String(deserializer);
-    var var_isOther = sse_decode_bool(deserializer);
     var var_isSecret = sse_decode_bool(deserializer);
     var var_options = sse_decode_opt_list_bridge_user_question_option(
       deserializer,
@@ -40374,7 +40372,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       header: var_header,
       question: var_question,
-      isOther: var_isOther,
       isSecret: var_isSecret,
       options: var_options,
     );
@@ -58034,7 +58031,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.id, serializer);
     sse_encode_String(self.header, serializer);
     sse_encode_String(self.question, serializer);
-    sse_encode_bool(self.isOther, serializer);
     sse_encode_bool(self.isSecret, serializer);
     sse_encode_opt_list_bridge_user_question_option(self.options, serializer);
   }

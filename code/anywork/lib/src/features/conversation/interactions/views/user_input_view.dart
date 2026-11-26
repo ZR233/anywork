@@ -178,10 +178,7 @@ class _UserInputViewState extends State<UserInputView> {
               });
               _ensureSubmitVisible();
             },
-            onTextChanged: (_) {
-              setState(() {});
-              _ensureSubmitVisible();
-            },
+            onTextChanged: (_) => setState(() {}),
           ),
           if (widget.error case final error?) ...[
             const SizedBox(height: 8),
@@ -232,7 +229,6 @@ class _UserInputViewState extends State<UserInputView> {
       if (left.id != right.id ||
           left.header != right.header ||
           left.question != right.question ||
-          left.isOther != right.isOther ||
           left.isSecret != right.isSecret ||
           left.options.length != right.options.length) {
         return false;
@@ -305,7 +301,7 @@ class _UserInputViewState extends State<UserInputView> {
       final key = _questionKey(question, index);
       final values = <String>[...(_selectedOptions[key] ?? const <String>{})];
       final text = _textControllers[key]?.text.trim() ?? '';
-      if ((question.isOther || question.options.isEmpty) && text.isNotEmpty) {
+      if (text.isNotEmpty) {
         values.add(text);
       }
       answers.add(UserInputAnswerCommand(questionId: key, answers: values));

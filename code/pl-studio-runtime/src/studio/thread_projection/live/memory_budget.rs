@@ -544,7 +544,6 @@ mod tests {
             id,
             header: String::new(),
             question: String::new(),
-            is_other: false,
             is_secret: false,
             options: Some(options),
         };

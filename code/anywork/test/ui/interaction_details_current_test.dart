@@ -37,7 +37,6 @@ CurrentCollectionPage _page() => CurrentCollectionPage(
                     'id': 'public',
                     'header': '公开问题',
                     'question': '公开详情',
-                    'isOther': true,
                     'isSecret': false,
                   },
                   {
@@ -114,6 +113,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('公开问题'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
     expect(find.textContaining('公开详情'), findsOneWidget);
     expect(find.text('秘密问题'), findsNothing);
     expect(find.textContaining('秘密详情'), findsNothing);

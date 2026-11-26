@@ -866,7 +866,7 @@
   "interactionAnsweredCount": "已答 {count} 题",
   "interactionQuestionTooltip": "问题 {index}",
   "interactionQuestionFallback": "问题",
-  "interactionOtherLabel": "其他",
+  "interactionCustomAnswerLabel": "自定义回答",
   "interactionSecretHint": "输入敏感信息",
   "interactionTextHint": "输入你的回答…",
   "interactionPermissionTitle": "需要权限",

@@ -250,7 +250,6 @@ Map<String, Object?> _questionRequest(String id, String question) => {
           'id': 'answer',
           'header': 'Choice',
           'question': question,
-          'isOther': true,
           'isSecret': false,
           'options': <Object?>[],
         },

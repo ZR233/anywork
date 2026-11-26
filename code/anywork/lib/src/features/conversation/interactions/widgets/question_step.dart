@@ -10,27 +10,28 @@ class QuestionStep extends StatelessWidget {
     super.key,
     required this.question,
     required this.questionKey,
-    required this.isFirstQuestion,
-    required this.firstOptionKey,
-    required this.controller,
-    required this.selected,
-    required this.onOptionChanged,
-    required this.onTextChanged,
+    this.isFirstQuestion = false,
+    this.firstOptionKey,
+    this.controller,
+    this.selected = const {},
+    this.onOptionChanged,
+    this.onTextChanged,
     required this.enabled,
   });
 
   final UserQuestionView question;
   final String questionKey;
   final bool isFirstQuestion;
-  final GlobalKey firstOptionKey;
-  final TextEditingController controller;
+  final GlobalKey? firstOptionKey;
+  final TextEditingController? controller;
   final Set<String> selected;
-  final void Function(String label, bool selected) onOptionChanged;
-  final ValueChanged<String> onTextChanged;
+  final void Function(String label, bool selected)? onOptionChanged;
+  final ValueChanged<String>? onTextChanged;
   final bool enabled;
 
   @override
   Widget build(BuildContext context) {
+    final changeOption = enabled ? onOptionChanged : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -60,28 +61,28 @@ class QuestionStep extends StatelessWidget {
                 child: _QuestionOptionRow(
                   option: option,
                   selected: selected.contains(option.label),
-                  onChanged: enabled
-                      ? (value) => onOptionChanged(option.label, value)
-                      : null,
+                  onChanged: changeOption == null
+                      ? null
+                      : (value) => changeOption(option.label, value),
                 ),
               ),
             ),
         ],
-        if (question.isOther || question.options.isEmpty) ...[
+        if (controller case final draft?) ...[
           const SizedBox(height: 8),
           TextField(
             key: isFirstQuestion
                 ? StudioDriverKeys.userInputFirstText
                 : StudioDriverKeys.userInputText(questionKey),
-            controller: controller,
+            controller: draft,
             enabled: enabled,
             obscureText: question.isSecret,
             minLines: 1,
             maxLines: question.isSecret ? 1 : 4,
             decoration: InputDecoration(
-              labelText: question.isOther
-                  ? context.l10n.interactionOtherLabel
-                  : context.l10n.interactionAnswerLabel,
+              labelText: question.options.isEmpty
+                  ? context.l10n.interactionAnswerLabel
+                  : context.l10n.interactionCustomAnswerLabel,
               hintText: question.isSecret
                   ? context.l10n.interactionSecretHint
                   : context.l10n.interactionTextHint,

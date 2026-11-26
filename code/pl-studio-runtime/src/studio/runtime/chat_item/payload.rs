@@ -217,7 +217,6 @@ pub(super) struct UserInputDescriptor {
 #[serde(rename_all = "camelCase")]
 pub(super) struct QuestionDescriptor {
     pub id: String,
-    pub is_other: bool,
     pub is_secret: bool,
     /// 缺少选项与显式空选项列表保持区别。
     pub option_count: Option<u32>,

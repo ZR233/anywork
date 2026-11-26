@@ -226,7 +226,6 @@ mod tests {
                 id: "question-1".into(),
                 header: "Credential".into(),
                 question: "Provide the test credential".into(),
-                is_other: true,
                 is_secret: true,
                 options: None,
             }],
