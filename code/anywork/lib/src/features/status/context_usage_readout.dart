@@ -517,12 +517,13 @@ String _contextSemanticsValue(StudioContextProjection projection) {
 String _withIncompleteMarker(
   BuildContext context,
   String value,
-  bool incomplete,
-) {
+  bool incomplete, {
+  String? marker,
+}) {
   if (!incomplete) {
     return value;
   }
-  return '$value · ${context.l10n.statusUsageIncompleteLabel}';
+  return '$value · ${marker ?? context.l10n.statusUsageIncompleteLabel}';
 }
 
 String _formatCount(int value) {
