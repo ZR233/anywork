@@ -1679,6 +1679,7 @@ mod required {
         runtime.ensure_thread_owner(&root.id).await?.flush().await?;
         let id = "delete-private-required";
         let mut private = crate::Thread::placeholder(id);
+        private.role = "fixture".into();
         private.workspace_id = project.id.clone();
         private.workspace_path = workspace.to_string_lossy().into_owned();
         private.root_thread_id = root.id.clone();
@@ -1723,6 +1724,13 @@ mod required {
             .session_for_roots(std::slice::from_ref(&root.id))?
             .assemble(spec)
             .await?;
+        // This fixture targets deletion of a failed save, not observer initialization failure.
+        let ready = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runtime.thread_session_meta(id),
+        )
+        .await??;
+        assert_eq!(ready.owner_epoch, thread.runtime_epoch().to_string());
         let conversation = runtime.store.conversation_store(id).await?;
         let current_writer = runtime
             .store

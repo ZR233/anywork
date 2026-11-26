@@ -23,14 +23,23 @@ async fn cold_session_meta_reports_corrupt_history_but_accepts_absence() -> Resu
         .flush_current(owner.runtime_epoch())
         .await?;
     let paths = runtime.store.registered_session_paths(&thread.id)?;
+    let history = runtime.store.history(&thread.id).await?;
     runtime.shutdown_runtime().await?;
+    // Fault injection starts only after the writer's WAL and both pools have finished closing.
+    history.close().await?;
+    drop(history);
+    drop(owner);
     drop(runtime);
 
-    let runtime = StudioRuntime::initialize(options(&home)).await?;
     let current = tokio::fs::read(paths.current_file())
         .await
         .context("saved fixture Current")?;
     tokio::fs::write(paths.history_database(), b"invalid history database").await?;
+    assert_eq!(
+        tokio::fs::read(paths.history_database()).await?,
+        b"invalid history database"
+    );
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
     assert!(runtime.open_conversation_feed(&thread.id, 8).await.is_err());
     assert!(
         runtime.thread_session_meta(&thread.id).await.is_err(),
