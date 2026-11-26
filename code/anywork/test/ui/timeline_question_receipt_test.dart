@@ -68,16 +68,8 @@ void main() {
       'userInput': {
         'interactionId': 'interaction',
         'questions': [
-          {
-            'id': 'public-q',
-            'isSecret': false,
-            'optionCount': optionCount,
-          },
-          {
-            'id': 'secret-q',
-            'isSecret': true,
-            'optionCount': 0,
-          },
+          {'id': 'public-q', 'isSecret': false, 'optionCount': optionCount},
+          {'id': 'secret-q', 'isSecret': true, 'optionCount': 0},
         ],
         'state': {
           'kind': cancelled ? 'cancelled' : 'resolved',
