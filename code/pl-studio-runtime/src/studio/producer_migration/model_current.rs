@@ -1,4 +1,5 @@
 //! Model identity conversion at the explicit Current recovery/import boundaries.
+use crate::studio::session_data_error::SessionDataError;
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload},
@@ -54,10 +55,17 @@ pub(super) fn prepare(current: &mut ThreadCurrent) -> Result<()> {
         }
     }
     if let Some(call) = next.model_call.as_mut() {
-        if let Some(payload) = call.prepared_parameters.as_mut()
-            && let Some(upgraded) = pl_model::runtime::migration::migrate_payload(payload)?
-        {
-            *payload = upgraded;
+        if let Some(payload) = call.prepared_parameters.as_mut() {
+            let migrated =
+                pl_model::runtime::migration::migrate_payload(payload).map_err(|source| {
+                    SessionDataError::PreparedRequest {
+                        revision: payload.version(),
+                        source,
+                    }
+                })?;
+            if let Some(upgraded) = migrated {
+                *payload = upgraded;
+            }
         }
         if let SavedModelPhase::Streaming { stream } = &mut call.phase {
             ensure!(

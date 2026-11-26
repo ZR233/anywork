@@ -92,6 +92,8 @@ pub(crate) enum ProjectionError {
     Product(#[from] crate::PureError),
     #[error("saved workflow state cannot be projected")]
     Workflow(#[from] pl_core::tool::opaque::ToolError),
+    #[error("saved plan cannot be projected")]
+    Plan(#[from] crate::studio::session_data_error::SessionDataError),
     #[error("saved tool media receipt cannot be decoded")]
     ToolMedia(pl_core::tool::opaque::ToolError),
     #[error("durable history identity lookup failed: {0}")]

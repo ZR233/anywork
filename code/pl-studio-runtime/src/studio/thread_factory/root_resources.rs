@@ -2,12 +2,13 @@
 use super::bot_workspace::BotWorkspacePreparation;
 use super::{
     StudioThreadFactory,
-    errors::resource_error,
+    errors::{resource_error, workspace_error},
     thread_seed::{self, ThreadInstructionSeed},
 };
 use crate::{
     agent::definition::{AgentRootEntry, ResolvedAgentDefinition, VerifiedAgentIdentity},
     instruction::ModeInstructionProfile,
+    studio::session_data_error::SessionDataError,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
 };
 use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
@@ -155,8 +156,12 @@ impl StudioThreadFactory {
                     .and_then(|replacement| catalog.mode(&replacement))
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(selected_mode.to_string()))?;
-        let saved_route = crate::studio::model_route::saved(&saved)
-            .map_err(|error| resource_error("decode saved model route", error))?;
+        let saved_route = crate::studio::model_route::saved(&saved).map_err(|source| {
+            resource_error(
+                "decode saved model route",
+                SessionDataError::ModelRoute(source),
+            )
+        })?;
         let has_saved_route = saved_route.is_some();
         let default_route = match self.initial_route(id).filter(|_| is_new) {
             Some(frozen) => frozen,
@@ -218,7 +223,7 @@ impl StudioThreadFactory {
                 local_root,
             )
             .await
-            .map_err(|error| resource_error("resolve root workspace", error))?;
+            .map_err(|error| workspace_error("resolve root workspace", error))?;
         let workspace = ToolWorkspace::new(match workspace_mode {
             crate::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             crate::ThreadWorkspaceMode::Worktree => {

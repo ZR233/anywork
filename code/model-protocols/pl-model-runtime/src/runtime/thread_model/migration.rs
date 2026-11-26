@@ -27,6 +27,9 @@ const LEGACY_FAILURE_RECEIPT_VERSION_V2: u32 = 2;
 const LEGACY_FAILURE_RECEIPT_VERSION: u32 = 1;
 const PRESENTATION_PREVIEW_FORMAT: &str = "pl.model.presentation-item";
 
+#[cfg(test)]
+mod prepared_request_tests;
+
 /// Validates current model payloads and upgrades historical v2 producer encodings.
 ///
 /// Returns `None` for unrelated formats and already-current, validated payloads. This function
@@ -149,7 +152,7 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
                 })?;
             }
         }
-        "pl.model.prepared-request" => {
+        "pl.model.prepared-request" if payload.version() == 1 => {
             migrate_binding_field(&mut value)?;
             if value.get("prompt").is_some_and(|raw| raw.get() != "null") {
                 let binding: RawObject = parse(field(&value, "binding")?.get())?;

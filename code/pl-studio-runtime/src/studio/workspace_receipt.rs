@@ -2,6 +2,7 @@
 //!
 //! 创建回执、spawn 返回值与 review 目标解析都消费同一编码；不存在第二套解释。
 use crate::AgentWorkspaceAssignmentSnapshot;
+use crate::studio::session_data_error::SessionDataError;
 use anyhow::{Result, ensure};
 use pl_core::context::OpaquePayload;
 
@@ -22,11 +23,18 @@ pub(crate) fn from_snapshot(
 
 /// Decodes one `pl.studio.workspace` payload as received from a saved extension record.
 pub(crate) fn from_payload(payload: &OpaquePayload) -> Result<AgentWorkspaceAssignmentSnapshot> {
+    let binding_error = |source| SessionDataError::WorkspaceBinding {
+        format: FORMAT,
+        revision: payload.version(),
+        source,
+    };
     ensure!(
         payload.format() == FORMAT && payload.version() == 3,
-        "unsupported workspace receipt encoding; explicit recovery migration is required"
+        binding_error(anyhow::anyhow!(
+            "unsupported workspace receipt encoding; explicit recovery migration is required"
+        ))
     );
-    Ok(serde_json::from_str(payload.content())?)
+    serde_json::from_str(payload.content()).map_err(|source| binding_error(source.into()).into())
 }
 
 /// Encodes an assignment into the durable `pl.studio.workspace` payload form.

@@ -1,20 +1,40 @@
 //! Pure producer normalization shared by named history migrations and TOML import.
 use crate::context_preparation::CompactionReceipt;
+use crate::studio::session_data_error::SessionDataError;
 use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
 use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    thread::permissions::PermissionRecord,
+    thread::{extensions::ExtensionRecord, permissions::PermissionRecord},
 };
 use serde_json::value::{RawValue, to_raw_value};
+use std::collections::BTreeMap;
 
 mod model_current;
 
 pub(crate) fn prepare_model_current(
     current: &mut pl_core::thread::current::ThreadCurrent,
 ) -> Result<()> {
-    model_current::prepare(current)
+    model_current::prepare(current).map_err(|source| SessionDataError::Model(source).into())
+}
+
+/// Prepare the Plan extension in the caller's in-memory view of a saved Current.
+pub(crate) fn prepare_plan_current(
+    extensions: &mut BTreeMap<String, ExtensionRecord>,
+) -> Result<()> {
+    let Some(record) = extensions.get_mut(crate::plan_tool::PLAN_EXTENSION) else {
+        return Ok(());
+    };
+    let revision = record.payload.version();
+    let plan_error = |source| SessionDataError::Plan { revision, source };
+    let migrated = crate::plan_tool::migrate_plan_payload(&record.payload).map_err(plan_error)?;
+    crate::plan_tool::decode_plan_state(migrated.as_ref().unwrap_or(&record.payload))
+        .map_err(|source| plan_error(source.into()))?;
+    if let Some(current) = migrated {
+        record.payload = current;
+    }
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]

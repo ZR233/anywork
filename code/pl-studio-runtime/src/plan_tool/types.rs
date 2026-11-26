@@ -74,7 +74,6 @@ pub enum AgentSessionPlanResultCode {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionPlanState {
-    #[serde(default)]
     pub plan: PlanRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_interaction_id: Option<String>,

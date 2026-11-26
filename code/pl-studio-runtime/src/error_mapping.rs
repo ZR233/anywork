@@ -51,6 +51,13 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     if let Some(error) = error.downcast_ref::<StudioError>() {
         return error.clone();
     }
+    if let Some(error) = crate::studio::session_data_error::SessionDataError::find(error) {
+        return StudioError::new(
+            StudioErrorCode::Storage,
+            error.to_string(),
+            error.retryable(),
+        );
+    }
     if let Some(error) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<crate::agent::worktree::WorktreeError>())

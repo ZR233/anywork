@@ -1,7 +1,13 @@
 //! Actual execution dependencies, shared by read-only audit and last-mile admission.
-use super::StudioThreadFactory;
+use super::{
+    StudioThreadFactory,
+    errors::{WorkspacePreparationFailure, is_workspace_preparation_failure, resource_error},
+};
+use crate::AgentWorkspaceAssignmentSnapshot;
+use crate::agent::worktree::WorktreeError;
 use crate::studio::{
     WorkspaceRecord,
+    session_data_error::SessionDataError,
     worktree::{
         workspace_preparation,
         worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseState},
@@ -9,6 +15,7 @@ use crate::studio::{
 };
 use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
+use pl_core::context::OpaquePayload;
 use pl_core::thread::ThreadSnapshot;
 use std::path::Path;
 
@@ -37,14 +44,14 @@ impl StudioThreadFactory {
             .map_err(|error| {
                 error
                     .downcast::<ThreadAssemblyError>()
-                    .unwrap_or_else(Self::workspace_usage_error)
+                    .unwrap_or_else(|source| {
+                        resource_error("verify saved execution workspace", source)
+                    })
             })?;
         self.services
             .recovery
             .ensure_thread_execution_access(thread)
-            .map_err(|error| {
-                super::errors::resource_error("saved Thread execution admission", error)
-            })
+            .map_err(|error| resource_error("saved Thread execution admission", error))
     }
 
     pub(crate) async fn verify_and_report_execution_workspace(
@@ -55,10 +62,15 @@ impl StudioThreadFactory {
         let result = self
             .verify_execution_workspace(thread, snapshot, ExecutionWorkspaceCheck::Prepare)
             .await;
+        let failure = match &result {
+            Ok(()) => None,
+            Err(error) if is_workspace_preparation_failure(error) => Some(error),
+            Err(_) => return result,
+        };
         self.services.product_events.emit_recovery_state(
             self.services
                 .recovery
-                .apply_execution_workspace_check(thread, result.as_ref().err()),
+                .apply_execution_workspace_check(thread, failure),
         );
         result
     }
@@ -81,7 +93,9 @@ impl StudioThreadFactory {
             ensure!(
                 bot.workspace_id == thread.workspace_id
                     && thread.workspace_mode == crate::ThreadWorkspaceMode::Local,
-                "bot execution directory association is incompatible"
+                WorktreeError::IdentityMismatch(
+                    "bot execution directory association is incompatible".into()
+                )
             );
             let complete = self
                 .services
@@ -91,18 +105,22 @@ impl StudioThreadFactory {
             if !complete {
                 ensure!(
                     associated.ssh_alias.is_none(),
-                    "old bot migration source has no proven local binding"
+                    WorktreeError::IdentityMismatch(
+                        "old bot migration source has no proven local binding".into()
+                    )
                 );
                 self.verify_project_workspace(&associated)
                     .await
-                    .context("bot migration still requires its original source")?;
+                    .context("bot migration still requires its original source")
+                    .map_err(WorkspacePreparationFailure)?;
                 let source = Path::new(&associated.path)
                     .join(pl_tool::workspace::SessionFiles::new(&thread.id).root());
                 pl_tool::workspace::path_safety::validate_path_for_write_async(
                     Path::new(&associated.path),
                     &source,
                 )
-                .await?;
+                .await
+                .map_err(|source| WorkspacePreparationFailure(source.into()))?;
             }
             let managed = self.services.bots.workspace_root(&bot);
             let mut effective = associated;
@@ -112,7 +130,9 @@ impl StudioThreadFactory {
                 && frozen.is_none()
                 && thread.parent_thread_id.is_none()
                 && check == ExecutionWorkspaceCheck::Prepare
-                && !tokio::fs::try_exists(&managed).await?
+                && !tokio::fs::try_exists(&managed)
+                    .await
+                    .map_err(|source| WorkspacePreparationFailure(source.into()))?
             {
                 // Only preparation may materialize a missing managed target, while its still-needed
                 // original source has just been proved. Audit/execution never infer completion.
@@ -120,12 +140,15 @@ impl StudioThreadFactory {
             }
             let identity = self
                 .resolve_workspace_identity(&effective, &managed)
-                .await?;
+                .await
+                .map_err(WorkspacePreparationFailure)?;
             ensure!(
                 frozen.as_ref().is_none_or(|frozen| *frozen == identity),
-                "bot physical execution identity changed"
+                WorktreeError::IdentityMismatch("bot physical execution identity changed".into())
             );
-            Self::verify_resolved_execution_identity(&identity).await?;
+            Self::verify_resolved_execution_identity(&identity)
+                .await
+                .map_err(WorkspacePreparationFailure)?;
             if check == ExecutionWorkspaceCheck::Prepare && thread.parent_thread_id.is_some() {
                 self.verify_saved_bot_child_workspace(thread, snapshot, &identity)
                     .await?;
@@ -140,20 +163,31 @@ impl StudioThreadFactory {
         }
         let assignment = snapshot
             .map(crate::studio::workspace_receipt::from_snapshot)
-            .transpose()
-            .map_err(anyhow::Error::msg)?
+            .transpose()?
             .flatten();
         let effective = snapshot
             .and_then(|snapshot| snapshot.extensions.get("studio.project"))
-            .map(|saved| -> Result<WorkspaceRecord> {
-                ensure!(
-                    saved.payload.format() == "pl.studio.project" && saved.payload.version() == 1,
-                    "unsupported execution project binding"
-                );
-                Ok(serde_json::from_str(saved.payload.content())?)
-            })
-            .transpose()?
-            .unwrap_or(associated.clone());
+            .map(|saved| decode_saved_project(&saved.payload))
+            .transpose()?;
+        self.verify_physical_binding(
+            thread,
+            &associated,
+            effective.as_ref().unwrap_or(&associated),
+            frozen.as_ref(),
+            assignment.as_ref(),
+        )
+        .await
+        .map_err(|source| WorkspacePreparationFailure(source).into())
+    }
+
+    async fn verify_physical_binding(
+        &self,
+        thread: &crate::Thread,
+        associated: &WorkspaceRecord,
+        effective: &WorkspaceRecord,
+        frozen: Option<&WorkspaceIdentity>,
+        assignment: Option<&AgentWorkspaceAssignmentSnapshot>,
+    ) -> Result<()> {
         ensure!(
             effective.id == thread.workspace_id
                 && effective.kind == associated.kind
@@ -161,7 +195,7 @@ impl StudioThreadFactory {
                 && effective.ssh_alias == associated.ssh_alias,
             "execution project binding changed"
         );
-        let root = match (&frozen, &assignment) {
+        let root = match (frozen, assignment) {
             (Some(identity), Some(assignment)) => {
                 ensure!(
                     identity.matches_root(&assignment.root),
@@ -175,7 +209,7 @@ impl StudioThreadFactory {
             _ => anyhow::bail!("child execution binding remains unknown"),
         };
         let actual = self
-            .resolve_workspace_identity(&effective, Path::new(&root))
+            .resolve_workspace_identity(effective, Path::new(&root))
             .await?;
         let lease = self
             .services
@@ -195,10 +229,8 @@ impl StudioThreadFactory {
             );
         }
         ensure!(
-            frozen.as_ref().is_none_or(|identity| *identity == actual),
-            crate::agent::worktree::WorktreeError::IdentityMismatch(
-                "execution canonical path or endpoint changed".into()
-            )
+            frozen.is_none_or(|identity| *identity == actual),
+            WorktreeError::IdentityMismatch("execution canonical path or endpoint changed".into())
         );
         Self::verify_resolved_execution_identity(&actual).await?;
         if let Some(lease) = lease {
@@ -215,10 +247,7 @@ impl StudioThreadFactory {
                     base_commit: lease.base_commit,
                 })
                 .await?;
-        } else if assignment
-            .as_ref()
-            .is_some_and(|assignment| assignment.worktree.is_some())
-        {
+        } else if assignment.is_some_and(|assignment| assignment.worktree.is_some()) {
             anyhow::bail!("execution worktree has no matching owner or borrower lease");
         }
         Ok(())
@@ -235,4 +264,18 @@ impl StudioThreadFactory {
         }
         Ok(())
     }
+}
+
+pub(super) fn decode_saved_project(payload: &OpaquePayload) -> Result<WorkspaceRecord> {
+    const FORMAT: &str = "pl.studio.project";
+    let binding_error = |source| SessionDataError::WorkspaceBinding {
+        format: FORMAT,
+        revision: payload.version(),
+        source,
+    };
+    ensure!(
+        payload.format() == FORMAT && payload.version() == 1,
+        binding_error(anyhow::anyhow!("unsupported execution project binding"))
+    );
+    serde_json::from_str(payload.content()).map_err(|source| binding_error(source.into()).into())
 }

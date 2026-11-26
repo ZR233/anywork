@@ -1,5 +1,8 @@
 //! Bot execution admission is read-only and precedes migration, tools, worktrees and model opening.
-use super::{StudioThreadFactory, errors::resource_error};
+use super::{
+    StudioThreadFactory,
+    errors::{resource_error, workspace_error},
+};
 use crate::studio::worktree::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
 use crate::thread_assembler::{ChildThreadRequest, ThreadAssemblyError};
 use crate::{AgentWorkspaceMode, ThreadWorkspaceMode};
@@ -316,12 +319,12 @@ async fn local_identity(path: &Path) -> Result<WorkspaceIdentity, ThreadAssembly
     let path = path.to_owned();
     let canonical = tokio::task::spawn_blocking(move || dunce::canonicalize(path))
         .await?
-        .map_err(|error| resource_error("resolve canonical bot execution root", error))?;
+        .map_err(|error| workspace_error("resolve canonical bot execution root", error))?;
     WorkspaceIdentity::canonical(
         WorkspaceEndpoint::Local,
         canonical.to_string_lossy().into_owned(),
     )
-    .map_err(StudioThreadFactory::workspace_usage_error)
+    .map_err(|error| workspace_error("validate canonical bot execution root", error))
 }
 
 fn bot_workspace_refusal(id: &str, reason: &str) -> ThreadAssemblyError {

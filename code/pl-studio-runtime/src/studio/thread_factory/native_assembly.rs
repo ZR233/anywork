@@ -10,7 +10,7 @@
 
 use super::{
     StudioThreadFactory,
-    errors::resource_error,
+    errors::{resource_error, workspace_error},
     thread_tools::{PreparedThreadTools, ThreadToolAssembly},
 };
 use crate::{
@@ -160,7 +160,7 @@ impl StudioThreadFactory {
             Ok::<_, anyhow::Error>(project_root)
         })
         .await?
-        .map_err(|error| resource_error(context, error))
+        .map_err(|error| workspace_error(context, error))
     }
 
     pub(super) async fn assign_native_workspace(
@@ -171,7 +171,7 @@ impl StudioThreadFactory {
     ) -> Result<(), ThreadAssemblyError> {
         self.assign_workspace_use(usage, project, root)
             .await
-            .map_err(Self::workspace_usage_error)?;
+            .map_err(|error| workspace_error("assign Native execution workspace", error))?;
         Ok(())
     }
 

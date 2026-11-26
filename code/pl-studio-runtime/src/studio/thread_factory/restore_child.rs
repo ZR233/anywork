@@ -4,12 +4,15 @@
 //! missing directory is a broken site and fails with a typed `Workspace` error that the activation
 //! path publishes as a Recovery diagnosis. Ordinary activation never recreates the saved site.
 use super::workspace_validation::{same_workspace_path, verify_worktree_declarations};
-use super::{StudioThreadFactory, errors::resource_error};
+use super::{
+    StudioThreadFactory,
+    errors::{resource_error, workspace_error},
+    execution_admission::decode_saved_project,
+};
 use crate::{
     agent::definition::VerifiedAgentIdentity,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
 };
-use pl_core::context::OpaquePayload;
 use pl_model::config::AgentRoleId;
 use pl_tool::workspace::ToolWorkspace;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -85,12 +88,14 @@ impl StudioThreadFactory {
                 super::bot_workspace::BotWorkspacePreparation::Existing,
             )
             .await?;
+        let workspace_mismatch = |reason: &str| ThreadAssemblyError::Workspace {
+            thread_id: id.to_owned(),
+            reason: reason.into(),
+        };
         let saved = restored
             .extensions
             .get(crate::studio::workspace_receipt::EXTENSION)
-            .ok_or_else(|| {
-                ThreadAssemblyError::Identity(format!("child {id} has no workspace receipt"))
-            })?;
+            .ok_or_else(|| workspace_mismatch("saved child has no workspace receipt"))?;
         let assignment: crate::AgentWorkspaceAssignmentSnapshot =
             crate::studio::workspace_receipt::from_payload(&saved.payload)
                 .map_err(|error| resource_error("decode saved workspace binding", error))?;
@@ -135,27 +140,26 @@ impl StudioThreadFactory {
                 (fallback, false)
             }
         };
-        let saved_project = restored.extensions.get("studio.project").ok_or_else(|| {
-            ThreadAssemblyError::Identity(format!("child {id} has no project binding"))
-        })?;
-        let previous: crate::studio::WorkspaceRecord =
-            decode(&saved_project.payload, "pl.studio.project")?;
+        let saved_project = restored
+            .extensions
+            .get("studio.project")
+            .ok_or_else(|| workspace_mismatch("saved child has no project binding"))?;
+        let previous = decode_saved_project(&saved_project.payload)
+            .map_err(|error| resource_error("decode saved child project binding", error))?;
         if previous.id != project.id
             || previous.kind != project.kind
             || previous.path != project.path
             || previous.ssh_alias != project.ssh_alias
         {
-            return Err(ThreadAssemblyError::Identity(
-                "child project target changed".into(),
-            ));
+            return Err(workspace_mismatch("child project target changed"));
         }
         // Resolve the actual root once. Existing child worktrees keep their original receipt;
         // this boundary neither selects a new HEAD nor rebuilds the session checkout.
         let workspace_mode = thread.workspace_mode;
         let root_thread = self.directory_member(&thread.root_thread_id)?;
         if root_thread.session.workspace_mode != workspace_mode {
-            return Err(ThreadAssemblyError::Identity(
-                "saved child root workspace mode changed".into(),
+            return Err(workspace_mismatch(
+                "saved child root workspace mode changed",
             ));
         }
         let local_root = bot_root
@@ -178,11 +182,11 @@ impl StudioThreadFactory {
                 local_root,
             )
             .await
-            .map_err(|error| resource_error("resolve restored root session workspace", error))?
+            .map_err(|error| workspace_error("resolve restored root session workspace", error))?
             .0;
         if std::path::Path::new(&assignment.project_root) != root {
-            return Err(ThreadAssemblyError::Identity(
-                "saved child workspace has a different project root".into(),
+            return Err(workspace_mismatch(
+                "saved child workspace has a different project root",
             ));
         }
         let mut verified_lease = None;
@@ -199,9 +203,7 @@ impl StudioThreadFactory {
                     .worktree
                     .as_ref()
                     .filter(|receipt| receipt.path == assignment.root)
-                    .ok_or_else(|| {
-                        ThreadAssemblyError::Identity("invalid saved worktree receipt".into())
-                    })?;
+                    .ok_or_else(|| workspace_mismatch("invalid saved worktree receipt"))?;
                 let verified = self
                     .ensure_restored_child_worktree(receipt, &thread, &project)
                     .await?;
@@ -213,22 +215,21 @@ impl StudioThreadFactory {
                     &assignment.root,
                     project.ssh_alias.is_some(),
                 ) {
-                    return Err(ThreadAssemblyError::Identity(
-                        "the verified child worktree is not the saved workspace assignment root"
-                            .into(),
+                    return Err(workspace_mismatch(
+                        "verified child worktree differs from the saved workspace assignment root",
                     ));
                 }
                 verified_lease = Some(verified);
             }
             crate::AgentWorkspaceMode::Unrestricted | crate::AgentWorkspaceMode::Directory => {
-                return Err(ThreadAssemblyError::Identity(
-                    "invalid saved child workspace assignment".into(),
+                return Err(workspace_mismatch(
+                    "invalid saved child workspace assignment",
                 ));
             }
         }
         if profile.workspace_mode != assignment.mode {
-            return Err(ThreadAssemblyError::Identity(
-                "saved child Profile conflicts with its workspace assignment".into(),
+            return Err(workspace_mismatch(
+                "saved child Profile conflicts with its workspace assignment",
             ));
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
@@ -353,9 +354,9 @@ impl StudioThreadFactory {
         // derives, and only while it still matches this child, its root, its project and its receipt.
         lease
             .validate_identity()
-            .map_err(|error| resource_error("validate restored child worktree lease", error))?;
+            .map_err(|error| workspace_error("validate restored child worktree lease", error))?;
         verify_worktree_declarations(&lease, receipt, thread, project, &repository_root).map_err(
-            |error| resource_error("validate restored child worktree declarations", error),
+            |error| workspace_error("validate restored child worktree declarations", error),
         )?;
         let manager = crate::studio::worktree::workspace_preparation::manager_from_lease(
             &self.services.store,
@@ -364,7 +365,7 @@ impl StudioThreadFactory {
             Some(&project_endpoint),
         )
         .await
-        .map_err(|error| resource_error("open restored child workspace manager", error))?;
+        .map_err(|error| workspace_error("open restored child workspace manager", error))?;
         let handle = crate::agent::worktree::WorktreeHandle {
             path: PathBuf::from(&lease.path),
             base_commit: lease.base_commit.clone(),
@@ -392,28 +393,13 @@ impl StudioThreadFactory {
     > {
         let project_root =
             crate::studio::worktree::workspace_preparation::resolved_project_root(project)
-                .map_err(|error| resource_error("resolve restored child project root", error))?;
+                .map_err(|error| workspace_error("resolve restored child project root", error))?;
         crate::studio::worktree::workspace_preparation::project_repository(
             &self.services.ssh_manager,
             project.ssh_alias.as_deref(),
             &project_root,
         )
         .await
-        .map_err(|error| resource_error("resolve restored child repository", error))
+        .map_err(|error| workspace_error("resolve restored child repository", error))
     }
-}
-
-fn decode<T: serde::de::DeserializeOwned>(
-    payload: &OpaquePayload,
-    format: &str,
-) -> Result<T, ThreadAssemblyError> {
-    if payload.format() != format || payload.version() != 1 {
-        return Err(ThreadAssemblyError::Identity(format!(
-            "unsupported saved binding {} version {}",
-            payload.format(),
-            payload.version()
-        )));
-    }
-    serde_json::from_str(payload.content())
-        .map_err(|error| resource_error("decode saved workspace binding", error))
 }

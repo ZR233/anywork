@@ -3,9 +3,11 @@ use super::{
     StudioStore,
     object::{PersistedStudioObject, checked_bump_revision, list_objects, load_object, put_object},
 };
-use crate::studio::worktree::worktree_lease::WorkspaceIdentity;
+use crate::studio::{
+    session_data_error::SessionDataError, worktree::worktree_lease::WorkspaceIdentity,
+};
 use anyhow::{Context, Result, ensure};
-use sea_orm::TransactionTrait;
+use sea_orm::{ConnectionTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,12 +184,25 @@ impl PersistedStudioObject for ThreadPreparationRecord {
     }
 }
 
+fn preparation_storage(source: impl Into<anyhow::Error>) -> SessionDataError {
+    SessionDataError::PreparationStorage(source.into())
+}
+
+async fn load_preparation(
+    db: &impl ConnectionTrait,
+    id: &str,
+) -> Result<Option<ThreadPreparationRecord>> {
+    load_object(db, id)
+        .await
+        .map_err(|source| preparation_storage(source).into())
+}
+
 impl StudioStore {
     pub(crate) async fn thread_preparation(
         &self,
         id: &str,
     ) -> Result<Option<ThreadPreparationRecord>> {
-        load_object(self.database(), id).await
+        load_preparation(self.database(), id).await
     }
 
     pub(crate) async fn thread_preparation_for_deletion(
@@ -257,10 +272,8 @@ impl StudioStore {
         identity: PreparationIdentity,
         published: bool,
     ) -> Result<()> {
-        let transaction = self.database().begin().await?;
-        if let Some(previous) =
-            load_object::<ThreadPreparationRecord>(&transaction, &identity.thread_id).await?
-        {
+        let transaction = self.database().begin().await.map_err(preparation_storage)?;
+        if let Some(previous) = load_preparation(&transaction, &identity.thread_id).await? {
             ensure!(
                 previous.identity == identity,
                 "preparation original owner changed"
@@ -278,16 +291,19 @@ impl StudioStore {
                 retired: false,
                 published,
             };
-            value.validate_owner(&value.identity.thread_id)?;
+            value
+                .validate_owner(&value.identity.thread_id)
+                .map_err(preparation_storage)?;
             put_object(
                 &transaction,
                 &value.identity.thread_id,
                 &value,
                 crate::studio::unix_seconds(),
             )
-            .await?;
+            .await
+            .map_err(preparation_storage)?;
         }
-        transaction.commit().await?;
+        transaction.commit().await.map_err(preparation_storage)?;
         Ok(())
     }
 
@@ -296,15 +312,18 @@ impl StudioStore {
         id: &str,
         change: impl FnOnce(&mut ThreadPreparationRecord) -> Result<()>,
     ) -> Result<()> {
-        let transaction = self.database().begin().await?;
-        let mut value = load_object::<ThreadPreparationRecord>(&transaction, id)
+        let transaction = self.database().begin().await.map_err(preparation_storage)?;
+        let mut value = load_preparation(&transaction, id)
             .await?
-            .context("private preparation has no durable original owner")?;
+            .context("private preparation has no durable original owner")
+            .map_err(preparation_storage)?;
         change(&mut value)?;
-        checked_bump_revision(&mut value.revision, "preparation")?;
-        value.validate_owner(id)?;
-        put_object(&transaction, id, &value, crate::studio::unix_seconds()).await?;
-        transaction.commit().await?;
+        checked_bump_revision(&mut value.revision, "preparation").map_err(preparation_storage)?;
+        value.validate_owner(id).map_err(preparation_storage)?;
+        put_object(&transaction, id, &value, crate::studio::unix_seconds())
+            .await
+            .map_err(preparation_storage)?;
+        transaction.commit().await.map_err(preparation_storage)?;
         Ok(())
     }
 

@@ -230,11 +230,30 @@ async fn hydrated_active_binding_surfaces_a_real_revision_conflict_without_an_ac
     )
     .await?
     .unwrap_err();
-    assert!(failure.downcast_ref::<crate::PureError>().is_some());
     assert!(
-        failure.to_string().contains("revision conflicts"),
+        failure.chain().any(|cause| cause
+            .downcast_ref::<crate::PureError>()
+            .is_some_and(|source| source.to_string().contains("revision conflicts"))),
         "{failure:#}"
     );
+    assert!(matches!(
+        writer.state_snapshot().state,
+        crate::PersistenceState::Blocked(_)
+    ));
+    assert!(!crate::studio::thread_factory::is_workspace_preparation_failure(&failure));
+    let wrapped = anyhow::Error::new(
+        crate::thread_assembler::ThreadAssemblyError::ChildWorkspacePreparation {
+            source: failure.reallocate_into_boxed_dyn_error_without_backtrace(),
+        },
+    );
+    assert!(!crate::studio::thread_factory::is_workspace_preparation_failure(&wrapped));
+    let mapped = crate::studio_error_from_anyhow(wrapped);
+    assert_eq!(mapped.code, crate::StudioErrorCode::Storage);
+    assert!(
+        mapped.message.contains("persist the saved worktree lease"),
+        "{mapped:?}"
+    );
+    assert!(mapped.retryable);
     assert!(writer.admitted_ticket() > 0);
     assert_eq!(writer.saved_watermark(), 0);
     assert!(!owner.is_durable(&active));
@@ -312,6 +331,10 @@ async fn verified_binding_rechecks_retirement_after_the_write_ack() -> Result<()
     let failure = confirming.await?.unwrap_err();
     assert!(
         failure.to_string().contains("sealed for retirement"),
+        "{failure:#}"
+    );
+    assert!(
+        crate::studio::thread_factory::is_workspace_preparation_failure(&failure),
         "{failure:#}"
     );
     // The ACK still belongs to its original write; rejecting execution must not
