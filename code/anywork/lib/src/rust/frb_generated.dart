@@ -15416,6 +15416,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           message: dco_decode_String(raw[2]),
           retryAfterMs: dco_decode_opt_box_autoadd_u_64(raw[3]),
           attempt: dco_decode_u_32(raw[4]),
+          maxAttempts: dco_decode_u_32(raw[5]),
+        );
+      case 5:
+        return BridgeLiveStatusPhase_Stopping(
+          startedAtMs: dco_decode_opt_box_autoadd_i_64(raw[1]),
         );
       default:
         throw Exception("unreachable");
@@ -15440,8 +15445,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeLiveWorkItem dco_decode_bridge_live_work_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return BridgeLiveWorkItem(
       id: dco_decode_String(arr[0]),
       callId: dco_decode_opt_String(arr[1]),
@@ -15450,6 +15455,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       status: dco_decode_String(arr[4]),
       summary: dco_decode_String(arr[5]),
       startedAtMs: dco_decode_opt_box_autoadd_i_64(arr[6]),
+      finishedAtMs: dco_decode_opt_box_autoadd_i_64(arr[7]),
     );
   }
 
@@ -31743,12 +31749,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         var var_message = sse_decode_String(deserializer);
         var var_retryAfterMs = sse_decode_opt_box_autoadd_u_64(deserializer);
         var var_attempt = sse_decode_u_32(deserializer);
+        var var_maxAttempts = sse_decode_u_32(deserializer);
         return BridgeLiveStatusPhase_Reconnecting(
           attemptId: var_attemptId,
           message: var_message,
           retryAfterMs: var_retryAfterMs,
           attempt: var_attempt,
+          maxAttempts: var_maxAttempts,
         );
+      case 5:
+        var var_startedAtMs = sse_decode_opt_box_autoadd_i_64(deserializer);
+        return BridgeLiveStatusPhase_Stopping(startedAtMs: var_startedAtMs);
       default:
         throw UnimplementedError('');
     }
@@ -31783,6 +31794,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_status = sse_decode_String(deserializer);
     var var_summary = sse_decode_String(deserializer);
     var var_startedAtMs = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_finishedAtMs = sse_decode_opt_box_autoadd_i_64(deserializer);
     return BridgeLiveWorkItem(
       id: var_id,
       callId: var_callId,
@@ -31791,6 +31803,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       status: var_status,
       summary: var_summary,
       startedAtMs: var_startedAtMs,
+      finishedAtMs: var_finishedAtMs,
     );
   }
 
@@ -49830,12 +49843,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         message: final message,
         retryAfterMs: final retryAfterMs,
         attempt: final attempt,
+        maxAttempts: final maxAttempts,
       ):
         sse_encode_i_32(4, serializer);
         sse_encode_String(attemptId, serializer);
         sse_encode_String(message, serializer);
         sse_encode_opt_box_autoadd_u_64(retryAfterMs, serializer);
         sse_encode_u_32(attempt, serializer);
+        sse_encode_u_32(maxAttempts, serializer);
+      case BridgeLiveStatusPhase_Stopping(startedAtMs: final startedAtMs):
+        sse_encode_i_32(5, serializer);
+        sse_encode_opt_box_autoadd_i_64(startedAtMs, serializer);
     }
   }
 
@@ -49864,6 +49882,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.status, serializer);
     sse_encode_String(self.summary, serializer);
     sse_encode_opt_box_autoadd_i_64(self.startedAtMs, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.finishedAtMs, serializer);
   }
 
   @protected

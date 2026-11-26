@@ -4117,5 +4117,35 @@
         "type": "int"
       }
     }
-  }
+  },
+  "conversationActivityReconnecting": "Reconnecting",
+  "conversationActivityReconnectingMeta": "Attempt {attempt}/{maxAttempts}",
+  "@conversationActivityReconnectingMeta": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      },
+      "maxAttempts": {
+        "type": "int"
+      }
+    }
+  },
+  "conversationActivityReconnectingAttemptMeta": "Attempt {attempt}",
+  "@conversationActivityReconnectingAttemptMeta": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      }
+    }
+  },
+  "conversationActivityAttentionDefault": "Action required",
+  "conversationActivityWaitingChild": "Subagent waiting",
+  "liveWorkKindThinking": "Thinking",
+  "liveWorkKindRead": "Read",
+  "liveWorkKindEdit": "Edit",
+  "liveWorkKindSearch": "Search",
+  "liveWorkKindExec": "Run",
+  "liveWorkKindWait": "Wait",
+  "liveWorkKindAgent": "Agent",
+  "liveWorkKindTool": "Tool"
 }

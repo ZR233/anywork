@@ -8541,4 +8541,47 @@ class AppLocalizationsEn extends AppLocalizations {
   String acpStepsStatusTooltip(int completed, int total) {
     return 'Execution steps $completed/$total';
   }
+
+  @override
+  String get conversationActivityReconnecting => 'Reconnecting';
+
+  @override
+  String conversationActivityReconnectingMeta(int attempt, int maxAttempts) {
+    return 'Attempt $attempt/$maxAttempts';
+  }
+
+  @override
+  String conversationActivityReconnectingAttemptMeta(int attempt) {
+    return 'Attempt $attempt';
+  }
+
+  @override
+  String get conversationActivityAttentionDefault => 'Action required';
+
+  @override
+  String get conversationActivityWaitingChild => 'Subagent waiting';
+
+  @override
+  String get liveWorkKindThinking => 'Thinking';
+
+  @override
+  String get liveWorkKindRead => 'Read';
+
+  @override
+  String get liveWorkKindEdit => 'Edit';
+
+  @override
+  String get liveWorkKindSearch => 'Search';
+
+  @override
+  String get liveWorkKindExec => 'Run';
+
+  @override
+  String get liveWorkKindWait => 'Wait';
+
+  @override
+  String get liveWorkKindAgent => 'Agent';
+
+  @override
+  String get liveWorkKindTool => 'Tool';
 }

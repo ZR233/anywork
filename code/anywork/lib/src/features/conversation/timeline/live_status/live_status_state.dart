@@ -1,12 +1,7 @@
 import 'package:anywork_client/models.dart';
 import 'package:flutter/foundation.dart' show immutable, listEquals;
 
-import '../state/timeline_display_models.dart';
-
-/// 实时工作组在状态机中的运行子形态。
-enum LiveWorkGroupMode { active, waiting, stopping }
-
-/// 存储阻塞的 typed 严重度分类；由后端 `ThreadStorageStateView` 直接派生，绝不解析错误文本。
+/// 存储阻塞的 typed 严重度分类；由后端 [ThreadStorageStateView] 直接派生，绝不解析错误文本。
 enum LiveStorageSeverity {
   fault,
   pressure,
@@ -24,346 +19,303 @@ enum LiveStorageSeverity {
   }
 }
 
-/// 实时流同步连接状态。
-enum LiveConnectionStatus { connected, reconnecting, disconnected }
+/// 告警单态分类（与存储／连接／审批／错误一一对应）。
+enum LiveAlertKind {
+  approval,
+  storageReady,
+  storageWarning,
+  storageFault,
+  disconnected,
+  error,
+}
 
-/// 实时状态栏的互斥主阶段。
+/// 实时工作容器内折叠的单个思考或工具条目的前端投影模型。
 @immutable
-sealed class LiveStatusPrimaryPhase {
-  const LiveStatusPrimaryPhase();
-}
-
-final class LiveReconnectingPhase extends LiveStatusPrimaryPhase {
-  const LiveReconnectingPhase({
-    this.detail,
-    this.attempt,
-    this.maxAttempts,
-    this.retryAt,
-  });
-
-  final String? detail;
-  final int? attempt;
-  final int? maxAttempts;
-  final DateTime? retryAt;
-
-  @override
-  bool operator ==(Object other) =>
-      other is LiveReconnectingPhase &&
-      detail == other.detail &&
-      attempt == other.attempt &&
-      maxAttempts == other.maxAttempts &&
-      retryAt == other.retryAt;
-
-  @override
-  int get hashCode => Object.hash(detail, attempt, maxAttempts, retryAt);
-}
-
-/// 正在输出的一条正文及其计时起点。
-final class LiveResponsePhase extends LiveStatusPrimaryPhase {
-  const LiveResponsePhase({
-    required this.itemId,
-    required this.previewText,
-    this.startedAt,
-  });
-  final String itemId;
-  final String previewText;
-  final int? startedAt;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveResponsePhase &&
-          itemId == other.itemId &&
-          previewText == other.previewText &&
-          startedAt == other.startedAt;
-
-  @override
-  int get hashCode => Object.hash(itemId, previewText, startedAt);
-}
-
-/// 开放工作组正在实时状态栏主区运行、等待或停止。
-final class LiveWorkPhase extends LiveStatusPrimaryPhase {
-  const LiveWorkPhase({
+final class LiveWorkMember {
+  const LiveWorkMember({
     required this.id,
-    required this.block,
-    required this.mode,
-    required this.timing,
-    this.activity,
-    this.thinkingSummary,
-    this.items = const [],
-    required this.executionPresent,
+    this.callId,
+    required this.kind,
+    required this.toolName,
+    required this.status,
+    required this.summary,
+    this.startedAtMs,
+    this.finishedAtMs,
   });
 
   final String id;
-  final DisplayBlock block;
-  final LiveWorkGroupMode mode;
-  final WorkTiming timing;
-  final ConversationActivityView? activity;
-  final String? thinkingSummary;
-  final List<LiveWorkItem> items;
-  final bool executionPresent;
+  final String? callId;
+  final String kind;
+  final String toolName;
+  final String status;
+  final String summary;
+  final int? startedAtMs;
+  final int? finishedAtMs;
+
+  bool get isActive =>
+      status == 'running' ||
+      status == 'cancelling' ||
+      status == 'awaitingApproval';
+
+  bool get isFailed => status == 'failed' || status == 'denied';
+
+  bool get isCancelled => status == 'cancelled';
+
+  bool get isCompleted => status == 'completed' || status == 'backgrounded';
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveWorkPhase &&
+      other is LiveWorkMember &&
           id == other.id &&
-          sameDisplayBlock(block, other.block) &&
-          mode == other.mode &&
-          timing == other.timing &&
-          activity == other.activity &&
-          thinkingSummary == other.thinkingSummary &&
-          executionPresent == other.executionPresent &&
-          listEquals(items, other.items);
+          callId == other.callId &&
+          kind == other.kind &&
+          toolName == other.toolName &&
+          status == other.status &&
+          summary == other.summary &&
+          startedAtMs == other.startedAtMs &&
+          finishedAtMs == other.finishedAtMs;
 
   @override
   int get hashCode => Object.hash(
     id,
-    block.id,
-    block.blockOrder,
-    mode,
-    timing,
-    activity,
-    thinkingSummary,
-    executionPresent,
-    Object.hashAll(items),
+    callId,
+    kind,
+    toolName,
+    status,
+    summary,
+    startedAtMs,
+    finishedAtMs,
   );
 }
 
-/// 上下文压缩阶段。
-final class LiveCompactingPhase extends LiveStatusPrimaryPhase {
-  const LiveCompactingPhase({required this.activity, this.startedAt});
-
-  final ConversationActivityView activity;
-  final int? startedAt;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveCompactingPhase &&
-          activity == other.activity &&
-          startedAt == other.startedAt;
-
-  @override
-  int get hashCode => Object.hash(activity, startedAt);
-}
-
-/// 独立活动状态（无正文/无开放工作组时的准备、思考、规划、等待或单行执行态）。
-final class LiveActivityPhase extends LiveStatusPrimaryPhase {
-  const LiveActivityPhase({required this.activity, this.startedAt});
-
-  final ConversationActivityView activity;
-  final int? startedAt;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveActivityPhase &&
-          activity == other.activity &&
-          startedAt == other.startedAt;
-
-  @override
-  int get hashCode => Object.hash(activity, startedAt);
-}
-
-/// 与主阶段正交并存的控制态、审批态或故障关注条；同帧去重。
+/// 实时状态栏前端展示层的单一扁平状态机（8 个互斥态）。
 @immutable
-sealed class LiveStatusAttention {
-  const LiveStatusAttention();
+sealed class LiveStatusState {
+  const LiveStatusState();
 }
 
-final class LiveStoppingAttention extends LiveStatusAttention {
-  const LiveStoppingAttention(this.activity);
+/// 隐藏状态（空闲或被根线程交互覆盖）。
+final class LiveStatusHidden extends LiveStatusState {
+  const LiveStatusHidden({required this.suppressed});
 
-  final ConversationActivityView activity;
+  final bool suppressed;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveStoppingAttention && activity == other.activity;
+      other is LiveStatusHidden && suppressed == other.suppressed;
 
   @override
-  int get hashCode => activity.hashCode;
+  int get hashCode => Object.hash(LiveStatusHidden, suppressed);
 }
 
-final class LiveApprovalAttention extends LiveStatusAttention {
-  const LiveApprovalAttention(this.activity);
+/// 思考中或执行工具容器状态（包含可折叠的单行工作条目列表与单行思考摘要）。
+final class LiveStatusWorkingState extends LiveStatusState {
+  LiveStatusWorkingState({
+    required this.threadId,
+    required List<LiveWorkMember> items,
+    this.reasoningPreview,
+    this.startedAtMs,
+  }) : items = List.unmodifiable(items);
 
-  final ConversationActivityView activity;
+  final String threadId;
+  final List<LiveWorkMember> items;
+  final String? reasoningPreview;
+  final int? startedAtMs;
+
+  bool get hasRunningCommand =>
+      items.any((item) => item.kind == 'command' && item.isActive);
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveApprovalAttention && activity == other.activity;
+      other is LiveStatusWorkingState &&
+          threadId == other.threadId &&
+          listEquals(items, other.items) &&
+          reasoningPreview == other.reasoningPreview &&
+          startedAtMs == other.startedAtMs;
 
   @override
-  int get hashCode => activity.hashCode;
+  int get hashCode => Object.hash(
+    LiveStatusWorkingState,
+    threadId,
+    Object.hashAll(items),
+    reasoningPreview,
+    startedAtMs,
+  );
 }
 
-final class LiveStorageAttention extends LiveStatusAttention {
-  const LiveStorageAttention({
-    required this.activity,
-    required this.storage,
-    required this.severity,
+/// 文本流持续输出状态。
+final class LiveStatusStreamingState extends LiveStatusState {
+  const LiveStatusStreamingState({
+    required this.attemptId,
+    required this.itemId,
+    required this.text,
+    this.startedAtMs,
   });
 
-  final ConversationActivityView activity;
-  final ThreadStorageStateView storage;
-  final LiveStorageSeverity severity;
+  final String attemptId;
+  final String itemId;
+  final String text;
+  final int? startedAtMs;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveStorageAttention &&
-          activity == other.activity &&
-          storage == other.storage &&
-          severity == other.severity;
+      other is LiveStatusStreamingState &&
+          attemptId == other.attemptId &&
+          itemId == other.itemId &&
+          text == other.text &&
+          startedAtMs == other.startedAtMs;
 
   @override
-  int get hashCode => Object.hash(activity, storage, severity);
+  int get hashCode => Object.hash(
+    LiveStatusStreamingState,
+    attemptId,
+    itemId,
+    text,
+    startedAtMs,
+  );
 }
 
-final class LiveDisconnectedAttention extends LiveStatusAttention {
-  const LiveDisconnectedAttention({this.detail});
+/// 上下文压缩状态。
+final class LiveStatusCompactingState extends LiveStatusState {
+  const LiveStatusCompactingState({required this.manual, this.startedAtMs});
 
-  final String? detail;
-
-  @override
-  bool operator ==(Object other) =>
-      other is LiveDisconnectedAttention && detail == other.detail;
-
-  @override
-  int get hashCode => detail.hashCode;
-}
-
-final class LiveErrorAttention extends LiveStatusAttention {
-  const LiveErrorAttention({required this.message, this.retryable = false});
-
-  final String message;
-  final bool retryable;
+  final bool manual;
+  final int? startedAtMs;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveErrorAttention &&
-          message == other.message &&
-          retryable == other.retryable;
-
-  @override
-  int get hashCode => Object.hash(message, retryable);
-}
-
-/// 单帧实时状态栏的完整纯展示模型。
-@immutable
-final class LiveStatusPresentation {
-  LiveStatusPresentation({
-    this.primary,
-    List<LiveStatusAttention> attentions = const [],
-    this.showInteractionDetails = false,
-  }) : attentions = List.unmodifiable(attentions);
-
-  final LiveStatusPrimaryPhase? primary;
-  final List<LiveStatusAttention> attentions;
-  final bool showInteractionDetails;
-
-  bool get isEmpty =>
-      primary == null && attentions.isEmpty && !showInteractionDetails;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusPresentation &&
-          primary == other.primary &&
-          listEquals(attentions, other.attentions) &&
-          showInteractionDetails == other.showInteractionDetails;
+      other is LiveStatusCompactingState &&
+          manual == other.manual &&
+          startedAtMs == other.startedAtMs;
 
   @override
   int get hashCode =>
-      Object.hash(primary, Object.hashAll(attentions), showInteractionDetails);
+      Object.hash(LiveStatusCompactingState, manual, startedAtMs);
 }
 
-/// 顶层门控状态机：空闲、被底部交互停靠区遮蔽，或正在呈现实时状态。
-@immutable
-sealed class LiveStatusGateState {
-  const LiveStatusGateState();
+/// 模型连接中断重连状态。
+final class LiveStatusReconnectingState extends LiveStatusState {
+  const LiveStatusReconnectingState({
+    required this.attemptId,
+    required this.message,
+    this.retryAfterMs,
+    required this.attempt,
+    required this.maxAttempts,
+  });
 
-  bool get showInteractionDetails => switch (this) {
-    LiveStatusIdle() => false,
-    LiveStatusSuppressed(:final showInteractionDetails) =>
-      showInteractionDetails,
-    LiveStatusPresenting(:final presentation) =>
-      presentation.showInteractionDetails,
-  };
-}
-
-final class LiveStatusIdle extends LiveStatusGateState {
-  const LiveStatusIdle();
+  final String attemptId;
+  final String message;
+  final int? retryAfterMs;
+  final int attempt;
+  final int maxAttempts;
 
   @override
-  bool operator ==(Object other) => other is LiveStatusIdle;
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveStatusReconnectingState &&
+          attemptId == other.attemptId &&
+          message == other.message &&
+          retryAfterMs == other.retryAfterMs &&
+          attempt == other.attempt &&
+          maxAttempts == other.maxAttempts;
 
   @override
-  int get hashCode => (LiveStatusIdle).hashCode;
+  int get hashCode => Object.hash(
+    LiveStatusReconnectingState,
+    attemptId,
+    message,
+    retryAfterMs,
+    attempt,
+    maxAttempts,
+  );
 }
 
-final class LiveStatusSuppressed extends LiveStatusGateState {
-  const LiveStatusSuppressed({
+/// 用户中断后的停止中终态锁存展示。
+final class LiveStatusStoppingState extends LiveStatusState {
+  const LiveStatusStoppingState({this.startedAtMs});
+
+  final int? startedAtMs;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveStatusStoppingState && startedAtMs == other.startedAtMs;
+
+  @override
+  int get hashCode => Object.hash(LiveStatusStoppingState, startedAtMs);
+}
+
+/// 最高优先级单行告警状态（审批、存储、断连或错误）。
+final class LiveStatusAlertState extends LiveStatusState {
+  const LiveStatusAlertState({required this.kind, this.detail, this.storage});
+
+  final LiveAlertKind kind;
+  final String? detail;
+  final ThreadStorageStateView? storage;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveStatusAlertState &&
+          kind == other.kind &&
+          detail == other.detail &&
+          storage == other.storage;
+
+  @override
+  int get hashCode => Object.hash(LiveStatusAlertState, kind, detail, storage);
+}
+
+/// 子线程只读交互详情状态（仅子线程使用）。
+final class LiveStatusChildInteractionState extends LiveStatusState {
+  const LiveStatusChildInteractionState({
     required this.interactionId,
-    required this.showInteractionDetails,
-    this.obscured,
+    required this.payload,
   });
 
   final String interactionId;
-  @override
-  final bool showInteractionDetails;
-  final LiveStatusPresentation? obscured;
+  final InteractionPayload payload;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveStatusSuppressed &&
+      other is LiveStatusChildInteractionState &&
           interactionId == other.interactionId &&
-          showInteractionDetails == other.showInteractionDetails &&
-          obscured == other.obscured;
+          payload == other.payload;
 
   @override
   int get hashCode =>
-      Object.hash(interactionId, showInteractionDetails, obscured);
+      Object.hash(LiveStatusChildInteractionState, interactionId, payload);
 }
 
-final class LiveStatusPresenting extends LiveStatusGateState {
-  const LiveStatusPresenting({required this.presentation});
-
-  final LiveStatusPresentation presentation;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusPresenting && presentation == other.presentation;
-
-  @override
-  int get hashCode => presentation.hashCode;
-}
-
+/// 实时状态栏对外发布的只读投影视图。
+@immutable
 final class LiveStatusView {
   const LiveStatusView({
     required this.threadId,
-    required this.gate,
+    required this.state,
     this.primaryActivity,
+    this.revision = 0,
   });
 
   final String threadId;
-  final LiveStatusGateState gate;
+  final LiveStatusState state;
   final ConversationActivityView? primaryActivity;
+  final int revision;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LiveStatusView &&
           threadId == other.threadId &&
-          gate == other.gate &&
-          primaryActivity == other.primaryActivity;
+          state == other.state &&
+          primaryActivity == other.primaryActivity &&
+          revision == other.revision;
 
   @override
-  int get hashCode => Object.hash(threadId, gate, primaryActivity);
+  int get hashCode => Object.hash(threadId, state, primaryActivity, revision);
 }

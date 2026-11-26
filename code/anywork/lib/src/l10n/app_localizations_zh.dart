@@ -8056,4 +8056,47 @@ class AppLocalizationsZh extends AppLocalizations {
   String acpStepsStatusTooltip(int completed, int total) {
     return '执行步骤 $completed/$total';
   }
+
+  @override
+  String get conversationActivityReconnecting => '连接中断，正在重连';
+
+  @override
+  String conversationActivityReconnectingMeta(int attempt, int maxAttempts) {
+    return '第 $attempt/$maxAttempts 次';
+  }
+
+  @override
+  String conversationActivityReconnectingAttemptMeta(int attempt) {
+    return '第 $attempt 次';
+  }
+
+  @override
+  String get conversationActivityAttentionDefault => '需要确认';
+
+  @override
+  String get conversationActivityWaitingChild => '子代理等待处理';
+
+  @override
+  String get liveWorkKindThinking => '思考';
+
+  @override
+  String get liveWorkKindRead => '读取';
+
+  @override
+  String get liveWorkKindEdit => '编辑';
+
+  @override
+  String get liveWorkKindSearch => '搜索';
+
+  @override
+  String get liveWorkKindExec => '运行';
+
+  @override
+  String get liveWorkKindWait => '等待';
+
+  @override
+  String get liveWorkKindAgent => '子代理';
+
+  @override
+  String get liveWorkKindTool => '工具';
 }

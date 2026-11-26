@@ -3,7 +3,6 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../live_status/live_status_header_spec.dart';
-import '../live_status/live_status_state.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_section.dart';
@@ -36,7 +35,7 @@ class ConversationActivityBar extends StatelessWidget {
               side: BorderSide(color: context.colors.outlineVariant),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               child: LiveStatusMotionHost(
                 child: LayoutBuilder(
                   builder: (context, constraints) => ConstrainedBox(
@@ -68,53 +67,6 @@ class ConversationActivityBar extends StatelessWidget {
       ),
     ),
   );
-}
-
-/// 无正文的当前状态；统一通过 [LiveStatusHeaderSpec] 派生图标、语义色、动画样式与耗时文案。
-class ConversationActivityStatus extends StatelessWidget {
-  const ConversationActivityStatus({
-    required this.view,
-    this.storageSeverity,
-    this.specOverride,
-    super.key,
-  });
-
-  final ConversationActivityView view;
-  final LiveStorageSeverity? storageSeverity;
-  final LiveStatusHeaderSpec? specOverride;
-
-  @override
-  Widget build(BuildContext context) {
-    final spec =
-        specOverride ??
-        LiveStatusHeaderSpec.forActivity(
-          context,
-          view,
-          storageSeverity: storageSeverity,
-        );
-    return Semantics(
-      container: true,
-      liveRegion: true,
-      child: TimelineActivitySection(
-        header: TimelineActivityRow(
-          label: spec.label,
-          icon: spec.icon,
-          iconColor: spec.iconColor,
-          labelColor: spec.labelColor,
-          labelWidget: spec.labelWidget,
-          indicatorStyle: spec.indicatorStyle,
-          isIssue: spec.isIssue,
-          active: spec.active,
-          emphasized: spec.emphasized,
-          expandable: false,
-          header: true,
-          tooltip: spec.tooltip,
-          meta: spec.meta,
-          metaKey: const ValueKey('conversation-activity-trailing-meta'),
-        ),
-      ),
-    );
-  }
 }
 
 /// 当前文本的唯一呈现入口；正文读取与窗口翻页仍由连接层负责。

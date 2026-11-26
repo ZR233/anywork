@@ -249,7 +249,10 @@ sealed class BridgeLiveStatusPhase with _$BridgeLiveStatusPhase {
     required String message,
     BigInt? retryAfterMs,
     required int attempt,
+    required int maxAttempts,
   }) = BridgeLiveStatusPhase_Reconnecting;
+  const factory BridgeLiveStatusPhase.stopping({PlatformInt64? startedAtMs}) =
+      BridgeLiveStatusPhase_Stopping;
 }
 
 class BridgeLiveStatusSnapshot {
@@ -291,6 +294,7 @@ class BridgeLiveWorkItem {
   final String status;
   final String summary;
   final PlatformInt64? startedAtMs;
+  final PlatformInt64? finishedAtMs;
 
   const BridgeLiveWorkItem({
     required this.id,
@@ -300,6 +304,7 @@ class BridgeLiveWorkItem {
     required this.status,
     required this.summary,
     this.startedAtMs,
+    this.finishedAtMs,
   });
 
   @override
@@ -310,7 +315,8 @@ class BridgeLiveWorkItem {
       toolName.hashCode ^
       status.hashCode ^
       summary.hashCode ^
-      startedAtMs.hashCode;
+      startedAtMs.hashCode ^
+      finishedAtMs.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -323,7 +329,8 @@ class BridgeLiveWorkItem {
           toolName == other.toolName &&
           status == other.status &&
           summary == other.summary &&
-          startedAtMs == other.startedAtMs;
+          startedAtMs == other.startedAtMs &&
+          finishedAtMs == other.finishedAtMs;
 }
 
 class BridgeModelRecoveryNotice {

@@ -6,36 +6,39 @@ import 'package:anywork_client/models.dart' as feed;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-Widget _host(LiveStatusGateState gate, {bool reducedMotion = false}) =>
-    MaterialApp(
-      theme: pureStudioTheme(),
-      locale: const Locale('zh'),
-      localizationsDelegates: [
-        AppLocalizations.delegate,
-        ...GlobalMaterialLocalizations.delegates,
-      ],
-      supportedLocales: AppLocalizations.supportedLocales,
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(disableAnimations: reducedMotion),
-        child: child!,
-      ),
-      home: Scaffold(
-        body: Center(
-          child: SizedBox(
-            width: 760,
-            child: LiveStatusSurfaceView(
-              gate: gate,
-              liveWorkInitiallyExpanded: true,
-              liveWorkChildBuilder: (_) => const Text('Open tool member'),
-            ),
-          ),
+Widget _host(
+  LiveStatusState state, {
+  bool reducedMotion = false,
+  bool expanded = true,
+}) => MaterialApp(
+  theme: pureStudioTheme(),
+  locale: const Locale('zh'),
+  localizationsDelegates: [
+    AppLocalizations.delegate,
+    ...GlobalMaterialLocalizations.delegates,
+  ],
+  supportedLocales: AppLocalizations.supportedLocales,
+  builder: (context, child) => MediaQuery(
+    data: MediaQuery.of(context).copyWith(disableAnimations: reducedMotion),
+    child: child!,
+  ),
+  home: Scaffold(
+    body: Center(
+      child: SizedBox(
+        width: 760,
+        child: LiveStatusSurfaceView(
+          state: state,
+          liveWorkInitiallyExpanded: expanded,
         ),
       ),
-    );
+    ),
+  ),
+);
 
-LiveStatusGateState _gate(
+LiveStatusState _project(
   feed.LiveStatusPhase phase, {
   List<feed.LiveAttention> attentions = const [],
+  feed.ThreadStorageStateView? storageState,
 }) => LiveStatusMachine.project(
   'thread-1',
   feed.LiveStatusSnapshot(
@@ -45,13 +48,14 @@ LiveStatusGateState _gate(
     suppressedByInteraction: false,
   ),
   receivedAt: DateTime.utc(2026),
-).gate;
+  storageState: storageState,
+).state;
 
 void main() {
   testWidgets('streaming owns one header, clock, and growing response body', (
     tester,
   ) async {
-    LiveStatusGateState streaming(String text) => _gate(
+    LiveStatusState streaming(String text) => _project(
       feed.LiveStatusStreamingText(
         attemptId: 'attempt-1',
         itemId: 'response-1',
@@ -77,59 +81,121 @@ void main() {
     expect(tester.widget<TimelineActivityRow>(header).meta, isNotEmpty);
     expect(tester.widget<ConversationCurrentWindowView>(body).text, 'Beacon');
 
-    await tester.pumpWidget(_host(_gate(const feed.LiveStatusIdle())));
+    await tester.pumpWidget(_host(_project(const feed.LiveStatusIdle())));
     expect(title, findsNothing);
     expect(body, findsNothing);
   });
 
+  testWidgets(
+    'working empty shows thinking without disclosure and items fold cleanly without ListTile',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          _project(
+            feed.LiveStatusWorking(items: const [], startedAtMs: 100000),
+          ),
+        ),
+      );
+      expect(find.text('思考中'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('live-work-disclosure:thread-1')),
+        findsNothing,
+      );
+
+      await tester.pumpWidget(
+        _host(
+          _project(
+            feed.LiveStatusWorking(
+              items: const [
+                feed.LiveWorkItem(
+                  id: 'reasoning:1',
+                  kind: 'thinking',
+                  toolName: 'thinking',
+                  status: 'completed',
+                  summary: '梳理依赖',
+                  startedAtMs: 100000,
+                  finishedAtMs: 102000,
+                ),
+                feed.LiveWorkItem(
+                  id: 'call:1',
+                  callId: '1',
+                  kind: 'command',
+                  toolName: 'exec',
+                  status: 'running',
+                  summary: 'cargo test',
+                  startedAtMs: 102000,
+                ),
+              ],
+              reasoningPreview: '梳理依赖',
+              startedAtMs: 100000,
+            ),
+          ),
+          expanded: true,
+        ),
+      );
+      expect(
+        find.byKey(const ValueKey('live-work-disclosure:thread-1')),
+        findsOneWidget,
+      );
+      expect(find.text('思考 · 梳理依赖'), findsOneWidget);
+      expect(find.text('运行 · cargo test'), findsOneWidget);
+      expect(find.byType(ListTile), findsNothing);
+    },
+  );
+
   testWidgets('reconnect replaces work and updates the existing retry row', (
     tester,
   ) async {
-    final work = _gate(
+    final work = _project(
       feed.LiveStatusWorking(items: const [], startedAtMs: 100000),
     );
     await tester.pumpWidget(_host(work));
-    expect(find.byType(CompletionRunView), findsOneWidget);
-    expect(find.text('Open tool member'), findsOneWidget);
+    expect(find.text('思考中'), findsOneWidget);
 
     feed.LiveStatusReconnecting retry(String reason) =>
         feed.LiveStatusReconnecting(
           attemptId: 'retry',
           message: reason,
           attempt: 2,
+          maxAttempts: 5,
         );
-    final label = find.text('正在重连实时同步');
+    final label = find.text('模型连接断开，正在重连（2/5）');
     final row = find.ancestor(
       of: label,
       matching: find.byType(TimelineActivityRow),
     );
-    await tester.pumpWidget(_host(_gate(retry('first failure'))));
-    expect(find.byType(CompletionRunView), findsNothing);
-    expect(find.text('Open tool member'), findsNothing);
+    await tester.pumpWidget(_host(_project(retry('first failure'))));
+    expect(find.text('思考中'), findsNothing);
     final element = tester.element(row);
     expect(tester.widget<TimelineActivityRow>(row).tooltip, 'first failure');
 
-    await tester.pumpWidget(_host(_gate(retry('second failure'))));
+    await tester.pumpWidget(_host(_project(retry('second failure'))));
     expect(tester.element(row), same(element));
     expect(tester.widget<TimelineActivityRow>(row).tooltip, 'second failure');
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await tester.pumpWidget(
+      _host(_project(retry('second failure')), reducedMotion: true),
+    );
+    expect(find.byIcon(Icons.sync_outlined), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
     await tester.pumpWidget(_host(work));
     expect(label, findsNothing);
-    expect(find.byType(CompletionRunView), findsOneWidget);
+    expect(find.text('思考中'), findsOneWidget);
   });
 
   testWidgets('stopping has a static alternative under reduced motion', (
     tester,
   ) async {
-    final gate = _gate(
-      const feed.LiveStatusIdle(),
-      attentions: const [
-        feed.LiveAttention(id: 'stop-1', kind: 'stopping', summary: ''),
-      ],
+    final stopping = _project(
+      const feed.LiveStatusStopping(startedAtMs: 100000),
     );
-    await tester.pumpWidget(_host(gate));
+    await tester.pumpWidget(_host(stopping));
+    expect(find.text('停止中'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    await tester.pumpWidget(_host(gate, reducedMotion: true));
+
+    await tester.pumpWidget(_host(stopping, reducedMotion: true));
     expect(find.byIcon(Icons.stop_circle_outlined), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
@@ -137,7 +203,7 @@ void main() {
   testWidgets('approval is a static warning', (tester) async {
     await tester.pumpWidget(
       _host(
-        _gate(
+        _project(
           const feed.LiveStatusIdle(),
           attentions: const [
             feed.LiveAttention(
@@ -165,33 +231,16 @@ void main() {
   testWidgets('storage ready and fault show their distinct status', (
     tester,
   ) async {
-    Future<void> show(feed.ThreadStorageStateView storage, String? error) =>
-        tester.pumpWidget(
-          _host(
-            LiveStatusPresenting(
-              presentation: LiveStatusPresentation(
-                attentions: [
-                  LiveStorageAttention(
-                    activity: feed.ConversationActivityView(
-                      identity: 'storage',
-                      kind: feed.ConversationActivityKind.storageBlocked,
-                      errorMessage: error,
-                      storage: storage,
-                    ),
-                    storage: storage,
-                    severity: LiveStorageSeverity.fromStorage(storage),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
+    Future<void> show(feed.ThreadStorageStateView storage) => tester.pumpWidget(
+      _host(_project(const feed.LiveStatusIdle(), storageState: storage)),
+    );
+
     await show(
       const feed.ThreadStorageStateView(resumeRequired: true, canResume: true),
-      null,
     );
     expect(find.byIcon(Icons.check_circle_outline), findsOneWidget);
     expect(find.text('已保存，等待继续执行'), findsOneWidget);
+
     await show(
       const feed.ThreadStorageStateView(
         fault: feed.ThreadHistoryFault.writeFailed,
@@ -199,7 +248,6 @@ void main() {
         execution: feed.ThreadStorageExecution.paused,
         lastError: '写入失败',
       ),
-      '写入失败',
     );
     expect(find.byIcon(Icons.error_outline), findsOneWidget);
     expect(find.text('写入失败'), findsOneWidget);

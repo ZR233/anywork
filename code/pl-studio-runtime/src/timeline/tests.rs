@@ -494,6 +494,7 @@ fn live_status_state_machine_transitions_and_coalescing() {
             generation: 0,
             text: "thinking step".into(),
             replace: false,
+            is_summary: false,
         })
         .unwrap();
     assert!(matches!(snap.phase, LiveStatusPhase::Working { .. }));
@@ -930,6 +931,7 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
             generation: 0,
             text: "thinking".into(),
             replace: false,
+            is_summary: false,
         },
     ));
     // Wait until LiveStatus becomes Working before opening feed3.
@@ -1524,6 +1526,7 @@ async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summ
         text: "Step 1".into(),
         replace: false,
         generation: 0,
+        is_summary: false,
     });
     assert!(matches!(
         first.map(|s| s.phase),
@@ -1542,6 +1545,7 @@ async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summ
                 text: " and 2".into(),
                 replace: false,
                 generation: 0,
+                is_summary: false,
             })
             .is_none()
     );
@@ -1578,12 +1582,151 @@ async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summ
     let snap = layer.on_history_record(&completed.to_record()).unwrap();
     match snap.phase {
         LiveStatusPhase::Working { items, .. } => {
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].status, "completed");
-            assert_eq!(items[0].summary, "running cargo test");
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].kind, "thinking");
+            assert_eq!(items[1].kind, "command");
+            assert_eq!(items[1].status, "completed");
+            assert_eq!(items[1].summary, "running cargo test");
         }
         other => panic!("expected Working phase, got {other:?}"),
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_status_state_machine_stopping_summary_boundary_and_stray_guard() -> Result<()> {
+    use pl_core::thread::{ActiveExecution, ExecutionPhase};
+
+    let layer = LiveStatusDataLayer::new();
+
+    // Stray terminal Work event while Idle must NOT wake Working.
+    let mut stray = make_tool_event(
+        "ev-stray",
+        "call-stray",
+        "shell",
+        HistoryEventKind::ToolCompleted,
+        r#"{"command":"pwd"}"#,
+        Some("ok"),
+        "turn-0",
+        "db-0",
+    )?;
+    stray.seq = 1;
+    assert!(layer.on_history_record(&stray.to_record()).is_none());
+    assert!(matches!(layer.snapshot().phase, LiveStatusPhase::Idle));
+
+    // RunActivity(Preparing) transitions Idle -> Working immediately with empty container.
+    let prep = layer
+        .on_live_event(&CoreLiveEvent::RunActivity {
+            execution: Some(ActiveExecution {
+                id: "exec-1".into(),
+                phase: ExecutionPhase::Preparing,
+                turn_id: Some("turn-1".into()),
+            }),
+        })
+        .unwrap();
+    assert!(matches!(
+        prep.phase,
+        LiveStatusPhase::Working { ref items, .. } if items.is_empty()
+    ));
+
+    // Unmatched ToolCompleted while active appends completed item directly.
+    let mut unmatched = make_tool_event(
+        "ev-unmatched",
+        "call-u",
+        "read_file",
+        HistoryEventKind::ToolCompleted,
+        r#"{"path":"src/main.rs"}"#,
+        Some("content"),
+        "turn-1",
+        "db-1",
+    )?;
+    unmatched.seq = 2;
+    let snap = layer.on_history_record(&unmatched.to_record()).unwrap();
+    match snap.phase {
+        LiveStatusPhase::Working { items, .. } => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].kind, "read");
+            assert_eq!(items[0].status, "completed");
+            assert!(items[0].finished_at_ms.is_some());
+        }
+        other => panic!("expected Working, got {other:?}"),
+    }
+
+    // ReasoningDelta with is_summary=true takes precedence over body deltas in reasoning_preview.
+    let _ = layer.on_live_event(&CoreLiveEvent::ReasoningDelta {
+        attempt_id: "a1".into(),
+        item_id: "r-sum".into(),
+        text: "raw chain of thought".into(),
+        replace: false,
+        generation: 0,
+        is_summary: false,
+    });
+    let _ = layer.on_live_event(&CoreLiveEvent::ReasoningDelta {
+        attempt_id: "a1".into(),
+        item_id: "r-sum".into(),
+        text: "总结摘要".into(),
+        replace: false,
+        generation: 0,
+        is_summary: true,
+    });
+    let flushed = layer.flush_coalesced().unwrap();
+    assert!(matches!(
+        &flushed.phase,
+        LiveStatusPhase::Working {
+            reasoning_preview: Some(preview),
+            ..
+        } if preview == "总结摘要"
+    ));
+
+    // Boundary clears previous working items without waiting for unfinished tools.
+    let mut boundary = make_text_event(
+        "ev-b1",
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Boundary,
+        HistoryEntityKind::Text,
+        Some(ThreadTextChannel::Final),
+        "done text",
+        "turn-1",
+        "db-1",
+    )?;
+    boundary.seq = 3;
+    let after_boundary = layer.on_history_record(&boundary.to_record()).unwrap();
+    assert!(matches!(
+        after_boundary.phase,
+        LiveStatusPhase::Working { ref items, ref reasoning_preview, .. }
+        if items.is_empty() && reasoning_preview.is_none()
+    ));
+
+    // Stopping latches until RunActivity(None) arrives.
+    let stopping = layer
+        .on_live_event(&CoreLiveEvent::RunActivity {
+            execution: Some(ActiveExecution {
+                id: "exec-1".into(),
+                phase: ExecutionPhase::Stopping,
+                turn_id: Some("turn-1".into()),
+            }),
+        })
+        .unwrap();
+    assert!(matches!(stopping.phase, LiveStatusPhase::Stopping { .. }));
+
+    // Deltas while Stopping are ignored.
+    assert!(
+        layer
+            .on_live_event(&CoreLiveEvent::TextStreamStarted {
+                attempt_id: "a1".into(),
+                item_id: "t-late".into(),
+                generation: 0,
+            })
+            .is_none()
+    );
+    assert!(matches!(layer.snapshot().phase, LiveStatusPhase::Stopping { .. }));
+
+    // RunActivity(None) resets Stopping -> Idle.
+    let idle = layer
+        .on_live_event(&CoreLiveEvent::RunActivity { execution: None })
+        .unwrap();
+    assert!(matches!(idle.phase, LiveStatusPhase::Idle));
 
     Ok(())
 }

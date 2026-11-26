@@ -7359,6 +7359,7 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
           attemptId: turnId,
           message: message,
           attempt: attempt,
+          maxAttempts: 5,
           retryAfterMs: promptActivityDelay.inMilliseconds,
         );
         _upsertChatItem(

@@ -378,6 +378,8 @@ pub struct LiveWorkItem {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,6 +425,12 @@ pub enum LiveStatusPhase {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retry_after_ms: Option<u64>,
         attempt: u32,
+        #[serde(default)]
+        max_attempts: u32,
+    },
+    Stopping {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<i64>,
     },
 }
 

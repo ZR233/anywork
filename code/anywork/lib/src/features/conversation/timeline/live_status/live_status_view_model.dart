@@ -5,8 +5,8 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../interactions/state/interaction_payload.dart';
-import 'live_status_machine.dart';
 import '../view_models/timeline_view_model.dart';
+import 'live_status_machine.dart';
 import 'live_status_state.dart';
 
 part 'live_status_view_model.g.dart';
@@ -16,10 +16,16 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
   @override
   LiveStatusView? build(String threadId) {
     final owner = ref.read(timelineSessionOwnerProvider);
-    final interaction = ref.watch(
-      threadSessionStoreProvider(threadId)
-          .select((state) => activePendingInteraction(state.interactions)),
+    final (interaction, isChildThread, storageState) = ref.watch(
+      threadSessionStoreProvider(threadId).select(
+        (session) => (
+          activePendingInteraction(session.interactions),
+          session.meta?.parentThreadId != null,
+          session.storage,
+        ),
+      ),
     );
+
     LiveStatusView? project(
       ({
         String threadId,
@@ -34,6 +40,8 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
         event.snapshot,
         receivedAt: event.receivedAt,
         interaction: interaction,
+        isChildThread: isChildThread,
+        storageState: storageState,
       );
       // Driver diagnostics borrow the same presentation the footer renders.
       owner.lease(threadId)?.liveStatus = view;

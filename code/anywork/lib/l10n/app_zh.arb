@@ -3445,5 +3445,35 @@
         "type": "int"
       }
     }
-  }
+  },
+  "conversationActivityReconnecting": "连接中断，正在重连",
+  "conversationActivityReconnectingMeta": "第 {attempt}/{maxAttempts} 次",
+  "@conversationActivityReconnectingMeta": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      },
+      "maxAttempts": {
+        "type": "int"
+      }
+    }
+  },
+  "conversationActivityReconnectingAttemptMeta": "第 {attempt} 次",
+  "@conversationActivityReconnectingAttemptMeta": {
+    "placeholders": {
+      "attempt": {
+        "type": "int"
+      }
+    }
+  },
+  "conversationActivityAttentionDefault": "需要确认",
+  "conversationActivityWaitingChild": "子代理等待处理",
+  "liveWorkKindThinking": "思考",
+  "liveWorkKindRead": "读取",
+  "liveWorkKindEdit": "编辑",
+  "liveWorkKindSearch": "搜索",
+  "liveWorkKindExec": "运行",
+  "liveWorkKindWait": "等待",
+  "liveWorkKindAgent": "子代理",
+  "liveWorkKindTool": "工具"
 }

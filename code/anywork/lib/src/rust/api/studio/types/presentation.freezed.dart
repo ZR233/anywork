@@ -925,7 +925,7 @@ extension BridgeLiveStatusPhasePatterns on BridgeLiveStatusPhase {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeLiveStatusPhase_Idle value)?  idle,TResult Function( BridgeLiveStatusPhase_Working value)?  working,TResult Function( BridgeLiveStatusPhase_StreamingText value)?  streamingText,TResult Function( BridgeLiveStatusPhase_Compacting value)?  compacting,TResult Function( BridgeLiveStatusPhase_Reconnecting value)?  reconnecting,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeLiveStatusPhase_Idle value)?  idle,TResult Function( BridgeLiveStatusPhase_Working value)?  working,TResult Function( BridgeLiveStatusPhase_StreamingText value)?  streamingText,TResult Function( BridgeLiveStatusPhase_Compacting value)?  compacting,TResult Function( BridgeLiveStatusPhase_Reconnecting value)?  reconnecting,TResult Function( BridgeLiveStatusPhase_Stopping value)?  stopping,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle() when idle != null:
@@ -933,7 +933,8 @@ return idle(_that);case BridgeLiveStatusPhase_Working() when working != null:
 return working(_that);case BridgeLiveStatusPhase_StreamingText() when streamingText != null:
 return streamingText(_that);case BridgeLiveStatusPhase_Compacting() when compacting != null:
 return compacting(_that);case BridgeLiveStatusPhase_Reconnecting() when reconnecting != null:
-return reconnecting(_that);case _:
+return reconnecting(_that);case BridgeLiveStatusPhase_Stopping() when stopping != null:
+return stopping(_that);case _:
   return orElse();
 
 }
@@ -951,7 +952,7 @@ return reconnecting(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeLiveStatusPhase_Idle value)  idle,required TResult Function( BridgeLiveStatusPhase_Working value)  working,required TResult Function( BridgeLiveStatusPhase_StreamingText value)  streamingText,required TResult Function( BridgeLiveStatusPhase_Compacting value)  compacting,required TResult Function( BridgeLiveStatusPhase_Reconnecting value)  reconnecting,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeLiveStatusPhase_Idle value)  idle,required TResult Function( BridgeLiveStatusPhase_Working value)  working,required TResult Function( BridgeLiveStatusPhase_StreamingText value)  streamingText,required TResult Function( BridgeLiveStatusPhase_Compacting value)  compacting,required TResult Function( BridgeLiveStatusPhase_Reconnecting value)  reconnecting,required TResult Function( BridgeLiveStatusPhase_Stopping value)  stopping,}){
 final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle():
@@ -959,7 +960,8 @@ return idle(_that);case BridgeLiveStatusPhase_Working():
 return working(_that);case BridgeLiveStatusPhase_StreamingText():
 return streamingText(_that);case BridgeLiveStatusPhase_Compacting():
 return compacting(_that);case BridgeLiveStatusPhase_Reconnecting():
-return reconnecting(_that);}
+return reconnecting(_that);case BridgeLiveStatusPhase_Stopping():
+return stopping(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -973,7 +975,7 @@ return reconnecting(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeLiveStatusPhase_Idle value)?  idle,TResult? Function( BridgeLiveStatusPhase_Working value)?  working,TResult? Function( BridgeLiveStatusPhase_StreamingText value)?  streamingText,TResult? Function( BridgeLiveStatusPhase_Compacting value)?  compacting,TResult? Function( BridgeLiveStatusPhase_Reconnecting value)?  reconnecting,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeLiveStatusPhase_Idle value)?  idle,TResult? Function( BridgeLiveStatusPhase_Working value)?  working,TResult? Function( BridgeLiveStatusPhase_StreamingText value)?  streamingText,TResult? Function( BridgeLiveStatusPhase_Compacting value)?  compacting,TResult? Function( BridgeLiveStatusPhase_Reconnecting value)?  reconnecting,TResult? Function( BridgeLiveStatusPhase_Stopping value)?  stopping,}){
 final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle() when idle != null:
@@ -981,7 +983,8 @@ return idle(_that);case BridgeLiveStatusPhase_Working() when working != null:
 return working(_that);case BridgeLiveStatusPhase_StreamingText() when streamingText != null:
 return streamingText(_that);case BridgeLiveStatusPhase_Compacting() when compacting != null:
 return compacting(_that);case BridgeLiveStatusPhase_Reconnecting() when reconnecting != null:
-return reconnecting(_that);case _:
+return reconnecting(_that);case BridgeLiveStatusPhase_Stopping() when stopping != null:
+return stopping(_that);case _:
   return null;
 
 }
@@ -998,14 +1001,15 @@ return reconnecting(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  idle,TResult Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt)?  reconnecting,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  idle,TResult Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)?  reconnecting,TResult Function( PlatformInt64? startedAtMs)?  stopping,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle() when idle != null:
 return idle();case BridgeLiveStatusPhase_Working() when working != null:
 return working(_that.items,_that.reasoningPreview,_that.startedAtMs);case BridgeLiveStatusPhase_StreamingText() when streamingText != null:
 return streamingText(_that.attemptId,_that.itemId,_that.text,_that.startedAtMs);case BridgeLiveStatusPhase_Compacting() when compacting != null:
 return compacting(_that.manual,_that.startedAtMs);case BridgeLiveStatusPhase_Reconnecting() when reconnecting != null:
-return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attempt);case _:
+return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attempt,_that.maxAttempts);case BridgeLiveStatusPhase_Stopping() when stopping != null:
+return stopping(_that.startedAtMs);case _:
   return orElse();
 
 }
@@ -1023,14 +1027,15 @@ return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attem
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  idle,required TResult Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)  working,required TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)  streamingText,required TResult Function( bool manual,  PlatformInt64? startedAtMs)  compacting,required TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt)  reconnecting,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  idle,required TResult Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)  working,required TResult Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)  streamingText,required TResult Function( bool manual,  PlatformInt64? startedAtMs)  compacting,required TResult Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)  reconnecting,required TResult Function( PlatformInt64? startedAtMs)  stopping,}) {final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle():
 return idle();case BridgeLiveStatusPhase_Working():
 return working(_that.items,_that.reasoningPreview,_that.startedAtMs);case BridgeLiveStatusPhase_StreamingText():
 return streamingText(_that.attemptId,_that.itemId,_that.text,_that.startedAtMs);case BridgeLiveStatusPhase_Compacting():
 return compacting(_that.manual,_that.startedAtMs);case BridgeLiveStatusPhase_Reconnecting():
-return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attempt);}
+return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attempt,_that.maxAttempts);case BridgeLiveStatusPhase_Stopping():
+return stopping(_that.startedAtMs);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -1044,14 +1049,15 @@ return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attem
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  idle,TResult? Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult? Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult? Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult? Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt)?  reconnecting,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  idle,TResult? Function( List<BridgeLiveWorkItem> items,  String? reasoningPreview,  PlatformInt64? startedAtMs)?  working,TResult? Function( String attemptId,  String itemId,  String text,  PlatformInt64? startedAtMs)?  streamingText,TResult? Function( bool manual,  PlatformInt64? startedAtMs)?  compacting,TResult? Function( String attemptId,  String message,  BigInt? retryAfterMs,  int attempt,  int maxAttempts)?  reconnecting,TResult? Function( PlatformInt64? startedAtMs)?  stopping,}) {final _that = this;
 switch (_that) {
 case BridgeLiveStatusPhase_Idle() when idle != null:
 return idle();case BridgeLiveStatusPhase_Working() when working != null:
 return working(_that.items,_that.reasoningPreview,_that.startedAtMs);case BridgeLiveStatusPhase_StreamingText() when streamingText != null:
 return streamingText(_that.attemptId,_that.itemId,_that.text,_that.startedAtMs);case BridgeLiveStatusPhase_Compacting() when compacting != null:
 return compacting(_that.manual,_that.startedAtMs);case BridgeLiveStatusPhase_Reconnecting() when reconnecting != null:
-return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attempt);case _:
+return reconnecting(_that.attemptId,_that.message,_that.retryAfterMs,_that.attempt,_that.maxAttempts);case BridgeLiveStatusPhase_Stopping() when stopping != null:
+return stopping(_that.startedAtMs);case _:
   return null;
 
 }
@@ -1317,13 +1323,14 @@ as PlatformInt64?,
 
 
 class BridgeLiveStatusPhase_Reconnecting extends BridgeLiveStatusPhase {
-  const BridgeLiveStatusPhase_Reconnecting({required this.attemptId, required this.message, this.retryAfterMs, required this.attempt}): super._();
+  const BridgeLiveStatusPhase_Reconnecting({required this.attemptId, required this.message, this.retryAfterMs, required this.attempt, required this.maxAttempts}): super._();
 
 
  final  String attemptId;
  final  String message;
  final  BigInt? retryAfterMs;
  final  int attempt;
+ final  int maxAttempts;
 
 /// Create a copy of BridgeLiveStatusPhase
 /// with the given fields replaced by the non-null parameter values.
@@ -1335,18 +1342,18 @@ $BridgeLiveStatusPhase_ReconnectingCopyWith<BridgeLiveStatusPhase_Reconnecting> 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeLiveStatusPhase_Reconnecting&&(identical(other.attemptId, attemptId) || other.attemptId == attemptId)&&(identical(other.message, message) || other.message == message)&&(identical(other.retryAfterMs, retryAfterMs) || other.retryAfterMs == retryAfterMs)&&(identical(other.attempt, attempt) || other.attempt == attempt));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeLiveStatusPhase_Reconnecting&&(identical(other.attemptId, attemptId) || other.attemptId == attemptId)&&(identical(other.message, message) || other.message == message)&&(identical(other.retryAfterMs, retryAfterMs) || other.retryAfterMs == retryAfterMs)&&(identical(other.attempt, attempt) || other.attempt == attempt)&&(identical(other.maxAttempts, maxAttempts) || other.maxAttempts == maxAttempts));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,attemptId,message,retryAfterMs,attempt);
+    return Object.hash(runtimeType,attemptId,message,retryAfterMs,attempt,maxAttempts);
 }
 
 @override
 String toString() {
-    return 'BridgeLiveStatusPhase.reconnecting(attemptId: $attemptId, message: $message, retryAfterMs: $retryAfterMs, attempt: $attempt)';
+    return 'BridgeLiveStatusPhase.reconnecting(attemptId: $attemptId, message: $message, retryAfterMs: $retryAfterMs, attempt: $attempt, maxAttempts: $maxAttempts)';
 }
 
 
@@ -1357,7 +1364,7 @@ abstract mixin class $BridgeLiveStatusPhase_ReconnectingCopyWith<$Res> implement
   factory $BridgeLiveStatusPhase_ReconnectingCopyWith(BridgeLiveStatusPhase_Reconnecting value, $Res Function(BridgeLiveStatusPhase_Reconnecting) _then) = _$BridgeLiveStatusPhase_ReconnectingCopyWithImpl;
 @useResult
 $Res call({
- String attemptId, String message, BigInt? retryAfterMs, int attempt
+ String attemptId, String message, BigInt? retryAfterMs, int attempt, int maxAttempts
 });
 
 
@@ -1374,13 +1381,82 @@ class _$BridgeLiveStatusPhase_ReconnectingCopyWithImpl<$Res>
 
 /// Create a copy of BridgeLiveStatusPhase
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? attemptId = null,Object? message = null,Object? retryAfterMs = freezed,Object? attempt = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? attemptId = null,Object? message = null,Object? retryAfterMs = freezed,Object? attempt = null,Object? maxAttempts = null,}) {
   return _then(BridgeLiveStatusPhase_Reconnecting(
 attemptId: null == attemptId ? _self.attemptId : attemptId // ignore: cast_nullable_to_non_nullable
 as String,message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String,retryAfterMs: freezed == retryAfterMs ? _self.retryAfterMs : retryAfterMs // ignore: cast_nullable_to_non_nullable
 as BigInt?,attempt: null == attempt ? _self.attempt : attempt // ignore: cast_nullable_to_non_nullable
+as int,maxAttempts: null == maxAttempts ? _self.maxAttempts : maxAttempts // ignore: cast_nullable_to_non_nullable
 as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeLiveStatusPhase_Stopping extends BridgeLiveStatusPhase {
+  const BridgeLiveStatusPhase_Stopping({this.startedAtMs}): super._();
+
+
+ final  PlatformInt64? startedAtMs;
+
+/// Create a copy of BridgeLiveStatusPhase
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeLiveStatusPhase_StoppingCopyWith<BridgeLiveStatusPhase_Stopping> get copyWith => _$BridgeLiveStatusPhase_StoppingCopyWithImpl<BridgeLiveStatusPhase_Stopping>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeLiveStatusPhase_Stopping&&(identical(other.startedAtMs, startedAtMs) || other.startedAtMs == startedAtMs));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,startedAtMs);
+}
+
+@override
+String toString() {
+    return 'BridgeLiveStatusPhase.stopping(startedAtMs: $startedAtMs)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeLiveStatusPhase_StoppingCopyWith<$Res> implements $BridgeLiveStatusPhaseCopyWith<$Res> {
+  factory $BridgeLiveStatusPhase_StoppingCopyWith(BridgeLiveStatusPhase_Stopping value, $Res Function(BridgeLiveStatusPhase_Stopping) _then) = _$BridgeLiveStatusPhase_StoppingCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64? startedAtMs
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeLiveStatusPhase_StoppingCopyWithImpl<$Res>
+    implements $BridgeLiveStatusPhase_StoppingCopyWith<$Res> {
+  _$BridgeLiveStatusPhase_StoppingCopyWithImpl(this._self, this._then);
+
+  final BridgeLiveStatusPhase_Stopping _self;
+  final $Res Function(BridgeLiveStatusPhase_Stopping) _then;
+
+/// Create a copy of BridgeLiveStatusPhase
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? startedAtMs = freezed,}) {
+  return _then(BridgeLiveStatusPhase_Stopping(
+startedAtMs: freezed == startedAtMs ? _self.startedAtMs : startedAtMs // ignore: cast_nullable_to_non_nullable
+as PlatformInt64?,
   ));
 }
 

@@ -104,7 +104,7 @@ void main() {
             LiveWorkItem(
               id: 'work:2',
               callId: 'call-2',
-              kind: 'tool',
+              kind: 'read',
               toolName: 'read_file',
               status: 'running',
               summary: 'Reading a.txt',
@@ -113,20 +113,21 @@ void main() {
         ),
       );
       final liveWork = find.byKey(
-        const ValueKey('completion-run-header:live-work:thread-main'),
+        const ValueKey('live-work-disclosure:thread-main'),
       );
       await pumpClientUntil(
         tester,
         () => liveWork.evaluate().isNotEmpty,
         'working status',
       );
-      expect(liveText('Reading a.txt'), findsNothing);
+      expect(liveText('Read · Reading a.txt'), findsNothing);
       await tester.tap(liveWork);
       await pumpClientUntil(
         tester,
-        () => liveText('Reading a.txt').evaluate().isNotEmpty,
+        () => liveText('Read · Reading a.txt').evaluate().isNotEmpty,
         'working status',
       );
+      expect(find.byType(ListTile), findsNothing);
       expect(lease.controller.messages.single, same(input));
       expect(feed.memberRequests, isEmpty);
 

@@ -519,6 +519,7 @@ fn live_work_item(value: protocol::LiveWorkItem) -> BridgeLiveWorkItem {
         status: value.status,
         summary: value.summary,
         started_at_ms: value.started_at_ms,
+        finished_at_ms: value.finished_at_ms,
     }
 }
 
@@ -566,12 +567,17 @@ fn live_status_phase(value: protocol::LiveStatusPhase) -> BridgeLiveStatusPhase 
             message,
             retry_after_ms,
             attempt,
+            max_attempts,
         } => BridgeLiveStatusPhase::Reconnecting {
             attempt_id,
             message,
             retry_after_ms,
             attempt,
+            max_attempts,
         },
+        protocol::LiveStatusPhase::Stopping { started_at_ms } => {
+            BridgeLiveStatusPhase::Stopping { started_at_ms }
+        }
     }
 }
 
