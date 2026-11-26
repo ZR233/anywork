@@ -106,6 +106,14 @@ impl BotRuntime {
         }
         let mut run = run;
         run.thread_id = thread_id;
+        // Per-thread serialization in the bot layer keeps one-inbound-one-card execution without
+        // relying on any kernel queued mode: the ClaimLeaseGuard in `dispatch_prompt` keeps the
+        // DB claim alive while a second message waits here for the first Turn to finish.
+        let gate = self.thread_reply_gate(&run.thread_id);
+        let _thread_gate = tokio::select! {
+            _ = cancel.cancelled() => return InboundWorkOutcome::Interrupted,
+            guard = gate.lock_owned() => guard,
+        };
         // A format upgrade must never reinterpret a historical text-send intent as
         // permission to create a new card, even when the old result is unknown.
         let binding = run.card_binding();
@@ -300,9 +308,6 @@ impl BotRuntime {
                     cancel,
                 )
             }
-            ReplyInputAction::ConcurrentTurn => {
-                Step::Done(attention("bot input was routed onto a concurrent turn"))
-            }
             ReplyInputAction::Wait => Step::Wait,
             ReplyInputAction::FinishUnconsumed => {
                 let action_cancel = cancel.child_token();
@@ -409,7 +414,7 @@ impl BotRuntime {
         // Only the runtime's admission wait may be cancelled. Once it starts
         // retaining resources or submitting the stable input, keep this future
         // and its drafts alive until their real result has been acknowledged.
-        let result = runtime.submit_queued_prompt(request, cancel).await;
+        let result = runtime.submit_prompt_cancellable(request, cancel).await;
         for draft in drafts {
             if let Err(error) = runtime.remove_attachment_draft(draft).await {
                 tracing::warn!(%error, "failed to release bot attachment draft");

@@ -1534,7 +1534,6 @@ async fn failed_preparation_keeps_direct_and_queued_input_for_a_new_attempt() {
     ));
     saved.state.inputs = vec![input::InputRecord {
         accepted_sequence: 0,
-        delivery: input::InputDelivery::NextTurn,
         input: input::ThreadInput {
             id: "queued".into(),
             purpose: input::InputPurpose::Message,
@@ -1582,13 +1581,15 @@ async fn failed_preparation_keeps_direct_and_queued_input_for_a_new_attempt() {
     let requests = session.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     assert_ne!(requests[0].attempt_id, requests[1].attempt_id);
-    let input = requests[1]
+    let user_records: Vec<_> = requests[1]
         .context
         .records
         .iter()
-        .find(|record| matches!(record.source, ContextSource::User))
-        .unwrap();
-    assert_eq!(input.content, vec![text("direct"), text("queued")]);
+        .filter(|record| matches!(record.source, ContextSource::User))
+        .collect();
+    assert_eq!(user_records.len(), 2);
+    assert_eq!(user_records[0].content, vec![text("direct")]);
+    assert_eq!(user_records[1].content, vec![text("queued")]);
     assert!(
         thread
             .capture_current(CancellationToken::new())
@@ -1953,7 +1954,6 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
         };
         current.state.inputs = vec![input::InputRecord {
             accepted_sequence: 0,
-            delivery: input::InputDelivery::NextTurn,
             input: input::ThreadInput {
                 id: "input".into(),
                 purpose: input::InputPurpose::Message,
@@ -2059,14 +2059,8 @@ async fn explicit_input_resumes_saved_current_through_the_existing_queue_driver(
             max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
         };
         let mut updates = thread.subscribe();
-        if continue_existing {
-            thread
-                .submit_input_and_continue(input, options)
-                .await
-                .unwrap();
-        } else {
-            thread.submit_input_and_run(input, options).await.unwrap();
-        }
+        let _ = continue_existing;
+        thread.submit_input(input, Some(options)).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while let Some(snapshot) = updates.next().await {
                 if session.counts() == (1, 1)
@@ -2082,16 +2076,15 @@ async fn explicit_input_resumes_saved_current_through_the_existing_queue_driver(
         .expect("authorized input must use Current resume, not fail CurrentPaused");
         let requests = session.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 1);
-        let admitted = requests[0]
+        let user_records: Vec<_> = requests[0]
             .context
             .records
             .iter()
-            .find(|record| matches!(record.source, ContextSource::User))
-            .unwrap();
-        assert_eq!(
-            admitted.content,
-            vec![text("unsent direct input"), text("new user input")]
-        );
+            .filter(|record| matches!(record.source, ContextSource::User))
+            .collect();
+        assert_eq!(user_records.len(), 2);
+        assert_eq!(user_records[0].content, vec![text("unsent direct input")]);
+        assert_eq!(user_records[1].content, vec![text("new user input")]);
         assert_ne!(requests[0].attempt_id, "old-attempt");
         thread.close().await.unwrap();
     }
@@ -2104,16 +2097,16 @@ async fn stopping_a_resumed_current_queue_preserves_a_paused_continuation() {
     let thread =
         ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
     thread
-        .submit_input_and_continue(
+        .submit_input(
             input::ThreadInput {
                 id: "explicit-resume".into(),
                 purpose: input::InputPurpose::Message,
                 payload: OpaquePayload::text("resume then stop"),
                 context: vec![text("resume then stop")],
             },
-            input::InputDriverOptions {
+            Some(input::InputDriverOptions {
                 max_model_steps: ModelStepLimit::Unlimited,
-            },
+            }),
         )
         .await
         .unwrap();

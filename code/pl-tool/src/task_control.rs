@@ -67,12 +67,14 @@ pub struct WaitTasksInput {
     pub timeout_ms: Option<u64>,
 }
 
-/// Committed task and inbox readiness, without consuming or duplicating their result bodies.
+/// Committed task, inbox, and immediate user-input readiness without consuming bodies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitTasksOutput {
     pub tasks: Vec<TaskRecord>,
     pub messages_ready: bool,
+    #[serde(default)]
+    pub user_inputs_ready: bool,
     pub timed_out: bool,
 }
 
@@ -82,6 +84,8 @@ pub struct WaitTasksOutput {
 pub struct WaitTasksView {
     pub tasks: Vec<TaskStatusView>,
     pub messages_ready: bool,
+    #[serde(default)]
+    pub user_inputs_ready: bool,
     pub timed_out: bool,
 }
 
@@ -168,11 +172,13 @@ impl pl_agent_tool::Tool for TaskControlTool {
                 let payload = WaitTasksOutput {
                     tasks: result.tasks,
                     messages_ready: result.messages_ready,
+                    user_inputs_ready: result.user_inputs_ready,
                     timed_out: result.timed_out,
                 };
                 let view = WaitTasksView {
                     tasks: payload.tasks.iter().map(TaskStatusView::from).collect(),
                     messages_ready: payload.messages_ready,
+                    user_inputs_ready: payload.user_inputs_ready,
                     timed_out: payload.timed_out,
                 };
                 output("pl.tool.wait", &payload, &view)

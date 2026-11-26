@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::model::CurrentCaptureHandle;
-use crate::thread::{Owner, StepInput, ThreadHandle, TurnInput, mailbox::MailboxCommand};
+use crate::thread::{Owner, StepInput, ThreadHandle, TurnInput};
 
 #[derive(Debug)]
 pub(crate) struct CapturedStream {
@@ -78,7 +78,7 @@ impl ThreadHandle {
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Err(CurrentError::Cancelled),
-                result = self.events.send(crate::thread::handle::LoopEvent::Mailbox(MailboxCommand::ReadCurrent { captured: captured.take(), reply })) => {
+                result = self.events.send(crate::thread::handle::LoopEvent::ReadCurrent { captured: captured.take(), reply }) => {
                     if result.is_err() {
                         return self.final_current.borrow().as_ref().cloned()
                             .ok_or(CurrentError::Closed)?.map_err(CurrentError::Final);
@@ -192,9 +192,6 @@ impl Owner {
                 _ => None,
             });
         input.content = direct.unwrap_or_default();
-        if let Some(content) = self.freeze_next_input_batch() {
-            input.content.extend(content);
-        }
         self.current_saved_execution = None;
         self.current_saved_lifecycle = None;
         Ok(input)
@@ -218,24 +215,11 @@ impl Owner {
         input: &StepInput,
         plan: &crate::tool::opaque::ToolPlan,
     ) {
-        // Frozen queue records retain their own content until admission. Only the prefix that is
-        // not owned by those records must be saved with the preparing call.
-        let queued_content_len: usize = self
-            .active_inputs
-            .iter()
-            .filter_map(|id| {
-                self.state
-                    .inputs
-                    .iter()
-                    .find(|record| &record.input.id == id)
-            })
-            .map(|record| record.input.context.len())
-            .sum();
-        let direct_len = input.content.len().saturating_sub(queued_content_len);
-        let pending_step_input =
-            (!input.content[..direct_len].is_empty()).then(|| PendingStepInput {
-                content: input.content[..direct_len].to_vec(),
-            });
+        // Pending queue inputs stay owned by their ThreadInput records until admission, so any
+        // `input.content` present here is direct step content (restored checkpoint or correction).
+        let pending_step_input = (!input.content.is_empty()).then(|| PendingStepInput {
+            content: input.content.clone(),
+        });
         if self
             .current_call
             .as_ref()

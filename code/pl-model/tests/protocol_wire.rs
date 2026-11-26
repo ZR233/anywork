@@ -792,14 +792,17 @@ async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_ide
         for (index, prompt) in ["resume", "resume again"].iter().enumerate() {
             if index == 0 {
                 restored
-                    .submit_input(ThreadInput {
-                        id: format!("restored-input-{index}"),
-                        purpose: InputPurpose::Message,
-                        payload: OpaquePayload::text(*prompt),
-                        context: vec![ContextContent::Text {
-                            text: Arc::from(*prompt),
-                        }],
-                    })
+                    .submit_input(
+                        ThreadInput {
+                            id: format!("restored-input-{index}"),
+                            purpose: InputPurpose::Message,
+                            payload: OpaquePayload::text(*prompt),
+                            context: vec![ContextContent::Text {
+                                text: Arc::from(*prompt),
+                            }],
+                        },
+                        None,
+                    )
                     .await
                     .unwrap();
                 restored
@@ -1161,14 +1164,17 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
         .unwrap();
         let before = restored.snapshot().context;
         restored
-            .submit_input(ThreadInput {
-                id: "target-input".into(),
-                purpose: InputPurpose::Message,
-                payload: OpaquePayload::text("second"),
-                context: vec![ContextContent::Text {
-                    text: Arc::from("second"),
-                }],
-            })
+            .submit_input(
+                ThreadInput {
+                    id: "target-input".into(),
+                    purpose: InputPurpose::Message,
+                    payload: OpaquePayload::text("second"),
+                    context: vec![ContextContent::Text {
+                        text: Arc::from("second"),
+                    }],
+                },
+                None,
+            )
             .await
             .unwrap();
         let result = restored
@@ -2372,14 +2378,17 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
         }
         let prompt = format!("Replay resume {label}");
         restored
-            .submit_input(ThreadInput {
-                id: format!("replay-input-{label}"),
-                purpose: InputPurpose::Message,
-                payload: OpaquePayload::text(prompt.as_str()),
-                context: vec![ContextContent::Text {
-                    text: Arc::from(prompt.as_str()),
-                }],
-            })
+            .submit_input(
+                ThreadInput {
+                    id: format!("replay-input-{label}"),
+                    purpose: InputPurpose::Message,
+                    payload: OpaquePayload::text(prompt.as_str()),
+                    context: vec![ContextContent::Text {
+                        text: Arc::from(prompt.as_str()),
+                    }],
+                },
+                None,
+            )
             .await
             .unwrap();
         let mut turn = replay_turn(&prompt, Default::default());

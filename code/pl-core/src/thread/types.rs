@@ -1149,6 +1149,28 @@ pub enum AttemptOutcome {
     },
 }
 
+/// Phase at which a running step was softly preempted by new immediate input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreemptedStepPhase {
+    Preparing,
+    Streaming,
+}
+
+/// Canonical meta-event emitted when a step is softly preempted inside an active Turn.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepPreemptionEvent {
+    pub seq: u64,
+    pub turn_id: String,
+    pub attempt_id: Option<String>,
+    pub phase: PreemptedStepPhase,
+    #[serde(default)]
+    pub trigger_input_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_record_id: Option<String>,
+}
+
 impl RequestAttempt {
     /// Creates a body-free execution record for replay and checkpoint construction.
     pub fn new(
@@ -1430,8 +1452,6 @@ pub enum ThreadError {
     RejectedTools(#[source] Box<crate::tool::opaque::RejectedTools>),
     #[error("input requires an idle Thread with no pending input")]
     InputRequiresIdle,
-    #[error("steering input requires a running Turn")]
-    InputRequiresActiveTurn,
     #[error("input is being prepared for model admission")]
     InputInUse,
     #[error("a control input carries no user content, so it cannot be built with context")]

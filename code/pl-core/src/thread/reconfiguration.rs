@@ -11,7 +11,7 @@ impl Owner {
         if self.current_saved_lifecycle.is_some() && !self.interrupt.is_closing() {
             return Ok(());
         }
-        if !self.active_inputs.is_empty()
+        if self.active.is_some()
             || self
                 .state
                 .turns

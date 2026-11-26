@@ -557,38 +557,155 @@ fn translate_commit(
         )?
     };
 
-    // 1. Accepted user inputs.
+    // 1. Accepted, consumed, and discarded user inputs.
     for change in effect.inputs.iter() {
-        if let pl_core::thread::input::InputChange::Accepted(record) = change {
-            let at = crate::ChatFactPosition {
-                effect_seq: effect.sequence,
-                suborder: 1,
-            };
-            if let Some(draft) =
-                accepted_input_draft(thread, record, at, effect.committed_at, database_id)?
-            {
-                if !state.completed_drafts.insert(draft.item_id.clone())
-                    || history.event_exists_in_memory(&draft.item_id)
-                {
-                    continue;
-                }
-                let mut atom_val = serde_json::from_slice::<ChatAtom>(&draft.metadata)?;
-                atom_val.source = ChatSourceId::Input {
-                    input_id: record.input.id.clone(),
+        match change {
+            pl_core::thread::input::InputChange::Accepted(record) => {
+                let at = crate::ChatFactPosition {
+                    effect_seq: effect.sequence,
+                    suborder: 1,
                 };
-                atom_val.kind = crate::ChatAtomKind::Input;
-                let ev = emit_draft_event(
-                    &atom_val,
-                    &draft,
-                    HistoryEventKind::InputAccepted,
-                    HistoryTimelineRole::Boundary,
-                    run,
-                    recorded_at,
-                    database_id,
-                )?;
-                events.push(ev);
+                if let Some(draft) =
+                    accepted_input_draft(thread, record, at, effect.committed_at, database_id)?
+                {
+                    if !state.completed_drafts.insert(draft.item_id.clone())
+                        || history.event_exists_in_memory(&draft.item_id)
+                    {
+                        continue;
+                    }
+                    let mut atom_val = serde_json::from_slice::<ChatAtom>(&draft.metadata)?;
+                    atom_val.source = ChatSourceId::Input {
+                        input_id: record.input.id.clone(),
+                    };
+                    atom_val.kind = crate::ChatAtomKind::Input;
+                    let ev = emit_draft_event(
+                        &atom_val,
+                        &draft,
+                        HistoryEventKind::InputAccepted,
+                        HistoryTimelineRole::Boundary,
+                        run,
+                        recorded_at,
+                        database_id,
+                    )?;
+                    events.push(ev);
+                }
             }
+            pl_core::thread::input::InputChange::Transition {
+                id,
+                ordinal,
+                revision,
+                state: input_state,
+                context_record_id,
+                injected_mid_turn,
+            } => match input_state {
+                pl_core::thread::input::InputState::Consumed {
+                    turn_id,
+                    attempt_id,
+                } => {
+                    let event_id = format!(
+                        "input-consumed:{run_str}:{}:{id}:{revision}",
+                        effect.sequence
+                    );
+                    if !state.completed_drafts.insert(event_id.clone())
+                        || history.event_exists_in_memory(&event_id)
+                    {
+                        continue;
+                    }
+                    let mut ev = HistoryEvent::new(
+                        event_id,
+                        HistoryEventKind::InputConsumed,
+                        HistoryTimelineRole::Hidden,
+                        recorded_at,
+                    );
+                    ev.occurred_at = Some(recorded_at);
+                    ev.run_id = Some(run_str.clone());
+                    ev.turn_id = Some(turn_id.clone());
+                    ev.attempt_id = Some(attempt_id.clone());
+                    ev.entity_id = Some(id.clone());
+                    ev.source = Some(ChatSourceId::Input {
+                        input_id: id.clone(),
+                    });
+                    ev.payload_schema = "anywork.business/1".into();
+                    ev.payload_json = serde_json::json!({
+                        "factType": "input_consumed",
+                        "inputId": id,
+                        "ordinal": ordinal,
+                        "revision": revision,
+                        "turnId": turn_id,
+                        "attemptId": attempt_id,
+                        "contextRecordId": context_record_id,
+                        "injectedMidTurn": injected_mid_turn,
+                    })
+                    .to_string();
+                    events.push(ev);
+                }
+                pl_core::thread::input::InputState::Discarded => {
+                    let event_id = format!(
+                        "input-discarded:{run_str}:{}:{id}:{revision}",
+                        effect.sequence
+                    );
+                    if !state.completed_drafts.insert(event_id.clone())
+                        || history.event_exists_in_memory(&event_id)
+                    {
+                        continue;
+                    }
+                    let mut ev = HistoryEvent::new(
+                        event_id,
+                        HistoryEventKind::InputDiscarded,
+                        HistoryTimelineRole::Hidden,
+                        recorded_at,
+                    );
+                    ev.occurred_at = Some(recorded_at);
+                    ev.run_id = Some(run_str.clone());
+                    ev.entity_id = Some(id.clone());
+                    ev.source = Some(ChatSourceId::Input {
+                        input_id: id.clone(),
+                    });
+                    ev.payload_schema = "anywork.business/1".into();
+                    ev.payload_json = serde_json::json!({
+                        "factType": "input_discarded",
+                        "inputId": id,
+                        "ordinal": ordinal,
+                        "revision": revision,
+                    })
+                    .to_string();
+                    events.push(ev);
+                }
+                pl_core::thread::input::InputState::Pending => {}
+            },
         }
+    }
+
+    // 1b. Soft step preemption audit meta-events (Hidden = 0).
+    for (index, preemption) in effect.step_preemptions.iter().enumerate() {
+        let event_id = format!("step-preempted:{run_str}:{}:{index}", effect.sequence);
+        if !state.completed_drafts.insert(event_id.clone())
+            || history.event_exists_in_memory(&event_id)
+        {
+            continue;
+        }
+        let mut ev = HistoryEvent::new(
+            event_id,
+            HistoryEventKind::StepPreempted,
+            HistoryTimelineRole::Hidden,
+            recorded_at,
+        );
+        ev.occurred_at = Some(recorded_at);
+        ev.run_id = Some(run_str.clone());
+        ev.turn_id = Some(preemption.turn_id.clone());
+        ev.attempt_id = preemption.attempt_id.clone();
+        ev.entity_id = preemption.attempt_id.clone();
+        ev.payload_schema = "anywork.business/1".into();
+        ev.payload_json = serde_json::json!({
+            "factType": "step_preempted",
+            "turnId": preemption.turn_id,
+            "attemptId": preemption.attempt_id,
+            "phase": preemption.phase,
+            "triggerInputIds": preemption.trigger_input_ids,
+            "partialRecordId": preemption.partial_record_id,
+        })
+        .to_string();
+        events.push(ev);
     }
 
     // 2. Accepted parent inbox messages (skipping forwarded final task results already sealed by tools).

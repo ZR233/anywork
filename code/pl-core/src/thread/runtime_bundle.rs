@@ -47,9 +47,7 @@ impl RuntimeBindingReader {
         self.authorization_dirty
             .store(true, std::sync::atomic::Ordering::Release);
         if let Some(commands) = self.commands.upgrade() {
-            let _ = commands.try_send(super::handle::LoopEvent::Mailbox(
-                super::mailbox::MailboxCommand::RuntimeAuthorizationChanged,
-            ));
+            let _ = commands.try_send(super::handle::LoopEvent::RuntimeAuthorizationChanged);
         }
     }
 }
@@ -225,6 +223,11 @@ impl Owner {
             .as_ref()
             .filter(|bundle| bundle.update.wait_for_model_before_input)
             .and(self.state.runtime_bundle.preparing_model_identity.clone())
+    }
+
+    pub(super) fn has_pending_model_switch(&self) -> bool {
+        self.pending_input_model()
+            .is_some_and(|model| self.state.runtime_bundle.model_identity.as_ref() != Some(&model))
     }
 
     pub(super) fn queue_runtime_bundle(

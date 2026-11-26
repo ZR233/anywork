@@ -118,6 +118,8 @@ pub struct ThreadEffectBatch {
     #[serde(default)]
     pub context_compactions: Arc<[ContextCompactionEvent]>,
     #[serde(default)]
+    pub step_preemptions: Arc<[StepPreemptionEvent]>,
+    #[serde(default)]
     pub continuations: Arc<[ContinuationOperation]>,
     pub turn: Option<TurnRecord>,
     pub discovered_tools: Option<Arc<[ModelToolDeclaration]>>,
@@ -226,6 +228,7 @@ impl ThreadEffectBatch {
         sequence: u64,
         members: super::model_members::MemberEffects,
         context_compactions: Arc<[ContextCompactionEvent]>,
+        step_preemptions: Arc<[StepPreemptionEvent]>,
     ) -> Option<Self> {
         let super::model_members::MemberEffects {
             completed: model_members,
@@ -375,6 +378,7 @@ impl ThreadEffectBatch {
             && model_sub_attempt_settlements.is_empty()
             && model_connection_events.is_empty()
             && context_compactions.is_empty()
+            && step_preemptions.is_empty()
             && continuations.is_empty()
             && turn.is_none()
             && discovered_tools.is_none()
@@ -410,6 +414,7 @@ impl ThreadEffectBatch {
             model_sub_attempt_settlements,
             model_connection_events,
             context_compactions,
+            step_preemptions,
             continuations,
             turn,
             discovered_tools,

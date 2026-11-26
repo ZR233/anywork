@@ -201,7 +201,7 @@ mod tests {
     }
     fn input(id: &str) -> InputRecord {
         InputRecord {
-        accepted_sequence: 7,  delivery: Default::default(),
+        accepted_sequence: 7,
         input: ThreadInput { id: id.into(), purpose: InputPurpose::Message,
             payload: OpaquePayload::new("pl.studio.prompt",1,
                 "{\"text\":\"已接纳\\n🦀\",\"presentation\":\"visible\",\"attachments\":[],\"request\":null}").unwrap(),

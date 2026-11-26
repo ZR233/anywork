@@ -3,6 +3,14 @@ use super::*;
 use futures::future::BoxFuture;
 use std::{fmt, sync::Arc};
 
+#[derive(Debug)]
+pub(super) enum OutputRetryReply {
+    Finished(Result<(), ThreadError>),
+    /// Another original retry still owns the I/O. Re-enter after it settles, preserving serial
+    /// retry semantics without retaining a list of reply waiters.
+    Waiting(CancellationToken),
+}
+
 /// Storage-boundary error retains its typed source; it never rolls back a Thread commit.
 #[derive(Debug, thiserror::Error)]
 #[error("cold store failed: {source}")]
@@ -570,12 +578,9 @@ impl Owner {
     /// Returns the retry's own typed storage failure (the obligation stays owed), or
     /// [`ThreadError::StorageRecoveryUnverified`] when the attached backend cannot own the
     /// obligation at all, so the caller learns the retry could not have stored those bytes.
-    pub(super) fn start_output_retry(
-        &mut self,
-        reply: oneshot::Sender<super::mailbox::OutputRetryReply>,
-    ) {
+    pub(super) fn start_output_retry(&mut self, reply: oneshot::Sender<OutputRetryReply>) {
         if let Some(active) = &self.output_retry_active {
-            let _ = reply.send(super::mailbox::OutputRetryReply::Waiting(active.clone()));
+            let _ = reply.send(OutputRetryReply::Waiting(active.clone()));
             return;
         }
         let owed: Vec<_> = self

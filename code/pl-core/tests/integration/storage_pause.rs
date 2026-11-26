@@ -918,7 +918,7 @@ async fn paused_turn_resumes_without_replaying_model_or_tool(failure: Failure) {
         context: vec![text("blocked")],
     };
     assert!(matches!(
-        within(thread.submit_input(fresh)).await,
+        within(thread.submit_input(fresh, None)).await,
         Err(ThreadError::StoragePressure | ThreadError::Storage(_))
     ));
 

@@ -22,7 +22,7 @@ impl Owner {
             // A cancellation that latched a real failure is that failure, exactly like the terminal
             // state records it; the run itself reports cancellation.
             Err(ThreadError::Cancelled) => self
-                .policy
+                .driver
                 .error()
                 .filter(|error| recoverable_continuation(error))
                 .map(|_| ContinuationReason::ExecutionFailed),

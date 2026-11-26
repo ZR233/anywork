@@ -277,7 +277,7 @@ impl Owner {
             && let Some(options) = drive
         {
             self.state.wake_messages_through = self.state.wake_messages_through.max(sequence);
-            self.policy.wake(options);
+            self.driver.wake(options);
         }
     }
 

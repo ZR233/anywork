@@ -51,7 +51,8 @@ impl CompletedTaskLedger {
 pub struct TaskWaitSnapshot {
     pub tasks: Vec<task::TaskRecord>,
     pub messages_ready: bool,
-    /// True only when the fixed deadline was reached without a ready task or message.
+    pub user_inputs_ready: bool,
+    /// True only when the fixed deadline was reached without a ready task, message, or user input.
     pub timed_out: bool,
 }
 
@@ -126,16 +127,14 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::InvokeNested {
-                    caller: self.caller.clone(),
-                    executor: self.executor.clone(),
-                    tool_id,
-                    arguments,
-                    cancellation,
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::InvokeNested {
+                caller: self.caller.clone(),
+                executor: self.executor.clone(),
+                tool_id,
+                arguments,
+                cancellation,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -188,13 +187,11 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::RecordTaskObservation {
-                    caller: self.caller.clone(),
-                    payload,
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::RecordTaskObservation {
+                caller: self.caller.clone(),
+                payload,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -209,13 +206,11 @@ impl TaskAccess {
         self.commands
             .upgrade()
             .ok_or(ModelMemberError::Closed)?
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::OpenAuxiliaryModel {
-                    caller: Some(self.caller.clone()),
-                    turn_id: None,
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::OpenAuxiliaryModel {
+                caller: Some(self.caller.clone()),
+                turn_id: None,
+                reply,
+            })
             .await
             .map_err(|_| ModelMemberError::Closed)?;
         response.await.map_err(|_| ModelMemberError::Closed)?
@@ -225,13 +220,11 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::ValidateExecution {
-                    caller: self.caller.clone(),
-                    executor: self.executor.clone(),
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::ValidateExecution {
+                caller: self.caller.clone(),
+                executor: self.executor.clone(),
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -252,14 +245,12 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::RequestPermission {
-                    caller: self.caller.clone(),
-                    authority: self.executor.clone(),
-                    payload,
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::RequestPermission {
+                caller: self.caller.clone(),
+                authority: self.executor.clone(),
+                payload,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         let record = response.await.map_err(|_| ThreadError::Closed)??;
@@ -313,14 +304,12 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::ToolProgress {
-                    caller: self.caller.clone(),
-                    executor: self.executor.clone(),
-                    update,
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::ToolProgress {
+                caller: self.caller.clone(),
+                executor: self.executor.clone(),
+                update,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -345,14 +334,12 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::ToolOutputStorageFault {
-                    caller: self.caller.clone(),
-                    executor: self.executor.clone(),
-                    fault,
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::ToolOutputStorageFault {
+                caller: self.caller.clone(),
+                executor: self.executor.clone(),
+                fault,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -499,13 +486,18 @@ impl TaskAccess {
                     }
                 }
 
-                // The resident queue holds only pending messages, so readiness is a sequence
-                // comparison against the consumption watermark, never a queue length.
+                // The resident queue holds only pending messages/inputs, so readiness checks for any
+                // pending entry instead of polling lengths.
                 let messages_ready = snapshot
                     .inbox
                     .iter()
                     .any(|record| record.sequence > snapshot.consumed_messages);
+                let user_inputs_ready = snapshot
+                    .inputs
+                    .iter()
+                    .any(|record| record.state == input::InputState::Pending);
                 let ready = messages_ready
+                    || user_inputs_ready
                     || tasks
                         .iter()
                         .any(|task| task.status != task::TaskStatus::Running);
@@ -513,6 +505,7 @@ impl TaskAccess {
                     TaskWaitSnapshot {
                         tasks,
                         messages_ready,
+                        user_inputs_ready,
                         // Check the clock while still borrowing this exact observation: a publish
                         // between releasing the borrow and checking the clock cannot be missed.
                         timed_out: !ready && tokio::time::Instant::now() >= deadline,
@@ -587,14 +580,12 @@ impl TaskAccess {
         let commands = self.commands.upgrade().ok_or(ThreadError::Closed)?;
         let (reply, response) = oneshot::channel();
         commands
-            .send(handle::LoopEvent::Mailbox(
-                mailbox::MailboxCommand::ToolCancelTask {
-                    caller: self.caller.clone(),
-                    authorization: self.authorization.clone(),
-                    target: id.clone(),
-                    reply,
-                },
-            ))
+            .send(handle::LoopEvent::ToolCancelTask {
+                caller: self.caller.clone(),
+                authorization: self.authorization.clone(),
+                target: id.clone(),
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         match response.await.map_err(|_| ThreadError::Closed)? {

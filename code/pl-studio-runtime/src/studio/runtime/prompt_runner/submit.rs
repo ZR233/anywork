@@ -9,20 +9,6 @@ use super::super::{
 };
 use super::{UserThreadAction, ensure_thread_not_archived, ensure_user_root_target};
 
-/// How one product admission treats a Turn that is already running on the same Thread.
-///
-/// This is an explicit product decision, not a tuning flag: the desktop UI and explicit
-/// interaction continuation keep replacing the current Turn, while a platform message identity
-/// becomes its own queued input so two messages of the same conversation never interrupt or merge
-/// each other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AdmissionMode {
-    /// Explicit user submission: interrupt the running Turn and continue.
-    InterruptAndContinue,
-    /// Platform message identity: enqueue a separate input without interrupting the Turn.
-    Queued,
-}
-
 fn ensure_submission_not_cancelled(
     cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<()> {
@@ -33,7 +19,7 @@ fn ensure_submission_not_cancelled(
 }
 
 impl StudioRuntime {
-    /// Atomically starts or interrupts and continues the canonical Thread.
+    /// Atomically submits an immediate prompt to the canonical Thread.
     pub async fn submit_prompt_command(
         &self,
         thread_id: String,
@@ -54,28 +40,21 @@ impl StudioRuntime {
         &self,
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
-        self.submit_owned_prompt(request, AdmissionMode::InterruptAndContinue, None)
-            .await
+        self.submit_owned_prompt(request, None).await
     }
 
-    /// 非打断准入：平台消息作为独立输入排队，不中断同一 Thread 正在运行的 Turn。
-    ///
-    /// 与 [`Self::submit_prompt`] 共享全部内容校验、生命周期栅栏、正文身份、当前回执、route
-    /// CAS、附件准备、预算与事件；只有最终的 core 准入不同——排队输入由 actor 串行消费，因此
-    /// 同一会话的两条平台消息各自形成独立输入与 Turn，不会互相打断或合并。
-    pub(crate) async fn submit_queued_prompt(
+    /// 供已自行按会话串行化的通道使用：仅前置等待栅栏可取消，一旦进入 core 受理即立即落盘驱动。
+    pub(crate) async fn submit_prompt_cancellable(
         &self,
         request: StudioSubmitPromptRequest,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<StudioSubmitPromptResponse> {
-        self.submit_owned_prompt(request, AdmissionMode::Queued, Some(cancel))
-            .await
+        self.submit_owned_prompt(request, Some(cancel)).await
     }
 
     async fn submit_owned_prompt(
         &self,
         request: StudioSubmitPromptRequest,
-        mode: AdmissionMode,
         cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<StudioSubmitPromptResponse> {
         validate_prompt_content(&request.input)?;
@@ -103,7 +82,7 @@ impl StudioRuntime {
         // the parent, so this runs before the owner is activated, before attachment drafts resolve
         // and before any route or prompt work. Only the parent agent schedules child work.
         ensure_user_root_target(&thread_record, UserThreadAction::Submit)?;
-        self.submit_owned_prompt_with_admission(request, thread_record, mode, cancel)
+        self.submit_owned_prompt_with_admission(request, thread_record, cancel)
             .await
     }
 
@@ -112,20 +91,14 @@ impl StudioRuntime {
         request: StudioSubmitPromptRequest,
         thread_record: ThreadRecord,
     ) -> Result<StudioSubmitPromptResponse> {
-        self.submit_owned_prompt_with_admission(
-            request,
-            thread_record,
-            AdmissionMode::InterruptAndContinue,
-            None,
-        )
-        .await
+        self.submit_owned_prompt_with_admission(request, thread_record, None)
+            .await
     }
 
     fn submit_owned_prompt_with_admission<'a>(
         &'a self,
         request: StudioSubmitPromptRequest,
         thread_record: ThreadRecord,
-        mode: AdmissionMode,
         cancel: Option<&'a tokio_util::sync::CancellationToken>,
     ) -> impl std::future::Future<Output = Result<StudioSubmitPromptResponse>> + Send + 'a {
         // First input, ordinary submission and queued input share this admission state. Allocate
@@ -286,21 +259,11 @@ impl StudioRuntime {
                     thread_record.parent_thread_id.is_none(),
                 ),
             };
-            // The only semantic difference between the product admissions. `input_and_run` lets the
-            // actor own the queued input and consume it after the current Turn, while
-            // `input_and_continue` replaces the running Turn.
             // Resource preparation has reached its real terminal result. A cancelled
             // producer may stop here without abandoning I/O or starting a new input.
             // Once the actor request below starts, its acceptance is always awaited.
             ensure_submission_not_cancelled(cancel)?;
-            let accepted = match mode {
-                AdmissionMode::InterruptAndContinue => {
-                    thread
-                        .submit_input_and_continue(thread_input, driver)
-                        .await?
-                }
-                AdmissionMode::Queued => thread.submit_input_and_run(thread_input, driver).await?,
-            };
+            let accepted = thread.submit_input(thread_input, Some(driver)).await?;
             tracing::debug!(
                 target: "prompt_submission",
                 thread_id,

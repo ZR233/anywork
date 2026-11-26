@@ -8,7 +8,7 @@ use crate::bots::{
     },
 };
 use crate::{TurnCompletion, TurnState};
-use pl_core::thread::input::{InputDelivery, InputState};
+use pl_core::thread::input::InputState;
 use std::collections::BTreeSet;
 
 /// 一次入站工作的恢复执行进度；`watch_input` 是当前 canonical 输入身份。
@@ -39,19 +39,12 @@ impl ReplySession {
             }
             BotInputRead::Absent
             | BotInputRead::Ready {
-                delivery: InputDelivery::NextTurn,
                 state: InputState::Pending,
             } => ReplyInputAction::Wait,
             BotInputRead::Ready {
-                delivery: InputDelivery::CurrentTurn { .. },
-                ..
-            } => ReplyInputAction::ConcurrentTurn,
-            BotInputRead::Ready {
-                delivery: InputDelivery::NextTurn,
                 state: InputState::Discarded,
             } => ReplyInputAction::FinishUnconsumed,
             BotInputRead::Ready {
-                delivery: InputDelivery::NextTurn,
                 state: InputState::Consumed { turn_id, .. },
             } => ReplyInputAction::ObserveTurn(turn_id),
         }
@@ -82,7 +75,6 @@ impl ReplySession {
 pub(super) enum ReplyInputAction {
     SubmitOriginal,
     Wait,
-    ConcurrentTurn,
     FinishUnconsumed,
     ObserveTurn(String),
 }

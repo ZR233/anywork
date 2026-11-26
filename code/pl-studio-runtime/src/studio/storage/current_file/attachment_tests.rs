@@ -55,8 +55,6 @@ fn current_in(slot: Slot, content: ContextContent, epoch: RuntimeEpoch) -> Threa
         Slot::Input => {
             current.state.inputs = vec![InputRecord {
                 accepted_sequence: 1,
-
-                delivery: Default::default(),
                 input: ThreadInput {
                     id: "pending-input".into(),
                     purpose: Default::default(),

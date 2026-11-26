@@ -564,51 +564,35 @@ impl Session {
                 Vec::new(),
             ))
             .await?;
-        // The second input is accepted while the first Turn is still running: that
-        // is the real overlap, not two events pushed back to back.
-        // The queued input must be accepted in the canonical Thread itself: a
-        // platform claim is not the queue. The public snapshot carries no input
-        // list, so read the same durable input identities the runtime consults
-        // after a restart (saved Current JSON), and require one stable pending id
-        // with a higher ordinal than the running input.
+        // The second input is persisted in bots.db inbound_work while the first Turn is still
+        // running, waiting behind the bot's per-thread serialization gate without interrupting Turn A.
         let a_input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:om_concurrent_a");
-        let b_input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:om_concurrent_b");
-        let (queued_b, pending_ordinal) = {
+        let b_status = {
             let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
             loop {
                 let inputs = sqlite::thread_inputs(&self.home, &thread_id).await?;
-                let pick = |id: &str| -> Result<Option<sqlite::ThreadInputRow>> {
-                    let mut matches = inputs.iter().filter(|row| row.id == id);
-                    let first = matches.next().cloned();
-                    ensure!(
-                        matches.next().is_none(),
-                        "input {id} appears more than once in the canonical Thread"
-                    );
-                    Ok(first)
-                };
-                let consumed_a = pick(&a_input_id)?;
-                let pending_b = pick(&b_input_id)?;
-                let a_ok = consumed_a.as_ref().is_some_and(|row| {
-                    row.thread_id == thread_id
+                let a_ok = inputs.iter().any(|row| {
+                    row.id == a_input_id
+                        && row.thread_id == thread_id
                         && matches!(
                             &row.state,
                             sqlite::ThreadInputState::Consumed { turn_id } if turn_id == &concurrent_a_turn
                         )
                 });
-                let b_ok = pending_b.as_ref().is_some_and(|row| {
-                    row.thread_id == thread_id
-                        && matches!(row.state, sqlite::ThreadInputState::Pending)
-                        && row.revision != 0
-                        && row.delivery == sqlite::ThreadInputDelivery::NextTurn
-                        && consumed_a.as_ref().is_some_and(|a| row.ordinal > a.ordinal)
-                });
-                if a_ok && b_ok {
-                    let b = pending_b.context("accepted second input")?;
-                    break (b.id, b.ordinal);
+                let inbound_rows = sqlite::inbound(&self.home, &bot_id).await?;
+                let b_waiting = inbound_rows
+                    .iter()
+                    .find(|row| {
+                        row.message_id == "om_concurrent_b"
+                            && matches!(row.status.as_str(), "pending" | "claimed")
+                    })
+                    .map(|row| row.status.clone());
+                if a_ok && let Some(status) = b_waiting {
+                    break status;
                 }
                 if Instant::now() >= deadline {
                     bail!(
-                        "the second input never became a canonical pending input of Thread {thread_id}: {inputs:?}"
+                        "the second inbound never queued behind the first Turn on Thread {thread_id}: inputs={inputs:?}, inbound={inbound_rows:?}"
                     );
                 }
                 http::hold_for(http::POLL).await;
@@ -617,7 +601,7 @@ impl Session {
         let running_before_release = running_turn_id(self.http()?, &thread_id).await?;
         ensure!(
             running_before_release.as_deref() == Some(concurrent_a_turn.as_str()),
-            "the first Turn must still be running while the second input is queued, got {running_before_release:?}"
+            "the first Turn must still be running while the second inbound waits, got {running_before_release:?} (expected {concurrent_a_turn})"
         );
         concurrent_stage().release();
         self.wait_inbound_completed(&bot_id, "om_concurrent_a")
@@ -667,7 +651,7 @@ impl Session {
         Ok(report::passed(
             CASE_IDEMPOTENT,
             format!(
-                "duplicate identity is idempotent, conflicting content is rejected, and two same-body identities each execute once: the second input became canonical pending input {queued_b} (persisted ordinal {pending_ordinal}) while the first Turn {concurrent_a_turn} was still running, reconnect keeps the existing DM binding"
+                "duplicate identity is idempotent, conflicting content is rejected, and two same-body identities each execute once: the second inbound waited in bots.db ({b_status}) while the first Turn {concurrent_a_turn} was still running, reconnect keeps the existing DM binding"
             ),
         ))
     }

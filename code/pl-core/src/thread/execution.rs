@@ -52,7 +52,6 @@ pub(super) enum PrimaryCompletion {
 pub(super) enum RunReply {
     Driver,
     Turn(oneshot::Sender<Result<TurnCompletion, ThreadError>>),
-    Queued(oneshot::Sender<Result<Option<TurnCompletion>, ThreadError>>),
     Step(oneshot::Sender<Result<ModelStepOutput, ThreadError>>),
     Current(oneshot::Sender<Result<TurnCompletion, current::CurrentError>>),
     Compact(oneshot::Sender<Result<ContextSnapshot, ThreadError>>),
@@ -63,9 +62,6 @@ impl RunReply {
         match self {
             Self::Driver => (),
             Self::Turn(reply) => {
-                let _ = reply.send(Err(error));
-            }
-            Self::Queued(reply) => {
                 let _ = reply.send(Err(error));
             }
             Self::Step(reply) => {
@@ -95,10 +91,16 @@ pub(super) enum RunPhase {
 
 pub(super) struct ActiveRun {
     pub(super) input: TurnInput,
+    pub(super) primary_input_id: Option<String>,
+    pub(super) turn_cancel: CancellationToken,
+    pub(super) step_preempt: CancellationToken,
+    pub(super) preempt_triggers: Vec<String>,
+    pub(super) current_step_inputs: Vec<String>,
     pub(super) reply: RunReply,
     pub(super) phase: RunPhase,
     pub(super) started: tokio::time::Instant,
     pub(super) steps: u32,
+    pub(super) attempt_seq: u32,
     pub(super) next_attempt: Option<String>,
     pub(super) recovery_used: bool,
     pub(super) operation_id: Option<String>,
@@ -106,6 +108,35 @@ pub(super) struct ActiveRun {
     pub(super) restored: bool,
     // Own the cancellation installation until all primary work really returns.
     pub(super) _cancellation: cancellation::ActiveExecution,
+}
+
+impl ActiveRun {
+    pub(super) fn is_turn_cancelled(&self, closing: bool) -> bool {
+        closing || self.turn_cancel.is_cancelled()
+    }
+
+    pub(super) fn is_step_preempted(&self, closing: bool) -> bool {
+        !closing
+            && !self.turn_cancel.is_cancelled()
+            && self.step_preempt.is_cancelled()
+            && !self.preempt_triggers.is_empty()
+    }
+
+    pub(super) fn preempt_step(&mut self, trigger_input_id: &str) {
+        if !self
+            .preempt_triggers
+            .iter()
+            .any(|id| id == trigger_input_id)
+        {
+            self.preempt_triggers.push(trigger_input_id.to_owned());
+        }
+        self.step_preempt.cancel();
+    }
+
+    pub(super) fn reset_step_preempt(&mut self) -> Vec<String> {
+        self.step_preempt = self.turn_cancel.child_token();
+        std::mem::take(&mut self.preempt_triggers)
+    }
 }
 
 pub(super) struct ToolBatch {
@@ -159,7 +190,7 @@ pub(super) enum MaintenanceCompletion {
             u64,
             Result<cold::OutputRetryOutcome, cold::ColdStoreError>,
         )>,
-        reply: oneshot::Sender<super::mailbox::OutputRetryReply>,
+        reply: oneshot::Sender<super::cold::OutputRetryReply>,
         finished: CancellationToken,
     },
 }
@@ -180,7 +211,7 @@ impl Owner {
             } => {
                 let result = self.finish_output_retry(results);
                 self.output_retry_active = None;
-                let _ = reply.send(super::mailbox::OutputRetryReply::Finished(result));
+                let _ = reply.send(super::cold::OutputRetryReply::Finished(result));
                 finished.cancel();
             }
             MaintenanceCompletion::ModelSettlement {
@@ -218,9 +249,73 @@ impl Owner {
                 tracing::error!(thread = self.id, %error, "abandoned owner shutdown failed");
             }
         } else {
-            self.policy.fail(Arc::new(error));
-            self.pause_inputs();
+            self.driver.fail(Arc::new(error));
+            self.pause_execution();
         }
+    }
+
+    pub(super) fn preempt_or_wake_active_run(
+        &mut self,
+        trigger_input_id: &str,
+        reopen_settling: bool,
+    ) {
+        if self.interrupt.is_closing() || self.stopping_turn.is_some() {
+            return;
+        }
+        let Some(run) = self.active.as_mut() else {
+            return;
+        };
+        if run.is_turn_cancelled(false) {
+            return;
+        }
+        match &run.phase {
+            RunPhase::Preparing | RunPhase::RequestReady(_) => {
+                run.preempt_step(trigger_input_id);
+                self.publish_snapshot();
+            }
+            RunPhase::Settling(Ok(completion))
+                if reopen_settling
+                    && !matches!(run.reply, RunReply::Step(_))
+                    && completion.outcome == TurnOutcome::Completed
+                    && !matches!(
+                        self.driver,
+                        input::ExecutionDriver::Stopped | input::ExecutionDriver::Failed(_)
+                    ) =>
+            {
+                run.phase = RunPhase::NextStep {
+                    content: Vec::new(),
+                    retry_of: None,
+                };
+                self.publish_snapshot();
+            }
+            RunPhase::Starting
+            | RunPhase::NextStep { .. }
+            | RunPhase::ToolBatch(_)
+            | RunPhase::Settling(_) => {}
+        }
+    }
+
+    fn soft_preempt_preparing_step(&mut self, step: StepWork) -> Result<(), ThreadError> {
+        let mut run = self.active.take().ok_or(ThreadError::InvalidIdentity)?;
+        let trigger_input_ids = run.reset_step_preempt();
+        run.current_step_inputs.clear();
+        let attempt_id = step.input.attempt_id.clone();
+        self.pending_step_preemptions.push(StepPreemptionEvent {
+            seq: self.state.commit_sequence.saturating_add(1),
+            turn_id: run.input.turn_id.clone(),
+            attempt_id: Some(attempt_id.clone()),
+            phase: PreemptedStepPhase::Preparing,
+            trigger_input_ids,
+            partial_record_id: None,
+        });
+        run.phase = RunPhase::NextStep {
+            content: step.input.content,
+            retry_of: step.retry_of,
+        };
+        self.active = Some(run);
+        self.finish_step(&attempt_id);
+        self.publish()?;
+        Ok(())
     }
 
     pub(super) fn schedule_step(
@@ -240,7 +335,7 @@ impl Owner {
             max_model_steps: ModelStepLimit::Limited(std::num::NonZeroU32::new(1).unwrap()),
             cancellation: input.cancellation.clone(),
         };
-        if let Err((error, reply)) = self.start_run(turn, reply) {
+        if let Err((error, reply)) = self.start_run(turn, reply, None) {
             reply.reject(error);
             return;
         }
@@ -324,7 +419,7 @@ impl Owner {
             max_model_steps: ModelStepLimit::Unlimited,
             cancellation,
         };
-        if let Err((error, reply)) = self.start_run(input, RunReply::Compact(reply)) {
+        if let Err((error, reply)) = self.start_run(input, RunReply::Compact(reply), None) {
             reply.reject(error);
             return;
         }
@@ -699,6 +794,7 @@ impl Owner {
         &mut self,
         mut input: TurnInput,
         reply: RunReply,
+        primary_input_id: Option<String>,
     ) -> Result<(), (ThreadError, RunReply)> {
         if self.active.is_some() || self.primary.is_some() {
             return Err((ThreadError::InputRequiresIdle, reply));
@@ -717,24 +813,31 @@ impl Owner {
             return Err((ThreadError::InvalidIdentity, reply));
         }
         let cancellation = self.interrupt.activate(&input.cancellation);
-        input.cancellation = cancellation.token.clone();
+        let turn_cancel = cancellation.token.clone();
+        let step_preempt = turn_cancel.child_token();
+        input.cancellation = turn_cancel.clone();
         if let Err(error) = self.begin_execution() {
             return Err((error, reply));
         }
-        self.frozen_turn = Some(input.turn_id.clone());
         let first = StepInput {
             turn_id: input.turn_id.clone(),
             attempt_id: self.turn_attempt_identity(&input.attempt_prefix, 0),
             content: input.content.clone(),
-            cancellation: input.cancellation.clone(),
+            cancellation: step_preempt.clone(),
         };
         self.begin_current_step(&first, &self.tools.freeze());
         self.active = Some(ActiveRun {
             input,
+            primary_input_id,
+            turn_cancel,
+            step_preempt,
+            preempt_triggers: Vec::new(),
+            current_step_inputs: Vec::new(),
             reply,
             phase: RunPhase::Starting,
             started: tokio::time::Instant::now(),
             steps: 0,
+            attempt_seq: 1,
             operation_id: None,
             start_stops: self.interrupt.stops(),
             restored: false,
@@ -757,7 +860,7 @@ impl Owner {
         if self
             .active
             .as_ref()
-            .is_some_and(|r| r.input.cancellation.is_cancelled())
+            .is_some_and(|r| r.is_turn_cancelled(self.interrupt.is_closing()))
         {
             let settling = matches!(
                 self.active.as_ref().map(|r| &r.phase),
@@ -771,7 +874,7 @@ impl Owner {
             if self.closing.is_some() {
                 return self.advance_close();
             }
-            return self.start_queued_work();
+            return self.start_immediate_work();
         };
         let phase = std::mem::replace(&mut run.phase, RunPhase::Preparing);
         match phase {
@@ -795,7 +898,7 @@ impl Owner {
                     let mut turns = self.state.turns.to_vec();
                     turns.push(TurnRecord {
                         turn_id: run.input.turn_id.clone(),
-                        input_id: self.active_inputs.first().cloned(),
+                        input_id: run.primary_input_id.clone(),
                         state: TurnState::Running,
                         model_steps: 0,
                         elapsed_ms: None,
@@ -818,13 +921,23 @@ impl Owner {
                     self.active = Some(run);
                     return Ok(false);
                 }
+                let attempt_id = if let Some(attempt_id) = run.next_attempt.take() {
+                    attempt_id
+                } else {
+                    let attempt_seq = run.attempt_seq;
+                    let Some(next_seq) = run.attempt_seq.checked_add(1) else {
+                        self.active = Some(run);
+                        return Err(ThreadError::RevisionExhausted);
+                    };
+                    run.attempt_seq = next_seq;
+                    self.turn_attempt_identity(&run.input.attempt_prefix, attempt_seq)
+                };
+                let _ = run.reset_step_preempt();
                 let input = StepInput {
                     turn_id: run.input.turn_id.clone(),
-                    attempt_id: run.next_attempt.take().unwrap_or_else(|| {
-                        self.turn_attempt_identity(&run.input.attempt_prefix, run.steps)
-                    }),
+                    attempt_id,
                     content,
-                    cancellation: run.input.cancellation.clone(),
+                    cancellation: run.step_preempt.clone(),
                 };
                 self.active = Some(run);
                 let step = self.freeze_step(input, self.tools.freeze(), retry_of)?;
@@ -832,6 +945,11 @@ impl Owner {
                 Ok(self.primary.is_none())
             }
             RunPhase::RequestReady(step) => {
+                if run.is_step_preempted(self.interrupt.is_closing()) {
+                    self.active = Some(run);
+                    self.soft_preempt_preparing_step(*step)?;
+                    return Ok(true);
+                }
                 if !self.storage_admission_ready() {
                     run.phase = RunPhase::RequestReady(step);
                     self.active = Some(run);
@@ -895,6 +1013,28 @@ impl Owner {
                 }
             }
             RunPhase::Settling(result) => {
+                if !matches!(run.reply, RunReply::Step(_))
+                    && matches!(
+                        &result,
+                        Ok(completion) if completion.outcome == TurnOutcome::Completed
+                    )
+                    && !self.interrupt.is_closing()
+                    && self.stopping_turn.is_none()
+                    && !matches!(
+                        self.driver,
+                        input::ExecutionDriver::Stopped | input::ExecutionDriver::Failed(_)
+                    )
+                    && !run.input.max_model_steps.reached(run.steps)
+                    && self.has_pending_immediate_inputs()
+                    && !self.has_pending_model_switch()
+                {
+                    run.phase = RunPhase::NextStep {
+                        content: Vec::new(),
+                        retry_of: None,
+                    };
+                    self.active = Some(run);
+                    return Ok(true);
+                }
                 if matches!(result, Err(ThreadError::Cancelled))
                     && self.state.tasks.values().any(|t| {
                         t.turn_id == run.input.turn_id && t.status == task::TaskStatus::Running
@@ -977,6 +1117,19 @@ impl Owner {
                     completion,
                     forced && step.recovery_error.is_some(),
                 );
+                if matches!(result, Err(ThreadError::Cancelled))
+                    && !matches!(
+                        self.active.as_ref().map(|r| &r.reply),
+                        Some(RunReply::Compact(_))
+                    )
+                    && self
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| r.is_step_preempted(self.interrupt.is_closing()))
+                {
+                    self.soft_preempt_preparing_step(step)?;
+                    return Ok(());
+                }
                 if !has_compaction_candidate
                     && step.preparation_refresh == 0
                     && matches!(
@@ -1008,6 +1161,12 @@ impl Owner {
                         if let RunReply::Compact(reply) = run.reply {
                             let _ = reply.send(Ok(self.state.context.clone()));
                         }
+                    } else if self
+                        .active
+                        .as_ref()
+                        .is_some_and(|r| r.is_step_preempted(self.interrupt.is_closing()))
+                    {
+                        self.soft_preempt_preparing_step(step)?;
                     } else {
                         self.stage_model_request(step)?;
                     }
@@ -1019,6 +1178,14 @@ impl Owner {
                 result,
             } => {
                 self.model = Some(model);
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|r| r.is_step_preempted(self.interrupt.is_closing()))
+                {
+                    self.soft_preempt_preparing_step(step)?;
+                    return Ok(());
+                }
                 if step.input.cancellation.is_cancelled() {
                     return Err(ThreadError::Cancelled);
                 }
@@ -1074,6 +1241,19 @@ impl Owner {
         result: Result<ModelStepOutput, ThreadError>,
     ) -> Result<(), ThreadError> {
         let mut run = self.active.take().ok_or(ThreadError::InvalidIdentity)?;
+        if matches!(result, Err(ThreadError::Cancelled))
+            && run.is_step_preempted(self.interrupt.is_closing())
+        {
+            let _ = run.reset_step_preempt();
+            run.current_step_inputs.clear();
+            run.phase = RunPhase::NextStep {
+                content: Vec::new(),
+                retry_of: None,
+            };
+            self.active = Some(run);
+            return Ok(());
+        }
+        run.current_step_inputs.clear();
         let Some(steps) = run.steps.checked_add(1) else {
             self.active = Some(run);
             return Err(ThreadError::RevisionExhausted);
@@ -1081,15 +1261,34 @@ impl Owner {
         run.steps = steps;
         match result {
             Ok(output) => {
-                if matches!(run.reply, RunReply::Step(_))
-                    || (output.tool_calls.is_empty()
-                        && output.turn_action == crate::model::ModelTurnAction::Finish)
-                {
+                if matches!(run.reply, RunReply::Step(_)) {
                     run.phase = RunPhase::Settling(Ok(TurnCompletion {
                         model_steps: run.steps,
                         outcome: TurnOutcome::Completed,
                         last_output: output,
                     }));
+                } else if output.tool_calls.is_empty()
+                    && output.turn_action == crate::model::ModelTurnAction::Finish
+                {
+                    if !run.input.max_model_steps.reached(run.steps)
+                        && !matches!(
+                            self.driver,
+                            input::ExecutionDriver::Stopped | input::ExecutionDriver::Failed(_)
+                        )
+                        && self.has_pending_immediate_inputs()
+                        && !self.has_pending_model_switch()
+                    {
+                        run.phase = RunPhase::NextStep {
+                            content: Vec::new(),
+                            retry_of: None,
+                        };
+                    } else {
+                        run.phase = RunPhase::Settling(Ok(TurnCompletion {
+                            model_steps: run.steps,
+                            outcome: TurnOutcome::Completed,
+                            last_output: output,
+                        }));
+                    }
                 } else {
                     run.phase = RunPhase::ToolBatch(ToolBatch {
                         output,
@@ -1121,11 +1320,17 @@ impl Owner {
                     && !run.input.max_model_steps.reached(run.steps) =>
             {
                 run.recovery_used = true;
+                let attempt_seq = run.attempt_seq;
+                let Some(next_seq) = run.attempt_seq.checked_add(1) else {
+                    self.active = Some(run);
+                    return Err(ThreadError::RevisionExhausted);
+                };
+                run.attempt_seq = next_seq;
                 let input = StepInput {
                     turn_id: run.input.turn_id.clone(),
-                    attempt_id: self.turn_attempt_identity(&run.input.attempt_prefix, run.steps),
+                    attempt_id: self.turn_attempt_identity(&run.input.attempt_prefix, attempt_seq),
                     content: Vec::new(),
-                    cancellation: run.input.cancellation.clone(),
+                    cancellation: run.step_preempt.clone(),
                 };
                 self.active = Some(run);
                 let mut recovery = self
@@ -1175,7 +1380,7 @@ impl Owner {
         }
         if run.restored && result.is_err() {
             self.current_saved_lifecycle = Some(ThreadLifecycle::Open);
-            self.pause_inputs();
+            self.pause_execution();
         }
         let result = if result.is_err() {
             match self.cancel_pending_calls(Some(turn_id)) {
@@ -1197,7 +1402,7 @@ impl Owner {
             turn.model_steps = run.steps;
             turn.state = match &result {
                 Ok(completion) => TurnState::Finished(completion.outcome),
-                Err(ThreadError::Cancelled) if self.interrupted_turn.as_ref() == Some(turn_id) => {
+                Err(ThreadError::Cancelled) if self.stopping_turn.as_ref() == Some(turn_id) => {
                     TurnState::Interrupted
                 }
                 Err(ThreadError::Cancelled) => TurnState::Cancelled,
@@ -1236,8 +1441,6 @@ impl Owner {
         for operation in receipts {
             self.settle_operation_output(&operation);
         }
-        self.frozen_turn = None;
-        self.active_inputs.clear();
         let cleared_execution = self.state.execution.as_ref().is_some_and(|execution| {
             execution.turn_id.is_none() || execution.turn_id.as_deref() == Some(turn_id)
         });
@@ -1256,6 +1459,7 @@ impl Owner {
             ));
             self.publish_snapshot();
         }
+        let was_stopping = self.stopping_turn.as_ref() == Some(&run.input.turn_id);
         match run.reply {
             RunReply::Driver => match result {
                 Ok(TurnCompletion {
@@ -1263,20 +1467,17 @@ impl Owner {
                     ..
                 }) => (),
                 Err(ThreadError::Cancelled)
-                    if self.policy.options().is_some()
-                        && (run.start_stops == self.interrupt.stops()
-                            && self.interrupted_turn.as_ref() == Some(&run.input.turn_id)) => {}
-                Err(ThreadError::Cancelled) | Ok(_) => self.pause_inputs(),
+                    if self.driver.options().is_some()
+                        && run.start_stops == self.interrupt.stops()
+                        && was_stopping => {}
+                Err(ThreadError::Cancelled) | Ok(_) => self.pause_execution(),
                 Err(error) => {
-                    self.policy.fail(Arc::new(error));
-                    self.pause_inputs();
+                    self.driver.fail(Arc::new(error));
+                    self.pause_execution();
                 }
             },
             RunReply::Turn(reply) => {
                 let _ = reply.send(result);
-            }
-            RunReply::Queued(reply) => {
-                let _ = reply.send(result.map(Some));
             }
             RunReply::Step(reply) => {
                 let _ = reply.send(result.map(|r| r.last_output));
@@ -1287,6 +1488,14 @@ impl Owner {
             RunReply::Compact(reply) => {
                 let _ = reply.send(result.map(|_| self.state.context.clone()));
             }
+        }
+        if was_stopping
+            && !self.state.tasks.values().any(|task| {
+                task.turn_id == run.input.turn_id && task.status == task::TaskStatus::Running
+            })
+        {
+            self.stopping_turn = None;
+            self.publish_snapshot();
         }
         Ok(())
     }

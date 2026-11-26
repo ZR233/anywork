@@ -187,6 +187,10 @@ pub(crate) fn project_effect_items(
             existing.keys().chain(reserved.keys()).cloned(),
             |id| existing.contains_key(id) || reserved.contains_key(id),
         );
+        let soft_preempted = effect
+            .step_preemptions
+            .iter()
+            .any(|ev| ev.attempt_id.as_deref() == Some(attempt.attempt_id.as_str()));
         let mut projected = super::responses::project_attempt(
             state,
             super::responses::AttemptStamp {
@@ -198,6 +202,7 @@ pub(crate) fn project_effect_items(
                 updated_at: effect.committed_at,
             },
             &finalize,
+            soft_preempted,
         )?;
         super::responses::finalize_missing_presentation(
             &thread.id,

@@ -476,18 +476,33 @@ void main() {
     await capturePresentation(tester, 'submission-canonical.png');
     await fixtureGate(tester, provider, _stage, release: true);
     firstGateReleased = true;
-    final secondTurn = await waitForCompletedTurn(
+    final completedTurn = await waitForCompletedTurn(
       feeds: transport,
       threadId: threadId,
-      matches: (head) => head.inputId == inputId,
-      description: 'canonical completed Turn for the handed-off second input',
+      matches: (head) => head.turnId == firstTurn!.turnId,
+      description:
+          'canonical completed Turn after soft-preempting for the second input',
       timeout: const Duration(minutes: 2),
     );
-    await until(() {
-      return observed.main.whereType<TimelineAssistantText>().any(
-        (item) => item.turnId == secondTurn.turnId,
-      );
-    }, 'second real model turn completed after interrupting the first');
+    expect(completedTurn.inputId, firstTurn!.inputId);
+    await until(
+      () {
+        return observed.main.whereType<TimelineAssistantText>().any(
+          (item) =>
+              item.turnId == completedTurn.turnId &&
+              item.seq > canonical.seq &&
+              item.text.contains('第二条消息已处理。') &&
+              item.isFinalTurnDelivery,
+        );
+      },
+      'real model reply for the injected second input completed in the same Turn',
+    );
+    expect(
+      observed.main.whereType<TimelineTurnOutcome>().where(
+        (outcome) => outcome.turnId == firstTurn!.turnId,
+      ),
+      isEmpty,
+    );
     await until(() {
       final state = graph.client.conversations.session(threadId).state;
       final storage = state.storage;

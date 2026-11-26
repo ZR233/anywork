@@ -9,6 +9,22 @@ use std::path::{Path, PathBuf};
 use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
 use anyhow::{Context, Result, ensure};
 
+/// Frozen schema-24 delivery routing enum preserved only for one-shot history/checkpoint import.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    content = "value"
+)]
+pub(crate) enum LegacyInputDelivery {
+    #[default]
+    NextTurn,
+    CurrentTurn {
+        turn_id: String,
+    },
+}
+
 /// Frozen continuation provenance decoded only during schema-24 import.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +48,7 @@ pub(crate) struct InputIdentityEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) continuation: Option<LegacyInputContinuation>,
     /// Delivery routing receipt retained from the original admission.
-    pub(crate) delivery: pl_core::thread::input::InputDelivery,
+    pub(crate) delivery: LegacyInputDelivery,
     pub(crate) id: String,
     /// 原始受理的用途：控制输入在正文离开驻留队列后仍然可识别。
     ///
