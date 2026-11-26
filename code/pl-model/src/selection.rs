@@ -27,6 +27,7 @@ const VERIFIED_AT: i64 = 1_792_627_200;
 const TERRA_VERIFIED_AT: i64 = 1_793_059_200;
 const GPT62_VERIFIED_AT: i64 = 1_794_960_000;
 const GEMINI4_VERIFIED_AT: i64 = 1_795_478_400; // 2026-11-24 UTC
+const GLM53_FLASH_VERIFIED_AT: i64 = 1_795_651_200; // 2026-11-26 UTC
 
 const OPENAI_MODELS_DOC: &str = "https://developers.openai.com/api/docs/models";
 
@@ -393,6 +394,49 @@ static BUNDLED_SELECTION_GUIDES: &[BundledSelectionGuide] = &[
                         metric: "Artificial Analysis Intelligence Index",
                         metric_version: Some("v4.3.2"),
                         score: Some(34.0),
+                    }),
+                },
+            ],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["zhipu", "zhipu-responses"],
+        model_id: "glm-5.3-flash",
+        guide: ModelSelectionGuide {
+            summary: "智谱面向日常编码的低成本多模态模型，适合按明确方案实现功能、补写和运行测试、定位代码调用点，以及结合截图排查界面问题。",
+            task_suitability: &[
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::Multimodal,
+            ],
+            limitations: &[
+                "跨模块设计取舍和关键审查宜交给更强的推理模型",
+                "在 Artificial Analysis 的 Max 档评测中，单题耗时高于同类模型中位数，且输出较长",
+                "糊来帮的内置目录当前接收文本和图片输入",
+            ],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash",
+                    verified_at: GLM53_FLASH_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://docs.bigmodel.cn/cn/coding-plan/learning-resources/flash-and-glm-5-4",
+                    verified_at: GLM53_FLASH_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Benchmark,
+                    url: "https://artificialanalysis.ai/models/glm-5-3-flash",
+                    verified_at: GLM53_FLASH_VERIFIED_AT,
+                    measurement: Some(ModelSelectionMeasurement {
+                        model: "GLM-5.3-Flash",
+                        effort: Some("max"),
+                        metric: "Artificial Analysis Intelligence Index",
+                        metric_version: Some("v5.0.2"),
+                        score: Some(28.0),
                     }),
                 },
             ],
