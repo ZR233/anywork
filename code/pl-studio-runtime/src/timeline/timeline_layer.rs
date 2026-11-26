@@ -4,7 +4,6 @@
 
 use anyhow::Result;
 use base64::Engine as _;
-use pl_core::thread::CoreLiveEvent;
 
 use crate::history::{
     HistoryCut, HistoryDemand, HistoryEventKind, HistoryEventRecord, HistoryReader,
@@ -247,11 +246,6 @@ impl TimelineDataLayer {
             HistoryTimelineRole::Hidden => {}
         }
         out
-    }
-
-    /// Live events only affect `LiveStatusDataLayer`; timeline grouping follows history roles.
-    pub fn on_live_event(&mut self, _live: &CoreLiveEvent) -> Vec<ConversationEvent> {
-        Vec::new()
     }
 
     fn seal_pending(&mut self, before_boundary_seq: u64) -> Option<TimelineItem> {

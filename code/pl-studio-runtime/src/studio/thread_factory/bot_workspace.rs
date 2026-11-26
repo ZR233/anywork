@@ -215,64 +215,15 @@ impl StudioThreadFactory {
 
     /// Existing incompatible records remain readable. This gate neither migrates their history nor
     /// rewrites a binding; it only denies activation/continuation and emits a typed workspace error.
-    pub(crate) async fn verify_saved_bot_execution_workspace(
+    pub(super) async fn verify_saved_bot_child_workspace(
         &self,
         thread: &crate::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
+        expected: &WorkspaceIdentity,
     ) -> Result<(), ThreadAssemblyError> {
-        let Some(bot) = self
-            .services
-            .bots
-            .saved_config_for_thread(&thread.root_thread_id)
-            .await
-            .map_err(|error| resource_error("read saved bot workspace admission", error))?
-        else {
-            return Ok(());
-        };
-        if thread.workspace_mode != ThreadWorkspaceMode::Local {
-            return Err(bot_workspace_refusal(
-                &thread.id,
-                "saved bot session uses a worktree root; its binding and history were preserved",
-            ));
-        }
-        let managed = self.services.bots.workspace_root(&bot);
-        if thread.parent_thread_id.is_none() {
-            // A pre-migration root may have no physical identity yet. A frozen assignment, however,
-            // cannot be rebound to the managed root to make incompatible old execution look valid.
-            if let Some(frozen) = self
-                .services
-                .store
-                .workspace_identity(&thread.id)
-                .await
-                .map_err(|error| resource_error("read frozen bot root identity", error))?
-            {
-                let expected = local_identity(&managed).await?;
-                self.check_bot_frozen_identity(&thread.id, &frozen, &expected)
-                    .await?;
-            }
-            return Ok(());
-        }
-        let loaded;
-        let snapshot = match snapshot {
-            Some(snapshot) => snapshot,
-            None => {
-                loaded = self
-                    .services
-                    .store
-                    .load_current_read_only(thread)
-                    .await
-                    .map_err(|error| resource_error("read saved bot child admission", error))?
-                    .ok_or_else(|| {
-                        bot_workspace_refusal(
-                            &thread.id,
-                            "bot child has no saved workspace receipt",
-                        )
-                    })?
-                    .state
-                    .to_paused_snapshot();
-                &loaded
-            }
-        };
+        let snapshot = snapshot.ok_or_else(|| {
+            bot_workspace_refusal(&thread.id, "bot child has no saved workspace receipt")
+        })?;
         let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(|error| resource_error("decode saved bot workspace receipt", error))?
             .ok_or_else(|| {
@@ -289,24 +240,13 @@ impl StudioThreadFactory {
                 "saved bot child has an incompatible worktree/Profile binding; original data was preserved",
             ));
         }
-        let expected = local_identity(&managed).await?;
         let actual = local_identity(Path::new(&assignment.root)).await?;
         let project = local_identity(Path::new(&assignment.project_root)).await?;
-        if actual != expected || project != expected {
+        if &actual != expected || &project != expected {
             return Err(bot_workspace_refusal(
                 &thread.id,
                 "saved bot child execution root differs from its bot-managed canonical root",
             ));
-        }
-        if let Some(frozen) = self
-            .services
-            .store
-            .workspace_identity(&thread.id)
-            .await
-            .map_err(|error| resource_error("read frozen bot child identity", error))?
-        {
-            self.check_bot_frozen_identity(&thread.id, &frozen, &expected)
-                .await?;
         }
         if assignment.mode == AgentWorkspaceMode::Review {
             let target = assignment.review_target.as_ref().ok_or_else(|| {
@@ -316,7 +256,7 @@ impl StudioThreadFactory {
                 &thread.id,
                 &thread.root_thread_id,
                 &target.agent_id,
-                &expected,
+                expected,
             )
             .await?;
         }

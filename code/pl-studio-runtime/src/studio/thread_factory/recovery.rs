@@ -5,10 +5,9 @@
 //! Which entries may touch storage:
 //!
 //! - **May prepare storage** (one-shot schema upgrade or legacy current materialization):
-//!   [`load_current_for_recovery`] and explicit activation/recovery entries that call it,
-//!   including a cold Current reader preparing its first saved baseline.
-//! - **Must never prepare storage**: [`StudioStore::load_current_read_only`] and every projection — directory
-//!   listing, Thread snapshot and interaction reads. They report only an already-complete
+//!   [`load_current_for_recovery`] when called by explicit activation or other storage maintenance.
+//! - **Read-only**: [`StudioStore::load_current_read_only`] and projections such as directory
+//!   listing, Thread snapshot and interaction reads report only an already-complete
 //!   `current.json`; missing and invalid current stay distinct at their normal error boundaries.
 
 use anyhow::Result;

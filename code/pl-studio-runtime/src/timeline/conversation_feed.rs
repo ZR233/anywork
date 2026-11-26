@@ -10,10 +10,6 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use pl_core::thread::UsageSummary;
 
 use crate::history::HistoryReader;
-use crate::{
-    ThreadActivity, ThreadModelRouteSnapshot, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
-    ThreadStorageState, Turn, mode::ThreadModeId,
-};
 
 use super::meta_bus::{MetaEventBus, ThreadMetaEvent};
 use super::models::{
@@ -106,34 +102,16 @@ impl SessionMetaLayer {
         *guard = next.clone();
         Some(next)
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_fields(
-        &self,
-        activity: Option<ThreadActivity>,
-        active_turn: Option<Turn>,
-        usage: UsageSummary,
-        context_metrics: Option<ThreadRuntimeUsage>,
-        model_route: Option<ThreadModelRouteSnapshot>,
-        runtime: Option<ThreadRuntimeSnapshot>,
-        storage_state: Option<ThreadStorageState>,
-        mode: Option<ThreadModeId>,
-    ) -> SessionMetaSnapshot {
-        let mut guard = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.revision += 1;
-        guard.activity = activity;
-        guard.active_turn = active_turn;
-        guard.usage = usage;
-        guard.context_metrics = context_metrics;
-        guard.model_route = model_route;
-        guard.runtime = runtime;
-        guard.storage_state = storage_state;
-        guard.mode = mode;
-        guard.clone()
-    }
+fn attach_bus(
+    reader: &HistoryReader,
+    bus: &MetaEventBus,
+) -> Result<tokio::sync::broadcast::Receiver<ThreadMetaEvent>> {
+    // Subscribe before the cut/replay, and make pending reads available before publishing it.
+    let receiver = bus.subscribe();
+    reader.attach_store(bus.history())?;
+    Ok(receiver)
 }
 
 struct FeedInner {
@@ -258,7 +236,10 @@ impl ConversationFeed {
     ) -> Result<Self> {
         let thread_id = thread_id.into();
         let initial_bus = bus_rx.borrow_and_update().clone();
-        let initial_live_rx = initial_bus.as_ref().map(MetaEventBus::subscribe);
+        let initial_live_rx = initial_bus
+            .as_ref()
+            .map(|bus| attach_bus(&reader, bus))
+            .transpose()?;
         let initial_live = initial_bus
             .as_ref()
             .map_or_else(LiveStatusSnapshot::default, |b| b.live_status().snapshot());
@@ -505,7 +486,25 @@ async fn run_feed_pump(
 
         let mut rx = match initial_live_rx.take() {
             Some(rx) => rx,
-            None => bus.subscribe(),
+            None => {
+                let reader = inner.reader().clone();
+                let Some(reader) = reader else {
+                    return;
+                };
+                match attach_bus(&reader, &bus) {
+                    Ok(rx) => rx,
+                    Err(error) => {
+                        let _ = send_event(
+                            &inner,
+                            ConversationEvent::ResyncRequired {
+                                reason: format!("cannot attach history owner: {error}"),
+                            },
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
         };
 
         if !attached_on_open {
@@ -569,19 +568,6 @@ async fn run_feed_pump(
                                 timeline = inner.timeline.lock() => timeline,
                             };
                             let evs = timeline.on_history_record(&record, input_id.as_deref());
-                            if !emit_events(&inner, evs).await {
-                                return;
-                            }
-                        }
-                        Ok(ThreadMetaEvent::Live(live_ev)) => {
-                            let evs = {
-                                let mut tl = tokio::select! {
-                                    biased;
-                                    () = inner.cancel.cancelled() => return,
-                                    tl = inner.timeline.lock() => tl,
-                                };
-                                tl.on_live_event(&live_ev)
-                            };
                             if !emit_events(&inner, evs).await {
                                 return;
                             }

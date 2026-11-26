@@ -1,6 +1,7 @@
 //! Publication retries consume the durable deletion transaction after directory removal.
 use super::*;
 use crate::studio::thread_factory::mcp::tests::install_failed_watcher;
+use crate::thread_assembler::test_support::CorruptCurrentAfterLoad;
 use std::sync::Arc;
 
 async fn publication_retry(restart: bool) -> Result<()> {
@@ -104,17 +105,17 @@ impl std::fmt::Debug for FailedRestoreFactory {
 }
 
 impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
-    async fn prepare_root(
+    async fn prepare_execution(
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
     ) -> std::result::Result<
         (
-            crate::DelegationSettings,
+            Option<crate::DelegationSettings>,
             Option<pl_core::thread::current::ThreadCurrent>,
         ),
         crate::thread_assembler::ThreadAssemblyError,
     > {
-        self.native.prepare_root(identity).await
+        self.native.prepare_execution(identity).await
     }
 
     async fn prepare(
@@ -126,7 +127,18 @@ impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
     > {
         use crate::thread_assembler::ThreadAssemblyError;
         let id = request.identity.id().to_owned();
+        let expected = request
+            .current
+            .as_ref()
+            .expect("real cold restoration supplied its checkpoint");
+        let expected = serde_json::to_vec(expected).expect("encode fixture checkpoint");
         let spec = self.native.prepare(request).await?;
+        let prepared = serde_json::to_vec(spec.current.as_ref().expect("prepared checkpoint"))
+            .expect("encode prepared checkpoint");
+        assert!(
+            prepared == expected,
+            "assembly changed the complete canonical checkpoint"
+        );
         let scope = self.native.resource_scope(&id).expect("real Native scope");
         let mcp = scope.mcp.lock().unwrap().clone().expect("real MCP owner");
         install_failed_watcher(&mcp, "cold restoration MCP watcher failed")
@@ -185,6 +197,25 @@ async fn delete_waits_for_failed_only_cold_preparation() -> Result<()> {
                 .unwrap()
                 .published
         );
+        let resumed = session
+            .activate(
+                identity.clone(),
+                CorruptCurrentAfterLoad::with_pending_model_input(
+                    runtime.thread_factory.clone(),
+                    &runtime.store,
+                    &root.id,
+                )
+                .await?,
+            )
+            .await?;
+        assert!(
+            session
+                .thread(&root.id)
+                .is_some_and(|owner| owner.same_instance(&resumed))
+        );
+        CorruptCurrentAfterLoad::assert_recovered_model_input(&resumed).await?;
+        session.close(&root.id).await?;
+        assert!(session.observed_thread(&root.id).is_none());
         let restore = session
             .activate(
                 identity,

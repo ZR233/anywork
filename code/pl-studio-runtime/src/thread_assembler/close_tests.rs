@@ -80,10 +80,11 @@ struct RefusedFactory {
     panic: bool,
 }
 impl StudioActivationFactory for RefusedFactory {
-    async fn prepare_root(
+    async fn prepare_execution(
         &self,
         identity: &ThreadActivation,
-    ) -> Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError> {
+    ) -> Result<(Option<crate::DelegationSettings>, Option<ThreadCurrent>), ThreadAssemblyError>
+    {
         register_member(
             &self.owner,
             identity.id(),
@@ -106,7 +107,7 @@ impl StudioActivationFactory for RefusedFactory {
         ))
     }
     async fn prepare(&self, _: ThreadPreparation) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-        unreachable!("root delegation refuses before physical tool preparation")
+        unreachable!("execution preflight refuses before physical tool preparation")
     }
 }
 

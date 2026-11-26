@@ -6156,7 +6156,7 @@ mod migration_tests {
     }
 
     #[tokio::test]
-    async fn cold_conversation_feed_prepares_schema24_before_history_is_opened()
+    async fn cold_conversation_feed_preserves_schema24_until_explicit_maintenance()
     -> anyhow::Result<()> {
         use crate::runtime_test_support::Environment;
         let mut env = Environment::new(vec![], vec![]).await?;
@@ -6177,9 +6177,25 @@ mod migration_tests {
             }
             std::fs::create_dir_all(paths.root())?;
             write_v24_fixture(&paths.history_database(), &thread.id, true).await?;
+            let original = std::fs::read(paths.history_database())?;
             assert!(!paths.current_file().exists());
             env.restart().await?;
             assert!(!paths.current_file().exists());
+            assert!(
+                env.runtime
+                    .open_conversation_feed(&thread.id, 16)
+                    .await
+                    .is_err()
+            );
+            assert!(env.runtime.thread_session_meta(&thread.id).await.is_err());
+            assert_eq!(std::fs::read(paths.history_database())?, original);
+            assert!(!paths.current_file().exists());
+            assert!(!paths.root().join("migration-backups").exists());
+            assert!(env.root_provider.recorded().is_empty());
+            // Only the explicit maintenance boundary may create Current and upgrade History.
+            let report =
+                upgrade_history(&paths.history_database(), &thread.id, paths.root()).await?;
+            assert_eq!(report.status, UpgradeStatus::Upgraded);
             let feed = env.runtime.open_conversation_feed(&thread.id, 16).await?;
             let meta = feed.session_meta_snapshot();
             assert!(!meta.execution_present);

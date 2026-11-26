@@ -221,7 +221,7 @@ impl StudioStore {
             }
             return Ok(());
         }
-        self.begin_removal_preparation(identity, published).await
+        self.record_thread_preparation(identity, published).await
     }
 
     pub(crate) async fn thread_preparations(&self) -> Result<Vec<ThreadPreparationRecord>> {
@@ -247,12 +247,12 @@ impl StudioStore {
                 .load_current()
                 .await?
                 .is_some();
-        self.begin_removal_preparation(identity, published_root)
+        self.record_thread_preparation(identity, published_root)
             .await
     }
 
-    /// Deletion already owns directory/preparation identities and must not open cold history.
-    pub(in crate::studio) async fn begin_removal_preparation(
+    /// Records preparation using the caller's known publication baseline, without loading Current.
+    pub(in crate::studio) async fn record_thread_preparation(
         &self,
         identity: PreparationIdentity,
         published: bool,

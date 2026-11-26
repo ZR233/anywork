@@ -200,27 +200,18 @@ impl StudioSessionOwner {
         self.authorize(caller, target).await?;
         let record = self.record(target).await?;
         self.recovery.ensure_thread_read_access(&record)?;
-        let live = owner
-            .observed_thread(target)
-            .map(|thread| thread.snapshot());
-        let resources = self
-            .factory
-            .verify_execution_workspace(
-                &record,
-                live.as_ref(),
-                crate::studio::thread_factory::ExecutionWorkspaceCheck::Prepare,
-            )
-            .await;
-        self.events.emit_recovery_state(
-            self.recovery
-                .apply_execution_workspace_check(&record, resources.as_ref().err()),
-        );
-        resources?;
-        self.recovery.ensure_thread_execution_access(&record)?;
         anyhow::ensure!(
             self.direct_child(caller, target)? && !record.archived,
             "only an active direct child can be resumed"
         );
+        if let Some(thread) = owner.thread(target) {
+            self.factory
+                .verify_and_report_execution_workspace(&record, Some(&thread.snapshot()))
+                .await?;
+            self.recovery.ensure_thread_execution_access(&record)?;
+            owner.ensure_agent_admission_open(target)?;
+            return Ok(());
+        }
         let activated = owner.activate(activation, self.factory.clone()).await;
         if let Err(error) = activated {
             // An internal scheduling activation is the same product fact as an explicit one, so its
@@ -236,6 +227,8 @@ impl StudioSessionOwner {
             }
             return Err(error.into());
         }
+        self.recovery.ensure_thread_execution_access(&record)?;
+        owner.ensure_agent_admission_open(target)?;
         Ok(())
     }
 

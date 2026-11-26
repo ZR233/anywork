@@ -287,9 +287,9 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
     );
 
     let meta = SessionMetaLayer::empty("thread-1").snapshot();
+    let reader = HistoryStore::open_reader(&db_path, "thread-1", HistoryLimits::default()).await?;
     let feed =
-        ConversationFeed::open_static("thread-1", store.reader(), Some(bus.clone()), meta, 64)
-            .await?;
+        ConversationFeed::open_static("thread-1", reader, Some(bus.clone()), meta, 64).await?;
 
     // Drain initial Reset + LiveStatus(Idle) + SessionMeta.
     let reset = feed.next_event().await.unwrap();
@@ -1045,25 +1045,43 @@ async fn cold_opened_feed_transitions_seamlessly_when_bus_attaches() -> Result<(
         "turn-old",
         &db_id,
     )?;
-    prior_bus.admit_and_broadcast(vec![prior_input]).await?;
+    let prior_reply = make_text_event(
+        "reply-old",
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Boundary,
+        HistoryEntityKind::Text,
+        Some(ThreadTextChannel::Final),
+        "old reply",
+        "turn-old",
+        &db_id,
+    )?;
+    prior_bus
+        .admit_and_broadcast(vec![prior_input, prior_reply])
+        .await?;
+    store.flush().await?;
     prior_bus.close().await;
 
     // Open ConversationFeed while no bus is active (bus_tx = None).
     let (bus_tx, bus_rx) = tokio::sync::watch::channel(None);
     let feed = ConversationFeed::open(
         "thread-cold-live",
-        store.reader(),
+        HistoryStore::open_reader(&db_path, "thread-cold-live", HistoryLimits::default()).await?,
         bus_rx,
         SessionMetaLayer::empty("thread-cold-live").snapshot(),
-        64,
+        1,
     )
     .await?;
 
-    let reset = feed.next_event().await.unwrap();
-    assert!(matches!(
-        reset,
-        ConversationEvent::Timeline(TimelinePatch::Reset { items, .. }) if items.len() == 1
-    ));
+    let Some(ConversationEvent::Timeline(TimelinePatch::Reset {
+        items,
+        older_cursor,
+        ..
+    })) = feed.next_event().await
+    else {
+        panic!("cold feed should open with a reset");
+    };
+    assert_eq!(items.len(), 1);
+    let older_cursor = older_cursor.expect("cold cut must have an older page");
     let _ = feed.next_event().await.unwrap(); // initial Idle LiveStatus
     let _ = feed.next_event().await.unwrap(); // initial SessionMeta
 
@@ -1125,6 +1143,75 @@ async fn cold_opened_feed_transitions_seamlessly_when_bus_attaches() -> Result<(
     }
     assert!(saw_new_user && saw_stream);
     assert_eq!(store.read_query_count(), reads_before_attach);
+
+    let paused_flush = store.pause_flush().await;
+    let work = make_tool_event(
+        "live-tool-completed",
+        "new-call",
+        "shell",
+        HistoryEventKind::ToolCompleted,
+        "{}",
+        Some("result"),
+        "turn-new",
+        &db_id,
+    )?;
+    let long_reply = "pending long reply ".repeat(4096);
+    let reply = make_text_event(
+        "reply-new",
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Boundary,
+        HistoryEntityKind::Text,
+        Some(ThreadTextChannel::Final),
+        &long_reply,
+        "turn-new",
+        &db_id,
+    )?;
+    let sequences = live_bus.admit_and_broadcast(vec![work, reply]).await?;
+    let (members, body_ref) = loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), feed.next_event())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("feed closed before the new work group"))?;
+        if let ConversationEvent::Timeline(TimelinePatch::Append { items }) = event
+            && let Some(TimelineItem::WorkGroup {
+                after_boundary_seq,
+                before_boundary_seq,
+                ..
+            }) = items.first()
+        {
+            let members = feed
+                .load_work_group_members(*after_boundary_seq, *before_boundary_seq)
+                .await?;
+            let Some(TimelineItem::AssistantText {
+                body_ref: Some(reference),
+                ..
+            }) = items.get(1)
+            else {
+                panic!("new long reply must expose its body reference");
+            };
+            break (members, reference.clone());
+        }
+    };
+    assert!(store.durable_head() < sequences[0]);
+    assert!(
+        matches!(members.as_slice(), [WorkGroupMember::ToolCall { call_id, .. }] if call_id == "new-call")
+    );
+    assert!(body_ref.inline_text.is_none());
+    let offset = 65_536;
+    let window = feed.read_body_window(&body_ref, offset, 4096).await?;
+    assert_eq!(window.offset, offset);
+    assert_eq!(window.total_bytes, long_reply.len() as u64);
+    assert_eq!(
+        window.text.as_deref(),
+        Some(&long_reply[offset as usize..offset as usize + 4096])
+    );
+    assert!(!window.eof);
+    assert!(store.durable_head() < sequences[0]);
+    assert!(matches!(
+        feed.load_older(older_cursor, 4).await?,
+        TimelinePatch::PrependOlder { items, .. } if items.iter().any(|item|
+            matches!(item, TimelineItem::UserMessage { text, .. } if text == "hello"))
+    ));
+    drop(paused_flush);
 
     bus_tx.send(None)?;
     let idle_revision = loop {
@@ -1348,7 +1435,7 @@ async fn idle_and_restarted_tail_waits_for_boundary_with_or_without_prior_bounda
 }
 
 #[tokio::test]
-async fn live_work_ignores_status_and_hidden_events_until_boundary() -> Result<()> {
+async fn live_work_ignores_hidden_events_until_boundary() -> Result<()> {
     let mut layer = super::timeline_layer::TimelineDataLayer::new();
 
     let mut work1 = make_tool_event(
@@ -1364,21 +1451,6 @@ async fn live_work_ignores_status_and_hidden_events_until_boundary() -> Result<(
     work1.seq = 10;
     assert!(layer.on_history_record(&work1.to_record(), None).is_empty());
 
-    let seal1 = layer.on_live_event(&CoreLiveEvent::TextStreamStarted {
-        attempt_id: "att-1".into(),
-        item_id: "txt-1".into(),
-        generation: 0,
-    });
-    assert!(seal1.is_empty());
-    assert!(
-        layer
-            .on_live_event(&CoreLiveEvent::CompactionStarted {
-                turn_id: Some("turn-1".into()),
-                revision: 1,
-                manual: false,
-            })
-            .is_empty()
-    );
     let mut ended = HistoryEvent::new(
         "ended",
         HistoryEventKind::TurnEnded,

@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::Result;
-use pl_core::thread::{CoreCommitEvent, CoreEvent, CoreEventSink, CoreLiveEvent, HistoryExport};
+use pl_core::thread::{CoreCommitEvent, CoreEvent, CoreEventSink, HistoryExport};
 use pl_core::usage::UsageOutcome;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -53,7 +53,6 @@ pub enum ThreadMetaEvent {
         input_id: Option<String>,
         turn_id: Option<String>,
     },
-    Live(CoreLiveEvent),
     LiveStatus(Arc<LiveStatusSnapshot>),
     SessionMeta(Arc<SessionMetaSnapshot>),
     Closed,
@@ -409,7 +408,6 @@ async fn run_serial_actor(
                         if let Some(snapshot) = inner.live_status.on_live_event(&live) {
                             let _ = inner.broadcast.send(ThreadMetaEvent::LiveStatus(Arc::new(snapshot)));
                         }
-                        let _ = inner.broadcast.send(ThreadMetaEvent::Live(live));
                     }
                     CoreEvent::Durable(commit) => {
                         let commit_seq = commit.export.effect.sequence;

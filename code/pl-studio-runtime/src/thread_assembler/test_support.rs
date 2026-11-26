@@ -57,6 +57,99 @@ pub(crate) async fn current_message_identity(
                 })
         }))
 }
+
+/// Replaces the disk file after the real coordinator has obtained its checkpoint.
+#[derive(Debug)]
+pub(crate) struct CorruptCurrentAfterLoad {
+    native: crate::studio::StudioThreadFactory,
+    path: std::path::PathBuf,
+}
+
+const PENDING_MODEL_INPUT: &str = "model step input saved before interruption";
+
+impl CorruptCurrentAfterLoad {
+    pub(crate) async fn with_pending_model_input(
+        native: crate::studio::StudioThreadFactory,
+        store: &StudioStore,
+        id: &str,
+    ) -> Result<Self> {
+        use pl_core::thread::current::{CurrentModelCall, PendingStepInput, SavedModelPhase};
+
+        let paths = store.registered_session_paths(id)?;
+        let mut current = store
+            .state_for(paths.workspace_id(), id)?
+            .load_current()
+            .await?
+            .context("closed fixture has a checkpoint")?;
+        current.model_call = Some(CurrentModelCall {
+            source_run_id: current.saved_runtime_epoch,
+            source_execution_id: "interrupted-execution".into(),
+            source_turn_id: "interrupted-turn".into(),
+            source_attempt_id: "interrupted-attempt".into(),
+            tools: Arc::from([]),
+            tool_call_mode: pl_core::model::ToolCallMode::Sequential,
+            solo_tool_ids: Arc::from([]),
+            prepared_parameters: None,
+            phase: SavedModelPhase::Preparing {
+                pending_step_input: Some(PendingStepInput {
+                    content: vec![ContextContent::Text {
+                        text: PENDING_MODEL_INPUT.into(),
+                    }],
+                }),
+            },
+        });
+        current.validate(id)?;
+        let path = paths.current_file();
+        tokio::fs::write(&path, serde_json::to_vec(&current)?).await?;
+        Ok(Self { native, path })
+    }
+
+    pub(crate) async fn assert_recovered_model_input(thread: &ThreadHandle) -> Result<()> {
+        use pl_core::thread::current::SavedModelPhase;
+
+        let current = thread.capture_current(Default::default()).await?;
+        let call = current.model_call.context("restored model call")?;
+        let SavedModelPhase::Preparing {
+            pending_step_input: Some(input),
+        } = call.phase
+        else {
+            anyhow::bail!("restoration lost the unexecuted model input")
+        };
+        assert_eq!(
+            input.content,
+            vec![ContextContent::Text {
+                text: PENDING_MODEL_INPUT.into(),
+            }]
+        );
+        Ok(())
+    }
+}
+
+impl StudioActivationFactory for CorruptCurrentAfterLoad {
+    async fn prepare_execution(
+        &self,
+        identity: &ThreadActivation,
+    ) -> Result<(Option<crate::DelegationSettings>, Option<ThreadCurrent>), ThreadAssemblyError>
+    {
+        let prepared = self.native.prepare_execution(identity).await?;
+        assert!(prepared.1.is_some(), "real cold checkpoint was loaded");
+        tokio::fs::write(
+            &self.path,
+            b"invalid current after the checkpoint was loaded",
+        )
+        .await
+        .map_err(storage_error)?;
+        Ok(prepared)
+    }
+
+    async fn prepare(
+        &self,
+        request: ThreadPreparation,
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        StudioActivationFactory::prepare(&self.native, request).await
+    }
+}
+
 pub(crate) async fn history_parent_report(
     history: &crate::history::HistoryStore,
     thread: &str,

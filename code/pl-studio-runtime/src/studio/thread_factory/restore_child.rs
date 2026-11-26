@@ -52,25 +52,14 @@ impl StudioThreadFactory {
             ));
         }
         let protocol_thread: crate::Thread = thread.clone().into();
-        self.verify_saved_bot_execution_workspace(&protocol_thread, None)
+        let mut current = request.current.ok_or_else(|| {
+            ThreadAssemblyError::Identity(format!("child {id} has no saved current"))
+        })?;
+        let mut restored = current.state.to_paused_snapshot();
+        self.admit_saved_execution(&protocol_thread, Some(&restored))
             .await?;
-        self.verify_execution_workspace(
-            &protocol_thread,
-            None,
-            super::ExecutionWorkspaceCheck::Prepare,
-        )
-        .await
-        .map_err(Self::workspace_usage_error)?;
-        let mut current =
-            super::recovery::load_current_for_recovery(&self.services.store, &protocol_thread)
-                .await
-                .map_err(|error| resource_error("load Thread current", error))?
-                .ok_or_else(|| {
-                    ThreadAssemblyError::Identity(format!("child {id} has no saved current"))
-                })?;
         // Core Closed belongs to the previous owner (including graceful host shutdown).
         // Only Studio's durable explicit-close intent prohibits a new execution incarnation.
-        let restored = current.state.to_paused_snapshot();
         if crate::studio::agent_close::is_explicitly_closed(&restored)
             .map_err(|error| resource_error("read child close intent", error))?
         {
@@ -126,14 +115,10 @@ impl StudioThreadFactory {
         })?;
         // Instruction migration only rewrites the frozen extension payload. Keep the complete
         // current state intact instead of round-tripping it through a legacy checkpoint.
-        let mut migrated = current.state.to_paused_snapshot();
-        crate::instruction::migrate_saved_representation(&mut migrated, &saved_identity)
+        crate::instruction::migrate_saved_representation(&mut restored, &saved_identity)
             .map_err(|error| resource_error("migrate saved child instructions", error))?;
-        crate::plan_tool::migrate_saved_plan(&mut migrated)
-            .map_err(|error| resource_error("migrate saved child plan", error))?;
-        current.state.extensions = migrated.extensions;
-        current.state.extension_sequence = migrated.extension_sequence;
-        let restored = current.state.to_paused_snapshot();
+        current.state.extensions = restored.extensions.clone();
+        current.state.extension_sequence = restored.extension_sequence;
         let route_selector = crate::studio::model_route::profile_route(&profile)
             .map_err(|error| resource_error("read saved child model route", error))?;
         let resolved = crate::studio::delegation::resolve_child_route(&config, &profile);

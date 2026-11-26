@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct Observation {
     owner: std::sync::Weak<crate::session::NativeResources>,
     thread: ThreadHandle,
@@ -112,6 +115,8 @@ struct Shared {
     delivery_closed: tokio_util::sync::CancellationToken,
     projector: ObservationServices,
     observations: Mutex<BTreeMap<String, Vec<std::sync::Weak<Observation>>>>,
+    #[cfg(test)]
+    source_selection_pause: Mutex<Option<tests::SourceSelectionPause>>,
     /// Stable passive slots survive absent → live → absent transitions.
     live: Mutex<BTreeMap<String, Arc<ObservationSlot>>>,
 }
@@ -140,6 +145,8 @@ impl ThreadObservations {
             delivery_closed: Default::default(),
             projector,
             observations: Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            source_selection_pause: Mutex::default(),
             live: Mutex::new(BTreeMap::new()),
         }))
     }
@@ -155,6 +162,87 @@ impl ThreadObservations {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .and_then(|slot| slot.meta_bus())
+    }
+
+    /// Borrows the registered projection's source without activating execution or waiting for disk.
+    pub(in crate::studio::runtime) async fn ready_bus(
+        &self,
+        id: &str,
+        bus: &mut watch::Receiver<Option<crate::timeline::MetaEventBus>>,
+    ) -> Result<Option<crate::timeline::MetaEventBus>> {
+        loop {
+            anyhow::ensure!(
+                !self.0.delivery_closed.is_cancelled(),
+                "Thread observation delivery closed"
+            );
+            let observation = self.observations(Some(id)).pop().map(|(_, owner)| owner);
+            #[cfg(test)]
+            {
+                let pause = self
+                    .0
+                    .source_selection_pause
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(pause) = pause {
+                    pause.selected.cancel();
+                    pause.resume.cancelled().await;
+                }
+            }
+            let current = bus.borrow_and_update().clone();
+            // A reader's old Arc does not prevent close and a new incarnation. Do not apply the
+            // old owner's finished/error state to a source published while sampling the bus.
+            let same_observation = {
+                let all = self
+                    .0
+                    .observations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let registered = all
+                    .get(id)
+                    .and_then(|entries| entries.iter().rev().find_map(std::sync::Weak::upgrade));
+                match (observation.as_ref(), registered.as_ref()) {
+                    (Some(selected), Some(registered)) => Arc::ptr_eq(selected, registered),
+                    (None, None) => true,
+                    _ => false,
+                }
+            };
+            if !same_observation {
+                continue;
+            }
+            anyhow::ensure!(
+                observation
+                    .as_ref()
+                    .is_none_or(|owner| !owner.state.deletion.is_cancelled()),
+                "Thread observation deleted"
+            );
+            if let Some(current) = current
+                && observation
+                    .as_ref()
+                    .is_none_or(|owner| owner.thread.runtime_epoch() == current.runtime_epoch())
+            {
+                return Ok(Some(current));
+            }
+            let Some(observation) = observation else {
+                return Ok(None);
+            };
+            let mut progress = observation.state.progress.subscribe();
+            let current = progress.borrow_and_update().clone();
+            if let Some(error) = current.error {
+                bail!("Thread {id} product observation failed: {error:#}");
+            }
+            if current.finished {
+                return Ok(None);
+            }
+            tokio::select! {
+                biased;
+                () = self.0.delivery_closed.cancelled() => bail!("Thread observation delivery closed"),
+                () = observation.state.deletion.cancelled() => bail!("Thread observation deleted"),
+                changed = bus.changed() => changed.context("Thread observation source closed")?,
+                changed = progress.changed() => changed.context("Thread observation progress closed")?,
+                joined = observation.join() => joined?,
+            }
+        }
     }
 
     /// End outward delivery before joining producers; their original save
@@ -384,6 +472,13 @@ impl ThreadObservations {
         let worker_thread = thread.clone();
         let worker_id = id.clone();
         let deletion = state.deletion.clone();
+        // Registering and starting the original worker share this admission boundary: readers
+        // cannot observe a published source before its lifecycle is available to wait on.
+        let mut all = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let task = tokio::spawn(async move {
             tokio::select! {
                 biased;
@@ -410,11 +505,6 @@ impl ThreadObservations {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(observation.clone());
-        let mut all = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = all.entry(id).or_default();
         previous.retain(|entry| entry.strong_count() > 0);
         previous.push(Arc::downgrade(&observation));

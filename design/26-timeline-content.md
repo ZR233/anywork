@@ -22,7 +22,7 @@ flowchart TD
         EventCh -->|"次优先"| Loop
         Loop -->|"唯一通道 CoreEvent"| Bus
         Bus -->|"1. 纯内存入队"| Unflushed
-        Bus -->|"2. 广播 ThreadMetaEvent"| LiveSM
+        Bus -->|"更新瞬态状态"| LiveSM
         Bus -->|"2. 广播 ThreadMetaEvent"| TimelineLive
         Bus -->|"2. 广播 ThreadMetaEvent"| SessionMeta
     end
@@ -36,7 +36,7 @@ flowchart TD
 
         Loop -.->|"异步快照写沉"| CurrentWriter
         CurrentWriter -.->|"写"| CurrentFile
-        CurrentFile -.->|"仅冷启动读一次"| Loop
+        CurrentFile -.->|"每代执行准备统一加载"| Loop
         Unflushed -.->|"异步批量落盘"| FlushWorker
         FlushWorker -.->|"INSERT 后回收"| HistoryDB
         HistoryDB -.->|"仅冷启动读 MAX seq"| Bus

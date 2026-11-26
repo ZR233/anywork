@@ -515,7 +515,7 @@ async fn permanent_delete_cold_missing_or_unreadable_history_skips_storage_and_t
         let host = runtime.store.session_paths(&project.id, &root.id)?;
         runtime
             .store
-            .begin_removal_preparation(
+            .record_thread_preparation(
                 PreparationIdentity {
                     thread_id: root.id.clone(),
                     workspace_id: project.id.clone(),
@@ -1478,7 +1478,7 @@ mod required {
             let id = "cold-private-child";
             runtime
                 .store
-                .begin_removal_preparation(
+                .record_thread_preparation(
                     PreparationIdentity {
                         thread_id: id.into(),
                         workspace_id: project.id.clone(),
@@ -1591,7 +1591,7 @@ mod required {
         };
         runtime
             .store
-            .begin_removal_preparation(identity, false)
+            .record_thread_preparation(identity, false)
             .await?;
         runtime
             .store
@@ -1870,7 +1870,7 @@ mod required {
                 .await?;
             runtime
                 .store
-                .begin_removal_preparation(
+                .record_thread_preparation(
                     PreparationIdentity {
                         thread_id: root.id.clone(),
                         workspace_id: project.id.clone(),
@@ -2361,7 +2361,7 @@ mod recovery {
             )?;
             runtime
                 .store
-                .begin_removal_preparation(
+                .record_thread_preparation(
                     PreparationIdentity {
                         thread_id: (*id).into(),
                         workspace_id: workspace_id.into(),

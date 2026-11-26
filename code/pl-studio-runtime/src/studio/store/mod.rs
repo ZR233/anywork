@@ -108,9 +108,11 @@ impl StudioStore {
         let path = session.history_database();
         if !tokio::fs::try_exists(&path).await? {
             let state = self.state_for(workspace_id, thread_id)?;
-            // Only the named maintenance boundary may import a v2 TOML-only session. A normal
-            // current file wins; stale legacy originals are retained as evidence, never a fallback.
-            if state.load_current().await?.is_none() && state.legacy_checkpoint().await?.is_some() {
+            // Only the named maintenance boundary may import a v2 TOML-only session. The
+            // presence of Current prevents import. Its reader owns decoding and validation.
+            if !tokio::fs::try_exists(session.root().join(super::paths::CURRENT_FILE_NAME)).await?
+                && state.legacy_checkpoint().await?.is_some()
+            {
                 self.thread_persistence
                     .retire_history_for_upgrade(thread_id)
                     .await?;
@@ -136,7 +138,7 @@ impl StudioStore {
             .install_shared_history(thread_id, &opened))
     }
 
-    /// Opens an existing history independently from current; schema 24 alone uses maintenance.
+    /// Opens an existing history without preparing or migrating storage.
     pub(crate) async fn open_history_reader(
         &self,
         thread_id: &str,
@@ -159,7 +161,6 @@ impl StudioStore {
             )
             .into());
         }
-        crate::history::upgrade_history(&path, thread_id, paths.root()).await?;
         crate::history::HistoryStore::open_reader(
             path,
             thread_id,

@@ -129,133 +129,125 @@ impl LiveOwner {
         persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) -> Result<Self> {
         let channel = state.channel.clone();
-        let id = thread.id.as_str();
-        let conversation = projector.store.conversation_store(id).await?;
+        let id = thread.id.clone();
+        let conversation = projector.store.conversation_store(&id).await?;
         let binding = projector
-            .session_of(id)
-            .map(|session| session.projection_storage_binding(id))
+            .session_of(&id)
+            .map(|session| session.projection_storage_binding(&id))
             .transpose()?
             .flatten()
             .context("execution has no storage binding")?;
         conversation.attach_execution(&binding).await?;
-        conversation.attach_current(handle.clone()).await?;
-        let history = projector.store.history(id).await?;
+        let history = projector.store.history(&id).await?;
         let history_reader = history.reader();
         let runtime_epoch = handle.runtime_epoch();
         let bus = MetaEventBus::open(thread.clone(), history.clone(), runtime_epoch);
-        match handle.attach_event_sink(Arc::new(bus.sink())).await {
-            Ok(()) | Err(pl_core::thread::ThreadError::Closed) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let attached_commit_floor = handle.snapshot().commit_sequence;
-        slot.install_bus(bus.clone());
-        let usage = snapshot.usage_summary.clone();
-        let runtime_epoch = handle.runtime_epoch();
-        let initialized = conversation
-            .initialize_projection(Arc::new({
-                let channel = channel.clone();
-                let thread = thread.clone();
-                let snapshot = snapshot.clone();
-                let usage = usage.clone();
-                move || {
-                    let (channel, thread, snapshot, usage, history, runtime_epoch) = (
-                        channel.clone(),
-                        thread.clone(),
-                        snapshot.clone(),
-                        usage.clone(),
-                        history.clone(),
-                        runtime_epoch,
-                    );
-                    Box::pin(async move {
-                        let mut projection = LiveProjection::new();
-                        projection.bind_execution(
-                            channel.order_index(),
+        let prepared = async {
+            conversation.attach_current(handle.clone()).await?;
+            match handle.attach_event_sink(Arc::new(bus.sink())).await {
+                Ok(()) | Err(pl_core::thread::ThreadError::Closed) => {}
+                Err(error) => return Err(error.into()),
+            }
+            let attached_commit_floor = handle.snapshot().commit_sequence;
+            let usage = snapshot.usage_summary.clone();
+            let runtime_epoch = handle.runtime_epoch();
+            conversation
+                .initialize_projection(Arc::new({
+                    let channel = channel.clone();
+                    let thread = thread.clone();
+                    let snapshot = snapshot.clone();
+                    let usage = usage.clone();
+                    move || {
+                        let (channel, thread, snapshot, usage, history, runtime_epoch) = (
+                            channel.clone(),
+                            thread.clone(),
+                            snapshot.clone(),
+                            usage.clone(),
+                            history.clone(),
                             runtime_epoch,
-                            history.database_id().to_owned(),
-                        )?;
-                        projection.mark_bus_admitted();
-                        projection.restore_current(&thread, &snapshot)?;
-                        Ok(RetainedProjection {
-                            projection,
-                            pending: None,
-                            usage,
+                        );
+                        Box::pin(async move {
+                            let mut projection = LiveProjection::new();
+                            projection.bind_execution(
+                                channel.order_index(),
+                                runtime_epoch,
+                                history.database_id().to_owned(),
+                            )?;
+                            projection.mark_bus_admitted();
+                            projection.restore_current(&thread, &snapshot)?;
+                            Ok(RetainedProjection {
+                                projection,
+                                pending: None,
+                                usage,
+                            })
                         })
-                    })
-                }
-            }))
-            .await;
-        if let Err(error) = initialized {
-            slot.retire_bus(&bus);
-            bus.close().await;
-            return match conversation
-                .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
-                .await
-            {
-                Ok(()) => Err(error),
-                Err(close) => Err(error.context(format!(
-                    "closing current after projection initialization failure: {close:#}"
-                ))),
+                    }
+                }))
+                .await?;
+            let retained = ProjectionLease::claim(conversation.clone())?;
+            let storage_published = persistence.map(|detail| storage_state(snapshot, detail));
+            let runtime = crate::studio::thread_projection::project_runtime(
+                &id,
+                snapshot,
+                thread.updated_at,
+                &usage,
+            )?;
+            let mut model_route = crate::studio::model_route::projected(snapshot)?;
+            let (config, catalog) = projector.config.read_with_catalog()?;
+            crate::studio::model_route::annotate_availability(
+                model_route.as_mut(),
+                &thread,
+                &config.config,
+            )?;
+            let runtime_published = Some(runtime);
+            let model_route_published = model_route;
+            let last_turn_published = slot.last_turn().map(|turn| (*turn).clone());
+            let mut owner = Self {
+                history_reader,
+                native_directory: state.native_directory.clone(),
+                terminal_transfer: state.terminal_transfer.clone(),
+                terminal_revocation: state.reconciliation_through.clone(),
+                terminal_floor: state.progress.borrow().applied,
+                first_send: state.observed_before_execution,
+                config: projector.config.clone(),
+                qualification_revision: catalog.revision,
+                retained,
+                binding,
+                activity_published: None,
+                runtime_published,
+                model_route_published,
+                storage_published,
+                last_turn_published,
+                meta_revision: 1,
+                channel,
+                thread,
+                bus: bus.clone(),
+                slot,
+                attached_commit_floor,
             };
+            owner.publish_retained()?;
+            owner.publish_session_meta(snapshot)?;
+            // Subscribers only see a source whose history and first metadata are ready. The attached
+            // sink already retains events produced while this owner was being initialized.
+            owner.slot.install_bus(owner.bus.clone());
+            Ok(owner)
         }
-        let retained = match ProjectionLease::claim(conversation.clone()) {
-            Ok(retained) => retained,
+        .await;
+        match prepared {
+            Ok(owner) => Ok(owner),
             Err(error) => {
-                slot.retire_bus(&bus);
                 bus.close().await;
-                return match conversation
+                match conversation
                     .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
                     .await
                 {
                     Ok(()) => Err(error),
                     Err(close) => Err(error.context(format!(
-                        "closing current after projection ownership failure: {close:#}"
+                        "closing current after observation initialization failure: {close:#}"
                     ))),
-                };
+                }
             }
-        };
-        let storage_published = persistence.map(|detail| storage_state(snapshot, detail));
-        let runtime = crate::studio::thread_projection::project_runtime(
-            id,
-            snapshot,
-            thread.updated_at,
-            &usage,
-        )?;
-        let mut model_route = crate::studio::model_route::projected(snapshot)?;
-        let (config, catalog) = projector.config.read_with_catalog()?;
-        crate::studio::model_route::annotate_availability(
-            model_route.as_mut(),
-            &thread,
-            &config.config,
-        )?;
-        let runtime_published = Some(runtime);
-        let model_route_published = model_route;
-        let last_turn_published = slot.last_turn().map(|turn| (*turn).clone());
-        let mut owner = Self {
-            history_reader,
-            native_directory: state.native_directory.clone(),
-            terminal_transfer: state.terminal_transfer.clone(),
-            terminal_revocation: state.reconciliation_through.clone(),
-            terminal_floor: state.progress.borrow().applied,
-            first_send: state.observed_before_execution,
-            config: projector.config.clone(),
-            qualification_revision: catalog.revision,
-            retained,
-            binding,
-            activity_published: None,
-            runtime_published,
-            model_route_published,
-            storage_published,
-            last_turn_published,
-            meta_revision: 1,
-            channel,
-            thread,
-            bus,
-            slot,
-            attached_commit_floor,
-        };
-        owner.publish_retained()?;
-        owner.publish_session_meta(snapshot)?;
-        Ok(owner)
+        }
     }
 
     /// Publishes how much this projection currently retains in its own tables.
@@ -908,6 +900,7 @@ impl LiveOwner {
 impl Drop for LiveOwner {
     fn drop(&mut self) {
         self.slot.retire_bus(&self.bus);
-        self.binding.conversation.detach_execution(&self.binding);
+        // The execution's storage binding owns attachment through all retries and close joins.
+        // Dropping a failed projection must not revoke that still-resident binding.
     }
 }

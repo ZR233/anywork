@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use pl_core::thread::{ThreadHandle, extensions::ExtensionMutation};
 use pl_tool::workspace::SessionFiles;
 
-use crate::thread_assembler::test_support::CloseFactoryFixture;
+use crate::thread_assembler::test_support::{
+    CloseFactoryFixture, CorruptCurrentAfterLoad, spawn_live_projection_for_thread,
+};
 use std::path::PathBuf;
 
 fn migration_review_target(agent_id: &str) -> crate::AgentReviewTargetSnapshot {
@@ -502,21 +504,27 @@ async fn incompatible_saved_worktree_preserves_original_facts_and_files() -> Res
     let old_files = other_root.join(SessionFiles::new(&old.id).root());
     tokio::fs::create_dir_all(&old_files).await?;
     tokio::fs::write(old_files.join("original"), b"old identity preserved").await?;
-    assert!(matches!(
-        StudioActivationFactory::prepare(
-            factory,
-            ThreadPreparation {
-                workspace_owner: Default::default(),
-                identity: ThreadActivation::native_test(&old.id, old.parent_thread_id.as_deref(),),
-                cancellation: Default::default(),
-                agent_controls: vec![],
-                delegation: None,
-                root_current: None,
-            }
-        )
-        .await,
-        Err(ThreadAssemblyError::Workspace { .. })
-    ));
+    let current_path = store.registered_session_paths(&old.id)?.current_file();
+    let saved_bytes = tokio::fs::read(&current_path).await?;
+    tokio::fs::write(&current_path, b"invalid current after preparation handoff").await?;
+    let outcome = StudioActivationFactory::prepare(
+        factory,
+        ThreadPreparation {
+            workspace_owner: Default::default(),
+            identity: ThreadActivation::native_test(&old.id, old.parent_thread_id.as_deref()),
+            cancellation: Default::default(),
+            agent_controls: vec![],
+            delegation: None,
+            current: Some(current),
+        },
+    )
+    .await;
+    tokio::fs::write(&current_path, saved_bytes).await?;
+    assert!(
+        matches!(outcome, Err(ThreadAssemblyError::Workspace { ref reason, .. })
+        if reason.contains("incompatible worktree/Profile binding")),
+        "{outcome:?}"
+    );
     assert_eq!(
         serde_json::to_vec(
             &store
@@ -681,13 +689,60 @@ async fn removed_source_still_uses_managed_root_for_new_directory_and_review_mem
         prepared.push((registered, core, current_store, epoch));
     }
     for (registered, core, current_store, epoch) in prepared.into_iter().rev() {
+        let snapshot = core.snapshot();
+        let restore_directory = registered.id == "new-bot-directory";
+        if restore_directory {
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
+            store
+                .thread_persistence()
+                .history_channel(&registered.id)
+                .stop_and_join()
+                .await?;
+            let activation = factory.activation(&registered.id)?;
+            let owner = crate::session::SessionRuntime::open(activation.agent.session_id.clone());
+            fixture.install(&owner)?;
+            owner.retain_directory_identity(&factory.activation(&root.id)?.agent)?;
+            let resumed = owner
+                .activate(
+                    activation,
+                    CorruptCurrentAfterLoad::with_pending_model_input(
+                        factory.clone(),
+                        store,
+                        &registered.id,
+                    )
+                    .await?,
+                )
+                .await?;
+            assert!(
+                owner
+                    .thread(&registered.id)
+                    .is_some_and(|thread| thread.same_instance(&resumed))
+            );
+            CorruptCurrentAfterLoad::assert_recovered_model_input(&resumed).await?;
+            let projection = spawn_live_projection_for_thread(store.clone(), &registered.id);
+            let closed = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                owner.close(&registered.id),
+            )
+            .await;
+            if !matches!(closed, Ok(Ok(()))) {
+                projection.abort();
+            }
+            let projected = projection.await;
+            closed??;
+            projected?;
+        }
         factory
-            .begin_child_close(&registered, Some(&core.snapshot()), false)
+            .begin_child_close(&registered, Some(&snapshot), false)
             .await?;
         factory.begin_child_close(&registered, None, false).await?;
-        current_store
-            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
-            .await?;
+        if !restore_directory {
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
+        }
         factory.finish_child_execution(&registered).await?;
         factory.finish_child_worktree_cleanup(&registered).await?;
         let result = store.agent_close(&registered.id).await?.unwrap().result();

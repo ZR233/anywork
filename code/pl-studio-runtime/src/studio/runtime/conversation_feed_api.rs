@@ -1,8 +1,7 @@
 //! Unified conversation feed & session metadata API for Native & cold threads.
 //!
-//! Live threads attach directly to the resident `MetaEventBus` (pure RAM deltas + 16ms coalesced
-//! live status); cold threads read exclusively from `HistoryReader` and `Thread` directory state
-//! without touching `current.json` or activating execution.
+//! Live threads borrow the resident observation owner's prepared source. Cold threads read saved
+//! pause information and history without preparing storage or activating execution.
 
 use anyhow::Result;
 use pl_core::thread::UsageSummary;
@@ -10,6 +9,9 @@ use pl_core::thread::UsageSummary;
 use crate::history::{HistoryBusinessRowHead, HistoryDemand, HistoryReader};
 use crate::studio::StudioRuntime;
 use crate::timeline::{ConversationFeed, SessionMetaLayer, SessionMetaSnapshot};
+
+#[cfg(test)]
+mod tests;
 
 impl StudioRuntime {
     /// Opens a unified `ConversationFeed` for `thread_id` (live `MetaEventBus` if resident +
@@ -21,13 +23,27 @@ impl StudioRuntime {
     ) -> Result<ConversationFeed> {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
-        let reader = self.store.open_history_reader(thread_id).await?;
         let slot = self.thread_observations.observation_slot(thread_id);
-        let bus_rx = slot.subscribe_bus();
-        let bus = slot.meta_bus();
-        let initial_meta = self
-            .build_session_meta_snapshot(&thread, Some(&reader), bus.as_ref())
+        let mut bus_rx = slot.subscribe_bus();
+        let bus = self
+            .thread_observations
+            .ready_bus(thread_id, &mut bus_rx)
             .await?;
+        let (reader, initial_meta) = if let Some(bus) = bus {
+            (
+                bus.history().reader(),
+                (*bus.latest_meta().expect("published observation metadata")).clone(),
+            )
+        } else {
+            let reader = self.store.open_history_reader(thread_id).await?;
+            match self.build_cold_session_meta(&thread, Some(&reader)).await {
+                Ok(meta) => (reader, meta),
+                Err(error) => {
+                    reader.close().await;
+                    return Err(error);
+                }
+            }
+        };
         let feed = ConversationFeed::open(
             thread_id,
             reader,
@@ -40,105 +56,49 @@ impl StudioRuntime {
         Ok(feed)
     }
 
-    /// Reads the latest `SessionMetaSnapshot` (pure RAM from resident `MetaEventBus` / `ThreadHandle`
-    /// if open, otherwise cold metadata + latest durable turn/usage from `HistoryReader`).
+    /// Reads the prepared observation's metadata, or saved pause information when not running.
     pub async fn thread_session_meta(&self, thread_id: &str) -> Result<SessionMetaSnapshot> {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
-        let bus = self.thread_observations.meta_bus(thread_id);
-        if let Some(meta) = bus.as_ref().and_then(|bus| bus.latest_meta()) {
-            return Ok((*meta).clone());
+        let slot = self.thread_observations.observation_slot(thread_id);
+        let mut bus_rx = slot.subscribe_bus();
+        if let Some(bus) = self
+            .thread_observations
+            .ready_bus(thread_id, &mut bus_rx)
+            .await?
+        {
+            return Ok((*bus.latest_meta().expect("published observation metadata")).clone());
         }
-        let reader = self.store.open_history_reader(thread_id).await.ok();
-        let snapshot = self
-            .build_session_meta_snapshot(&thread, reader.as_ref(), bus.as_ref())
-            .await?;
+        let reader = match self.store.open_history_reader(thread_id).await {
+            Ok(reader) => Some(reader),
+            Err(error)
+                if error
+                    .downcast_ref::<crate::StudioError>()
+                    .is_some_and(|error| error.code == crate::StudioErrorCode::NotFound) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let snapshot = self.build_cold_session_meta(&thread, reader.as_ref()).await;
         if let Some(reader) = reader {
             reader.close().await;
         }
-        Ok(snapshot)
+        if let Some(bus) = self
+            .thread_observations
+            .ready_bus(thread_id, &mut bus_rx)
+            .await?
+        {
+            return Ok((*bus.latest_meta().expect("published observation metadata")).clone());
+        }
+        snapshot
     }
 
-    async fn build_session_meta_snapshot(
+    async fn build_cold_session_meta(
         &self,
         thread: &crate::Thread,
         reader: Option<&HistoryReader>,
-        bus: Option<&crate::timeline::MetaEventBus>,
     ) -> Result<SessionMetaSnapshot> {
-        if let Some(meta) = bus.and_then(|bus| bus.latest_meta()) {
-            return Ok((*meta).clone());
-        }
-
-        if let Some(handle) = self
-            .session_of(&thread.id)
-            .and_then(|session| session.observed_thread(&thread.id))
-        {
-            let snapshot = handle.snapshot();
-            let persistence = self
-                .store
-                .thread_persistence()
-                .snapshot()
-                .threads
-                .into_iter()
-                .find(|detail| detail.thread_id == thread.id);
-            let runtime = crate::studio::thread_projection::project_runtime(
-                &thread.id,
-                &snapshot,
-                thread.updated_at,
-                &snapshot.usage_summary,
-            )?;
-            let mut model_route = crate::studio::model_route::projected(&snapshot)?;
-            if let Ok((config, _)) = self.config_runtime.read_with_catalog() {
-                let _ = crate::studio::model_route::annotate_availability(
-                    model_route.as_mut(),
-                    thread,
-                    &config.config,
-                );
-            }
-            let active_turn = crate::studio::thread_projection::project_active_turn(
-                &thread.id,
-                &snapshot,
-                thread.updated_at,
-            )?;
-            let last_turn = self
-                .thread_observations
-                .observation_slot(&thread.id)
-                .last_turn()
-                .map(|turn| (*turn).clone());
-            let activity =
-                crate::studio::thread_projection::project_activity(&thread.id, &snapshot, None);
-            let storage_state = persistence
-                .as_ref()
-                .map(|detail| crate::studio::thread_projection::storage_state(&snapshot, detail));
-            let interactions =
-                crate::studio::thread_projection::project_interactions(&thread.id, &snapshot)?;
-            let pending_interaction_count = u32::try_from(interactions.len()).unwrap_or(u32::MAX);
-            let plan = runtime.plan.clone();
-            let context_metrics = Some(runtime.usage.clone());
-            return Ok(SessionMetaSnapshot {
-                thread_id: thread.id.clone(),
-                status: crate::studio::thread_projection::status(&snapshot),
-                title: Some(thread.title.clone()),
-                parent_thread_id: thread.parent_thread_id.clone(),
-                root_thread_id: thread.root_thread_id.clone(),
-                owner_epoch: handle.runtime_epoch().to_string(),
-                revision: snapshot.commit_sequence,
-                active_turn,
-                last_turn,
-                activity,
-                usage: snapshot.usage_summary,
-                context_metrics,
-                model_route,
-                runtime: Some(runtime),
-                storage_state,
-                interactions,
-                pending_interaction_count,
-                plan,
-                mode: thread.mode.clone(),
-                execution_present: snapshot.execution.is_some(),
-            });
-        }
-
         // Cold thread: synthesize from Thread directory record, read-only cold checkpoint, and
         // HistoryReader only (never mutates current.json or activates execution).
         let mut meta = SessionMetaLayer::empty(&thread.id).snapshot();

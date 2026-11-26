@@ -77,12 +77,12 @@ impl std::fmt::Debug for ReactivationFactory {
     }
 }
 impl StudioActivationFactory for ReactivationFactory {
-    async fn prepare_root(
+    async fn prepare_execution(
         &self,
         identity: &ThreadActivation,
     ) -> Result<
         (
-            crate::DelegationSettings,
+            Option<crate::DelegationSettings>,
             Option<pl_core::thread::current::ThreadCurrent>,
         ),
         ThreadAssemblyError,
@@ -102,7 +102,7 @@ impl StudioActivationFactory for ReactivationFactory {
         let delegation = crate::studio::delegation::saved(&current.state.to_paused_snapshot())
             .map_err(storage_error)?
             .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
-        Ok((delegation, Some(current)))
+        Ok((Some(delegation), Some(current)))
     }
 
     async fn prepare(
@@ -111,7 +111,7 @@ impl StudioActivationFactory for ReactivationFactory {
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let id = request.identity.id().to_owned();
         let protocol = Fixture::protocol(&id, None);
-        let current = request.root_current;
+        let current = request.current;
         let sink = ThreadStorageSink::new(self.0.clone(), protocol)
             .await
             .map_err(storage_error)?;
