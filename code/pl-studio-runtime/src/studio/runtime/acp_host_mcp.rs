@@ -135,10 +135,12 @@ fn append_delegation_instructions(instructions: &mut String, host: &AgentHost) {
         return;
     }
     instructions.push_str(
-        "\nRead `anywork_list_agent_profiles` before delegating. Use a returned executable \
-         `profileId` and its backend and workspace contract to choose the branch of \
-         `anywork_spawn_agent` offered in the current MCP catalog. If the tool or a suitable \
-         Profile is unavailable, continue within your own authorized scope and report any blocker.\n",
+        "\nRead `anywork_list_agent_profiles` before delegating. Copy the enabled Profile's \
+         `definition.definitionId` into `profileId`. Use its backend and workspace contract \
+         to select the matching branch of `anywork_spawn_agent`. When the task calls for \
+         a child and you have selected a valid Profile, invoke that tool and wait for the \
+         child report. Some clients display it under the anywork server's qualified name. \
+         If blocked, identify the exact missing tool or report the attempted call and its error.\n",
     );
     let selection = host.delegation();
     let has_native = profiles
@@ -799,6 +801,41 @@ enum AcpPlanToolKind {
     Transition,
 }
 
+/// ACP submits or withdraws a Plan. Feedback and approval arrive through the host card.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcpPlanTransitionInput {
+    #[schemars(with = "String")]
+    target_state: pl_tool_plan::PlanState,
+    #[serde(default)]
+    #[schemars(with = "String", transform = omit_plan_argument_default)]
+    content: Option<String>,
+    #[serde(default)]
+    #[schemars(with = "u64", transform = omit_plan_argument_default)]
+    expected_revision: Option<u64>,
+    #[serde(default)]
+    #[schemars(transform = omit_plan_argument_default)]
+    force: bool,
+}
+
+fn omit_plan_argument_default(schema: &mut schemars::Schema) {
+    schema.remove("default");
+}
+
+impl From<AcpPlanTransitionInput> for pl_tool_plan::PlanTransitionArgs {
+    fn from(input: AcpPlanTransitionInput) -> Self {
+        Self {
+            target_state: input.target_state,
+            content: input.content,
+            feedback: None,
+            reason: None,
+            force: input.force,
+            expected_revision: input.expected_revision,
+            idempotency_key: None,
+        }
+    }
+}
+
 struct AcpPlanBindingTool {
     definition: ToolDefinition,
     kind: AcpPlanToolKind,
@@ -872,10 +909,10 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                 .map_err(ToolError::new)?
             }
             AcpPlanToolKind::Transition => {
-                let args: pl_tool_plan::PlanTransitionArgs = input.decode()?;
+                let args: AcpPlanTransitionInput = input.decode()?;
                 let outcome = self
                     .owner
-                    .transition_from_tool(args, plan_ctx, &context.cancellation)
+                    .transition_from_tool(args.into(), plan_ctx, &context.cancellation)
                     .await
                     .map_err(|error| ToolError::new(std::io::Error::other(error)))?;
                 serde_json::to_value(&outcome).map_err(ToolError::new)?
@@ -978,7 +1015,7 @@ fn attach_workflow_and_plan_tools(
     use pl_agent_tool::typed::{TypedTool, input_schema_for};
     use pl_tool_plan::{
         PlanCurrentTool, PlanEmptyArgs, PlanHistoryArgs, PlanHistoryTool, PlanNextTool,
-        PlanTransitionArgs, PlanTransitionTool,
+        PlanTransitionTool,
     };
 
     type Owner = super::acp_business::AcpWorkflowPlanOwner;
@@ -1015,8 +1052,8 @@ fn attach_workflow_and_plan_tools(
             AcpPlanToolKind::Transition,
             ToolDefinition::json(
                 PlanTransitionTool::<Owner>::NAME,
-                "Submit a complete Markdown Plan with targetState=awaitingConfirmation and force=false. The host shows the confirmation card and returns the user's decision. Use targetState=drafting to start a revision or withdraw a stale submission. Only the user can approve or request revisions.",
-                input_schema_for::<PlanTransitionArgs>(),
+                "Submit Markdown for host confirmation with targetState=awaitingConfirmation and content. Use targetState=drafting to withdraw or revise.",
+                input_schema_for::<AcpPlanTransitionInput>(),
             )?,
         ),
     ];
