@@ -30,11 +30,7 @@ import 'support/history_turns.dart';
 import 'support/timeline_observation.dart';
 
 void main() {
-  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  // This native journey waits for real FRB/provider I/O. Let the engine draw
-  // requested frames while the test yields instead of making each readiness
-  // check depend on completion of a timed LiveTestWidgetsFlutterBinding pump.
-  binding.framePolicy = LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   WidgetController.hitTestWarningShouldBeFatal = true;
 
   testWidgets('real wait tool reaches visible history and closes normally', (
@@ -136,21 +132,16 @@ void main() {
             'active=${state?.activeTurn?.turnId} last=${state?.lastTurn?.turnId}';
       },
     );
-    debugPrint('wait-events: waiting for canonical completed Turn');
-    final completed = await tester.runAsync(
-      () => waitForCompletedTurn(
-        feeds: graph.client.transport,
-        threadId: threadId!,
-        matches: (head) =>
-            head.inputId != null &&
-            (threadId != priorThreadId || head.turnId != priorTurnId),
-        description: 'canonical completed wait Turn',
-        timeout: const Duration(minutes: 2),
-      ),
+    final completed = await waitForCompletedTurn(
+      feeds: graph.client.transport,
+      threadId: threadId!,
+      matches: (head) =>
+          head.inputId != null &&
+          (threadId != priorThreadId || head.turnId != priorTurnId),
+      description: 'canonical completed wait Turn',
+      timeout: const Duration(minutes: 2),
     );
-    expect(tester.takeException(), isNull);
-    expect(completed, isNotNull);
-    expect(completed!.inputId, isNotNull);
+    expect(completed.inputId, isNotNull);
     bool isObservedWait(WorkGroupMember member) {
       if (member is! WorkGroupToolCall ||
           member.toolName != 'wait' ||
@@ -175,11 +166,7 @@ void main() {
     );
 
     final lease = graph.timeline.lease(threadId!)!;
-    final observed = TimelineObservation(
-      tester,
-      () => lease,
-      idle: () => _idle(tester),
-    );
+    final observed = TimelineObservation(tester, () => lease);
     await _until(
       tester,
       () => observed.main.whereType<TimelineWorkGroup>().isNotEmpty,
@@ -347,20 +334,12 @@ Future<void> _until(
   Duration timeout = const Duration(seconds: 60),
   String Function()? diagnostic,
 }) async {
-  debugPrint('wait-events: waiting for $description');
   final clock = Stopwatch()..start();
   while (!ready()) {
     if (clock.elapsed >= timeout) {
       fail('Timed out waiting for $description; ${diagnostic?.call() ?? ''}');
     }
-    await _idle(tester);
+    await tester.pump(const Duration(milliseconds: 50));
     expect(tester.takeException(), isNull);
   }
-  debugPrint('wait-events: observed $description');
-}
-
-Future<void> _idle(WidgetTester tester) async {
-  await tester.runAsync(
-    () => Future<void>.delayed(const Duration(milliseconds: 50)),
-  );
 }

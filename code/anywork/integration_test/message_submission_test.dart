@@ -576,7 +576,14 @@ void main() {
           turn.state.status == StudioTurnStatus.cancelled,
       description: 'canonical cancelled stopped Turn',
     );
-    expect(cancelledTurn.state.status, StudioTurnStatus.cancelled);
+    expect(
+      cancelledTurn.state,
+      isA<CancelledStudioTurnState>().having(
+        (state) => state.cause,
+        'cause',
+        isA<InterruptedTurnCancellation>(),
+      ),
+    );
     await waitForHistoryRows(
       feeds: transport,
       threadId: threadId,
@@ -584,9 +591,9 @@ void main() {
         (outcome) =>
             outcome.turnId == stoppedTurnId &&
             outcome.inputId == cancelledTurn.inputId &&
-            outcome.outcome == 'cancelled',
+            outcome.outcome == 'interrupted',
       ),
-      description: 'persisted cancellation outcome for the exact stopped Turn',
+      description: 'history interruption receipt for the exact stopped Turn',
     );
     // A successful RPC is NOT the end condition: wait for the canonical
     // execution to disappear, the exact Turn to terminate and its continuation.
