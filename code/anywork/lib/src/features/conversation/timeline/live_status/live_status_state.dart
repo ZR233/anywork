@@ -58,32 +58,27 @@ final class LiveReconnectingPhase extends LiveStatusPrimaryPhase {
   int get hashCode => Object.hash(detail, attempt, maxAttempts, retryAt);
 }
 
-/// 主模型正在产出流式正文，可选附带未抑制的活动提示。
+/// 正在输出的一条正文及其计时起点。
 final class LiveResponsePhase extends LiveStatusPrimaryPhase {
   const LiveResponsePhase({
-    this.previewText,
+    required this.itemId,
+    required this.previewText,
     this.startedAt,
-    this.finishedAt,
-    this.activity,
   });
-  final String? previewText;
+  final String itemId;
+  final String previewText;
   final int? startedAt;
-  final int? finishedAt;
-  final ConversationActivityView? activity;
-
-  bool get isActive => finishedAt == null;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LiveResponsePhase &&
+          itemId == other.itemId &&
           previewText == other.previewText &&
-          startedAt == other.startedAt &&
-          finishedAt == other.finishedAt &&
-          activity == other.activity;
+          startedAt == other.startedAt;
 
   @override
-  int get hashCode => Object.hash(previewText, startedAt, finishedAt, activity);
+  int get hashCode => Object.hash(itemId, previewText, startedAt);
 }
 
 /// 开放工作组正在实时状态栏主区运行、等待或停止。

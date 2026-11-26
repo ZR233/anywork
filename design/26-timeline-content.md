@@ -100,6 +100,8 @@ stateDiagram-v2
     Reconnecting --> Idle : TurnEnded / RunIdle
 ```
 
+Flutter 将 `StreamingText` 呈现为一个实时响应区。区内同一行显示阶段标题和计时，下方随增量更新正文预览。同一条响应按 `itemId` 复用布局。需要用户关注的停止、审批或故障提示由独立的状态处理。
+
 ### 26.3.2 主时间线天然封组状态机（`TimelineDataLayer`）
 
 ```mermaid

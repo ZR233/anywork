@@ -48,6 +48,40 @@ LiveStatusGateState _gate(
 ).gate;
 
 void main() {
+  testWidgets('streaming owns one header, clock, and growing response body', (
+    tester,
+  ) async {
+    LiveStatusGateState streaming(String text) => _gate(
+      feed.LiveStatusStreamingText(
+        attemptId: 'attempt-1',
+        itemId: 'response-1',
+        text: text,
+        startedAtMs: DateTime.utc(2026).millisecondsSinceEpoch,
+      ),
+    );
+    final title = find.text('正在输出');
+    final body = find.byType(ConversationCurrentWindowView);
+
+    await tester.pumpWidget(_host(streaming('')));
+    expect(title, findsOneWidget);
+    final titleElement = tester.element(title);
+    expect(tester.widget<ConversationCurrentWindowView>(body).text, isEmpty);
+
+    await tester.pumpWidget(_host(streaming('Beacon')));
+    expect(title, findsOneWidget);
+    expect(tester.element(title), same(titleElement));
+    final header = find.ancestor(
+      of: title,
+      matching: find.byType(TimelineActivityRow),
+    );
+    expect(tester.widget<TimelineActivityRow>(header).meta, isNotEmpty);
+    expect(tester.widget<ConversationCurrentWindowView>(body).text, 'Beacon');
+
+    await tester.pumpWidget(_host(_gate(const feed.LiveStatusIdle())));
+    expect(title, findsNothing);
+    expect(body, findsNothing);
+  });
+
   testWidgets('reconnect replaces work and updates the existing retry row', (
     tester,
   ) async {

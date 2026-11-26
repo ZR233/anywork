@@ -64,12 +64,9 @@ abstract final class LiveStatusMachine {
         :final startedAtMs,
       ) =>
         LiveResponsePhase(
+          itemId: itemId,
           previewText: text,
           startedAt: startedAtMs == null ? null : startedAtMs ~/ 1000,
-          activity: activity(
-            feed.ConversationActivityKind.responding,
-            id: itemId,
-          ),
         ),
       feed.LiveStatusCompacting(:final startedAtMs) => LiveCompactingPhase(
         activity: activity(feed.ConversationActivityKind.compacting),
@@ -119,9 +116,12 @@ abstract final class LiveStatusMachine {
     return LiveStatusView(
       threadId: threadId,
       primaryActivity: switch (primary) {
-        LiveWorkPhase(:final activity) ||
-        LiveResponsePhase(:final activity) => activity,
+        LiveWorkPhase(:final activity) => activity,
         LiveCompactingPhase(:final activity) => activity,
+        LiveResponsePhase(:final itemId) => activity(
+          feed.ConversationActivityKind.responding,
+          id: itemId,
+        ),
         _ => null,
       },
       gate: hide

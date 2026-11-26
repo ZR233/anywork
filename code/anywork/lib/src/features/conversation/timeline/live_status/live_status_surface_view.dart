@@ -16,7 +16,7 @@ import 'live_status_state.dart';
 /// 实时状态栏唯一纯 UI 表面：直接消费状态机输出 [LiveStatusGateState]。
 ///
 /// 零 Riverpod、Client、AppGraph 或 FRB 依赖；生产连接层与官方预览共用同一套
-/// 布局骨架，只通过可选 builder/slot 注入实时正文、工作组成员加载或交互面板。
+/// 布局骨架，工作组成员和交互面板由各自的连接层提供。
 class LiveStatusSurfaceView extends StatelessWidget {
   const LiveStatusSurfaceView({
     required this.gate,
@@ -24,7 +24,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
     this.liveWorkBuilder,
     this.liveWorkChildBuilder,
     this.liveWorkInitiallyExpanded = false,
-    this.responseBuilder,
     this.now,
     this.interactionDetailsSlot,
     this.onRetryError,
@@ -37,8 +36,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
   liveWorkBuilder;
   final WidgetBuilder? liveWorkChildBuilder;
   final bool liveWorkInitiallyExpanded;
-  final Widget Function(BuildContext context, LiveResponsePhase response)?
-  responseBuilder;
   final DateTime Function()? now;
   final Widget? interactionDetailsSlot;
   final VoidCallback? onRetryError;
@@ -87,34 +84,24 @@ class LiveStatusSurfaceView extends StatelessWidget {
             ),
           ),
         );
-      case LiveResponsePhase(:final activity) && final response:
-        if (activity != null) {
-          barChildren.add(
-            Flexible(
-              key: ValueKey(('live-primary-activity', activity.identity)),
-              flex: 1,
-              fit: FlexFit.loose,
-              child: ConversationActivityStatus(view: activity),
-            ),
-          );
-        }
+      case LiveResponsePhase(
+        :final itemId,
+        :final previewText,
+        :final startedAt,
+      ):
         barChildren.add(
           Flexible(
-            key: const ValueKey('live-primary-response'),
+            key: ValueKey(('live-primary-response', itemId)),
             flex: 3,
             fit: FlexFit.loose,
-            child:
-                responseBuilder?.call(context, response) ??
-                ConversationResponseView(
-                  startedAt: response.startedAt,
-                  finishedAt: response.finishedAt,
-                  active: response.isActive,
-                  now: now,
-                  child: ConversationCurrentWindowView(
-                    id: 'live-response-preview',
-                    text: response.previewText ?? '',
-                  ),
-                ),
+            child: ConversationResponseView(
+              startedAt: startedAt,
+              now: now,
+              child: ConversationCurrentWindowView(
+                id: itemId,
+                text: previewText,
+              ),
+            ),
           ),
         );
       case LiveCompactingPhase(:final activity):
