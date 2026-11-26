@@ -59,7 +59,7 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'3cf211da33b49e8cd5be5e430dab11f19d1102c3';
+    r'735dad815128110d02bf3c1cca8006db11b57fe9';
 
 final class LiveStatusViewModelFamily extends $Family
     with

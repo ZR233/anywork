@@ -346,6 +346,9 @@ final class _DemoConversationFeedResource implements ClientResource {
     final phase =
         _history.reconnecting ??
         switch ((text, activity?.kind, workspace.activeTurn)) {
+          (_, ThreadActivityKind.stopping, _) => LiveStatusStopping(
+            startedAtMs: startedAt,
+          ),
           (final item?, _, _) => LiveStatusStreamingText(
             attemptId: item.turnId ?? item.id,
             itemId: item.id,

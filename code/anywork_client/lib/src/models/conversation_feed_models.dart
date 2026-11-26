@@ -94,6 +94,7 @@ final class LiveWorkItem {
     required this.status,
     required this.summary,
     this.startedAtMs,
+    this.finishedAtMs,
   });
   final String id;
   final String? callId;
@@ -102,6 +103,7 @@ final class LiveWorkItem {
   final String status;
   final String summary;
   final int? startedAtMs;
+  final int? finishedAtMs;
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -112,7 +114,8 @@ final class LiveWorkItem {
           toolName == other.toolName &&
           status == other.status &&
           summary == other.summary &&
-          startedAtMs == other.startedAtMs;
+          startedAtMs == other.startedAtMs &&
+          finishedAtMs == other.finishedAtMs;
   @override
   int get hashCode => Object.hashAll([
     LiveWorkItem,
@@ -123,6 +126,7 @@ final class LiveWorkItem {
     status,
     summary,
     startedAtMs,
+    finishedAtMs,
   ]);
 }
 
@@ -1177,11 +1181,13 @@ final class LiveStatusReconnecting extends LiveStatusPhase {
     required this.message,
     this.retryAfterMs,
     required this.attempt,
+    this.maxAttempts = 0,
   });
   final String attemptId;
   final String message;
   final int? retryAfterMs;
   final int attempt;
+  final int maxAttempts;
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1189,7 +1195,8 @@ final class LiveStatusReconnecting extends LiveStatusPhase {
           attemptId == other.attemptId &&
           message == other.message &&
           retryAfterMs == other.retryAfterMs &&
-          attempt == other.attempt;
+          attempt == other.attempt &&
+          maxAttempts == other.maxAttempts;
   @override
   int get hashCode => Object.hashAll([
     LiveStatusReconnecting,
@@ -1197,7 +1204,19 @@ final class LiveStatusReconnecting extends LiveStatusPhase {
     message,
     retryAfterMs,
     attempt,
+    maxAttempts,
   ]);
+}
+
+final class LiveStatusStopping extends LiveStatusPhase {
+  const LiveStatusStopping({this.startedAtMs});
+  final int? startedAtMs;
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveStatusStopping && startedAtMs == other.startedAtMs;
+  @override
+  int get hashCode => Object.hashAll([LiveStatusStopping, startedAtMs]);
 }
 
 sealed class ConversationFeedEvent {

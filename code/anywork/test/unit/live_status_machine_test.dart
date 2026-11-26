@@ -3,33 +3,164 @@ import 'package:anywork_client/models.dart' as feed;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test(
-    'the reconnect snapshot uses the retry delay relative to receipt time',
-    () {
-      final receivedAt = DateTime.utc(2026);
-      final view = LiveStatusMachine.project(
-        'thread-main',
-        feed.LiveStatusSnapshot(
-          revision: 3,
-          phase: const feed.LiveStatusReconnecting(
-            attemptId: 'retry-1',
-            message: 'Request failed',
-            retryAfterMs: 2500,
-            attempt: 2,
+  test('projects flat 8-state machine with strict priority arbitration', () {
+    final now = DateTime.utc(2026);
+    const approval = feed.PendingInteraction(
+      id: 'int-1',
+      threadId: 'thread-main',
+      turnId: 'turn-1',
+      kind: feed.InteractionKind.toolApproval,
+      title: 'Run shell',
+      body: 'cargo test',
+      payload: feed.UnknownInteractionPayload(),
+    );
+    final workingSnapshot = feed.LiveStatusSnapshot(
+      revision: 1,
+      phase: feed.LiveStatusWorking(
+        items: const [
+          feed.LiveWorkItem(
+            id: 'call:1',
+            callId: '1',
+            kind: 'command',
+            toolName: 'exec',
+            status: 'completed',
+            summary: 'cargo test',
+            startedAtMs: 100,
+            finishedAtMs: 250,
           ),
-          attentions: const [],
-          suppressedByInteraction: false,
+        ],
+        reasoningPreview: '分析状态机边界',
+        startedAtMs: 100,
+      ),
+      attentions: const [],
+      suppressedByInteraction: false,
+    );
+
+    // 1. Root interaction suppresses status bar -> LiveStatusHidden(suppressed: true)
+    final rootHidden = LiveStatusMachine.project(
+      'thread-main',
+      workingSnapshot,
+      receivedAt: now,
+      interaction: approval,
+      isChildThread: false,
+    );
+    expect(rootHidden.state, const LiveStatusHidden(suppressed: true));
+
+    // 2. Child interaction projects into LiveStatusChildInteractionState
+    final childView = LiveStatusMachine.project(
+      'thread-child',
+      workingSnapshot,
+      receivedAt: now,
+      interaction: approval,
+      isChildThread: true,
+    );
+    expect(
+      childView.state,
+      const LiveStatusChildInteractionState(
+        interactionId: 'int-1',
+        payload: feed.UnknownInteractionPayload(),
+      ),
+    );
+
+    // 3. Stopping beats Working/Streaming/Reconnecting
+    final stoppingView = LiveStatusMachine.project(
+      'thread-main',
+      feed.LiveStatusSnapshot(
+        revision: 2,
+        phase: const feed.LiveStatusStopping(startedAtMs: 500),
+        attentions: const [],
+        suppressedByInteraction: false,
+      ),
+      receivedAt: now,
+    );
+    expect(stoppingView.state, const LiveStatusStoppingState(startedAtMs: 500));
+
+    // 4. Reconnecting retains retry delay and attempt counters
+    final retryView = LiveStatusMachine.project(
+      'thread-main',
+      feed.LiveStatusSnapshot(
+        revision: 3,
+        phase: const feed.LiveStatusReconnecting(
+          attemptId: 'retry-1',
+          message: 'Request failed',
+          retryAfterMs: 2500,
+          attempt: 2,
+          maxAttempts: 5,
         ),
-        receivedAt: receivedAt,
-      );
-      final retry =
-          (view.gate as LiveStatusPresenting).presentation.primary!
-              as LiveReconnectingPhase;
-      expect(retry.detail, 'Request failed');
-      expect(retry.attempt, 2);
-      expect(retry.retryAt, receivedAt.add(const Duration(milliseconds: 2500)));
-    },
-  );
+        attentions: const [],
+        suppressedByInteraction: false,
+      ),
+      receivedAt: now,
+    );
+    expect(
+      retryView.state,
+      const LiveStatusReconnectingState(
+        attemptId: 'retry-1',
+        message: 'Request failed',
+        retryAfterMs: 2500,
+        attempt: 2,
+        maxAttempts: 5,
+      ),
+    );
+
+    // 5. Working maps LiveWorkItem including finishedAtMs
+    final workingView = LiveStatusMachine.project(
+      'thread-main',
+      workingSnapshot,
+      receivedAt: now,
+    );
+    final working = workingView.state as LiveStatusWorkingState;
+    expect(working.items.single.finishedAtMs, 250);
+    expect(working.items.single.isCompleted, isTrue);
+    expect(working.reasoningPreview, '分析状态机边界');
+
+    // 6. Alert arbitration picks highest single priority: storage > disconnected > approval
+    final alertView = LiveStatusMachine.project(
+      'thread-main',
+      feed.LiveStatusSnapshot(
+        revision: 4,
+        phase: const feed.LiveStatusIdle(),
+        attentions: const [
+          feed.LiveAttention(id: 'a1', kind: 'approval', summary: 'exec'),
+          feed.LiveAttention(id: 'd1', kind: 'disconnected', summary: '离线'),
+        ],
+        suppressedByInteraction: false,
+      ),
+      receivedAt: now,
+      storageState: const feed.ThreadStorageStateView(
+        fault: feed.ThreadHistoryFault.writeFailed,
+        faultGeneration: 1,
+        execution: feed.ThreadStorageExecution.paused,
+        lastError: '磁盘写入失败',
+      ),
+    );
+    expect(
+      alertView.state,
+      const LiveStatusAlertState(
+        kind: LiveAlertKind.storageFault,
+        detail: '磁盘写入失败',
+        storage: feed.ThreadStorageStateView(
+          fault: feed.ThreadHistoryFault.writeFailed,
+          faultGeneration: 1,
+          execution: feed.ThreadStorageExecution.paused,
+          lastError: '磁盘写入失败',
+        ),
+      ),
+    );
+
+    // 7. Plain idle without alerts or interaction -> LiveStatusHidden(suppressed: false)
+    final idleView = LiveStatusMachine.project(
+      'thread-main',
+      feed.LiveStatusSnapshot(
+        revision: 5,
+        phase: const feed.LiveStatusIdle(),
+        attentions: const [],
+        suppressedByInteraction: false,
+      ),
+      receivedAt: now,
+    );
+    expect(idleView.state, const LiveStatusHidden(suppressed: false));
+  });
 
   test('storage severity comes from typed flags', () {
     const paused = feed.ThreadStorageExecution.paused;

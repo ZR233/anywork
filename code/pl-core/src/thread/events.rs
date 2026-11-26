@@ -41,6 +41,7 @@ pub enum CoreLiveEvent {
         generation: u32,
         text: String,
         replace: bool,
+        is_summary: bool,
     },
     ToolProgress {
         task_id: String,
@@ -205,6 +206,7 @@ impl ModelProgressTracker {
                         attempt_id,
                         generation,
                         "aggregate:reasoning",
+                        false,
                         part,
                         bus,
                     );
@@ -216,7 +218,10 @@ impl ModelProgressTracker {
                     }
                     ObservedPartKind::ReasoningText | ObservedPartKind::SummaryText => {
                         let key = format!("{}:{}", identity.item_id, identity.content_index);
-                        self.emit_reasoning_part(attempt_id, generation, &key, part, bus);
+                        let is_summary = matches!(identity.part, ObservedPartKind::SummaryText);
+                        self.emit_reasoning_part(
+                            attempt_id, generation, &key, is_summary, part, bus,
+                        );
                     }
                 },
             }
@@ -290,6 +295,7 @@ impl ModelProgressTracker {
         attempt_id: &str,
         generation: u32,
         item_id: &str,
+        is_summary: bool,
         part: &ObservedPart,
         bus: &EventBus,
     ) {
@@ -302,6 +308,7 @@ impl ModelProgressTracker {
                         generation,
                         text: part.text(),
                         replace: false,
+                        is_summary,
                     }));
                 }
                 self.active_reasoning
@@ -317,6 +324,7 @@ impl ModelProgressTracker {
                             generation,
                             text,
                             replace: false,
+                            is_summary,
                         }));
                     }
                     self.active_reasoning
@@ -329,6 +337,7 @@ impl ModelProgressTracker {
                         generation,
                         text,
                         replace: true,
+                        is_summary,
                     }));
                     self.active_reasoning
                         .insert(item_id.to_owned(), part.baseline());

@@ -72,35 +72,50 @@ flowchart TD
 
 ### 26.3.1 实时状态栏状态机（`LiveStatusDataLayer`）
 
+`LiveStatusDataLayer` 直接复用持久化层的 `timeline_role`（`Hidden` / `Work` / `Boundary`）与实时流事件，以六个互斥相位（`Idle`、`Working`、`StreamingText`、`Compacting`、`Reconnecting`、`Stopping`）驱动实时状态栏，并通过天然展示分割替代复杂的分段维护：
+
+1. **执行启动即入思考态**：一旦收到 `RunActivity` 进入执行、`TurnStarted` 或 `InputAccepted`，立即切入 `Working`（思考中，工作容器为空且不显示展开箭头），等待首个模型或工具响应。
+2. **复用 `Work` 角色累加工作项**：持久化层 `timeline_role = 1`（`Work`：工具生命周期、推理终态、子智能体起止）与实时 `ReasoningDelta` / `ToolProgress` 进入当前 `Working` 容器，成员按调用/实体身份追踪各自 `status` 与起止时间。后到的完成或进度事件按身份原地更新（保留初次开始时间；`is_summary` 思考摘要优先于原始正文片段，已有有效进展摘要不被终态参数回退覆盖）；未匹配到前序开始的终态事件直接追加为已完成；处于 `Idle` 非执行态的迟到终态事件不重开 `Working`（防止状态栏误弹）。
+3. **展示类／边界事件天然切分工作组**：任意展示类信号（`TextStreamStarted` / `TextStreamDelta`、`CompactionStarted`、`ModelRecovery`、`RunActivity(Stopping)`）或持久化 `timeline_role = 2`（`Boundary`）到达时，立即切换对应相位并清空前序 `Working` 容器，无需等待在途工具全部收齐终态；待文本流、压缩或重连恢复后且当前 Turn 仍活跃，自动开启一个全新空白 `Working` 容器。
+4. **`Stopping` 锁存与归零**：执行阶段进入停止中即切入 `Stopping` 并锁存，屏蔽迟到的推理/工具/文本增量，直到执行彻底结束（`RunActivity(None)`、`TurnEnded`、`RunEnded` 或 `TurnReceiptRecorded`）归位 `Idle`。
+
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
 
-    Idle --> Working : UserInput / TurnStarted / ToolCalled / ReasoningDelta
+    Idle --> Working : RunActivity(active) / TurnStarted / InputAccepted / ReasoningDelta / ToolProgress / 活跃 Work
     Idle --> Compacting : CompactionStarted (手动压缩)
+    Idle --> Stopping : RunActivity(Stopping)
 
-    Working --> Working : ReasoningDelta / ToolCalled / ToolProgress / ToolWaitingApproval / ToolBackgrounded / ToolCompleted (容器内按 call_id 原地更新)
-    Working --> StreamingText : TextStreamStarted / TextStreamDelta (切文本流)
-    Working --> Compacting : CompactionStarted
-    Working --> Reconnecting : ModelRecoveryState (暂存容器, 切重连倒计时)
-    Working --> Idle : TurnEnded / RunIdle
+    Working --> Working : Work(role=1) / ReasoningDelta / ToolProgress (按身份就地更新或直显完成, 保留 started_at)
+    Working --> Working : Boundary(role=2) (Turn 仍活跃 -> 清空旧工作容器, 新建思考容器)
+    Working --> StreamingText : TextStreamStarted / TextStreamDelta (清空旧工作容器)
+    Working --> Compacting : CompactionStarted (清空旧工作容器)
+    Working --> Reconnecting : ModelRecovery(Repairing/Waiting/Retrying) (携带 attempt/max_attempts)
+    Working --> Stopping : RunActivity(Stopping)
+    Working --> Idle : TurnEnded / RunEnded / TurnReceiptRecorded / RunActivity(None)
 
     StreamingText --> StreamingText : TextStreamDelta (16ms 节拍合并增量)
-    StreamingText --> Working : TextStreamEnded / AssistantTextCompleted (Turn 未结束 -> 切思考中 + 新空工作组容器)
+    StreamingText --> Working : TextStreamEnded / Boundary (Turn 仍活跃 -> 清空缓冲并开新思考容器)
     StreamingText --> Compacting : CompactionStarted
-    StreamingText --> Reconnecting : ModelRecoveryState
-    StreamingText --> Idle : TurnEnded / RunIdle
+    StreamingText --> Reconnecting : ModelRecovery(Repairing/Waiting/Retrying)
+    StreamingText --> Stopping : RunActivity(Stopping)
+    StreamingText --> Idle : TurnEnded / RunEnded / TurnReceiptRecorded / RunActivity(None)
 
-    Compacting --> Working : CompactionCompleted (Turn 未结束 -> 切思考中 + 新空工作组容器)
-    Compacting --> Idle : CompactionCompleted (手动压缩结束) / TurnEnded
-    Compacting --> Reconnecting : ModelRecoveryState
+    Compacting --> Working : CompactionCompleted (Turn 仍活跃 -> 开新思考容器)
+    Compacting --> Idle : CompactionCompleted (手动压缩结束) / TurnEnded / RunActivity(None)
+    Compacting --> Reconnecting : ModelRecovery(Repairing/Waiting/Retrying)
+    Compacting --> Stopping : RunActivity(Stopping)
 
     Reconnecting --> StreamingText : TextStreamStarted / TextStreamDelta
-    Reconnecting --> Working : ModelRecoveryCleared / ReasoningDelta / ToolCalled
-    Reconnecting --> Idle : TurnEnded / RunIdle
+    Reconnecting --> Working : ModelRecovery(Recovered..) / ModelRecoveryCleared (Turn 仍活跃)
+    Reconnecting --> Stopping : RunActivity(Stopping)
+    Reconnecting --> Idle : TurnEnded / RunActivity(None) / ConnectionDisconnected
+
+    Stopping --> Idle : RunActivity(None) / TurnEnded / RunEnded / TurnReceiptRecorded
 ```
 
-Flutter 将 `StreamingText` 呈现为一个实时响应区。区内同一行显示阶段标题和计时，下方随增量更新正文预览。同一条响应按 `itemId` 复用布局。需要用户关注的停止、审批或故障提示由独立的状态处理。
+Flutter 侧只依据上述快照配合当前交互与存储状态投影为一个扁平互斥展示态：工作组折叠内容直接呈现在实时容器导轨内（单行紧凑条目，无二级描述），`StreamingText` 按 `itemId` 复用同一个有界响应窗口随增量刷新，停止、审批、存储或断连由独立单态承接而不堆叠多行。
 
 ### 26.3.2 主时间线天然封组状态机（`TimelineDataLayer`）
 

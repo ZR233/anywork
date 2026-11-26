@@ -14824,7 +14824,14 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveStatusPhas
                 let mut var_message = <String>::sse_decode(deserializer);
                 let mut var_retryAfterMs = <Option<u64>>::sse_decode(deserializer);
                 let mut var_attempt = <u32>::sse_decode(deserializer);
-                return crate::api::studio::types::presentation::BridgeLiveStatusPhase::Reconnecting{attempt_id: var_attemptId, message: var_message, retry_after_ms: var_retryAfterMs, attempt: var_attempt};
+                let mut var_maxAttempts = <u32>::sse_decode(deserializer);
+                return crate::api::studio::types::presentation::BridgeLiveStatusPhase::Reconnecting{attempt_id: var_attemptId, message: var_message, retry_after_ms: var_retryAfterMs, attempt: var_attempt, max_attempts: var_maxAttempts};
+            }
+            5 => {
+                let mut var_startedAtMs = <Option<i64>>::sse_decode(deserializer);
+                return crate::api::studio::types::presentation::BridgeLiveStatusPhase::Stopping {
+                    started_at_ms: var_startedAtMs,
+                };
             }
             _ => {
                 unimplemented!("");
@@ -14865,6 +14872,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveWorkItem {
         let mut var_status = <String>::sse_decode(deserializer);
         let mut var_summary = <String>::sse_decode(deserializer);
         let mut var_startedAtMs = <Option<i64>>::sse_decode(deserializer);
+        let mut var_finishedAtMs = <Option<i64>>::sse_decode(deserializer);
         return crate::api::studio::types::presentation::BridgeLiveWorkItem {
             id: var_id,
             call_id: var_callId,
@@ -14873,6 +14881,7 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeLiveWorkItem {
             status: var_status,
             summary: var_summary,
             started_at_ms: var_startedAtMs,
+            finished_at_ms: var_finishedAtMs,
         };
     }
 }
@@ -35068,14 +35077,19 @@ impl flutter_rust_bridge::IntoDart
                 message,
                 retry_after_ms,
                 attempt,
+                max_attempts,
             } => [
                 4.into_dart(),
                 attempt_id.into_into_dart().into_dart(),
                 message.into_into_dart().into_dart(),
                 retry_after_ms.into_into_dart().into_dart(),
                 attempt.into_into_dart().into_dart(),
+                max_attempts.into_into_dart().into_dart(),
             ]
             .into_dart(),
+            crate::api::studio::types::presentation::BridgeLiveStatusPhase::Stopping {
+                started_at_ms,
+            } => [5.into_dart(), started_at_ms.into_into_dart().into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -35133,6 +35147,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::presentation::
             self.status.into_into_dart().into_dart(),
             self.summary.into_into_dart().into_dart(),
             self.started_at_ms.into_into_dart().into_dart(),
+            self.finished_at_ms.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -50090,12 +50105,20 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveStatusPhas
                 message,
                 retry_after_ms,
                 attempt,
+                max_attempts,
             } => {
                 <i32>::sse_encode(4, serializer);
                 <String>::sse_encode(attempt_id, serializer);
                 <String>::sse_encode(message, serializer);
                 <Option<u64>>::sse_encode(retry_after_ms, serializer);
                 <u32>::sse_encode(attempt, serializer);
+                <u32>::sse_encode(max_attempts, serializer);
+            }
+            crate::api::studio::types::presentation::BridgeLiveStatusPhase::Stopping {
+                started_at_ms,
+            } => {
+                <i32>::sse_encode(5, serializer);
+                <Option<i64>>::sse_encode(started_at_ms, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -50129,6 +50152,7 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeLiveWorkItem {
         <String>::sse_encode(self.status, serializer);
         <String>::sse_encode(self.summary, serializer);
         <Option<i64>>::sse_encode(self.started_at_ms, serializer);
+        <Option<i64>>::sse_encode(self.finished_at_ms, serializer);
     }
 }
 

@@ -18,7 +18,7 @@ class ModelRequestWaitPreview extends StatelessWidget {
       receivedAt: DateTime.fromMillisecondsSinceEpoch(117_000),
     );
     return LiveStatusSurfaceView(
-      gate: projected.gate,
+      state: projected.state,
       now: () => DateTime.fromMillisecondsSinceEpoch(117_000),
     );
   }

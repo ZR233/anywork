@@ -317,6 +317,7 @@ pub struct BridgeLiveWorkItem {
     pub status: String,
     pub summary: String,
     pub started_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -350,6 +351,10 @@ pub enum BridgeLiveStatusPhase {
         message: String,
         retry_after_ms: Option<u64>,
         attempt: u32,
+        max_attempts: u32,
+    },
+    Stopping {
+        started_at_ms: Option<i64>,
     },
 }
 

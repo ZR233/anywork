@@ -392,6 +392,11 @@ LiveStatusSnapshot _liveStatusFromFrb(
           'retry delay',
         ),
         attempt: phase.attempt,
+        maxAttempts: phase.maxAttempts,
+      ),
+    final frb_presentation.BridgeLiveStatusPhase_Stopping phase =>
+      LiveStatusStopping(
+        startedAtMs: _timelineMillisFromFrb(phase.startedAtMs),
       ),
   },
   attentions: value.attentions.map(
@@ -414,6 +419,7 @@ LiveWorkItem _liveWorkItemFromFrb(frb_presentation.BridgeLiveWorkItem value) =>
       status: value.status,
       summary: value.summary,
       startedAtMs: _timelineMillisFromFrb(value.startedAtMs),
+      finishedAtMs: _timelineMillisFromFrb(value.finishedAtMs),
     );
 
 ConversationFeedEvent _conversationEventFromFrb(

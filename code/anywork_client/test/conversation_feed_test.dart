@@ -303,6 +303,31 @@ void main() {
         attentions: [],
         suppressedByInteraction: true,
       );
+      expect(
+        const LiveStatusReconnecting(
+          attemptId: 'att',
+          message: 'retrying',
+          attempt: 2,
+          maxAttempts: 5,
+        ).maxAttempts,
+        5,
+      );
+      expect(
+        const LiveStatusStopping(startedAtMs: 100),
+        const LiveStatusStopping(startedAtMs: 100),
+      );
+      expect(
+        const LiveWorkItem(
+          id: 'w1',
+          kind: 'exec',
+          toolName: 'shell',
+          status: 'completed',
+          summary: 'cargo test',
+          startedAtMs: 10,
+          finishedAtMs: 25,
+        ).finishedAtMs,
+        25,
+      );
       final events = <ConversationFeedEvent>[
         ConversationTimeline(
           patch: TimelineReset(items: [], hasMoreOlder: false, revision: 1),

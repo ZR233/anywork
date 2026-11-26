@@ -15128,6 +15128,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Execution steps {completed}/{total}'**
   String acpStepsStatusTooltip(int completed, int total);
+
+  /// No description provided for @conversationActivityReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting'**
+  String get conversationActivityReconnecting;
+
+  /// No description provided for @conversationActivityReconnectingMeta.
+  ///
+  /// In en, this message translates to:
+  /// **'Attempt {attempt}/{maxAttempts}'**
+  String conversationActivityReconnectingMeta(int attempt, int maxAttempts);
+
+  /// No description provided for @conversationActivityReconnectingAttemptMeta.
+  ///
+  /// In en, this message translates to:
+  /// **'Attempt {attempt}'**
+  String conversationActivityReconnectingAttemptMeta(int attempt);
+
+  /// No description provided for @conversationActivityAttentionDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Action required'**
+  String get conversationActivityAttentionDefault;
+
+  /// No description provided for @conversationActivityWaitingChild.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent waiting'**
+  String get conversationActivityWaitingChild;
+
+  /// No description provided for @liveWorkKindThinking.
+  ///
+  /// In en, this message translates to:
+  /// **'Thinking'**
+  String get liveWorkKindThinking;
+
+  /// No description provided for @liveWorkKindRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Read'**
+  String get liveWorkKindRead;
+
+  /// No description provided for @liveWorkKindEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit'**
+  String get liveWorkKindEdit;
+
+  /// No description provided for @liveWorkKindSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search'**
+  String get liveWorkKindSearch;
+
+  /// No description provided for @liveWorkKindExec.
+  ///
+  /// In en, this message translates to:
+  /// **'Run'**
+  String get liveWorkKindExec;
+
+  /// No description provided for @liveWorkKindWait.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait'**
+  String get liveWorkKindWait;
+
+  /// No description provided for @liveWorkKindAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent'**
+  String get liveWorkKindAgent;
+
+  /// No description provided for @liveWorkKindTool.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool'**
+  String get liveWorkKindTool;
 }
 
 class _AppLocalizationsDelegate
