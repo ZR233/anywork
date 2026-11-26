@@ -9,7 +9,7 @@ use rmcp::{
     service::RequestContext,
 };
 
-use crate::{HostError, HostInvocation, HostTools};
+use crate::{HostContent, HostError, HostInvocation, HostTools};
 
 /// The same protocol service is used by in-process HTTP and IPC-backed stdio.
 #[derive(Clone)]
@@ -99,13 +99,22 @@ impl<B: HostTools> ServerHandler for HostMcpService<B> {
             )
             .await
             .map_err(protocol_error)?;
-        let text = ContentBlock::text(result.value.to_string());
-        let mut response = if result.is_error {
-            CallToolResult::error(vec![text])
-        } else {
-            CallToolResult::success(vec![text])
+        let (content, structured_content) = match result.content {
+            Some(HostContent::Text(text)) => (ContentBlock::text(text), None),
+            Some(HostContent::Image { data, mime_type }) => {
+                (ContentBlock::image(data, mime_type), None)
+            }
+            None => (
+                ContentBlock::text(result.value.to_string()),
+                Some(result.value),
+            ),
         };
-        response.structured_content = Some(result.value);
+        let mut response = if result.is_error {
+            CallToolResult::error(vec![content])
+        } else {
+            CallToolResult::success(vec![content])
+        };
+        response.structured_content = structured_content;
         Ok(response.into())
     }
 }

@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use pl_studio_mcp::{HostCatalog, HostError, HostInvocation, HostResult, HostTool, HostTools};
+use pl_studio_mcp::{
+    HostCatalog, HostContent, HostError, HostInvocation, HostResult, HostTool, HostTools,
+};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -67,6 +69,7 @@ impl HostTools for Backend {
             return Ok(HostResult {
                 value: Value::String("x".repeat(size as usize)),
                 is_error: false,
+                content: None,
             });
         }
         if let Some(id) = request.arguments.get("id").and_then(Value::as_u64) {
@@ -74,9 +77,18 @@ impl HostTools for Backend {
             // Yield so streams overlap without artificial business timeouts.
             tokio::task::yield_now().await;
         }
+        let content = match request.arguments.get("content").and_then(Value::as_str) {
+            Some("text") => Some(HostContent::Text("first line\n第二行".into())),
+            Some("image") => Some(HostContent::Image {
+                data: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7".into(),
+                mime_type: "image/gif".into(),
+            }),
+            _ => None,
+        };
         Ok(HostResult {
             is_error: request.arguments.get("error") == Some(&json!(true)),
             value: Value::Object(request.arguments),
+            content,
         })
     }
 }
