@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:math';
 
 import 'package:anywork_client/lifecycle.dart';
@@ -232,7 +233,20 @@ final class TimelineDisplayLease implements TimelineUiControllers {
         } else {
           appliedAppends++;
         }
+        _recordApplied(prepend ? 'prepend' : 'append', messages.length);
       });
+
+  void _recordApplied(String placement, int count) {
+    developer.Timeline.instantSync(
+      'conversation.applied',
+      arguments: {
+        'generation': generation,
+        'placement': placement,
+        'acceptedBlocks': count,
+        'controllerMessages': loadedCount,
+      },
+    );
+  }
 
   Future<void> _update(TimelineItem item) => _mutate(() async {
     if (_pausedItems.containsKey(item.id)) {
@@ -490,7 +504,18 @@ final class TimelineSessionOwner {
   }
 
   Future<void> _serialize(Future<void> Function() action) {
-    final result = _commits.then((_) => action());
+    final queued = Stopwatch()..start();
+    final result = _commits.then((_) {
+      developer.Timeline.instantSync(
+        'conversation.admission',
+        arguments: {
+          'owner': 'timeline',
+          'threadId': _selectedThread ?? '',
+          'queueWaitMicros': queued.elapsedMicroseconds,
+        },
+      );
+      return action();
+    });
     _commits = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
   }
@@ -536,6 +561,7 @@ final class TimelineSessionOwner {
       }
       display.generation = ++_displayGeneration;
       _lease = display;
+      display._recordApplied('set', patch.items.length);
       if (replacing && previous != null) _retireDisplay(previous);
       if (!_owns(read)) return;
       if (read.resetWaiter case final waiter?) {

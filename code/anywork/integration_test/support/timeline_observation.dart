@@ -78,11 +78,15 @@ Finder timelineActivityTitleFinder(
 /// Synchronous observation of the one production Main controller. It does not
 /// reconstruct grouping or a second timeline collection.
 final class TimelineObservation {
-  TimelineObservation(this.tester, this.borrowLease);
+  TimelineObservation(this.tester, this.borrowLease, {this.idle});
 
   final WidgetTester tester;
   final TimelineDisplayLease Function() borrowLease;
+  final Future<void> Function()? idle;
   TimelineDisplayLease get lease => borrowLease();
+
+  Future<void> _idle() =>
+      idle?.call() ?? tester.pump(const Duration(milliseconds: 50));
 
   Iterable<TimelineItem> get main sync* {
     for (final message in lease.controller.messages) {
@@ -121,7 +125,7 @@ final class TimelineObservation {
         fail('Timed out waiting for $description');
       }
       if (ready()) return;
-      await tester.pump(const Duration(milliseconds: 50));
+      await _idle();
       expect(tester.takeException(), isNull);
     }
   }
@@ -147,7 +151,7 @@ final class TimelineObservation {
         expect(elements, hasLength(1));
         await Scrollable.ensureVisible(elements.single);
       }
-      await tester.pump(const Duration(milliseconds: 50));
+      await _idle();
       expect(tester.takeException(), isNull);
     }
     await tester.tap(target);
@@ -198,7 +202,7 @@ final class TimelineObservation {
         // finder; callers verify their actual content/control is visible.
         if (fragment.evaluate().isNotEmpty) return;
       }
-      await tester.pump(const Duration(milliseconds: 50));
+      await _idle();
     }
     fail('Timed out revealing Main row $unitId');
   }

@@ -8,6 +8,8 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
@@ -28,7 +30,11 @@ import 'support/history_turns.dart';
 import 'support/timeline_observation.dart';
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // This native journey waits for real FRB/provider I/O. Let the engine draw
+  // requested frames while the test yields instead of making each readiness
+  // check depend on completion of a timed LiveTestWidgetsFlutterBinding pump.
+  binding.framePolicy = LiveTestWidgetsFlutterBindingFramePolicy.fullyLive;
   WidgetController.hitTestWarningShouldBeFatal = true;
 
   testWidgets('real wait tool reaches visible history and closes normally', (
@@ -108,29 +114,60 @@ void main() {
     await tester.tap(find.byKey(StudioDriverKeys.composerSubmit));
 
     String? threadId;
-    await _until(tester, () {
-      final selected = graph.client.selection.state.selectedThreadId;
-      if (selected == null ||
-          graph.client.conversations.visibleThreadId.value != selected) {
+    await _until(
+      tester,
+      () {
+        final selected = graph.client.selection.state.selectedThreadId;
+        if (selected == null ||
+            graph.client.conversations.visibleThreadId.value != selected) {
+          return false;
+        }
+        threadId = selected;
+        return true;
+      },
+      'selected wait Thread',
+      diagnostic: () {
+        final selected = graph.client.selection.state.selectedThreadId;
+        final state = selected == null
+            ? null
+            : graph.client.conversations.sessionState(selected);
+        return 'selected=$selected visible=${graph.client.conversations.visibleThreadId.value} '
+            'sync=${state?.sync.phase.name} error=${state?.sync.errorMessage} '
+            'active=${state?.activeTurn?.turnId} last=${state?.lastTurn?.turnId}';
+      },
+    );
+    debugPrint('wait-events: waiting for canonical completed Turn');
+    final completed = await tester.runAsync(
+      () => waitForCompletedTurn(
+        feeds: graph.client.transport,
+        threadId: threadId!,
+        matches: (head) =>
+            head.inputId != null &&
+            (threadId != priorThreadId || head.turnId != priorTurnId),
+        description: 'canonical completed wait Turn',
+        timeout: const Duration(minutes: 2),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    expect(completed, isNotNull);
+    expect(completed!.inputId, isNotNull);
+    bool isObservedWait(WorkGroupMember member) {
+      if (member is! WorkGroupToolCall ||
+          member.toolName != 'wait' ||
+          member.turnId != completed.turnId) {
         return false;
       }
-      threadId = selected;
-      return true;
-    }, 'selected wait Thread');
-    final completed = await waitForCompletedTurn(
-      feeds: graph.client.transport,
-      threadId: threadId!,
-      matches: (head) =>
-          head.inputId != null &&
-          (threadId != priorThreadId || head.turnId != priorTurnId),
-      description: 'canonical completed wait Turn',
-      timeout: const Duration(minutes: 2),
-    );
-    expect(completed.inputId, isNotNull);
-    bool isObservedWait(WorkGroupMember member) =>
-        member is WorkGroupToolCall &&
-        member.toolName == 'wait' &&
-        member.turnId == completed.turnId;
+      // The fixture executes two wait calls in this Turn. Select the events
+      // wait with both targets through the production payload reader, then
+      // use its callId for every subsequent identity assertion.
+      final card = timelineFeedMember(member).toolCard;
+      return card is DecodedToolCard &&
+          switch (card.value.wait?.intent) {
+            ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
+            _ => false,
+          };
+    }
+
     await _until(
       tester,
       () => graph.timeline.lease(threadId!) != null,
@@ -138,7 +175,11 @@ void main() {
     );
 
     final lease = graph.timeline.lease(threadId!)!;
-    final observed = TimelineObservation(tester, () => lease);
+    final observed = TimelineObservation(
+      tester,
+      () => lease,
+      idle: () => _idle(tester),
+    );
     await _until(
       tester,
       () => observed.main.whereType<TimelineWorkGroup>().isNotEmpty,
@@ -171,7 +212,9 @@ void main() {
 
     await _until(
       tester,
-      () => observed.mountedMembers.any(isObservedWait),
+      () => observed.mountedMembers.whereType<WorkGroupToolCall>().any(
+        (member) => member.callId == historicalWait!.callId,
+      ),
       'historical wait tool member',
     );
     late TimelineToolItemView panel;
@@ -179,12 +222,7 @@ void main() {
     await _until(tester, () {
       final matches = tester
           .widgetList<TimelineToolItemView>(find.byType(TimelineToolItemView))
-          .where(
-            (value) => switch (value.item.wait?.intent) {
-              ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
-              _ => false,
-            },
-          )
+          .where((value) => value.item.toolCallId == historicalWait!.callId)
           .toList();
       if (matches.length != 1) return false;
       panel = matches.single;
@@ -198,7 +236,8 @@ void main() {
     final original = historicalWait!;
     final mounted = observed.mountedMembers
         .whereType<WorkGroupToolCall>()
-        .singleWhere(isObservedWait);
+        .singleWhere((member) => member.callId == original.callId);
+    expect(isObservedWait(mounted), isTrue);
     expect(mounted, original);
     expect(waitItem.id, original.id);
     expect(waitItem.raw, original.payloadJson);
@@ -306,13 +345,22 @@ Future<void> _until(
   bool Function() ready,
   String description, {
   Duration timeout = const Duration(seconds: 60),
+  String Function()? diagnostic,
 }) async {
+  debugPrint('wait-events: waiting for $description');
   final clock = Stopwatch()..start();
   while (!ready()) {
     if (clock.elapsed >= timeout) {
-      fail('Timed out waiting for $description');
+      fail('Timed out waiting for $description; ${diagnostic?.call() ?? ''}');
     }
-    await tester.pump(const Duration(milliseconds: 50));
+    await _idle(tester);
     expect(tester.takeException(), isNull);
   }
+  debugPrint('wait-events: observed $description');
+}
+
+Future<void> _idle(WidgetTester tester) async {
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 50)),
+  );
 }
