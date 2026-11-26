@@ -114,7 +114,7 @@ impl BridgeObservationFactory {
             .scope
             .open("conversation-feed", move |_| async move {
                 let feed = source
-                    .open_conversation_feed(&thread_id, initial_limit)
+                    .open_conversation_feed_with_maintenance(&thread_id, initial_limit)
                     .await?;
                 Ok(ConversationResource {
                     feed,
