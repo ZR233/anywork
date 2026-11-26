@@ -1419,6 +1419,12 @@ mod tests {
             }
         }
 
+        async fn completed_value(&mut self, name: &str, arguments: Value) -> Result<Value> {
+            let result = self.completed_tool(name, arguments).await?;
+            ensure!(!result.is_error, "MCP tool {name} failed: {}", result.value);
+            Ok(result.value)
+        }
+
         async fn task_reply(&mut self, task: &str) -> Result<Value> {
             self.tool("anywork_wait", json!({"taskIds":[task],"timeoutMs":30000}))
                 .await?;
@@ -1755,21 +1761,22 @@ mod tests {
             let patch = catalog.iter().find(|tool| tool["name"] == "anywork_apply_patch").context("patch declaration")?;
             ensure!(patch["inputSchema"]["properties"]["input"]["type"] == "string");
 
-            peer.tool("anywork_create_directory", json!({"path":"src"})).await?;
-            peer.tool("anywork_write_file", json!({"path":"src/file.txt","mode":"create","content":"before\n"})).await?;
-            peer.tool("anywork_apply_patch", json!({"input":"*** Begin Patch\n*** Update File: src/file.txt\n@@\n-before\n+after\n*** End Patch"})).await?;
-            let stat = peer.tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
-            ensure!(stat["exists"] == true && stat["type"] == "file" && stat["len"] == 6);
-            peer.tool("anywork_copy_path", json!({"from":"src/file.txt","to":"copy.txt","collision":"failIfExists"})).await?;
-            peer.tool("anywork_move_path", json!({"from":"copy.txt","to":"moved.txt","collision":"failIfExists"})).await?;
-            peer.tool("anywork_delete_path", json!({"path":"moved.txt","mode":"file"})).await?;
+            // Wait for each operation to finish before sending a dependent request.
+            peer.completed_value("anywork_create_directory", json!({"path":"src"})).await?;
+            peer.completed_value("anywork_write_file", json!({"path":"src/file.txt","mode":"create","content":"before\n"})).await?;
+            peer.completed_value("anywork_apply_patch", json!({"input":"*** Begin Patch\n*** Update File: src/file.txt\n@@\n-before\n+after\n*** End Patch"})).await?;
+            let stat = peer.completed_value("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
+            ensure!(stat["exists"] == true && stat["type"] == "file" && stat["len"] == 6, "stat result: {stat}");
+            peer.completed_value("anywork_copy_path", json!({"from":"src/file.txt","to":"copy.txt","collision":"failIfExists"})).await?;
+            peer.completed_value("anywork_move_path", json!({"from":"copy.txt","to":"moved.txt","collision":"failIfExists"})).await?;
+            peer.completed_value("anywork_delete_path", json!({"path":"moved.txt","mode":"file"})).await?;
             ensure!(tokio::fs::read_to_string(h.root.join("src/file.txt")).await? == "after\n");
             ensure!(!std::path::Path::new(&h.fixture.workspace.path).join("src/file.txt").exists(), "file tool used ACP host cwd");
             tokio::fs::create_dir(h.fixture.home.path().join("outside")).await?;
             std::os::unix::fs::symlink(h.fixture.home.path().join("outside"), h.root.join("escape"))?;
             let denied = peer.completed_tool("anywork_write_file", json!({"path":"escape/forbidden","content":"bad","mode":"create"})).await?;
             ensure!(denied.is_error && !h.fixture.home.path().join("outside/forbidden").exists());
-            let git = peer.tool("anywork_git_workspace_info", json!({})).await?;
+            let git = peer.completed_value("anywork_git_workspace_info", json!({})).await?;
             ensure!(git["worktree"] == h.root.to_str().context("Git root")?);
 
             // Disabling commands does not turn file permission into unrestricted host access.
