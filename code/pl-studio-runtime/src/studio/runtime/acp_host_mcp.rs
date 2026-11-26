@@ -783,6 +783,10 @@ impl crate::thread_assembler::host_agent_tools::AgentToolSink for AgentMcpTools<
         definition: &ToolDefinition,
         _: crate::thread_assembler::host_agent_tools::AgentToolOptions,
     ) -> Result<Self::Prepared> {
+        if definition.name() == "spawn_agent" {
+            let definition = acp_spawn_definition(definition)?;
+            return prepare_binding(self.0, &definition, pl_studio_mcp::JsonInput::Object);
+        }
         prepare_binding(self.0, definition, pl_studio_mcp::JsonInput::Object)
     }
     fn attach<T>(&mut self, projection: Self::Prepared, tool: T)
@@ -1102,10 +1106,56 @@ fn attach_workflow_and_plan_tools(
 }
 
 fn acp_workflow_transition_definition(definition: &ToolDefinition) -> Result<ToolDefinition> {
+    Ok(ToolDefinition::json(
+        definition.name(),
+        "Move the workflow to an allowed next stage.",
+        compact_acp_input_schema(definition)?.to_value(),
+    )?)
+}
+
+fn acp_spawn_definition(definition: &ToolDefinition) -> Result<ToolDefinition> {
+    let mut schema = compact_acp_input_schema(definition)?.to_value();
+    let (properties, required) = (
+        schema["properties"]
+            .as_object()
+            .context("spawn properties")?
+            .clone(),
+        schema["required"]
+            .as_array()
+            .context("spawn required fields")?
+            .clone(),
+    );
+    let branches = schema["oneOf"].as_array_mut().context("spawn branches")?;
+    for branch in branches {
+        let branch = branch.as_object_mut().context("spawn branch object")?;
+        // The root constraints apply to every branch. Keep only the additional
+        // constraints here, including false schemas that forbid a field.
+        branch
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+            .context("spawn branch properties")?
+            .retain(|name, value| properties.get(name) != Some(value));
+        let branch_required = branch
+            .get_mut("required")
+            .and_then(Value::as_array_mut)
+            .context("spawn branch required fields")?;
+        branch_required.retain(|name| !required.contains(name));
+        if branch_required.is_empty() {
+            branch.remove("required");
+        }
+    }
+    Ok(ToolDefinition::json(
+        definition.name(),
+        "Start a child using an enabled Profile. For an ACP child, use the requested model in acpConfig.",
+        schema,
+    )?)
+}
+
+fn compact_acp_input_schema(definition: &ToolDefinition) -> Result<schemars::Schema> {
     use schemars::transform::{RecursiveTransform, Transform};
 
     let pl_agent_tool::InputFormat::JsonSchema(schema) = definition.input() else {
-        anyhow::bail!("Workflow transition requires a JSON schema");
+        anyhow::bail!("ACP tool `{}` requires a JSON schema", definition.name());
     };
     let mut schema = schemars::Schema::try_from(schema.clone())?;
     // Keep the shared parameter contract while omitting annotations that can
@@ -1116,11 +1166,7 @@ fn acp_workflow_transition_definition(definition: &ToolDefinition) -> Result<Too
         }
     })
     .transform(&mut schema);
-    Ok(ToolDefinition::json(
-        definition.name(),
-        "Move the workflow to an allowed next stage.",
-        schema.to_value(),
-    )?)
+    Ok(schema)
 }
 
 impl HostTools for Handler {
