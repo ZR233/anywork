@@ -250,6 +250,8 @@ pub enum WorkGroupMember {
         id: String,
         seq: u64,
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         tool_name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         presentation_contract: Option<String>,
@@ -276,18 +278,6 @@ pub enum WorkGroupMember {
         status: String,
         summary: String,
         payload_json: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        started_at_ms: Option<i64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        finished_at_ms: Option<i64>,
-    },
-    Wait {
-        id: String,
-        seq: u64,
-        call_id: String,
-        summary: String,
-        status: String,
-        wait_json: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         started_at_ms: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -329,7 +319,6 @@ impl WorkGroupMember {
             Self::Reasoning { id, .. }
             | Self::ToolCall { id, .. }
             | Self::Agent { id, .. }
-            | Self::Wait { id, .. }
             | Self::FileChange { id, .. }
             | Self::Skill { id, .. }
             | Self::Fallback { id, .. } => id,
@@ -342,7 +331,6 @@ impl WorkGroupMember {
             Self::Reasoning { seq, .. }
             | Self::ToolCall { seq, .. }
             | Self::Agent { seq, .. }
-            | Self::Wait { seq, .. }
             | Self::FileChange { seq, .. }
             | Self::Skill { seq, .. }
             | Self::Fallback { seq, .. } => *seq,
@@ -352,11 +340,7 @@ impl WorkGroupMember {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "op",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum TimelinePatch {
     Reset {
         items: Vec<TimelineItem>,

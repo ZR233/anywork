@@ -5,9 +5,8 @@ use anyhow::{Context, Result, ensure};
 use pl_model::model::ModelTransportProfile;
 use pl_provider_fixture::ReplyStage;
 use pl_studio_runtime::{
-    SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest,
-    ThreadActivityToolState, ThreadWaitState, ThreadWorkspaceMode, TurnCancellationCause,
-    TurnState,
+    SetThreadModelRouteRequest, StudioPromptInput, SubmitPromptRequest, ThreadActivityToolState,
+    ThreadWaitState, ThreadWorkspaceMode, TurnCancellationCause, TurnState,
 };
 use serde_json::json;
 use support::{Environment, prompt_step, reached, text_reply, tool_reply};
@@ -82,15 +81,8 @@ async fn active_root_route_save_then_submit_summarizes_source_after_tool_cancell
         .await;
         feed.close().await;
         let held = observation?;
-        let source_turn = held
-            .active_turn
-            .as_ref()
-            .context("source Turn is active")?;
-        let revision = held
-            .model_route
-            .as_ref()
-            .context("source route")?
-            .revision;
+        let source_turn = held.active_turn.as_ref().context("source Turn is active")?;
+        let revision = held.model_route.as_ref().context("source route")?.revision;
         let saved = env
             .runtime
             .save_thread_model_route(

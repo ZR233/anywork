@@ -1,25 +1,17 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
-import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../../../anywork_client/test/support/timeline_transport.dart'
-    show TestHistoryReader;
-import '../support/chat_fixtures.dart';
+import '../support/conversation_feed_fixtures.dart';
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_app_lifecycle.dart';
@@ -27,507 +19,42 @@ import '../support/test_statistics_feed.dart';
 
 const _threadId = 'thread-main';
 
-CurrentContentRef _currentRef(String ownerId, String entityId) =>
-    CurrentContentRef(
-      ownerId: ownerId,
-      domain: 'thread',
-      entityId: entityId,
-      contentKey: 'body',
-      generation: '1',
-    );
-
-HistoryEventRecord _inputDivider({
-  required int seq,
-  required String id,
-  required String text,
-  required String runId,
-  required String turnId,
-}) => HistoryEventRecord(
-  seq: seq,
-  eventId: 'event:$id',
-  kind: 'input_accepted',
-  timelineRole: HistoryTimelineRole.boundary,
-  recordedAt: seq * 1000,
-  occurredAt: seq * 1000,
-  runId: runId,
-  turnId: turnId,
-  entityId: id,
-  rowKey: 'row:$id',
-  source: InputChatSource(inputId: id),
-  payloadSchema: 'anywork.event/1',
-  payloadJson: jsonEncode({
-    'contract': 'anywork.event/1',
-    'type': 'text',
-    'meta': {
-      'entityId': id,
-      'entityKind': 'input',
-      'delivery': 'foreground',
-      'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
-      'contentPresent': true,
-    },
-    'data': {'channel': 'user'},
-    'bodies': [
-      {
-        'key': 'body',
-        'byteLength': utf8.encode(text).length,
-        'inlineText': text,
-      },
-    ],
-  }),
-);
-
-HistoryEventRecord _finalTextDivider({
-  required int seq,
-  required String id,
-  required String text,
-  required String runId,
-  required String turnId,
-}) => HistoryEventRecord(
-  seq: seq,
-  eventId: 'event:$id',
-  kind: 'text_completed',
-  timelineRole: HistoryTimelineRole.boundary,
-  recordedAt: seq * 1000,
-  occurredAt: seq * 1000,
-  runId: runId,
-  turnId: turnId,
-  entityId: id,
-  rowKey: 'row:$id',
-  source: ForegroundTurnChatSource(turnId: turnId),
-  payloadSchema: 'anywork.event/1',
-  payloadJson: jsonEncode({
-    'contract': 'anywork.event/1',
-    'type': 'text',
-    'meta': {
-      'entityId': id,
-      'entityKind': 'text',
-      'delivery': 'foreground',
-      'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
-      'contentPresent': true,
-      'startedAt': seq * 1000,
-      'finishedAt': seq * 1000 + 200,
-    },
-    'data': {'channel': 'final'},
-    'bodies': [
-      {
-        'key': 'body',
-        'byteLength': utf8.encode(text).length,
-        'inlineText': text,
-      },
-    ],
-  }),
-);
-
-HistoryEventRecord _toolCalled({
-  required int seq,
-  required String callId,
-  required String toolName,
-  required String runId,
-  required String turnId,
-}) => HistoryEventRecord(
-  seq: seq,
-  eventId: 'event:tool-called:$callId',
-  kind: 'tool_called',
-  timelineRole: HistoryTimelineRole.work,
-  recordedAt: seq * 1000,
-  occurredAt: seq * 1000,
-  runId: runId,
-  turnId: turnId,
-  entityId: 'tool:${callId.length}:$callId',
-  callId: callId,
-  toolName: toolName,
-  rowKey: 'call:$callId',
-  source: ForegroundTurnChatSource(turnId: turnId),
-  payloadSchema: 'anywork.event/1',
-  payloadJson: jsonEncode({
-    'contract': 'anywork.event/1',
-    'type': 'tool',
-    'meta': {
-      'entityId': 'tool:${callId.length}:$callId',
-      'entityKind': 'toolCall',
-      'delivery': 'foreground',
-      'tool': {'callId': callId, 'name': toolName},
-      'state': {'kind': 'knownActive', 'status': 'running'},
-      'startedAt': seq * 1000,
-      'contentPresent': true,
-    },
-    'data': {
-      'callId': callId,
-      'toolName': toolName,
-      'state': {'kind': 'running'},
-      'invocation': {
-        'callId': callId,
-        'toolName': toolName,
-        'presentationContract': 'builtin.read_file@1',
-      },
-    },
-    'bodies': [
-      {
-        'key': 'tool.arguments',
-        'byteLength': 19,
-        'inlineText': '{"path":"a.txt"}',
-      },
-    ],
-  }),
-);
-
-HistoryEventRecord _toolCompleted({
-  required int seq,
-  required String callId,
-  required String toolName,
-  required String runId,
-  required String turnId,
-  required String resultText,
-}) => HistoryEventRecord(
-  seq: seq,
-  eventId: 'event:tool-done:$callId',
-  kind: 'tool_completed',
-  timelineRole: HistoryTimelineRole.work,
-  recordedAt: seq * 1000,
-  occurredAt: seq * 1000,
-  runId: runId,
-  turnId: turnId,
-  entityId: 'tool:${callId.length}:$callId',
-  callId: callId,
-  toolName: toolName,
-  rowKey: 'call:$callId',
-  source: ForegroundTurnChatSource(turnId: turnId),
-  payloadSchema: 'anywork.event/1',
-  payloadJson: jsonEncode({
-    'contract': 'anywork.event/1',
-    'type': 'tool',
-    'meta': {
-      'entityId': 'tool:${callId.length}:$callId',
-      'entityKind': 'toolCall',
-      'delivery': 'foreground',
-      'tool': {'callId': callId, 'name': toolName},
-      'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
-      'startedAt': (seq - 1) * 1000,
-      'finishedAt': seq * 1000,
-      'contentPresent': true,
-    },
-    'data': {
-      'callId': callId,
-      'toolName': toolName,
-      'state': {'kind': 'succeeded'},
-      'invocation': {
-        'callId': callId,
-        'toolName': toolName,
-        'presentationContract': 'builtin.read_file@1',
-      },
-    },
-    'bodies': [
-      {
-        'key': 'tool.result',
-        'byteLength': utf8.encode(resultText).length,
-        'inlineText': resultText,
-      },
-    ],
-  }),
-);
-
-final class _SnapshotOverrideCurrentReader implements CurrentReader {
-  _SnapshotOverrideCurrentReader(this.inner);
-
-  final RecordingCurrentReader inner;
-  CurrentView? snapshotOverride;
-
-  @override
-  OpenCurrent get metadata => inner.metadata;
-
-  @override
-  String get threadId => inner.threadId;
-
-  @override
-  CurrentView get initialView => snapshotOverride ?? inner.initialView;
-
-  @override
-  Future<CurrentView> snapshot(ReadDemand demand) async =>
-      snapshotOverride ?? await inner.snapshot(demand);
-
-  @override
-  Future<CurrentWatch> watch({
-    CurrentRevision? after,
-    required ReadDemand demand,
-  }) => inner.watch(after: after, demand: demand);
-
-  @override
-  Future<CurrentCollectionPage> pageCollection({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) => inner.pageCollection(
-    reference: reference,
-    continuation: continuation,
-    demand: demand,
-  );
-
-  @override
-  Future<ContentWindow> readBody({
-    required CurrentContentRef reference,
-    required ContentRange range,
-  }) => inner.readBody(reference: reference, range: range);
-
-  @override
-  Future<CurrentBodyWatch> watchBody({
-    required CurrentContentRef reference,
-    required ContentRange range,
-  }) => inner.watchBody(reference: reference, range: range);
-
-  @override
-  void requestClose() => inner.requestClose();
-
-  @override
-  Future<void> close() => inner.close();
-}
-
-final class _ImmutableLiveTransport extends RecordingDemoTransport {
-  final currentOwner = Completer<String>();
-  final Map<String, List<_SnapshotOverrideCurrentReader>> wrappedCurrent = {};
-
-  HistoryCut currentCut = const HistoryCut('cut-1');
-  List<HistoryTimelineEntry> Function(HistoryCut cut, String ownerId)?
-  timelineBuilder;
-  List<HistoryEventRecord> Function(
-    int? afterSeq,
-    int? beforeSeq,
-    HistoryCut cut,
-    String ownerId,
-  )?
-  workRangeBuilder;
-  Future<void> Function()? beforeWorkRange;
-
-  Completer<HistoryCut>? _changeWaiter;
-
-  void emitHistoryChange(HistoryCut nextCut) {
-    currentCut = nextCut;
-    final waiter = _changeWaiter;
-    _changeWaiter = null;
-    waiter?.complete(nextCut);
-  }
-
-  void setCurrentSnapshot(String threadId, CurrentView view) {
-    for (final reader in wrappedCurrent[threadId] ?? const []) {
-      reader.snapshotOverride = view;
-    }
-  }
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    final base = await super.openCurrentReader(
-      threadId,
-      currentProtocolVersion: currentProtocolVersion,
-      demand: demand,
-    ) as RecordingCurrentReader;
-    if (!currentOwner.isCompleted) {
-      currentOwner.complete(base.metadata.currentOwnerId);
-    }
-    final wrapper = _SnapshotOverrideCurrentReader(base);
-    wrappedCurrent.putIfAbsent(threadId, () => []).add(wrapper);
-    return wrapper;
-  }
-
-  @override
-  Future<HistoryReader> openHistoryReader(
-    String threadId, {
-    required int historyProtocolVersion,
-  }) async {
-    final ownerId = await currentOwner.future;
-    final reader = TestHistoryReader(threadId: threadId, cut: currentCut);
-    reader.onTimeline = (cut, cursor, demand) async {
-      final activeCut = cut ?? currentCut;
-      return HistoryTimelinePage(
-        cut: activeCut,
-        entries: cursor == null
-            ? (timelineBuilder?.call(activeCut, ownerId) ?? const [])
-            : const [],
-      );
-    };
-    reader.onWorkRange = (afterSeq, beforeSeq, cut, cursor, demand) async {
-      final activeCut = cut ?? currentCut;
-      await beforeWorkRange?.call();
-      return HistoryWorkRangePage(
-        cut: activeCut,
-        afterSeq: afterSeq,
-        beforeSeq: beforeSeq,
-        events: cursor == null
-            ? (workRangeBuilder?.call(
-                    afterSeq,
-                    beforeSeq,
-                    activeCut,
-                    ownerId,
-                  ) ??
-                  const [])
-            : const [],
-      );
-    };
-    reader.onWaitChanged = (cut) {
-      if (cut != currentCut) return Future.value(currentCut);
-      return (_changeWaiter ??= Completer<HistoryCut>()).future;
-    };
-    return reader;
-  }
-}
-
 void main() {
   testWidgets(
-    'LiveStatusBar hosts open work and streaming text while Timeline keeps immutable finalized rows',
+    'live work and streaming text leave sealed timeline rows intact',
     (tester) async {
-      final transport = _ImmutableLiveTransport();
-      late String runId;
-      const turn1 = 'turn-1';
-      const turn2 = 'turn-2';
-      const reply1Text = 'Final answer from turn 1';
-
-      var stage = 1;
-      transport.timelineBuilder = (cut, ownerId) {
-        runId = ownerId;
-        return switch (stage) {
-          1 => [
-            HistoryTimelineEntry(
-              event: _inputDivider(
-                seq: 1,
-                id: 'input-1',
-                text: 'First prompt',
-                runId: ownerId,
-                turnId: turn1,
-              ),
-              hasFoldedAfter: false,
-            ),
-          ],
-          2 => [
-            HistoryTimelineEntry(
-              event: _inputDivider(
-                seq: 1,
-                id: 'input-1',
-                text: 'First prompt',
-                runId: ownerId,
-                turnId: turn1,
-              ),
-              hasFoldedAfter: true,
-              tailFoldedEndedAt: 3000,
-            ),
-          ],
-          3 => [
-            HistoryTimelineEntry(
-              event: _finalTextDivider(
-                seq: 4,
-                id: 'text-1',
-                text: reply1Text,
-                runId: ownerId,
-                turnId: turn1,
-              ),
-              hasFoldedAfter: false,
-            ),
-            HistoryTimelineEntry(
-              event: _inputDivider(
-                seq: 1,
-                id: 'input-1',
-                text: 'First prompt',
-                runId: ownerId,
-                turnId: turn1,
-              ),
-              hasFoldedAfter: true,
-            ),
-          ],
-          _ => [
-            HistoryTimelineEntry(
-              event: _inputDivider(
-                seq: 5,
-                id: 'input-2',
-                text: 'Second prompt',
-                runId: ownerId,
-                turnId: turn2,
-              ),
-              hasFoldedAfter: false,
-            ),
-            HistoryTimelineEntry(
-              event: _finalTextDivider(
-                seq: 4,
-                id: 'text-1',
-                text: reply1Text,
-                runId: ownerId,
-                turnId: turn1,
-              ),
-              hasFoldedAfter: false,
-            ),
-            HistoryTimelineEntry(
-              event: _inputDivider(
-                seq: 1,
-                id: 'input-1',
-                text: 'First prompt',
-                runId: ownerId,
-                turnId: turn1,
-              ),
-              hasFoldedAfter: true,
-            ),
-          ],
+      final transport = RecordingDemoTransport()
+        ..onFeedOpened = (feed) {
+          feed.mapReset = (reset) => TimelineReset(
+            items: [feedUser('msg:1', 1, 'First prompt', inputId: 'input-1')],
+            hasMoreOlder: false,
+            revision: reset.revision,
+          );
         };
-      };
-
-      transport.workRangeBuilder = (afterSeq, beforeSeq, cut, ownerId) {
-        if (afterSeq == 1) {
-          return [
-            _toolCalled(
-              seq: 2,
-              callId: 'call-read',
-              toolName: 'read_file',
-              runId: ownerId,
-              turnId: turn1,
-            ),
-            if (stage >= 3)
-              _toolCompleted(
-                seq: 3,
-                callId: 'call-read',
-                toolName: 'read_file',
-                runId: ownerId,
-                turnId: turn1,
-                resultText: 'file-contents',
-              ),
-          ];
-        }
-        return const [];
-      };
-
       final graph = testAppGraph(
-        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
-        clientId: 'timeline-immutable-live',
+        statisticsFeed: const TestStatisticsFeedPort(),
+        clientId: 'timeline-live-feed',
       );
-      var graphClosed = false;
+      await tester.binding.setSurfaceSize(const Size(850, 850));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
-        if (!graphClosed) {
-          final report = await pumpClientFuture(
-            tester,
-            graph.close(
-              budget: testBudgetUntil(
-                DateTime.now().add(const Duration(seconds: 5)),
-              ),
-            ),
-            'teardown close',
-          );
-          expect(report.complete, isTrue);
-          graphClosed = true;
-        }
+        final report = await pumpClientFuture(
+          tester,
+          graph.close(budget: testCloseBudget()),
+          'close live status fixture',
+        );
+        expect(report.complete, isTrue);
       });
-
       await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
-      graph.timeline.updateReadDemand(chatDemand);
       await tester.pumpWidget(
         ProviderScope(
           overrides: [appGraphProvider.overrideWithValue(graph)],
           child: MaterialApp(
             theme: pureStudioTheme(),
-            locale: const Locale('zh'),
-            localizationsDelegates: [
-              AppLocalizations.delegate,
-              ...GlobalMaterialLocalizations.delegates,
-            ],
+            locale: const Locale('en'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
             supportedLocales: AppLocalizations.supportedLocales,
             home: const Scaffold(
               body: Column(
@@ -540,552 +67,193 @@ void main() {
           ),
         ),
       );
-
       graph.setConversationPageVisible(true);
       await pumpClientFuture(
         tester,
         graph.client.directoryCommands.selectThread(_threadId),
-        'select thread',
+        'open conversation',
       );
       await pumpClientFuture(
         tester,
         timelineReady(graph.timeline, _threadId),
-        'timeline ready',
+        'initial reset',
       );
-      await pumpClientUntil(
-        tester,
-        () => find.text('First prompt').evaluate().isNotEmpty,
-        'initial input divider rendered',
-      );
-
       final lease = graph.timeline.lease(_threadId)!;
-      final input1Message = lease.controller.messages.single;
-      expect(input1Message.id, 'row:input-1');
-
-      // Turn 1 begins running with a live open WorkRange and active tool atom.
-      final activeToolAtom = CurrentAtom(
-        id: 'tool:9:call-read',
-        source: const ForegroundTurnChatSource(turnId: turn1),
-        sourceOrder: 1,
-        kind: ChatAtomKind.toolCall,
-        delivery: ChatDeliveryKind.foreground,
-        lifecycle: const ActiveChatAtom(
-          started: null,
-          status: ChatActiveStatus.running,
-        ),
-        turnId: turn1,
-        tool: const ChatToolIdentity(callId: 'call-read', name: 'read_file'),
-        contentPresent: false,
-        contents: const [],
-      );
-      final runningWorkspace = chatWorkspace(_threadId).copyWith(
-        revision: 2,
-        thread: chatWorkspace(_threadId).thread
-            .copyWith(status: ThreadStatusView.running),
-        runtime: chatWorkspace(_threadId).runtime.copyWith(
-          execution: const AgentExecutionView(
-            id: 'exec-1',
-            phase: AgentExecutionPhase.running,
-            turnId: turn1,
-          ),
-        ),
-        activeTurn: StudioTurnView(
-          turnId: turn1,
-          threadId: _threadId,
-          revision: 1,
-          state: const RunningStudioTurnState(
-            startedAt: 2,
-            activity: StudioTurnActivity.runningTool,
-          ),
-          updatedAt: DateTime.utc(2026, 11, 22),
-        ),
-        activity: const ThreadActivityView(
-          threadId: _threadId,
-          identity: 'running:tool',
-          revision: 1,
-          turnId: turn1,
-          kind: ThreadActivityKind.runningTool,
-          summary: 'Reading a.txt',
-        ),
-      );
-      final runningProjection = CurrentProjection(
-        logicalStatus: ThreadStatusView.running,
-        executionPresent: true,
-        activeTurn: const CurrentTurnHead(
-          id: turn1,
-          phase: CurrentTurnPhase.runningTool,
-        ),
-        sources: const [],
-        atoms: [activeToolAtom],
-        previews: const [],
-        collections: const [],
+      final feed = transport.feedFor(_threadId);
+      final input = lease.controller.messages.single;
+      var revision = 10;
+      void status(LiveStatusPhase phase, {bool suppressed = false}) =>
+          feed.emit(
+            ConversationLiveStatus(
+              snapshot: LiveStatusSnapshot(
+                revision: revision++,
+                phase: phase,
+                attentions: const [],
+                suppressedByInteraction: suppressed,
+              ),
+            ),
+          );
+      Finder liveText(String text) => find.descendant(
+        of: find.byType(LiveStatusBar),
+        matching: find.text(text, findRichText: true),
       );
 
-      final timelineWrapper = lease.current! as _SnapshotOverrideCurrentReader;
-      transport.setCurrentSnapshot(
-        _threadId,
-        CurrentView(
-          revision: CurrentRevision(ownerId: runId, revision: 2),
-          state: ThreadSnapshotFrame(
-            workspace: runningWorkspace,
-            schemaVersion: threadSchemaVersion,
-          ),
-          projection: runningProjection,
+      status(
+        LiveStatusWorking(
+          items: const [
+            LiveWorkItem(
+              id: 'work:2',
+              callId: 'call-2',
+              kind: 'tool',
+              toolName: 'read_file',
+              status: 'running',
+              summary: 'Reading a.txt',
+            ),
+          ],
         ),
       );
-      await transport.publishWorkspace(runningWorkspace);
-      timelineWrapper.inner.emitCurrentFrame(
-        ProjectionCurrentFrame(
-          revision: CurrentRevision(ownerId: runId, revision: 2),
-          projection: runningProjection,
-        ),
+      final liveWork = find.byKey(
+        const ValueKey('completion-run-header:live-work:thread-main'),
       );
-
-      stage = 2;
-      transport.emitHistoryChange(const HistoryCut('cut-2'));
       await pumpClientUntil(
         tester,
-        () => find
-            .descendant(
-              of: find.byType(LiveStatusBar),
-              matching: find.byType(CompletionRunView),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'live open Work mounted in LiveStatusBar',
+        () => liveWork.evaluate().isNotEmpty,
+        'working status',
       );
-
-      // Hold the member read open while checking the live loading presentation.
-      final liveReadStarted = Completer<void>();
-      final liveReadRelease = Completer<void>();
-      transport.beforeWorkRange = () {
-        if (!liveReadStarted.isCompleted) liveReadStarted.complete();
-        return liveReadRelease.future;
-      };
-      await tester.tap(
-        find.descendant(
-          of: find.byType(LiveStatusBar),
-          matching: find.byType(CompletionRunView),
-        ),
-      );
-      await tester.pump();
-      await pumpClientFuture(
-        tester,
-        liveReadStarted.future,
-        'live member read',
-      );
-      final liveProgress = find.descendant(
-        of: find.byType(LiveStatusBar),
-        matching: find.byType(LinearProgressIndicator),
-      );
-      final showLiveProgress = liveProgress.evaluate().isNotEmpty;
-      transport.beforeWorkRange = null;
-      liveReadRelease.complete();
-      expect(showLiveProgress, isFalse);
+      expect(liveText('Reading a.txt'), findsNothing);
+      await tester.tap(liveWork);
       await pumpClientUntil(
         tester,
-        () => find
-            .descendant(
-              of: find.byType(LiveStatusBar),
-              matching: find.textContaining('a.txt'),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'open live tool folded inside LiveStatusBar',
+        () => liveText('Reading a.txt').evaluate().isNotEmpty,
+        'working status',
       );
-      final liveTool = find.descendant(
-        of: find.byType(LiveStatusBar),
-        matching: find.byType(TimelineToolItemView),
-      );
-      expect(
-        find.descendant(
-          of: liveTool,
-          matching: find.byType(CircularProgressIndicator),
-        ),
-        findsOneWidget,
-      );
+      expect(lease.controller.messages.single, same(input));
+      expect(feed.memberRequests, isEmpty);
 
-      // Main Timeline must remain completely untouched (only immutable input-1).
-      expect(lease.controller.messages, hasLength(1));
-      expect(
-        identical(lease.controller.messages.single, input1Message),
-        isTrue,
+      const streaming = LiveStatusStreamingText(
+        attemptId: 'attempt-1',
+        itemId: 'stream-1',
+        text: 'Streaming draft',
+      );
+      status(streaming);
+      await pumpClientUntil(
+        tester,
+        () => liveText('Streaming draft').evaluate().isNotEmpty,
+        'streaming status',
       );
       expect(
         find.descendant(
           of: find.byType(TimelineConnector),
-          matching: find.byType(CompletionRunView),
+          matching: find.text('Streaming draft'),
         ),
         findsNothing,
       );
-      // Ordinary runningTool status is suppressed while live open Work header takes over.
-      expect(
-        find.descendant(
-          of: find.byType(LiveStatusBar),
-          matching: find.byType(ConversationActivityStatus),
-        ),
-        findsNothing,
-      );
+      expect(lease.controller.messages.single, same(input));
+      expect(feed.bodyRequests, isEmpty);
 
-      // Live streaming response text renders inside LiveStatusBar without touching Timeline.
-      final textListening = Completer<void>();
-      final textStream = StreamController<ContentWindow>.broadcast(
-        sync: true,
-        onListen: () {
-          if (!textListening.isCompleted) textListening.complete();
-        },
+      status(streaming, suppressed: true);
+      await pumpClientUntil(
+        tester,
+        () => liveText('Streaming draft').evaluate().isEmpty,
+        'interaction suppresses the live surface',
       );
-      addTearDown(textStream.close);
-      final recoveryFixture = jsonDecode(
-        File('test/fixtures/provider_recovery_notices.json').readAsStringSync(),
-      ) as Map<String, Object?>;
-      final waitingFacts = recoveryFixture['waiting'] as Map<String, Object?>;
-      final waitingNotice = StudioModelRecoveryNotice.fromJson(waitingFacts)!;
-      final streamBody = waitingNotice.failure!.message;
-      final streamBytes = utf8.encode(streamBody);
-      timelineWrapper.inner.onReadBody = (_, range) async => ContentWindow(
-        offset: range.offset,
-        bytes: streamBytes,
-        generation: '1',
-        availableThrough: streamBytes.length,
-        sealed: false,
-      );
-      timelineWrapper.inner.onWatchBody = (_, _) => textStream.stream;
+      expect(lease.controller.messages.single, same(input));
 
-      CurrentProjection recoveryProjection(StudioModelRecoveryNotice notice) =>
-          CurrentProjection(
-            logicalStatus: ThreadStatusView.running,
-            executionPresent: true,
-            activeTurn: const CurrentTurnHead(
-              id: turn1,
-              phase: CurrentTurnPhase.responding,
-            ),
-            sources: const [],
-            atoms: [
-              CurrentAtom(
-                id: 'text:turn-1',
-                source: const ForegroundTurnChatSource(turnId: turn1),
-                sourceOrder: 2,
-                kind: ChatAtomKind.text,
-                delivery: ChatDeliveryKind.foreground,
-                lifecycle: const ActiveChatAtom(
-                  started: null,
-                  status: ChatActiveStatus.running,
-                ),
-                turnId: turn1,
-                startedAt: 3,
-                contentPresent: true,
-                textChannel: ThreadTextChannel.commentary,
-                modelRecovery: notice,
-                contents: [
-                  CurrentAtomContent(
-                    role: ChatContentRole.body,
-                    reference: _currentRef(runId, 'text:turn-1'),
-                  ),
-                ],
+      final member = Completer<List<WorkGroupMember>>();
+      addTearDown(() {
+        if (!member.isCompleted) member.complete(const []);
+      });
+      feed.onLoadMembers = (_, _) => member.future;
+      feed.emit(
+        ConversationTimeline(
+          patch: TimelineAppend(
+            items: [
+              const TimelineWorkGroup(
+                id: 'work:2',
+                firstSeq: 2,
+                lastSeq: 3,
+                afterBoundarySeq: 1,
+                beforeBoundarySeq: 4,
+                memberCount: 1,
+                summary: 'Completed work',
+                status: WorkGroupStatus.completed,
+              ),
+              feedAssistant(
+                'msg:4',
+                4,
+                'Final answer from turn 1',
+                turnId: 'turn-1',
               ),
             ],
-            previews: const [],
-            collections: const [],
-          );
-      final respondingWorkspace = runningWorkspace.copyWith(
-        revision: 3,
-        runtime: runningWorkspace.runtime.copyWith(
-          execution: const AgentExecutionView(
-            id: 'exec-1',
-            phase: AgentExecutionPhase.running,
-            turnId: turn1,
           ),
         ),
-        activity: const ThreadActivityView(
-          threadId: _threadId,
-          identity: 'responding:turn1',
-          revision: 2,
-          turnId: turn1,
-          kind: ThreadActivityKind.responding,
-          summary: 'Streaming',
-        ),
       );
-      final respondingProjection = recoveryProjection(
-        StudioModelRecoveryNotice.fromJson({
-          ...waitingFacts,
-          'phase': 'repairing',
-          'effectiveWaitMillis': null,
-        })!,
-      );
-      transport.setCurrentSnapshot(
-        _threadId,
-        CurrentView(
-          revision: CurrentRevision(ownerId: runId, revision: 3),
-          state: ThreadSnapshotFrame(
-            workspace: respondingWorkspace,
-            schemaVersion: threadSchemaVersion,
-          ),
-          projection: respondingProjection,
-        ),
-      );
-      await transport.publishWorkspace(respondingWorkspace);
-      timelineWrapper.inner.emitCurrentFrame(
-        ProjectionCurrentFrame(
-          revision: CurrentRevision(ownerId: runId, revision: 3),
-          projection: respondingProjection,
-        ),
-      );
+      status(const LiveStatusIdle());
       await pumpClientUntil(
         tester,
-        () => textListening.isCompleted,
-        'streaming body watchBody subscribed',
+        () => find.byType(CompletionRunView).evaluate().isNotEmpty,
+        'sealed work rendered',
       );
-      textStream.add(
-        ContentWindow(
-          offset: 0,
-          bytes: streamBytes,
-          generation: '1',
-          availableThrough: streamBytes.length,
-          sealed: false,
-        ),
+      expect(lease.controller.messages.map((row) => row.id), [
+        'msg:1',
+        'work:2',
+        'msg:4',
+      ]);
+      expect(lease.controller.messages.first, same(input));
+      expect(lease.appliedSets, 1);
+      expect(feed.memberRequests, isEmpty);
+
+      final disclosure = find.byKey(
+        const ValueKey('completion-run-header:work:2'),
       );
+      await tester.tap(disclosure);
       await pumpClientUntil(
         tester,
-        () =>
-            lease.controller.messages.length == 2 &&
-            find
-                .descendant(
-                  of: find.byType(LiveStatusBar),
-                  matching: find.text(streamBody),
-                )
-                .evaluate()
-                .isNotEmpty,
-        'streaming body in LiveStatusBar settles preceding work group',
+        () => feed.memberRequests.isNotEmpty,
+        'work group disclosed',
       );
+      expect(feed.memberRequests, [(afterSeq: 1, beforeSeq: 4)]);
+      await tester.tap(disclosure);
+      await tester.pump();
+      member.complete(const [
+        WorkGroupReasoning(
+          id: 'stale',
+          seq: 2,
+          text: 'Retired body',
+          summary: 'Retired summary',
+          outcome: 'completed',
+        ),
+      ]);
+      await tester.pumpAndSettle();
+      expect(find.text('Retired summary', findRichText: true), findsNothing);
+
+      feed.onLoadMembers = (_, _) async => const [
+        WorkGroupReasoning(
+          id: 'reasoning-2',
+          seq: 2,
+          text: 'Sealed body',
+          summary: 'Sealed reasoning',
+          outcome: 'completed',
+        ),
+      ];
+      await tester.tap(disclosure);
+      await pumpClientUntil(
+        tester,
+        () => find
+            .text('Sealed reasoning', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
+        'fresh work member visible',
+      );
+      expect(feed.memberRequests, [
+        (afterSeq: 1, beforeSeq: 4),
+        (afterSeq: 1, beforeSeq: 4),
+      ]);
       expect(
-        find.descendant(
-          of: find.byType(LiveStatusBar),
-          matching: find.byType(ConversationResponseView),
-        ),
+        find.text('Final answer from turn 1', findRichText: true),
         findsOneWidget,
       );
-      for (final text in ['正在修复模型请求', '第 1 次重试，上限 2 次']) {
-        expect(
-          find.descendant(
-            of: find.byType(LiveStatusBar),
-            matching: find.text(text),
-          ),
-          findsOneWidget,
-        );
-        expect(
-          find.descendant(
-            of: find.byType(TimelineConnector),
-            matching: find.text(text),
-          ),
-          findsNothing,
-        );
-      }
-      expect(
-        find.descendant(
-          of: find.byType(LiveStatusBar),
-          matching: find.byType(CompletionRunView),
-        ),
-        findsNothing,
-      );
-      expect(
-        find.descendant(
-          of: find.byType(TimelineConnector),
-          matching: find.text(streamBody),
-        ),
-        findsNothing,
-      );
-      expect(lease.controller.messages.map((m) => m.id), [
-        'row:input-1',
-        'work:1',
-      ]);
-      expect(identical(lease.controller.messages.first, input1Message), isTrue);
-      final streamingSettledWorkMessage = lease.controller.messages[1];
-
-      final waitingWorkspace = respondingWorkspace.copyWith(revision: 4);
-      final waitingProjection = recoveryProjection(waitingNotice);
-      final waitingRevision = CurrentRevision(ownerId: runId, revision: 4);
-      transport.setCurrentSnapshot(
-        _threadId,
-        CurrentView(
-          revision: waitingRevision,
-          state: ThreadSnapshotFrame(
-            workspace: waitingWorkspace,
-            schemaVersion: threadSchemaVersion,
-          ),
-          projection: waitingProjection,
-        ),
-      );
-      await transport.publishWorkspace(waitingWorkspace);
-      timelineWrapper.inner.emitCurrentFrame(
-        ProjectionCurrentFrame(
-          revision: waitingRevision,
-          projection: waitingProjection,
-        ),
-      );
-      await pumpClientUntil(
-        tester,
-        () => find.text('预计等待 45 秒').evaluate().isNotEmpty,
-        'same recovery row displays the new phase and scheduled wait',
-      );
-      expect(find.text('正在修复模型请求'), findsNothing);
-      expect(find.text('等待重试模型请求'), findsOneWidget);
-      expect(find.text('第 1 次重试，上限 2 次'), findsOneWidget);
-      expect(find.text(streamBody), findsOneWidget);
-      expect(lease.controller.messages[1], same(streamingSettledWorkMessage));
-
-      // Final divider + idle state settles reply into Timeline and hides LiveStatusBar.
-      final idleWorkspace = chatWorkspace(_threadId).copyWith(revision: 5);
-      final idleProjection = CurrentProjection(
-        logicalStatus: ThreadStatusView.idle,
-        executionPresent: true,
-        sources: const [],
-        atoms: const [],
-        previews: const [],
-        collections: const [],
-      );
-      transport.setCurrentSnapshot(
-        _threadId,
-        CurrentView(
-          revision: CurrentRevision(ownerId: runId, revision: 5),
-          state: ThreadSnapshotFrame(
-            workspace: idleWorkspace,
-            schemaVersion: threadSchemaVersion,
-          ),
-          projection: idleProjection,
-        ),
-      );
-      stage = 3;
-      transport.emitHistoryChange(const HistoryCut('cut-3'));
-      await transport.publishWorkspace(idleWorkspace);
-      timelineWrapper.inner.emitCurrentFrame(
-        ProjectionCurrentFrame(
-          revision: CurrentRevision(ownerId: runId, revision: 5),
-          projection: idleProjection,
-        ),
-      );
-      await pumpClientUntil(
-        tester,
-        () =>
-            lease.controller.messages.length == 3 &&
-            find.byType(ConversationActivityBar).evaluate().isEmpty &&
-            find.text(reply1Text).evaluate().isNotEmpty,
-        'turn 1 settled into immutable Timeline and LiveStatusBar cleared',
-      );
-
-      final settledWorkMessage = lease.controller.messages[1];
-      final settledReplyMessage = lease.controller.messages[2];
-      expect(lease.controller.messages.map((m) => m.id), [
-        'row:input-1',
-        'work:1',
-        'row:text-1',
-      ]);
-      expect(identical(lease.controller.messages[0], input1Message), isTrue);
-      // Once text-1 settles as nextDirect (seq=4, occurredAt=4000), work:1 upgrades
-      // its closing boundary from provisional tailFoldedEndedAt=3000 to beforeSeq=4.
-      expect(settledWorkMessage.id, streamingSettledWorkMessage.id);
-      final settledWorkBody =
-          (settledWorkMessage.metadata![timelineDisplayUnitKey]
-                      as TimelineDisplayUnit)
-                  .block
-                  .body
-              as WorkDisplayBlock;
-      expect(settledWorkBody.members.beforeSeq, 4);
-      expect(settledWorkBody.timing.finishedAtMillis, 4000);
-
-      // Expand Turn 1's settled WorkRange inside TimelineConnector and verify persistence.
-      final historyReadStarted = Completer<void>();
-      final historyReadRelease = Completer<void>();
-      transport.beforeWorkRange = () {
-        if (!historyReadStarted.isCompleted) historyReadStarted.complete();
-        return historyReadRelease.future;
-      };
-      await tester.tap(
-        find.descendant(
-          of: find.byType(TimelineConnector),
-          matching: find.byType(CompletionRunView),
-        ),
-      );
-      await tester.pump();
-      await pumpClientFuture(
-        tester,
-        historyReadStarted.future,
-        'history member read',
-      );
-      final historyProgress = find.descendant(
-        of: find.byType(CompletionRunView),
-        matching: find.byType(LinearProgressIndicator),
-      );
-      final showHistoryProgress = historyProgress.evaluate().isNotEmpty;
-      transport.beforeWorkRange = null;
-      historyReadRelease.complete();
-      expect(showHistoryProgress, isTrue);
-      await pumpClientUntil(
-        tester,
-        () =>
-            find
-                .descendant(
-                  of: find.byType(TimelineConnector),
-                  matching: find.textContaining('a.txt'),
-                )
-                .evaluate()
-                .isNotEmpty ||
-            lease.isBlockExpanded('work:1'),
-        'turn 1 WorkRange expanded in Timeline',
-      );
-      expect(lease.isBlockExpanded('work:1'), isTrue);
-
-      // Turn 2 arrives and advances HistoryCut: Turn 1 Timeline messages remain object-identical.
-      stage = 4;
-      transport.emitHistoryChange(const HistoryCut('cut-4'));
-      await pumpClientUntil(
-        tester,
-        () =>
-            lease.controller.messages.length == 4 &&
-            find.text('Second prompt').evaluate().isNotEmpty,
-        'turn 2 input appended',
-      );
-      expect(lease.controller.messages.map((m) => m.id), [
-        'row:input-1',
-        'work:1',
-        'row:text-1',
-        'row:input-2',
-      ]);
-      expect(identical(lease.controller.messages[0], input1Message), isTrue);
-      expect(
-        identical(lease.controller.messages[1], settledWorkMessage),
-        isTrue,
-      );
-      expect(
-        identical(lease.controller.messages[2], settledReplyMessage),
-        isTrue,
-      );
-      expect(lease.isBlockExpanded('work:1'), isTrue);
-
-      final work1Unit =
-          lease.controller.messages[1].metadata![timelineDisplayUnitKey]
-              as TimelineDisplayUnit;
-      expect(work1Unit.state, DisplayBlockState.sealed);
-      expect(
-        ChatItemPresentation.forUnit(
-          lease.controller.messages[2].metadata![timelineDisplayUnitKey]
-              as TimelineDisplayUnit,
-        ).inlineText('body'),
-        reply1Text,
-      );
-
-      await tester.pumpWidget(const SizedBox.shrink());
-      final report = await pumpClientFuture(
-        tester,
-        graph.close(
-          budget: testBudgetUntil(
-            DateTime.now().add(const Duration(seconds: 5)),
-          ),
-        ),
-        'graph close',
-      );
-      expect(report.complete, isTrue);
-      graphClosed = true;
+      expect(tester.takeException(), isNull);
     },
   );
 }

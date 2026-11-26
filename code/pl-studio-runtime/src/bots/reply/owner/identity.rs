@@ -1,7 +1,7 @@
 use super::super::session::bot_input_id;
+use crate::TurnState;
 use crate::studio::StudioRuntime;
 use crate::timeline::{ConversationEvent, TimelineItem};
-use crate::TurnState;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -25,12 +25,9 @@ async fn completed_input(
                         );
                         return Ok(turn);
                     }
-                    if let Some(turn) = meta
-                        .active_turn
-                        .filter(|turn| {
-                            turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
-                        })
-                    {
+                    if let Some(turn) = meta.active_turn.filter(|turn| {
+                        turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
+                    }) {
                         anyhow::ensure!(
                             matches!(turn.state, TurnState::Completed(_)),
                             "bot input failed"

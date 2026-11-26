@@ -9,7 +9,6 @@ import 'transport_ports.dart';
 import 'src/studio/bootstrap.dart';
 
 export 'src/modes/modes_ports.dart';
-export 'src/studio/thread_frames.dart';
 export 'src/studio/bootstrap.dart';
 export 'directory_ports.dart';
 
@@ -97,9 +96,7 @@ abstract class StudioTransport
         AttachmentTransport,
         BootstrapTransport,
         DirectoryFeedPort,
-        ConversationTransport,
-        CurrentTransport,
-        HistoryTransport,
+        ConversationFeedPort,
         CommandTransport,
         ModeEditorTransport {
   /// Exit admission belongs to this application transport instance.

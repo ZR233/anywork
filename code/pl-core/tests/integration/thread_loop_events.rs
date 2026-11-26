@@ -14,9 +14,7 @@ use pl_core::{
         AttemptOutcome, ModelStepLimit, ThreadHandle, TurnOutcome, TurnState,
         events::{CoreEvent, CoreEventSink, CoreLiveEvent},
         inbox::ThreadMessage,
-        interactions::{
-            InteractionRequest, InteractionResolution, InteractionResponse,
-        },
+        interactions::{InteractionRequest, InteractionResolution, InteractionResponse},
     },
     tool::{
         ToolOutput,
@@ -276,7 +274,12 @@ async fn core_event_stream_emits_live_and_durable_events_in_strict_order() {
     let events = log.0.lock().unwrap().clone();
     let run_started_pos = events
         .iter()
-        .position(|e| matches!(e, CoreEvent::Live(CoreLiveEvent::RunActivity { execution: Some(_) })))
+        .position(|e| {
+            matches!(
+                e,
+                CoreEvent::Live(CoreLiveEvent::RunActivity { execution: Some(_) })
+            )
+        })
         .expect("RunActivity(Some) emitted");
     let reasoning_pos = events
         .iter()
@@ -330,7 +333,12 @@ async fn core_event_stream_emits_live_and_durable_events_in_strict_order() {
         .expect("TurnFinished durable event emitted");
     let run_cleared_pos = events
         .iter()
-        .rposition(|e| matches!(e, CoreEvent::Live(CoreLiveEvent::RunActivity { execution: None })))
+        .rposition(|e| {
+            matches!(
+                e,
+                CoreEvent::Live(CoreLiveEvent::RunActivity { execution: None })
+            )
+        })
         .expect("RunActivity(None) emitted");
 
     assert!(run_started_pos < reasoning_pos);
@@ -348,7 +356,10 @@ async fn core_event_stream_emits_live_and_durable_events_in_strict_order() {
     while broadcast_rx.try_recv().is_ok() {
         broadcast_count += 1;
     }
-    assert!(broadcast_count >= 5, "broadcast subscribers receive live/durable CoreEvents");
+    assert!(
+        broadcast_count >= 5,
+        "broadcast subscribers receive live/durable CoreEvents"
+    );
     let _ = ModelMemberError::Closed;
     thread.close().await.unwrap();
 }

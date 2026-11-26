@@ -627,7 +627,8 @@ impl Owner {
         self.current_snapshot_missing = false;
         if let Some((attempt_id, receiver)) = &self.model_progress {
             let progress = receiver.borrow().clone();
-            self.progress_tracker.observe(attempt_id, &progress, &self.event_bus);
+            self.progress_tracker
+                .observe(attempt_id, &progress, &self.event_bus);
         }
         self.progress_tracker
             .finish_attempt(&input.attempt_id, &self.event_bus);

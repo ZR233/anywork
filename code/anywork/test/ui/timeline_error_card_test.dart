@@ -3,11 +3,11 @@ import 'dart:io';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_outcome_card.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,6 +41,24 @@ Widget _host(
   ),
 );
 
+ChatItemPresentation feedText(
+  String id,
+  String text,
+  Map<String, Object?>? recovery,
+) => chatItemPresentationOf(
+  timelineFeedMessage(
+    TimelineAssistantText(
+      id: id,
+      seq: 1,
+      channel: 'commentary',
+      text: text,
+      isFinalTurnDelivery: false,
+      outcome: 'completed',
+      modelRecovery: StudioModelRecoveryNotice.fromJson(recovery),
+    ),
+  ),
+)!;
+
 void main() {
   testWidgets(
     'recovered and cancelled notices retain the provider diagnostics',
@@ -72,42 +90,7 @@ void main() {
         final notice = fixture[phase] as Map<String, Object?>;
         final original = notice['failure'] as Map<String, Object?>;
         final originalBody = original['message'] as String;
-        final event = HistoryEventRecord(
-          seq: 1,
-          eventId: phase,
-          kind: 'response_completed',
-          timelineRole: HistoryTimelineRole.work,
-          recordedAt: 1000,
-          payloadSchema: 'anywork.event/1',
-          payloadJson: jsonEncode({
-            'contract': 'anywork.event/1',
-            'type': 'text',
-            'meta': {
-              'entityId': phase,
-              'entityKind': 'text',
-              'delivery': 'foreground',
-              'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
-              if (phase == 'recovered') 'modelRecovery': notice,
-            },
-            'data': {
-              'channel': 'commentary',
-              'attachments': [],
-              if (phase == 'cancelled') 'modelRecovery': notice,
-            },
-            if (phase == 'cancelled') 'capturedAt': 1000,
-            'bodies': [
-              {
-                'key': 'body',
-                'byteLength': utf8.encode(originalBody).length,
-                'inlineText': originalBody,
-              },
-            ],
-          }),
-        );
-        final item = ChatItemPresentation.forRecord(
-          TimelineHistoryProjection.recordFromEvent(event),
-          id: phase,
-        );
+        final item = feedText(phase, originalBody, notice);
         expect(item.modelRecovery?.toJson(), notice);
         await tester.pumpWidget(
           _host(
@@ -135,7 +118,7 @@ void main() {
     },
   );
 
-  testWidgets('renders History recovery metadata and preserves ordinary text', (
+  testWidgets('renders Feed recovery metadata and preserves ordinary text', (
     tester,
   ) async {
     ChatItemPresentation eventText(
@@ -144,41 +127,7 @@ void main() {
       Map<String, Object?>? metaRecovery,
       Map<String, Object?>? frozenRecovery,
     }) {
-      final event = HistoryEventRecord(
-        seq: 1,
-        eventId: id,
-        kind: 'response_completed',
-        timelineRole: HistoryTimelineRole.work,
-        recordedAt: 1000,
-        payloadSchema: 'anywork.event/1',
-        payloadJson: jsonEncode({
-          'contract': 'anywork.event/1',
-          'type': 'text',
-          'meta': {
-            'entityId': id,
-            'entityKind': 'text',
-            'delivery': 'foreground',
-            'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
-            'modelRecovery': ?metaRecovery,
-          },
-          'data': {
-            'channel': 'commentary',
-            'attachments': [],
-            'modelRecovery': ?frozenRecovery,
-          },
-          'bodies': [
-            {
-              'key': 'body',
-              'byteLength': utf8.encode(originalBody).length,
-              'inlineText': originalBody,
-            },
-          ],
-        }),
-      );
-      return ChatItemPresentation.forRecord(
-        TimelineHistoryProjection.recordFromEvent(event),
-        id: id,
-      );
+      return feedText(id, originalBody, metaRecovery ?? frozenRecovery);
     }
 
     final fixture = jsonDecode(

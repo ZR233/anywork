@@ -119,6 +119,7 @@ class LatestScrollViewport extends StatefulWidget {
     this.onUserScroll,
     this.onMetricsChanged,
     this.onClearSelection,
+    this.useScrollBehaviorScrollbar = false,
     required this.child,
   });
 
@@ -133,6 +134,7 @@ class LatestScrollViewport extends StatefulWidget {
   final ValueChanged<ScrollUpdateNotification>? onUserScroll;
   final VoidCallback? onMetricsChanged;
   final VoidCallback? onClearSelection;
+  final bool useScrollBehaviorScrollbar;
   final Widget child;
 
   @override
@@ -348,15 +350,17 @@ class LatestScrollViewportState extends State<LatestScrollViewport> {
         onNotification: _onMetrics,
         child: NotificationListener<ScrollNotification>(
           onNotification: _onScroll,
-          child: ScrollConfiguration(
-            behavior: ScrollConfiguration.of(context)
-                .copyWith(scrollbars: false),
-            child: _UserScrollbar(
-              controller: widget.controller,
-              runScrollAction: _runScrollAction,
-              child: widget.child,
-            ),
-          ),
+          child: widget.useScrollBehaviorScrollbar
+              ? widget.child
+              : ScrollConfiguration(
+                  behavior: ScrollConfiguration.of(context)
+                      .copyWith(scrollbars: false),
+                  child: _UserScrollbar(
+                    controller: widget.controller,
+                    runScrollAction: _runScrollAction,
+                    child: widget.child,
+                  ),
+                ),
         ),
       ),
     ),

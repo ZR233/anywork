@@ -13,7 +13,6 @@ import 'package:anywork/src/features/conversation/composer/views/composer_dock_v
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/interactions/views/user_input_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -275,11 +274,11 @@ void main() {
       release: true,
     );
     try {
-      final completedQuestionTurn = await waitForCompletedHistoryTurn(
-        conversations: graph.client.conversations,
+      final completedQuestionTurn = await waitForCompletedTurn(
+        feeds: graph.client.transport,
         threadId: draftThread,
         matches: (head) => head.turnId == admittedQuestionTurnId,
-        description: 'completed question-request Turn in History',
+        description: 'canonical completed question-request Turn',
         timeout: const Duration(minutes: 2),
       );
       expect(completedQuestionTurn.inputId, admittedQuestionInputId);
@@ -397,7 +396,7 @@ void main() {
       'question-receipt-collapsed.png',
       'completed question receipt; collapsed',
       'Real receipt is laid out without public answer bodies or private content.',
-      receiptId: receipt.atom!.id,
+      receiptId: receipt.id,
       receiptBlockId: receipt.id,
     );
     await _tap(tester, receiptRoot);
@@ -446,7 +445,7 @@ void main() {
           witness.$2,
           'completed question receipt; expanded',
           'Real receipt public answer/redaction witness; private answer is absent.',
-          receiptId: receipt.atom!.id,
+          receiptId: receipt.id,
           receiptBlockId: receipt.id,
         );
       }
@@ -539,7 +538,7 @@ Future<void> _reportMissingQuestionControls({
               'retryExhausted': session.sync.retryExhausted,
             },
             'hasSnapshot': session.hasSnapshot,
-            'epoch': session.streamEpoch,
+            'epoch': session.meta?.ownerEpoch,
             'revision': session.revision,
             'latestTurn': latestTurn == null
                 ? null
@@ -631,42 +630,40 @@ Future<ChatItemPresentation> _questionReceipt(
   });
   // Answer submission creates a continuation Turn. Its real terminal state
   // must not be confused with the earlier Turn that requested the interaction.
-  await waitForCompletedHistoryTurn(
-    conversations: graph.client.conversations,
+  await waitForCompletedTurn(
+    feeds: graph.client.transport,
     threadId: threadId,
     matches: (head) => head.turnId != questionTurnId,
-    description: 'completed real question continuation Turn in History',
+    description: 'canonical completed real question continuation Turn',
     timeout: const Duration(minutes: 3),
   );
-  final source = ForegroundTurnChatSource(turnId: questionTurnId);
-  TimelineDisplayUnit? target;
+  bool completedQuestion(TimelineStandaloneTool item) {
+    if (item.turnId != questionTurnId ||
+        item.toolName != 'request_user_input') {
+      return false;
+    }
+    final payload = jsonDecode(item.payloadJson) as Map<String, Object?>;
+    final meta = payload['meta'] as Map<String, Object?>;
+    final state = meta['state'] as Map<String, Object?>;
+    return state['kind'] == 'knownTerminal' && state['outcome'] == 'completed';
+  }
+
+  TimelineStandaloneTool? target;
   await _until(tester, () {
     final matches = observed.main
-        .where(
-          (unit) =>
-              unit.body is SingleDisplayBlock &&
-              unit.atom!.source == source &&
-              unit.atom!.kind == ChatAtomKind.interaction &&
-              (unit.atom!.lifecycle as TerminalChatAtom).outcome ==
-                  ChatTerminalOutcome.completed,
-        )
+        .whereType<TimelineStandaloneTool>()
+        .where(completedQuestion)
         .toList();
     expect(matches.length, lessThanOrEqualTo(1));
     target = matches.singleOrNull;
     return target != null;
   }, 'completed question interaction in independent Main status');
   final status = target!;
-  final atom = status.atom!;
-  expect(
-    (atom.lifecycle as TerminalChatAtom).outcome,
-    ChatTerminalOutcome.completed,
-  );
-  expect(status.body, isA<SingleDisplayBlock>());
+  expect(completedQuestion(status), isTrue);
   final reason =
       'Canonical question receipt must restore through its original renderer: '
-      '${status.id}/${atom.id}';
-  // Reveal the independent status through the production Main owner, then
-  // inspect the receipt actually supplied to its real UI, not a fabricated atom.
+      '${status.id}/${status.callId}';
+  // Inspect the real renderer for the Rust-owned standalone interaction receipt.
   await observed.reveal(observed.itemRow(status.id), status.id);
   late ChatItemPresentation receipt;
   await _until(tester, () {
@@ -678,13 +675,14 @@ Future<ChatItemPresentation> _questionReceipt(
     return true;
   }, 'canonical question receipt renderer');
   expect(receipt.id, status.id);
-  expect(receipt.atom, same(atom));
-  expect(observed.unit(receipt.id).atom!.source, source);
+  expect(receipt.raw, status.payloadJson);
+  expect(observed.unit(receipt.id), same(status));
+  expect(status.turnId, questionTurnId);
   expect(receipt.compatibility, ChatItemCompatibility.current, reason: reason);
   expect(receipt.type, 'tool');
   final invocation = receipt.data['invocation'] as Map<String, Object?>;
-  expect(atom.tool?.name, 'request_user_input');
-  expect(invocation['toolCallId'], atom.tool!.callId);
+  expect(status.toolName, 'request_user_input');
+  expect(invocation['toolCallId'], status.callId);
   expect(invocation['name'], 'request_user_input');
   final input = receipt.data['userInput'] as Map<String, Object?>;
   final questions = (input['questions'] as List).cast<Map<String, Object?>>();

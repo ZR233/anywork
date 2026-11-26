@@ -201,7 +201,13 @@ impl ModelProgressTracker {
                 ObservedPartIdentity::Aggregate {
                     channel: AggregateChannel::Reasoning,
                 } => {
-                    self.emit_reasoning_part(attempt_id, generation, "aggregate:reasoning", part, bus);
+                    self.emit_reasoning_part(
+                        attempt_id,
+                        generation,
+                        "aggregate:reasoning",
+                        part,
+                        bus,
+                    );
                 }
                 ObservedPartIdentity::Provider(identity) => match identity.part {
                     ObservedPartKind::OutputText => {
@@ -298,7 +304,8 @@ impl ModelProgressTracker {
                         replace: false,
                     }));
                 }
-                self.active_reasoning.insert(item_id.to_owned(), part.baseline());
+                self.active_reasoning
+                    .insert(item_id.to_owned(), part.baseline());
             }
             Some(prev) => match part.increment_since(prev) {
                 ContentIncrement::Current => {}
@@ -312,7 +319,8 @@ impl ModelProgressTracker {
                             replace: false,
                         }));
                     }
-                    self.active_reasoning.insert(item_id.to_owned(), part.baseline());
+                    self.active_reasoning
+                        .insert(item_id.to_owned(), part.baseline());
                 }
                 ContentIncrement::Replace(text) => {
                     bus.emit(CoreEvent::Live(CoreLiveEvent::ReasoningDelta {
@@ -322,7 +330,8 @@ impl ModelProgressTracker {
                         text,
                         replace: true,
                     }));
-                    self.active_reasoning.insert(item_id.to_owned(), part.baseline());
+                    self.active_reasoning
+                        .insert(item_id.to_owned(), part.baseline());
                 }
             },
         }

@@ -2,11 +2,11 @@
 //!
 //! Receives `CoreEvent` via `CoreEventSink` (non-blocking mpsc -> serial per-thread actor),
 //! translates `CoreCommitEvent` into `HistoryEvent` ONCE in pure RAM, admits into
-//! `HistoryStore::accept_in_memory` with ZERO SQLite reads, and broadcasts `ThreadMetaEvent`
+//! `HistoryStore::accept_new_in_memory` with ZERO SQLite reads, and broadcasts `ThreadMetaEvent`
 //! to `TimelineDataLayer`, `LiveStatusDataLayer`, and `SessionMetaLayer`.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     sync::{Arc, Mutex, RwLock, Weak},
 };
@@ -56,6 +56,7 @@ pub enum ThreadMetaEvent {
     Closed,
 }
 
+#[derive(Clone)]
 struct TranslatorState {
     run: pl_core::thread::current::RuntimeEpoch,
     run_started_emitted: bool,
@@ -89,13 +90,50 @@ struct Inner {
     history: HistoryStore,
     tx: mpsc::UnboundedSender<CoreEvent>,
     broadcast: broadcast::Sender<ThreadMetaEvent>,
+    recent_history: Mutex<VecDeque<Arc<HistoryEventRecord>>>,
     live_status: Arc<LiveStatusDataLayer>,
     latest_meta: RwLock<Option<Arc<SessionMetaSnapshot>>>,
     translator: tokio::sync::Mutex<TranslatorState>,
-    processed_commits: Mutex<BTreeSet<u64>>,
+    processed_commits: Mutex<BTreeMap<u64, std::result::Result<(), Arc<anyhow::Error>>>>,
     processed_notify: watch::Sender<u64>,
     cancel: CancellationToken,
     tasks: TaskTracker,
+}
+
+#[derive(Debug)]
+struct CommitAdmissionError {
+    sequence: u64,
+    error: Arc<anyhow::Error>,
+}
+
+impl fmt::Display for CommitAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "history commit {} was not admitted: {:#}",
+            self.sequence, self.error
+        )
+    }
+}
+
+impl std::error::Error for CommitAdmissionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref().as_ref())
+    }
+}
+
+fn admission_failure_through(inner: &Inner, sequence: u64) -> Option<CommitAdmissionError> {
+    inner
+        .processed_commits
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .range(..=sequence)
+        .find_map(|(&sequence, result)| {
+            result.as_ref().err().map(|error| CommitAdmissionError {
+                sequence,
+                error: Arc::clone(error),
+            })
+        })
 }
 
 impl Drop for Inner {
@@ -165,10 +203,11 @@ impl MetaEventBus {
             history,
             tx,
             broadcast,
+            recent_history: Mutex::new(VecDeque::new()),
             live_status,
             latest_meta: RwLock::new(None),
             translator: tokio::sync::Mutex::new(TranslatorState::new(runtime_epoch)),
-            processed_commits: Mutex::new(BTreeSet::new()),
+            processed_commits: Mutex::new(BTreeMap::new()),
             processed_notify,
             cancel: cancel.clone(),
             tasks: tasks.clone(),
@@ -214,6 +253,23 @@ impl MetaEventBus {
         self.inner.broadcast.subscribe()
     }
 
+    /// Call after subscribing. The receiver may also contain these records, which are deduped
+    /// by sequence at the feed. A missed range requires an explicit cold re-open.
+    pub(super) fn replay_history_after(&self, after: u64) -> Option<Vec<Arc<HistoryEventRecord>>> {
+        let recent = self
+            .inner
+            .recent_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let head = self.inner.history.current_head();
+        let records: Vec<_> = recent
+            .iter()
+            .filter(|record| record.seq > after)
+            .cloned()
+            .collect();
+        (head.saturating_sub(after) == records.len() as u64).then_some(records)
+    }
+
     #[must_use]
     pub fn latest_meta(&self) -> Option<Arc<SessionMetaSnapshot>> {
         self.inner
@@ -241,30 +297,64 @@ impl MetaEventBus {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = thread;
     }
 
-    /// Publishes already-prepared `HistoryEvent`s into RAM `HistoryStore::accept_in_memory` and
-    /// broadcasts `ThreadMetaEvent::History` for every newly accepted or assigned event.
+    /// Publishes only newly admitted stable identities; replay candidates are not broadcast.
+    /// Cumulative usage is prepared exclusively by the durable translator with its memory revision.
     pub async fn admit_and_broadcast(&self, events: Vec<HistoryEvent>) -> Result<Vec<u64>> {
-        admit_and_broadcast_inner(&self.inner, events).await
+        let _serial = self.inner.translator.lock().await;
+        anyhow::ensure!(
+            !events.iter().any(|event| matches!(
+                event.row_scope,
+                Some(
+                    crate::history::HistoryBusinessRowScope::Accounting
+                        | crate::history::HistoryBusinessRowScope::Cost
+                )
+            )),
+            "cumulative usage must be prepared and admitted through the durable commit translator"
+        );
+        let revision = self.inner.history.memory_admission_revision();
+        admit_and_broadcast_inner(&self.inner, &events, revision)
     }
 
-    /// Waits until `MetaEventBus` has translated & admitted `commit_seq` into RAM `HistoryStore::Pending`.
-    pub async fn wait_admitted_commit(&self, commit_seq: u64) {
+    /// Waits for successful in-memory acceptance. Earlier failed commits cannot be hidden by a
+    /// later success. Cancellation and a closed actor are failures, not acknowledgements.
+    pub async fn wait_admitted_commit(&self, commit_seq: u64) -> Result<()> {
         if commit_seq == 0 {
-            return;
+            return Ok(());
         }
         let mut rx = self.inner.processed_notify.subscribe();
         loop {
-            let done = self
-                .inner
-                .processed_commits
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&commit_seq);
-            if done || self.inner.cancel.is_cancelled() {
-                break;
+            let done = {
+                let outcomes = self
+                    .inner
+                    .processed_commits
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(error) =
+                    outcomes
+                        .range(..=commit_seq)
+                        .find_map(|(&sequence, result)| {
+                            result.as_ref().err().map(|error| CommitAdmissionError {
+                                sequence,
+                                error: Arc::clone(error),
+                            })
+                        })
+                {
+                    return Err(error.into());
+                }
+                outcomes
+                    .get(&commit_seq)
+                    .is_some_and(std::result::Result::is_ok)
+            };
+            if done {
+                return Ok(());
             }
-            if rx.changed().await.is_err() {
-                break;
+            tokio::select! {
+                () = self.inner.cancel.cancelled() => anyhow::bail!("MetaEventBus closed before commit {commit_seq} was admitted"),
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        anyhow::bail!("MetaEventBus actor closed before commit {commit_seq} was admitted");
+                    }
+                }
             }
         }
     }
@@ -272,7 +362,7 @@ impl MetaEventBus {
     /// Waits until `MetaEventBus` has translated & admitted `commit_seq` and `HistoryStore`
     /// has flushed it to SQLite.
     pub async fn flush_through_commit(&self, commit_seq: u64) -> Result<()> {
-        self.wait_admitted_commit(commit_seq).await;
+        self.wait_admitted_commit(commit_seq).await?;
         self.inner.history.flush().await?;
         Ok(())
     }
@@ -290,6 +380,7 @@ async fn run_serial_actor(
     mut rx: mpsc::UnboundedReceiver<CoreEvent>,
     cancel: CancellationToken,
 ) {
+    let _actor_closed = cancel.clone().drop_guard();
     let mut ticker = tokio::time::interval(STREAMING_TEXT_COALESCE_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -319,18 +410,17 @@ async fn run_serial_actor(
                     }
                     CoreEvent::Durable(commit) => {
                         let commit_seq = commit.export.effect.sequence;
-                        if let Err(error) = handle_durable_commit(&inner, commit).await {
-                            tracing::error!(
-                                thread_id = %inner.history.thread_id(),
-                                error = %error,
-                                "MetaEventBus durable commit translation failed"
-                            );
+                        let result = if let Some(error) = admission_failure_through(&inner, commit_seq.saturating_sub(1)) {
+                            Err(error.into())
+                        } else {
+                            handle_durable_commit(&inner, commit).await
+                        };
+                        if let Err(error) = &result {
+                            tracing::error!(thread_id = %inner.history.thread_id(), error = %error,
+                                "MetaEventBus durable commit admission failed");
                         }
-                        inner
-                            .processed_commits
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(commit_seq);
+                        inner.processed_commits.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(commit_seq, result.map_err(Arc::new));
                         inner
                             .processed_notify
                             .send_modify(|n| *n = n.wrapping_add(1));
@@ -349,35 +439,61 @@ async fn handle_durable_commit(inner: &Arc<Inner>, commit: Arc<CoreCommitEvent>)
         .clone();
     let database_id = inner.history.database_id().to_owned();
     let commit_seq = commit.export.effect.sequence;
-    let events = {
-        let mut translator = inner.translator.lock().await;
-        if !translator.translated_commit_seqs.insert(commit_seq) {
-            return Ok(());
-        }
-        translate_commit(&mut translator, &inner.history, &thread, &database_id, &commit.export)?
-    };
-    if events.is_empty() {
+    let mut translator = inner.translator.lock().await;
+    if translator.translated_commit_seqs.contains(&commit_seq) {
         return Ok(());
     }
-    admit_and_broadcast_inner(inner, events).await?;
+    let mut candidate = translator.clone();
+    let revision = inner.history.memory_admission_revision();
+    let events = translate_commit(
+        &mut candidate,
+        &inner.history,
+        &thread,
+        &database_id,
+        &commit.export,
+    )?;
+    admit_and_broadcast_inner(inner, &events, revision)?;
+    candidate.translated_commit_seqs.insert(commit_seq);
+    *translator = candidate;
     Ok(())
 }
 
-async fn admit_and_broadcast_inner(inner: &Arc<Inner>, events: Vec<HistoryEvent>) -> Result<Vec<u64>> {
-    if events.is_empty() {
-        return Ok(Vec::new());
-    }
-    let seqs = inner.history.accept_in_memory(&events).await?;
-    for (mut event, &seq) in events.into_iter().zip(&seqs) {
-        event.seq = seq;
-        let record = Arc::new(event.to_record());
+fn admit_and_broadcast_inner(
+    inner: &Arc<Inner>,
+    events: &[HistoryEvent],
+    usage_revision: u64,
+) -> Result<Vec<u64>> {
+    let records = {
+        let mut recent = inner
+            .recent_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let records = inner
+            .history
+            .accept_new_in_memory(events, usage_revision)?
+            .into_iter()
+            .map(Arc::new)
+            .collect::<Vec<_>>();
+        for record in &records {
+            if recent.len() == BROADCAST_CAPACITY {
+                recent.pop_front();
+            }
+            recent.push_back(Arc::clone(record));
+        }
+        records
+    };
+    let mut seqs = Vec::with_capacity(records.len());
+    for record in records {
+        seqs.push(record.seq);
         let input_id = match &record.source {
             Some(ChatSourceId::Input { input_id }) => Some(input_id.clone()),
             _ => None,
         };
         let turn_id = record.turn_id.clone();
         if let Some(snapshot) = inner.live_status.on_history_record(&record) {
-            let _ = inner.broadcast.send(ThreadMetaEvent::LiveStatus(Arc::new(snapshot)));
+            let _ = inner
+                .broadcast
+                .send(ThreadMetaEvent::LiveStatus(Arc::new(snapshot)));
         }
         let _ = inner.broadcast.send(ThreadMetaEvent::History {
             record,
@@ -447,7 +563,9 @@ fn translate_commit(
                 effect_seq: effect.sequence,
                 suborder: 1,
             };
-            if let Some(draft) = accepted_input_draft(thread, record, at, effect.committed_at, database_id)? {
+            if let Some(draft) =
+                accepted_input_draft(thread, record, at, effect.committed_at, database_id)?
+            {
                 if !state.completed_drafts.insert(draft.item_id.clone())
                     || history.event_exists_in_memory(&draft.item_id)
                 {
@@ -486,7 +604,9 @@ fn translate_commit(
             effect_seq: effect.sequence,
             suborder: 2,
         };
-        if let Some(draft) = accepted_inbox_draft(thread, record, at, effect.committed_at, database_id)? {
+        if let Some(draft) =
+            accepted_inbox_draft(thread, record, at, effect.committed_at, database_id)?
+        {
             if !state.completed_drafts.insert(draft.item_id.clone())
                 || history.event_exists_in_memory(&draft.item_id)
             {
@@ -521,7 +641,12 @@ fn translate_commit(
             }
         };
         let mut history_event = HistoryEvent::new(
-            format!("conn:model:{run}:{}:{}:{}", effect.sequence, index, conn.kind.as_str()),
+            format!(
+                "conn:model:{run}:{}:{}:{}",
+                effect.sequence,
+                index,
+                conn.kind.as_str()
+            ),
             kind,
             HistoryTimelineRole::Boundary,
             recorded_at,
@@ -531,20 +656,41 @@ fn translate_commit(
         history_event.turn_id = Some(conn.turn_id.clone());
         history_event.attempt_id = Some(conn.attempt_id.clone());
         let mut data = serde_json::Map::new();
-        data.insert("state".into(), serde_json::Value::String(conn.kind.as_str().to_owned()));
+        data.insert(
+            "state".into(),
+            serde_json::Value::String(conn.kind.as_str().to_owned()),
+        );
         data.insert("scope".into(), serde_json::Value::String("model".into()));
-        data.insert("transport".into(), serde_json::Value::String(conn.transport.clone()));
+        data.insert(
+            "transport".into(),
+            serde_json::Value::String(conn.transport.clone()),
+        );
         if let Some(fallback) = &conn.fallback_transport {
-            data.insert("fallbackTransport".into(), serde_json::Value::String(fallback.clone()));
+            data.insert(
+                "fallbackTransport".into(),
+                serde_json::Value::String(fallback.clone()),
+            );
         }
-        data.insert("attempt".into(), serde_json::Value::Number(serde_json::Number::from(conn.retry)));
-        data.insert("maxAttempts".into(), serde_json::Value::Number(serde_json::Number::from(conn.max_retries)));
-        data.insert("recoverable".into(), serde_json::Value::Bool(conn.recoverable));
+        data.insert(
+            "attempt".into(),
+            serde_json::Value::Number(serde_json::Number::from(conn.retry)),
+        );
+        data.insert(
+            "maxAttempts".into(),
+            serde_json::Value::Number(serde_json::Number::from(conn.max_retries)),
+        );
+        data.insert(
+            "recoverable".into(),
+            serde_json::Value::Bool(conn.recoverable),
+        );
         if let Some(reason) = &conn.reason {
             data.insert("reason".into(), serde_json::Value::String(reason.clone()));
         }
         if let Some(duration_ms) = conn.duration_ms {
-            data.insert("durationMs".into(), serde_json::Value::Number(serde_json::Number::from(duration_ms)));
+            data.insert(
+                "durationMs".into(),
+                serde_json::Value::Number(serde_json::Number::from(duration_ms)),
+            );
         }
         build_connection_event(&mut history_event, serde_json::Value::Object(data))?;
         events.push(history_event);
@@ -675,9 +821,9 @@ fn translate_commit(
             if let ExecutionShape::Tool(tool) = item.state() {
                 let call_id = tool.invocation().tool_call_id();
                 let waiting = matches!(tool.state(), ThreadToolState::AwaitingApproval(_))
-                    || tool
-                        .user_input()
-                        .is_some_and(|i| matches!(i.state(), crate::ThreadToolUserInputState::Pending));
+                    || tool.user_input().is_some_and(|i| {
+                        matches!(i.state(), crate::ThreadToolUserInputState::Pending)
+                    });
                 let task = effect
                     .tasks
                     .iter()
@@ -692,7 +838,9 @@ fn translate_commit(
                     "called"
                 };
                 if state.emitted_tool_stages.get(call_id).copied() != Some(stage_key) {
-                    state.emitted_tool_stages.insert(call_id.to_owned(), stage_key);
+                    state
+                        .emitted_tool_stages
+                        .insert(call_id.to_owned(), stage_key);
                     let kind = match stage_key {
                         "waiting_approval" => HistoryEventKind::ToolWaitingApproval,
                         "cancel_requested" => HistoryEventKind::ToolCancelRequested,
@@ -716,18 +864,30 @@ fn translate_commit(
                         HistoryTimelineRole::Hidden
                     };
                     let mut history_event = HistoryEvent::new(
-                        format!("tool-stage:{run}:{}:{}:{}", effect.sequence, call_id, kind.as_str()),
+                        format!(
+                            "tool-stage:{run}:{}:{}:{}",
+                            effect.sequence,
+                            call_id,
+                            kind.as_str()
+                        ),
                         kind,
                         role,
                         recorded_at,
                     );
                     history_event.occurred_at = Some(recorded_at);
                     history_event.run_id = Some(run_str.clone());
-                    history_event.turn_id = (!item.turn_id.is_empty()).then(|| item.turn_id.clone());
+                    history_event.turn_id =
+                        (!item.turn_id.is_empty()).then(|| item.turn_id.clone());
                     history_event.call_id = Some(call_id.to_owned());
                     history_event.entity_id = Some(item.id.clone());
                     history_event.tool_name = Some(tool.invocation().name().to_owned());
-                    build_active_tool_event(&mut history_event, &atom_val, item, cancel_requested, database_id)?;
+                    build_active_tool_event(
+                        &mut history_event,
+                        &atom_val,
+                        item,
+                        cancel_requested,
+                        database_id,
+                    )?;
                     events.push(history_event);
                 }
             }
@@ -777,20 +937,15 @@ fn translate_commit(
             HistoryTimelineRole::Hidden
         } else if crate::studio::thread_projection::work(&atom_val) {
             HistoryTimelineRole::Work
-        } else if atom_val.kind == crate::ChatAtomKind::Text && atom_val.content_present == Some(false) {
+        } else if atom_val.kind == crate::ChatAtomKind::Text
+            && atom_val.content_present == Some(false)
+        {
             HistoryTimelineRole::Hidden
         } else {
             HistoryTimelineRole::Boundary
         };
-        let mut ev = emit_draft_event(
-            &atom_val,
-            &draft,
-            kind,
-            role,
-            run,
-            recorded_at,
-            database_id,
-        )?;
+        let mut ev =
+            emit_draft_event(&atom_val, &draft, kind, role, run, recorded_at, database_id)?;
         if ev.turn_id.is_none() && !item.turn_id.is_empty() {
             ev.turn_id = Some(item.turn_id.clone());
         }
@@ -850,14 +1005,15 @@ fn translate_commit(
                 receipt.run_id = Some(run_str);
                 receipt.turn_id = Some(turn.turn_id.clone());
                 receipt.entity_id = Some(order::turn_id(&turn.turn_id));
-                let projected_failure = history_turn_details.get(&turn.turn_id).and_then(|t| {
-                    match &t.state {
-                        crate::TurnState::Failed(failed) => {
-                            serde_json::to_value(failed.failure()).ok()
-                        }
-                        _ => None,
-                    }
-                });
+                let projected_failure =
+                    history_turn_details
+                        .get(&turn.turn_id)
+                        .and_then(|t| match &t.state {
+                            crate::TurnState::Failed(failed) => {
+                                serde_json::to_value(failed.failure()).ok()
+                            }
+                            _ => None,
+                        });
                 let data = serde_json::json!({
                     "inputId": turn.input_id,
                     "outcome": {

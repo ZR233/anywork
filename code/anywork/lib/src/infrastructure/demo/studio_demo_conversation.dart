@@ -70,7 +70,7 @@ _DemoPlanDecision _demoPlanDecision(InteractionResolutionCommand command) {
   );
 }
 
-// Demo script facts are private. Only the frozen UTF-8 envelope crosses the port.
+// Private facts used by the Demo conversation script.
 enum _DemoContentKind { text, thinking, tool, completed }
 
 enum _DemoPlanDecisionKind { approved, revisionRequested }
@@ -349,550 +349,214 @@ _DemoItem _demoRevise(
   content: content,
 );
 
-const _demoMaxBytes = 256 * 1024;
-const _demoInlineBodyBytes = 4096;
 StudioFailure _demoQueryFailure(String message) => StudioFailure(
   code: StudioFailureCode.invalidArgument,
   message: message,
   retryable: false,
-  correlationId: 'demo-chat-query',
+  correlationId: 'demo-conversation-query',
 );
-StudioFailure _demoStale() => const StudioFailure(
-  code: StudioFailureCode.staleRevision,
-  message: 'The Demo current revision has retired',
-  retryable: false,
-  correlationId: 'demo-stale-content',
-  detailsJson: '{"reason":"staleContent"}',
-);
+
 StudioFailure _demoMissing() => const StudioFailure(
   code: StudioFailureCode.notFound,
   message: 'The Demo content is unavailable',
   retryable: false,
   correlationId: 'demo-content-not-found',
 );
-void _demoDemand(ReadDemand d) {
-  if (d.maxItems < 1 ||
-      d.maxItems > 4096 ||
-      d.maxBytes < 1 ||
-      d.maxBytes > _demoMaxBytes) {
-    throw _demoQueryFailure(
-      'InvalidDemand: items must be 1..4096 and bytes 1..262144',
-    );
-  }
-}
 
-String _demoScopeKey(ChatScope scope) => jsonEncode({
-  'queryClass': switch (scope.queryClass) {
-    ExactChatClass(:final value) => value,
-    AllChatClasses() => null,
-  },
-  'parentId': scope.parentId,
-});
-String? _demoTurnParent(String? turnId) =>
-    turnId == null ? null : '4:turn$turnId';
-bool _demoHasActivity(ChatScope scope) => scope.parentId == null;
-ChatAtom _demoCopy(
-  ChatAtom atom, {
-  PayloadData? payload,
-  ChatSourceState? sourceState,
-  ChatAtomLifecycle? lifecycle,
-  List<ChatAtomContent>? contents,
-  bool frozen = false,
-}) => ChatAtom(
-  id: atom.id,
-  source: atom.source,
-  sourceOrder: atom.sourceOrder,
-  kind: atom.kind,
-  sourceState: frozen ? null : sourceState ?? atom.sourceState,
-  delivery: atom.delivery,
-  lifecycle: lifecycle ?? atom.lifecycle,
-  turnId: atom.turnId,
-  attemptId: atom.attemptId,
-  tool: atom.tool,
-  wait: atom.wait,
-  textChannel: atom.textChannel,
-  contentPresent: atom.contentPresent,
-  startedAt: atom.startedAt,
-  finishedAt: atom.finishedAt,
-  contents: contents ?? atom.contents,
-  payload: payload ?? atom.payload,
-);
-int _demoEncoded(Object? value) => utf8.encode(jsonEncode(value)).length;
-
-// Chunked authoritative bytes: range reads visit only intersecting chunks, never
-// concatenate a body before slicing. Append keeps generation; replacement changes it.
-final class _DemoBody {
-  final List<Uint8List> _chunks = [];
-  final List<int> _ends = [];
-  int length = 0;
-  int generation = 1;
-  bool sealed = false;
-  _DemoBody frozen() => _DemoBody()
-    .._chunks.addAll(_chunks)
-    .._ends.addAll(_ends)
-    ..length = length
-    ..generation = generation
-    ..sealed = true;
-  void append(List<int> bytes) {
-    if (sealed) throw StateError('Cannot append sealed Demo content');
-    for (var start = 0; start < bytes.length; start += 4096) {
-      final end = (start + 4096).clamp(0, bytes.length);
-      final chunk = Uint8List.fromList(bytes.sublist(start, end));
-      _chunks.add(chunk);
-      length += chunk.length;
-      _ends.add(length);
-    }
-  }
-
-  Uint8List range(int offset, int maxBytes) {
-    if (offset < 0 || maxBytes < 1 || maxBytes > _demoMaxBytes) {
-      throw _demoQueryFailure('Invalid content range');
-    }
-    if (offset > length) {
-      throw _demoQueryFailure('Content offset exceeds length');
-    }
-    final end = (offset + maxBytes).clamp(0, length);
-    if (offset >= end) return Uint8List(0);
-    final out = Uint8List(end - offset);
-    var low = 0, high = _ends.length;
-    while (low < high) {
-      final mid = (low + high) ~/ 2;
-      if (_ends[mid] <= offset) {
-        low = mid + 1;
-      } else {
-        high = mid;
-      }
-    }
-    for (var i = low; i < _chunks.length; i++) {
-      final start = i == 0 ? 0 : _ends[i - 1];
-      if (start >= end) break;
-      final from = (offset - start).clamp(0, _chunks[i].length);
-      final through = (end - start).clamp(0, _chunks[i].length);
-      out.setRange(
-        start + from - offset,
-        start + through - offset,
-        _chunks[i],
-        from,
-      );
-    }
-    return out;
-  }
-
-  void update(String text) {
-    final bytes = utf8.encode(text);
-    var prefix = bytes.length >= length;
-    var pos = 0;
-    for (final chunk in _chunks) {
-      if (!prefix) break;
-      for (var i = 0; i < chunk.length; i++) {
-        if (bytes[pos + i] != chunk[i]) {
-          prefix = false;
-          break;
-        }
-      }
-      pos += chunk.length;
-    }
-    if (!prefix) {
-      if (sealed) throw StateError('Cannot replace sealed Demo content');
-      generation++;
-      _chunks.clear();
-      _ends.clear();
-      length = 0;
-    }
-    if (bytes.length > length) append(bytes.sublist(length));
-  }
-}
-
-final class _DemoFrozen {
-  const _DemoFrozen(this.message, this.order, this.scope);
-  final ChatAtom message;
-  final int order;
-  final ChatScope scope;
-}
-
-final class _DemoChange {
-  const _DemoChange(this.update);
-  final ThreadWorkspaceUpdate? update;
-}
-
+// The script is the producer of Demo facts. Its completed rows and member
+// details share the same sequence and body identities across open handles.
 final class _DemoHistory {
-  final List<DisplayBlock> displayBlocks = [];
+  final String epoch = newStudioCorrelationId();
   final Map<String, _DemoDisplayScript> displayScripts = {};
   final Map<String, String> displayMembership = {};
-  final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
-  final Map<String, int> displayMemberRevisions = {};
-  int historyLastOrder = 0;
-  int get displayHead => displayBlocks.lastOrNull?.blockOrder ?? 0;
-  final String epoch = newStudioCorrelationId();
-  final Map<String, ChatAtom> activeAtoms = {};
-  final Map<ChatSourceId, ChatSourceState> sourceStates = {};
-  final Map<ChatSourceId, int> _sourceOrders = {};
-  int _facts = 0;
-  ChatFactPosition _fact() =>
-      ChatFactPosition(effectSeq: ++_facts, suborder: 0);
-  final List<_DemoFrozen> items = [];
-  final Map<String, _DemoFrozen> byId = {};
-  final Map<String, Map<String, _DemoBody>> bodies = {};
-  final Map<String, _DemoBody> payloads = {};
-  final Map<(String, String, String), _DemoBody> currentBodies = {};
-  final Map<String, List<Object?>> stateCollections = {};
-  final Map<String, int> stateCollectionVersions = {};
-  final Map<String, String> _stateCollectionSignatures = {};
-  final Map<(String, String), int> positions = {};
-  int _nextPosition = 0;
-  _DemoBody? planDocument;
-  int? planRevision;
-  int interactionRevision = 0;
-  String? _interactionSignature;
-  final Set<void Function(_DemoChange)> changes = {};
-  int revision = 0;
-  int get head => items.lastOrNull?.order ?? 0;
-  void prepareCurrent(ThreadWorkspace workspace) {
-    final plan = workspace.runtime.plan;
-    if (plan?.document == null) {
-      planDocument = null;
-    } else if (planRevision != plan!.revision) {
-      planDocument = _DemoBody()
-        ..update(plan.document!.markdown)
-        ..sealed = true;
-    }
-    planRevision = plan?.revision;
-    final signature = jsonEncode([
-      for (final value in workspace.interactions)
-        [value.id, value.revision, value.title, value.body],
-    ]);
-    if (signature != _interactionSignature) {
-      _interactionSignature = signature;
-      interactionRevision++;
-      currentBodies.clear();
-    }
-    for (final interaction in workspace.interactions) {
-      positions.putIfAbsent((
-        'interaction',
-        interaction.id,
-      ), () => _nextPosition++);
-    }
-  }
+  final List<_DemoSealedBlock> displayBlocks = [];
+  final Map<String, _DemoItem> completed = {};
+  final Map<String, int> itemSequences = {};
+  final Set<void Function(ThreadWorkspace)> changes = {};
+  final Set<void Function()> retiring = {};
+  LiveStatusReconnecting? reconnecting;
+  int _sequence = 0;
 
-  void changed(ThreadWorkspace workspace, {ThreadWorkspaceUpdate? update}) {
-    revision++;
-    prepareCurrent(workspace);
-    final change = _DemoChange(update);
+  void changed(ThreadWorkspace workspace) {
     for (final wake in changes.toList()) {
-      wake(change);
+      wake(workspace);
     }
   }
 
-  Iterable<_DemoFrozen> index(ChatScope scope) => items.where(
-    (record) =>
-        (scope.queryClass is AllChatClasses ||
-            (record.scope.queryClass as ExactChatClass).value ==
-                (scope.queryClass as ExactChatClass).value) &&
-        (scope.parentId == null || record.scope.parentId == scope.parentId),
-  );
-  void validateScope(ChatScope scope) {
-    if (scope.queryClass case ExactChatClass(:final value)) {
-      if (value.isEmpty) throw _demoQueryFailure('Empty record class');
+  void retire() {
+    for (final stop in retiring.toList()) {
+      stop();
     }
   }
 
-  bool accept(ChatAtom message, ChatScope scope) {
-    validateScope(scope);
-    if (message.id.isEmpty) throw _demoQueryFailure('Empty message identity');
-    if (scope.queryClass is! ExactChatClass) {
-      throw _demoQueryFailure('Producer must declare the record class');
+  void admit(_DemoItem item) {
+    if (completed.containsKey(item.id)) {
+      throw StateError('Completed Demo member cannot be modified: ${item.id}');
     }
-    final key = _demoScopeKey(scope);
-    final old = byId[message.id];
-    message = _demoCopy(message, frozen: true);
-    if (old != null) {
-      if (_demoScopeKey(old.scope) != key ||
-          jsonEncode(chatAtomToJson(old.message)) !=
-              jsonEncode(chatAtomToJson(message))) {
-        throw const StudioFailure(
-          code: StudioFailureCode.conflict,
-          message: 'A completed Demo message cannot be changed',
-          retryable: false,
-          correlationId: 'demo-completion-conflict',
-        );
-      }
-      return false;
-    }
-    final record = _DemoFrozen(message, head + 1, scope);
-    if (message.payload case InlinePayload(:final bytes)) {
-      payloads[message.id] = _DemoBody()
-        ..append(bytes)
-        ..sealed = true;
-    }
-    items.add(record);
-    byId[message.id] = record;
-    return true;
-  }
-
-  void sync(_DemoItem item) {
-    if (item.content.descriptor?['type'] == 'inference') return;
-    if (!byId.containsKey(item.id)) {
-      final previous = activeAtoms[item.id];
-      final source =
-          previous?.source ??
-          (item.content.textChannel == ThreadTextChannel.user
-              ? InputChatSource(inputId: item.id)
-              : item.turnId == null ||
-                    item.content.descriptor?['type'] == 'turn'
-              ? ReceiptChatSource(receiptId: item.id)
-              : ForegroundTurnChatSource(turnId: item.turnId!));
-      sourceStates.putIfAbsent(
-        source,
-        () => ChatSourceState(
-          source: source,
-          lifecycle: const ActiveChatSource(),
-          started: _fact(),
-          ended: null,
-        ),
-      );
-      final kind = switch (item.content.kind) {
-        _DemoContentKind.text =>
-          item.content.textChannel == ThreadTextChannel.user
-              ? ChatAtomKind.input
-              : ChatAtomKind.text,
-        _DemoContentKind.thinking => ChatAtomKind.reasoning,
-        _DemoContentKind.tool => ChatAtomKind.toolCall,
-        _DemoContentKind.completed =>
-          switch (item.content.descriptor?['type']) {
-            'turn' => ChatAtomKind.turnReceipt,
-            'plan' => ChatAtomKind.plan,
-            'contextCompaction' => ChatAtomKind.compaction,
-            _ => ChatAtomKind.receipt,
-          },
-      };
-      activeAtoms[item.id] = ChatAtom(
-        id: item.id,
-        source: source,
-        sourceOrder:
-            previous?.sourceOrder ??
-            (_sourceOrders.update(
-              source,
-              (value) => value + 1,
-              ifAbsent: () => 1,
-            )),
-        kind: kind,
-        delivery: source is ForegroundTurnChatSource
-            ? ChatDeliveryKind.foreground
-            : ChatDeliveryKind.independent,
-        lifecycle:
-            previous?.lifecycle ??
-            ActiveChatAtom(started: _fact(), status: ChatActiveStatus.running),
-        turnId: item.turnId,
-        startedAt: previous?.startedAt ?? _demoSeconds(item.updatedAt),
-        textChannel: item.content.textChannel,
-        contentPresent: item.content.contentPresent,
-        tool: item.content.invocation == null
-            ? null
-            : ChatToolIdentity(
-                callId: item.content.invocation!.toolCallId,
-                name: item.content.invocation!.name,
-              ),
-        contents: [
-          for (final field in item.content.fields.keys)
-            ChatAtomContent(
-              role: kind == ChatAtomKind.toolCall
-                  ? field == 'tool.arguments'
-                        ? ChatContentRole.toolArguments
-                        : ChatContentRole.toolOutput
-                  : kind == ChatAtomKind.reasoning
-                  ? ChatContentRole.reasoningSummary
-                  : ChatContentRole.body,
-              reference: ContentRef(
-                databaseId: epoch,
-                target: BodyContentTarget(
-                  owner: ItemContentOwner(itemId: item.id),
-                  key: field,
-                ),
-              ),
-            ),
-        ],
-      );
-    }
-    positions.putIfAbsent(('member', item.id), () => _nextPosition++);
-    final contents = bodies.putIfAbsent(item.id, () => {});
-    for (final entry in item.content.fields.entries) {
-      (contents[entry.key] ??= _DemoBody()).update(entry.value);
-    }
-    updateDisplayMember(item.id);
+    itemSequences.putIfAbsent(item.id, () => ++_sequence);
   }
 
   void complete(_DemoItem item) {
-    final descriptor = item.content.descriptor!;
-    final type = descriptor['type'] as String;
-    final data = Map<String, Object?>.of(
-      descriptor['data'] as Map<String, Object?>,
-    );
-    if (type == 'inference') {
-      return; // Execution diagnostics are not Chat steps.
-    }
-    sync(item);
-    final contents = bodies[item.id]!;
-    final frozen = byId[item.id]?.message;
-    final active = activeAtoms.remove(item.id) ?? frozen!;
-    final rawOutcome = data['outcome'] ?? data['state'];
-    final result = rawOutcome is Map ? rawOutcome['kind'] : null;
-    final outcome = switch (result) {
-      'failed' => ChatTerminalOutcome.failed,
-      'cancelled' || 'interrupted' => ChatTerminalOutcome.cancelled,
-      _ => ChatTerminalOutcome.completed,
-    };
-    final message = ChatAtom(
-      id: item.id,
-      source: active.source,
-      sourceOrder: active.sourceOrder,
-      kind: active.kind,
-      delivery: active.delivery,
-      lifecycle:
-          frozen?.lifecycle ??
-          TerminalChatAtom(
-            started: (active.lifecycle as ActiveChatAtom).started,
-            ended: _fact(),
-            outcome: outcome,
-          ),
-      turnId: active.turnId,
-      tool: active.tool,
-      textChannel: active.textChannel,
-      contentPresent: active.contentPresent,
-      startedAt: active.startedAt,
-      finishedAt: _demoSeconds(item.updatedAt),
-      contents: active.contents,
-      payload: InlinePayload(
-        bytes: utf8.encode(
-          jsonEncode({
-            'contract': 'anywork.chat/1',
-            'type': type,
-            'data': data,
-            if (item.turnId != null) 'turnId': item.turnId,
-            'sealedAt': _demoSeconds(item.updatedAt),
-            'bodies': [
-              for (final entry in contents.entries)
-                {
-                  'key': entry.key,
-                  'byteLength': entry.value.length,
-                  if (entry.value.length <= _demoInlineBodyBytes)
-                    'inline': entry.value.range(0, _demoInlineBodyBytes)
-                  else
-                    'reference': contentRefToJson(
-                      ContentRef(
-                        databaseId: epoch,
-                        target: BodyContentTarget(
-                          owner: ItemContentOwner(itemId: item.id),
-                          key: entry.key,
-                        ),
-                      ),
-                    ),
-                },
-            ],
-          }),
-        ),
-      ),
-    );
-    final memberScope = ChatScope.conversation(
-      parentId: _demoTurnParent(item.turnId),
-    );
-    if (!accept(message, memberScope)) return;
-    updateDisplayMember(item.id);
-    final ended = <ChatSourceId>[
-      if (active.source is! ForegroundTurnChatSource) active.source,
-      if (type == 'turn' && item.turnId != null)
-        ForegroundTurnChatSource(turnId: item.turnId!),
-    ];
-    for (final source in ended) {
-      final previous = sourceStates[source];
-      if (previous != null) {
-        sourceStates[source] = ChatSourceState(
-          source: source,
-          lifecycle: EndedChatSource(outcome: outcome),
-          started: previous.started,
-          ended: _fact(),
-        );
-      }
-    }
-    for (final body in contents.values) {
-      body.sealed = true;
-    }
+    if (item.content.descriptor?['type'] == 'inference') return;
+    admit(item);
+    completed[item.id] = item;
   }
 }
 
-// All cursors are issued by this original reader and bind its fixed initial cut.
-// Tokens are opaque to callers; retaining only issued boundaries is not history caching.
+final class _DemoDetailWindowSink implements Sink<List<int>> {
+  _DemoDetailWindowSink(this.offset, this.limit);
 
-final class _DemoReadSource {
-  _DemoReadSource(this._api, this.threadId, this._history, this.scope);
-  final DemoStudioTransport _api;
-  final _DemoHistory _history;
-  final ChatScope scope;
-  final String threadId;
-  final Map<String, (String, int, int)> _cursors = {};
-  String cursor(String kind, int revision, int boundary) {
-    final token = 'demo:${newStudioCorrelationId()}';
-    _cursors[token] = (kind, revision, boundary);
-    return token;
+  final int offset;
+  final int limit;
+  final bytes = BytesBuilder();
+  int totalBytes = 0;
+
+  @override
+  void add(List<int> chunk) {
+    final start = (offset - totalBytes).clamp(0, chunk.length);
+    final count = (limit - bytes.length).clamp(0, chunk.length - start);
+    if (count > 0) bytes.add(chunk.sublist(start, start + count));
+    totalBytes += chunk.length;
   }
 
-  int boundary(String token, String kind, int revision) {
-    final c = _cursors[token];
-    if (c == null || c.$1 != kind || c.$2 != revision) {
-      throw _demoQueryFailure('Invalid original read cursor');
-    }
-    return c.$3;
-  }
+  @override
+  void close() {}
+}
 
-  // Scope selects chat members, not the lifetime of already issued Item refs.
-  // A Main current tool ref remains readable after sealing into Children.
-  bool _ownsItem(String id) =>
-      _history.byId.containsKey(id) ||
-      _history.payloads.containsKey(id) ||
-      _api._pendingItems[threadId]?.containsKey(id) == true;
+// Demo emits the same Serde field shapes as the native feed. Full detail is
+// selected from the snapshot that supplies the window's owner and revision.
+Object? _demoSessionDetail(
+  SessionMetaSnapshot snapshot,
+  SessionDetailKind kind, {
+  required PlanRuntimeView? plan,
+}) {
+  final runtime = snapshot.runtime;
+  return switch (kind) {
+    SessionDetailKind.plan => _demoPlanDetail(plan),
+    SessionDetailKind.interactions => [
+      for (final interaction in snapshot.interactions)
+        _demoInteractionDetail(interaction, runtime?.updatedAt ?? 0),
+    ],
+    SessionDetailKind.todo => _demoTodoDetail(runtime?.todo),
+    SessionDetailKind.workflow => _demoWorkflowDetail(runtime?.workflow),
+    SessionDetailKind.activeSkills => runtime?.activeSkills,
+    SessionDetailKind.activeMcpServers => runtime?.activeMcpServers,
+    SessionDetailKind.activeLspServers => runtime?.activeLspServers,
+  };
+}
 
-  Map<String, _DemoBody> _itemBodies(String id) {
-    if (!_ownsItem(id)) throw _demoMissing();
-    return _history.bodies[id] ?? const {};
-  }
+Map<String, Object?>? _demoPlanDetail(PlanRuntimeView? plan) {
+  if (plan == null) return null;
+  return {
+    'revision': plan.revision,
+    'state': plan.state.name,
+    if (plan.document case final document?)
+      'document': {
+        'version': document.version,
+        'markdown': document.markdown,
+        'contentHash': document.contentHash,
+      },
+    'updatedAt': _demoSeconds(plan.updatedAt),
+  };
+}
 
-  _DemoBody _body(ContentRef reference) {
-    if (reference.databaseId != _history.epoch) {
-      throw _demoQueryFailure('Wrong Demo database');
-    }
-    switch (reference.target) {
-      case ItemPayloadTarget(:final itemId):
-        if (!_ownsItem(itemId)) throw _demoMissing();
-        return _history.payloads[itemId] ?? (throw _demoMissing());
-      case BodyContentTarget(:final owner, :final key):
-        switch (owner) {
-          case DisplayObservationContentOwner(:final blockId, :final memberKey):
-            return _history.bodies[jsonEncode([
-                  'display-observation',
-                  blockId,
-                  memberKey,
-                ])]?[key] ??
-                (throw _demoMissing());
-          case ItemContentOwner(:final itemId):
-            return _itemBodies(itemId)[key] ?? (throw _demoMissing());
-          case CurrentContentOwner(:final domain, :final id, :final revision):
-            if (!_demoHasActivity(scope)) throw _demoMissing();
-            final workspace = _api._demoWorkspace(threadId);
-            if (domain == 'plan' && id == threadId) {
-              final plan = workspace.runtime.plan;
-              if (plan == null || plan.revision != revision) throw _demoStale();
-              if (key != 'plan.document' || plan.document == null) {
-                throw _demoMissing();
-              }
-              // Owner data is prepared at publication, not materialized by a range read.
-              return _history.planDocument ?? (throw _demoMissing());
-            }
-            if (domain != 'interactions' ||
-                revision != _history.interactionRevision) {
-              throw _demoStale();
-            }
-            return _history.currentBodies[(domain, id, key)] ??
-                (throw _demoMissing());
-        }
-    }
-  }
+Map<String, Object?>? _demoTodoDetail(TimelineTodoListUpdate? todo) {
+  if (todo == null) return null;
+  return {
+    'callId': todo.callId,
+    'agentId': ?todo.agentId,
+    'path': ?todo.path,
+    'parentPath': ?todo.parentPath,
+    'explanation': ?todo.explanation,
+    'items': [
+      for (final item in todo.items) {'step': item.step, 'status': item.status},
+    ],
+  };
+}
+
+Map<String, Object?>? _demoWorkflowDetail(WorkflowRuntimeView? workflow) {
+  if (workflow == null) return null;
+  return {
+    'revision': workflow.revision,
+    if (workflow.currentRun case final run?)
+      'currentRun': {
+        'lineageId': run.lineageId,
+        'runId': run.runId,
+        'modeId': run.modeId,
+        'graphRevision': run.graphRevision,
+        'graphHash': run.graphHash,
+        'lifecycle': run.terminal ? 'terminal' : 'active',
+        'currentStateTitle': run.currentStateTitle,
+        'modeDisplayName': run.modeDisplayName,
+        'modeDeleted': run.modeDeleted,
+        'currentStateId': run.currentStateId,
+        'visitedStateIds': run.visitedStateIds,
+        'lastTransitionForced': run.lastTransitionForced,
+        'startedAt': _demoSeconds(run.startedAt),
+        'updatedAt': _demoSeconds(run.updatedAt),
+      },
+  };
+}
+
+Map<String, Object?> _demoInteractionDetail(
+  PendingInteraction interaction,
+  int timestamp,
+) {
+  final payload = switch ((interaction.kind, interaction.payload)) {
+    (
+      InteractionKind.userInput,
+      UserInputInteractionPayload(:final questions),
+    ) =>
+      {
+        'questions': [
+          for (final question in questions)
+            {
+              'id': question.id,
+              'header': question.header,
+              'question': question.question,
+              'isOther': question.isOther,
+              'isSecret': question.isSecret,
+              if (question.options.isNotEmpty)
+                'options': [
+                  for (final option in question.options)
+                    {'label': option.label, 'description': option.description},
+                ],
+            },
+        ],
+      },
+    (InteractionKind.toolApproval, ToolApprovalInteractionPayload approval) => {
+      'request': {
+        'name': approval.toolName,
+        'arguments': approval.arguments,
+        'workingDirectory': approval.workingDirectory.isEmpty
+            ? null
+            : approval.workingDirectory,
+        'parentAgentId': approval.parentAgentId,
+      },
+    },
+    _ => throw _demoQueryFailure(
+      'Demo interaction requires a matching typed payload',
+    ),
+  };
+  return {
+    'interactionId': interaction.id,
+    'scope': {
+      'threadId': interaction.threadId,
+      'turnId': interaction.turnId,
+      'purpose': {'kind': 'general'},
+    },
+    'revision': interaction.revision,
+    'content': {
+      'kind': interaction.kind.name,
+      'data': {
+        ...payload,
+        'state': {
+          'kind': 'pending',
+          'data': {'operationId': interaction.id},
+        },
+      },
+    },
+    'createdAt': timestamp,
+    'updatedAt': timestamp,
+  };
 }

@@ -1,140 +1,142 @@
 import 'dart:typed_data';
 
-import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/timeline_feed_projection.dart';
 import '../state/timeline_image_resources.dart';
-import '../view_models/display_member_controller.dart';
-import 'work_group_member_list.dart';
-import '../../../../presentation/view_models/timeline_session_owner.dart';
+import '../widgets/chat_item_view.dart';
+import '../widgets/timeline_content_range_view.dart';
+import 'timeline_media_connector.dart';
 
-/// Borrows the stable block demand from the original display lease.
+/// The expanded row lends its producer-defined range to the original feed.
 class CompletionRunConnector extends StatefulWidget {
   const CompletionRunConnector({
+    super.key,
     required this.unit,
-    required this.threadId,
     required this.content,
     required this.images,
     this.readAttachment,
+    this.bodyBuilder,
     this.monotonicMicros,
     this.onContentLayout,
-    this.onCurrentContentLayout,
-    this.onCurrentContentUnmounted,
-    this.registerMemberDisplay,
-    super.key,
   });
+
   final TimelineDisplayUnit unit;
-  final String threadId;
   final TimelineDisplayLease content;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String)? readAttachment;
+  final Widget Function(String, String)? bodyBuilder;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
-  final void Function(String, int)? onCurrentContentLayout;
-  final void Function(String)? onCurrentContentUnmounted;
-  final VoidCallback Function(TimelineMemberDisplay)? registerMemberDisplay;
+
   @override
   State<CompletionRunConnector> createState() => _MembersState();
 }
 
 class _MembersState extends State<CompletionRunConnector>
-    implements TimelineGroupDisplay, TimelineMemberDisplay {
+    implements TimelineGroupDisplay {
   VoidCallback? _unregister;
-  VoidCallback? _unregisterMember;
-  final Set<TimelineMemberDisplay> _members = {};
-  DisplayMemberController? get _controller => widget.unit.expansion.members;
+  Future<List<WorkGroupMember>>? _load;
+  AsyncSnapshot<List<WorkGroupMember>> _snapshot =
+      const AsyncSnapshot.nothing();
+
   @override
-  String get unitId => widget.unit.id;
-  @override
-  DisplayBlockRef? get blockReference => widget.unit.memberReference;
-  @override
-  bool get isCurrent =>
-      mounted &&
-      !widget.unit.expansion.isRetired &&
-      widget.unit.expansion.expanded == true &&
-      (widget.unit.expansion.isDisplayActive?.call() ?? true);
-  @override
-  bool get expanded => isCurrent && widget.unit.expansion.expanded == true;
-  @override
-  bool get loading => isCurrent && (_controller?.loading ?? true);
-  @override
-  Object? get error => isCurrent ? _controller?.error : null;
-  @override
-  Iterable<ChatAtom> get atoms => isCurrent
-      ? _controller?.entries.map((entry) => entry.record.atom) ?? const []
-      : const [];
-  @override
-  Iterable<TimelineCurrentWindowDisplay> get windows sync* {
-    if (!isCurrent) return;
-    for (final member in _members) {
-      yield* member.windows;
-    }
-  }
+  TimelineWorkGroup? get group => widget.unit.body.feedGroup;
 
   @override
   void initState() {
     super.initState();
-    _bindDisplay();
-  }
-
-  void _bindDisplay() {
-    _unregister?.call();
-    _unregisterMember?.call();
-    final intent = widget.unit.expansion;
-    _unregister = intent.registerDisplay?.call(this);
-    _unregisterMember = widget.registerMemberDisplay?.call(this);
-    final open = intent.openDisplayMembers;
-    if (open != null) {
-      intent.members ??= DisplayMemberController(
-        reference: blockReference!,
-        groupClosed: (widget.unit.body as WorkDisplayBlock).groupClosed,
-        // Transport budget only; the group accepts all batches.
-        demand: const ReadDemand(maxItems: 12, maxBytes: 32 * 1024),
-        open: open,
-      );
-    }
-    if (widget.unit.state == DisplayBlockState.sealed) {
-      _controller?.requireSealed();
-    }
+    _unregister = widget.content.registerGroupDisplay(this);
+    _request();
   }
 
   @override
-  void didUpdateWidget(covariant CompletionRunConnector oldWidget) {
+  void didUpdateWidget(CompletionRunConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _bindDisplay();
+    if (!identical(oldWidget.content, widget.content)) {
+      _unregister?.call();
+      _unregister = widget.content.registerGroupDisplay(this);
+    }
+    final previous = oldWidget.unit.body.feedGroup;
+    if (previous != group || !identical(oldWidget.content, widget.content)) {
+      _request();
+    }
+  }
+
+  void _request() {
+    final group = this.group;
+    _snapshot = const AsyncSnapshot.nothing();
+    _load = group == null ? null : widget.content.loadWorkGroupMembers(group);
   }
 
   @override
   void dispose() {
     _unregister?.call();
-    _unregisterMember?.call();
-    _members.clear();
-    // The display lease, not this parent Widget position, owns the member demand.
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => WorkGroupMemberList(
-    controller: _controller,
-    showLoadingIndicator: true,
-    blockReference: blockReference,
-    executionPresent: widget.unit.executionPresent,
-    threadId: widget.threadId,
-    currentReader: widget.content.current,
-    retirement: widget.unit.expansion.retirement,
-    isActive: () => isCurrent && widget.unit.expansion.expanded == true,
-    images: widget.images,
-    readAttachment: widget.readAttachment,
-    monotonicMicros: widget.monotonicMicros,
-    onContentLayout: widget.onContentLayout,
-    onCurrentContentLayout: widget.onCurrentContentLayout,
-    onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
-    hideSealedCurrentPlaceholders: true,
-    registerMemberDisplay: (member) {
-      _members.add(member);
-      return () => _members.remove(member);
+  String get unitId => widget.unit.id;
+  @override
+  bool get isCurrent =>
+      mounted && widget.content.canRead && widget.unit.expansion.bodyActive;
+  @override
+  bool get loading => _snapshot.connectionState == ConnectionState.waiting;
+  @override
+  Object? get error => _snapshot.error;
+  @override
+  Iterable<WorkGroupMember> get members =>
+      isCurrent ? _snapshot.data ?? const [] : const [];
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<List<WorkGroupMember>>(
+    future: _load,
+    builder: (context, snapshot) {
+      _snapshot = snapshot;
+      if (!isCurrent) return const SizedBox.shrink();
+      if (snapshot.connectionState == ConnectionState.waiting) {
+        return const LinearProgressIndicator(minHeight: 1);
+      }
+      if (snapshot.hasError) {
+        return TextButton(
+          onPressed: () => setState(_request),
+          child: Text(snapshot.error.toString()),
+        );
+      }
+      return TimelineBodyReadIntent(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final member in snapshot.data ?? const <WorkGroupMember>[])
+              _member(member),
+          ],
+        ),
+      );
     },
   );
+
+  Widget _member(WorkGroupMember member) {
+    final item = timelineFeedMember(member);
+    final read = widget.readAttachment;
+    return ChatItemView(
+      key: ValueKey(member.id),
+      item: item,
+      bodyBuilder: widget.bodyBuilder,
+      isDisplayActive: () => isCurrent,
+      monotonicMicros: widget.monotonicMicros,
+      onContentLayout: widget.onContentLayout,
+      attachmentBuilder: read == null
+          ? null
+          : (item) => TimelineAttachmentsConnector(
+              item: item,
+              resources: widget.images,
+              readAttachment: read,
+              isActive: () => isCurrent,
+            ),
+    );
+  }
 }

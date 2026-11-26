@@ -68,9 +68,7 @@ pub(crate) struct PreparedAccounting {
 }
 
 impl PreparedAccounting {
-    pub(crate) fn shared(
-        effect: &ThreadEffectBatch,
-    ) -> Result<Arc<Self>, ProjectionError> {
+    pub(crate) fn shared(effect: &ThreadEffectBatch) -> Result<Arc<Self>, ProjectionError> {
         effect
             .prepared_accounting
             .get_or_prepare(|| Self::prepare(effect))

@@ -8,9 +8,9 @@ use pl_model::{
 };
 use pl_provider_fixture::{RealtimeToolCall, responses_text, responses_tool_calls};
 use pl_studio_runtime::{
-    CreateThreadRequest, DelegationMode, NewThreadModelRoute,
-    StudioHostKind, StudioPromptInput, StudioRuntime, StudioRuntimeOptions,
-    StudioSubmitPromptOptions, StudioSubmitPromptRequest, ThreadWorkspaceMode,
+    CreateThreadRequest, DelegationMode, NewThreadModelRoute, StudioHostKind, StudioPromptInput,
+    StudioRuntime, StudioRuntimeOptions, StudioSubmitPromptOptions, StudioSubmitPromptRequest,
+    ThreadWorkspaceMode,
     config::{ConfigPaths, ConfigStore, StudioConfig},
     mode::ThreadModeId,
 };

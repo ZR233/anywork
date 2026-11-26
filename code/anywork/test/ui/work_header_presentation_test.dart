@@ -1,6 +1,5 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
@@ -201,25 +200,22 @@ void main() {
       'history Work interval of $elapsedMillis milliseconds displays $label',
       (tester) async {
         const startedAt = 1_785_000_000_800;
-        final blocks = TimelineHistoryProjection.blocksFromEntries([
-          HistoryTimelineEntry(
-            event: HistoryEventRecord(
-              seq: 1,
-              eventId: 'ev-start',
-              kind: 'input_accepted',
-              timelineRole: HistoryTimelineRole.boundary,
-              recordedAt: startedAt,
-              occurredAt: startedAt,
-              payloadSchema: 'anywork.event/1',
-              payloadJson: '{"contract":"anywork.event/1","type":"text","meta":{"entityId":"ev-start","entityKind":"input","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"}},"data":{"channel":"user"},"bodies":[]}',
+        final block = DisplayBlock(
+          id: 'work:2',
+          blockOrder: 2,
+          body: WorkDisplayBlock(
+            executionPresent: false,
+            memberCount: 1,
+            unfinishedCount: 0,
+            groupClosed: true,
+            timing: WorkTiming(
+              startedAtMillis: startedAt,
+              finishedAtMillis: elapsedMillis == null
+                  ? null
+                  : startedAt + elapsedMillis,
             ),
-            hasFoldedAfter: true,
-            tailFoldedEndedAt: elapsedMillis == null
-                ? null
-                : startedAt + elapsedMillis,
           ),
-        ], cut: const HistoryCut('work-history-cut'));
-        final block = blocks.last;
+        );
         await tester.pumpWidget(
           _host(
             TimelineDisplayUnitView(
@@ -229,7 +225,7 @@ void main() {
           ),
         );
         final header = find.byKey(
-          const ValueKey('completion-run-header:work:1'),
+          const ValueKey('completion-run-header:work:2'),
         );
         expect(tester.widget<Text>(_workTitle(header)).data, label);
         await tester.pumpWidget(const SizedBox());

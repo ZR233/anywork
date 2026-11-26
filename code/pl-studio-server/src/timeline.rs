@@ -30,8 +30,8 @@ use pl_studio_runtime::{
         HistoryEventsQuery, HistoryTimelinePage, HistoryWorkRangePage,
     },
     timeline::{
-        BodyRef, BodyWindow, ConversationFeed, LiveStatusSnapshot, SessionMetaSnapshot,
-        TimelinePatch, WorkGroupMember,
+        BodyRef, BodyWindow, ConversationFeed, LiveStatusSnapshot, SessionDetailKind,
+        SessionDetailWindow, SessionMetaSnapshot, TimelinePatch, WorkGroupMember,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -1046,6 +1046,14 @@ pub(crate) struct FeedBodyRequest {
     max_bytes: u32,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FeedDetailRequest {
+    kind: SessionDetailKind,
+    offset: u64,
+    max_bytes: u32,
+}
+
 #[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FeedResetRequest {
@@ -1167,6 +1175,26 @@ pub(crate) async fn feed_body(
             .read_body_window(&request.reference, request.offset, request.max_bytes)
             .await?,
     ))
+}
+
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/detail",
+    operation_id = "thread.readFeedDetail",
+    params(("thread_id" = String, Path), ("feed_id" = String, Path)),
+    request_body = FeedDetailRequest,
+    responses(StudioApiErrors, (status = 200, body = SessionDetailWindow)))]
+pub(crate) async fn feed_detail(
+    State(state): State<AppState>,
+    Path((thread_id, feed_id)): Path<(String, String)>,
+    ApiJson(request): ApiJson<FeedDetailRequest>,
+) -> Result<Json<SessionDetailWindow>, ApiError> {
+    let lease = state
+        .timelines
+        .borrow_by_id(&thread_id, &feed_id, &state.shutdown)?;
+    Ok(Json(lease.feed()?.read_session_detail(
+        request.kind,
+        request.offset,
+        request.max_bytes,
+    )?))
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/feed/{feed_id}/reset",

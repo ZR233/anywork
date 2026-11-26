@@ -173,11 +173,7 @@ pub(super) async fn wait_running_turn(
         let observed = async {
             loop {
                 let meta = feed.session_meta().await?;
-                if let Some(turn) = meta
-                    .active_turn
-                    .as_ref()
-                    .filter(|turn| turn.id == turn_id)
-                {
+                if let Some(turn) = meta.active_turn.as_ref().filter(|turn| turn.id == turn_id) {
                     match &turn.state {
                         pl_studio_runtime::TurnState::Running(state) => return Ok(state.clone()),
                         terminal if terminal.is_terminal() => anyhow::bail!(

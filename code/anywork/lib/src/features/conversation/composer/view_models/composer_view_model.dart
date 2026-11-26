@@ -13,6 +13,7 @@ import '../../../../presentation/providers/mode_catalog_store.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/project_store.dart';
 import '../../../../presentation/providers/settings_store.dart';
+import '../../timeline/view_models/timeline_view_model.dart';
 import '../state/composer_input_state.dart';
 import '../state/composer_view_state.dart';
 import 'composer_actions.dart';
@@ -385,7 +386,7 @@ class ComposerViewModel extends _$ComposerViewModel implements ComposerActions {
 
   void refresh() {
     if (target case ThreadComposerTarget(:final threadId)) {
-      _client.conversations.session(threadId).refresh();
+      ref.read(timelineSessionOwnerProvider).refresh(threadId);
     }
   }
 

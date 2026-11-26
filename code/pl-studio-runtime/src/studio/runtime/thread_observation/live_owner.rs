@@ -320,28 +320,30 @@ impl LiveOwner {
         );
         let started = std::time::Instant::now();
         if effect.sequence <= self.attached_commit_floor {
-            self.bus.emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
-                pl_core::thread::CoreCommitEvent {
-                    thread_id: self.thread.id.clone(),
-                    sequence: effect.sequence,
-                    export: Arc::clone(write),
-                },
-            )));
+            self.bus
+                .emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
+                    pl_core::thread::CoreCommitEvent {
+                        thread_id: self.thread.id.clone(),
+                        sequence: effect.sequence,
+                        export: Arc::clone(write),
+                    },
+                )));
         }
-        let prepared = match self
-            .retained
-            .projection
-            .prepare_committed(&self.thread, effect, &write.state)
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.channel.fail_projection(
-                    effect.sequence,
-                    format!("live Thread projection failed: {error}"),
-                );
-                return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
-            }
-        };
+        let prepared =
+            match self
+                .retained
+                .projection
+                .prepare_committed(&self.thread, effect, &write.state)
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.channel.fail_projection(
+                        effect.sequence,
+                        format!("live Thread projection failed: {error}"),
+                    );
+                    return Err(anyhow::anyhow!("live Thread projection failed: {error}"));
+                }
+            };
         prepared.accounting.fold_into(&mut self.retained.usage);
         self.retained.pending = Some(PendingHandoff {
             admitted: false,
@@ -371,6 +373,18 @@ impl LiveOwner {
         self.prepare_parent_report()?;
         self.prepare_terminal_delivery(services)?;
         self.prepare_handoff(services, snapshot)?;
+        // A bus-admitted effect must really be in RAM before the reliable writer is allowed to
+        // skip its ordinary event preparation. Failure keeps this owner's pending handoff intact.
+        if let Some(pending) = &self.retained.pending {
+            let sequence = pending.prepared.sequence;
+            if let Err(error) = self.bus.wait_admitted_commit(sequence).await {
+                self.channel.fail_projection(
+                    sequence,
+                    format!("live history admission failed: {error:#}"),
+                );
+                return Err(error);
+            }
+        }
         self.binding.conversation.admit_prepared(
             &self.binding,
             &self.channel,
@@ -381,7 +395,6 @@ impl LiveOwner {
             && (pending.mode == HandoffMode::Live
                 || exporter.should_admit_behind_effect(&self.thread.id, pending.prepared.sequence))
         {
-            self.bus.wait_admitted_commit(pending.prepared.sequence).await;
             let owner_id = self
                 .retained
                 .projection
@@ -706,13 +719,14 @@ impl LiveOwner {
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
         if write.effect.sequence <= self.attached_commit_floor {
-            self.bus.emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
-                pl_core::thread::CoreCommitEvent {
-                    thread_id: self.thread.id.clone(),
-                    sequence: write.effect.sequence,
-                    export: Arc::clone(write),
-                },
-            )));
+            self.bus
+                .emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
+                    pl_core::thread::CoreCommitEvent {
+                        thread_id: self.thread.id.clone(),
+                        sequence: write.effect.sequence,
+                        export: Arc::clone(write),
+                    },
+                )));
         }
         let projected =
             self.retained
@@ -861,7 +875,9 @@ impl LiveOwner {
             .as_ref()
             .map(|runtime| runtime.usage.clone());
         let status = crate::studio::thread_projection::status(snapshot);
-        let mode = crate::studio::thread_projection::saved_mode(snapshot).ok().flatten();
+        let mode = crate::studio::thread_projection::saved_mode(snapshot)
+            .ok()
+            .flatten();
         let meta = SessionMetaSnapshot {
             thread_id: self.thread.id.clone(),
             status,

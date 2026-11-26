@@ -14,36 +14,33 @@ import '../support/chat_fixtures.dart';
 ChatItemPresentation _tool(
   String name,
   List<ThreadAttachmentView> attachments,
-) => ChatItemPresentation.decode(
-  chatEnvelope(
-    'tool',
-    type: 'tool',
-    data: {
-      'invocation': {
-        'toolCallId': 'call',
-        'name': name,
-        'presentationContract': 'generic@1',
-      },
-      'state': {
-        'kind': 'succeeded',
-        'completedAt': 0,
-        'output': {
-          'attachments': [
-            for (final attachment in attachments)
-              {
-                'id': attachment.id,
-                'modality': attachment.modality.name,
-                'mediaType': attachment.mediaType,
-                'byteSize': attachment.byteSize,
-                if (attachment.filename != null)
-                  'filename': attachment.filename,
-              },
-          ],
-        },
+) => chatPresentation(
+  'tool',
+  type: 'tool',
+  data: {
+    'invocation': {
+      'toolCallId': 'call',
+      'name': name,
+      'presentationContract': 'generic@1',
+    },
+    'state': {
+      'kind': 'succeeded',
+      'completedAt': 0,
+      'output': {
+        'attachments': [
+          for (final attachment in attachments)
+            {
+              'id': attachment.id,
+              'modality': attachment.modality.name,
+              'mediaType': attachment.mediaType,
+              'byteSize': attachment.byteSize,
+              if (attachment.filename != null) 'filename': attachment.filename,
+            },
+        ],
       },
     },
-    bodies: [inlineBody('tool.arguments', '{}')],
-  ),
+  },
+  bodies: [inlineBody('tool.arguments', '{}')],
 );
 
 Widget _app(Widget child) => MaterialApp(

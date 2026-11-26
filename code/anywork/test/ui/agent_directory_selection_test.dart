@@ -33,8 +33,7 @@ void main() {
       );
       expect(graph.client.conversations.visibleThreadId.value, isNull);
       expect(graph.client.conversations.existingSession(row.threadId), isNull);
-      expect(fixture.transport.stateReads, isEmpty);
-      expect(fixture.transport.currentReaders, isEmpty);
+      expect(fixture.transport.feeds, isEmpty);
       expect(graph.client.drafts.existingComposer(row.threadId), isNotNull);
     },
   );
@@ -89,7 +88,6 @@ void main() {
         await client.directoryCommands.selectAgentThread('T');
         expect(client.selection.state.selectedThreadId, 'T');
         expect(fixture.transport.metadataReads, isNot(contains('S')));
-        expect(fixture.transport.stateReads, isEmpty);
         expect(fixture.transport.submitCalls, 0);
       },
     );
@@ -235,8 +233,7 @@ void main() {
     );
     expect(client.selection.state.selectedThreadId, fixture.root.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
-    expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.currentReaders, isEmpty);
+    expect(fixture.transport.feeds, isEmpty);
   });
 
   test(
@@ -300,8 +297,7 @@ void main() {
           reason: invalidation,
         );
         expect(fixture.transport.metadataReads, [fixture.child.threadId]);
-        expect(fixture.transport.stateReads, isEmpty, reason: invalidation);
-        expect(fixture.transport.currentReaders, isEmpty, reason: invalidation);
+        expect(fixture.transport.feeds, isEmpty, reason: invalidation);
       }
     },
   );
@@ -382,12 +378,7 @@ void main() {
         reason: action,
       );
       expect(
-        fixture.transport.stateReads,
-        isNot(contains(fixture.child.threadId)),
-        reason: action,
-      );
-      expect(
-        fixture.transport.currentReaders.map((timeline) => timeline.threadId),
+        fixture.transport.feeds.map((timeline) => timeline.threadId),
         isNot(contains(fixture.child.threadId)),
         reason: action,
       );
@@ -430,7 +421,7 @@ void main() {
       fixture.graph.timeline.updateReadDemand(chatDemand);
       fixture.graph.setConversationPageVisible(true);
       await timelineReady(fixture.graph.timeline, fixture.other.threadId);
-      await _awaitCurrentReaders(fixture, fixture.other.threadId);
+      await _awaitFeed(fixture, fixture.other.threadId);
       expect(
         client.selection.state.selectedProjectId,
         fixture.other.workspaceId,
@@ -440,10 +431,6 @@ void main() {
         client.conversations.sessionStates.map((state) => state.threadId),
         [fixture.other.threadId],
       );
-      expect(fixture.transport.stateReads, [
-        fixture.other.threadId,
-        fixture.other.threadId,
-      ]);
     },
   );
 
@@ -523,12 +510,11 @@ void main() {
       (value) => value == sibling.threadId,
     );
     await timelineReady(fixture.graph.timeline, sibling.threadId);
-    await _awaitCurrentReaders(fixture, sibling.threadId);
+    await _awaitFeed(fixture, sibling.threadId);
     expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
       sibling.threadId,
     ]);
-    expect(fixture.transport.stateReads, [sibling.threadId, sibling.threadId]);
     expect(client.findThread(fixture.child.threadId), isNull);
   });
 
@@ -774,8 +760,7 @@ Future<void> _expectLatestQueuedColdSelection({
     reason: 'An old read must not publish while the new command is still queued/reading',
   );
   expect(client.conversations.sessionStates, isEmpty);
-  expect(fixture.transport.stateReads, isEmpty);
-  expect(fixture.transport.currentReaders, isEmpty);
+  expect(fixture.transport.feeds, isEmpty);
   if (newFails) {
     newReply.completeError(newError);
     expect(
@@ -789,8 +774,7 @@ Future<void> _expectLatestQueuedColdSelection({
     expect(client.selection.state.selectedThreadId, fixture.root.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
-    expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.currentReaders, isEmpty);
+    expect(fixture.transport.feeds, isEmpty);
   } else {
     newReply.complete(sibling);
     expect(await newNavigation, isNull);
@@ -802,17 +786,15 @@ Future<void> _expectLatestQueuedColdSelection({
     final session = client.conversations.existingSession(sibling.threadId)!;
     await session.source.waitFor((state) => state.workspace != null);
     await timelineReady(fixture.graph.timeline, session.threadId);
-    await _awaitCurrentReaders(fixture, session.threadId);
+    await _awaitFeed(fixture, session.threadId);
     expect(client.selection.state.selectedThreadId, sibling.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates.map((state) => state.threadId), [
       sibling.threadId,
     ]);
-    expect(fixture.transport.stateReads, [sibling.threadId, sibling.threadId]);
-    expect(
-      fixture.transport.currentReaders.map((timeline) => timeline.threadId),
-      [sibling.threadId, sibling.threadId],
-    );
+    expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
+      sibling.threadId,
+    ]);
   }
   expect(client.findThread(fixture.child.threadId), isNull);
   expect(client.conversations.existingSession(fixture.child.threadId), isNull);
@@ -880,11 +862,7 @@ SessionDirectoryRow _secondColdChild(_ColdFixture fixture) {
 
 Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   final client = fixture.graph.client;
-  expect(
-    fixture.transport.currentReaders,
-    isEmpty,
-    reason: '选择身份本身不产生 GUI 内容需求',
-  );
+  expect(fixture.transport.feeds, isEmpty, reason: '选择身份本身不产生 GUI 内容需求');
   fixture.graph.timeline.updateReadDemand(chatDemand);
   fixture.graph.setConversationPageVisible(true);
   await client.conversations.visibleThreadId.waitFor(
@@ -893,7 +871,7 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   final session = client.conversations.existingSession(fixture.child.threadId)!;
   await session.source.waitFor((state) => state.workspace != null);
   await timelineReady(fixture.graph.timeline, session.threadId);
-  await _awaitCurrentReaders(fixture, session.threadId);
+  await _awaitFeed(fixture, session.threadId);
   expect(client.selection.state.selectedThreadId, fixture.child.threadId);
   expect(client.selection.state.needsOpen, isFalse);
   expect(
@@ -912,14 +890,9 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   expect(fixture.transport.metadataReads.toSet(), {
     fixture.child.threadId,
   }, reason: 'The selected history observes only its own Thread ID');
-  expect(fixture.transport.stateReads, [
-    fixture.child.threadId,
+  expect(fixture.transport.feeds.map((timeline) => timeline.threadId), [
     fixture.child.threadId,
   ]);
-  expect(
-    fixture.transport.currentReaders.map((timeline) => timeline.threadId),
-    [fixture.child.threadId, fixture.child.threadId],
-  );
   expect(fixture.transport.submitCalls, 0);
   expect(fixture.transport.restoreCalls, 0);
 }
@@ -1071,31 +1044,17 @@ Future<_ColdFixture> _fixture({
   );
 }
 
-Future<void> _awaitCurrentReaders(_ColdFixture fixture, String threadId) async {
+Future<void> _awaitFeed(_ColdFixture fixture, String threadId) async {
   final session = fixture.graph.client.conversations.existingSession(threadId);
   if (session == null) {
     throw StateError('Thread session is not open: $threadId');
   }
   await session.source.waitFor((state) => state.hasSnapshot);
-  final timeline = fixture.graph.timeline.lease(threadId)?.current;
-  final current = fixture.transport.currentReaders
-      .where((reader) => reader.threadId == threadId)
-      .toList();
-  final history = fixture.transport.historyReaders.where(
-    (reader) => reader.threadId == threadId,
+  final feeds = fixture.transport.feeds.where(
+    (feed) => feed.threadId == threadId,
   );
-  expect(
-    current,
-    hasLength(2),
-    reason: 'State and Timeline own Current readers',
-  );
-  expect(history, hasLength(1), reason: 'History has one independent reader');
-  expect(timeline, isA<RecordingCurrentReader>());
-  final state = current.singleWhere((reader) => !identical(reader, timeline));
-  await Future.wait([
-    (timeline as RecordingCurrentReader).watchEntered.future,
-    state.watchEntered.future,
-  ]);
+  expect(feeds, hasLength(1));
+  await feeds.single.listening.future;
 }
 
 class _ColdFixture {
@@ -1120,7 +1079,6 @@ class _ColdFixture {
 final class _ColdSelectionTransport extends RecordingDemoTransport {
   late SessionDirectoryRow child;
   final metadataReads = <String>[];
-  final stateReads = <String>[];
   final savedThreadOverrides = <String, SessionDirectoryRow>{};
   String? frameThreadIdOverride;
   Future<SessionDirectoryRow> Function(String)? respond;
@@ -1184,20 +1142,6 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }) {
     newThreadEntered.complete();
     return newThreadEvents ?? (throw StateError('Unexpected creation request'));
-  }
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    stateReads.add(threadId);
-    return super.openCurrentReader(
-      threadId,
-      currentProtocolVersion: currentProtocolVersion,
-      demand: demand,
-    );
   }
 
   @override

@@ -230,7 +230,7 @@ void main() {
       expect(focus.hasFocus, isTrue);
       expect(scroll.offset, 100);
       expect(
-        transport.historyReaders,
+        transport.feeds,
         isEmpty,
         reason: 'directory rendering must not open history',
       );

@@ -1,6 +1,3 @@
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
-    show TimelineApplyPlacement;
-
 import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -12,7 +9,6 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -27,10 +23,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
 import '../support/recording_demo_transport.dart';
-import '../support/chat_fixtures.dart';
-import '../support/display_fixtures.dart';
+import '../support/conversation_feed_fixtures.dart';
 
-import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 
 import '../support/pump_client_future.dart';
 
@@ -125,29 +120,21 @@ void main() {
       );
       expect(_composerText(tester), 'start draft entered before Settings');
       expect(
-        transport.currentReaders,
+        transport.feeds,
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
       expect(
-        transport.currentReaders,
+        transport.feeds,
         isEmpty,
         reason: 'Navigating without a Thread opens no state subscription',
       );
 
-      // Raw completions and producer-chosen display positions are seeded separately.
-      const firstPosition = 5;
       final seeded = [
         for (var i = 0; i < 40; i++)
-          chatMessage('route-item-$i', completionSeq: firstPosition + i),
+          feedAssistant('route-item-$i', i + 5, 'Route item $i'),
       ];
-      const routeCut = HistoryCut('route-fixture');
-      transport.baseline = historyFixturePage(
-        displayBatch([
-          for (final entry in seeded) displaySingle(entry),
-        ], before: 'older-route'),
-        cut: routeCut,
-      );
+      transport.baseline = seeded;
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(
         tester,
@@ -158,12 +145,7 @@ void main() {
       final session = graph.client.conversations.existingSession(
         'thread-main',
       )!;
-      final attemptId = graph.timeline
-          .lease('thread-main')!
-          .current!
-          .metadata
-          .readerId;
-      final connection = _timelineReader(graph, 'thread-main');
+      final connection = transport.feedFor('thread-main');
       final composer = graph.client.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
@@ -178,14 +160,13 @@ void main() {
         'running Turn before Settings',
       );
       // 停止入口只以 canonical 执行身份为目标：轮次运行同时发布该执行身份。
-      final runningExecution = transport.emitExecution(
-        session.state.runtime!,
+      final runningExecution = await transport.emitExecution(
+        session.state.workspace!,
         const AgentExecutionView(
           id: 'settings-route-execution',
           phase: AgentExecutionPhase.running,
           turnId: 'settings-route-turn',
         ),
-        modelRoute: session.state.modelRoute,
       );
       await pumpClientUntil(
         tester,
@@ -210,33 +191,25 @@ void main() {
         'timeline ready for an older-page request',
       );
       final oldLease = graph.timeline.lease('thread-main')!;
-      expect(
-        oldLease.hasOlder,
-        isTrue,
-        reason:
-            'route fixture must leave older content: loaded=${oldLease.loadedCount}, reads=${transport.pageCalls}, demand=${oldLease.demand.maxItems}',
-      );
-      final oldPage = Completer<HistoryTimelinePage>();
+      expect(oldLease.hasOlder, isTrue);
+      final oldPage = Completer<TimelinePatch>();
       addTearDown(() {
         if (!oldPage.isCompleted) {
           oldPage.complete(
-            historyFixturePage(
-              displayBatch([], placement: TimelineApplyPlacement.prepend),
-              cut: transport.scriptedPageCut ?? routeCut,
-            ),
+            TimelinePrependOlder(items: const [], hasMoreOlder: false),
           );
         }
       });
-      transport.scriptedPage = oldPage;
+      final olderEntered = Completer<void>();
+      connection.onLoadOlder = (cursor, _) {
+        expect(cursor, 'older-route');
+        olderEntered.complete();
+        return oldPage.future;
+      };
       final timeline = tester.widget<TimelineView>(find.byType(TimelineView));
       timeline.onEnterHistory();
       final loading = timeline.onLoadOlder();
-      await pumpClientUntil(
-        tester,
-        () => transport.scriptedPage == null,
-        'old page entered',
-      );
-      final oldPageCut = transport.scriptedPageCut!;
+      await pumpClientFuture(tester, olderEntered.future, 'old page entered');
       var hiddenFrames = 0;
 
       await _settingsRoundTrip(
@@ -263,7 +236,7 @@ void main() {
             reason: '隐藏路由不向实时状态栏交付冻结的正文读取来源',
           );
           expect(oldLease.isRetired, isTrue);
-          hiddenFrames = connection.watchCalls;
+          hiddenFrames = connection.delivered.length;
           expect(composer.state.draft, 'Thread draft entered before Settings');
           expect(composer.stamp, composerStamp);
           expect(
@@ -279,20 +252,12 @@ void main() {
             ),
           );
           expect(completed.state, isA<CompletedStudioTurnState>());
-          final completedBody = chatMessage(
-            'settings-completed-body',
-            body: '隐藏期间完成的真实正文',
-            completionSeq: 100,
-          );
-          transport.baseline = historyFixturePage(
-            displayBatch([
-              for (final entry in seeded) displaySingle(entry),
-              displaySingle(completedBody, blockOrder: 45),
-            ], before: 'older-route'),
-            cut: routeCut,
-          );
+          transport.baseline = [
+            ...seeded,
+            feedAssistant('settings-completed-body', 100, '隐藏期间完成的真实正文'),
+          ];
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
-          expect(connection.watchCalls, hiddenFrames);
+          expect(connection.delivered.length, hiddenFrames);
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
@@ -301,42 +266,51 @@ void main() {
             same(session),
           );
           expect(
-            transport.currentReaders.where((reader) => !reader.requested),
+            transport.feeds.where((reader) => !reader.requested),
             isEmpty,
-            reason: 'the hidden route owns no live Current reader',
+            reason: 'the hidden route owns no live Feed',
           );
         },
       );
 
       await pumpClientUntil(
         tester,
+        () => graph.client.conversations.visibleThreadId.value == 'thread-main',
+        'return to visible session after Settings',
+      );
+      await pumpClientUntil(
+        tester,
         () =>
-            graph.timeline.lease('thread-main')?.isRetired == false &&
-            graph.timeline.lease('thread-main') != null &&
-            session.state.activeTurn == null &&
-            session.state.runtime?.execution == null,
-        'fresh visible feed reads hidden completion',
+            graph.timeline.source.value?.connection ==
+            TimelineConnectionPhase.opening,
+        'replacement timeline waits for retired page',
       );
-      final newConnection = _timelineReader(graph, 'thread-main');
-      final newLease = graph.timeline.lease('thread-main')!;
-      expect(
-        newConnection.metadata.readerId,
-        isNot(connection.metadata.readerId),
-      );
-      expect(newLease, isNot(same(oldLease)));
-      final currentMessages = [...newLease.controller.messages];
-      final currentBefore = newLease.olderCursor;
+      expect(graph.timeline.lease('thread-main'), isNull);
+      expect(transport.feeds.where((feed) => feed.threadId == 'thread-main'), [
+        connection,
+      ]);
+      final retiredPrepends = oldLease.appliedPrepends;
       oldPage.complete(
-        historyFixturePage(
-          displayBatch([
-            displaySingle(chatMessage('late-old-page')),
-          ], placement: TimelineApplyPlacement.prepend),
-          cut: oldPageCut,
+        TimelinePrependOlder(
+          items: [feedAssistant('late-old-page', 1, 'Retired history')],
+          hasMoreOlder: false,
         ),
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');
-      expect(newLease.controller.messages, currentMessages);
-      expect(newLease.olderCursor, currentBefore);
+      expect(oldLease.appliedPrepends, retiredPrepends);
+      await pumpClientFuture(
+        tester,
+        timelineReady(graph.timeline, 'thread-main'),
+        'apply fresh main Feed reset after Settings',
+      );
+      expect(session.state.activeTurn, isNull);
+      expect(session.state.runtime?.execution, isNull);
+      final newConnection = transport.feedFor('thread-main');
+      final newLease = graph.timeline.lease('thread-main')!;
+      expect(newConnection, isNot(same(connection)));
+      expect(newLease, isNot(same(oldLease)));
+      expect(newLease.appliedPrepends, 0);
+      expect(newLease.olderCursor, isNull);
       expect(
         newLease.controller.messages.any(
           (message) => message.id == 'late-old-page',
@@ -349,25 +323,16 @@ void main() {
       expect(composer.state.draft, 'Thread draft entered before Settings');
       expect(_composerText(tester), 'Thread draft entered before Settings');
       expect(session.state.activeTurn, isNull);
+      final completedBody = newLease.controller.messages.singleWhere(
+        (row) => row.id == 'settings-completed-body',
+      );
       expect(
-        newLease.controller.messages
-            .map(
-              (message) =>
-                  message.metadata![chatItemPresentationKey]
-                      as ChatItemPresentation,
-            )
-            .where(
-              (item) =>
-                  item.id == 'settings-completed-body' &&
-                  item.atom?.lifecycle is TerminalChatAtom &&
-                  item.displayUnit?.body is SingleDisplayBlock &&
-                  (item.displayUnit!.body as SingleDisplayBlock)
-                          .record
-                          .contentSource
-                      is CompletedOriginal,
-            ),
-        isNotEmpty,
-        reason: '新内容基线包含隐藏期间真正提交的终态事实',
+        timelineFeedItemOf(completedBody),
+        isA<TimelineAssistantText>().having(
+          (item) => item.text,
+          'text',
+          '隐藏期间完成的真实正文',
+        ),
       );
       expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
       final submit = find.byKey(StudioDriverKeys.composerSubmit);
@@ -381,14 +346,10 @@ void main() {
         startOwner.state.forProject(workspaceId).text,
         'start draft entered before Settings',
       );
-      expect(
-        graph.timeline.lease('thread-main')!.current!.metadata.readerId,
-        isNot(attemptId),
-      );
       expect(graph.timeline.lease('thread-main') != null, isTrue);
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
-      expect(connection.watchCalls, hiddenFrames);
+      expect(connection.delivered.length, hiddenFrames);
       expect(transport.bootstrapCalls, 1);
 
       transport.botProjectId = workspaceId;
@@ -486,7 +447,7 @@ void main() {
             'registered bot chat receives a fresh baseline',
           );
           await tester.pumpAndSettle();
-          final botFeed = _timelineReader(graph, 'thread-alt');
+          final botFeed = transport.feedFor('thread-alt');
           final botLease = graph.timeline.lease('thread-alt')!;
           expect(botLease, isNot(same(newLease)));
           expect(router.routerDelegate.state.name, BotConversationRoute.name);
@@ -560,7 +521,7 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(_composerText(tester), 'Bot draft follows route target');
-          final returnedFeed = _timelineReader(graph, 'thread-alt');
+          final returnedFeed = transport.feedFor('thread-alt');
           expect(graph.timeline.lease('thread-alt'), isNot(same(botLease)));
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await pumpClientUntil(
@@ -573,7 +534,7 @@ void main() {
           expect(graph.timeline.lease('thread-alt'), isNull);
           expect(composer.stamp, composerStamp);
           expect(router.routerDelegate.state.name, BotDetailsRoute.name);
-          final feedCount = transport.currentReaders.length;
+          final feedCount = transport.feeds.length;
           unawaited(
             BotConversationRoute(
               botId: botId,
@@ -592,7 +553,7 @@ void main() {
           );
           expect(graph.client.conversations.visibleThreadId.value, isNull);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
-          expect(transport.currentReaders, hasLength(feedCount));
+          expect(transport.feeds, hasLength(feedCount));
           await tester.tap(
             find.byKey(const ValueKey('conversation-directory-retry')),
           );
@@ -601,7 +562,7 @@ void main() {
             find.byKey(const ValueKey('conversation-directory-retry')),
             findsOneWidget,
           );
-          expect(transport.currentReaders, hasLength(feedCount));
+          expect(transport.feeds, hasLength(feedCount));
           expect(
             graph.client.drafts.existingComposer('missing-thread'),
             isNull,
@@ -648,10 +609,7 @@ void main() {
       );
       expect(connection.joined.isCompleted, isTrue);
       expect(newConnection.joined.isCompleted, isTrue);
-      expect(
-        transport.currentReaders.every((feed) => feed.joined.isCompleted),
-        isTrue,
-      );
+      expect(transport.feeds.every((feed) => feed.joined.isCompleted), isTrue);
       expect(tester.takeException(), isNull);
     },
     timeout: const Timeout(Duration(seconds: 60)),
@@ -697,7 +655,13 @@ Future<void> _settingsRoundTrip(
   }
   await whileSettingsOpen?.call();
   await tester.tap(find.byKey(StudioDriverKeys.settingsBack));
-  await tester.pumpAndSettle();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 350));
+  await pumpClientUntil(
+    tester,
+    () => find.byKey(StudioDriverKeys.settingsPage).evaluate().isEmpty,
+    'Settings route dismissed',
+  );
   expect(find.byKey(StudioDriverKeys.settingsPage), findsNothing);
 }
 
@@ -712,47 +676,30 @@ DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 final class _RouteTurnTransport extends RecordingDemoTransport {
   int _turnUpdates = 0;
   late String botProjectId;
-  Completer<HistoryTimelinePage>? scriptedPage;
-  HistoryTimelinePage? baseline;
-  HistoryCut? scriptedPageCut;
-  int pageCalls = 0;
+  List<TimelineItem>? baseline;
 
   @override
-  Future<HistoryReader> openHistoryReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int historyProtocolVersion,
+    int initialLimit = 50,
   }) async {
-    final reader = await super.openHistoryReader(
+    final feed = await super.openConversationFeed(
       threadId,
-      historyProtocolVersion: historyProtocolVersion,
-    );
-    final recording = reader as RecordingHistoryReader;
-    recording.onTimelinePage = (cut, cursor, demand) async {
-      pageCalls++;
-      if (threadId == 'thread-main' && cursor == null) {
-        final page = baseline;
-        if (page != null) {
-          return HistoryTimelinePage(
-            cut: cut ?? await recording.capture(),
-            entries: page.entries,
-            hasFoldedBeforeOldest: page.hasFoldedBeforeOldest,
-            next: page.next,
-          );
-        }
-      }
-      final gate = scriptedPage;
-      if (threadId == 'thread-main' && cursor != null && gate != null) {
-        scriptedPageCut = cut;
-        scriptedPage = null;
-        return gate.future;
-      }
-      return recording.inner.timelinePage(
-        cut: cut,
-        cursor: cursor,
-        demand: demand,
+      initialLimit: initialLimit,
+    ) as RecordingConversationFeed;
+    final items = baseline;
+    if (threadId == 'thread-main' && items != null) {
+      final isReturning = items.any(
+        (item) => item.id == 'settings-completed-body',
       );
-    };
-    return recording;
+      feed.mapReset = (reset) => TimelineReset(
+        items: items,
+        hasMoreOlder: !isReturning,
+        olderCursor: isReturning ? null : 'older-route',
+        revision: reset.revision,
+      );
+    }
+    return feed;
   }
 
   @override
@@ -788,7 +735,10 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
     );
     final workspace = seedConversationState(
       'thread-main',
-      ThreadTurnUpdate(turn),
+      (workspace) => workspace.copyWith(
+        activeTurn: state.isBusy ? turn : null,
+        latestTurn: turn,
+      ),
     );
     return workspace.activeTurn ?? turn;
   }
@@ -798,18 +748,12 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   /// 执行身份与轮次一样只能来自会话状态，不由活动快照或界面记忆推断。
   /// 路由是独立的 Thread 状态领域，本帧只改 runtime，调用方显式给出当前
   /// 路由，使既有 route 不被这一帧清空。
-  ThreadRuntimeView emitExecution(
-    ThreadRuntimeView current,
-    AgentExecutionView? execution, {
-    required ThreadModelRouteView? modelRoute,
-  }) {
-    final next = current.copyWith(execution: execution);
-    return seedConversationState(
-      'thread-main',
-      ThreadRuntimeUpdate(runtime: next, todo: null, modelRoute: modelRoute),
-    ).runtime;
+  Future<ThreadRuntimeView> emitExecution(
+    ThreadWorkspace workspace,
+    AgentExecutionView execution,
+  ) async {
+    final runtime = workspace.runtime.copyWith(execution: execution);
+    await publishWorkspace(workspace.copyWith(runtime: runtime));
+    return runtime;
   }
 }
-
-RecordingCurrentReader _timelineReader(AppGraph graph, String threadId) =>
-    graph.timeline.lease(threadId)!.current as RecordingCurrentReader;

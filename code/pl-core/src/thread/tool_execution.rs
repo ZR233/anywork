@@ -431,13 +431,14 @@ impl Owner {
             None => crate::model::ToolProgress::default().applied(&update),
         };
         if let Some(task) = self.state.tasks.get(&caller) {
-            self.event_bus
-                .emit(events::CoreEvent::Live(events::CoreLiveEvent::ToolProgress {
+            self.event_bus.emit(events::CoreEvent::Live(
+                events::CoreLiveEvent::ToolProgress {
                     task_id: task.id.clone(),
                     call_id: task.call_id.clone(),
                     tool_id: task.tool_id.clone(),
                     progress: next.clone(),
-                }));
+                },
+            ));
         }
         self.state.tool_progress.insert(caller, next);
         self.publish_snapshot();

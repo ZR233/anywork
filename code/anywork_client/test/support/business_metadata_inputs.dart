@@ -1,4 +1,4 @@
-import '../../models.dart';
+import 'package:anywork_client/models.dart';
 
 const threadSchemaVersion = 18;
 
@@ -63,11 +63,6 @@ final class ThreadStorageUpdate extends ThreadWorkspaceUpdate {
   const ThreadStorageUpdate({required this.storage});
 
   final ThreadStorageStateView? storage;
-}
-
-final class ThreadBusinessRefsUpdate extends ThreadWorkspaceUpdate {
-  const ThreadBusinessRefsUpdate({required this.references});
-  final ThreadBusinessRefs references;
 }
 
 final class ThreadInteractionUpdate extends ThreadWorkspaceUpdate {

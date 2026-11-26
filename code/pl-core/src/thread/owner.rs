@@ -257,10 +257,11 @@ impl Owner {
             phase: ExecutionPhase::Preparing,
             turn_id: None,
         });
-        self.event_bus
-            .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+        self.event_bus.emit(events::CoreEvent::Live(
+            events::CoreLiveEvent::RunActivity {
                 execution: self.state.execution.clone(),
-            }));
+            },
+        ));
         self.publish_snapshot();
         Ok(())
     }
@@ -281,10 +282,11 @@ impl Owner {
             Some(_) | None => false,
         };
         if changed {
-            self.event_bus
-                .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+            self.event_bus.emit(events::CoreEvent::Live(
+                events::CoreLiveEvent::RunActivity {
                     execution: self.state.execution.clone(),
-                }));
+                },
+            ));
             self.publish_snapshot();
         }
     }
@@ -304,10 +306,11 @@ impl Owner {
             Some(_) | None => false,
         };
         if changed {
-            self.event_bus
-                .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
+            self.event_bus.emit(events::CoreEvent::Live(
+                events::CoreLiveEvent::RunActivity {
                     execution: self.state.execution.clone(),
-                }));
+                },
+            ));
             self.publish_snapshot();
         }
     }
@@ -327,10 +330,9 @@ impl Owner {
         if owned {
             self.state.execution = None;
             if emit {
-                self.event_bus
-                    .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
-                        execution: None,
-                    }));
+                self.event_bus.emit(events::CoreEvent::Live(
+                    events::CoreLiveEvent::RunActivity { execution: None },
+                ));
                 self.publish_snapshot();
             }
         }
@@ -647,7 +649,8 @@ impl Owner {
                 self.schedule_retry(source, attempt, cancellation, reply);
             }
             LoopEvent::AttachHistory(store, reply) => {
-                let result = if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
+                let result = if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open
+                {
                     Err(ThreadError::InvalidIdentity)
                 } else {
                     self.cold = Some(store.into_storage());
@@ -933,12 +936,13 @@ impl Owner {
         }
         let mut history_state = self.state.clone();
         history_state.tool_progress = history_progress;
-        history_state.model_progress = self.model_progress.as_ref().map(|(id, receiver)| {
-            crate::model::ActiveModelProgress {
-                attempt_id: id.clone(),
-                progress: receiver.borrow().clone(),
-            }
-        });
+        history_state.model_progress =
+            self.model_progress
+                .as_ref()
+                .map(|(id, receiver)| crate::model::ActiveModelProgress {
+                    attempt_id: id.clone(),
+                    progress: receiver.borrow().clone(),
+                });
         let export = Arc::new(HistoryExport {
             effect,
             state: history_state,
@@ -951,12 +955,13 @@ impl Owner {
             write: PendingWrite::History(export.clone()),
             encoded_bytes,
         });
-        self.event_bus
-            .emit(events::CoreEvent::Durable(Arc::new(events::CoreCommitEvent {
+        self.event_bus.emit(events::CoreEvent::Durable(Arc::new(
+            events::CoreCommitEvent {
                 thread_id: self.id.clone(),
                 sequence,
                 export,
-            })));
+            },
+        )));
         self.admit_cold();
         self.publish_snapshot();
         Ok(())
@@ -1000,7 +1005,9 @@ mod close_tests {
         thread::{
             HistoryExport, ModelStepLimit, ThreadError, ThreadHandle, ThreadLifecycle, TurnInput,
             UsageSummary,
-            cold::{ColdStoreError, StorageAdmissionBackpressure, StorageIdleStatus, StoragePressure},
+            cold::{
+                ColdStoreError, StorageAdmissionBackpressure, StorageIdleStatus, StoragePressure,
+            },
             history_sink::{HistorySink, HistorySinkHandle},
             input::{InputPurpose, ThreadInput},
         },
@@ -1483,7 +1490,12 @@ mod close_tests {
         fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
             Ok(())
         }
-        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
             Ok(max)
         }
         fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {

@@ -1,6 +1,6 @@
 import '../support/test_app_lifecycle.dart';
 import '../support/recording_demo_transport.dart'
-    show timelineReady, RecordingDemoTransport;
+    show timelineReady, RecordingDemoTransport, sessionMetaFixture;
 import '../support/chat_fixtures.dart';
 
 import 'dart:async';
@@ -47,11 +47,7 @@ import 'package:anywork_client/studio_client.dart'
         StudioBootstrap,
         ThreadDirectoryPage,
         ThreadMetadataFrame,
-        ThreadObservationHandle,
-        ThreadRuntimeUpdate,
-        ThreadStreamFrame,
-        ThreadSnapshotFrame,
-        ThreadNotificationFrame;
+        ThreadObservationHandle;
 
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
 /// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
@@ -2077,7 +2073,7 @@ class _WorkflowScenarioTransport extends RecordingDemoTransport {
 
   final ThreadStatusView threadStatus;
 
-  WorkflowRuntimeView _workflow(ThreadRuntimeView runtime) {
+  WorkflowRuntimeView _workflow(ConversationRuntimeSnapshot runtime) {
     return WorkflowRuntimeView(
       revision: runtime.workflow?.revision ?? 1,
       currentRun: WorkflowRunView(
@@ -2094,9 +2090,6 @@ class _WorkflowScenarioTransport extends RecordingDemoTransport {
       ),
     );
   }
-
-  ThreadRuntimeView _runtime(ThreadRuntimeView runtime) =>
-      runtime.copyWith(workflow: _workflow(runtime));
 
   @override
   Future<ThreadObservationHandle> openThreadObservation(
@@ -2144,29 +2137,12 @@ class _WorkflowScenarioTransport extends RecordingDemoTransport {
   }
 
   @override
-  ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) =>
-      switch (frame) {
-        ThreadSnapshotFrame(:final workspace, :final schemaVersion) =>
-          ThreadSnapshotFrame(
-            workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
-            schemaVersion: schemaVersion,
-          ),
-        ThreadNotificationFrame() => switch (frame.update) {
-          ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
-            ThreadNotificationFrame(
-              threadId: frame.threadId,
-              revision: frame.revision,
-              epoch: frame.epoch,
-              baseRevision: frame.baseRevision,
-              update: ThreadRuntimeUpdate(
-                runtime: _runtime(runtime),
-                todo: todo,
-                modelRoute: modelRoute,
-              ),
-            ),
-          _ => frame,
-        },
-      };
+  SessionMetaSnapshot testMapSessionMeta(SessionMetaSnapshot snapshot) {
+    final runtime = snapshot.runtime;
+    return runtime == null
+        ? snapshot
+        : sessionMetaFixture(snapshot, workflow: _workflow(runtime));
+  }
 
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
     rows: [for (final row in page.rows) _thread(row)],

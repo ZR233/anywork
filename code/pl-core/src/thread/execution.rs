@@ -1251,10 +1251,9 @@ impl Owner {
             }
         };
         if cleared_execution {
-            self.event_bus
-                .emit(events::CoreEvent::Live(events::CoreLiveEvent::RunActivity {
-                    execution: None,
-                }));
+            self.event_bus.emit(events::CoreEvent::Live(
+                events::CoreLiveEvent::RunActivity { execution: None },
+            ));
             self.publish_snapshot();
         }
         match run.reply {

@@ -309,7 +309,12 @@ async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reac
         fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
             Ok(())
         }
-        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
             Ok(max)
         }
         fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
@@ -459,10 +464,7 @@ async fn settlement_save_failure_refuses_replay_and_current_capture_remains_reac
     assert_eq!(receipt.settlements.len(), 1);
     assert_eq!(receipt.accounting.usage.total_tokens, Some(52));
     assert_eq!(server.finish().await.unwrap().len(), 1);
-    assert!(matches!(
-        thread.close().await,
-        Err(ThreadError::Storage(_))
-    ));
+    assert!(matches!(thread.close().await, Err(ThreadError::Storage(_))));
 }
 
 #[tokio::test]
@@ -498,7 +500,12 @@ async fn auxiliary_attempts_wait_for_their_exact_effect_and_keep_both_usage_samp
         fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
             Ok(())
         }
-        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
             Ok(max)
         }
         fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {

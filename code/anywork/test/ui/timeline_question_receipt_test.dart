@@ -2,7 +2,8 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_feed_body_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -19,6 +20,7 @@ void main() {
     WidgetTester tester,
     ChatItemPresentation item, {
     double width = 600,
+    Widget Function(Widget)? wrap,
   }) => tester.pumpWidget(
     MaterialApp(
       theme: pureStudioTheme(),
@@ -32,10 +34,12 @@ void main() {
         body: SingleChildScrollView(
           child: SizedBox(
             width: width,
-            child: ChatItemView(
-              item: item,
-              bodyBuilder: (id, text) =>
-                  SelectionArea(child: Text(text, key: ValueKey(id))),
+            child: (wrap ?? (child) => child)(
+              ChatItemView(
+                item: item,
+                bodyBuilder: (id, text) =>
+                    SelectionArea(child: Text(text, key: ValueKey(id))),
+              ),
             ),
           ),
         ),
@@ -47,69 +51,64 @@ void main() {
     bool reverseAnswers = false,
     int optionCount = 2,
     int answerCount = 2,
-  }) => ChatItemPresentation.decode(
-    chatEnvelope(
-      'qa',
-      type: 'tool',
-      data: {
-        'invocation': {
-          'toolCallId': 'call',
-          'name': 'request_user_input',
-          'presentationContract': 'generic@1',
-        },
-        'state': {
-          'kind': 'succeeded',
-          'completedAt': 0,
-          'output': {'attachments': []},
-        },
-        'userInput': {
-          'interactionId': 'interaction',
-          'questions': [
-            {
-              'id': 'public-q',
-              'isSecret': false,
-              'isOther': true,
-              'optionCount': optionCount,
-            },
-            {
-              'id': 'secret-q',
-              'isSecret': true,
-              'isOther': true,
-              'optionCount': 0,
-            },
-          ],
-          'state': {
-            'kind': cancelled ? 'cancelled' : 'resolved',
-            'answers': [
-              if (reverseAnswers)
-                {'questionId': 'secret-q', 'answerCount': 1, 'redacted': true},
-              {
-                'questionId': 'public-q',
-                'answerCount': answerCount,
-                'redacted': false,
-              },
-              if (!reverseAnswers)
-                {'questionId': 'secret-q', 'answerCount': 1, 'redacted': true},
-            ],
+  }) => chatPresentation(
+    'qa',
+    type: 'tool',
+    data: {
+      'invocation': {
+        'toolCallId': 'call',
+        'name': 'request_user_input',
+        'presentationContract': 'generic@1',
+      },
+      'state': {
+        'kind': 'succeeded',
+        'completedAt': 0,
+        'output': {'attachments': []},
+      },
+      'userInput': {
+        'interactionId': 'interaction',
+        'questions': [
+          {
+            'id': 'public-q',
+            'isSecret': false,
+            'isOther': true,
+            'optionCount': optionCount,
           },
+          {
+            'id': 'secret-q',
+            'isSecret': true,
+            'isOther': true,
+            'optionCount': 0,
+          },
+        ],
+        'state': {
+          'kind': cancelled ? 'cancelled' : 'resolved',
+          'answers': [
+            if (reverseAnswers)
+              {'questionId': 'secret-q', 'answerCount': 1, 'redacted': true},
+            {
+              'questionId': 'public-q',
+              'answerCount': answerCount,
+              'redacted': false,
+            },
+            if (!reverseAnswers)
+              {'questionId': 'secret-q', 'answerCount': 1, 'redacted': true},
+          ],
         },
       },
-      bodies: [
-        inlineBody('tool.arguments', '{}'),
-        inlineBody('tool.user-input.question.0.header', '公开问题'),
-        inlineBody('tool.user-input.question.0.body', 'Which option?'),
-        inlineBody('tool.user-input.question.0.option.0.label', 'Option A'),
-        inlineBody('tool.user-input.question.0.option.1.label', 'Option B'),
-        inlineBody('tool.user-input.answer.0.0', 'Option A'),
-        inlineBody('tool.user-input.answer.0.1', 'free second'),
-        inlineBody('tool.user-input.question.1.header', 'PRIVATE HEADER'),
-        inlineBody('tool.user-input.question.1.body', 'PRIVATE QUESTION'),
-        inlineBody(
-          'tool.user-input.answer.1.0',
-          'secret-token-must-not-render',
-        ),
-      ],
-    ),
+    },
+    bodies: [
+      inlineBody('tool.arguments', '{}'),
+      inlineBody('tool.user-input.question.0.header', '公开问题'),
+      inlineBody('tool.user-input.question.0.body', 'Which option?'),
+      inlineBody('tool.user-input.question.0.option.0.label', 'Option A'),
+      inlineBody('tool.user-input.question.0.option.1.label', 'Option B'),
+      inlineBody('tool.user-input.answer.0.0', 'Option A'),
+      inlineBody('tool.user-input.answer.0.1', 'free second'),
+      inlineBody('tool.user-input.question.1.header', 'PRIVATE HEADER'),
+      inlineBody('tool.user-input.question.1.body', 'PRIVATE QUESTION'),
+      inlineBody('tool.user-input.answer.1.0', 'secret-token-must-not-render'),
+    ],
   );
 
   testWidgets(
@@ -117,63 +116,60 @@ void main() {
     (tester) async {
       final inline = receipt();
       final bodies = {for (final body in inline.bodies) body.key: body.inline!};
-      final unit = TimelineDisplayUnit(
-        block: DisplayBlock(
-          id: 'qa',
-          blockOrder: 1,
-          body: SingleDisplayBlock(
-            visibility: HistorySingleVisibility.content,
-            record: DisplayRecord(
-              historyEventId: 'event',
-              contentSource: const CompletedOriginal(completionId: 'event'),
-              atom: inline.atom!,
-            ),
+      final refs = [
+        for (final entry in bodies.entries)
+          BodyRef(
+            databaseId: 'db',
+            ownerEventId: 'event',
+            bodyKey: entry.key,
+            bodyId: 'body-${entry.key}',
+            role: 'body',
+            byteLength: entry.value.length,
           ),
-        ),
-      );
-      unit.expansion.current = unit;
-      final reads = <String>[];
-      unit.expansion.readHistoryBody = (generation, reference, range) async {
-        expect(identical(generation, unit.expansion.bodyGeneration), isTrue);
-        expect(reference.ownerEventId, 'event');
-        expect(range.offset, 0);
-        reads.add(reference.bodyKey);
-        final bytes = bodies[reference.bodyKey]!;
-        return ContentWindow(
-          offset: 0,
-          bytes: bytes,
-          generation: reference.bodyId,
-          availableThrough: bytes.length,
-          sealed: true,
-        );
-      };
-      final item = ChatItemPresentation.forUnit(unit).resolvePayload(
-        InlinePayload(
-          bytes: utf8.encode(
-            jsonEncode({
-              'contract': 'anywork.chat/1',
+      ];
+      final item = chatItemPresentationOf(
+        timelineFeedMessage(
+          TimelineStandaloneTool(
+            id: 'qa',
+            seq: 1,
+            callId: 'call',
+            toolName: 'request_user_input',
+            state: 'succeeded',
+            summary: 'Question receipt',
+            presentationContract: 'generic@1',
+            bodies: refs,
+            payloadJson: jsonEncode({
+              'contract': 'anywork.event/1',
               'type': inline.type,
               'data': inline.data,
-              'bodies': [
-                for (final entry in bodies.entries)
-                  {
-                    'key': entry.key,
-                    'byteLength': entry.value.length,
-                    'reference': {
-                      'databaseId': 'db',
-                      'ownerEventId': 'event',
-                      'bodyKey': entry.key,
-                      'bodyId': 'body-${entry.key}',
-                      'byteStart': 0,
-                      'byteLength': entry.value.length,
-                    },
-                  },
-              ],
             }),
           ),
         ),
+      )!;
+      final reads = <String>[];
+      final identity = Object();
+      await pumpReceipt(
+        tester,
+        item,
+        wrap: (child) => TimelineFeedContent(
+          identity: identity,
+          isActive: () => true,
+          readBodyWindow:
+              (reference, {required offset, required maxBytes}) async {
+                expect(reference.ownerEventId, 'event');
+                expect(offset, 0);
+                reads.add(reference.bodyKey);
+                final bytes = bodies[reference.bodyKey]!;
+                return BodyWindow(
+                  offset: 0,
+                  text: utf8.decode(bytes),
+                  totalBytes: bytes.length,
+                  eof: true,
+                );
+              },
+          child: child,
+        ),
       );
-      await pumpReceipt(tester, item);
       await tester.pumpAndSettle();
       expect(reads, isEmpty);
       await tester.tap(find.byKey(StudioDriverKeys.timelineUserInput('qa')));
@@ -198,7 +194,6 @@ void main() {
       expect(find.textContaining('PRIVATE'), findsNothing);
       expect(find.textContaining('secret-token'), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
-      expect(unit.expansion.bodyActive, isFalse);
       expect(tester.takeException(), isNull);
     },
   );
@@ -285,43 +280,38 @@ void main() {
     testWidgets(
       'ordinary question titled Plan with optionCount=$optionCount is not a plan decision',
       (tester) async {
-        final ordinary = ChatItemPresentation.decode(
-          chatEnvelope(
-            'ordinary',
-            type: 'tool',
-            data: {
-              'invocation': {
-                'toolCallId': 'call',
-                'name': 'plan',
-                'presentationContract': 'generic@1',
-              },
-              'state': {
-                'kind': 'succeeded',
-                'output': {'attachments': []},
-              },
-              'userInput': {
-                'questions': [
-                  {
-                    'id': 'ordinary-q',
-                    'isSecret': false,
-                    'optionCount': optionCount,
-                  },
-                ],
-                'state': {'kind': 'resolved', 'answers': []},
-              },
+        final ordinary = chatPresentation(
+          'ordinary',
+          type: 'tool',
+          data: {
+            'invocation': {
+              'toolCallId': 'call',
+              'name': 'plan',
+              'presentationContract': 'generic@1',
             },
-            bodies: [
-              inlineBody('tool.arguments', '{}'),
-              inlineBody(
-                'tool.user-input.question.0.header',
-                'Plan approval question',
-              ),
-              inlineBody(
-                'tool.user-input.question.0.body',
-                'An ordinary prompt',
-              ),
-            ],
-          ),
+            'state': {
+              'kind': 'succeeded',
+              'output': {'attachments': []},
+            },
+            'userInput': {
+              'questions': [
+                {
+                  'id': 'ordinary-q',
+                  'isSecret': false,
+                  'optionCount': optionCount,
+                },
+              ],
+              'state': {'kind': 'resolved', 'answers': []},
+            },
+          },
+          bodies: [
+            inlineBody('tool.arguments', '{}'),
+            inlineBody(
+              'tool.user-input.question.0.header',
+              'Plan approval question',
+            ),
+            inlineBody('tool.user-input.question.0.body', 'An ordinary prompt'),
+          ],
         );
         await pumpReceipt(tester, ordinary);
         expect(find.text('Plan approval question'), findsNothing);
@@ -345,23 +335,21 @@ void main() {
     testWidgets(
       'frozen $decision displays its own document and feedback without machine markers',
       (tester) async {
-        final item = ChatItemPresentation.decode(
-          chatEnvelope(
-            'plan',
-            type: 'plan',
-            data: {
-              'interactionId': 'old-plan',
-              'decision': decision,
-              'documentVersion': 7,
-            },
-            bodies: [
-              inlineBody(
-                'plan.document',
-                '# Delivery Blueprint\n\nKeep the current draft readable.',
-              ),
-              inlineBody('plan.feedback', '请补充回滚步骤'),
-            ],
-          ),
+        final item = chatPresentation(
+          'plan',
+          type: 'plan',
+          data: {
+            'interactionId': 'old-plan',
+            'decision': decision,
+            'documentVersion': 7,
+          },
+          bodies: [
+            inlineBody(
+              'plan.document',
+              '# Delivery Blueprint\n\nKeep the current draft readable.',
+            ),
+            inlineBody('plan.feedback', '请补充回滚步骤'),
+          ],
         );
         await pumpReceipt(tester, item);
         expect(find.textContaining(label), findsOneWidget);
@@ -401,13 +389,11 @@ void main() {
       );
       await pumpReceipt(
         tester,
-        ChatItemPresentation.decode(
-          chatEnvelope(
-            'plan-feedback',
-            type: 'plan',
-            data: const {'decision': 'revisionRequested'},
-            bodies: [inlineBody('plan.feedback', feedback)],
-          ),
+        chatPresentation(
+          'plan-feedback',
+          type: 'plan',
+          data: const {'decision': 'revisionRequested'},
+          bodies: [inlineBody('plan.feedback', feedback)],
         ),
       );
       await tester.tap(find.text('已请求修改计划'));

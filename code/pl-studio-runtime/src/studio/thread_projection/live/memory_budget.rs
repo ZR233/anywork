@@ -257,9 +257,9 @@ fn json_bytes(value: &serde_json::Value) -> u64 {
         Value::Null | Value::Bool(_) => 8,
         Value::Number(_) => 16,
         Value::String(text) => text.len() as u64,
-        Value::Array(values) => values
-            .iter()
-            .fold(0_u64, |total, value| total.saturating_add(json_bytes(value))),
+        Value::Array(values) => values.iter().fold(0_u64, |total, value| {
+            total.saturating_add(json_bytes(value))
+        }),
         Value::Object(entries) => entries.iter().fold(0_u64, |total, (key, value)| {
             total
                 .saturating_add(key.len() as u64)

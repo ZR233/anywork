@@ -28,29 +28,30 @@ Core 线程主循环通过单一通道发射无状态 `CoreEvent`，由 `pl-stud
   - `Timeline(TimelinePatch)`：`Reset`、`PrependOlder`、`Append`、`Update`、`Remove`，与 Flyer Chat 的 `ChatOperation` 1:1 对齐；
   - `LiveStatus(LiveStatusSnapshot)`：实时状态栏互斥状态机快照（经过 16ms 节拍合并高频流式文本增量）；
   - `SessionMeta(SessionMetaSnapshot)`：低频元数据（用量、吞吐、待决交互摘要、Plan 头、工作流摘要、存储状态）；
-  - `InputPresented(Vec<String>)`：已入列主时间线的 `input_id` 集合，用于结算临时发送回显。
+  - `InputPresented { input_id, item_id }`：已入列主时间线的输入及其条目 ID，用于结算临时发送回显。
 - **按需有界点查（复用同一句柄）**：
-  - `load_older_timeline(cursor, page_size)`：向上翻页读取更早历史（拼接 SQLite 与未入库内存），返回 `PrependOlder`；
+  - `load_older(cursor, page_size)`：向上翻页读取更早历史（拼接 SQLite 与未入库内存），返回 `PrependOlder`；
   - `reset_to_latest(page_size)`：从历史浏览模式追平最新窗口；
-  - `load_work_group_members(work_group_id, first_seq, last_seq)`：在服务端完成同 `call_id` / `entity_id` 折叠及跨区间 `tool_called` 参数补拉；
+  - `load_work_group_members(after_seq, before_seq)`：在服务端完成同 `call_id` / `entity_id` 折叠及跨区间 `tool_called` 参数补拉；
   - `read_body_window(body_ref, offset, max_bytes)`：按 64 KiB 窗口读取 `> 16 KiB` 大正文或二进制附件；
-  - `read_session_detail(request)`：按需分页或分段读取 Plan 文档、待决交互详情、Todo、Workflow、Active Skills/MCP/LSP 等大字段。
+  - `read_session_detail(kind, offset, max_bytes)`：从 Feed 已应用的内存快照读取 Plan、待决交互、Todo、Workflow 或 Active Skills/MCP/LSP 的 JSON 字节窗口。窗口最多 64 KiB，按字节偏移读取。非 ASCII 字符可能跨窗，拼接时必须核对 `owner_epoch`、`revision`、偏移和总长度，再解码 UTF-8。超过末尾返回空窗口。
 
-若后端广播消费者发生不可恢复滞后（lag），`ConversationFeed` 自动从 `(history.sqlite ∪ UnflushedLog)` 重建最新有界窗口并发出一次 `TimelinePatch::Reset` 恢复，不静默丢行。
+若后端广播消费者发生滞后，`ConversationFeed` 发出 `ResyncRequired`。桌面时间线关闭旧句柄，打开新句柄并从首个 `TimelinePatch::Reset` 重建对应窗口。
 
 ## 7.4 HTTP 与 FRB 边界
 
-HTTP Server 与 FRB 共用同一套 `ConversationFeed` 契约与强类型 DTO（不再在桥接边界透传未解码的 `payload_json` 或维护四个独立 reader/watch 句柄）：
+HTTP Server 与 FRB 共用 `ConversationFeed` 和强类型 DTO。类型化工具条目同时可携带原有工具负载，供工具注册表选择对应的呈现格式。
 
-| 能力 | FRB 单句柄方法 | HTTP 端点（`/api/v1/threads/{thread_id}/feed/...`） |
+| 能力 | FRB 单句柄方法 | HTTP 端点（相对于 `/api/v1/threads/{thread_id}/feed`） |
 | --- | --- | --- |
-| 打开并订阅事件流 | `open_conversation_feed` | `POST /open` + `GET /stream`（SSE `ConversationEvent`） |
-| 向上翻页 | `load_older_timeline` | `POST /older` |
-| 回到最新窗口 | `reset_to_latest` | `POST /reset` |
-| 展开历史工作组 | `load_work_group_members` | `POST /work-group` |
-| 读取大正文窗口 | `read_body_window` | `POST /body` |
+| 打开并订阅事件流 | `open_conversation_feed` 及 `next_event` | `POST /open` + `GET /{feed_id}/events`（SSE `ConversationEvent`） |
+| 读取会话元数据 | `session_meta_snapshot` | `GET /{feed_id}/meta` |
+| 向上翻页 | `load_older` | `POST /{feed_id}/older` |
+| 回到最新窗口 | `reset_to_latest` | `POST /{feed_id}/reset` |
+| 展开历史工作组 | `load_work_group_members` | `POST /{feed_id}/work-group` |
+| 读取大正文窗口 | `read_body_window` | `POST /{feed_id}/body` |
 | 读取延迟详情字段 | `read_session_detail` | `POST /detail` |
-| 请求关闭与汇合 | `request_close` / `close` | `POST /close` |
+| 请求关闭与汇合 | `request_close` / `close` | `POST /{feed_id}/close` |
 
 CLI（`anywk`）、Bots 与内部运行导出仍可直接消费底层 `HistoryStore` 原子查询（`events_page`、`turns_page`、`read_body`）与内存 `MetaEventBus` 通知，并同步受益于零延迟内存序列。
 
@@ -58,9 +59,11 @@ CLI（`anywk`）、Bots 与内部运行导出仍可直接消费底层 `HistorySt
 
 产品主题流（项目、目录、设置、账号、ACP、MCP/LSP、模型统计、更新器、启动与关机进度）沿用各自 typed topic 与既有 pull/feed 机制。无关领域变更不得触发会话 `ConversationFeed` 重建。
 
-当前累计用量、live 用量、吞吐率与控件资格随 `SessionMeta` 轻量发布；大块文本、集合与详情按需经 `read_session_detail` 读取，读取失败不阻断已可用的轻量读数。
+当前累计用量、live 用量、吞吐率与控件资格随 `SessionMeta` 发布。Plan 只推送状态和修订信息，打开详情时经 `read_session_detail` 读取正文。待决交互和侧栏所需的当前集合也随元数据提供，详情调用可独立读取选定字段。详情读取失败只影响对应面板。
 
-打开 `ConversationFeed` 不会激活模型或工具；冷恢复会话仅从已加载的 `current.json` 内存态初始化静态暂停信息，并从 `history.sqlite` 只读历史页。关闭 `ConversationFeed` 先同步调用 `request_close()` 封闭准入、撤销订阅与在途异步查询，再 `close()` 汇合等待所有在途任务退出；失败保留原资源与重试责任，绝不停止后台运行的业务 Thread 或持久化写入器。
+打开 `ConversationFeed` 不会激活模型或工具。冷启动可以读取 `current.json` 初始化静态暂停信息，并从 `history.sqlite` 与未落盘内存日志读取历史页。已打开的 Feed 切到新的实时生产者时，只接续该生产者最近广播的内存记录。超出内存能补齐的范围时发出 `ResyncRequired`，由客户端重开观察获取新的历史起点。
+
+关闭 `ConversationFeed` 先同步调用 `request_close()` 封闭准入、撤销订阅与在途异步查询，再 `close()` 汇合等待所有在途任务退出。失败保留原资源与重试责任，后台运行的业务 Thread 和持久化写入器沿自身生命周期继续处理。
 
 ## 7.6 统计、账号、ACP 与目录观察边界
 

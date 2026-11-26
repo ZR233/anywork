@@ -26,7 +26,10 @@ impl ThreadWatch {
         })
     }
 
-    pub(crate) async fn wait_session_meta(&mut self, budget: Duration) -> Result<SessionMetaSnapshot> {
+    pub(crate) async fn wait_session_meta(
+        &mut self,
+        budget: Duration,
+    ) -> Result<SessionMetaSnapshot> {
         let deadline = Instant::now() + budget;
         let feed = self.open().await?;
         let observed = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
@@ -99,7 +102,11 @@ impl ThreadWatch {
         Ok(found)
     }
 
-    pub(crate) async fn interaction(&mut self, budget: Duration, question_id: &str) -> Result<InteractionRequest> {
+    pub(crate) async fn interaction(
+        &mut self,
+        budget: Duration,
+        question_id: &str,
+    ) -> Result<InteractionRequest> {
         self.wait_interaction(
             budget,
             |item| {

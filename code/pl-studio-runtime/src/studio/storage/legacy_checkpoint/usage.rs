@@ -1,6 +1,6 @@
 //! The flat accounting layout is decoded only at an explicit checkpoint migration boundary.
-use pl_core::thread::{UsageCost, UsagePricingSummary, UsageSummary};
 use pl_core::model::ModelUsageBinding;
+use pl_core::thread::{UsageCost, UsagePricingSummary, UsageSummary};
 use pl_core::usage::{
     UsageCacheSummary, UsageContextSummary, UsageDiagnostics, UsageThroughputSummary, UsageTotals,
 };

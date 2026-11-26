@@ -547,12 +547,13 @@ impl Owner {
             let revision = self.state.context.revision;
             let manual = call.turn_id.is_none();
             let turn_id = call.turn_id.clone();
-            self.event_bus
-                .emit(events::CoreEvent::Live(events::CoreLiveEvent::CompactionStarted {
+            self.event_bus.emit(events::CoreEvent::Live(
+                events::CoreLiveEvent::CompactionStarted {
                     turn_id,
                     revision,
                     manual,
-                }));
+                },
+            ));
             if let Err(error) = self.publish() {
                 let _ = reply.send(Err(error));
                 return;

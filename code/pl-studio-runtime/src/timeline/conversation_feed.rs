@@ -20,9 +20,24 @@ use super::models::{
     BodyRef, BodyWindow, ConversationEvent, LiveStatusPhase, LiveStatusSnapshot,
     SessionMetaSnapshot, TimelinePatch, WorkGroupMember,
 };
+use super::session_detail::{SessionDetailKind, SessionDetailSnapshot, SessionDetailWindow};
 use super::timeline_layer::TimelineDataLayer;
 
 const FEED_CHANNEL_CAPACITY: usize = 512;
+
+fn session_meta_head(mut snapshot: SessionMetaSnapshot) -> SessionMetaSnapshot {
+    if let Some(plan) = snapshot.plan.as_mut() {
+        plan.document = None;
+    }
+    if let Some(plan) = snapshot
+        .runtime
+        .as_mut()
+        .and_then(|runtime| runtime.plan.as_mut())
+    {
+        plan.document = None;
+    }
+    snapshot
+}
 
 #[derive(Debug)]
 pub struct SessionMetaLayer {
@@ -70,6 +85,14 @@ impl SessionMetaLayer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    pub(super) fn detail_snapshot(&self, kind: SessionDetailKind) -> SessionDetailSnapshot {
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        SessionDetailSnapshot::capture(&guard, kind)
     }
 
     pub fn update(&self, next: SessionMetaSnapshot) -> Option<SessionMetaSnapshot> {
@@ -222,9 +245,9 @@ impl ConversationFeed {
         let initial_live = initial_bus
             .as_ref()
             .map_or_else(LiveStatusSnapshot::default, |b| b.live_status().snapshot());
-        let initial_meta = initial_bus
-            .as_ref()
-            .and_then(MetaEventBus::latest_meta)
+        let initial_bus_meta = initial_bus.as_ref().and_then(MetaEventBus::latest_meta);
+        let initial_meta_revision = initial_bus_meta.as_ref().map(|meta| meta.revision);
+        let initial_meta = initial_bus_meta
             .map(|m| (*m).clone())
             .unwrap_or(initial_meta);
 
@@ -235,13 +258,11 @@ impl ConversationFeed {
             .await?;
 
         let (events_tx, events_rx) = mpsc::channel(FEED_CHANNEL_CAPACITY);
-        let _ = events_tx.send(ConversationEvent::Timeline(reset_patch)).await;
-        let _ = events_tx
-            .send(ConversationEvent::LiveStatus(initial_live.clone()))
-            .await;
-        let _ = events_tx
-            .send(ConversationEvent::SessionMeta(initial_meta.clone()))
-            .await;
+        let initial_events = vec![
+            ConversationEvent::Timeline(reset_patch),
+            ConversationEvent::LiveStatus(initial_live.clone()),
+            ConversationEvent::SessionMeta(session_meta_head(initial_meta.clone())),
+        ];
 
         let inner = Arc::new(FeedInner {
             thread_id,
@@ -255,6 +276,12 @@ impl ConversationFeed {
             tasks: TaskTracker::new(),
         });
 
+        for event in initial_events {
+            if !send_event(&inner, event).await {
+                return Err(stale_feed_error());
+            }
+        }
+
         let pump_inner = Arc::clone(&inner);
         inner.tasks.spawn(run_feed_pump(
             pump_inner,
@@ -262,6 +289,7 @@ impl ConversationFeed {
             initial_bus,
             initial_live_rx,
             initial_live.revision,
+            initial_meta_revision,
         ));
 
         Ok(Self { inner })
@@ -288,7 +316,22 @@ impl ConversationFeed {
 
     #[must_use]
     pub fn session_meta_snapshot(&self) -> SessionMetaSnapshot {
-        self.inner.session_meta.snapshot()
+        session_meta_head(self.inner.session_meta.snapshot())
+    }
+
+    /// Reads the selected full metadata field from this Feed's most recently applied cut.
+    /// Compare both owner epoch and revision before combining windows from separate requests.
+    pub fn read_session_detail(
+        &self,
+        kind: SessionDetailKind,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<SessionDetailWindow> {
+        self.ensure_active()?;
+        let snapshot = self.inner.session_meta.detail_snapshot(kind);
+        let window = snapshot.window(offset, max_bytes)?;
+        self.ensure_active()?;
+        Ok(window)
     }
 
     #[must_use]
@@ -304,8 +347,16 @@ impl ConversationFeed {
     }
 
     pub async fn next_event(&self) -> Option<ConversationEvent> {
-        let mut rx = self.inner.events_rx.lock().await;
-        rx.recv().await
+        let mut rx = tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => return None,
+            rx = self.inner.events_rx.lock() => rx,
+        };
+        tokio::select! {
+            biased;
+            () = self.inner.cancel.cancelled() => None,
+            event = rx.recv() => event,
+        }
     }
 
     pub async fn load_older(&self, cursor: String, limit: u32) -> Result<TimelinePatch> {
@@ -322,10 +373,9 @@ impl ConversationFeed {
         before_seq: Option<u64>,
     ) -> Result<Vec<WorkGroupMember>> {
         self.ensure_active()?;
-        let tl = self.inner.timeline.lock().await;
-        let members = tl
-            .load_work_group_members(&self.inner.reader, after_seq, before_seq)
-            .await?;
+        let members =
+            TimelineDataLayer::load_work_group_members(&self.inner.reader, after_seq, before_seq)
+                .await?;
         self.ensure_active()?;
         Ok(members)
     }
@@ -337,10 +387,9 @@ impl ConversationFeed {
         max_bytes: u32,
     ) -> Result<BodyWindow> {
         self.ensure_active()?;
-        let tl = self.inner.timeline.lock().await;
-        let window = tl
-            .read_body_window(&self.inner.reader, reference, offset, max_bytes)
-            .await?;
+        let window =
+            TimelineDataLayer::read_body_window(&self.inner.reader, reference, offset, max_bytes)
+                .await?;
         self.ensure_active()?;
         Ok(window)
     }
@@ -351,17 +400,15 @@ impl ConversationFeed {
             self.live_status_snapshot().phase,
             LiveStatusPhase::Working { .. }
         );
-        let patch = {
-            let mut tl = self.inner.timeline.lock().await;
-            tl.load_initial_page(&self.inner.reader, limit, is_working_live)
-                .await?
-        };
+        // Keep the rebuilt cut and its first patch in the same ordering as live appends.
+        let mut timeline = self.inner.timeline.lock().await;
+        let patch = timeline
+            .load_initial_page(&self.inner.reader, limit, is_working_live)
+            .await?;
         self.ensure_active()?;
-        let _ = self
-            .inner
-            .events_tx
-            .send(ConversationEvent::Timeline(patch.clone()))
-            .await;
+        if !send_event(&self.inner, ConversationEvent::Timeline(patch.clone())).await {
+            return Err(stale_feed_error());
+        }
         Ok(patch)
     }
 
@@ -375,13 +422,31 @@ impl ConversationFeed {
     }
 }
 
+async fn send_event(inner: &FeedInner, event: ConversationEvent) -> bool {
+    tokio::select! {
+        biased;
+        () = inner.cancel.cancelled() => false,
+        result = inner.events_tx.send(event) => result.is_ok(),
+    }
+}
+
 async fn emit_events(inner: &FeedInner, events: Vec<ConversationEvent>) -> bool {
     for ev in events {
-        if inner.events_tx.send(ev).await.is_err() {
+        if !send_event(inner, ev).await {
             return false;
         }
     }
     true
+}
+
+fn stage_live_status(inner: &FeedInner, mut snapshot: LiveStatusSnapshot) -> ConversationEvent {
+    let mut current = inner
+        .live_status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    snapshot.revision = current.revision.saturating_add(1);
+    *current = snapshot.clone();
+    ConversationEvent::LiveStatus(snapshot)
 }
 
 async fn run_feed_pump(
@@ -390,6 +455,7 @@ async fn run_feed_pump(
     mut current_bus: Option<MetaEventBus>,
     mut initial_live_rx: Option<tokio::sync::broadcast::Receiver<ThreadMetaEvent>>,
     mut last_live_rev: u64,
+    mut last_meta_rev: Option<u64>,
 ) {
     let mut attached_on_open = current_bus.is_some();
     let mut bus_watch_closed = false;
@@ -422,51 +488,47 @@ async fn run_feed_pump(
         };
 
         if !attached_on_open {
-            // Re-attached on cold -> live transition (or owner epoch restart): sync live status,
-            // session meta, and any early commits between `cut_seq` and `bus.subscribe()`.
+            // The receiver is installed before the replay cut. Duplicate records are ignored by
+            // sequence, and a missing range asks the client to reopen from cold history.
             let snap = bus.live_status().snapshot();
-            if snap.revision > last_live_rev || snap.phase != LiveStatusPhase::Idle {
-                last_live_rev = last_live_rev.max(snap.revision);
-                *inner
-                    .live_status
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = snap.clone();
-                if inner
-                    .events_tx
-                    .send(ConversationEvent::LiveStatus(snap))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
+            // Each bus owns its own revisions. A new owner may start back at zero.
+            last_live_rev = snap.revision;
+            if !send_event(&inner, stage_live_status(&inner, snap)).await {
+                return;
             }
-            if let Some(meta) = bus.latest_meta()
+            let latest_meta = bus.latest_meta();
+            last_meta_rev = latest_meta.as_ref().map(|meta| meta.revision);
+            if let Some(meta) = latest_meta
                 && let Some(updated) = inner.session_meta.update((*meta).clone())
-                && inner
-                    .events_tx
-                    .send(ConversationEvent::SessionMeta(updated))
-                    .await
-                    .is_err()
+                && !send_event(
+                    &inner,
+                    ConversationEvent::SessionMeta(session_meta_head(updated)),
+                )
+                .await
             {
                 return;
             }
-            let catchup = {
-                let mut tl = inner.timeline.lock().await;
-                tl.sync_from_reader_after(&inner.reader).await
+            let mut timeline = tokio::select! {
+                biased;
+                () = inner.cancel.cancelled() => return,
+                timeline = inner.timeline.lock() => timeline,
             };
-            match catchup {
-                Ok(evs) => {
-                    if !emit_events(&inner, evs).await {
-                        return;
-                    }
-                }
-                Err(error) => {
-                    let _ = inner
-                        .events_tx
-                        .send(ConversationEvent::ResyncRequired {
-                            reason: format!("catchup after live bus attach failed: {error}"),
-                        })
-                        .await;
+            let Some(records) = bus.replay_history_after(timeline.cut_seq()) else {
+                let _ = send_event(
+                    &inner,
+                    ConversationEvent::ResyncRequired {
+                        reason: "in-memory history replay cannot reach the feed cut".into(),
+                    },
+                )
+                .await;
+                return;
+            };
+            for record in records {
+                let input_id = match &record.source {
+                    Some(crate::ChatSourceId::Input { input_id }) => Some(input_id.as_str()),
+                    _ => None,
+                };
+                if !emit_events(&inner, timeline.on_history_record(&record, input_id)).await {
                     return;
                 }
             }
@@ -477,63 +539,26 @@ async fn run_feed_pump(
             tokio::select! {
                 biased;
                 () = inner.cancel.cancelled() => return,
-                changed = bus_rx.changed(), if !bus_watch_closed => {
-                    match changed {
-                        Ok(()) => {
-                            let next = bus_rx.borrow_and_update().clone();
-                            if next.as_ref().is_some_and(|candidate| candidate.ptr_eq(&bus)) {
-                                continue;
-                            }
-                            if next.is_none() {
-                                let prev = inner
-                                    .live_status
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .clone();
-                                if prev.phase != LiveStatusPhase::Idle {
-                                    last_live_rev = last_live_rev.max(prev.revision).saturating_add(1);
-                                    let idle = LiveStatusSnapshot {
-                                        revision: last_live_rev,
-                                        phase: LiveStatusPhase::Idle,
-                                        attentions: Vec::new(),
-                                        suppressed_by_interaction: false,
-                                    };
-                                    *inner
-                                        .live_status
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner) = idle.clone();
-                                    if inner
-                                        .events_tx
-                                        .send(ConversationEvent::LiveStatus(idle))
-                                        .await
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
-                                }
-                            }
-                            current_bus = next;
-                            break;
-                        }
-                        Err(_) => {
-                            bus_watch_closed = true;
-                        }
-                    }
-                }
                 recv = rx.recv() => {
                     match recv {
                         Ok(ThreadMetaEvent::History { record, input_id, .. }) => {
-                            let evs = {
-                                let mut tl = inner.timeline.lock().await;
-                                tl.on_history_record(&record, input_id.as_deref())
+                            let mut timeline = tokio::select! {
+                                biased;
+                                () = inner.cancel.cancelled() => return,
+                                timeline = inner.timeline.lock() => timeline,
                             };
+                            let evs = timeline.on_history_record(&record, input_id.as_deref());
                             if !emit_events(&inner, evs).await {
                                 return;
                             }
                         }
                         Ok(ThreadMetaEvent::Live(live_ev)) => {
                             let evs = {
-                                let mut tl = inner.timeline.lock().await;
+                                let mut tl = tokio::select! {
+                                    biased;
+                                    () = inner.cancel.cancelled() => return,
+                                    tl = inner.timeline.lock() => tl,
+                                };
                                 tl.on_live_event(&live_ev)
                             };
                             if !emit_events(&inner, evs).await {
@@ -543,28 +568,19 @@ async fn run_feed_pump(
                         Ok(ThreadMetaEvent::LiveStatus(live)) => {
                             if live.revision > last_live_rev {
                                 last_live_rev = live.revision;
-                                let snapshot = (*live).clone();
-                                *inner
-                                    .live_status
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
-                                if inner
-                                    .events_tx
-                                    .send(ConversationEvent::LiveStatus(snapshot))
-                                    .await
-                                    .is_err()
+                                if !send_event(&inner, stage_live_status(&inner, (*live).clone())).await
                                 {
                                     return;
                                 }
                             }
                         }
                         Ok(ThreadMetaEvent::SessionMeta(meta)) => {
+                            if last_meta_rev.is_some_and(|revision| meta.revision <= revision) {
+                                continue;
+                            }
+                            last_meta_rev = Some(meta.revision);
                             if let Some(updated) = inner.session_meta.update((*meta).clone())
-                                && inner
-                                    .events_tx
-                                    .send(ConversationEvent::SessionMeta(updated))
-                                    .await
-                                    .is_err()
+                                && !send_event(&inner, ConversationEvent::SessionMeta(session_meta_head(updated))).await
                             {
                                 return;
                             }
@@ -573,20 +589,149 @@ async fn run_feed_pump(
                             if bus_watch_closed {
                                 return;
                             }
+                            current_bus = bus_rx.borrow_and_update().clone()
+                                .filter(|candidate| !candidate.ptr_eq(&bus));
                             break;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            let _ = inner
-                                .events_tx
-                                .send(ConversationEvent::ResyncRequired {
+                            let _ = send_event(&inner, ConversationEvent::ResyncRequired {
                                     reason: format!("broadcast lagged by {skipped} events"),
-                                })
-                                .await;
+                                }).await;
                             return;
+                        }
+                    }
+                }
+                // Drain already-published records from the retiring owner before switching.
+                changed = bus_rx.changed(), if !bus_watch_closed => {
+                    match changed {
+                        Ok(()) => {
+                            let next = bus_rx.borrow_and_update().clone();
+                            if next.as_ref().is_some_and(|candidate| candidate.ptr_eq(&bus)) {
+                                continue;
+                            }
+                            current_bus = next;
+                            break;
+                        }
+                        Err(_) => {
+                            bus_watch_closed = true;
                         }
                     }
                 }
             }
         }
+        let needs_idle = current_bus.is_none()
+            && inner
+                .live_status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .phase
+                != LiveStatusPhase::Idle;
+        if needs_idle
+            && !send_event(
+                &inner,
+                stage_live_status(&inner, LiveStatusSnapshot::default()),
+            )
+            .await
+        {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use crate::history::{HistoryLimits, HistoryStore};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn full_event_queue_without_a_consumer_does_not_block_close() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            temp.path().join("history.sqlite"),
+            "full-feed",
+            HistoryLimits::default(),
+        )
+        .await?;
+        let bus = MetaEventBus::open(
+            crate::Thread::placeholder("full-feed"),
+            store.clone(),
+            pl_core::thread::current::RuntimeEpoch::new(),
+        );
+        let meta = SessionMetaLayer::empty("full-feed").snapshot();
+        let feed = ConversationFeed::open_static(
+            "full-feed",
+            store.reader(),
+            Some(bus.clone()),
+            meta.clone(),
+            64,
+        )
+        .await?;
+        // Fill the actual outgoing channel; no receiver ever drains it.
+        while feed
+            .inner
+            .events_tx
+            .try_send(ConversationEvent::SessionMeta(meta.clone()))
+            .is_ok()
+        {}
+        assert_eq!(feed.inner.events_tx.capacity(), 0);
+        let mut updated = meta;
+        updated.revision = 7;
+        bus.update_session_meta(updated);
+        // Updating the exposed snapshot happens immediately before the pump awaits its send.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while feed.session_meta_snapshot().revision != 7 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        tokio::time::timeout(Duration::from_secs(2), feed.close()).await?;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), feed.next_event())
+                .await?
+                .is_none()
+        );
+        bus.close().await;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn close_cancels_both_receive_and_receiver_lock_waiters() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            temp.path().join("history.sqlite"),
+            "empty-feed",
+            HistoryLimits::default(),
+        )
+        .await?;
+        let feed = ConversationFeed::open_static(
+            "empty-feed",
+            store.reader(),
+            None,
+            SessionMetaLayer::empty("empty-feed").snapshot(),
+            64,
+        )
+        .await?;
+        for _ in 0..3 {
+            assert!(feed.next_event().await.is_some());
+        }
+        let mut first = std::pin::pin!(feed.next_event());
+        let mut second = std::pin::pin!(feed.next_event());
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        tokio::time::timeout(Duration::from_secs(2), feed.close()).await?;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), first)
+                .await?
+                .is_none()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), second)
+                .await?
+                .is_none()
+        );
+        store.close().await?;
+        Ok(())
     }
 }

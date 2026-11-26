@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
@@ -64,17 +66,23 @@ class LiveStatusSurfaceView extends StatelessWidget {
         :final detail,
         :final attempt,
         :final maxAttempts,
+        :final retryAt,
       ):
         barChildren.add(
           Flexible(
             key: const ValueKey('live-primary-reconnecting'),
             fit: FlexFit.loose,
-            child: _StatusHeaderRow(
-              spec: LiveStatusHeaderSpec.forReconnecting(
-                context,
-                detail,
-                attempt: attempt,
-                maxAttempts: maxAttempts,
+            child: _RetryCountdown(
+              retryAt: retryAt,
+              now: now,
+              builder: (context, seconds) => _StatusHeaderRow(
+                spec: LiveStatusHeaderSpec.forReconnecting(
+                  context,
+                  detail,
+                  attempt: attempt,
+                  maxAttempts: maxAttempts,
+                  retrySeconds: seconds,
+                ),
               ),
             ),
           ),
@@ -217,6 +225,73 @@ class LiveStatusSurfaceView extends StatelessWidget {
               : null,
         ),
       };
+}
+
+class _RetryCountdown extends StatefulWidget {
+  const _RetryCountdown({
+    required this.retryAt,
+    required this.now,
+    required this.builder,
+  });
+
+  final DateTime? retryAt;
+  final DateTime Function()? now;
+  final Widget Function(BuildContext, int?) builder;
+
+  @override
+  State<_RetryCountdown> createState() => _RetryCountdownState();
+}
+
+class _RetryCountdownState extends State<_RetryCountdown> {
+  Timer? _timer;
+
+  Duration get _remaining =>
+      widget.retryAt?.difference((widget.now ?? DateTime.now)()) ??
+      Duration.zero;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(_RetryCountdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.retryAt != widget.retryAt || oldWidget.now != widget.now) {
+      _sync();
+    }
+  }
+
+  void _sync() {
+    _timer?.cancel();
+    final remaining = _remaining;
+    if (remaining <= Duration.zero || !TickerMode.valuesOf(context).enabled) {
+      return;
+    }
+    final next = remaining < const Duration(seconds: 1)
+        ? remaining
+        : const Duration(seconds: 1);
+    _timer = Timer(next, () {
+      setState(() {});
+      _sync();
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = _remaining;
+    final seconds = remaining > Duration.zero
+        ? (remaining.inMilliseconds + 999) ~/ 1000
+        : null;
+    return widget.builder(context, seconds);
+  }
 }
 
 class _StatusHeaderRow extends StatelessWidget {

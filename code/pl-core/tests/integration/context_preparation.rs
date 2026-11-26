@@ -415,8 +415,7 @@ async fn unmeasured_failure_preserves_bound_usage_across_checkpoint_and_next_tur
         serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
     thread.close().await.unwrap();
     let (model, _) = ScriptedModel::new(&[]);
-    let thread =
-        ThreadHandle::restore_current(saved, Some(DynModelSession::new(model))).unwrap();
+    let thread = ThreadHandle::restore_current(saved, Some(DynModelSession::new(model))).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     thread
         .set_context_preparation(Some(ContextPreparer::new(ObserveUsage(seen.clone()))))

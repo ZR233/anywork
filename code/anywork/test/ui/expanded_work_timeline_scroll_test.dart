@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -20,11 +18,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../../../anywork_client/test/support/timeline_transport.dart'
-    show TestHistoryReader;
+import '../support/conversation_feed_fixtures.dart';
 import '../support/pump_client_future.dart';
-import '../support/recording_demo_transport.dart'
-    show RecordingHistoryReader, timelineReady;
+import '../support/recording_demo_transport.dart';
 import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -47,7 +43,7 @@ Future<void> _wheel(WidgetTester tester, Finder scroll, double dy) async {
 
 Future<AppGraph> _mountNative(
   WidgetTester tester,
-  _NativeHistoryTransport transport,
+  RecordingDemoTransport transport,
 ) async {
   await tester.binding.setSurfaceSize(const Size(820, 580));
   addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -128,8 +124,9 @@ void main() {
   testWidgets('native history stays frozen until explicit or manual return', (
     tester,
   ) async {
-    final transport = _NativeHistoryTransport();
+    final transport = _timelineTransport();
     final graph = await _mountNative(tester, transport);
+    final feed = transport.feedFor(_threadId);
     final owner = graph.timeline;
     final lease = owner.lease(_threadId)!;
     final controller = lease.scrollController;
@@ -148,7 +145,7 @@ void main() {
     expect(readingOffset, greaterThan(100));
     expect(_returnLatest.hitTestable(), findsOneWidget);
 
-    transport.publishHead(11);
+    feed.emit(ConversationTimeline(patch: TimelineAppend(items: [_row(11)])));
     await pumpClientUntil(
       tester,
       () => owner.source.value!.hasNewOutput,
@@ -160,7 +157,6 @@ void main() {
     expect(controller.offset, closeTo(readingOffset, .5));
     expect(_returnLatest, findsOneWidget);
 
-    final readsBeforeButton = transport.latestReads;
     await tester.tap(_returnLatest);
     await pumpClientUntil(
       tester,
@@ -171,14 +167,14 @@ void main() {
     );
     expect(owner.lease(_threadId), same(lease));
     expect(rowIds().last, 'row:11');
-    expect(transport.latestReads, readsBeforeButton + 1);
+    expect(feed.resetRequests, isEmpty);
     expect(owner.source.value!.hasNewOutput, isFalse);
     expect(controller.offset, closeTo(controller.position.minScrollExtent, .5));
 
     await _wheel(tester, scroll, -170);
     await _layout(tester);
     expect(lease.mode, TimelineDisplayMode.history);
-    transport.publishHead(12);
+    feed.emit(ConversationTimeline(patch: TimelineAppend(items: [_row(12)])));
     await pumpClientUntil(
       tester,
       () => owner.source.value!.hasNewOutput,
@@ -194,118 +190,129 @@ void main() {
       'manual return committed',
     );
     expect(rowIds().last, 'row:12');
+    expect(feed.resetRequests, isEmpty);
     expect(controller.offset, closeTo(controller.position.minScrollExtent, .5));
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'failed latest read preserves Native history and can be retried',
-    (tester) async {
-      final transport = _NativeHistoryTransport();
-      final graph = await _mountNative(tester, transport);
-      final owner = graph.timeline;
-      final lease = owner.lease(_threadId)!;
-      final controller = lease.scrollController;
-      await _wheel(tester, _timelineScroll(controller), -170);
-      await _layout(tester);
-      expect(lease.mode, TimelineDisplayMode.history);
-      final readingOffset = controller.offset;
-      final failure = StateError('latest page unavailable');
-      transport.latestError = failure;
+  for (final count in [64, 65]) {
+    testWidgets(
+      'Native history buffers $count new rows within the fixed limit',
+      (tester) async {
+        final transport = _timelineTransport();
+        final graph = await _mountNative(tester, transport);
+        final owner = graph.timeline;
+        final lease = owner.lease(_threadId)!;
+        final feed = transport.feedFor(_threadId);
+        final original = lease.controller.messages
+            .map((row) => row.id)
+            .toList();
+        final incoming = [
+          for (var seq = 11; seq < 11 + count; seq++) _row(seq),
+        ];
+        feed.onReset = (limit) async => TimelineReset(
+          items: incoming.skip(count - 5),
+          hasMoreOlder: true,
+          olderCursor: 'latest-older',
+          revision: 2,
+        );
 
-      await tester.tap(_returnLatest);
-      await pumpClientUntil(
-        tester,
-        () => owner.source.value?.connectionError == failure,
-        'failed latest-page read',
-      );
-      await _layout(tester);
-      expect(owner.lease(_threadId), same(lease));
-      expect(lease.mode, TimelineDisplayMode.history);
-      expect(controller.offset, closeTo(readingOffset, .5));
-      expect(owner.source.value!.hasNewOutput, isFalse);
-      expect(_returnLatest.hitTestable(), findsOneWidget);
+        await _wheel(tester, _timelineScroll(lease.scrollController), -170);
+        await _layout(tester);
+        expect(lease.mode, TimelineDisplayMode.history);
+        feed.emit(
+          ConversationTimeline(patch: TimelineAppend(items: incoming.take(32))),
+        );
+        feed.emit(
+          ConversationTimeline(patch: TimelineAppend(items: incoming.skip(32))),
+        );
+        feed.emit(
+          ConversationLiveStatus(
+            snapshot: LiveStatusSnapshot(
+              revision: 99,
+              phase: const LiveStatusIdle(),
+              attentions: const [],
+              suppressedByInteraction: false,
+            ),
+          ),
+        );
+        await pumpClientUntil(
+          tester,
+          () => owner.liveStatus.value?.snapshot.revision == 99,
+          'both append patches reached the paused timeline',
+        );
+        expect(lease.hasNewOutput, isTrue);
+        expect(lease.controller.messages.map((row) => row.id), original);
+        expect(
+          find.byKey(StudioDriverKeys.timelineReturnLatest),
+          findsOneWidget,
+        );
+        await tester.tap(_returnLatest);
+        await pumpClientUntil(
+          tester,
+          () => lease.mode == TimelineDisplayMode.live,
+          'return to latest',
+        );
 
-      transport.latestError = null;
-      await tester.tap(_returnLatest);
-      await pumpClientUntil(
-        tester,
-        () =>
-            lease.mode == TimelineDisplayMode.live &&
-            _returnLatest.evaluate().isEmpty,
-        'retry latest page from the same lease',
-      );
-      expect(owner.lease(_threadId), same(lease));
-      expect(controller.position.extentBefore, 0);
-    },
-  );
+        expect(
+          lease.controller.messages.map((row) => row.id),
+          count == 64
+              ? [...original, ...incoming.map((row) => row.id)]
+              : incoming.skip(count - 5).map((row) => row.id),
+        );
+        expect(feed.resetRequests, count == 64 ? isEmpty : hasLength(1));
+        expect(lease.appliedSets, count == 64 ? 1 : 2);
+        expect(lease.hasNewOutput, isFalse);
+      },
+    );
+  }
 
-  testWidgets('scrolling older cancels a return queued behind Native paging', (
+  testWidgets('Native older paging keeps its cursor and prepends in order', (
     tester,
   ) async {
-    final transport = _NativeHistoryTransport();
+    final transport = _timelineTransport();
     final graph = await _mountNative(tester, transport);
     final owner = graph.timeline;
     final lease = owner.lease(_threadId)!;
-    final controller = lease.scrollController;
-    final scroll = _timelineScroll(controller);
-    transport.olderRelease = Completer<void>();
+    final feed = transport.feedFor(_threadId);
+    final firstPage = Completer<TimelinePatch>();
     addTearDown(() {
-      if (!transport.olderRelease!.isCompleted) {
-        transport.olderRelease!.complete();
+      if (!firstPage.isCompleted) {
+        firstPage.complete(
+          TimelinePrependOlder(items: const [], hasMoreOlder: false),
+        );
       }
     });
-
-    expect(controller.position.maxScrollExtent, greaterThan(300));
-    await _wheel(tester, scroll, -(controller.position.maxScrollExtent - 140));
+    feed.onLoadOlder = (cursor, _) => firstPage.future;
+    final older = owner.loadOlder(_threadId, generation: lease.generation);
     await pumpClientUntil(
       tester,
-      () =>
-          transport.olderReads.isNotEmpty &&
-          _returnLatest.evaluate().isNotEmpty,
-      'fixed-cut older query',
+      () => feed.olderRequests.isNotEmpty,
+      'older query entered',
     );
-    expect(lease.mode, TimelineDisplayMode.history);
-    expect(transport.olderReads, [(const HistoryCut('head-10'), 'older:2')]);
-
-    transport.publishHead(11);
+    expect(feed.olderRequests.single.cursor, 'older:2');
+    final samePage = owner.loadOlder(_threadId, generation: lease.generation);
+    feed.emit(ConversationTimeline(patch: TimelineAppend(items: [_row(11)])));
     await pumpClientUntil(
       tester,
-      () => owner.source.value!.hasNewOutput,
-      'new output while older query waits',
+      () => lease.controller.messages.last.id == 'row:11',
+      'live append during paging',
     );
-    final readsBeforeReturn = transport.latestReads;
-    await tester.tap(_returnLatest);
-    await tester.pump();
-    expect(transport.latestReads, readsBeforeReturn);
-
-    await _wheel(tester, scroll, -70);
-    transport.olderRelease!.complete();
-    await pumpClientUntil(
+    firstPage.complete(
+      TimelinePrependOlder(items: [_row(1), _row(2)], hasMoreOlder: false),
+    );
+    await pumpClientFuture(
       tester,
-      () => !owner.source.value!.isLoadingOlder,
+      Future.wait([older, samePage]),
       'older page applied',
     );
-    await _layout(tester);
-    expect(transport.latestReads, readsBeforeReturn);
-    expect(transport.olderReads, [(const HistoryCut('head-10'), 'older:2')]);
-    expect(lease.mode, TimelineDisplayMode.history);
-    expect(lease.controller.messages.first.id, 'row:1');
-    expect(lease.controller.messages.last.id, 'row:10');
-    expect(controller.offset, greaterThan(100));
-    expect(_returnLatest.hitTestable(), findsOneWidget);
-
-    await tester.tap(_returnLatest);
-    await pumpClientUntil(
-      tester,
-      () =>
-          lease.mode == TimelineDisplayMode.live &&
-          _returnLatest.evaluate().isEmpty,
-      'new return committed',
-    );
-    expect(transport.latestReads, readsBeforeReturn + 1);
-    expect(lease.controller.messages.last.id, 'row:11');
-    expect(tester.takeException(), isNull);
+    expect(lease.controller.messages.map((row) => row.id), [
+      for (var seq = 1; seq <= 11; seq++) 'row:$seq',
+    ]);
+    expect(feed.olderRequests, hasLength(1));
+    expect(lease.appliedSets, 1);
+    expect(lease.appliedPrepends, 1);
+    expect(lease.hasOlder, isFalse);
   });
 
   testWidgets(
@@ -336,54 +343,6 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
-
-  testWidgets('automatic fill follows a new cut with the same older cursor', (
-    tester,
-  ) async {
-    final release = Completer<void>();
-    final transport = _NativeHistoryTransport(headRows: 1)
-      ..olderRelease = release;
-    final graph = await _mountNative(tester, transport);
-    addTearDown(() {
-      if (!release.isCompleted) release.complete();
-    });
-    final owner = graph.timeline;
-    final lease = owner.lease(_threadId)!;
-    await pumpClientUntil(
-      tester,
-      () => transport.olderReads.isNotEmpty,
-      'short viewport fill',
-    );
-    expect(transport.olderReads, [(const HistoryCut('head-10'), 'older')]);
-    expect(lease.mode, TimelineDisplayMode.live);
-    expect(_returnLatest, findsNothing);
-
-    transport.publishHead(11);
-    await pumpClientUntil(
-      tester,
-      () => lease.controller.messages.singleOrNull?.id == 'row:11',
-      'new live window while prefill waits',
-    );
-    expect(lease.olderCursor, 'older');
-    expect(owner.source.value!.hasNewOutput, isFalse);
-    release.complete();
-    await pumpClientUntil(
-      tester,
-      () => lease.appliedPrepends == 1,
-      'current cut fills the viewport',
-    );
-    await _layout(tester);
-    expect(transport.olderReads, [
-      (const HistoryCut('head-10'), 'older'),
-      (const HistoryCut('head-11'), 'older'),
-    ]);
-    expect(lease.mode, TimelineDisplayMode.live);
-    expect(lease.controller.messages.last.id, 'row:11');
-    expect(lease.appliedPrepends, 1);
-    expect(owner.source.value!.olderError, isNull);
-    expect(_returnLatest, findsNothing);
-    expect(tester.takeException(), isNull);
-  });
 
   testWidgets(
     'Native submission echo mounts at the latest edge and follows new input',
@@ -592,119 +551,20 @@ void main() {
   }
 }
 
-class _NativeHistoryTransport extends TestDemoStudioTransport {
-  _NativeHistoryTransport({this.headRows = 8});
+RecordingDemoTransport _timelineTransport() =>
+    RecordingDemoTransport()
+      ..onFeedOpened = (feed) {
+        feed.mapReset = (reset) => TimelineReset(
+          items: [for (var seq = 3; seq <= 10; seq++) _row(seq)],
+          hasMoreOlder: true,
+          olderCursor: 'older:2',
+          revision: reset.revision,
+        );
+      };
 
-  final int headRows;
-  int _head = 10;
-  HistoryCut get _headCut => HistoryCut('head-$_head');
-  Completer<HistoryCut>? _changed;
-  int latestReads = 0;
-  Object? latestError;
-  final olderReads = <(HistoryCut?, String)>[];
-  Completer<void>? olderRelease;
-
-  void publishHead(int head) {
-    _head = head;
-    final changed = _changed;
-    _changed = null;
-    changed?.complete(_headCut);
-  }
-
-  @override
-  Future<HistoryReader> openHistoryReader(
-    String threadId, {
-    required int historyProtocolVersion,
-  }) async =>
-      RecordingHistoryReader(
-          inner:
-              TestHistoryReader(
-                  threadId: threadId,
-                  protocolVersion: historyProtocolVersion,
-                  cut: _headCut,
-                )
-                ..onWaitChanged = (after) => after == _headCut
-                    ? (_changed ??= Completer<HistoryCut>()).future
-                    : Future.value(_headCut),
-        )
-        ..onTimelinePage = (cut, cursor, demand) async {
-          final requestedCut = cut ?? _headCut;
-          final head = int.parse(requestedCut.token.substring('head-'.length));
-          if (cursor != null) {
-            olderReads.add((cut, cursor));
-            await olderRelease?.future;
-            final newest = cursor == 'older'
-                ? head - headRows
-                : int.parse(cursor.substring('older:'.length));
-            final count = min(newest, demand.maxRows);
-            return _page(
-              requestedCut,
-              newest: newest,
-              count: count,
-              next: newest > count ? 'older:${newest - count}' : null,
-            );
-          }
-          if (cut == null) {
-            latestReads++;
-            if (latestError case final error?) throw error;
-          }
-          return _page(
-            requestedCut,
-            newest: head,
-            count: headRows,
-            next: headRows == 1 ? 'older' : 'older:${head - headRows}',
-          );
-        };
-
-  HistoryTimelinePage _page(
-    HistoryCut cut, {
-    required int newest,
-    required int count,
-    String? next,
-  }) => HistoryTimelinePage(
-    cut: cut,
-    next: next,
-    entries: [
-      for (var seq = newest; seq > newest - count; seq--)
-        HistoryTimelineEntry(event: _row(seq), hasFoldedAfter: false),
-    ],
-  );
-
-  HistoryEventRecord _row(int seq) {
-    final id = 'input-$seq';
-    final text = List.generate(
-      6,
-      (line) => 'Prompt $seq, paragraph $line',
-    ).join('\n\n');
-    return HistoryEventRecord(
-      seq: seq,
-      eventId: 'event:$id',
-      kind: 'input_accepted',
-      timelineRole: HistoryTimelineRole.boundary,
-      recordedAt: seq * 1000,
-      entityId: id,
-      rowKey: 'row:$seq',
-      source: InputChatSource(inputId: id),
-      payloadSchema: 'anywork.event/1',
-      payloadJson: jsonEncode({
-        'contract': 'anywork.event/1',
-        'type': 'text',
-        'meta': {
-          'entityId': id,
-          'entityKind': 'input',
-          'delivery': 'foreground',
-          'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
-          'contentPresent': true,
-        },
-        'data': {'channel': 'user'},
-        'bodies': [
-          {
-            'key': 'body',
-            'byteLength': utf8.encode(text).length,
-            'inlineText': text,
-          },
-        ],
-      }),
-    );
-  }
-}
+TimelineUserMessage _row(int seq) => feedUser(
+  'row:$seq',
+  seq,
+  List.generate(6, (line) => 'Prompt $seq, paragraph $line').join('\n\n'),
+  inputId: 'input-$seq',
+);

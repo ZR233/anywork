@@ -83,8 +83,6 @@ impl Accounting {
     }
 }
 
-
-
 #[derive(Debug)]
 struct Storage(Arc<Store>);
 

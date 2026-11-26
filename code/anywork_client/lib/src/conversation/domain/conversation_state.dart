@@ -1,134 +1,123 @@
 import '../../../models.dart';
-import 'conversation_watermark.dart';
 import '../../studio/stores/domain_sync.dart';
 
-/// 单个会话的 canonical 状态投影。
-///
-/// 这里只有 Thread 状态事实（runtime/turn/interactions/storage 与流水位）。正文、已加载消息、
-/// 展示模式与分页游标都不属于它；界面持有唯一有界历史窗口和自己的正文读取资源。
-/// Native 交互只保留原 Current owner 优先查询得到的一项决定，不累计完整集合。
-/// 状态流不反写正文，正文读取也不把状态标成 ready。
-///
-/// revision / streamEpoch / baseRevision 都参与相等。
-/// workflow 在 [runtime] 上，不另建旁路字段。
+/// Read-only session metadata; no timeline, read scope or revision reducer.
 class ThreadSessionState {
   const ThreadSessionState({
     required this.threadId,
-    this.workspace,
+    this.meta,
     this.directoryRow,
-    this.hasSnapshot = false,
-    this.streamEpoch,
-    this.baseRevision,
     this.sync = const DomainSyncStatus(),
-    this.interactionReadError,
-    this.interactionReadReference,
   });
-
   final String threadId;
-  final ThreadWorkspace? workspace;
-
-  /// 本会话的目录行描述（typed 身份与目录事实）。
-  ///
-  /// 它与 [workspace] 的 Native Thread 投影分开保存：root/child 与成员归属
-  /// 只读这里的 `parentAgentId`/`sessionId`，不从执行快照反推。
+  final SessionMetaSnapshot? meta;
   final SessionDirectoryRow? directoryRow;
-  final bool hasSnapshot;
-  final int? streamEpoch;
-  final int? baseRevision;
   final DomainSyncStatus sync;
-
-  /// Failure of the bounded active-decision query; other Current State keeps updating.
-  final Object? interactionReadError;
-  final CurrentCollectionRef? interactionReadReference;
-
-  /// Absence is authoritative only after this Current reference was read.
-  bool get hasInteractionBaseline =>
-      hasSnapshot &&
-      interactionReadError == null &&
-      (businessRefs?.interactions == null ||
-          interactionReadReference == businessRefs?.interactions);
-
-  int get revision => workspace?.revision ?? 0;
-  ThreadRuntimeView? get runtime => workspace?.runtime;
-  ThreadBusinessRefs? get businessRefs => workspace?.businessRefs;
-  ThreadModelRouteView? get modelRoute => workspace?.modelRoute;
+  bool get hasSnapshot => meta != null;
+  bool get hasInteractionBaseline => hasSnapshot;
+  int get revision => meta?.revision ?? 0;
+  ThreadRuntimeView? get runtime => _projectRuntime(meta?.runtime);
+  ThreadModelRouteView? get modelRoute => meta?.modelRoute;
   WorkflowRuntimeView? get workflow => runtime?.workflow;
-  StudioTurnView? get activeTurn => workspace?.activeTurn;
-  List<PendingInteraction> get interactions =>
-      hasInteractionBaseline ? workspace?.interactions ?? const [] : const [];
-  ThreadActivityView? get activity => workspace?.activity;
-  ThreadStorageStateView? get storage => workspace?.storage;
-  StudioTurnView? get lastTurn => workspace?.lastTurn;
+  StudioTurnView? get activeTurn => meta?.activeTurn;
+  StudioTurnView? get lastTurn => meta?.lastTurn;
+  List<PendingInteraction> get interactions => meta?.interactions ?? const [];
+  ThreadActivityView? get activity => meta?.activity;
+  ThreadStorageStateView? get storage => meta?.storageState;
 
-  ThreadStreamWatermark get watermark => ThreadStreamWatermark(
-    hasSnapshot: hasSnapshot,
-    revision: revision,
-    epoch: streamEpoch,
-    baseRevision: baseRevision,
-  );
-
-  ThreadSessionState copyWith({
-    ThreadWorkspace? workspace,
-    bool clearWorkspace = false,
-    Object? directoryRow = _unset,
-    bool? hasSnapshot,
-    Object? streamEpoch = _unset,
-    Object? baseRevision = _unset,
-    DomainSyncStatus? sync,
-    Object? interactionReadError = _unset,
-    Object? interactionReadReference = _unset,
-  }) {
-    return ThreadSessionState(
-      threadId: threadId,
-      workspace: clearWorkspace ? null : workspace ?? this.workspace,
-      directoryRow: identical(directoryRow, _unset)
-          ? this.directoryRow
-          : directoryRow as SessionDirectoryRow?,
-      hasSnapshot: hasSnapshot ?? this.hasSnapshot,
-      streamEpoch: identical(streamEpoch, _unset)
-          ? this.streamEpoch
-          : streamEpoch as int?,
-      baseRevision: identical(baseRevision, _unset)
-          ? this.baseRevision
-          : baseRevision as int?,
-      sync: sync ?? this.sync,
-      interactionReadError: identical(interactionReadError, _unset)
-          ? this.interactionReadError
-          : interactionReadError,
-      interactionReadReference: identical(interactionReadReference, _unset)
-          ? this.interactionReadReference
-          : interactionReadReference as CurrentCollectionRef?,
+  /// Command context combines canonical directory identity and feed metadata.
+  ThreadWorkspace? get workspace {
+    final row = directoryRow;
+    final value = meta;
+    if (row == null || value == null || row.backend is! NativeAgentBackendView)
+      return null;
+    final thread = StudioThread(
+      id: row.threadId,
+      workspaceId: row.workspaceId,
+      title: value.title ?? row.title,
+      mode: value.mode,
+      delegationMode: row.delegationMode,
+      delegationPreference: row.delegationPreference,
+      updatedAt: row.updatedAt,
+      createdAt: row.createdAt,
+      lastUserMessageAt: row.lastUserMessageAt,
+      parentThreadId: value.parentThreadId,
+      rootThreadId: value.rootThreadId,
+      role: row.role,
+      frozenModel: row.frozenModel,
+      status: value.status,
+      archived: row.archived,
+      workspaceMode: row.workspaceMode,
+      workspacePath: row.workspacePath,
+    );
+    final currentRuntime = runtime;
+    if (currentRuntime == null) return null;
+    return ThreadWorkspace(
+      thread: thread,
+      revision: value.revision,
+      interactions: value.interactions,
+      runtime: currentRuntime,
+      modelRoute: value.modelRoute,
+      activeTurn: value.activeTurn,
+      latestTurn: value.lastTurn,
+      todo: value.runtime?.todo,
+      activity: value.activity,
+      storage: value.storageState,
     );
   }
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ThreadSessionState &&
-          threadId == other.threadId &&
-          hasSnapshot == other.hasSnapshot &&
-          revision == other.revision &&
-          streamEpoch == other.streamEpoch &&
-          baseRevision == other.baseRevision &&
-          sync == other.sync &&
-          interactionReadError == other.interactionReadError &&
-          interactionReadReference == other.interactionReadReference &&
-          directoryRow == other.directoryRow &&
-          identical(workspace, other.workspace);
-
-  @override
-  int get hashCode => Object.hash(
-    threadId,
-    hasSnapshot,
-    revision,
-    streamEpoch,
-    baseRevision,
-    sync,
-    interactionReadError,
-    interactionReadReference,
-    directoryRow,
-    identityHashCode(workspace),
+  ThreadSessionState copyWith({
+    SessionMetaSnapshot? meta,
+    Object? directoryRow = _unset,
+    DomainSyncStatus? sync,
+  }) => ThreadSessionState(
+    threadId: threadId,
+    meta: meta ?? this.meta,
+    directoryRow: identical(directoryRow, _unset)
+        ? this.directoryRow
+        : directoryRow as SessionDirectoryRow?,
+    sync: sync ?? this.sync,
   );
 }
 
-const Object _unset = Object();
+const _unset = Object();
+
+ThreadRuntimeView? _projectRuntime(ConversationRuntimeSnapshot? snapshot) {
+  if (snapshot == null) return null;
+  final usage = snapshot.usage;
+  return ThreadRuntimeView(
+    modelId: usage.modelId,
+    usageDiagnostics: usage.diagnostics,
+    contextTokens: usage.latestContextTokens,
+    contextWindow: usage.contextWindow ?? 0,
+    maxContextWindow: usage.maxContextWindow,
+    autoCompactLimit: usage.autoCompactLimit,
+    totalTokens: usage.totalTokens,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    cachedPromptTokens: usage.cachedPromptTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    reasoningTokens: usage.reasoningTokens,
+    inferenceCount: usage.inferenceCount,
+    cacheUsage: usage.cacheUsage,
+    costLabel: formatRuntimeCosts(usage.estimatedCosts),
+    estimatedCosts: usage.estimatedCosts,
+    estimatedCacheSavings: usage.estimatedCacheSavings,
+    hasUnpricedUsage: usage.hasUnpricedUsage,
+    hasIncompleteUsage: usage.hasIncompleteUsage,
+    promptGeneration: usage.promptGeneration,
+    promptCachePolicy: usage.promptCachePolicy,
+    prefixChangedReason: usage.prefixChangedReason?.name,
+    activeSkills: snapshot.activeSkills,
+    activeMcpServers: snapshot.activeMcpServers,
+    activeLspServers: snapshot.activeLspServers,
+    turnCompletionTokens: snapshot.turnCompletionTokens,
+    turnResponseMillis: snapshot.turnResponseMillis,
+    liveUsage: snapshot.liveUsage,
+    deferred: snapshot.deferred,
+    workflow: snapshot.workflow,
+    plan: snapshot.plan,
+    execution: snapshot.execution,
+    continuation: snapshot.continuation,
+  );
+}

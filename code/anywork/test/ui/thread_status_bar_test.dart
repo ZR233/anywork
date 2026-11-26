@@ -50,8 +50,7 @@ void main() {
         'thread-main',
       )!;
       await timelineReady(graph.timeline, session.threadId);
-      await _awaitCurrentReaders(graph, transport, session.threadId);
-      await transport.firstSetAcknowledged.future;
+      await _awaitFeed(graph, transport, session.threadId);
       await session.source.waitFor((value) => value.hasSnapshot);
       final initial = session.state.workspace!;
       final summaries = graph.accounts.observeSummaries();
@@ -204,20 +203,6 @@ void main() {
         timelineReady(graph.timeline, 'thread-main'),
         'timeline baseline',
       );
-      final timelineReader =
-          graph.timeline.lease('thread-main')!.current
-              as RecordingCurrentReader;
-      final stateReader = _stateCurrentReader(transport);
-      await pumpClientUntil(
-        tester,
-        () => timelineReader.watchEntered.isCompleted,
-        'timeline Current watch',
-      );
-      await pumpClientUntil(
-        tester,
-        () => stateReader.watchEntered.isCompleted,
-        'session Current watch',
-      );
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
@@ -238,9 +223,10 @@ void main() {
       expect(transport.compactCalls, 1);
       await pumpClientFuture(
         tester,
-        _stateCurrentReader(transport).emitStateAndWait(
-          _runtimeFrame(
-            session,
+        _publishUpdate(
+          transport,
+          session,
+          _runtimeUpdate(
             session.state.runtime!.copyWith(
               activeSkills: const ['during-compact'],
             ),
@@ -310,9 +296,10 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        _stateCurrentReader(transport).emitStateAndWait(
-          _runtimeFrame(
-            session,
+        _publishUpdate(
+          transport,
+          session,
+          _runtimeUpdate(
             session.state.runtime!.copyWith(
               activeSkills: const ['after-compact'],
             ),
@@ -485,15 +472,15 @@ void main() {
         .timeout(const Duration(seconds: 10));
     final session = graph.client.conversations.existingSession('thread-main')!;
     await timelineReady(graph.timeline, session.threadId);
-    await _awaitCurrentReaders(graph, transport, session.threadId);
-    await transport.firstSetAcknowledged.future;
+    await _awaitFeed(graph, transport, session.threadId);
     await session.source.waitFor((value) => value.hasSnapshot);
     final composer = graph.client.drafts.existingComposer('thread-main')!;
     composer.updateDraft('keep this draft');
-    final initial = session.state.workspace!;
-    await (graph.client.transport as RecordingDemoTransport).publishWorkspace(
-      initial.copyWith(
-        runtime: initial.runtime.copyWith(
+    await _publishUpdate(
+      transport,
+      session,
+      _runtimeUpdate(
+        session.state.runtime!.copyWith(
           contextTokens: 100,
           turnCompletionTokens: 25,
           turnResponseMillis: 1000,
@@ -552,11 +539,12 @@ void main() {
     contextNotifications = 0;
     chromeNotifications = 0;
     startedItemsNotifications = 0;
-    final timelineConnections = transport.currentReaders.length;
+    final timelineConnections = transport.feeds.length;
 
-    await _stateCurrentReader(transport).emitStateAndWait(
-      _runtimeFrame(
-        session,
+    await _publishUpdate(
+      transport,
+      session,
+      _runtimeUpdate(
         session.state.runtime!.copyWith(
           contextTokens: 100,
           liveUsage: const ThreadRuntimeLiveUsageView(
@@ -585,9 +573,10 @@ void main() {
       reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    await _stateCurrentReader(transport).emitStateAndWait(
-      _runtimeFrame(
-        session,
+    await _publishUpdate(
+      transport,
+      session,
+      _runtimeUpdate(
         session.state.runtime!.copyWith(
           liveUsage: const ThreadRuntimeLiveUsageView(
             turnId: 'turn-2',
@@ -618,33 +607,25 @@ void main() {
     );
     expect(chromeNotifications, 0);
 
-    await _stateCurrentReader(transport).emitStateAndWait(
-      ThreadNotificationFrame(
-        threadId: 'thread-main',
-        epoch: session.state.streamEpoch ?? 1,
-        baseRevision: session.state.revision,
-        revision: session.state.revision + 1,
-        update: const ThreadActivityUpdate(
-          activity: ThreadActivityView(
-            threadId: 'thread-main',
-            identity: 'activity:turn-2:1:responding',
-            revision: 1,
-            turnId: 'turn-2',
-            kind: ThreadActivityKind.responding,
-            summary: 'streaming',
-          ),
+    await _publishUpdate(
+      transport,
+      session,
+      (current) => current.copyWith(
+        activity: const ThreadActivityView(
+          threadId: 'thread-main',
+          identity: 'activity:turn-2:1:responding',
+          revision: 1,
+          turnId: 'turn-2',
+          kind: ThreadActivityKind.responding,
+          summary: 'streaming',
         ),
       ),
     );
-    await _stateCurrentReader(transport).emitStateAndWait(
-      ThreadNotificationFrame(
-        threadId: 'thread-main',
-        epoch: session.state.streamEpoch ?? 1,
-        baseRevision: session.state.revision,
-        revision: session.state.revision + 1,
-        update: const ThreadStorageUpdate(
-          storage: ThreadStorageStateView(acceptedSequence: 8),
-        ),
+    await _publishUpdate(
+      transport,
+      session,
+      (current) => current.copyWith(
+        storage: const ThreadStorageStateView(acceptedSequence: 8),
       ),
     );
     expect(throughput.read()?.tokensPerSecond, 40);
@@ -652,9 +633,10 @@ void main() {
     expect(contextNotifications, 0);
     expect(chromeNotifications, 0);
 
-    await _stateCurrentReader(transport).emitStateAndWait(
-      _runtimeFrame(
-        session,
+    await _publishUpdate(
+      transport,
+      session,
+      _runtimeUpdate(
         session.state.runtime!.copyWith(
           activeSkills: List<String>.of(['skill-a', 'skill-b']),
           activeMcpServers: List<String>.of(['mcp-a']),
@@ -671,7 +653,7 @@ void main() {
     expect(throughputNotifications, 1);
     expect(contextNotifications, 0);
 
-    expect(transport.currentReaders, hasLength(timelineConnections));
+    expect(transport.feeds, hasLength(timelineConnections));
     expect(
       graph.client.conversations.existingSession('thread-main'),
       same(session),
@@ -923,26 +905,10 @@ Finder _tooltipWithMessage(String message) => find.byWidgetPredicate(
 );
 
 final class _StatusTransport extends RecordingDemoTransport {
-  final firstSetAcknowledged = Completer<void>();
   final compactStarted = Completer<void>();
   Completer<void>? compactGate;
   int compactCalls = 0;
   StreamController<ProductTopicFrame>? _lspFrames;
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    final reader = await super.openCurrentReader(
-      threadId,
-      currentProtocolVersion: currentProtocolVersion,
-      demand: demand,
-    );
-    if (!firstSetAcknowledged.isCompleted) firstSetAcknowledged.complete();
-    return reader;
-  }
 
   @override
   TestTopicFrames testProductTopicFrames(
@@ -991,48 +957,30 @@ final class _StatusTransport extends RecordingDemoTransport {
   }
 }
 
-ThreadNotificationFrame _runtimeFrame(
-  ConversationSession session,
+ThreadWorkspace Function(ThreadWorkspace) _runtimeUpdate(
   ThreadRuntimeView runtime,
-) {
-  return ThreadNotificationFrame(
-    threadId: 'thread-main',
-    epoch: session.state.streamEpoch ?? 1,
-    baseRevision: session.state.revision,
-    revision: session.state.revision + 1,
-    update: ThreadRuntimeUpdate(
-      runtime: runtime,
-      todo: null,
-      modelRoute: session.state.modelRoute,
-    ),
-  );
+) =>
+    (current) => current.copyWith(runtime: runtime);
+
+Future<void> _publishUpdate(
+  RecordingDemoTransport transport,
+  ConversationSession session,
+  ThreadWorkspace Function(ThreadWorkspace) update,
+) async {
+  final workspace = transport.seedConversationState(session.threadId, update);
+  await session.source.waitFor((state) => state.revision >= workspace.revision);
 }
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 
-RecordingCurrentReader _stateCurrentReader(RecordingDemoTransport transport) =>
-    transport.currentReaders.lastWhere(
-      (reader) =>
-          reader.threadId == 'thread-main' && reader.demand.maxItems == 128,
-    );
-
-Future<void> _awaitCurrentReaders(
+Future<void> _awaitFeed(
   AppGraph graph,
   RecordingDemoTransport transport,
   String threadId,
 ) async {
-  final session = graph.client.conversations.existingSession(threadId);
-  if (session == null) {
-    throw StateError('Thread session is not open: $threadId');
-  }
+  final session = graph.client.conversations.existingSession(threadId)!;
   await session.source.waitFor((state) => state.hasSnapshot);
-  final timeline = graph.timeline.lease(threadId)?.current;
-  final state = transport.currentReaders.lastWhere(
-    (reader) => reader.threadId == threadId && reader.demand.maxItems == 128,
-  );
-  expect(timeline, isA<RecordingCurrentReader>());
-  await Future.wait([
-    (timeline as RecordingCurrentReader).watchEntered.future,
-    state.watchEntered.future,
-  ]);
+  final feeds = transport.feeds.where((feed) => feed.threadId == threadId);
+  expect(feeds, hasLength(1));
+  await feeds.single.listening.future;
 }

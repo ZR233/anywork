@@ -32,11 +32,13 @@ pub(in crate::studio) fn project_interactions(
             interactions.push(interaction);
         }
     }
-    interactions.sort_by_key(|interaction| match (interaction.status(), interaction.kind()) {
-        (crate::InteractionStatus::Pending, crate::InteractionKind::ToolApproval) => 0_u8,
-        (crate::InteractionStatus::Pending, crate::InteractionKind::UserInput) => 1_u8,
-        _ => 2_u8,
-    });
+    interactions.sort_by_key(
+        |interaction| match (interaction.status(), interaction.kind()) {
+            (crate::InteractionStatus::Pending, crate::InteractionKind::ToolApproval) => 0_u8,
+            (crate::InteractionStatus::Pending, crate::InteractionKind::UserInput) => 1_u8,
+            _ => 2_u8,
+        },
+    );
     Ok(interactions)
 }
 mod runtime;

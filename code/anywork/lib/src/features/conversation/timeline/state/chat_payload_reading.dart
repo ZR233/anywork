@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
-import 'timeline_display_unit.dart';
 import '../tools/items/wait/sleep_tool_item.dart';
 import '../tools/items/wait/wait_tool_item.dart';
 import '../tools/tool_item_registry.dart';
@@ -148,17 +147,12 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
     return DecodedToolCard(
       TimelineToolPresentation(
         id: item.id,
-        toolCallId: chatString(
-          invocation['toolCallId'],
-          'invocation.toolCallId',
-        ),
+        toolCallId:
+            item.toolCallId ??
+            chatString(invocation['toolCallId'], 'invocation.toolCallId'),
         name: chatString(invocation['name'], 'invocation.name'),
         presentationContract: adapter.id,
         statusString: status,
-        frozenObservation:
-            item.displayRecord?.contentSource is FrozenObservation,
-        executionPresent:
-            item.displayRecord?.contentSource is CurrentAtomSource,
         arguments: arguments,
         output: item.inlineText('tool.result') ?? '',
         // No start timestamp is present in the canonical invocation. Keep unknown.

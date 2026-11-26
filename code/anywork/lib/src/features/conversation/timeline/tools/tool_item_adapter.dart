@@ -41,7 +41,7 @@ class TimelineToolMatchContext {
     return TimelineToolMatchContext(
       toolName: name,
       presentationContract: item.presentationContract,
-      hasWaitPayload: item.data['wait'] != null || item.atom?.wait != null,
+      hasWaitPayload: item.data['wait'] != null,
     );
   }
 
@@ -396,14 +396,13 @@ class TimelineToolItemController extends ChangeNotifier {
   /// the enclosing [group] lifecycle.
   void notifyOutputWindowRead(
     Object epoch,
-    ContentWindow window, {
+    BodyWindow window, {
     TimelineExpansionIntent? group,
   }) {
     if (!identical(epoch, _callbackEpoch) ||
         (group != null && (!group.bodyActive || group.isRetired)) ||
-        !window.sealed ||
-        window.offset != 0 ||
-        window.bytes.length != window.availableThrough) {
+        !window.eof ||
+        window.offset != 0) {
       return;
     }
     onAcceptedOutputWindow(window);
@@ -413,7 +412,7 @@ class TimelineToolItemController extends ChangeNotifier {
   void onItemUpdated() {}
 
   @protected
-  void onAcceptedOutputWindow(ContentWindow window) {}
+  void onAcceptedOutputWindow(BodyWindow window) {}
 
   @protected
   void onRetireTransientState() {}

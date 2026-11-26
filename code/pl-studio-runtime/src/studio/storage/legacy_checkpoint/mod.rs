@@ -93,7 +93,8 @@ impl CheckpointBodyReference {
     /// Rejects replaced or truncated bytes, and malformed reference metadata.
     pub fn verify(&self, bytes: &[u8]) -> Result<(), CheckpointBodyError> {
         self.validate()?;
-        if bytes.len() as u64 != self.byte_len || pl_core::context::content_hash(bytes) != self.digest
+        if bytes.len() as u64 != self.byte_len
+            || pl_core::context::content_hash(bytes) != self.digest
         {
             return Err(CheckpointBodyError::ContentMismatch);
         }
@@ -658,7 +659,9 @@ impl ThreadCheckpoint {
             state_revision: state.commit_sequence,
             thread_id,
             history_fence,
-            saved_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs().min(i64::MAX as u64) as i64),
+            saved_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs().min(i64::MAX as u64) as i64),
             external_bodies: Vec::new(),
             state,
         }
@@ -1785,12 +1788,8 @@ mod tests {
 
     #[test]
     fn schema_4_checkpoint_decode_legacy_defaults_new_fields_and_flattens_usage() {
-        let seed = ThreadCheckpoint::capture(
-            "legacy-v4".into(),
-            1,
-            ThreadSnapshot::default(),
-        )
-        .unwrap();
+        let seed =
+            ThreadCheckpoint::capture("legacy-v4".into(), 1, ThreadSnapshot::default()).unwrap();
         let mut value = serde_json::to_value(&seed).unwrap();
         value["schemaVersion"] = serde_json::json!(4);
         let flat_usage = usage::LegacyUsageSummary::from(UsageSummary::default());

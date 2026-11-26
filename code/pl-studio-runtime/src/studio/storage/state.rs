@@ -6,8 +6,8 @@ mod current;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, ensure};
 use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
+use anyhow::{Context, Result, ensure};
 
 /// Frozen continuation provenance decoded only during schema-24 import.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

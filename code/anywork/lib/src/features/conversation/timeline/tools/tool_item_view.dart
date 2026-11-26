@@ -116,7 +116,7 @@ class TimelineToolItemView extends StatefulWidget {
   final WidgetBuilder? additionalContentBuilder;
   final Object? declaredContentIdentity;
   final List<Widget> Function(
-    ValueChanged<ContentWindow> onOutputRead,
+    ValueChanged<BodyWindow> onOutputRead,
     ToolAcceptanceProjection? acceptance,
   )?
   declaredContentBuilder;

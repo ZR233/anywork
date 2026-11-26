@@ -860,9 +860,7 @@ async fn missing_effects_and_conflicting_blobs_cannot_be_sealed() -> Result<()> 
     Ok(())
 }
 
-async fn idempotency_fixture(
-    root: &std::path::Path,
-) -> Result<crate::history::HistoryReader> {
+async fn idempotency_fixture(root: &std::path::Path) -> Result<crate::history::HistoryReader> {
     let studio_home = root.join("home");
     std::fs::create_dir_all(&studio_home)?;
     std::fs::write(studio_home.join("config.toml"), "[models]\n")?;

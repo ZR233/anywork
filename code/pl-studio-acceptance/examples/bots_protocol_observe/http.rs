@@ -8,6 +8,10 @@ use pl_studio_runtime::history::{
     HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
     HistoryTimelinePage, HistoryWorkRangePage,
 };
+use pl_studio_runtime::timeline::{
+    BodyRef, BodyWindow, ConversationEvent, LiveStatusSnapshot, SessionMetaSnapshot, TimelinePatch,
+    WorkGroupMember,
+};
 use pl_studio_runtime::{
     BotConversationPage, BotConversationThreadReply, BotMessagePage, BotSendResult,
     BotsCommandReply, BotsStateSnapshot, CancelBotRegistrationRequest,
@@ -15,10 +19,6 @@ use pl_studio_runtime::{
     ReadBotMessagesRequest, ResolveInteractionRequest, SaveBotRequest, SendBotMessageRequest,
     SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
     StartBotRegistrationRequest, StudioError,
-};
-use pl_studio_runtime::timeline::{
-    BodyRef, BodyWindow, ConversationEvent, LiveStatusSnapshot, SessionMetaSnapshot, TimelinePatch,
-    WorkGroupMember,
 };
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -226,7 +226,10 @@ impl FeedRead {
     }
 
     pub async fn session_meta(&self) -> Result<SessionMetaSnapshot> {
-        let path = format!("/api/v1/threads/{}/feed/{}/meta", self.thread_id, self.feed_id);
+        let path = format!(
+            "/api/v1/threads/{}/feed/{}/meta",
+            self.thread_id, self.feed_id
+        );
         self.http.get_json(&path).await
     }
 
@@ -286,8 +289,11 @@ impl FeedRead {
 
     #[allow(dead_code)]
     pub async fn older(&self, cursor: &str, limit: Option<u32>) -> Result<TimelinePatch> {
-        self.post("older", &serde_json::json!({ "cursor": cursor, "limit": limit }))
-            .await
+        self.post(
+            "older",
+            &serde_json::json!({ "cursor": cursor, "limit": limit }),
+        )
+        .await
     }
 
     #[allow(dead_code)]
@@ -324,7 +330,10 @@ impl FeedRead {
     }
 
     pub async fn close(&self) -> Result<()> {
-        let path = format!("/api/v1/threads/{}/feed/{}/close", self.thread_id, self.feed_id);
+        let path = format!(
+            "/api/v1/threads/{}/feed/{}/close",
+            self.thread_id, self.feed_id
+        );
         let response = self
             .http
             .client

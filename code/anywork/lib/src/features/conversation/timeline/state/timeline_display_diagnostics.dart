@@ -1,54 +1,16 @@
-import 'package:anywork_client/conversation.dart';
-import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:anywork_client/models.dart';
 
-import 'timeline_display_models.dart';
-
-/// Actual mounted expanded Run window. No query is started by these
-/// synchronous borrows; business Children keeps its independent parent domain.
+/// Synchronous borrow of an expanded work group and the members it displays.
 abstract interface class TimelineGroupDisplay {
   String get unitId;
   bool get isCurrent;
-  bool get expanded;
-  DisplayBlockRef? get blockReference;
   bool get loading;
   Object? get error;
-  Iterable<ChatAtom> get atoms;
-  Iterable<TimelineCurrentWindowDisplay> get windows;
+  TimelineWorkGroup? get group;
+  Iterable<WorkGroupMember> get members;
 }
 
-/// A borrow of the real expanded Children display, never a second message collection.
-///
-/// Getters are synchronous and perform no IO. The display owns registration, eligibility and
-/// teardown; the Main display lease only lends these current facts to an explicit Driver query.
-abstract interface class TimelineChildrenDisplay {
-  String get parentId;
-  int get generation;
-  bool get isCurrent;
-  bool get ready;
-  String? get olderCursor;
-  bool get loadingOlder;
-  Object? get error;
-  Iterable<Message> get messages;
-  int get appliedSets;
-  int get appliedPrepends;
-  int get appliedAppends;
-  Iterable<TimelineCurrentWindowDisplay> get windows;
-}
-
-/// A borrow of a mounted member renderer's actual body resources.
-abstract interface class TimelineMemberDisplay {
-  Iterable<TimelineCurrentWindowDisplay> get windows;
-}
-
-abstract interface class TimelineCurrentWindowDisplay {
-  String get id;
-  Object get reference;
-  int get offset;
-  ContentWindow? get window;
-  Object? get error;
-}
-
-/// One actual content layout, measured on the selection owner's single monotonic clock.
+/// Actual content layout measured on the selection owner's monotonic clock.
 final class TimelineContentLayout {
   const TimelineContentLayout({
     required this.selectionId,

@@ -109,7 +109,10 @@ fn bounded_tail_preview(text: &str) -> Option<String> {
     if count <= REASONING_PREVIEW_LIMIT {
         Some(trimmed.to_owned())
     } else {
-        let skipped: String = trimmed.chars().skip(count - REASONING_PREVIEW_LIMIT).collect();
+        let skipped: String = trimmed
+            .chars()
+            .skip(count - REASONING_PREVIEW_LIMIT)
+            .collect();
         Some(format!("…{skipped}"))
     }
 }
@@ -333,7 +336,8 @@ impl LiveStatusDataLayer {
                     None
                 }
                 None => {
-                    if !matches!(state.current_phase(), LiveStatusPhase::Idle) || state.turn_active {
+                    if !matches!(state.current_phase(), LiveStatusPhase::Idle) || state.turn_active
+                    {
                         state.enter_idle();
                         state.suppressed_by_interaction = false;
                         state.revision += 1;
@@ -387,7 +391,10 @@ impl LiveStatusDataLayer {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now_ms = record.occurred_at.or(Some(record.recorded_at)).unwrap_or_else(now_millis);
+        let now_ms = record
+            .occurred_at
+            .or(Some(record.recorded_at))
+            .unwrap_or_else(now_millis);
 
         match &record.kind {
             HistoryEventKind::TurnStarted | HistoryEventKind::InputAccepted => {
@@ -443,10 +450,7 @@ impl LiveStatusDataLayer {
                     .clone()
                     .or_else(|| record.entity_id.clone())
                     .unwrap_or_else(|| record.event_id.clone());
-                let tool_name = record
-                    .tool_name
-                    .clone()
-                    .unwrap_or_else(|| "tool".into());
+                let tool_name = record.tool_name.clone().unwrap_or_else(|| "tool".into());
                 let status = match record.kind {
                     HistoryEventKind::ToolCalled => "running",
                     HistoryEventKind::ToolWaitingApproval => "awaitingApproval",
@@ -455,7 +459,9 @@ impl LiveStatusDataLayer {
                     HistoryEventKind::ToolCompleted => "completed",
                     _ => "unknown",
                 };
-                state.attentions.retain(|a| a.call_id.as_deref() != Some(call_id.as_str()));
+                state
+                    .attentions
+                    .retain(|a| a.call_id.as_deref() != Some(call_id.as_str()));
                 if matches!(record.kind, HistoryEventKind::ToolWaitingApproval) {
                     state.suppressed_by_interaction = true;
                     state.attentions.push(LiveAttention {

@@ -18,52 +18,6 @@ pub mod item;
 pub use item::*;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeThreadNotificationEnvelope {
-    pub thread_id: String,
-    /// 生产端一次连续广播生命周期的标识；与上一条不一致时客户端丢弃旧帧。
-    pub epoch: u64,
-    /// 本通知之前的状态水位；与客户端已知水位不一致即表示缺口。
-    pub base_revision: u64,
-    pub revision: u64,
-    pub emitted_at: i64,
-    pub notification: BridgeThreadNotification,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BridgeThreadNotification {
-    TurnStarted {
-        turn: Box<BridgeTurn>,
-    },
-    TurnUpdated {
-        turn: Box<BridgeTurn>,
-    },
-    TurnCompleted {
-        turn: Box<BridgeTurn>,
-    },
-    InteractionChanged {
-        interaction: Box<BridgeInteractionRequest>,
-    },
-    BusinessRefsChanged {
-        references: BridgeThreadBusinessRefs,
-    },
-    ThreadRuntimeUpdated {
-        runtime: Box<BridgeThreadRuntimeSnapshot>,
-        model_route: Option<BridgeThreadModelRouteSnapshot>,
-    },
-    /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
-    ActivityChanged {
-        activity: Option<Box<BridgeThreadActivity>>,
-    },
-    /// Thread 存储状态变化；`None` 表示当前没有可报告的存储事实（未知，不是“健康”）。
-    StorageChanged {
-        storage: Option<Box<BridgeThreadStorageState>>,
-    },
-    Lagged {
-        dropped: u64,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadSnapshot {
     pub schema_version: u32,
     pub revision: u64,

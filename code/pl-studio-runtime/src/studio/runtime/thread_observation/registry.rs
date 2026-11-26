@@ -316,9 +316,9 @@ impl ThreadObservations {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entries) = all.get_mut(id) {
                 entries.retain(|entry| {
-                    entry
-                        .upgrade()
-                        .is_some_and(|entry| !observations.iter().any(|old| Arc::ptr_eq(&entry, old)))
+                    entry.upgrade().is_some_and(|entry| {
+                        !observations.iter().any(|old| Arc::ptr_eq(&entry, old))
+                    })
                 });
                 if entries.is_empty() {
                     all.remove(id);

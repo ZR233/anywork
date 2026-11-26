@@ -335,7 +335,8 @@ mod admission_tests {
             PreparedModelCall,
         },
         thread::{
-            HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput, UsageSummary,
+            HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadHandle, TurnInput,
+            UsageSummary,
             cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
             history_sink::{HistorySink, HistorySinkHandle},
         },
@@ -368,7 +369,12 @@ mod admission_tests {
             Ok(())
         }
 
-        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
             Ok(max)
         }
 

@@ -13,8 +13,6 @@ import '../../domain/models/studio_models.dart';
 import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/conversation.dart'
-    show ConversationContinuityError, ProtocolVersionMismatch;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -45,7 +43,6 @@ import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
 import '../../rust/api/studio/handlers/timeline.dart' as frb_timeline;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
-import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
 import '../../rust/api/studio/types/presentation.dart' as frb_presentation;
 import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
 import '../../rust/api/studio/types/command.dart' as frb_command;
@@ -94,17 +91,4 @@ String _permissionModeLabel(PermissionMode mode) {
     PermissionMode.autoReview => 'auto-review',
     PermissionMode.fullAccess => 'full-access',
   };
-}
-
-ThreadRuntimeView _emptyRuntimeView() {
-  return const ThreadRuntimeView(
-    modelId: '',
-    contextTokens: 0,
-    contextWindow: 0,
-    totalTokens: 0,
-    costLabel: '',
-    activeSkills: [],
-    activeMcpServers: [],
-    activeLspServers: [],
-  );
 }

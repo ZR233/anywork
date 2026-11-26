@@ -10,7 +10,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import '../domain/models/agent_workspace_view.dart';
 import '../features/conversation/timeline/state/chat_item_presentation.dart';
 import '../features/conversation/timeline/state/timeline_display_diagnostics.dart';
-import '../features/conversation/timeline/state/timeline_display_unit.dart';
+import '../features/conversation/timeline/state/timeline_feed_projection.dart';
 import '../features/conversation/timeline/state/chat_payload_reading.dart';
 import '../features/conversation/interactions/state/interaction_payload.dart';
 import '../features/shell/shell_view.dart' show projectById;
@@ -245,29 +245,25 @@ TimelineDisplayFacts? _timelineFacts(
     appliedSets: lease?.appliedSets,
     appliedPrepends: lease?.appliedPrepends,
     appliedAppends: lease?.appliedAppends,
-    renderedCurrentAtomIds:
-        (lease?.renderedCurrentAtomIds.toList() ?? <String>[])..sort(),
-    currentAtomsLoadedCount: lease?.live.value?.currentAtoms.length,
-    currentAtomsError: lease?.currentCollectionError.value?.toString(),
     groups: [
       for (final display
           in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
         {
           'unitId': display.unitId,
-          'expanded': display.expanded,
-          'blockReference': switch (display.blockReference) {
-            final reference? => {
-              'blockId': reference.blockId,
-              'cut': reference.cut.token,
-              'anchorSeq': reference.anchorSeq,
-              'headSeq': reference.headSeq,
+          'expanded': display.isCurrent,
+          'blockReference': switch (display.group) {
+            final group? => {
+              'blockId': group.id,
+              'afterBoundarySeq': group.afterBoundarySeq,
+              'beforeBoundarySeq': group.beforeBoundarySeq,
             },
             null => null,
           },
           'loading': display.loading,
           'error': display.error?.toString(),
           'items': StudioDriverState.timelineItemsJson([
-            for (final atom in display.atoms) _atomFacts(atom),
+            for (final member in display.members)
+              _timelineItemFacts(timelineFeedMember(member)),
           ]),
         },
     ],
@@ -281,25 +277,6 @@ TimelineDisplayFacts? _timelineFacts(
       ),
       null => null,
     },
-    children: [
-      if (lease != null)
-        for (final display in lease.childrenDisplays)
-          TimelineChildrenFacts(
-            parentId: display.parentId,
-            generation: display.generation,
-            ready: display.ready,
-            olderCursor: display.olderCursor,
-            loadingOlder: display.loadingOlder,
-            error: display.error?.toString(),
-            appliedSets: display.appliedSets,
-            appliedPrepends: display.appliedPrepends,
-            appliedAppends: display.appliedAppends,
-            items: [
-              for (final message in display.messages)
-                _timelineMessageFacts(message),
-            ],
-          ),
-    ],
     items: [
       for (final message in lease?.controller.messages ?? const <Message>[])
         _timelineMessageFacts(message),
@@ -308,49 +285,10 @@ TimelineDisplayFacts? _timelineFacts(
 }
 
 TimelineItemFacts _timelineMessageFacts(Message message) {
-  final unit =
-      message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
-  if (unit != null) {
-    final atom = unit.atom;
-    final finishedAtMillis = unit.timing?.finishedAtMillis;
-    final item = chatItemPresentationOf(message);
-    return TimelineItemFacts(
-      id: message.id,
-      sealedAt:
-          atom?.finishedAt ??
-          (finishedAtMillis == null
-              ? null
-              : finishedAtMillis ~/ Duration.millisecondsPerSecond),
-      compatibility: 'current',
-      omittedBytes: null,
-      kind: unit.timing == null ? atom?.kind.name ?? 'single' : 'work',
-      status: 'history',
-      text: item == null ? '' : _timelineItemFacts(item).text,
-      channel: atom?.textChannel?.name,
-      timeline: {
-        'blockId': unit.id,
-        'blockOrder': unit.blockOrder,
-        'members': switch (unit.memberReference) {
-          final reference? => {
-            'blockId': reference.blockId,
-            'cut': reference.cut.token,
-            'anchorSeq': reference.anchorSeq,
-            'headSeq': reference.headSeq,
-          },
-          null => null,
-        },
-        if (atom != null) ...{
-          'entityId': atom.id,
-          'source': _sourceFacts(atom.source),
-        },
-        'runId': ?item?.displayRecord?.runId,
-        'historyEventId': ?item?.displayRecord?.historyEventId,
-        'historyDetailEventId': ?item?.displayRecord?.historyDetailEventId,
-      },
-    );
-  }
   final item = chatItemPresentationOf(message);
-  if (item != null) return _timelineItemFacts(item);
+  if (item != null) {
+    return _timelineItemFacts(item, feedItem: timelineFeedItemOf(message));
+  }
   return TimelineItemFacts(
     id: message.id,
     sealedAt: null,
@@ -363,56 +301,6 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
     diagnostic: 'Message has no current chat metadata',
   );
 }
-
-TimelineItemFacts _atomFacts(ChatAtom atom) {
-  if (atom.payload != null) {
-    return _timelineItemFacts(ChatItemPresentation.decode(atom));
-  }
-  return TimelineItemFacts(
-    id: atom.id,
-    sealedAt: atom.finishedAt,
-    compatibility: 'current',
-    omittedBytes: null,
-    kind: atom.kind.name,
-    status: switch (atom.lifecycle) {
-      ActiveChatAtom() => 'running',
-      TerminalChatAtom(:final outcome) => outcome.name,
-    },
-    text: '',
-    channel: atom.textChannel?.name,
-    atomic: {
-      'source': _sourceFacts(atom.source),
-      'sourceOrder': atom.sourceOrder,
-      'toolCallId': atom.tool?.callId,
-      'toolName': atom.tool?.name,
-    },
-  );
-}
-
-Map<String, Object?> _sourceFacts(ChatSourceId source) => switch (source) {
-  ForegroundTurnChatSource(:final turnId) => {
-    'kind': 'foregroundTurn',
-    'turnId': turnId,
-  },
-  InputChatSource(:final inputId) => {'kind': 'input', 'inputId': inputId},
-  InboxMessageChatSource(:final sourceId, :final messageId) => {
-    'kind': 'inboxMessage',
-    'sourceId': sourceId,
-    'messageId': messageId,
-  },
-  BackgroundResultChatSource(:final messageId) => {
-    'kind': 'backgroundResult',
-    'messageId': messageId,
-  },
-  OperationChatSource(:final operationId) => {
-    'kind': 'operation',
-    'operationId': operationId,
-  },
-  ReceiptChatSource(:final receiptId) => {
-    'kind': 'receipt',
-    'receiptId': receiptId,
-  },
-};
 
 /// 只读滚动几何：每次诊断请求**现场**读当前展示 lease 实测挂载的标准 controller。
 ///
@@ -442,9 +330,12 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
   );
 }
 
-TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
+TimelineItemFacts _timelineItemFacts(
+  ChatItemPresentation item, {
+  TimelineItem? feedItem,
+}) {
   try {
-    return _loadedItemFacts(item);
+    return _loadedItemFacts(item, feedItem: feedItem);
   } on FormatException catch (error) {
     // Only the current in-memory presentation is inspected here; no I/O error
     // can be relabelled by this per-item diagnostic boundary.
@@ -463,7 +354,10 @@ TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
   }
 }
 
-TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
+TimelineItemFacts _loadedItemFacts(
+  ChatItemPresentation item, {
+  TimelineItem? feedItem,
+}) {
   final data = item.data;
   final outcome = _diagnosticObject(data['outcome']);
   final state = _diagnosticObject(data['state']);
@@ -498,12 +392,15 @@ TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
             'blockId': item.displayUnit!.id,
             'blockOrder': item.displayUnit!.blockOrder,
           },
-    atomic: item.atom == null
-        ? null
-        : {
-            'source': _sourceFacts(item.atom!.source),
-            'sourceOrder': item.atom!.sourceOrder,
-          },
+    atomic: switch (feedItem) {
+      TimelineUserMessage(:final inputId, :final turnId) => {
+        'source': {'kind': 'input', 'inputId': inputId, 'turnId': turnId},
+      },
+      TimelineAssistantText(:final turnId) when turnId != null => {
+        'source': {'kind': 'foregroundTurn', 'turnId': turnId},
+      },
+      _ => null,
+    },
     sealedAt: _diagnosticUnixSeconds(item.createdAt),
     compatibility: item.compatibility.name,
     omittedBytes: item.compatibility == ChatItemCompatibility.current
@@ -513,9 +410,7 @@ TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
                 bytes + body.byteLength - (body.inline?.length ?? 0),
           )
         : null,
-    payloadByteLength:
-        item.byteLength ??
-        (item.raw == null ? null : utf8.encode(item.raw!).length),
+    payloadByteLength: item.raw == null ? null : utf8.encode(item.raw!).length,
     kind: item.type,
     status: status,
     text:
@@ -523,7 +418,11 @@ TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
         item.inlineText('plan.document') ??
         _diagnosticString(data['notice']) ??
         '',
-    channel: _diagnosticString(data['channel']),
+    channel: switch (feedItem) {
+      TimelineUserMessage(:final channel) ||
+      TimelineAssistantText(:final channel) => channel,
+      _ => _diagnosticString(data['channel']),
+    },
     presentationContract: item.presentationContract,
     diagnostic:
         item.diagnostic ??

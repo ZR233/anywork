@@ -86,80 +86,26 @@ Future<void> _prepareAndClose(AppGraph graph) async {
   await StudioExitCoordinator.requestExit();
 }
 
-Future<HistoryTurnHead> _waitForCompletedSetupTurn(
+Future<StudioTurnView> _waitForCompletedSetupTurn(
   AppGraph graph,
   String threadId, {
   required String inputId,
   Duration timeout = const Duration(seconds: 120),
 }) async {
-  if (timeout <= Duration.zero) {
-    throw ArgumentError.value(timeout, 'timeout', 'must be positive');
-  }
-  final deadline = DateTime.now().add(timeout);
-  Duration remaining() {
-    final value = deadline.difference(DateTime.now());
-    if (value <= Duration.zero) {
-      throw TimeoutException('Timed out waiting for shutdown setup History');
-    }
-    return value;
-  }
-
-  final history = await graph.client.conversations
-      .openHistoryReader(threadId)
+  final session = graph.client.conversations.session(threadId);
+  final snapshot = await session.source
+      .waitFor((state) {
+        final turn = state.lastTurn;
+        return turn != null && turn.inputId == inputId && turn.state.isTerminal;
+      })
       .timeout(timeout);
-  try {
-    var cut = await history.capture().timeout(remaining());
-    while (true) {
-      String? pendingTurnId;
-      var cursor = <String>{};
-      String? continuation;
-      do {
-        final page = await history
-            .turnsPage(
-              cut: cut,
-              cursor: continuation,
-              demand: const HistoryDemand(maxRows: 128, maxBytes: 1024 * 1024),
-            )
-            .timeout(remaining());
-        for (final entry in page.entries) {
-          if (entry.head case TurnHistoryBusinessRow(:final head)
-              when head.inputId == inputId) {
-            switch (head.state) {
-              case HistoryTurnState.completed:
-                return head;
-              case HistoryTurnState.cancelled:
-              case HistoryTurnState.failed:
-              case HistoryTurnState.budgetLimited:
-                throw StateError(
-                  'Shutdown setup Turn ${head.turnId} ended as '
-                  '${head.state.name}',
-                );
-              case HistoryTurnState.unknown:
-              case HistoryTurnState.queued:
-              case HistoryTurnState.running:
-                pendingTurnId = head.turnId;
-            }
-          }
-        }
-        continuation = page.next;
-        if (continuation != null && !cursor.add(continuation)) {
-          throw StateError('Shutdown setup Turn continuation repeated');
-        }
-      } while (continuation != null);
-
-      final changed = await history.waitChanged(cut).timeout(remaining());
-      if (changed == cut) {
-        throw StateError(
-          pendingTurnId == null
-              ? 'Shutdown setup History change did not advance'
-              : 'Shutdown setup Turn $pendingTurnId did not advance',
-        );
-      }
-      cut = changed;
-    }
-  } finally {
-    await history.close();
+  final turn = snapshot.lastTurn!;
+  if (turn.state.status != StudioTurnStatus.completed) {
+    throw StateError(
+      'Shutdown setup Turn ${turn.turnId} ended as ${turn.state.status.name}',
+    );
   }
+  return turn;
 }
 
 Future<void> _waitForClose(File signal) async {

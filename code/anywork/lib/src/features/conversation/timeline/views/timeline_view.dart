@@ -83,6 +83,9 @@ class TimelineView extends StatefulWidget {
 
 class _TimelineViewState extends State<TimelineView> {
   final _latestScroll = GlobalKey<LatestScrollViewportState>();
+  // Flyer may ask for visible children again after a sliver insertion.
+  // Reuse the rendered content of unchanged messages without retaining old rows.
+  Expando<Widget> _messageContent = Expando();
   StreamSubscription<ChatOperation>? _operations;
   bool _scheduled = false;
   // Only a layout barrier, not a request gate. Every entry still delegates
@@ -114,6 +117,21 @@ class _TimelineViewState extends State<TimelineView> {
       identical(widget.controls, oldWidget.controls),
       'A new generation requires a new Chat subtree key',
     );
+    if (widget.onLink != oldWidget.onLink ||
+        widget.isSafeLink != oldWidget.isSafeLink ||
+        widget.remoteImageBuilder != oldWidget.remoteImageBuilder ||
+        widget.attachmentBuilder != oldWidget.attachmentBuilder ||
+        widget.monotonicMicros != oldWidget.monotonicMicros ||
+        widget.onContentLayout != oldWidget.onContentLayout ||
+        widget.onCurrentContentLayout != oldWidget.onCurrentContentLayout ||
+        widget.onCurrentContentUnmounted !=
+            oldWidget.onCurrentContentUnmounted ||
+        widget.isDisplayActive != oldWidget.isDisplayActive ||
+        widget.groupMembersBuilder != oldWidget.groupMembersBuilder ||
+        widget.canonicalPresentationBuilder !=
+            oldWidget.canonicalPresentationBuilder) {
+      _messageContent = Expando();
+    }
     final oldSubmissionIds = {
       for (final submission in oldWidget.submissions) submission.inputId,
     };
@@ -243,6 +261,122 @@ class _TimelineViewState extends State<TimelineView> {
     child: _buildTimeline(context),
   );
 
+  late final _builders = Builders(
+    composerBuilder: (_) => const SizedBox.shrink(),
+    scrollToBottomBuilder: (_, _, _) => const SizedBox.shrink(),
+    emptyChatListBuilder: (context) => widget.submissions.isNotEmpty
+        ? const SizedBox.shrink()
+        : Center(
+            child: SelectionContainer.disabled(
+              child: Text(
+                context.l10n.timelineEmptyMessage,
+                style: context.text.bodyMedium,
+              ),
+            ),
+          ),
+    chatAnimatedListBuilder: (context, itemBuilder) => ChatAnimatedList(
+      reversed: true,
+      itemBuilder: itemBuilder,
+      scrollController: widget.controls.scrollController,
+      insertAnimationDuration: Duration.zero,
+      removeAnimationDuration: Duration.zero,
+      shouldScrollToEndWhenSendingMessage: false,
+      handleSafeArea: false,
+      topPadding: 16,
+      bottomPadding: 16,
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+      bottomSliver: widget.planSummary == null && widget.submissions.isEmpty
+          ? null
+          : SliverToBoxAdapter(
+              child: Column(
+                children: [
+                  if (widget.planSummary != null) widget.planSummary!,
+                  for (final submission in widget.submissions)
+                    _ComposerSubmissionCard(
+                      submission: submission,
+                      bodyBuilder: _body,
+                      controls: widget.submissionControlsBuilder?.call(
+                        submission,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+    ),
+    chatMessageBuilder:
+        (
+          context,
+          message,
+          index,
+          animation,
+          child, {
+          bool? isRemoved,
+          required bool isSentByMe,
+          MessageGroupStatus? groupStatus,
+        }) {
+          if (isRemoved == true) {
+            return const SizedBox.shrink();
+          }
+          if (chatItemPresentationOf(message)?.isKnownEmptyText == true) {
+            return const SizedBox.shrink();
+          }
+          return ChatMessage(
+            key: StudioDriverKeys.timelineRow(message.id),
+            message: message,
+            index: index,
+            animation: animation,
+            isRemoved: isRemoved,
+            groupStatus: groupStatus,
+            horizontalPadding: 24,
+            // 条目已由 Studio 投影分组，不再按作者和
+            // 时间套用聊天气泡的第二套间距规则。
+            verticalPadding: 12,
+            verticalGroupedPadding: 12,
+            child: SizedBox(width: double.infinity, child: child),
+          );
+        },
+    customMessageBuilder:
+        (
+          context,
+          message,
+          index, {
+          required bool isSentByMe,
+          MessageGroupStatus? groupStatus,
+        }) => _messageContent[message] ??= _buildMessageContent(
+          message,
+          isSentByMe,
+        ),
+  );
+
+  Widget _buildMessageContent(Message message, bool isSentByMe) {
+    final item = chatItemPresentationOf(message)!;
+    final promptBubble = isSentByMe || item.authorId == 'parentAgent';
+    Widget render(ChatItemPresentation resolved) => ChatItemView(
+      item: resolved,
+      promptBubble: promptBubble,
+      bodyBuilder: _body,
+      attachmentBuilder: widget.attachmentBuilder,
+      monotonicMicros: widget.monotonicMicros,
+      onContentLayout: widget.onContentLayout,
+      onCurrentContentLayout: widget.onCurrentContentLayout,
+      onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
+      isDisplayActive: widget.isDisplayActive,
+      groupMembersBuilder: widget.groupMembersBuilder,
+    );
+    final rendered =
+        widget.canonicalPresentationBuilder?.call(item, render) ?? render(item);
+    if (!promptBubble) return rendered;
+    return Align(
+      alignment: AlignmentDirectional.centerEnd,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: StudioLayout.conversationPromptWidth,
+        ),
+        child: rendered,
+      ),
+    );
+  }
+
   Widget _buildTimeline(BuildContext context) {
     final controls = widget.controls;
     return Column(
@@ -291,6 +425,7 @@ class _TimelineViewState extends State<TimelineView> {
           child: LatestScrollViewport(
             key: _latestScroll,
             controller: controls.scrollController,
+            useScrollBehaviorScrollbar: true,
             latestAtStart: true,
             isActive: () => _displayActive,
             historyPaused: widget.view.mode == TimelineDisplayMode.history,
@@ -309,172 +444,12 @@ class _TimelineViewState extends State<TimelineView> {
                   child: KeyedSubtree(
                     key: StudioDriverKeys.timeline,
                     child: Chat(
+                      key: controls.chatKey,
                       currentUserId: 'user',
                       resolveUser: (id) async => User(id: id),
                       chatController: controls.controller,
                       backgroundColor: Colors.transparent,
-                      builders: Builders(
-                        composerBuilder: (_) => const SizedBox.shrink(),
-                        scrollToBottomBuilder: (_, _, _) =>
-                            const SizedBox.shrink(),
-                        emptyChatListBuilder: (_) =>
-                            widget.submissions.isNotEmpty
-                            ? const SizedBox.shrink()
-                            : Center(
-                                child: SelectionContainer.disabled(
-                                  child: Text(
-                                    context.l10n.timelineEmptyMessage,
-                                    style: context.text.bodyMedium,
-                                  ),
-                                ),
-                              ),
-                        chatAnimatedListBuilder: (context, itemBuilder) =>
-                            ChatAnimatedListReversed(
-                              // Preserve Flyer's ID lookup for moves
-                              // while replacing its row State when a
-                              // Set supplies a new immutable Message.
-                              // ChatMessageInternal otherwise retains
-                              // its initState message for the same ID.
-                              itemBuilder:
-                                  (
-                                    context,
-                                    message,
-                                    index,
-                                    animation, {
-                                    messagesGroupingMode,
-                                    messageGroupingTimeoutInSeconds,
-                                    isRemoved,
-                                  }) => KeyedSubtree(
-                                    key: ValueKey(message.id),
-                                    child: KeyedSubtree(
-                                      key: ObjectKey(message),
-                                      child: itemBuilder(
-                                        context,
-                                        message,
-                                        index,
-                                        animation,
-                                        messagesGroupingMode:
-                                            messagesGroupingMode,
-                                        messageGroupingTimeoutInSeconds:
-                                            messageGroupingTimeoutInSeconds,
-                                        isRemoved: isRemoved,
-                                      ),
-                                    ),
-                                  ),
-                              scrollController: controls.scrollController,
-                              insertAnimationDuration: Duration.zero,
-                              removeAnimationDuration: Duration.zero,
-                              shouldScrollToEndWhenSendingMessage: false,
-                              handleSafeArea: false,
-                              topPadding: 16,
-                              bottomPadding: 16,
-                              keyboardDismissBehavior:
-                                  ScrollViewKeyboardDismissBehavior.manual,
-                              bottomSliver:
-                                  widget.planSummary == null &&
-                                      widget.submissions.isEmpty
-                                  ? null
-                                  : SliverToBoxAdapter(
-                                      child: Column(
-                                        children: [
-                                          if (widget.planSummary != null)
-                                            widget.planSummary!,
-                                          for (final submission
-                                              in widget.submissions)
-                                            _ComposerSubmissionCard(
-                                              submission: submission,
-                                              bodyBuilder: _body,
-                                              controls: widget
-                                                  .submissionControlsBuilder
-                                                  ?.call(submission),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                            ),
-                        chatMessageBuilder:
-                            (
-                              context,
-                              message,
-                              index,
-                              animation,
-                              child, {
-                              bool? isRemoved,
-                              required bool isSentByMe,
-                              MessageGroupStatus? groupStatus,
-                            }) {
-                              if (isRemoved == true) {
-                                return const SizedBox.shrink();
-                              }
-                              if (chatItemPresentationOf(message)
-                                      ?.isKnownEmptyText ==
-                                  true) {
-                                return const SizedBox.shrink();
-                              }
-                              return ChatMessage(
-                                key: StudioDriverKeys.timelineRow(message.id),
-                                message: message,
-                                index: index,
-                                animation: animation,
-                                isRemoved: isRemoved,
-                                groupStatus: groupStatus,
-                                horizontalPadding: 24,
-                                // 条目已由 Studio 投影分组，不再按作者和
-                                // 时间套用聊天气泡的第二套间距规则。
-                                verticalPadding: 12,
-                                verticalGroupedPadding: 12,
-                                child: SizedBox(
-                                  width: double.infinity,
-                                  child: child,
-                                ),
-                              );
-                            },
-                        customMessageBuilder:
-                            (
-                              context,
-                              message,
-                              index, {
-                              required bool isSentByMe,
-                              MessageGroupStatus? groupStatus,
-                            }) {
-                              final item = chatItemPresentationOf(message)!;
-                              final promptBubble =
-                                  isSentByMe || item.authorId == 'parentAgent';
-                              Widget render(ChatItemPresentation resolved) =>
-                                  ChatItemView(
-                                    item: resolved,
-                                    promptBubble: promptBubble,
-                                    bodyBuilder: _body,
-                                    attachmentBuilder: widget.attachmentBuilder,
-                                    monotonicMicros: widget.monotonicMicros,
-                                    onContentLayout: widget.onContentLayout,
-                                    onCurrentContentLayout:
-                                        widget.onCurrentContentLayout,
-                                    onCurrentContentUnmounted:
-                                        widget.onCurrentContentUnmounted,
-                                    isDisplayActive: widget.isDisplayActive,
-                                    groupMembersBuilder:
-                                        widget.groupMembersBuilder,
-                                  );
-                              final rendered =
-                                  widget.canonicalPresentationBuilder?.call(
-                                    item,
-                                    render,
-                                  ) ??
-                                  render(item);
-                              if (!promptBubble) return rendered;
-                              return Align(
-                                alignment: AlignmentDirectional.centerEnd,
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth:
-                                        StudioLayout.conversationPromptWidth,
-                                  ),
-                                  child: rendered,
-                                ),
-                              );
-                            },
-                      ),
+                      builders: _builders,
                     ),
                   ),
                 ),

@@ -15,8 +15,8 @@ use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload, ResourceReference},
     model::{DynModelSession, ToolProgressUpdate},
     thread::{
-        AttemptOutcome, HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadError, ThreadHandle,
-        ThreadSnapshot, TurnOutcome, TurnState,
+        AttemptOutcome, HistoryExport, ModelStepLimit, ThreadEffectBatch, ThreadError,
+        ThreadHandle, ThreadSnapshot, TurnOutcome, TurnState,
         cold::{
             ColdStoreError, OutputRepair, OutputRetryFuture, OutputRetryObligation,
             OutputRetryOutcome, OutputStorageFault, StorageExecutionPhase, StorageFaultKind,
@@ -500,11 +500,7 @@ async fn receipt_capacity_recovery_uses_a_notification_without_another_model_req
 }
 
 impl HistorySink for GatedStore {
-    fn fold_usage(
-        &self,
-        summary: &mut pl_core::thread::UsageSummary,
-        effect: &ThreadEffectBatch,
-    ) {
+    fn fold_usage(&self, summary: &mut pl_core::thread::UsageSummary, effect: &ThreadEffectBatch) {
         let _ = (summary, effect);
     }
 

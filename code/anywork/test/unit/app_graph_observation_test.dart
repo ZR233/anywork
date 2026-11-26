@@ -11,12 +11,7 @@ import 'package:anywork/src/presentation/providers/start_session_controller.dart
 import 'package:anywork/src/presentation/providers/skills_store.dart';
 import 'package:anywork/src/presentation/providers/session_costs_store.dart';
 import 'package:anywork_client/studio_client.dart'
-    show
-        CloseReport,
-        CurrentReader,
-        DomainSyncPhase,
-        FailedComposerThreadState,
-        ReadDemand;
+    show CloseReport, DomainSyncPhase, FailedComposerThreadState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -39,7 +34,7 @@ void main() {
       graph.setConversationPageVisible(true);
       await graph.client.directoryCommands.selectThread('thread-main');
       await timelineReady(graph.timeline, 'thread-main');
-      await _awaitCurrentReaders(graph, transport, 'thread-main');
+      await _awaitFeed(graph, transport, 'thread-main');
       final lease = graph.timeline.lease('thread-main')!..bind();
       Future<CloseReport>? nested;
       final observation = graph.timeline.source.watch((state) {
@@ -111,7 +106,7 @@ void main() {
       expect(costs.read().loaded, isFalse);
       // 未加载会话只观察 visibleThreadId；其他三个缺失 owner 各观察 selection 与 failure。
       expect(client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(transport.currentReaders, isEmpty);
+      expect(transport.feeds, isEmpty);
     } finally {
       session.close();
       composer.close();
@@ -142,13 +137,8 @@ void main() {
         (id) => id == 'thread-main',
       );
       await timelineReady(graph.timeline, 'thread-main');
-      await _awaitCurrentReaders(graph, transport, 'thread-main');
-      final connection = _timelineCurrentReader(graph, 'thread-main');
-      final attemptId = graph.timeline
-          .lease('thread-main')!
-          .current!
-          .metadata
-          .readerId;
+      await _awaitFeed(graph, transport, 'thread-main');
+      final connection = transport.feedFor('thread-main');
       final workspaceId = graph.client.selection.state.selectedProjectId!;
       final startOwner = graph.client.drafts.startDraft;
       final composerOwner = graph.client.drafts.existingComposer(
@@ -188,10 +178,7 @@ void main() {
 
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
-      expect(
-        graph.timeline.lease('thread-main')!.current!.metadata.readerId,
-        attemptId,
-      );
+      expect(transport.feedFor('thread-main'), same(connection));
       expect(graph.timeline.lease('thread-main'), isNotNull);
       expect(graph.client.drafts.startDraft, same(startOwner));
       expect(graph.client.drafts.composer('thread-main'), same(composerOwner));
@@ -222,10 +209,7 @@ void main() {
       addTearDown(rebuiltStart.close);
       addTearDown(rebuiltComposer.close);
 
-      expect(
-        graph.timeline.lease('thread-main')!.current!.metadata.readerId,
-        attemptId,
-      );
+      expect(transport.feedFor('thread-main'), same(connection));
       expect(
         rebuilt
             .read(startSessionControllerProvider)
@@ -237,12 +221,7 @@ void main() {
         rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
         'existing session survives observation disposal',
       );
-      expect(_activeTimelineCurrentReaders(graph, 'thread-main'), hasLength(1));
-      expect(
-        connection.initialViewReads,
-        2,
-        reason: 'Timeline reads the baseline and watch qualification boundary',
-      );
+      expect(transport.feeds.where((feed) => !feed.requested), hasLength(1));
 
       final report = await graph.close(budget: testBudgetUntil(_deadline()));
       expect(report.unresolved, isEmpty);
@@ -276,9 +255,9 @@ void main() {
       second.client.directoryCommands.selectThread('thread-main'),
     ]);
     final afterVisibleSelection = first.timeline.monotonicMicros;
-    expect(_activeTimelineCurrentReaders(first, 'thread-main'), isEmpty);
+    expect(firstTransport.feeds.where((feed) => !feed.requested), isEmpty);
     expect(
-      _activeTimelineCurrentReaders(second, 'thread-main'),
+      secondTransport.feeds.where((feed) => !feed.requested),
       isEmpty,
       reason: 'canonical visible selection does not fabricate viewport demand',
     );
@@ -289,8 +268,8 @@ void main() {
       timelineReady(second.timeline, 'thread-main'),
     ]);
     await Future.wait([
-      _awaitCurrentReaders(first, firstTransport, 'thread-main'),
-      _awaitCurrentReaders(second, secondTransport, 'thread-main'),
+      _awaitFeed(first, firstTransport, 'thread-main'),
+      _awaitFeed(second, secondTransport, 'thread-main'),
     ]);
     final display = first.timeline.lease('thread-main')!;
     expect(display.selectionId, isNotNull);
@@ -331,8 +310,8 @@ void main() {
       isNot(same(second.client.conversations.session('thread-main'))),
     );
     expect(
-      _timelineCurrentReader(first, 'thread-main'),
-      isNot(same(_timelineCurrentReader(second, 'thread-main'))),
+      firstTransport.feedFor('thread-main'),
+      isNot(same(secondTransport.feedFor('thread-main'))),
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(
@@ -355,15 +334,11 @@ void main() {
       isTrue,
     );
     expect(
-      firstTransport.currentReaders.every(
-        (reader) => reader.joined.isCompleted,
-      ),
+      firstTransport.feeds.every((reader) => reader.joined.isCompleted),
       isTrue,
     );
     expect(
-      secondTransport.currentReaders.every(
-        (reader) => reader.requestCloseCalls == 0,
-      ),
+      secondTransport.feeds.every((reader) => reader.requestCloseCalls == 0),
       isTrue,
     );
     expect(second.client.isClosed, isFalse);
@@ -376,104 +351,65 @@ void main() {
     );
   });
 
-  test('History opens before Current and late Current is reclaimed after switching', () async {
-    final transport = _LateTimelineOpenTransport();
-    final graph = testAppGraph(
-      statisticsFeed: const TestStatisticsFeedPort(),
-      transport: transport,
-      clientId: 'late-demo-attempt',
-    );
-    addTearDown(() async {
-      if (!transport.releaseFirstTimelineOpen.isCompleted) {
-        transport.releaseFirstTimelineOpen.complete();
-      }
-      await graph.close(budget: testBudgetUntil(_deadline()));
-    });
-    await graph.client.bootstrap();
-    final lateSelection =
-        (graph
-              ..timeline.updateReadDemand(chatDemand)
-              ..setConversationPageVisible(true))
-            .client
-            .directoryCommands
-            .selectThread('thread-main');
-    await transport.firstTimelineOpenEntered.future;
-    await timelineReady(graph.timeline, 'thread-main');
-    expect(
-      graph.timeline.lease('thread-main')!.controller.messages,
-      isNotEmpty,
-      reason: 'History is visible while Current is still opening',
-    );
-    final late = transport.currentReaders.lastWhere(
-      (reader) =>
-          reader.threadId == 'thread-main' &&
-          reader.demand.maxItems == chatDemand.maxItems,
-    );
-    await (graph
-          ..timeline.updateReadDemand(chatDemand)
-          ..setConversationPageVisible(true))
-        .client
-        .directoryCommands
-        .selectThread('thread-alt');
-    await timelineReady(graph.timeline, 'thread-alt');
-    await _awaitCurrentReaders(graph, transport, 'thread-alt');
-    final currentAttempt = graph.timeline
-        .lease('thread-alt')!
-        .current!
-        .metadata
-        .readerId;
-    final current =
-        graph.timeline.lease('thread-alt')!.current as RecordingCurrentReader;
-    expect(current, isNot(same(late)));
+  test(
+    'retired Feed open is joined without publishing its initial reset',
+    () async {
+      final transport = RecordingDemoTransport();
+      final entered = Completer<RecordingConversationFeed>();
+      final release = transport.nextFeedOpenGate = Completer<void>();
+      final closeEntered = Completer<void>();
+      final closeGate = Completer<void>();
+      transport.onFeedOpened = (feed) {
+        if (feed.threadId == 'thread-main' && !entered.isCompleted) {
+          entered.complete(feed);
+        }
+      };
+      final graph = testAppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'late-demo-attempt',
+      );
+      addTearDown(() async {
+        if (!release.isCompleted) release.complete();
+        if (!closeGate.isCompleted) closeGate.complete();
+        await graph.close(budget: testBudgetUntil(_deadline()));
+      });
+      await graph.client.bootstrap();
+      graph.timeline.updateReadDemand(chatDemand);
+      graph.setConversationPageVisible(true);
+      final first = graph.client.directoryCommands.selectThread('thread-main');
+      final late = await entered.future;
+      expect(late.initialLimit, chatDemand);
+      late.beforeClose = () {
+        closeEntered.complete();
+        return closeGate.future;
+      };
+      expect(graph.timeline.lease('thread-main'), isNull);
 
-    transport.releaseFirstTimelineOpen.complete();
-    await lateSelection;
-    await late.joined.future;
+      final second = graph.client.directoryCommands.selectThread('thread-alt');
+      await graph.client.conversations.visibleThreadId.waitFor(
+        (id) => id == 'thread-alt',
+      );
+      release.complete();
+      await closeEntered.future;
+      expect(late.requested, isTrue);
+      expect(late.joined.isCompleted, isFalse);
+      closeGate.complete();
+      await Future.wait([first, second]);
+      await late.joined.future;
+      await _awaitFeed(graph, transport, 'thread-alt');
 
-    expect(
-      late.initialViewReads,
-      0,
-      reason: 'retired open never becomes a baseline',
-    );
-    expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
-    expect(late.closeCalls, 1);
-    expect(current.requestCloseCalls, 0);
-    expect(
-      graph.timeline.lease('thread-alt')!.current!.metadata.readerId,
-      currentAttempt,
-    );
-    expect(graph.timeline.lease('thread-alt'), isNotNull);
-    final display = graph.timeline.lease('thread-alt')!;
-    expect(display.controller.messages, isNotEmpty);
-    // This is the Client attempt contract over Demo connections, not native FRB.
-  });
-}
-
-final class _LateTimelineOpenTransport extends RecordingDemoTransport {
-  final firstTimelineOpenEntered = Completer<void>();
-  final releaseFirstTimelineOpen = Completer<void>();
-  bool _gatedFirstTimelineOpen = false;
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    final reader = await super.openCurrentReader(
-      threadId,
-      currentProtocolVersion: currentProtocolVersion,
-      demand: demand,
-    );
-    if (!_gatedFirstTimelineOpen &&
-        threadId == 'thread-main' &&
-        demand.maxItems == chatDemand.maxItems) {
-      _gatedFirstTimelineOpen = true;
-      firstTimelineOpenEntered.complete();
-      await releaseFirstTimelineOpen.future;
-    }
-    return reader;
-  }
+      expect(late.listening.isCompleted, isFalse);
+      expect(late.delivered, isEmpty);
+      expect(late.requestCloseCalls, 1);
+      expect(late.closeCalls, 1);
+      expect(transport.feedFor('thread-alt').requested, isFalse);
+      expect(
+        graph.timeline.lease('thread-alt')!.controller.messages,
+        isNotEmpty,
+      );
+    },
+  );
 }
 
 ProviderContainer _container(AppGraph graph) =>
@@ -481,40 +417,15 @@ ProviderContainer _container(AppGraph graph) =>
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 
-RecordingCurrentReader _timelineCurrentReader(
-  AppGraph graph,
-  String threadId,
-) => graph.timeline.lease(threadId)!.current as RecordingCurrentReader;
-
-Iterable<RecordingCurrentReader> _activeTimelineCurrentReaders(
-  AppGraph graph,
-  String threadId,
-) {
-  final current = graph.timeline.lease(threadId)?.current;
-  return current is RecordingCurrentReader && !current.requested
-      ? [current]
-      : const [];
-}
-
-Future<void> _awaitCurrentReaders(
+Future<void> _awaitFeed(
   AppGraph graph,
   RecordingDemoTransport transport,
   String threadId,
 ) async {
-  final session = graph.client.conversations.existingSession(threadId);
-  if (session == null) {
-    throw StateError('Thread session is not open: $threadId');
-  }
+  final session = graph.client.conversations.existingSession(threadId)!;
   await session.source.waitFor((state) => state.hasSnapshot);
-  final timeline = graph.timeline.lease(threadId)?.current;
-  final current = transport.currentReaders
-      .where((reader) => reader.threadId == threadId)
-      .toList();
-  expect(current, hasLength(2));
-  expect(timeline, isA<RecordingCurrentReader>());
-  final state = current.singleWhere((reader) => !identical(reader, timeline));
-  await Future.wait([
-    (timeline as RecordingCurrentReader).watchEntered.future,
-    state.watchEntered.future,
-  ]);
+  await timelineReady(graph.timeline, threadId);
+  final feeds = transport.feeds.where((feed) => feed.threadId == threadId);
+  expect(feeds, hasLength(1));
+  await feeds.single.listening.future;
 }

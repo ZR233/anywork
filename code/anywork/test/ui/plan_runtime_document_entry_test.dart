@@ -6,6 +6,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -58,33 +59,24 @@ void main() {
     );
 
     final session = graph.client.conversations.session('thread-main');
-    final workspace = session.state.workspace!;
     final markdown =
         '# Delivery Blueprint\n\nKeep the current draft readable.\n\n'
         '${List.generate(80, (index) => 'Reading paragraph $index.').join('\n\n')}';
     Future<void> publishPlan(PlanRuntimeView? plan, {bool cold = false}) async {
-      final runtime = workspace.runtime.copyWith(plan: plan);
-      transport.seedConversationState(
+      final next = transport.seedConversationState(
         'thread-main',
-        ThreadRuntimeUpdate(
-          runtime: runtime,
-          todo: null,
-          modelRoute: session.state.modelRoute,
+        (current) => current.copyWith(
+          interactions: const [],
+          runtime: cold
+              ? current.runtime.copyWith(plan: plan, execution: null)
+              : current.runtime.copyWith(plan: plan),
+          activity: null,
         ),
       );
       await pumpClientUntil(
         tester,
-        () => session.state.businessRefs?.plan?.revision == plan?.revision,
-        'original State Plan reference',
-      );
-      await transport.publishWorkspace(
-        session.state.workspace!.copyWith(
-          interactions: const [],
-          runtime: cold
-              ? runtime.copyWith(plan: null, execution: null)
-              : runtime,
-          activity: null,
-        ),
+        () => session.state.revision >= next.revision,
+        'Plan metadata received',
       );
     }
 
@@ -126,8 +118,24 @@ void main() {
 
     expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
     expect(find.byKey(StudioDriverKeys.statusPlanEntry), findsOneWidget);
+    expect(session.state.meta?.plan?.document, isNull);
+    final feed = transport.feedFor('thread-main');
+    expect(feed.sessionDetailRequests, isEmpty);
     await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
     await tester.pumpAndSettle();
+
+    expect(transport.feedFor('thread-main'), same(feed));
+    expect(feed.sessionDetailRequests, [
+      (kind: SessionDetailKind.plan, offset: 0, maxBytes: 64 * 1024),
+    ]);
+    expect(
+      tester
+          .widget<TimelineMarkdown>(
+            find.byKey(StudioDriverKeys.planDetailsMarkdown),
+          )
+          .text,
+      markdown,
+    );
 
     expect(
       tester.widget<Text>(find.byKey(StudioDriverKeys.planDetailsStatus)).data,
@@ -210,10 +218,10 @@ void main() {
       cold: true,
     );
     await tester.pumpAndSettle();
-    expect(session.state.runtime?.plan, isNull);
     expect(session.state.runtime?.execution, isNull);
     expect(session.state.activity, isNull);
-    expect(session.state.businessRefs?.plan?.document, isNotNull);
+    expect(session.state.meta?.plan?.revision, 5);
+    expect(session.state.meta?.plan?.document, isNull);
     await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
     await tester.pumpAndSettle();
     expect(
@@ -226,7 +234,7 @@ void main() {
         findRichText: true,
       ),
       findsOneWidget,
-      reason: 'Cold State refs keep the original approved document readable',
+      reason: 'The cold session feed still serves the approved Plan detail',
     );
     expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
     expect(find.byKey(StudioDriverKeys.planSubmitRevision), findsNothing);
@@ -266,7 +274,7 @@ void main() {
     // Exercise the actual shell footer, whose height budget is smaller than
     // the full Plan form in this viewport.
     await transport.publishWorkspace(
-      workspace.copyWith(
+      session.state.workspace!.copyWith(
         interactions: [
           PendingInteraction(
             id: 'short-plan',

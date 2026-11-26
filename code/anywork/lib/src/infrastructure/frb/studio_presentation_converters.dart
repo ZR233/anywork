@@ -1,353 +1,5 @@
 part of 'studio_api.dart';
 
-HistoryCut _historyCutFromFrb(frb_presentation.BridgeHistoryCut value) =>
-    HistoryCut(value.token);
-
-OpenHistory _openHistoryFromFrb(
-  frb_presentation.BridgeOpenHistoryReader value,
-) => OpenHistory(
-  readerId: value.readerId,
-  historyProtocolVersion: value.historyProtocolVersion,
-);
-
-frb_presentation.BridgeHistoryCut _historyCutToFrb(HistoryCut value) =>
-    frb_presentation.BridgeHistoryCut(token: value.token);
-
-frb_presentation.BridgeHistoryDemand _historyDemandToFrb(HistoryDemand value) =>
-    frb_presentation.BridgeHistoryDemand(
-      maxRows: value.maxRows,
-      maxBytes: value.maxBytes,
-    );
-
-frb_presentation.BridgeHistoryEventsQuery _historyEventsQueryToFrb(
-  HistoryEventsQuery value,
-) => switch (value) {
-  AllHistoryEvents() =>
-    const frb_presentation.BridgeHistoryEventsQuery.allEvents(),
-  EntityHistoryEvents(:final entityId) =>
-    frb_presentation.BridgeHistoryEventsQuery.entity(entityId: entityId),
-  TurnHistoryEvents(:final turnId) =>
-    frb_presentation.BridgeHistoryEventsQuery.turn(turnId: turnId),
-  SourceHistoryEvents(:final source) =>
-    frb_presentation.BridgeHistoryEventsQuery.source(
-      source: _chatSourceToFrb(source),
-    ),
-  CallHistoryEvents(:final callId) =>
-    frb_presentation.BridgeHistoryEventsQuery.call(callId: callId),
-  OriginalsHistoryEvents(:final queryClass, :final parentId) =>
-    frb_presentation.BridgeHistoryEventsQuery.originals(
-      queryClass: queryClass,
-      parentId: parentId,
-    ),
-  TextOriginalHistoryEvents() =>
-    const frb_presentation.BridgeHistoryEventsQuery.textOriginals(),
-};
-
-HistoryTimelineRole _historyTimelineRoleFromFrb(
-  frb_presentation.BridgeHistoryTimelineRole value,
-) => switch (value) {
-  frb_presentation.BridgeHistoryTimelineRole.boundary =>
-    HistoryTimelineRole.boundary,
-  frb_presentation.BridgeHistoryTimelineRole.work => HistoryTimelineRole.work,
-  frb_presentation.BridgeHistoryTimelineRole.hidden =>
-    HistoryTimelineRole.hidden,
-};
-
-HistoryBusinessRowScope _historyBusinessRowScopeFromFrb(
-  frb_presentation.BridgeHistoryBusinessRowScope value,
-) => switch (value) {
-  frb_presentation.BridgeHistoryBusinessRowScope.turn =>
-    HistoryBusinessRowScope.turn,
-  frb_presentation.BridgeHistoryBusinessRowScope.source =>
-    HistoryBusinessRowScope.source,
-  frb_presentation.BridgeHistoryBusinessRowScope.cost =>
-    HistoryBusinessRowScope.cost,
-  frb_presentation.BridgeHistoryBusinessRowScope.accounting =>
-    HistoryBusinessRowScope.accounting,
-};
-
-HistoryBusinessRowHead _historyBusinessRowHeadFromFrb(
-  frb_presentation.BridgeHistoryBusinessRowHead value,
-) => switch (value) {
-  frb_presentation.BridgeHistoryBusinessRowHead_Turn(:final field0) =>
-    TurnHistoryBusinessRow(_historyTurnHeadFromFrb(field0)),
-  frb_presentation.BridgeHistoryBusinessRowHead_Source(:final field0) =>
-    SourceHistoryBusinessRow(_historySourceHeadFromFrb(field0)),
-  frb_presentation.BridgeHistoryBusinessRowHead_Cost(:final field0) =>
-    CostHistoryBusinessRow(_historyCostHeadFromFrb(field0)),
-  frb_presentation.BridgeHistoryBusinessRowHead_Accounting(:final field0) =>
-    AccountingHistoryBusinessRow(_historyAccountingHeadFromFrb(field0)),
-};
-
-HistoryBusinessRowEntry _historyBusinessRowEntryFromFrb(
-  frb_presentation.BridgeHistoryBusinessRowEntry value,
-) => HistoryBusinessRowEntry(
-  rowKey: value.rowKey,
-  anchorSeq: exactTimelineInt(value.anchorSeq, 'history anchor'),
-  headSeq: exactTimelineInt(value.headSeq, 'history head'),
-  head: _historyBusinessRowHeadFromFrb(value.head),
-);
-
-HistoryBusinessPage _historyBusinessPageFromFrb(
-  frb_presentation.BridgeHistoryBusinessPage value,
-) => HistoryBusinessPage(
-  cut: _historyCutFromFrb(value.cut),
-  entries: value.entries.map(_historyBusinessRowEntryFromFrb).toList(),
-  next: value.next,
-);
-
-HistoryTurnHead _historyTurnHeadFromFrb(
-  frb_presentation.BridgeHistoryTurnHead value,
-) => HistoryTurnHead(
-  turnId: value.turnId,
-  inputId: value.inputId,
-  runId: value.runId,
-  state: HistoryTurnState.values.byName(value.state.name),
-  phase: value.phase == null
-      ? null
-      : CurrentTurnPhase.values.byName(_currentTurnPhase(value.phase!).name),
-  contextDisposition: switch (value.contextDisposition) {
-    frb_presentation.BridgeHistoryContextDisposition.active =>
-      HistoryContextDisposition.active,
-    frb_presentation.BridgeHistoryContextDisposition.rolledBack =>
-      HistoryContextDisposition.rolledBack,
-  },
-  queuedAt: _timelineTimestampFromFrb(value.queuedAt),
-  startedAt: _timelineTimestampFromFrb(value.startedAt),
-  finishedAt: _timelineTimestampFromFrb(value.finishedAt),
-  updatedAt: _timelineTimestampFromFrb(value.updatedAt)!,
-  detailEventId: value.detailEventId,
-);
-
-HistorySourceHead _historySourceHeadFromFrb(
-  frb_presentation.BridgeHistorySourceHead value,
-) => HistorySourceHead(
-  source: _chatSourceFromFrb(value.source),
-  lifecycle: switch (value.lifecycle) {
-    frb_presentation.BridgeHistorySourceLifecycle_Unknown() =>
-      const HistorySourceLifecycle(kind: HistorySourceLifecycleKind.unknown),
-    frb_presentation.BridgeHistorySourceLifecycle_Active() =>
-      const HistorySourceLifecycle(kind: HistorySourceLifecycleKind.active),
-    frb_presentation.BridgeHistorySourceLifecycle_Ended(:final outcome) =>
-      HistorySourceLifecycle(
-        kind: HistorySourceLifecycleKind.ended,
-        outcome: ChatTerminalOutcome.values.byName(outcome.name),
-      ),
-  },
-  startedAt: _timelineTimestampFromFrb(value.startedAt),
-  endedAt: _timelineTimestampFromFrb(value.endedAt),
-  observedAt: _timelineTimestampFromFrb(value.observedAt),
-  detailEventId: value.detailEventId,
-);
-
-HistoryCostHead _historyCostHeadFromFrb(
-  frb_presentation.BridgeHistoryCostHead value,
-) => HistoryCostHead(
-  purpose: value.purpose,
-  currency: value.currency,
-  costDelta: value.costDelta,
-  costTotal: value.costTotal,
-  cacheSavingsDelta: value.cacheSavingsDelta,
-  cacheSavingsTotal: value.cacheSavingsTotal,
-  updatedAt: _timelineTimestampFromFrb(value.updatedAt)!,
-  detailEventId: value.detailEventId,
-);
-
-HistoryAccountingHead _historyAccountingHeadFromFrb(
-  frb_presentation.BridgeHistoryAccountingHead value,
-) => HistoryAccountingHead(
-  promptTokens: exactTimelineInt(value.promptTokens, 'prompt tokens'),
-  completionTokens: exactTimelineInt(
-    value.completionTokens,
-    'completion tokens',
-  ),
-  cachedPromptTokens: exactTimelineInt(
-    value.cachedPromptTokens,
-    'cached prompt tokens',
-  ),
-  cacheWriteTokens: exactTimelineInt(
-    value.cacheWriteTokens,
-    'cache write tokens',
-  ),
-  reasoningTokens: exactTimelineInt(value.reasoningTokens, 'reasoning tokens'),
-  inferenceCount: exactTimelineInt(value.inferenceCount, 'inference count'),
-  totalTokens: exactTimelineInt(value.totalTokens, 'total tokens'),
-  cacheUsage: _cacheUsageFromFrb(value.cacheUsage),
-  hasIncompleteUsage: value.hasIncompleteUsage,
-  hasUnpricedUsage: value.hasUnpricedUsage,
-  updatedAt: _timelineTimestampFromFrb(value.updatedAt)!,
-  detailEventId: value.detailEventId,
-);
-
-HistoryEventRecord _historyEventRecordFromFrb(
-  frb_presentation.BridgeHistoryEventRecord value,
-) => HistoryEventRecord(
-  seq: exactTimelineInt(value.seq, 'history event sequence'),
-  eventId: value.eventId,
-  kind: value.kind,
-  timelineRole: _historyTimelineRoleFromFrb(value.timelineRole),
-  occurredAt: _timelineTimestampFromFrb(value.occurredAt),
-  recordedAt: _timelineTimestampFromFrb(value.recordedAt)!,
-  runId: value.runId,
-  turnId: value.turnId,
-  attemptId: value.attemptId,
-  callId: value.callId,
-  entityId: value.entityId,
-  messageId: value.messageId,
-  toolName: value.toolName,
-  source: value.source == null ? null : _chatSourceFromFrb(value.source!),
-  original: value.original == null
-      ? null
-      : HistoryOriginalInfo(
-          queryClass: value.original!.queryClass,
-          parentId: value.original!.parentId,
-          originalKind: ChatAtomKind.values.byName(
-            value.original!.originalKind.name,
-          ),
-          toolName: value.original!.toolName,
-        ),
-  rowScope: value.rowScope == null
-      ? null
-      : _historyBusinessRowScopeFromFrb(value.rowScope!),
-  rowKey: value.rowKey,
-  payloadSchema: value.payloadSchema,
-  payloadJson: value.payloadJson,
-);
-
-HistoryTimelineEntry _historyTimelineEntryFromFrb(
-  frb_presentation.BridgeHistoryTimelineEntry value,
-) => HistoryTimelineEntry(
-  event: _historyEventRecordFromFrb(value.event),
-  hasFoldedAfter: value.hasFoldedAfter,
-  tailFoldedEndedAt: _timelineTimestampFromFrb(value.tailFoldedEndedAt),
-);
-
-HistoryTimelinePage _historyTimelinePageFromFrb(
-  frb_presentation.BridgeHistoryTimelinePage value,
-) => HistoryTimelinePage(
-  cut: _historyCutFromFrb(value.cut),
-  entries: value.entries.map(_historyTimelineEntryFromFrb).toList(),
-  hasFoldedBeforeOldest: value.hasFoldedBeforeOldest,
-  next: value.next,
-);
-
-HistoryWorkRangePage _historyWorkRangePageFromFrb(
-  frb_presentation.BridgeHistoryWorkRangePage value,
-) => HistoryWorkRangePage(
-  cut: _historyCutFromFrb(value.cut),
-  afterSeq: value.afterSeq == null
-      ? null
-      : exactTimelineInt(value.afterSeq!, 'history work range afterSeq'),
-  beforeSeq: value.beforeSeq == null
-      ? null
-      : exactTimelineInt(value.beforeSeq!, 'history work range beforeSeq'),
-  events: value.events.map(_historyEventRecordFromFrb).toList(),
-  next: value.next,
-);
-
-HistoryEventsPage _historyEventsPageFromFrb(
-  frb_presentation.BridgeHistoryEventsPage value,
-) => HistoryEventsPage(
-  cut: _historyCutFromFrb(value.cut),
-  entries: value.entries.map(_historyEventRecordFromFrb).toList(),
-  next: value.next,
-);
-
-HistoryEventBodyRef _historyBodyRefFromFrb(
-  frb_presentation.BridgeHistoryEventBodyRef value,
-) => HistoryEventBodyRef(
-  databaseId: value.databaseId,
-  ownerEventId: value.ownerEventId,
-  bodyKey: value.bodyKey,
-  bodyId: value.bodyId,
-  byteStart: exactTimelineInt(value.byteStart, 'history body start'),
-  byteLength: exactTimelineInt(value.byteLength, 'history body length'),
-);
-
-frb_presentation.BridgeHistoryEventBodyRef _historyBodyRefToFrb(
-  HistoryEventBodyRef value,
-) => frb_presentation.BridgeHistoryEventBodyRef(
-  databaseId: value.databaseId,
-  ownerEventId: value.ownerEventId,
-  bodyKey: value.bodyKey,
-  bodyId: value.bodyId,
-  byteStart: BigInt.from(value.byteStart),
-  byteLength: BigInt.from(value.byteLength),
-);
-
-HistoryBodyWindow _historyBodyWindowFromFrb(
-  frb_presentation.BridgeHistoryBodyWindow value,
-) => HistoryBodyWindow(
-  offset: exactTimelineInt(value.offset, 'history body offset'),
-  bytes: value.bytes,
-  totalLength: exactTimelineInt(value.totalLength, 'history body length'),
-  mediaType: value.mediaType,
-);
-
-HistoryBodyPage _historyBodyPageFromFrb(
-  frb_presentation.BridgeHistoryBodyPage value,
-) => HistoryBodyPage(
-  ownerEventId: value.ownerEventId,
-  entries: [
-    for (final entry in value.entries)
-      HistoryBodyEntry(
-        ordinal: exactTimelineInt(entry.ordinal, 'history body ordinal'),
-        bodyKey: entry.bodyKey,
-        role: switch (entry.role) {
-          frb_presentation.BridgeHistoryBodyRole_CanonicalPayload() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.canonicalPayload),
-          frb_presentation.BridgeHistoryBodyRole_CanonicalMetadata() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.canonicalMetadata),
-          frb_presentation.BridgeHistoryBodyRole_Body() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.body),
-          frb_presentation.BridgeHistoryBodyRole_ReasoningSummary() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.reasoningSummary),
-          frb_presentation.BridgeHistoryBodyRole_ToolArguments() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.toolArguments),
-          frb_presentation.BridgeHistoryBodyRole_ToolOutput() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.toolOutput),
-          frb_presentation.BridgeHistoryBodyRole_Attachment() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.attachment),
-          frb_presentation.BridgeHistoryBodyRole_WaitPresentation() =>
-            const HistoryBodyRole(HistoryBodyRoleKind.waitPresentation),
-          frb_presentation.BridgeHistoryBodyRole_Other(:final name) =>
-            HistoryBodyRole(HistoryBodyRoleKind.other, name: name),
-        },
-        reference: _historyBodyRefFromFrb(entry.reference),
-        mediaType: entry.mediaType,
-      ),
-  ],
-  next: value.next,
-);
-
-HistoryAccounting? _historyAccountingFromFrb(
-  frb_presentation.BridgeHistoryAccounting? value,
-) => value == null
-    ? null
-    : HistoryAccounting(_historyAccountingHeadFromFrb(value.head));
-
-CurrentRevision _currentRevisionFromFrb(
-  frb_presentation.BridgeCurrentRevision value,
-) => CurrentRevision(
-  ownerId: value.ownerId,
-  revision: exactTimelineInt(value.revision, 'current revision'),
-);
-
-OpenCurrent _openCurrentFromFrb(
-  frb_presentation.BridgeOpenCurrentReader value,
-) => OpenCurrent(
-  readerId: value.readerId,
-  currentProtocolVersion: value.currentProtocolVersion,
-  currentOwnerId: value.currentOwnerId,
-);
-
-frb_presentation.BridgeCurrentRevision _currentRevisionToFrb(
-  CurrentRevision value,
-) => frb_presentation.BridgeCurrentRevision(
-  ownerId: value.ownerId,
-  revision: BigInt.from(value.revision),
-);
-
 CurrentContentRef _currentContentRefFromFrb(
   frb_presentation.BridgeCurrentContentRef value,
 ) => CurrentContentRef(
@@ -383,16 +35,6 @@ CurrentStateField _currentStateFieldFromFrb(
     ),
 };
 
-frb_presentation.BridgeCurrentContentRef _currentContentRefToFrb(
-  CurrentContentRef value,
-) => frb_presentation.BridgeCurrentContentRef(
-  ownerId: value.ownerId,
-  domain: value.domain,
-  entityId: value.entityId,
-  contentKey: value.contentKey,
-  generation: value.generation,
-);
-
 CurrentCollectionRef _currentCollectionRefFromFrb(
   frb_presentation.BridgeCurrentCollectionRef value,
 ) => CurrentCollectionRef(
@@ -401,271 +43,560 @@ CurrentCollectionRef _currentCollectionRefFromFrb(
   revision: exactTimelineInt(value.revision, 'current collection revision'),
 );
 
-frb_presentation.BridgeCurrentCollectionRef _currentCollectionRefToFrb(
-  CurrentCollectionRef value,
-) => frb_presentation.BridgeCurrentCollectionRef(
-  ownerId: value.ownerId,
-  collection: value.collection,
-  revision: BigInt.from(value.revision),
+BodyRef _bodyRefFromFrb(frb_presentation.BridgeBodyRef value) => BodyRef(
+  databaseId: value.databaseId,
+  bodyId: value.bodyId,
+  ownerEventId: value.ownerEventId,
+  bodyKey: value.bodyKey,
+  role: value.role,
+  byteLength: exactTimelineInt(value.byteLength, 'body length'),
+  mediaType: value.mediaType,
+  inlineText: value.inlineText,
 );
 
-CurrentPayloadData _currentPayloadFromFrb(
-  frb_presentation.BridgeCurrentPayloadData value,
+frb_presentation.BridgeBodyRef _bodyRefToFrb(BodyRef value) =>
+    frb_presentation.BridgeBodyRef(
+      databaseId: value.databaseId,
+      bodyId: value.bodyId,
+      ownerEventId: value.ownerEventId,
+      bodyKey: value.bodyKey,
+      role: value.role,
+      byteLength: BigInt.from(value.byteLength),
+      mediaType: value.mediaType,
+      inlineText: value.inlineText,
+    );
+
+BodyWindow _bodyWindowFromFrb(frb_presentation.BridgeBodyWindow value) =>
+    BodyWindow(
+      offset: exactTimelineInt(value.offset, 'body offset'),
+      text: value.text,
+      bytesBase64: value.bytesBase64,
+      totalBytes: exactTimelineInt(value.totalBytes, 'body length'),
+      eof: value.eof,
+    );
+
+frb_presentation.BridgeSessionDetailKind _sessionDetailKindToFrb(
+  SessionDetailKind kind,
+) => switch (kind) {
+  SessionDetailKind.plan => frb_presentation.BridgeSessionDetailKind.plan,
+  SessionDetailKind.interactions =>
+    frb_presentation.BridgeSessionDetailKind.interactions,
+  SessionDetailKind.todo => frb_presentation.BridgeSessionDetailKind.todo,
+  SessionDetailKind.workflow =>
+    frb_presentation.BridgeSessionDetailKind.workflow,
+  SessionDetailKind.activeSkills =>
+    frb_presentation.BridgeSessionDetailKind.activeSkills,
+  SessionDetailKind.activeMcpServers =>
+    frb_presentation.BridgeSessionDetailKind.activeMcpServers,
+  SessionDetailKind.activeLspServers =>
+    frb_presentation.BridgeSessionDetailKind.activeLspServers,
+};
+
+SessionDetailWindow _sessionDetailWindowFromFrb(
+  frb_presentation.BridgeSessionDetailWindow value,
+) => SessionDetailWindow(
+  ownerEpoch: value.ownerEpoch,
+  revision: exactTimelineInt(value.revision, 'session detail revision'),
+  offset: exactTimelineInt(value.offset, 'session detail offset'),
+  totalBytes: exactTimelineInt(value.totalBytes, 'session detail length'),
+  bytes: value.bytes,
+);
+
+int? _timelineMillisFromFrb(Object? value) =>
+    value == null ? null : _exactSignedTimelineInt(value);
+
+StudioModelRecoveryNotice _recoveryNoticeFromFrb(
+  frb_presentation.BridgeModelRecoveryNotice value,
+) => StudioModelRecoveryNotice(
+  phase: StudioModelRecoveryPhase.values.byName(value.phase.name),
+  retryCount: value.retryCount,
+  maxRetries: value.maxRetries,
+  effectiveWaitMillis: value.effectiveWaitMillis,
+  failureKind: value.failureKind,
+  reason: StudioProviderRecovery.values.asNameMap()[value.reason],
+  failure: value.failure == null ? null : _turnFailureFromFrb(value.failure!),
+);
+
+TimelineItem _timelineItemFromFrb(
+  frb_presentation.BridgeTimelineItem value,
 ) => switch (value) {
-  frb_presentation.BridgeCurrentPayloadData_Inline(:final bytes) =>
-    InlineCurrentPayload(bytes: bytes),
-  frb_presentation.BridgeCurrentPayloadData_Deferred(
-    :final reference,
-    :final byteLength,
-  ) =>
-    DeferredCurrentPayload(
-      reference: _currentContentRefFromFrb(reference),
-      byteLength: exactTimelineInt(byteLength, 'current payload length'),
+  final frb_presentation.BridgeTimelineItem_UserMessage row =>
+    TimelineUserMessage(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      inputId: row.inputId,
+      channel: row.channel,
+      text: row.text,
+      attachments: jsonDecode(row.attachmentsJson) as List<Object?>,
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_AssistantText row =>
+    TimelineAssistantText(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      attemptId: row.attemptId,
+      channel: row.channel,
+      text: row.text,
+      bodyRef: row.bodyRef == null ? null : _bodyRefFromFrb(row.bodyRef!),
+      isFinalTurnDelivery: row.isFinalTurnDelivery,
+      outcome: row.outcome,
+      modelRecovery: row.modelRecovery == null
+          ? null
+          : _recoveryNoticeFromFrb(row.modelRecovery!),
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_WorkGroup row => TimelineWorkGroup(
+    id: row.id,
+    firstSeq: exactTimelineInt(row.firstSeq, 'first sequence'),
+    lastSeq: exactTimelineInt(row.lastSeq, 'last sequence'),
+    afterBoundarySeq: _exactNullableTimelineInt(
+      row.afterBoundarySeq,
+      'previous boundary sequence',
+    ),
+    beforeBoundarySeq: _exactNullableTimelineInt(
+      row.beforeBoundarySeq,
+      'next boundary sequence',
+    ),
+    memberCount: row.memberCount,
+    summary: row.summary,
+    status: WorkGroupStatus.values.byName(row.status.name),
+    startedAtMs: _timelineMillisFromFrb(row.startedAtMs),
+    finishedAtMs: _timelineMillisFromFrb(row.finishedAtMs),
+  ),
+  final frb_presentation.BridgeTimelineItem_Compaction row =>
+    TimelineCompaction(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      summary: row.summary,
+      outcome: row.outcome,
+      tokensBefore: _exactNullableTimelineInt(
+        row.tokensBefore,
+        'pre-compaction tokens',
+      ),
+      tokensAfter: _exactNullableTimelineInt(
+        row.tokensAfter,
+        'post-compaction tokens',
+      ),
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_PlanResolution row =>
+    TimelinePlanResolution(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      decision: row.decision,
+      document: row.document,
+      documentRef: row.documentRef == null
+          ? null
+          : _bodyRefFromFrb(row.documentRef!),
+      feedback: row.feedback,
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_ConnectionNotice row =>
+    TimelineConnectionNotice(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      scope: row.scope,
+      state: row.state,
+      transport: row.transport,
+      fallbackTransport: row.fallbackTransport,
+      attempt: row.attempt,
+      maxAttempts: row.maxAttempts,
+      recoverable: row.recoverable,
+      reason: row.reason,
+      durationMs: _exactNullableTimelineInt(
+        row.durationMs,
+        'connection duration',
+      ),
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_TurnOutcome row =>
+    TimelineTurnOutcome(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      inputId: row.inputId,
+      outcome: row.outcome,
+      message: row.message,
+      turnFailure: row.turnFailure == null
+          ? null
+          : _turnFailureFromFrb(row.turnFailure!),
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_StandaloneTool row =>
+    TimelineStandaloneTool(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      turnId: row.turnId,
+      callId: row.callId,
+      toolName: row.toolName,
+      presentationContract: row.presentationContract,
+      state: row.state,
+      summary: row.summary,
+      payloadJson: row.payloadJson,
+      bodies: row.bodies.map(_bodyRefFromFrb),
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeTimelineItem_Fallback row => TimelineFallback(
+    id: row.id,
+    seq: exactTimelineInt(row.seq, 'sequence'),
+    eventId: row.eventId,
+    eventKind: row.eventKind,
+    reason: row.reason,
+    rawPreview: row.rawPreview,
+    occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+  ),
+};
+
+WorkGroupMember _workGroupMemberFromFrb(
+  frb_presentation.BridgeWorkGroupMember value,
+) => switch (value) {
+  final frb_presentation.BridgeWorkGroupMember_Reasoning row =>
+    WorkGroupReasoning(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      text: row.text,
+      summary: row.summary,
+      bodyRef: row.bodyRef == null ? null : _bodyRefFromFrb(row.bodyRef!),
+      outcome: row.outcome,
+      startedAtMs: _timelineMillisFromFrb(row.startedAtMs),
+      finishedAtMs: _timelineMillisFromFrb(row.finishedAtMs),
+    ),
+  final frb_presentation.BridgeWorkGroupMember_ToolCall row =>
+    WorkGroupToolCall(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      callId: row.callId,
+      turnId: row.turnId,
+      toolName: row.toolName,
+      presentationContract: row.presentationContract,
+      status: row.status,
+      summary: row.summary,
+      arguments: row.arguments,
+      resultPreview: row.resultPreview,
+      payloadJson: row.payloadJson,
+      bodies: row.bodies.map(_bodyRefFromFrb),
+      waitJson: row.waitJson,
+      startedAtMs: _timelineMillisFromFrb(row.startedAtMs),
+      finishedAtMs: _timelineMillisFromFrb(row.finishedAtMs),
+    ),
+  final frb_presentation.BridgeWorkGroupMember_Agent row => WorkGroupAgent(
+    id: row.id,
+    seq: exactTimelineInt(row.seq, 'sequence'),
+    agentId: row.agentId,
+    name: row.name,
+    status: row.status,
+    summary: row.summary,
+    payloadJson: row.payloadJson,
+    startedAtMs: _timelineMillisFromFrb(row.startedAtMs),
+    finishedAtMs: _timelineMillisFromFrb(row.finishedAtMs),
+  ),
+  final frb_presentation.BridgeWorkGroupMember_FileChange row =>
+    WorkGroupFileChange(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      summary: row.summary,
+      payloadJson: row.payloadJson,
+      bodies: row.bodies.map(_bodyRefFromFrb),
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+    ),
+  final frb_presentation.BridgeWorkGroupMember_Skill row => WorkGroupSkill(
+    id: row.id,
+    seq: exactTimelineInt(row.seq, 'sequence'),
+    name: row.name,
+    summary: row.summary,
+    payloadJson: row.payloadJson,
+    occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
+  ),
+  final frb_presentation.BridgeWorkGroupMember_Fallback row =>
+    WorkGroupFallback(
+      id: row.id,
+      seq: exactTimelineInt(row.seq, 'sequence'),
+      eventId: row.eventId,
+      eventKind: row.eventKind,
+      reason: row.reason,
+      occurredAtMs: _timelineMillisFromFrb(row.occurredAtMs),
     ),
 };
 
-CurrentCollectionPage _currentCollectionPageFromFrb(
-  frb_presentation.BridgeCurrentCollectionPage value,
-) => CurrentCollectionPage(
-  revision: exactTimelineInt(value.revision, 'current revision'),
-  entries: [
-    for (final entry in value.entries)
-      CurrentCollectionEntry(
-        id: entry.id,
-        position: _exactSignedTimelineInt(entry.position),
-        payload: _currentPayloadFromFrb(entry.payload),
+TimelinePatch _timelinePatchFromFrb(
+  frb_presentation.BridgeTimelinePatch value,
+) => switch (value) {
+  frb_presentation.BridgeTimelinePatch_Reset(
+    :final items,
+    :final hasMoreOlder,
+    :final olderCursor,
+    :final revision,
+  ) =>
+    TimelineReset(
+      items: items.map(_timelineItemFromFrb),
+      hasMoreOlder: hasMoreOlder,
+      olderCursor: olderCursor,
+      revision: exactTimelineInt(revision, 'reset revision'),
+    ),
+  frb_presentation.BridgeTimelinePatch_PrependOlder(
+    :final items,
+    :final hasMoreOlder,
+    :final olderCursor,
+  ) =>
+    TimelinePrependOlder(
+      items: items.map(_timelineItemFromFrb),
+      hasMoreOlder: hasMoreOlder,
+      olderCursor: olderCursor,
+    ),
+  frb_presentation.BridgeTimelinePatch_Append(:final items) => TimelineAppend(
+    items: items.map(_timelineItemFromFrb),
+  ),
+  frb_presentation.BridgeTimelinePatch_Update(:final item) => TimelineUpdate(
+    item: _timelineItemFromFrb(item),
+  ),
+  frb_presentation.BridgeTimelinePatch_Remove(:final itemId) => TimelineRemove(
+    itemId: itemId,
+  ),
+};
+
+LiveStatusSnapshot _liveStatusFromFrb(
+  frb_presentation.BridgeLiveStatusSnapshot value,
+) => LiveStatusSnapshot(
+  revision: exactTimelineInt(value.revision, 'live status revision'),
+  phase: switch (value.phase) {
+    frb_presentation.BridgeLiveStatusPhase_Idle() => const LiveStatusIdle(),
+    final frb_presentation.BridgeLiveStatusPhase_Working phase =>
+      LiveStatusWorking(
+        items: phase.items.map(_liveWorkItemFromFrb),
+        reasoningPreview: phase.reasoningPreview,
+        startedAtMs: _timelineMillisFromFrb(phase.startedAtMs),
       ),
-  ],
-  continuation: value.continuation,
+    final frb_presentation.BridgeLiveStatusPhase_StreamingText phase =>
+      LiveStatusStreamingText(
+        attemptId: phase.attemptId,
+        itemId: phase.itemId,
+        text: phase.text,
+        startedAtMs: _timelineMillisFromFrb(phase.startedAtMs),
+      ),
+    final frb_presentation.BridgeLiveStatusPhase_Compacting phase =>
+      LiveStatusCompacting(
+        manual: phase.manual,
+        startedAtMs: _timelineMillisFromFrb(phase.startedAtMs),
+      ),
+    final frb_presentation.BridgeLiveStatusPhase_Reconnecting phase =>
+      LiveStatusReconnecting(
+        attemptId: phase.attemptId,
+        message: phase.message,
+        retryAfterMs: _exactNullableTimelineInt(
+          phase.retryAfterMs,
+          'retry delay',
+        ),
+        attempt: phase.attempt,
+      ),
+  },
+  attentions: value.attentions.map(
+    (attention) => LiveAttention(
+      id: attention.id,
+      kind: attention.kind,
+      summary: attention.summary,
+      callId: attention.callId,
+    ),
+  ),
+  suppressedByInteraction: value.suppressedByInteraction,
 );
 
-CurrentProjection _currentProjectionFromFrb(
-  frb_presentation.BridgeCurrentProjection value,
-) => CurrentProjection(
-  logicalStatus: ThreadStatusView.values.byName(value.logicalStatus.name),
-  executionPresent: value.executionPresent,
-  active: value.active == null
-      ? null
-      : CurrentActivityHead(
-          id: value.active!.id,
-          kind: _threadActivityKindFromFrb(value.active!.kind),
-          summary: value.active!.summary,
-          thinkingSummary: value.active!.thinkingSummary,
-          thinkingSeconds: value.active!.thinkingSeconds == null
-              ? null
-              : exactTimelineInt(
-                  value.active!.thinkingSeconds!,
-                  'current thinking seconds',
-                ),
-          toolCount: value.active!.toolCount,
-          backgroundToolCount: value.active!.backgroundToolCount,
-          latestTool: value.active!.latestTool == null
-              ? null
-              : CurrentToolHead(
-                  callId: value.active!.latestTool!.callId,
-                  name: value.active!.latestTool!.name,
-                  state: ThreadActivityToolState.values.byName(
-                    value.active!.latestTool!.state.name,
-                  ),
-                ),
-        ),
-  activeTurn: value.activeTurn == null
-      ? null
-      : CurrentTurnHead(
-          id: value.activeTurn!.id,
-          phase: _currentTurnPhase(value.activeTurn!.phase),
-        ),
-  sources: value.sources.map(_chatSourceStateFromFrb).toList(),
-  atoms: value.atoms.map(_currentAtomFromFrb).toList(),
-  plan: value.plan == null
-      ? null
-      : CurrentPlanHead(
-          revision: exactTimelineInt(
-            value.plan!.revision,
-            'current plan revision',
-          ),
-          phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
-          document: value.plan!.document == null
-              ? null
-              : _currentContentRefFromFrb(value.plan!.document!),
-        ),
-  interactions: value.interactions == null
-      ? null
-      : _currentCollectionRefFromFrb(value.interactions!),
-  previews: [
-    for (final preview in value.previews)
-      CurrentContentPreview(
-        id: preview.id,
-        role: CurrentContentRole.values.byName(preview.role.name),
-        textChannel: preview.textChannel == null
-            ? null
-            : ThreadTextChannel.values.byName(preview.textChannel!.name),
-        text: preview.text,
-        reference: _currentContentRefFromFrb(preview.reference),
-      ),
-  ],
-  collections: value.collections.map(_currentCollectionRefFromFrb).toList(),
-  modelRecovery: value.modelRecovery == null
-      ? null
-      : CurrentModelRecovery(
-          attempt: value.modelRecovery!.attempt,
-          maxAttempts: value.modelRecovery!.maxAttempts,
-          reason: value.modelRecovery!.reason,
-        ),
-);
-
-CurrentAtom _currentAtomFromFrb(frb_presentation.BridgeCurrentAtom value) =>
-    CurrentAtom(
+LiveWorkItem _liveWorkItemFromFrb(frb_presentation.BridgeLiveWorkItem value) =>
+    LiveWorkItem(
       id: value.id,
-      source: _chatSourceFromFrb(value.source),
-      sourceState: value.sourceState == null
-          ? null
-          : _chatSourceStateFromFrb(value.sourceState!),
-      sourceOrder: _exactNullableTimelineInt(value.sourceOrder, 'source order'),
-      kind: ChatAtomKind.values.byName(value.kind.name),
-      delivery: ChatDeliveryKind.values.byName(value.delivery.name),
-      lifecycle: switch (value.lifecycle) {
-        frb_chat_types.BridgeChatAtomLifecycle_Active(
-          :final started,
-          :final status,
-        ) =>
-          ActiveChatAtom(
-            started: started == null ? null : _chatPositionFromFrb(started),
-            status: ChatActiveStatus.values.byName(status.name),
-          ),
-        frb_chat_types.BridgeChatAtomLifecycle_Terminal(
-          :final started,
-          :final ended,
-          :final outcome,
-        ) =>
-          TerminalChatAtom(
-            started: started == null ? null : _chatPositionFromFrb(started),
-            ended: ended == null ? null : _chatPositionFromFrb(ended),
-            outcome: ChatTerminalOutcome.values.byName(outcome.name),
-          ),
-      },
-      turnId: value.turnId,
-      attemptId: value.attemptId,
-      tool: value.tool == null
-          ? null
-          : ChatToolIdentity(
-              callId: value.tool!.callId,
-              name: value.tool!.name,
+      callId: value.callId,
+      kind: value.kind,
+      toolName: value.toolName,
+      status: value.status,
+      summary: value.summary,
+      startedAtMs: _timelineMillisFromFrb(value.startedAtMs),
+    );
+
+ConversationFeedEvent _conversationEventFromFrb(
+  frb_presentation.BridgeConversationEvent value,
+) => switch (value) {
+  frb_presentation.BridgeConversationEvent_Timeline(:final patch) =>
+    ConversationTimeline(patch: _timelinePatchFromFrb(patch)),
+  frb_presentation.BridgeConversationEvent_LiveStatus(:final snapshot) =>
+    ConversationLiveStatus(snapshot: _liveStatusFromFrb(snapshot)),
+  frb_presentation.BridgeConversationEvent_SessionMeta(:final snapshot) =>
+    ConversationSessionMeta(snapshot: _sessionMetaFromFrb(snapshot)),
+  frb_presentation.BridgeConversationEvent_InputPresented(
+    :final inputId,
+    :final itemId,
+  ) =>
+    ConversationInputPresented(inputId: inputId, itemId: itemId),
+  frb_presentation.BridgeConversationEvent_ResyncRequired(:final reason) =>
+    ConversationResyncRequired(reason: reason),
+};
+
+SessionMetaSnapshot _sessionMetaFromFrb(
+  frb_presentation.BridgeSessionMetaSnapshot value,
+) => SessionMetaSnapshot(
+  threadId: value.threadId,
+  status: _threadStatusFromFrb(value.status),
+  title: value.title,
+  parentThreadId: value.parentThreadId,
+  rootThreadId: value.rootThreadId,
+  ownerEpoch: value.ownerEpoch,
+  revision: exactTimelineInt(value.revision, 'session metadata revision'),
+  activeTurn: value.activeTurn == null ? null : _turnFromFrb(value.activeTurn!),
+  lastTurn: value.lastTurn == null ? null : _turnFromFrb(value.lastTurn!),
+  activity: value.activity == null
+      ? null
+      : _threadActivityFromFrb(value.activity!),
+  usage: _sessionUsageFromFrb(value.usage),
+  contextMetrics: value.contextMetrics == null
+      ? null
+      : _conversationRuntimeUsageFromFrb(value.contextMetrics!),
+  modelRoute: _threadModelRouteFromFrb(value.modelRoute),
+  runtime: value.runtime == null
+      ? null
+      : _conversationRuntimeFromFrb(value.runtime!),
+  storageState: value.storageState == null
+      ? null
+      : _threadStorageFromFrb(value.storageState!),
+  interactions: value.interactions
+      .where(_interactionIsPending)
+      .map(_interactionFromFrb),
+  pendingInteractionCount: value.pendingInteractionCount,
+  plan: value.plan == null ? null : planRuntimeFromFrb(value.plan!),
+  mode: value.mode == null ? null : ThreadModeId.fromId(value.mode!),
+  executionPresent: value.executionPresent,
+);
+
+SessionUsageSummary _sessionUsageFromFrb(
+  frb_presentation.BridgeUsageSummary value,
+) {
+  final binding = value.binding;
+  final totals = value.totals;
+  final cache = value.cache;
+  final context = value.context;
+  final throughput = value.throughput;
+  final pricing = value.pricing;
+  return SessionUsageSummary(
+    appliedSequence: exactTimelineInt(value.appliedSequence, 'usage sequence'),
+    binding: binding == null
+        ? null
+        : SessionModelUsageBinding(
+            routeIdentity: binding.routeIdentity,
+            model: binding.model,
+            contextWindow: _exactNullableTimelineInt(
+              binding.contextWindow,
+              'context window',
             ),
-      wait: value.wait == null ? null : _waitFromFrb(value.wait!),
-      textChannel: value.textChannel == null
-          ? null
-          : ThreadTextChannel.values.byName(value.textChannel!.name),
-      modelRecovery: switch (value.modelRecovery) {
-        final recovery? => StudioModelRecoveryNotice(
-          phase: StudioModelRecoveryPhase.values.byName(recovery.phase.name),
-          retryCount: recovery.retryCount,
-          maxRetries: recovery.maxRetries,
-          failureKind: recovery.failureKind,
-          reason: StudioProviderRecovery.values.asNameMap()[recovery.reason],
-          effectiveWaitMillis: recovery.effectiveWaitMillis,
-          failure: recovery.failure == null
-              ? null
-              : _turnFailureFromFrb(recovery.failure!),
-        ),
-        null => null,
-      },
-      startedAt: _timelineTimestampFromFrb(value.startedAt),
-      finishedAt: _timelineTimestampFromFrb(value.finishedAt),
-      contentPresent: value.contentPresent,
-      contents: [
-        for (final content in value.contents)
-          CurrentAtomContent(
-            role: ChatContentRole.values.byName(content.role.name),
-            reference: _currentContentRefFromFrb(content.reference),
+            maxContextWindow: _exactNullableTimelineInt(
+              binding.maxContextWindow,
+              'maximum context window',
+            ),
+            autoCompactLimit: _exactNullableTimelineInt(
+              binding.autoCompactLimit,
+              'compaction threshold',
+            ),
           ),
-      ],
-    );
-
-CurrentView _currentViewFromFrb(frb_presentation.BridgeCurrentView value) =>
-    CurrentView(
-      revision: _currentRevisionFromFrb(value.revision),
-      state: ThreadSnapshotFrame(
-        workspace: _threadWorkspaceFromSnapshot(value.state),
-        schemaVersion: value.state.schemaVersion,
+    totals: SessionUsageTotals(
+      inferenceCount: exactTimelineInt(
+        totals.inferenceCount,
+        'inference count',
       ),
-      projection: _currentProjectionFromFrb(value.projection),
-    );
-
-CurrentFrame _currentFrameFromFrb(frb_presentation.BridgeCurrentFrame value) =>
-    switch (value) {
-      frb_presentation.BridgeCurrentFrame_Reset(:final view) =>
-        ResetCurrentFrame(_currentViewFromFrb(view)),
-      frb_presentation.BridgeCurrentFrame_Notification(
-        :final revision,
-        :final notification,
-      ) =>
-        NotificationCurrentFrame(
-          revision: _currentRevisionFromFrb(revision),
-          notification: _currentNotificationFrameFromEnvelope(notification),
-        ),
-      frb_presentation.BridgeCurrentFrame_Projection(
-        :final revision,
-        :final projection,
-      ) =>
-        ProjectionCurrentFrame(
-          revision: _currentRevisionFromFrb(revision),
-          projection: _currentProjectionFromFrb(projection),
-        ),
-    };
-
-CurrentTurnPhase _currentTurnPhase(frb.BridgeTurnPhase value) =>
-    switch (value) {
-      frb.BridgeTurnPhase.preparing => CurrentTurnPhase.preparing,
-      frb.BridgeTurnPhase.thinking => CurrentTurnPhase.thinking,
-      frb.BridgeTurnPhase.responding => CurrentTurnPhase.responding,
-      frb.BridgeTurnPhase.planning => CurrentTurnPhase.planning,
-      frb.BridgeTurnPhase.runningTool => CurrentTurnPhase.runningTool,
-      frb.BridgeTurnPhase.persisting => CurrentTurnPhase.persisting,
-    };
-
-frb_chat_types.BridgeChatSourceId _chatSourceToFrb(ChatSourceId value) =>
-    switch (value) {
-      ForegroundTurnChatSource(:final turnId) =>
-        frb_chat_types.BridgeChatSourceId.foregroundTurn(turnId: turnId),
-      InputChatSource(:final inputId) =>
-        frb_chat_types.BridgeChatSourceId.input(inputId: inputId),
-      InboxMessageChatSource(:final sourceId, :final messageId) =>
-        frb_chat_types.BridgeChatSourceId.inboxMessage(
-          sourceId: sourceId,
-          messageId: messageId,
-        ),
-      BackgroundResultChatSource(:final messageId) =>
-        frb_chat_types.BridgeChatSourceId.backgroundResult(
-          messageId: messageId,
-        ),
-      OperationChatSource(:final operationId) =>
-        frb_chat_types.BridgeChatSourceId.operation(operationId: operationId),
-      ReceiptChatSource(:final receiptId) =>
-        frb_chat_types.BridgeChatSourceId.receipt(receiptId: receiptId),
-    };
-
-frb_chat_types.BridgeContentRange _contentRangeToFrb(ContentRange value) =>
-    frb_chat_types.BridgeContentRange(
-      offset: BigInt.from(value.offset),
-      maxBytes: value.maxBytes,
-    );
-
-// History timestamps are in milliseconds; Current atoms use Unix seconds.
-int? _timelineTimestampFromFrb(Object? value) {
-  if (value == null) return null;
-  return _exactSignedTimelineInt(value);
+      promptTokens: exactTimelineInt(totals.promptTokens, 'prompt tokens'),
+      completionTokens: exactTimelineInt(
+        totals.completionTokens,
+        'completion tokens',
+      ),
+      cachedPromptTokens: exactTimelineInt(
+        totals.cachedPromptTokens,
+        'cached prompt tokens',
+      ),
+      cacheWriteTokens: exactTimelineInt(
+        totals.cacheWriteTokens,
+        'cache write tokens',
+      ),
+      reasoningTokens: exactTimelineInt(
+        totals.reasoningTokens,
+        'reasoning tokens',
+      ),
+      totalTokens: exactTimelineInt(totals.totalTokens, 'total tokens'),
+    ),
+    cache: SessionUsageCache(
+      inputTokens: exactTimelineInt(cache.inputTokens, 'cache input tokens'),
+      readTokens: exactTimelineInt(cache.readTokens, 'cache read tokens'),
+      sampleCount: exactTimelineInt(cache.sampleCount, 'cache sample count'),
+      incomplete: cache.incomplete,
+    ),
+    context: SessionUsageContext(
+      tokens: exactTimelineInt(context.tokens, 'context tokens'),
+      latestCall: context.latestCall == null
+          ? null
+          : _sessionUsageObservationFromFrb(context.latestCall!),
+    ),
+    throughput: SessionUsageThroughput(
+      turnId: throughput.turnId,
+      completionTokens: exactTimelineInt(
+        throughput.completionTokens,
+        'turn completion tokens',
+      ),
+      responseMillis: exactTimelineInt(
+        throughput.responseMillis,
+        'turn response duration',
+      ),
+    ),
+    diagnostics: _sessionUsageDiagnosticsFromFrb(value.diagnostics),
+    pricing: SessionUsagePricing(
+      incomplete: pricing.incomplete,
+      estimatedCosts: pricing.estimatedCosts.map(_runtimeCostFromFrb),
+      estimatedCacheSavings: pricing.estimatedCacheSavings.map(
+        _runtimeCostFromFrb,
+      ),
+    ),
+  );
 }
 
-CacheUsageView _cacheUsageFromFrb(frb.BridgeCacheUsageSummary value) =>
-    CacheUsageView(
-      sampleCount: exactTimelineInt(value.sampleCount, 'usage sample count'),
-      legacySampleCountUnknown: value.legacySampleCountUnknown,
-      inputTokens: exactTimelineInt(value.inputTokens, 'input tokens'),
-      cacheReadTokens: exactTimelineInt(
-        value.cacheReadTokens,
-        'cache read tokens',
-      ),
-      hitRate: value.hitRate,
-      hasIncompleteUsage: value.hasIncompleteUsage,
-    );
+SessionUsageDiagnostics _sessionUsageDiagnosticsFromFrb(
+  frb_presentation.BridgeUsageDiagnostics value,
+) => SessionUsageDiagnostics(
+  incompleteCalls: exactTimelineInt(
+    value.incompleteCalls,
+    'incomplete call count',
+  ),
+  missingCalls: exactTimelineInt(value.missingCalls, 'missing call count'),
+  partialCalls: exactTimelineInt(value.partialCalls, 'partial call count'),
+  invalidCalls: exactTimelineInt(value.invalidCalls, 'invalid call count'),
+  overflowCalls: exactTimelineInt(value.overflowCalls, 'overflowed call count'),
+  byOutcome: value.byOutcome.map(usageOutcomeCountSnapshotFromFrb),
+  byPurpose: value.byPurpose.map(usagePurposeCountSnapshotFromFrb),
+  otherPurposeCalls: exactTimelineInt(
+    value.otherPurposeCalls,
+    'other purpose call count',
+  ),
+  byIssue: value.byIssue.map(usageIssueCountSnapshotFromFrb),
+  recentGaps: value.recentGaps.map(_sessionUsageObservationFromFrb),
+  legacyUnknown: value.legacyUnknown,
+  legacyIncomplete: value.legacyIncomplete,
+  countsOverflowed: value.countsOverflowed,
+);
+
+UsageCallSnapshot _sessionUsageObservationFromFrb(
+  frb_presentation.BridgeUsageObservation value,
+) {
+  final source = value.source;
+  return UsageCallSnapshot(
+    threadId: source.threadId,
+    callId: source.callId,
+    turnId: source.turnId,
+    effectSequence: exactTimelineInt(
+      source.effectSequence,
+      'usage effect sequence',
+    ),
+    observedAt: _exactSignedTimelineInt(source.observedAt),
+    purpose: source.purpose,
+    outcome: usageTerminalStatusFromFrb(source.outcome),
+    status: usageReportStatusFromFrb(value.status),
+    usage: usageReportFromFrb(value.usage),
+    issues: value.issues.map(usageGapIssueFromFrb),
+  );
+}

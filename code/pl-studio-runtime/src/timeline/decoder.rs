@@ -43,7 +43,11 @@ fn manifest_bodies(envelope: &EventPayloadEnvelope, owner_event_id: &str) -> Vec
         .collect()
 }
 
-fn find_inline_text(envelope: &EventPayloadEnvelope, roles: &[&str], keys: &[&str]) -> Option<String> {
+fn find_inline_text(
+    envelope: &EventPayloadEnvelope,
+    roles: &[&str],
+    keys: &[&str],
+) -> Option<String> {
     for key in keys {
         if let Some(inline) = envelope
             .bodies
@@ -460,7 +464,7 @@ pub fn summarize_work_group(
                     has_cancelled = true;
                 }
             }
-            WorkGroupMember::Wait { status, .. } | WorkGroupMember::Agent { status, .. } => {
+            WorkGroupMember::Agent { status, .. } => {
                 if status == "failed" || status == "denied" {
                     has_failed = true;
                 } else if status == "cancelled" {
@@ -540,6 +544,7 @@ fn merge_member(existing: &mut WorkGroupMember, incoming: WorkGroupMember) {
         (
             WorkGroupMember::ToolCall {
                 seq,
+                turn_id,
                 presentation_contract,
                 status,
                 summary,
@@ -554,6 +559,7 @@ fn merge_member(existing: &mut WorkGroupMember, incoming: WorkGroupMember) {
             },
             WorkGroupMember::ToolCall {
                 seq: new_seq,
+                turn_id: new_turn_id,
                 presentation_contract: new_contract,
                 status: new_status,
                 summary: new_summary,
@@ -568,6 +574,9 @@ fn merge_member(existing: &mut WorkGroupMember, incoming: WorkGroupMember) {
             },
         ) => {
             *seq = (*seq).max(new_seq);
+            if new_turn_id.is_some() {
+                *turn_id = new_turn_id;
+            }
             if new_contract.is_some() {
                 *presentation_contract = new_contract;
             }
@@ -575,15 +584,27 @@ fn merge_member(existing: &mut WorkGroupMember, incoming: WorkGroupMember) {
             if !new_summary.is_empty() {
                 *summary = new_summary;
             }
-            if new_args.is_some() {
-                *arguments = new_args;
-            }
-            if new_res.is_some() {
-                *result_preview = new_res;
+            for (inline, incoming, key) in [
+                (arguments, new_args, "tool.arguments"),
+                (result_preview, new_res, "tool.result"),
+            ] {
+                if incoming.is_some() {
+                    *inline = incoming;
+                    bodies.retain(|body| body.body_key != key);
+                } else if new_bodies.iter().any(|body| body.body_key == key) {
+                    *inline = None;
+                }
             }
             *payload_json = new_payload;
-            if !new_bodies.is_empty() {
-                *bodies = new_bodies;
+            for body in new_bodies {
+                if let Some(existing) = bodies
+                    .iter_mut()
+                    .find(|existing| existing.body_key == body.body_key)
+                {
+                    *existing = body;
+                } else {
+                    bodies.push(body);
+                }
             }
             if new_wait.is_some() {
                 *wait_json = new_wait;
@@ -681,24 +702,11 @@ fn decode_work_member(record: &HistoryEventRecord) -> WorkGroupMember {
                 .get("wait")
                 .filter(|v| !v.is_null())
                 .and_then(|v| serde_json::to_string(v).ok());
-            if let Some(wait) = &wait_json
-                && matches!(tool_name.as_str(), "wait" | "sleep")
-            {
-                return WorkGroupMember::Wait {
-                    id: format!("call:{call_id}"),
-                    seq: record.seq,
-                    call_id,
-                    summary: tool_name,
-                    status,
-                    wait_json: wait.clone(),
-                    started_at_ms: envelope.meta.started_at.or(occurred_at_ms),
-                    finished_at_ms: envelope.meta.finished_at,
-                };
-            }
             WorkGroupMember::ToolCall {
                 id: format!("call:{call_id}"),
                 seq: record.seq,
                 call_id,
+                turn_id: record.turn_id.clone(),
                 tool_name: tool_name.clone(),
                 presentation_contract: envelope.meta.presentation_contract.clone(),
                 status,

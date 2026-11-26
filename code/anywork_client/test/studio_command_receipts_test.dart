@@ -1,4 +1,5 @@
 import 'support/conversation_delivery.dart';
+import 'support/sdk_conversation_page_lifecycle.dart';
 
 import 'dart:async';
 
@@ -117,7 +118,9 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
         await binding.close();
       }
       for (final sink in topicSinks) {
-        await sink.close();
+        final hasListener = sink.hasListener;
+        final closing = sink.close();
+        if (hasListener) await closing;
       }
     });
   }
@@ -213,11 +216,10 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   @override
-  Future<CurrentReader> openCurrentReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) => Future.value(ScriptedCurrentReader(threadId: threadId));
+    int initialLimit = 50,
+  }) => Future.value(ScriptedConversationFeed(threadId: threadId));
 
   @override
   Future<void> compactThread(String threadId) {
@@ -238,7 +240,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
       sync: true,
       onListen: listening.complete,
     );
-    addTearDown(() => sink.close());
     topicSinks.add(sink);
     topicSinksByTopic[topic] = sink;
     final observation = await openTestProductTopic(
@@ -403,11 +404,12 @@ final class _TopicBinding {
 }
 
 /// A Current reader whose native close stays observable and gateable.
-final class _RouteConflictCurrentReader extends ScriptedCurrentReader {
-  _RouteConflictCurrentReader({
+final class _RouteConflictConversationFeedHandle
+    extends ScriptedConversationFeed {
+  _RouteConflictConversationFeedHandle({
     required super.threadId,
     required super.states,
-    super.initialView,
+    super.initialMeta,
     required this.onClose,
   });
 
@@ -434,17 +436,16 @@ final class _RouteConflictTransport extends _Transport {
   }
 
   final List<StreamController<ThreadStreamFrame>> stateBindings = [];
-  final List<_RouteConflictCurrentReader> readers = [];
+  final List<_RouteConflictConversationFeedHandle> readers = [];
   final Future<void> Function(int index)? onCurrentClose;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
   Completer<void>? nextCurrentOpenGate;
 
   @override
-  Future<CurrentReader> openCurrentReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
+    int initialLimit = 50,
   }) async {
     final index = stateBindings.length;
     // Frames may have no consumer when opening is retired immediately.
@@ -456,10 +457,10 @@ final class _RouteConflictTransport extends _Transport {
     final initial = index == 0
         ? _workspace(revision: 40, routeRevision: 3)
         : _workspace(revision: 7, routeRevision: 4);
-    final reader = _RouteConflictCurrentReader(
+    final reader = _RouteConflictConversationFeedHandle(
       threadId: threadId,
       states: binding.stream,
-      initialView: currentViewForWorkspace(initial),
+      initialMeta: sessionMetaForWorkspace(initial),
       onClose: () => onCurrentClose?.call(index) ?? Future<void>.value(),
     );
     readers.add(reader);
@@ -617,7 +618,6 @@ ThreadWorkspace _workspace({
   ThreadStorageStateView? storage,
   List<PendingInteraction> interactions = const [],
 }) => ThreadWorkspace(
-  businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
   thread: _thread(),
   revision: revision,
   interactions: interactions,
@@ -897,9 +897,14 @@ Future<AnyworkClient> _client(
     threadId: 'thread',
     needsOpen: true,
   );
+  observeTestConversationPage(client);
   client.conversations.setVisibleThread('thread');
-  await scriptedCurrentReader('thread');
+  await scriptedConversationFeed('thread');
   await client.conversations.session('thread').deliverWorkspace(_workspace());
+  await transport.topicBinding(
+    const ChildInteractionsTopic(hostThreadId: 'thread'),
+    0,
+  );
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
   return client;
@@ -2556,7 +2561,7 @@ void main() {
   });
 
   test(
-    'route conflict resync uses the replacement initialView before retrying',
+    'route conflict resync uses the replacement initialMeta before retrying',
     () async {
       final transport = _RouteConflictTransport();
       final client = await _client(transport);
@@ -2981,84 +2986,6 @@ void main() {
       },
     );
   }
-
-  test(
-    'interaction query loading and failure cannot confirm a decision',
-    () async {
-      final transport = _Transport();
-      final client = await _client(transport);
-      final session = client.conversations.session('thread');
-      final interaction = _interaction();
-      await session.deliverWorkspace(_workspace(interactions: [interaction]));
-      final entered = transport.interactions.stream.first;
-      final resolving = client.threadCommands.resolveActiveInteraction(
-        'thread',
-        interaction.id,
-        _resolution,
-      );
-      final operation = client.mutations.latest('interaction:thread')!;
-      final call = await entered;
-      call.reply.complete(
-        InteractionCommandReply(
-          interaction: interaction,
-          receipt: _identityReceipt(call.operationId, effective: true),
-        ),
-      );
-      await resolving;
-
-      final reader = await scriptedCurrentReader('thread');
-      final reference = CurrentCollectionRef(
-        ownerId: reader.metadata.currentOwnerId,
-        collection: 'interactions',
-        revision: 2,
-      );
-      final started = Completer<void>();
-      final page = Completer<CurrentCollectionPage>();
-      reader.onPage = (_, _, _) {
-        started.complete();
-        return page.future;
-      };
-      await _applyOwnerUpdate(
-        client,
-        ThreadBusinessRefsUpdate(
-          references: ThreadBusinessRefs(plan: null, interactions: reference),
-        ),
-      );
-      await started.future;
-      expect(session.state.hasInteractionBaseline, isFalse);
-      expect(
-        operation.state.value.observed,
-        isFalse,
-        reason: 'An empty display while querying is not a canonical removal',
-      );
-      final failure = StateError('controlled decision query failure');
-      page.completeError(failure);
-      await session.source.waitFor(
-        (value) => identical(value.interactionReadError, failure),
-      );
-      expect(operation.state.value.observed, isFalse);
-      expect(
-        client.threadCommands.state.commands['interaction:thread']?.phase,
-        CommandPhase.pending,
-      );
-
-      reader.onPage = (reference, _, _) async => CurrentCollectionPage(
-        revision: reference.revision,
-        entries: const [],
-      );
-      await session.deliverWorkspace(
-        _workspace(revision: session.state.revision + 1).copyWith(
-          businessRefs: ThreadBusinessRefs(plan: null, interactions: reference),
-        ),
-      );
-      await operation.state.waitFor((value) => value.observed);
-      expect(session.state.hasInteractionBaseline, isTrue);
-      expect(
-        client.threadCommands.state.commands,
-        isNot(contains('interaction:thread')),
-      );
-    },
-  );
 
   test(
     'queued interaction rechecks Recovery before transport invocation',
@@ -3982,8 +3909,9 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
+    observeTestConversationPage(client);
     client.conversations.setVisibleThread('thread');
-    await scriptedCurrentReader('thread');
+    await scriptedConversationFeed('thread');
     await client.conversations
         .session('thread')
         .deliverWorkspace(
@@ -5334,25 +5262,7 @@ void main() {
     await client.conversations
         .session('thread')
         .deliverWorkspace(_workspace(revision: 3, continuation: fresh));
-    // An older increment cannot replace the newer continuation projection.
-    final session = client.conversations.session('thread');
-    await session.deliverNotification(
-      ThreadNotificationFrame(
-        threadId: 'thread',
-        revision: session.state.revision,
-        baseRevision: session.state.revision,
-        update: ThreadRuntimeUpdate(
-          runtime: _runtime(continuation: _continuation(id: 'obsolete')),
-          todo: null,
-          modelRoute: session.state.modelRoute,
-        ),
-      ),
-    );
-    expect(
-      client.threadCommands.continuation('thread')!.id,
-      fresh.id,
-      reason: 'A lowered frame revision never rewrites the projection',
-    );
+    expect(client.threadCommands.continuation('thread')!.id, fresh.id);
     // The consumed Turn clears the point: nothing local is offered afterwards.
     await client.conversations
         .session('thread')

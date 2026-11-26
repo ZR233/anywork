@@ -4243,7 +4243,6 @@ mod tests {
 mod migration_tests {
     use std::sync::Arc;
 
-    use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
     use super::*;
     use crate::history::{
         HistoryBusinessRowHead, HistoryDelivery, HistoryEntityKind, HistoryEntityState,
@@ -4252,6 +4251,7 @@ mod migration_tests {
     };
     use crate::studio::storage::history::schema::v24_presentation::BlockOrder;
     use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
+    use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
     use crate::thread_assembler::{
         agent_review::review_message_id,
         review_delivery::{
@@ -6156,8 +6156,8 @@ mod migration_tests {
     }
 
     #[tokio::test]
-    async fn cold_conversation_feed_prepares_schema24_before_history_is_opened() -> anyhow::Result<()>
-    {
+    async fn cold_conversation_feed_prepares_schema24_before_history_is_opened()
+    -> anyhow::Result<()> {
         use crate::runtime_test_support::Environment;
         let mut env = Environment::new(vec![], vec![]).await?;
         let result = async {
@@ -6180,10 +6180,7 @@ mod migration_tests {
             assert!(!paths.current_file().exists());
             env.restart().await?;
             assert!(!paths.current_file().exists());
-            let feed = env
-                .runtime
-                .open_conversation_feed(&thread.id, 16)
-                .await?;
+            let feed = env.runtime.open_conversation_feed(&thread.id, 16).await?;
             let meta = feed.session_meta_snapshot();
             assert!(!meta.execution_present);
             feed.close().await;

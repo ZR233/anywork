@@ -1179,11 +1179,9 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
             )
             .await;
         if !replay_reasoning {
-            assert!(
-                matches!(result, Err(CurrentError::Owner(ref error))
+            assert!(matches!(result, Err(CurrentError::Owner(ref error))
                 if matches!(error.as_ref(), pl_core::thread::ThreadError::Model(model_err)
-                if model_err.kind == pl_core::model::ModelFailureKind::IncompatibleContext))
-            );
+                if model_err.kind == pl_core::model::ModelFailureKind::IncompatibleContext)));
             assert_eq!(restored.snapshot().context, before);
             restored.close().await.unwrap();
             assert_eq!(server.finish().await.unwrap().len(), 1);

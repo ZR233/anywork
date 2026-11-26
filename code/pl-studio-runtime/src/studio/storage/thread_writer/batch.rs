@@ -45,6 +45,8 @@ pub(super) struct FrozenBatch {
 struct PreparedEffectState {
     /// Candidate bytes accumulated for the effect's next atomic acceptance.
     events: Vec<HistoryEvent>,
+    basic_count: usize,
+    usage_revision: Option<u64>,
     /// Row anchors already prepared in this effect but not yet published.
     anchors: BTreeSet<String>,
     basic_done: bool,
@@ -150,6 +152,7 @@ pub(super) fn select(
 
 #[derive(Clone)]
 struct EffectStateSnapshot {
+    usage_revision: Option<u64>,
     basic_done: bool,
     usage_done: bool,
     complete: bool,
@@ -187,6 +190,7 @@ fn effect_state(inner: &Inner, index: usize) -> Result<EffectStateSnapshot> {
         .get(index)
         .context("history effect preparation slot disappeared")?;
     Ok(EffectStateSnapshot {
+        usage_revision: state.usage_revision,
         basic_done: state.basic_done,
         usage_done: state.usage_done,
         complete: state.complete,
@@ -217,6 +221,7 @@ fn append_basic_events(inner: &Inner, index: usize, events: Vec<HistoryEvent>) -
     for event in events {
         retain_prepared_event(state, event);
     }
+    state.basic_count = state.events.len();
     state.basic_done = true;
     Ok(())
 }
@@ -236,6 +241,7 @@ fn append_usage_events(inner: &Inner, index: usize, prepared: PreparedHistoryUsa
         .get_mut(index)
         .context("history effect preparation slot disappeared")?;
     ensure!(!state.usage_done, "history usage effect was prepared twice");
+    state.usage_revision = Some(prepared.usage_revision);
     for event in prepared.events {
         retain_prepared_event(state, event);
     }
@@ -259,6 +265,35 @@ fn complete_effect(inner: &Inner, index: usize) -> Result<()> {
     );
     state.frozen_events = Some(std::mem::take(&mut state.events).into());
     state.complete = true;
+    Ok(())
+}
+
+// A stale cumulative projection was never accepted. Keep immutable basic facts and body
+// identities, then derive usage again from its original facts on the next writer attempt.
+fn reset_usage_preparation(inner: &Inner, index: usize) -> Result<()> {
+    let mut progress = lock_progress(inner);
+    let batch = progress
+        .in_flight
+        .as_mut()
+        .context("history prefix was not selected")?;
+    let state = batch
+        .prepared_effects
+        .get_mut(index)
+        .context("history effect preparation slot disappeared")?;
+    let frozen = state
+        .frozen_events
+        .take()
+        .context("stale usage had no frozen events")?;
+    state.events = frozen[..state.basic_count].to_vec();
+    state.anchors = state
+        .events
+        .iter()
+        .filter(|event| event.is_anchor)
+        .filter_map(|event| event.row_key.clone())
+        .collect();
+    state.usage_revision = None;
+    state.usage_done = false;
+    state.complete = false;
     Ok(())
 }
 
@@ -496,16 +531,27 @@ async fn admit_effect(
         complete_effect(inner, index)?;
     }
 
-    let events = effect_state(inner, index)?
+    let state = effect_state(inner, index)?;
+    let usage_revision = state
+        .usage_revision
+        .unwrap_or_else(|| admission.usage_revision());
+    let events = state
         .frozen_events
         .context("complete history effect has no frozen events")?;
-    let mut accepted = history.accept_locked(&admission, &events).await;
+    let mut accepted = history
+        .accept_locked_at_revision(&admission, &events, usage_revision)
+        .await;
     if matches!(accepted, Err(crate::history::HistoryError::Capacity)) {
-        // Flush only batches that were already accepted as complete effects. The admission guard
-        // stays held so another producer cannot change anchors or accounting totals between the
-        // failure and the retry of this identical vector.
         history.flush().await?;
-        accepted = history.accept_locked(&admission, &events).await;
+        accepted = history
+            .accept_locked_at_revision(&admission, &events, usage_revision)
+            .await;
+    }
+    if accepted
+        .as_ref()
+        .is_err_and(crate::history::HistoryError::is_usage_preparation_changed)
+    {
+        reset_usage_preparation(inner, index)?;
     }
     accepted.map_err(anyhow::Error::new)?;
     drop(admission);
@@ -562,42 +608,43 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<History
         }
         ensure_effect_state(inner, index)?;
         if effect.prepared.bus_admitted {
-            if let Some(report) = &effect.prepared.parent_report {
-                let recorded_at = millis(effect.prepared.committed_at)?;
-                let report_event = delivery_event(
-                    &inner.thread.id,
-                    "parent_report",
-                    &report.id,
-                    serde_json::to_string(report)?,
-                    effect.prepared.run_id,
-                    BatchWriteContext {
-                        recorded_at,
-                        anchor: false,
-                        database_id: &database_id,
+            if !effect_state(inner, index)?.complete {
+                let mut events = Vec::new();
+                if let Some(report) = &effect.prepared.parent_report {
+                    events.push(delivery_event(
+                        &inner.thread.id,
+                        "parent_report",
+                        &report.id,
+                        serde_json::to_string(report)?,
+                        effect.prepared.run_id,
+                        BatchWriteContext {
+                            recorded_at: millis(effect.prepared.committed_at)?,
+                            anchor: false,
+                            database_id: &database_id,
+                        },
+                    )?);
+                }
+                append_basic_events(inner, index, events)?;
+                append_usage_events(
+                    inner,
+                    index,
+                    PreparedHistoryUsage {
+                        events: Vec::new(),
+                        accepted_sequence: None,
+                        usage_revision: history.memory_admission_revision(),
                     },
                 )?;
-                let report_events = [report_event];
-                let mut accepted = history.accept_in_memory(&report_events).await;
-                if matches!(accepted, Err(crate::history::HistoryError::Capacity)) {
-                    history.flush().await?;
-                    accepted = history.accept_in_memory(&report_events).await;
-                }
-                accepted.map_err(anyhow::Error::new)?;
+                complete_effect(inner, index)?;
             }
-            {
-                let mut progress = lock_progress(inner);
-                let batch = progress
-                    .in_flight
-                    .as_mut()
-                    .context("history prefix was not selected")?;
-                let state = batch
-                    .prepared_effects
-                    .get_mut(index)
-                    .context("history effect preparation slot disappeared")?;
-                state.basic_done = true;
-                state.usage_done = true;
-                state.complete = true;
+            let events = effect_state(inner, index)?
+                .frozen_events
+                .context("parent report events were not frozen")?;
+            let mut accepted = history.accept_batch(&events).await;
+            if matches!(accepted, Err(crate::history::HistoryError::Capacity)) {
+                history.flush().await?;
+                accepted = history.accept_batch(&events).await;
             }
+            accepted.map_err(anyhow::Error::new)?;
             mark_effect_accepted(inner, index)?;
         } else {
             admit_effect(inner, &history, effect, index).await?;

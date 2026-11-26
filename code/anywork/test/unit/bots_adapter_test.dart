@@ -178,7 +178,7 @@ void main() {
       expect(session, isNotNull);
       await timelineReady(graph.timeline, 'thread-main');
       await session!.source.waitFor((state) => state.hasSnapshot);
-      await _awaitCurrentReaders(graph, transport, 'thread-main');
+      await _awaitFeed(graph, transport, 'thread-main');
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
@@ -196,20 +196,13 @@ void main() {
   );
 }
 
-Future<void> _awaitCurrentReaders(
+Future<void> _awaitFeed(
   AppGraph graph,
   RecordingDemoTransport transport,
   String threadId,
 ) async {
-  final timeline = graph.timeline.lease(threadId)!.current;
-  final current = transport.currentReaders
-      .where((reader) => reader.threadId == threadId)
-      .toList();
-  expect(current, hasLength(2));
-  expect(timeline, isA<RecordingCurrentReader>());
-  final state = current.singleWhere((reader) => !identical(reader, timeline));
-  await Future.wait([
-    (timeline as RecordingCurrentReader).watchEntered.future,
-    state.watchEntered.future,
-  ]);
+  await timelineReady(graph.timeline, threadId);
+  final feeds = transport.feeds.where((feed) => feed.threadId == threadId);
+  expect(feeds, hasLength(1));
+  await feeds.single.listening.future;
 }

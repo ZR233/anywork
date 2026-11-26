@@ -735,7 +735,9 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         {
             let checkpoint_version: i64 = row.try_get("", "version")?;
             ensure!(
-                (1..=i64::from(crate::studio::storage::legacy_checkpoint::ThreadCheckpoint::SCHEMA_VERSION))
+                (1..=i64::from(
+                    crate::studio::storage::legacy_checkpoint::ThreadCheckpoint::SCHEMA_VERSION
+                ))
                     .contains(&checkpoint_version),
                 "unsupported checkpoint schema {checkpoint_version}; existing data preserved"
             );

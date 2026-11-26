@@ -394,6 +394,7 @@ mod tests {
             "/api/v1/threads/{thread_id}/feed/{feed_id}/older",
             "/api/v1/threads/{thread_id}/feed/{feed_id}/work-group",
             "/api/v1/threads/{thread_id}/feed/{feed_id}/body",
+            "/api/v1/threads/{thread_id}/feed/{feed_id}/detail",
             "/api/v1/threads/{thread_id}/feed/{feed_id}/reset",
             "/api/v1/threads/{thread_id}/feed/{feed_id}/close",
         ] {

@@ -7,7 +7,9 @@ mod support;
 use anyhow::{Context, Result, ensure};
 
 use pl_studio_runtime::history::*;
-use pl_studio_runtime::timeline::{ConversationEvent, LiveStatusPhase, TimelineItem, TimelinePatch};
+use pl_studio_runtime::timeline::{
+    ConversationEvent, LiveStatusPhase, TimelineItem, TimelinePatch,
+};
 use std::path::Path;
 use support::{Environment, prompt_step, reached};
 
@@ -171,9 +173,13 @@ async fn ordinary_question_answer_continues_from_current_without_history_reconst
         env.runtime.synchronize_thread_observation(&id).await?;
         let input = loop {
             let meta = feed.session_meta_snapshot();
-            if let Some(input) = meta.active_turn.and_then(|turn| turn.input_id).filter(|input| {
-                input != "input-Show an interaction request and wait for my choice."
-            }) {
+            if let Some(input) = meta
+                .active_turn
+                .and_then(|turn| turn.input_id)
+                .filter(|input| {
+                    input != "input-Show an interaction request and wait for my choice."
+                })
+            {
                 break input;
             }
             ensure!(

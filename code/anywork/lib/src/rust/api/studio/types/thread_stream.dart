@@ -4,7 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
-import 'chat.dart';
 import 'delegation.dart';
 import 'mode_editor.dart';
 
@@ -13,11 +12,10 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'presentation.dart';
 import 'runtime.dart';
-import 'thread_activity.dart';
-import 'thread_stream/item.dart';
 part 'thread_stream.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeThreadBusinessRefs`, `BridgeThreadRuntimeAvailability`, `BridgeThreadSnapshot`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// FRB mirror of the canonical prompt cache effective-usage summary.
 class BridgeCacheUsageSummary {
@@ -494,24 +492,6 @@ class BridgeThread {
           archived == other.archived;
 }
 
-class BridgeThreadBusinessRefs {
-  final BridgeCurrentPlanHead? plan;
-  final BridgeCurrentCollectionRef? interactions;
-
-  const BridgeThreadBusinessRefs({this.plan, this.interactions});
-
-  @override
-  int get hashCode => plan.hashCode ^ interactions.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadBusinessRefs &&
-          runtimeType == other.runtimeType &&
-          plan == other.plan &&
-          interactions == other.interactions;
-}
-
 class BridgeThreadMcpAvailabilityDescriptor {
   final BridgeThreadMcpServerDescriptor server;
   final String availability;
@@ -649,88 +629,6 @@ class BridgeThreadModelRouteSnapshot {
           available == other.available &&
           unavailableReason == other.unavailableReason;
 }
-
-@freezed
-sealed class BridgeThreadNotification with _$BridgeThreadNotification {
-  const BridgeThreadNotification._();
-
-  const factory BridgeThreadNotification.turnStarted({
-    required BridgeTurn turn,
-  }) = BridgeThreadNotification_TurnStarted;
-  const factory BridgeThreadNotification.turnUpdated({
-    required BridgeTurn turn,
-  }) = BridgeThreadNotification_TurnUpdated;
-  const factory BridgeThreadNotification.turnCompleted({
-    required BridgeTurn turn,
-  }) = BridgeThreadNotification_TurnCompleted;
-  const factory BridgeThreadNotification.interactionChanged({
-    required BridgeInteractionRequest interaction,
-  }) = BridgeThreadNotification_InteractionChanged;
-  const factory BridgeThreadNotification.businessRefsChanged({
-    required BridgeThreadBusinessRefs references,
-  }) = BridgeThreadNotification_BusinessRefsChanged;
-  const factory BridgeThreadNotification.threadRuntimeUpdated({
-    required BridgeThreadRuntimeSnapshot runtime,
-    BridgeThreadModelRouteSnapshot? modelRoute,
-  }) = BridgeThreadNotification_ThreadRuntimeUpdated;
-
-  /// 当前执行活动变化；`None` 表示当前没有活动（Turn 已结束或尚未开始）。
-  const factory BridgeThreadNotification.activityChanged({
-    BridgeThreadActivity? activity,
-  }) = BridgeThreadNotification_ActivityChanged;
-
-  /// Thread 存储状态变化；`None` 表示当前没有可报告的存储事实（未知，不是“健康”）。
-  const factory BridgeThreadNotification.storageChanged({
-    BridgeThreadStorageState? storage,
-  }) = BridgeThreadNotification_StorageChanged;
-  const factory BridgeThreadNotification.lagged({required BigInt dropped}) =
-      BridgeThreadNotification_Lagged;
-}
-
-class BridgeThreadNotificationEnvelope {
-  final String threadId;
-
-  /// 生产端一次连续广播生命周期的标识；与上一条不一致时客户端丢弃旧帧。
-  final BigInt epoch;
-
-  /// 本通知之前的状态水位；与客户端已知水位不一致即表示缺口。
-  final BigInt baseRevision;
-  final BigInt revision;
-  final PlatformInt64 emittedAt;
-  final BridgeThreadNotification notification;
-
-  const BridgeThreadNotificationEnvelope({
-    required this.threadId,
-    required this.epoch,
-    required this.baseRevision,
-    required this.revision,
-    required this.emittedAt,
-    required this.notification,
-  });
-
-  @override
-  int get hashCode =>
-      threadId.hashCode ^
-      epoch.hashCode ^
-      baseRevision.hashCode ^
-      revision.hashCode ^
-      emittedAt.hashCode ^
-      notification.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadNotificationEnvelope &&
-          runtimeType == other.runtimeType &&
-          threadId == other.threadId &&
-          epoch == other.epoch &&
-          baseRevision == other.baseRevision &&
-          revision == other.revision &&
-          emittedAt == other.emittedAt &&
-          notification == other.notification;
-}
-
-enum BridgeThreadRuntimeAvailability { active, inactive }
 
 class BridgeThreadRuntimeLiveUsage {
   final String turnId;
@@ -966,69 +864,6 @@ class BridgeThreadRuntimeUsage {
 }
 
 enum BridgeThreadRuntimeUsageState { live, authoritative }
-
-class BridgeThreadSnapshot {
-  final int schemaVersion;
-  final BigInt revision;
-  final BridgeThread thread;
-  final BridgeThreadBusinessRefs businessRefs;
-  final BridgeTurn? activeTurn;
-  final List<BridgeInteractionRequest> interactions;
-  final BridgeThreadModelRouteSnapshot? modelRoute;
-  final BridgeThreadRuntimeSnapshot? runtime;
-
-  /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
-  final BridgeThreadActivity? activity;
-
-  /// Thread 存储状态；`None` 表示没有可报告的存储事实（不是“健康”）。
-  final BridgeThreadStorageState? storage;
-  final BridgeThreadRuntimeAvailability runtimeAvailability;
-
-  const BridgeThreadSnapshot({
-    required this.schemaVersion,
-    required this.revision,
-    required this.thread,
-    required this.businessRefs,
-    this.activeTurn,
-    required this.interactions,
-    this.modelRoute,
-    this.runtime,
-    this.activity,
-    this.storage,
-    required this.runtimeAvailability,
-  });
-
-  @override
-  int get hashCode =>
-      schemaVersion.hashCode ^
-      revision.hashCode ^
-      thread.hashCode ^
-      businessRefs.hashCode ^
-      activeTurn.hashCode ^
-      interactions.hashCode ^
-      modelRoute.hashCode ^
-      runtime.hashCode ^
-      activity.hashCode ^
-      storage.hashCode ^
-      runtimeAvailability.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeThreadSnapshot &&
-          runtimeType == other.runtimeType &&
-          schemaVersion == other.schemaVersion &&
-          revision == other.revision &&
-          thread == other.thread &&
-          businessRefs == other.businessRefs &&
-          activeTurn == other.activeTurn &&
-          interactions == other.interactions &&
-          modelRoute == other.modelRoute &&
-          runtime == other.runtime &&
-          activity == other.activity &&
-          storage == other.storage &&
-          runtimeAvailability == other.runtimeAvailability;
-}
 
 enum BridgeThreadStatus {
   idle,

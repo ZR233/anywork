@@ -1,200 +1,155 @@
-import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../../presentation/providers/client_provider.dart';
-import '../../../../presentation/providers/observe_client.dart';
-import 'timeline_view_model.dart';
-import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../../../../domain/models/timeline_commands.dart';
+import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/providers/thread_session_store.dart';
+import 'timeline_view_model.dart';
 
-final planDocumentViewModelProvider = NotifierProvider.autoDispose
-    .family<PlanDocumentViewModel, PlanDocumentState, String>(
-      PlanDocumentViewModel.new,
+typedef PlanDetailReadout = ({
+  PlanRuntimeView? plan,
+  bool Function() isCurrent,
+});
+
+typedef _PlanHead = ({int revision, PlanRuntimePhase state, int updatedAt});
+
+const _planWindowBytes = 64 * 1024;
+
+final planDocumentProvider = FutureProvider.autoDispose
+    .family<PlanDetailReadout?, String>((ref, threadId) async {
+      final conversations = ref.watch(anyworkClientProvider).conversations;
+      final owner = ref.watch(timelineSessionOwnerProvider);
+      final presentation = ref.watch(
+        timelineViewModelProvider(threadId).select((state) {
+          final view = state.asData?.value;
+          return (
+            display: view?.connection == TimelineConnectionPhase.ready
+                ? owner.lease(threadId)
+                : null,
+            error: view?.connectionError ?? state.asError?.error,
+          );
+        }),
+      );
+      final stamp = ref.watch(
+        threadSessionStoreProvider(threadId)
+            .select((state) => _stampOf(state.meta)),
+      );
+      final display = presentation.display;
+      final session = conversations.existingSession(threadId);
+      if (presentation.error case final error?) throw error;
+      if (display == null || session == null || stamp == null) return null;
+
+      var observed = true;
+      ref.onCancel(() => observed = false);
+      ref.onResume(ref.invalidateSelf);
+
+      bool isCurrent() =>
+          observed &&
+          ref.mounted &&
+          session.isActive &&
+          conversations.visibleThreadId.value == threadId &&
+          identical(conversations.existingSession(threadId), session) &&
+          identical(owner.lease(threadId), display) &&
+          display.canRead &&
+          _stampOf(session.state.meta) == stamp;
+
+      final plan = await _readPlan(session, stamp.ownerEpoch, isCurrent);
+      if (!isCurrent() || _headOf(plan) != stamp.head) {
+        throw StateError('The Plan changed during the detail read');
+      }
+      return (plan: plan, isCurrent: isCurrent);
+    }, retry: (_, _) => null);
+
+({String ownerEpoch, _PlanHead? head})? _stampOf(SessionMetaSnapshot? meta) =>
+    meta == null
+    ? null
+    : (ownerEpoch: meta.ownerEpoch, head: _headOf(meta.plan));
+
+_PlanHead? _headOf(PlanRuntimeView? plan) => plan == null
+    ? null
+    : (
+        revision: plan.revision,
+        state: plan.state,
+        updatedAt:
+            plan.updatedAt.millisecondsSinceEpoch ~/
+            Duration.millisecondsPerSecond,
+      );
+
+Future<PlanRuntimeView?> _readPlan(
+  ConversationSession session,
+  String ownerEpoch,
+  bool Function() isCurrent,
+) async {
+  final bytes = BytesBuilder(copy: false);
+  (int, int)? snapshot;
+  do {
+    if (!isCurrent()) throw ThreadStateResyncCancelled(session.threadId);
+    final offset = bytes.length;
+    final window = await session.readSessionDetail(
+      kind: SessionDetailKind.plan,
+      offset: offset,
+      maxBytes: _planWindowBytes,
     );
-
-class PlanDocumentState {
-  const PlanDocumentState({
-    this.window,
-    this.error,
-    this.loading = false,
-    this.canRead = false,
-  });
-
-  final ContentWindow? window;
-  final Object? error;
-  final bool loading;
-  final bool canRead;
+    if (!isCurrent()) throw ThreadStateResyncCancelled(session.threadId);
+    final next = (window.revision, window.totalBytes);
+    if (window.ownerEpoch != ownerEpoch ||
+        (snapshot != null && next != snapshot)) {
+      throw StateError(
+        'The session snapshot changed during the Plan detail read',
+      );
+    }
+    snapshot = next;
+    if (window.offset != offset ||
+        window.bytes.isEmpty ||
+        window.bytes.length > _planWindowBytes ||
+        window.bytes.length > window.totalBytes - offset) {
+      throw const FormatException('Invalid Plan detail window');
+    }
+    bytes.add(window.bytes);
+  } while (bytes.length < snapshot.$2);
+  return _decodePlan(jsonDecode(utf8.decode(bytes.takeBytes())));
 }
 
-class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
-  PlanDocumentViewModel(this.threadId);
-
-  final String threadId;
-  late ConversationRepository _conversations;
-  ConversationSession? _session;
-  Observation? _sessionObservation;
-  late TimelineSessionOwner _timeline;
-  Observation? _timelineObservation;
-  CurrentQueryScope? _scope;
-  Object? _source;
-  int _generation = 0;
-  int _request = 0;
-  int _offset = 0;
-  bool _disposed = false;
-
-  @override
-  PlanDocumentState build() {
-    _conversations = ref.read(anyworkClientProvider).conversations;
-    _timeline = ref.read(timelineSessionOwnerProvider);
-    _timelineObservation = _timeline.source.watch((_) => _sync());
-    observeClient(ref, _conversations.visibleThreadId, (_) => _sync());
-    ref.onDispose(() {
-      _disposed = true;
-      _sessionObservation?.cancel();
-      _timelineObservation?.cancel();
-      _retire();
-    });
-    // Defer IO until the provider has published its initial presentation.
-    scheduleMicrotask(_sync);
-    return const PlanDocumentState();
-  }
-
-  Object? _currentSource() {
-    final session = _conversations.existingSession(threadId);
-    final content = _timeline.lease(threadId);
-    final document = session?.state.businessRefs?.plan?.document;
-    final reader = content?.current;
-    if (_conversations.visibleThreadId.value != threadId ||
-        session == null ||
-        content == null ||
-        reader == null ||
-        document == null ||
-        session.isClosed ||
-        content.isRetired ||
-        _timeline.source.value?.connection != TimelineConnectionPhase.ready) {
-      return null;
-    }
-    return (session, content, reader.metadata.readerId, document);
-  }
-
-  void _sync() {
-    if (_disposed) return;
-    final session = _conversations.existingSession(threadId);
-    if (!identical(session, _session)) {
-      _sessionObservation?.cancel();
-      _session = session;
-      _sessionObservation = session?.source
-          .watchLatest((_) => _sync())
-          .observation;
-    }
-    final source = _currentSource();
-    if (source != null && source == _source) return;
-    _retire();
-    _source = source;
-    _offset = 0;
-    if (source == null) {
-      final connection = _timeline.source.value;
-      final error =
-          _conversations.visibleThreadId.value == threadId &&
-              connection?.connection == TimelineConnectionPhase.failed
-          ? connection?.connectionError
-          : null;
-      state = PlanDocumentState(error: error);
-      return;
-    }
-    state = const PlanDocumentState(canRead: true);
-    unawaited(_load(0));
-  }
-
-  void _retire() {
-    _request++;
-    _source = null;
-    final scope = _scope;
-    _scope = null;
-    scope?.retire();
-    // Failed cleanup remains owned by the original display lease.
-    if (scope != null) unawaited(scope.close());
-  }
-
-  Future<void> _load(int offset) async {
-    final source = _source;
-    if (_disposed ||
-        source == null ||
-        source != _currentSource() ||
-        state.loading) {
-      return;
-    }
-    final request = ++_request;
-    _offset = offset;
-    final content = _timeline.lease(threadId)!;
-    final document = _session!.state.businessRefs!.plan!.document!;
-    bool current() =>
-        !_disposed &&
-        request == _request &&
-        source == _source &&
-        source == _currentSource();
-    state = PlanDocumentState(
-      window: state.window,
-      loading: true,
-      canRead: true,
-    );
-    try {
-      final scope = _scope ??= content.openCurrentScope(
-        generation: ++_generation,
-      );
-      final window = await scope.readBody(
-        reference: document,
-        range: ContentRange(offset: offset, maxBytes: 64 * 1024),
-      );
-      if (!current()) return;
-      state = PlanDocumentState(window: window, canRead: true);
-    } catch (error) {
-      if (!current()) return;
-      state = PlanDocumentState(
-        window: state.window,
-        error: error,
-        canRead: true,
-      );
-    }
-    // No shared finally: an old request cannot clear a newer request's loading.
-  }
-
-  void retry() {
-    if (_disposed || state.loading || state.error == null) return;
-    if (_conversations.visibleThreadId.value != threadId) return;
-    if (_timeline.source.value?.connection == TimelineConnectionPhase.failed) {
-      _timeline.refresh(threadId);
-    } else {
-      unawaited(_load(_offset));
-    }
-  }
-
-  void next() {
-    final window = state.window;
-    if (window == null ||
-        window.bytes.isEmpty ||
-        window.offset + window.bytes.length >= window.availableThrough) {
-      return;
-    }
-    unawaited(_load(window.offset + window.bytes.length));
-  }
-
-  void copy() {
-    final window = state.window;
-    if (window == null ||
-        state.loading ||
-        _source == null ||
-        _source != _currentSource()) {
-      return;
-    }
-    unawaited(
-      Clipboard.setData(
-        ClipboardData(text: utf8.decode(window.bytes, allowMalformed: true)),
+PlanRuntimeView? _decodePlan(Object? json) {
+  if (json == null) return null;
+  if (json
+      case final Map<String, Object?> envelope &&
+          {
+            'revision': final int revision,
+            'state': final String state,
+            'updatedAt': final int updatedAt,
+          }
+      when revision >= 0 &&
+          updatedAt >= -8640000000000 &&
+          updatedAt <= 8640000000000) {
+    final phase = PlanRuntimePhase.values.asNameMap()[state];
+    if (phase == null) throw const FormatException('Invalid Plan detail state');
+    final document = switch (envelope['document']) {
+      null => null,
+      {
+        'version': final int version,
+        'markdown': final String markdown,
+        'contentHash': final String contentHash,
+      }
+          when version >= 0 =>
+        PlanDocumentView(
+          version: version,
+          markdown: markdown,
+          contentHash: contentHash,
+        ),
+      _ => throw const FormatException('Invalid Plan detail document'),
+    };
+    return PlanRuntimeView(
+      revision: revision,
+      state: phase,
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(
+        updatedAt * Duration.millisecondsPerSecond,
       ),
+      document: document,
     );
   }
+  throw const FormatException('Invalid Plan detail');
 }

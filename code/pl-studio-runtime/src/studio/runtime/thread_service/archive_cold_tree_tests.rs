@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
+use anyhow::{Context, Result};
 use pl_core::{
     context::{
         ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload, content_hash,

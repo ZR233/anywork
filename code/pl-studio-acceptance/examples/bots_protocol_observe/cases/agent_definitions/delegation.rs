@@ -177,8 +177,7 @@ impl Observation<'_> {
             .id
             .clone();
         ensure!(
-            meta.parent_thread_id.as_deref() == Some(parent)
-                && meta.root_thread_id == parent,
+            meta.parent_thread_id.as_deref() == Some(parent) && meta.root_thread_id == parent,
             "child direct-parent/root association changed"
         );
         let route = meta
@@ -255,10 +254,9 @@ impl Observation<'_> {
                         && meta.activity.as_ref().is_some_and(|activity| {
                             activity.tools.active.iter().any(|tool| {
                                 tool.call_id == call_id
-                                    && tool
-                                        .wait
-                                        .as_ref()
-                                        .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
+                                    && tool.wait.as_ref().is_some_and(|wait| {
+                                        wait.state() == ThreadWaitState::Waiting
+                                    })
                             })
                         })
                     {

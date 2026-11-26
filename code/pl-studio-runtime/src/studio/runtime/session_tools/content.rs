@@ -342,16 +342,18 @@ pub(super) async fn read(
         if let Some(item_id) = args.item_id {
             let page = resource
                 .history
-                .list_bodies(item_id.clone(), args.continuation, crate::history::HistoryDemand {
-                    max_rows: page_demand.max_items,
-                    max_bytes: page_demand.max_bytes,
-                })
+                .list_bodies(
+                    item_id.clone(),
+                    args.continuation,
+                    crate::history::HistoryDemand {
+                        max_rows: page_demand.max_items,
+                        max_bytes: page_demand.max_bytes,
+                    },
+                )
                 .await?;
             return output(&serde_json::json!({"readScope":id,"itemId":item_id,"manifest":page}));
         }
-        let scope = args
-            .scope
-            .unwrap_or(ChatScope::conversation(None));
+        let scope = args.scope.unwrap_or(ChatScope::conversation(None));
         let page = resource
             .history
             .events_page(

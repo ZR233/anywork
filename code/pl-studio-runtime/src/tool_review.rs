@@ -287,7 +287,12 @@ mod tests {
         struct Sink(Arc<Gate>);
         impl HistorySink for Sink {
             fn fold_usage(&self, _: &mut UsageSummary, _: &ThreadEffectBatch) {}
-            fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+            fn reserve_observed_item(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<(), ColdStoreError> {
                 Ok(())
             }
             fn reserve_operation_output(

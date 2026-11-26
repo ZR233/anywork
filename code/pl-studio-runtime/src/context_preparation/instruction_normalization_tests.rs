@@ -74,10 +74,7 @@ fn snapshot_payload(snapshot: &crate::instruction::InstructionSnapshot) -> Resul
 #[tokio::test]
 async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<()> {
     use crate::instruction::{InstructionSnapshot, InstructionSourceKind};
-    use pl_core::{
-        model::ModelFactory,
-        thread::ThreadHandle,
-    };
+    use pl_core::{model::ModelFactory, thread::ThreadHandle};
     use pl_model::{
         completion::OpenAiCompactionMode,
         config::{AccountId, ResolvedModelRoute},

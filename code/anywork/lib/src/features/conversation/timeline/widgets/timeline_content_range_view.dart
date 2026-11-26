@@ -5,31 +5,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../state/content_reference_identity.dart';
 import 'timeline_activity_row.dart';
 
-/// Completed bounded reads handed off by this row's original metadata reader.
-class TimelineInitialBodyReads extends InheritedWidget {
-  const TimelineInitialBodyReads({
-    super.key,
-    required this.results,
-    required super.child,
-  });
-  final Map<Object, AsyncSnapshot<ContentWindow>> results;
-
-  static AsyncSnapshot<ContentWindow>? read(
-    BuildContext context,
-    HistoryEventBodyRef reference,
-  ) => context
-      .getInheritedWidgetOfExactType<TimelineInitialBodyReads>()
-      ?.results[historyBodyIdentity(reference)];
-
-  @override
-  bool updateShouldNotify(TimelineInitialBodyReads oldWidget) =>
-      !identical(results, oldWidget.results);
-}
-
-/// A presentation owner's stable read epoch; this grants no query permission.
 class TimelineBodyReadQualification extends InheritedWidget {
   const TimelineBodyReadQualification({
     required this.value,
@@ -63,8 +40,8 @@ class TimelineBodyReadIntent extends InheritedWidget {
   final bool summary;
   final bool scrollable;
   final Widget Function(String text)? bodyBuilder;
-  final ValueChanged<ContentWindow>? onRead;
-  static ValueChanged<ContentWindow>? onReadOf(BuildContext context) => context
+  final ValueChanged<BodyWindow>? onRead;
+  static ValueChanged<BodyWindow>? onReadOf(BuildContext context) => context
       .dependOnInheritedWidgetOfExactType<TimelineBodyReadIntent>()
       ?.onRead;
   static Widget Function(String text)? bodyBuilderOf(BuildContext context) =>
@@ -116,6 +93,7 @@ class TimelineContentRangeView extends StatelessWidget {
     this.error,
     this.bodyBuilder,
     this.frameBody,
+    this.showInlineCopy = false,
   });
 
   final String itemId;
@@ -126,7 +104,8 @@ class TimelineContentRangeView extends StatelessWidget {
   final bool loading;
   final bool active;
   final bool canRead;
-  final ContentWindow? window;
+  final bool showInlineCopy;
+  final BodyWindow? window;
   final Object? error;
   final Widget Function(String text)? bodyBuilder;
   final Widget Function(Widget body)? frameBody;
@@ -138,17 +117,20 @@ class TimelineContentRangeView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final window = this.window;
-    final end = window == null ? 0 : window.offset + window.bytes.length;
-    final text = window == null
-        ? ''
-        : utf8.decode(window.bytes, allowMalformed: true);
+    final encoded = window?.bytesBase64;
+    final bytes = encoded == null ? null : base64Decode(encoded);
+    final text =
+        window?.text ??
+        (bytes == null ? '' : utf8.decode(bytes, allowMalformed: true));
+    final length = bytes?.length ?? utf8.encode(text).length;
+    final end = (window?.offset ?? 0) + length;
     final hasNext =
-        window != null &&
-        window.bytes.isNotEmpty &&
-        end < window.availableThrough;
+        window != null && length > 0 && !window.eof && end < window.totalBytes;
     final showRange = !disclosed || hasNext || (window?.offset ?? 0) > 0;
     final showCopy =
-        window != null && onCopy != null && (bodyBuilder == null || showRange);
+        window != null &&
+        onCopy != null &&
+        (showInlineCopy || bodyBuilder == null || showRange);
     final contents = <Widget>[
       if (loading) const LinearProgressIndicator(minHeight: 1),
       if (error != null)
@@ -159,7 +141,7 @@ class TimelineContentRangeView extends StatelessWidget {
       if (window != null) ...[
         if (showRange)
           Text(
-            '字节 ${window.offset}–$end / ${window.availableThrough}',
+            '字节 ${window.offset}–$end / ${window.totalBytes}',
             style: context.text.labelSmall?.copyWith(
               color: context.colors.onSurfaceVariant,
             ),

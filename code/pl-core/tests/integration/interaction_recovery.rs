@@ -65,8 +65,7 @@ async fn closing_the_thread_keeps_a_pending_interaction_recoverable() {
             .unwrap(),
     )
     .unwrap();
-    let restored: pl_core::thread::current::ThreadCurrent =
-        serde_json::from_slice(&saved).unwrap();
+    let restored: pl_core::thread::current::ThreadCurrent = serde_json::from_slice(&saved).unwrap();
     let resumed = ThreadHandle::restore_current(restored, None).unwrap();
     let record = resumed
         .snapshot()
@@ -110,8 +109,7 @@ async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempot
             .unwrap(),
     )
     .unwrap();
-    let restored: pl_core::thread::current::ThreadCurrent =
-        serde_json::from_slice(&saved).unwrap();
+    let restored: pl_core::thread::current::ThreadCurrent = serde_json::from_slice(&saved).unwrap();
     let (model, seen) = ScriptedModel::new(&[]);
     let resumed =
         ThreadHandle::restore_current(restored, Some(DynModelSession::new(model))).unwrap();
@@ -226,8 +224,7 @@ async fn an_explicitly_cancelled_interaction_is_not_resurrected_by_recovery() {
             .unwrap(),
     )
     .unwrap();
-    let restored: pl_core::thread::current::ThreadCurrent =
-        serde_json::from_slice(&saved).unwrap();
+    let restored: pl_core::thread::current::ThreadCurrent = serde_json::from_slice(&saved).unwrap();
     let resumed = ThreadHandle::restore_current(restored, None).unwrap();
     // Recovery must not rebuild the cancelled interaction from history or accept new answers.
     assert!(!resumed.snapshot().interactions.contains_key("plan-1"));

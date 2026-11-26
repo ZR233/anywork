@@ -31,7 +31,10 @@ impl Default for ObservationSlot {
 }
 
 impl ObservationSlot {
-    pub(in crate::studio::runtime) fn register_feed(&self, handle: crate::timeline::FeedCloseHandle) {
+    pub(in crate::studio::runtime) fn register_feed(
+        &self,
+        handle: crate::timeline::FeedCloseHandle,
+    ) {
         let mut state = self
             .state
             .lock()
@@ -73,7 +76,11 @@ impl ObservationSlot {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.bus.as_ref().is_some_and(|current| current.ptr_eq(bus)) {
+        if state
+            .bus
+            .as_ref()
+            .is_some_and(|current| current.ptr_eq(bus))
+        {
             state.bus = None;
             self.bus_tx.send_replace(None);
         }

@@ -12,7 +12,7 @@ use sea_orm::{
     ConnectionTrait, DatabaseConnection, SqliteTransactionMode, TransactionOptions,
     TransactionTrait,
 };
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, watch};
+use tokio::sync::{Notify, Semaphore, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use super::{
@@ -28,6 +28,45 @@ pub(super) struct State {
     pub accepting: bool,
     pub closing: bool,
     pub write_error: Option<String>,
+    pub usage_revision: u64,
+}
+
+/// Serializes strict writers and remembers the cumulative usage state they prepared against.
+/// Live admission never acquires the asynchronous writer lock.
+pub(crate) struct HistoryAdmissionGuard<'a> {
+    _writer: tokio::sync::MutexGuard<'a, ()>,
+    usage_revision: AtomicU64,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct StrictValidationGate {
+    pub(crate) arrived: Notify,
+    pub(crate) resume: Notify,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("accounting/cost preparation was superseded by another admission")]
+struct UsagePreparationChanged;
+
+impl HistoryError {
+    pub(crate) fn is_usage_preparation_changed(&self) -> bool {
+        matches!(self, Self::Storage(error) if error.is::<UsagePreparationChanged>())
+    }
+}
+
+impl HistoryAdmissionGuard<'_> {
+    pub(crate) fn usage_revision(&self) -> u64 {
+        self.usage_revision.load(Ordering::Relaxed)
+    }
+}
+
+enum StrictAdmission {
+    Read {
+        pending: Arc<Pending>,
+        indices: Vec<usize>,
+    },
+    Accepted(Vec<u64>),
 }
 
 pub(super) struct Inner {
@@ -49,6 +88,8 @@ pub(super) struct Inner {
     pub operations: TaskTracker,
     pub(super) admission: tokio::sync::Mutex<()>,
     flush_lock: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    strict_validation_gate: Mutex<Option<Arc<StrictValidationGate>>>,
     lease: Mutex<Option<WriterLease>>,
 }
 
@@ -119,6 +160,7 @@ impl HistoryStore {
                     accepting: false,
                     closing: false,
                     write_error: None,
+                    usage_revision: 0,
                 }),
                 known: Mutex::new(KnownIndex::default()),
                 read_query_count: AtomicU64::new(0),
@@ -131,6 +173,8 @@ impl HistoryStore {
                 operations: TaskTracker::new(),
                 admission: tokio::sync::Mutex::new(()),
                 flush_lock: tokio::sync::Mutex::new(()),
+                #[cfg(test)]
+                strict_validation_gate: Mutex::new(None),
                 lease: Mutex::new(None),
             }),
         };
@@ -219,6 +263,7 @@ impl HistoryStore {
                     accepting: true,
                     closing: false,
                     write_error: None,
+                    usage_revision: 0,
                 }),
                 known: Mutex::new(known),
                 read_query_count: AtomicU64::new(0),
@@ -231,6 +276,8 @@ impl HistoryStore {
                 operations: TaskTracker::new(),
                 admission: tokio::sync::Mutex::new(()),
                 flush_lock: tokio::sync::Mutex::new(()),
+                #[cfg(test)]
+                strict_validation_gate: Mutex::new(None),
                 lease: Mutex::new(Some(lease)),
             }),
         };
@@ -256,6 +303,22 @@ impl HistoryStore {
 
     pub async fn accept_in_memory(&self, events: &[HistoryEvent]) -> Result<Vec<u64>> {
         self.accept_batch(events).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_flush(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.flush_lock.lock().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_strict_validation(&self) -> Arc<StrictValidationGate> {
+        let gate = Arc::new(StrictValidationGate::default());
+        *self
+            .inner
+            .strict_validation_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate.clone());
+        gate
     }
 
     pub fn database_id(&self) -> &str {
@@ -372,14 +435,92 @@ impl HistoryStore {
         self.accept_locked(&admission, events).await
     }
 
-    pub(crate) async fn admission_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.inner.admission.lock().await
+    pub(crate) async fn admission_guard(&self) -> HistoryAdmissionGuard<'_> {
+        let writer = self.inner.admission.lock().await;
+        let usage_revision = self.memory_admission_revision();
+        HistoryAdmissionGuard {
+            _writer: writer,
+            usage_revision: AtomicU64::new(usage_revision),
+        }
+    }
+
+    /// Capture before deriving accounting/cost candidates, not after preparing them.
+    pub(crate) fn memory_admission_revision(&self) -> u64 {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .usage_revision
+    }
+
+    /// Admits only unseen stable identities. Replays are discarded without interpreting their
+    /// candidate payload or consulting persistence. Returns exactly the newly accepted records.
+    pub(crate) fn accept_new_in_memory(
+        &self,
+        events: &[HistoryEvent],
+        usage_revision: u64,
+    ) -> Result<Vec<HistoryEventRecord>> {
+        if self.inner.read_only {
+            return Err(HistoryError::Closed);
+        }
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.accepting || state.closing {
+            return Err(HistoryError::Closed);
+        }
+        let mut known = self
+            .inner
+            .known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut unseen = Vec::new();
+        let mut identities = BTreeSet::new();
+        for (idx, event) in events.iter().enumerate() {
+            if !identities.insert(event.event_id.as_str()) {
+                return Err(HistoryError::Conflict(format!(
+                    "duplicate event_id {} in batch",
+                    event.event_id
+                )));
+            }
+            if !known.events.contains(&event.event_id) {
+                unseen.push(idx);
+            }
+        }
+        let retained_sizes = unseen
+            .iter()
+            .map(|&idx| validate::event(&events[idx]))
+            .collect::<Result<Vec<_>>>()?;
+        let records = self.commit_new_events(
+            &mut state,
+            &mut known,
+            events,
+            &unseen,
+            &retained_sizes,
+            usage_revision,
+        )?;
+        drop(known);
+        drop(state);
+        self.notify_admission(&records);
+        Ok(records)
     }
 
     pub(crate) async fn accept_locked(
         &self,
-        _admission: &tokio::sync::MutexGuard<'_, ()>,
+        admission: &HistoryAdmissionGuard<'_>,
         events: &[HistoryEvent],
+    ) -> Result<Vec<u64>> {
+        self.accept_locked_at_revision(admission, events, admission.usage_revision())
+            .await
+    }
+
+    pub(crate) async fn accept_locked_at_revision(
+        &self,
+        admission: &HistoryAdmissionGuard<'_>,
+        events: &[HistoryEvent],
+        usage_revision: u64,
     ) -> Result<Vec<u64>> {
         if self.inner.read_only {
             return Err(HistoryError::Closed);
@@ -387,225 +528,284 @@ impl HistoryStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let pending_snapshot = {
-            let state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !state.accepting || state.closing {
-                return Err(HistoryError::Closed);
-            }
-            state.pending.clone()
-        };
-
-        let mut seen_event_ids = BTreeSet::new();
-        let mut seen_body_ids = BTreeSet::new();
-        let mut retained_sizes = Vec::with_capacity(events.len());
+        let mut identities = BTreeSet::new();
+        let mut body_ids = BTreeSet::new();
         for event in events {
-            let bytes = validate::event(event)?;
-            if !seen_event_ids.insert(event.event_id.as_str()) {
+            validate::event(event)?;
+            if !identities.insert(event.event_id.as_str()) {
                 return Err(HistoryError::Conflict(format!(
                     "duplicate event_id {} in batch",
                     event.event_id
                 )));
             }
             for body in &event.bodies {
-                if !seen_body_ids.insert(body.body_id.as_str()) {
+                if !body_ids.insert(body.body_id.as_str()) {
                     return Err(HistoryError::Conflict(format!(
                         "duplicate body_id {} in batch",
                         body.body_id
                     )));
                 }
             }
-            retained_sizes.push(bytes);
         }
+        let mut verified = BTreeMap::new();
+        loop {
+            // Classification and final commit share the same current state/known lock order.
+            // All SQLite validation happens after releasing both locks.
+            let attempt = {
+                let mut state = self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !state.accepting || state.closing {
+                    return Err(HistoryError::Closed);
+                }
+                let mut known = self
+                    .inner
+                    .known
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut assigned = vec![0; events.len()];
+                let mut new_indices = Vec::new();
+                let mut persisted = Vec::new();
+                for (idx, event) in events.iter().enumerate() {
+                    if let Some(accepted) = state.pending.event(&event.event_id) {
+                        let existing = Record::from_event(&accepted.event);
+                        ensure_same_pending_event(&state.pending, &existing, event)?;
+                        assigned[idx] = existing.record.seq;
+                    } else if known.events.contains(&event.event_id) {
+                        if let Some(&seq) = verified.get(&idx) {
+                            assigned[idx] = seq;
+                        } else {
+                            persisted.push(idx);
+                        }
+                    } else {
+                        new_indices.push(idx);
+                    }
+                }
+                if !persisted.is_empty() {
+                    StrictAdmission::Read {
+                        pending: state.pending.clone(),
+                        indices: persisted,
+                    }
+                } else {
+                    let retained_sizes = new_indices
+                        .iter()
+                        .map(|&idx| validate::event(&events[idx]))
+                        .collect::<Result<Vec<_>>>()?;
+                    let records = self.commit_new_events(
+                        &mut state,
+                        &mut known,
+                        events,
+                        &new_indices,
+                        &retained_sizes,
+                        usage_revision,
+                    )?;
+                    for (&idx, record) in new_indices.iter().zip(&records) {
+                        assigned[idx] = record.seq;
+                    }
+                    admission
+                        .usage_revision
+                        .store(state.usage_revision, Ordering::Relaxed);
+                    drop(known);
+                    drop(state);
+                    self.notify_admission(&records);
+                    StrictAdmission::Accepted(assigned)
+                }
+            };
+            match attempt {
+                StrictAdmission::Accepted(assigned) => return Ok(assigned),
+                StrictAdmission::Read { pending, indices } => {
+                    self.inner.read_query_count.fetch_add(1, Ordering::Relaxed);
+                    let tx = self.inner.reader.begin().await?;
+                    for idx in indices {
+                        let event = &events[idx];
+                        let existing = db::event(&tx, &event.event_id).await?.ok_or_else(|| {
+                            HistoryError::Integrity(format!(
+                                "known event {} missing from sqlite",
+                                event.event_id
+                            ))
+                        })?;
+                        ensure_same_event(&tx, &pending, &existing, event).await?;
+                        verified.insert(idx, existing.record.seq);
+                    }
+                    tx.commit().await?;
+                    #[cfg(test)]
+                    {
+                        let gate = self
+                            .inner
+                            .strict_validation_gate
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take();
+                        if let Some(gate) = gate {
+                            gate.arrived.notify_one();
+                            gate.resume.notified().await;
+                        }
+                    }
+                    // A hot admission may have taken any previously-new ID, anchor or body ID
+                    // while SQLite was awaited. Reclassify and validate before assigning seqs.
+                }
+            }
+        }
+    }
 
-        let mut assigned = vec![0u64; events.len()];
-        let mut new_indices = Vec::new();
+    fn commit_new_events(
+        &self,
+        state: &mut State,
+        known: &mut KnownIndex,
+        events: &[HistoryEvent],
+        indices: &[usize],
+        retained_sizes: &[usize],
+        usage_revision: u64,
+    ) -> Result<Vec<HistoryEventRecord>> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let changes_usage = indices.iter().any(|&idx| {
+            matches!(
+                events[idx].row_scope,
+                Some(HistoryBusinessRowScope::Accounting | HistoryBusinessRowScope::Cost)
+            )
+        });
+        if changes_usage && state.usage_revision != usage_revision {
+            return Err(HistoryError::Storage(UsagePreparationChanged.into()));
+        }
+        let next_usage_revision = state
+            .usage_revision
+            .checked_add(u64::from(changes_usage))
+            .ok_or_else(|| HistoryError::Integrity("usage admission revision exhausted".into()))?;
+        let new_head = state
+            .head
+            .checked_add(indices.len() as u64)
+            .filter(|seq| *seq <= i64::MAX as u64)
+            .ok_or_else(|| HistoryError::InvalidEvent("history sequence exhausted".into()))?;
+        let mut anchors = BTreeSet::new();
         let mut new_event_ids = BTreeSet::new();
-        let mut new_bodies: BTreeMap<String, (&str, &str, u64)> = BTreeMap::new();
-        let mut batch_anchors = BTreeSet::new();
-        let mut persisted_hits = Vec::new();
-
-        {
-            let known = self
-                .inner
-                .known
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (idx, event) in events.iter().enumerate() {
-                if let Some(accepted) = pending_snapshot.event(&event.event_id) {
-                    let existing = Record::from_event(&accepted.event);
-                    ensure_same_pending_event(&pending_snapshot, &existing, event)?;
-                    assigned[idx] = existing.record.seq;
-                    continue;
-                }
-                if known.events.contains(&event.event_id) {
-                    persisted_hits.push(idx);
-                    continue;
-                }
-
-                if event.is_anchor
-                    && let Some(row_key) = &event.row_key
-                    && (!batch_anchors.insert(row_key.as_str())
-                        || pending_snapshot.anchors.contains_key(row_key)
-                        || known.anchors.contains(row_key))
+        let mut new_bodies = BTreeMap::new();
+        for &idx in indices {
+            let event = &events[idx];
+            if event.is_anchor
+                && let Some(row_key) = &event.row_key
+                && (!anchors.insert(row_key.as_str()) || known.anchors.contains(row_key))
+            {
+                return Err(HistoryError::Conflict(format!(
+                    "duplicate anchor for row_key {row_key}"
+                )));
+            }
+            for body in &event.bodies {
+                if known.bodies.contains_key(&body.body_id)
+                    || new_bodies
+                        .insert(
+                            body.body_id.clone(),
+                            (
+                                event.event_id.as_str(),
+                                body.body_key.as_str(),
+                                body.bytes.len() as u64,
+                            ),
+                        )
+                        .is_some()
                 {
                     return Err(HistoryError::Conflict(format!(
-                        "duplicate anchor for row_key {row_key}"
+                        "duplicate body_id {}",
+                        body.body_id
                     )));
                 }
-
-                for body in &event.bodies {
-                    if pending_snapshot.bodies.contains_key(&body.body_id)
-                        || known.bodies.contains_key(&body.body_id)
-                    {
-                        return Err(HistoryError::Conflict(format!(
-                            "body_id {} already exists",
-                            body.body_id
-                        )));
-                    }
-                    new_bodies.insert(
-                        body.body_id.clone(),
-                        (
-                            event.event_id.as_str(),
-                            body.body_key.as_str(),
-                            body.bytes.len() as u64,
-                        ),
-                    );
-                }
-                new_event_ids.insert(event.event_id.as_str());
-                new_indices.push(idx);
             }
-
-            for &idx in &new_indices {
-                check_references_in_memory(
-                    &known,
-                    &pending_snapshot,
-                    &new_event_ids,
-                    &new_bodies,
-                    &events[idx],
-                    &self.inner.database_id,
-                )?;
-            }
+            new_event_ids.insert(event.event_id.as_str());
         }
-
-        if !persisted_hits.is_empty() {
-            self.inner.read_query_count.fetch_add(1, Ordering::Relaxed);
-            let tx = self.inner.reader.begin().await?;
-            for idx in persisted_hits {
-                let event = &events[idx];
-                let existing = db::event(&tx, &event.event_id).await?.ok_or_else(|| {
-                    HistoryError::Integrity(format!(
-                        "known event {} missing from sqlite",
-                        event.event_id
-                    ))
-                })?;
-                ensure_same_event(&tx, &pending_snapshot, &existing, event).await?;
-                assigned[idx] = existing.record.seq;
-            }
-            tx.commit().await?;
+        for &idx in indices {
+            check_references_in_memory(
+                known,
+                &state.pending,
+                &new_event_ids,
+                &new_bodies,
+                &events[idx],
+                &self.inner.database_id,
+            )?;
         }
-
-        if new_indices.is_empty() {
-            return Ok(assigned);
-        }
-
-        let mut reservations = Vec::with_capacity(new_indices.len());
-        for &idx in &new_indices {
-            let bytes = u32::try_from(retained_sizes[idx]).map_err(|_| HistoryError::Capacity)?;
-            let ev_permit: OwnedSemaphorePermit = self
+        let mut accepted_events = Vec::with_capacity(indices.len());
+        let mut next_pending = (*state.pending).clone();
+        for (position, (&idx, &bytes)) in indices.iter().zip(retained_sizes).enumerate() {
+            let bytes = u32::try_from(bytes).map_err(|_| HistoryError::Capacity)?;
+            let event_permit = self
                 .inner
                 .event_permits
                 .clone()
                 .try_acquire_many_owned(1)
                 .map_err(|_| HistoryError::Capacity)?;
-            let byte_permit: OwnedSemaphorePermit = self
+            let byte_permit = self
                 .inner
                 .byte_permits
                 .clone()
                 .try_acquire_many_owned(bytes)
                 .map_err(|_| HistoryError::Capacity)?;
-            reservations.push(Arc::new(Reservation {
-                _events: ev_permit,
-                _bytes: byte_permit,
-            }));
+            let mut event = events[idx].clone();
+            event.seq = state.head + position as u64 + 1;
+            let body_headers = (0..event.bodies.len())
+                .map(|ordinal| Body::from_event(&event, ordinal))
+                .collect();
+            let accepted = Arc::new(Accepted {
+                event,
+                retained_bytes: bytes as usize,
+                body_headers,
+                _reservation: Arc::new(Reservation {
+                    _events: event_permit,
+                    _bytes: byte_permit,
+                }),
+            });
+            next_pending.insert(accepted.clone())?;
+            accepted_events.push(accepted);
         }
+        // No fallible operation below: publish indices and Pending as one memory transition.
+        let mut records = Vec::with_capacity(accepted_events.len());
+        for accepted in accepted_events {
+            let event = &accepted.event;
+            known.events.insert(event.event_id.clone());
+            if event.is_anchor
+                && let Some(row_key) = &event.row_key
+            {
+                known.anchors.insert(row_key.clone());
+            }
+            for body in &event.bodies {
+                known.bodies.insert(
+                    body.body_id.clone(),
+                    KnownBodyMeta {
+                        owner: event.event_id.clone(),
+                        key: body.body_key.clone(),
+                        length: body.bytes.len() as u64,
+                    },
+                );
+            }
+            if event.payload_schema == "anywork.accounting/1"
+                && let Ok(env) = serde_json::from_str::<
+                    super::body::BusinessEnvelope<HistoryAccountingHead>,
+                >(&event.payload_json)
+            {
+                known.latest_accounting = Some(env.head);
+            } else if event.payload_schema == "anywork.cost/1"
+                && let Some(row_key) = &event.row_key
+                && let Ok(env) = serde_json::from_str::<
+                    super::body::BusinessEnvelope<HistoryCostHead>,
+                >(&event.payload_json)
+            {
+                known.latest_costs.insert(row_key.clone(), env.head);
+            }
+            records.push(event.to_record());
+        }
+        state.pending = Arc::new(next_pending);
+        state.head = new_head;
+        state.usage_revision = next_usage_revision;
+        Ok(records)
+    }
 
-        let new_head = {
-            let mut state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !state.accepting || state.closing {
-                return Err(HistoryError::Closed);
-            }
-            let mut known = self
-                .inner
-                .known
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut next_seq = state.head;
-            let mut next_pending = (*state.pending).clone();
-            for (idx, reservation) in new_indices.into_iter().zip(reservations) {
-                next_seq = next_seq
-                    .checked_add(1)
-                    .filter(|seq| *seq <= i64::MAX as u64)
-                    .ok_or_else(|| {
-                        HistoryError::InvalidEvent("history sequence exhausted".into())
-                    })?;
-                let mut accepted_event = events[idx].clone();
-                accepted_event.seq = next_seq;
-                let body_headers = (0..accepted_event.bodies.len())
-                    .map(|ordinal| Body::from_event(&accepted_event, ordinal))
-                    .collect();
-                known.events.insert(accepted_event.event_id.clone());
-                if accepted_event.is_anchor
-                    && let Some(row_key) = &accepted_event.row_key
-                {
-                    known.anchors.insert(row_key.clone());
-                }
-                for body in &accepted_event.bodies {
-                    known.bodies.insert(
-                        body.body_id.clone(),
-                        KnownBodyMeta {
-                            owner: accepted_event.event_id.clone(),
-                            key: body.body_key.clone(),
-                            length: body.bytes.len() as u64,
-                        },
-                    );
-                }
-                if accepted_event.payload_schema == "anywork.accounting/1"
-                    && let Ok(env) = serde_json::from_str::<
-                        super::body::BusinessEnvelope<HistoryAccountingHead>,
-                    >(&accepted_event.payload_json)
-                {
-                    known.latest_accounting = Some(env.head);
-                } else if accepted_event.payload_schema == "anywork.cost/1"
-                    && let Some(row_key) = &accepted_event.row_key
-                    && let Ok(env) = serde_json::from_str::<
-                        super::body::BusinessEnvelope<HistoryCostHead>,
-                    >(&accepted_event.payload_json)
-                {
-                    known.latest_costs.insert(row_key.clone(), env.head);
-                }
-                next_pending.insert(Arc::new(Accepted {
-                    event: accepted_event,
-                    retained_bytes: retained_sizes[idx],
-                    body_headers,
-                    _reservation: reservation,
-                }))?;
-                assigned[idx] = next_seq;
-            }
-            state.pending = Arc::new(next_pending);
-            state.head = next_seq;
-            state.head
-        };
-        let _ = self.inner.changed.send(new_head);
-        self.inner.worker_notify.notify_one();
-        Ok(assigned)
+    fn notify_admission(&self, records: &[HistoryEventRecord]) {
+        if let Some(last) = records.last() {
+            self.inner
+                .changed
+                .send_modify(|head| *head = (*head).max(last.seq));
+            self.inner.worker_notify.notify_one();
+        }
     }
 
     pub(super) async fn latest_record(&self, row: &str) -> Result<Option<Record>> {

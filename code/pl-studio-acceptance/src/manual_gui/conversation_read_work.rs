@@ -10,10 +10,6 @@ use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{ModelDefinition, ModelTransportProfile};
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
-    ThreadStatus, ThreadWorkspaceMode,
-    timeline::{ConversationEvent, ConversationFeed, TimelinePatch},
-};
-use pl_studio_runtime::{
     CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
 };
 use pl_studio_runtime::{
@@ -21,6 +17,10 @@ use pl_studio_runtime::{
     config::{ConfigPaths, ConfigStore},
     history::{HISTORY_PROTOCOL_VERSION, HistoryBusinessRowHead, HistoryDemand, HistoryTurnState},
     mode::ThreadModeId,
+};
+use pl_studio_runtime::{
+    ThreadStatus, ThreadWorkspaceMode,
+    timeline::{ConversationEvent, ConversationFeed, TimelinePatch},
 };
 use serde::Serialize;
 use std::fs;
@@ -299,13 +299,7 @@ pub(super) async fn wait_initial_turn(
                 snapshot_revision: meta.revision,
             });
         }
-        Box::pin(wait_notified_turn(
-            feed,
-            saw_baseline,
-            thread_id,
-            input_id,
-        ))
-        .await
+        Box::pin(wait_notified_turn(feed, saw_baseline, thread_id, input_id)).await
     }
     .await;
     result.with_context(|| format!("initial Turn not observed for {input_id}"))

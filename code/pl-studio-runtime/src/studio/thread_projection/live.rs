@@ -108,10 +108,7 @@ impl LiveProjection {
         turn_failures.retain(|turn, _| state.turns.iter().any(|record| &record.turn_id == turn));
         if let Some(attempt) = &effect.attempt {
             if let pl_core::thread::AttemptOutcome::Failed(error) = &attempt.outcome {
-                turn_failures.insert(
-                    attempt.turn_id.clone(),
-                    super::turns::model_failure(error),
-                );
+                turn_failures.insert(attempt.turn_id.clone(), super::turns::model_failure(error));
             } else if matches!(attempt.outcome, pl_core::thread::AttemptOutcome::Running) {
                 turn_failures.remove(&attempt.turn_id);
             }

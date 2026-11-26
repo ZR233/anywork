@@ -102,8 +102,7 @@ async fn preadmission_failure_retains_model_facts_and_continues_without_replayin
     let context = thread.snapshot().context;
     thread.close().await.unwrap();
     let (model, observed) = ScriptedModel::new(&[]);
-    let resumed =
-        ThreadHandle::restore_current(saved, Some(DynModelSession::new(model))).unwrap();
+    let resumed = ThreadHandle::restore_current(saved, Some(DynModelSession::new(model))).unwrap();
     assert_eq!(resumed.snapshot().context, context);
     assert!(observed.lock().unwrap().is_empty());
     resumed

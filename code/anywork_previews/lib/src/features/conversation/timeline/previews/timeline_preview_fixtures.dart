@@ -6,18 +6,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-
-final class TimelinePreviewRunEntry {
-  const TimelinePreviewRunEntry({
-    required this.id,
-    required this.order,
-    required this.memberCount,
-  });
-
-  final String id;
-  final int order;
-  final int memberCount;
-}
+import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_projection.dart';
 
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
@@ -30,53 +19,17 @@ abstract final class TimelinePreviewFixtures {
       '${'这是一段没有人为换行的中文用户输入，用于检查长正文在窄窗口中的完整呈现。' * 70}\n\n'
       '末尾内容保持可读。';
 
-  static const userBodyReference = ContentRef(
-    databaseId: 'preview',
-    target: BodyContentTarget(
-      owner: ItemContentOwner(itemId: 'preview-user-deferred'),
-      key: 'body',
-    ),
-  );
-
-  static final longUserInputItem = ChatItemPresentation.forUnit(
-    TimelineDisplayUnit(
-      block: DisplayBlock(
+  static final longUserInputItem = chatItemPresentationOf(
+    timelineFeedMessage(
+      TimelineUserMessage(
         id: 'preview-user-deferred',
-        blockOrder: 1,
-        body: SingleDisplayBlock(
-          visibility: HistorySingleVisibility.content,
-          record: DisplayRecord(
-            atom: ChatAtom(
-              id: 'preview-user-deferred',
-              source: const InputChatSource(inputId: 'preview-input'),
-              sourceOrder: 1,
-              kind: ChatAtomKind.input,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const TerminalChatAtom(
-                started: null,
-                ended: null,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              contents: const [
-                ChatAtomContent(
-                  role: ChatContentRole.body,
-                  reference: userBodyReference,
-                ),
-              ],
-              payload: _payload(
-                'text',
-                const {'channel': 'user', 'attachments': []},
-                bodies: [body('body', longUserInput)],
-              ),
-            ),
-            contentSource: CompletedOriginal(
-              completionId: 'preview-user-deferred',
-            ),
-          ),
-        ),
+        seq: 1,
+        channel: 'user',
+        text: longUserInput,
+        attachments: const [],
       ),
     ),
-  );
+  )!;
 
   static ComposerSubmission longUserSubmission(ComposerSubmissionPhase phase) =>
       ComposerSubmission(
@@ -107,7 +60,7 @@ abstract final class TimelinePreviewFixtures {
     List<Map<String, Object?>> bodies = const [],
     String contract = 'anywork.chat/1',
     int sealedAt = 1735689600,
-  }) => ChatItemPresentation.decodePayload(
+  }) => ChatItemPresentation.decodePayloadJson(
     id,
     _payload(
       type,
@@ -118,23 +71,19 @@ abstract final class TimelinePreviewFixtures {
     ),
   );
 
-  static InlinePayload _payload(
+  static String _payload(
     String type,
     Map<String, Object?> data, {
     List<Map<String, Object?>> bodies = const [],
     String contract = 'anywork.chat/1',
     int sealedAt = 1735689600,
-  }) => InlinePayload(
-    bytes: utf8.encode(
-      jsonEncode({
-        'contract': contract,
-        'type': type,
-        'data': data,
-        'bodies': bodies,
-        'sealedAt': sealedAt,
-      }),
-    ),
-  );
+  }) => jsonEncode({
+    'contract': contract,
+    'type': type,
+    'data': data,
+    'bodies': bodies,
+    'sealedAt': sealedAt,
+  });
 
   static final user = item(
     'preview-user',
@@ -251,188 +200,87 @@ abstract final class TimelinePreviewFixtures {
 
   // All member identities, lifecycle facts and group summaries below are
   // explicitly projected synthetic inputs, not a grouping fixture engine.
-  static const groupSource = ForegroundTurnChatSource(turnId: 'preview-turn');
   static const groupStartedAt = 1735689600;
   static const commandFinishedAt = 1735689601;
   static const workSummaryKey = 'part.summaryText.0';
   static final workSummaryBytes = utf8.encode(
-    '### 核对 **工作组成员** 与 `WorkRange` 的读取边界\n'
+    '### 核对 **工作组成员** 与 `WorkGroup` 的读取边界\n'
     '确认过长的思考概要在窄窗口中不会挤占命令、修改和其他成员的展示空间。',
   );
-  static const _workReasoningId = 'preview-reasoning';
-  static final completedReasoning = ChatAtom(
-    id: _workReasoningId,
-    source: groupSource,
-    sourceOrder: 1,
-    kind: ChatAtomKind.reasoning,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-turn',
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 1, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 2, suborder: 0),
-      outcome: ChatTerminalOutcome.completed,
-    ),
-    startedAt: groupStartedAt,
-    finishedAt: groupStartedAt,
-    contents: const [],
-    payload: _payload(
-      'thinking',
-      const {},
-      bodies: [
-        {
-          'key': workSummaryKey,
-          'byteLength': workSummaryBytes.length,
-          'reference': {
-            'databaseId': 'preview',
-            'ownerEventId': _workReasoningId,
-            'bodyId': 'work-summary',
-            'bodyKey': workSummaryKey,
-            'byteStart': 0,
-            'byteLength': workSummaryBytes.length,
-          },
-        },
-        _reasoningBodies.last,
-      ],
-    ),
+  static final completedReasoning = WorkGroupReasoning(
+    id: 'preview-reasoning',
+    seq: 1,
+    text: '先确认纯组件只消费不可变呈现值，再检查 Connector 是否仍持有读取资格。',
+    summary: utf8.decode(workSummaryBytes),
+    outcome: 'completed',
+    startedAtMs: groupStartedAt * 1000,
+    finishedAtMs: groupStartedAt * 1000,
   );
-  static final completedCommand = ChatAtom(
+  static final completedCommand = WorkGroupToolCall(
     id: 'preview-tool',
-    source: groupSource,
-    sourceOrder: 2,
-    kind: ChatAtomKind.toolCall,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-turn',
-    tool: const ChatToolIdentity(callId: 'preview-call', name: 'exec'),
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 3, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 4, suborder: 0),
-      outcome: ChatTerminalOutcome.completed,
-    ),
-    startedAt: groupStartedAt,
-    finishedAt: commandFinishedAt,
-    contents: const [],
-    payload: _payload(
+    seq: 2,
+    callId: 'preview-call',
+    toolName: 'exec',
+    presentationContract: 'builtin.exec@2',
+    status: 'succeeded',
+    summary: 'cargo flutter test test/ui',
+    payloadJson: _payload(
       'tool',
       tool.data,
       bodies: _commandBodies,
       sealedAt: commandFinishedAt,
     ),
+    bodies: const [],
+    startedAtMs: groupStartedAt * 1000,
+    finishedAtMs: commandFinishedAt * 1000,
   );
-  static final secondCompletedReasoning = ChatAtom(
+  static const secondCompletedReasoning = WorkGroupReasoning(
     id: 'preview-second-reasoning',
-    source: groupSource,
-    sourceOrder: 4,
-    kind: ChatAtomKind.reasoning,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-turn',
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 7, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 8, suborder: 0),
-      outcome: ChatTerminalOutcome.completed,
-    ),
-    startedAt: 1735689603,
-    finishedAt: 1735689603,
-    contents: const [],
-    payload: _payload(
-      'thinking',
-      const {},
-      bodies: _reasoningBodies,
-      sealedAt: 1735689603,
-    ),
+    seq: 4,
+    text: '先确认纯组件只消费不可变呈现值，再检查 Connector 是否仍持有读取资格。',
+    summary: '核对展示边界与资源所有权',
+    outcome: 'completed',
+    startedAtMs: 1735689603000,
+    finishedAtMs: 1735689603000,
   );
 
-  // Wall-clock start is deliberately unknown: a static preview must not turn a
-  // fixed synthetic date into a year-long locally running elapsed timer.
-  static final activeReasoning = ChatAtom(
+  // Unknown wall-clock start avoids a synthetic year-long running timer.
+  static const activeReasoning = WorkGroupReasoning(
     id: 'preview-active-reasoning',
-    source: groupSource,
-    sourceOrder: 1,
-    kind: ChatAtomKind.reasoning,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-turn',
-    lifecycle: const ActiveChatAtom(
-      started: ChatFactPosition(effectSeq: 1, suborder: 0),
-      status: ChatActiveStatus.running,
-    ),
-    contentPresent: true,
-    contents: const [
-      ChatAtomContent(
-        role: ChatContentRole.body,
-        reference: ContentRef(
-          databaseId: 'preview',
-          target: BodyContentTarget(
-            owner: CurrentContentOwner(
-              domain: 'reasoning',
-              id: 'preview-active-reasoning',
-              revision: 1,
-            ),
-            key: 'body',
-          ),
-        ),
-      ),
-    ],
+    seq: 1,
+    outcome: 'running',
+    summary: '思考尚未结束',
+    text: 'R 的思考尚未结束，已接纳的片段保持可读；后继正文不会使它伪造终态。',
   );
-  static final activeReasoningWindow = ContentWindow(
+  static final activeReasoningWindow = BodyWindow(
     offset: 0,
-    bytes: utf8.encode('R 的思考尚未结束，已接纳的片段保持可读；后继正文不会使它伪造终态。'),
-    generation: 'preview-active-reasoning-window',
-    availableThrough: utf8.encode('R 的思考尚未结束，已接纳的片段保持可读；后继正文不会使它伪造终态。').length,
-    sealed: false,
+    text: activeReasoning.text,
+    totalBytes: utf8.encode(activeReasoning.text).length,
+    eof: false,
   );
 
-  static final overlapTextAtom = ChatAtom(
+  static const overlapTextAtom = TimelineAssistantText(
     id: 'preview-overlap-T',
-    source: groupSource,
-    sourceOrder: 2,
-    kind: ChatAtomKind.text,
-    delivery: ChatDeliveryKind.foreground,
+    seq: 2,
     turnId: 'preview-turn',
-    textChannel: ThreadTextChannel.finalAnswer,
-    contentPresent: true,
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 3, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 4, suborder: 0),
-      outcome: ChatTerminalOutcome.completed,
-    ),
-    startedAt: 1735689601,
-    finishedAt: 1735689602,
-    contents: const [],
-    payload: _payload(
-      'text',
-      const {'channel': 'final', 'attachments': []},
-      bodies: [
-        body(
-          'part.text.0',
-          'T 的正文已经完整结束，但仍在同一个 current 中。\n\nR 尚未结束不应阻止这段回复进入历史。',
-        ),
-      ],
-      sealedAt: 1735689602,
-    ),
+    channel: 'final',
+    text: 'T 的正文已经完整结束，但仍在同一个会话中。\n\nR 尚未结束不应阻止这段回复进入历史。',
+    isFinalTurnDelivery: true,
+    outcome: 'completed',
+    occurredAtMs: 1735689602000,
   );
-  static const mediaSource = ForegroundTurnChatSource(
-    turnId: 'preview-media-turn',
-  );
-  static final mediaTool = ChatAtom(
+  static final mediaTool = WorkGroupToolCall(
     id: 'preview-media-tool',
-    source: mediaSource,
-    sourceOrder: 1,
-    kind: ChatAtomKind.toolCall,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-media-turn',
-    tool: const ChatToolIdentity(
-      callId: 'preview-media-call',
-      name: 'view_image',
-    ),
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 1, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 2, suborder: 0),
-      outcome: ChatTerminalOutcome.completed,
-    ),
-    startedAt: 1735689600,
-    finishedAt: 1735689602,
-    contentPresent: true,
-    contents: const [],
-    payload: _payload(
+    seq: 1,
+    callId: 'preview-media-call',
+    toolName: 'view_image',
+    presentationContract: 'builtin.view_image@1',
+    status: 'succeeded',
+    summary: '合成媒体读取',
+    bodies: const [],
+    startedAtMs: 1735689600000,
+    finishedAtMs: 1735689602000,
+    payloadJson: _payload(
       'tool',
       {
         'invocation': {
@@ -459,26 +307,18 @@ abstract final class TimelinePreviewFixtures {
       sealedAt: 1735689602,
     ),
   );
-  static final failedImageTool = ChatAtom(
+  static final failedImageTool = WorkGroupToolCall(
     id: 'preview-failed-image-tool',
-    source: mediaSource,
-    sourceOrder: 2,
-    kind: ChatAtomKind.toolCall,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-media-turn',
-    tool: const ChatToolIdentity(
-      callId: 'preview-failed-image-call',
-      name: 'view_image',
-    ),
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 3, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 4, suborder: 0),
-      outcome: ChatTerminalOutcome.failed,
-    ),
-    startedAt: 1735689602,
-    finishedAt: 1735689604,
-    contents: const [],
-    payload: _payload(
+    seq: 2,
+    callId: 'preview-failed-image-call',
+    toolName: 'view_image',
+    presentationContract: 'builtin.view_image@1',
+    status: 'failed',
+    summary: '合成媒体读取',
+    bodies: const [],
+    startedAtMs: 1735689602000,
+    finishedAtMs: 1735689604000,
+    payloadJson: _payload(
       'tool',
       const {
         'invocation': {
@@ -496,27 +336,18 @@ abstract final class TimelinePreviewFixtures {
       sealedAt: 1735689604,
     ),
   );
-  static final resourceErrorTool = ChatAtom(
+  static final resourceErrorTool = WorkGroupToolCall(
     id: 'preview-resource-error-tool',
-    source: mediaSource,
-    sourceOrder: 3,
-    kind: ChatAtomKind.toolCall,
-    delivery: ChatDeliveryKind.foreground,
-    turnId: 'preview-media-turn',
-    tool: const ChatToolIdentity(
-      callId: 'preview-resource-error-call',
-      name: 'view_image',
-    ),
-    lifecycle: const TerminalChatAtom(
-      started: ChatFactPosition(effectSeq: 5, suborder: 0),
-      ended: ChatFactPosition(effectSeq: 6, suborder: 0),
-      outcome: ChatTerminalOutcome.completed,
-    ),
-    startedAt: 1735689604,
-    finishedAt: 1735689606,
-    contentPresent: true,
-    contents: const [],
-    payload: _payload(
+    seq: 3,
+    callId: 'preview-resource-error-call',
+    toolName: 'view_image',
+    presentationContract: 'builtin.view_image@1',
+    status: 'succeeded',
+    summary: '合成媒体读取',
+    bodies: const [],
+    startedAtMs: 1735689604000,
+    finishedAtMs: 1735689606000,
+    payloadJson: _payload(
       'tool',
       {
         'invocation': {
@@ -541,31 +372,26 @@ abstract final class TimelinePreviewFixtures {
   );
   static final mediaGroup = runEntry('preview-media-group', 3, count: 3);
 
-  static TimelinePreviewRunEntry runEntry(
+  static TimelineWorkGroup runEntry(
     String id,
     int seq, {
     int count = 1,
-  }) => TimelinePreviewRunEntry(id: id, order: seq, memberCount: count);
-  static TimelineDisplayUnit runUnit(TimelinePreviewRunEntry entry) =>
-      TimelineDisplayUnit(
-        block: DisplayBlock(
-          id: entry.id,
-          blockOrder: entry.order,
-          body: WorkDisplayBlock(
-            timing: workTiming(),
-            members: DisplayBlockRef(
-              blockId: entry.id,
-              cut: HistoryCut('preview-cut'),
-              anchorSeq: entry.order,
-              headSeq: entry.order,
-            ),
-            executionPresent: false,
-            memberCount: entry.memberCount,
-            unfinishedCount: 0,
-            groupClosed: true,
-          ),
-        ),
-      );
+    bool active = false,
+    int? startedAtMs = 100_000,
+    int? finishedAtMs = 225_000,
+    String summary = '',
+  }) => TimelineWorkGroup(
+    id: id,
+    firstSeq: seq,
+    lastSeq: seq + count - 1,
+    memberCount: count,
+    summary: summary,
+    status: active ? WorkGroupStatus.active : WorkGroupStatus.completed,
+    startedAtMs: startedAtMs,
+    finishedAtMs: active ? null : finishedAtMs,
+  );
+  static TimelineDisplayUnit runUnit(TimelineWorkGroup entry) =>
+      chatItemPresentationOf(timelineFeedMessage(entry))!.displayUnit!;
 
   static WorkTiming workTiming() =>
       const WorkTiming(startedAtMillis: 100_000, finishedAtMillis: 225_000);
@@ -796,12 +622,11 @@ abstract final class TimelinePreviewFixtures {
     },
   });
 
-  static final contentWindow = ContentWindow(
+  static const contentWindow = BodyWindow(
     offset: 0,
-    bytes: utf8.encode('这是合成且已接纳的有界正文窗口。Preview 不会发起查询或 Clipboard IO。'),
-    generation: 'preview-generation',
-    availableThrough: 196608,
-    sealed: true,
+    text: '这是合成且已接纳的有界正文窗口。Preview 不会发起查询或 Clipboard IO。',
+    totalBytes: 196608,
+    eof: false,
   );
 
   // Original synthetic landscape: flat sky, orange sun and two mountain ridges.
@@ -849,99 +674,69 @@ abstract final class TimelinePreviewFixtures {
       ),
   ];
 
+  static const _copyBodies = {
+    'preview-copy-event-1': '排查连接池获取超时后未及时释放句柄的问题，并补齐取消安全测试。',
+    'preview-copy-event-2': '已定位到忙碌重试循环没有及时响应取消信号，正在验证超时后的资源释放。',
+    'preview-copy-event-4': '已修复连接池取消后未及时释放句柄的问题。超时和取消两条路径均已通过回归测试。',
+  };
+
   static List<Message> copyActionMessages() => [
-    _copyActionMessage(
-      'preview-copy-input',
-      1,
-      ThreadTextChannel.user,
-      '排查连接池获取超时后未及时释放句柄的问题，并补齐取消安全测试。',
-    ),
-    _copyActionMessage(
-      'preview-copy-commentary',
-      2,
-      ThreadTextChannel.commentary,
-      '已定位到忙碌重试循环没有及时响应取消信号，正在验证超时后的资源释放。',
-    ),
-    _message(
-      ChatItemPresentation.forUnit(runUnit(runEntry('copy-work', 3, count: 3))),
-    ),
-    _copyActionMessage(
-      'completion:12:preview-copy',
-      4,
-      ThreadTextChannel.finalAnswer,
-      '已修复连接池取消后未及时释放句柄的问题。超时和取消两条路径均已通过回归测试。',
-    ),
+    _copyActionMessage(1, ThreadTextChannel.user),
+    _copyActionMessage(2, ThreadTextChannel.commentary),
+    timelineFeedMessage(runEntry('copy-work', 3, count: 3)),
+    _copyActionMessage(4, ThreadTextChannel.finalAnswer),
   ];
 
-  static Message _copyActionMessage(
-    String id,
-    int order,
-    ThreadTextChannel channel,
-    String text,
-  ) {
-    final bytes = utf8.encode(text);
-    final isInput = channel == ThreadTextChannel.user;
-    final eventId = 'preview-copy-event-$order';
-    final unit = TimelineDisplayUnit(
-      block: DisplayBlock(
-        id: eventId,
-        blockOrder: order,
-        body: SingleDisplayBlock(
-          visibility: HistorySingleVisibility.content,
-          record: DisplayRecord(
-            historyEventId: eventId,
-            contentSource: CompletedOriginal(completionId: eventId),
-            atom: ChatAtom(
-              id: id,
-              source: isInput
-                  ? InputChatSource(inputId: id)
-                  : const ForegroundTurnChatSource(turnId: 'preview-copy-turn'),
-              sourceOrder: order,
-              kind: isInput ? ChatAtomKind.input : ChatAtomKind.text,
-              delivery: ChatDeliveryKind.independent,
-              textChannel: channel,
-              lifecycle: const TerminalChatAtom(
-                started: null,
-                ended: null,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              contents: const [],
-              payload: _payload(
-                'text',
-                {
-                  'channel': channel == ThreadTextChannel.finalAnswer
-                      ? 'final'
-                      : channel.name,
-                },
-                bodies: [
-                  {
-                    'key': 'body',
-                    'byteLength': bytes.length,
-                    'reference': {
-                      'databaseId': 'preview',
-                      'ownerEventId': eventId,
-                      'bodyKey': 'body',
-                      'bodyId': eventId,
-                      'byteStart': 0,
-                      'byteLength': bytes.length,
-                    },
-                  },
-                ],
-              ),
+  // Explicit accepted presentation values preserve the stored-body copy scene.
+  // All loading, disclosure and Clipboard behavior belongs to production widgets.
+  static Message _copyActionMessage(int order, ThreadTextChannel channel) {
+    final id = 'preview-copy-event-$order';
+    final byteLength = utf8.encode(_copyBodies[id]!).length;
+    return _message(
+      ChatItemPresentation(
+        id: id,
+        compatibility: ChatItemCompatibility.current,
+        type: 'text',
+        authorId: channel == ThreadTextChannel.user ? 'user' : 'assistant',
+        finalTurnDelivery: channel == ThreadTextChannel.finalAnswer,
+        data: const {},
+        bodies: [
+          ChatBodyPresentation(
+            key: 'body',
+            byteLength: byteLength,
+            feedReference: BodyRef(
+              databaseId: 'preview',
+              bodyId: id,
+              ownerEventId: id,
+              bodyKey: 'body',
+              role: 'body',
+              byteLength: byteLength,
             ),
           ),
-        ),
+        ],
       ),
     );
-    unit.expansion.current = unit;
-    unit.expansion.readHistoryBody = (_, _, _) async => ContentWindow(
-      offset: 0,
-      bytes: bytes,
-      generation: eventId,
-      availableThrough: bytes.length,
-      sealed: true,
+  }
+
+  static Future<BodyWindow> readCopyBodyWindow(
+    BodyRef reference, {
+    required int offset,
+    required int maxBytes,
+  }) async {
+    final text = _copyBodies[reference.bodyId];
+    if (reference.databaseId != 'preview' ||
+        reference.bodyKey != 'body' ||
+        text == null) {
+      throw StateError('Unexpected preview copy body: ${reference.bodyId}');
+    }
+    final bytes = utf8.encode(text);
+    final end = (offset + maxBytes).clamp(0, bytes.length);
+    return BodyWindow(
+      offset: offset,
+      bytesBase64: base64Encode(bytes.sublist(offset, end)),
+      totalBytes: bytes.length,
+      eof: end == bytes.length,
     );
-    return _message(ChatItemPresentation.forUnit(unit));
   }
 
   /// 同作者相邻消息、跨时间消息和工作组使用同一个生产时间线。
@@ -966,9 +761,11 @@ abstract final class TimelinePreviewFixtures {
     ),
     for (var index = 0; index < 2; index++) ...[
       _message(
-        ChatItemPresentation.forUnit(
-          runUnit(runEntry('spacing-group-$index', index * 4 + 3, count: 3)),
-        ),
+        chatItemPresentationOf(
+          timelineFeedMessage(
+            runEntry('spacing-group-$index', index * 4 + 3, count: 3),
+          ),
+        )!,
       ),
       _message(
         item(
@@ -1000,55 +797,17 @@ abstract final class TimelinePreviewFixtures {
     String id,
     int order,
     String text,
-  ) {
-    final bodyReference = ContentRef(
-      databaseId: 'preview',
-      target: BodyContentTarget(
-        owner: ItemContentOwner(itemId: id),
-        key: 'body',
+  ) => chatItemPresentationOf(
+    timelineFeedMessage(
+      TimelineUserMessage(
+        id: id,
+        seq: order,
+        channel: 'parentAgent',
+        text: text,
+        attachments: const [],
       ),
-    );
-    final atom = ChatAtom(
-      id: id,
-      source: InboxMessageChatSource(
-        sourceId: 'agent:preview-parent',
-        messageId: id,
-      ),
-      sourceOrder: order,
-      kind: ChatAtomKind.text,
-      delivery: ChatDeliveryKind.independent,
-      lifecycle: const TerminalChatAtom(
-        started: null,
-        ended: null,
-        outcome: ChatTerminalOutcome.completed,
-      ),
-      textChannel: ThreadTextChannel.parentAgent,
-      contentPresent: true,
-      contents: [
-        ChatAtomContent(role: ChatContentRole.body, reference: bodyReference),
-      ],
-      payload: _payload(
-        'text',
-        const {'channel': 'parentAgent', 'attachments': []},
-        bodies: [body('body', text)],
-      ),
-    );
-    return ChatItemPresentation.forUnit(
-      TimelineDisplayUnit(
-        block: DisplayBlock(
-          id: id,
-          blockOrder: order,
-          body: SingleDisplayBlock(
-            visibility: HistorySingleVisibility.content,
-            record: DisplayRecord(
-              atom: atom,
-              contentSource: CompletedOriginal(completionId: id),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+    ),
+  )!;
 
   static List<Message> parentAgentMessages() => [
     _message(

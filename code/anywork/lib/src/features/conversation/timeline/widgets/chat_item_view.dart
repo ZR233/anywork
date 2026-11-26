@@ -1,20 +1,20 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:anywork_client/models.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../connectors/timeline_owned_body_connector.dart';
+import '../connectors/timeline_feed_body_connector.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
-import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_outcome_presentation.dart';
-import '../state/tool_presentation.dart';
 import '../tools/tool_item_registry.dart';
 import '../tools/tool_item_view.dart';
 import '../views/plan_receipt_view.dart';
@@ -63,36 +63,7 @@ class ChatItemView extends StatefulWidget {
 }
 
 class _ChatItemViewState extends State<ChatItemView> {
-  final Object _unitVisibility = Object();
-  TimelineExpansionIntent? _visibleUnitExpansion;
-
   ChatItemPresentation get item => widget.item;
-  @override
-  void initState() {
-    super.initState();
-    _syncUnitVisibility();
-  }
-
-  @override
-  void didUpdateWidget(covariant ChatItemView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _syncUnitVisibility();
-  }
-
-  void _syncUnitVisibility() {
-    final unit = item.displayUnit;
-    final next = unit?.body is SingleDisplayBlock ? unit!.expansion : null;
-    if (identical(next, _visibleUnitExpansion)) return;
-    _visibleUnitExpansion?.setBodyVisible(_unitVisibility, false);
-    _visibleUnitExpansion = next;
-    next?.setBodyVisible(_unitVisibility, true);
-  }
-
-  @override
-  void dispose() {
-    _visibleUnitExpansion?.setBodyVisible(_unitVisibility, false);
-    super.dispose();
-  }
 
   Set<int> get _sensitiveQuestions {
     final input = item.data['userInput'];
@@ -126,31 +97,9 @@ class _ChatItemViewState extends State<ChatItemView> {
     });
   }
 
-  Iterable<ChatBodyPresentation> get _textBodies {
-    final atom = item.atom;
-    if (atom == null) {
-      // Payload-only known Input/parent text is also used by official previews.
-      // Its canonical text field is body, not every retained content domain.
-      return switch (item.data['channel']) {
-        'user' ||
-        'parentAgent' => item.bodies.where((body) => body.key == 'body'),
-        _ => item.bodies,
-      };
-    }
-    if (atom.source is! InputChatSource &&
-        atom.source is! InboxMessageChatSource) {
-      // Model text can use part.outputText.N. Do not reinterpret its manifest.
-      return item.bodies;
-    }
-    if (item.historyEventId != null) {
-      return item.bodies.where((body) => body.key == 'body');
-    }
-    final keys = {
-      for (final content in item.currentContents)
-        if (content.role == ChatContentRole.body) content.reference.contentKey,
-    };
-    return item.bodies.where((body) => keys.contains(body.key));
-  }
+  Iterable<ChatBodyPresentation> get _textBodies => widget.promptBubble
+      ? item.bodies.where((body) => body.key == 'body')
+      : item.bodies;
 
   Widget _publicEnvelope() => _sensitiveQuestions.isEmpty
       ? SelectableText(item.raw ?? '')
@@ -175,14 +124,7 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
-    var content = _buildContent(context);
-    final unit = item.displayUnit;
-    if (unit?.body is SingleDisplayBlock) {
-      content = TimelineGroupBodyIntent(
-        intent: unit!.expansion,
-        child: content,
-      );
-    }
+    final content = _buildContent(context);
     return widget.promptBubble ? content : _withParentLabel(content);
   }
 
@@ -224,43 +166,16 @@ class _ChatItemViewState extends State<ChatItemView> {
   }
 
   Widget _buildContent(BuildContext context) {
-    if (item.observationUnavailable &&
-        item.compatibility != ChatItemCompatibility.malformed) {
-      final record = item.displayRecord!;
-      return _promptBubble(
-        Text(
-          record.startFact != null && record.endFact == null
-              ? '旧边界观察不可用 · 封存时尚未结束'
-              : '旧边界观察不可用',
-        ),
-      );
-    }
-    if (item.hasPublicInputBody) {
-      // This branch and its Body positions remain the same while metadata is
-      // pending, restricted, or resolved. Metadata never replaces the read owner.
-      return _textLayout(
-        item.publicInputBodyIndices,
-        (index, frame) => _declaredContent(item.atom!, index, frameBody: frame),
-        trailing: _publicInputMedia(),
-      );
-    }
-    if (item.finalEmptyAfterContent) {
-      return _promptBubble(const Text('该输出的最终内容为空'));
-    }
     if (item.isKnownEmptyText) return const SizedBox.shrink();
+    if (item.type == 'text' &&
+        item.finalTurnDelivery &&
+        item.compatibility == ChatItemCompatibility.current &&
+        item.modelRecovery == null &&
+        item.bodies.every((body) => body.byteLength == 0)) {
+      return const Text('该输出的最终内容为空');
+    }
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
-      if (unit.body is SingleDisplayBlock) {
-        final atom = unit.atom!;
-        return _textLayout(
-          [
-            for (var index = 0; index < item.currentContents.length; index++)
-              index,
-          ],
-          (index, frame) => _declaredContent(atom, index, frameBody: frame),
-          leading: item.currentContents.isEmpty ? const Text('内容状态未知') : null,
-        );
-      }
       return KeyedSubtree(
         key: ValueKey('chat-item:${unit.id}'),
         child: TimelineDisplayUnitView(
@@ -297,22 +212,6 @@ class _ChatItemViewState extends State<ChatItemView> {
       type: MaterialType.transparency,
       child: content,
     );
-  }
-
-  Widget _publicInputMedia() {
-    if (item.compatibility != ChatItemCompatibility.current) {
-      return const SizedBox.shrink();
-    }
-    try {
-      if (item.type != 'text') {
-        throw const FormatException('Input metadata must be text');
-      }
-      return _media();
-    } on FormatException {
-      // A malformed metadata domain cannot take the independently declared
-      // public Body down with it, or expose the original envelope as a fallback.
-      return const Text('完成内容格式无法解析');
-    }
   }
 
   Widget _content(BuildContext context) => switch (item.type) {
@@ -389,12 +288,9 @@ class _ChatItemViewState extends State<ChatItemView> {
       showCopy: _showTextCopy(frame),
       frameBody: frame,
     ),
-    leading: switch ((item.modelRecovery, item.atom?.source)) {
-      (final recovery?, _) => TimelineModelRecoveryStatus(notice: recovery),
-      (_, InboxMessageChatSource(:final sourceId))
-          when item.authorId != 'parentAgent' =>
-        Text('来源 · $sourceId'),
-      _ => null,
+    leading: switch (item.modelRecovery) {
+      final recovery? => TimelineModelRecoveryStatus(notice: recovery),
+      null => null,
     },
     trailing: _media(),
   );
@@ -441,7 +337,6 @@ class _ChatItemViewState extends State<ChatItemView> {
     final summary = inlineSummary
         ? summaries.map((body) => body.text!).join(' ')
         : null;
-    final atom = item.atom;
     final isIssue = state == 'failed' || state == 'budgetLimited';
     return TimelineReasoningView(
       summary: summary,
@@ -455,18 +350,9 @@ class _ChatItemViewState extends State<ChatItemView> {
                   Flexible(child: _reasoningSummary(body, fallback)),
               ],
             ),
-      startedAt: item.displayRecord == null
-          ? atom?.startedAt
-          : item.displayRecord!.displayStartedAt,
-      finishedAt: item.displayRecord == null
-          ? atom?.finishedAt
-          : item.displayRecord!.displayObservedThrough,
-      outcome:
-          (state is String ? state : null) ??
-          switch (atom?.lifecycle) {
-            TerminalChatAtom(:final outcome) => outcome.name,
-            _ => null,
-          },
+      startedAt: item.data['startedAt'] as int?,
+      finishedAt: item.data['finishedAt'] as int?,
+      outcome: state is String ? state : null,
       diagnostic: outcomeSummary.plainDiagnostic,
       initiallyExpanded: widget.initiallyExpanded,
       onExpansionChanged: widget.onExpansionChanged,
@@ -491,18 +377,17 @@ class _ChatItemViewState extends State<ChatItemView> {
     if (body.text case final text?) {
       return TimelineReasoningSummary(text: text);
     }
-    return TimelineBodyReadIntent(
-      key: ValueKey(body.key),
-      summary: true,
-      child: TimelineOwnedBodyConnector(
+    if (body.feedReference case final reference?) {
+      return TimelineFeedBodyConnector(
         itemId: item.id,
-        contentKey: body.key,
+        reference: reference,
         label: fallback,
-        historyReference: body.historyReference,
-        currentReference: body.currentReference,
-        witness: _contentWitness,
-      ),
-    );
+        disclosed: true,
+        showCopy: false,
+        witness: (text, _) => TimelineReasoningSummary(text: text),
+      );
+    }
+    return TimelineReasoningSummary(text: fallback);
   }
 
   Widget _tool(BuildContext context, {String? arguments}) {
@@ -517,22 +402,17 @@ class _ChatItemViewState extends State<ChatItemView> {
       );
     }
     final argumentBody = item.body('tool.arguments');
-    // A mounted historical tool needs its small semantic input to build the
-    // same card as Current. Large inputs keep their explicit bounded reader.
-    // The existing body owner revokes this read with the enclosing Work.
-    if (arguments == null &&
-        argumentBody?.historyReference != null &&
-        argumentBody!.byteLength <= 64 * 1024 &&
-        argumentBody.byteLength == argumentBody.historyReference!.byteLength) {
-      return TimelineOwnedBodyConnector(
+    if (argumentBody?.feedReference case final reference?
+        when arguments == null &&
+            argumentBody!.hasInline == false &&
+            reference.byteLength <= 64 * 1024) {
+      return TimelineFeedBodyConnector(
         itemId: item.id,
-        contentKey: argumentBody.key,
+        reference: reference,
         label: context.l10n.timelineToolArguments,
-        historyReference: argumentBody.historyReference,
         disclosed: true,
         witness: (_, child) => child,
-        bodyBuilder: (text) =>
-            utf8.encode(text).length == argumentBody.byteLength
+        bodyBuilder: (text) => utf8.encode(text).length == reference.byteLength
             ? _tool(context, arguments: text)
             : _unavailable(
                 context.l10n.timelineToolArgumentsIncompleteTitle,
@@ -546,127 +426,48 @@ class _ChatItemViewState extends State<ChatItemView> {
     final Widget card;
     if (reading is DecodedToolCard) {
       final tool = reading.value;
-      final identity = item.atom?.tool;
-      if (identity != null && identity.callId != tool.toolCallId) {
-        return _unavailable(
-          context.l10n.timelineToolIdentityMismatchTitle,
-          context.l10n.timelineToolIdentityMismatchDetail,
-        );
-      }
-      final declaredContents = [
-        for (final content in item.currentContents)
-          if (content.role == ChatContentRole.toolArguments ||
-              content.role == ChatContentRole.toolOutput)
-            (
-              role: content.role,
-              key: content.reference.contentKey,
-              current: content.reference,
-              history: null as HistoryEventBodyRef?,
-            ),
-        for (final body in item.bodies)
-          if (body.historyReference != null &&
-              (body.key == 'tool.arguments' || body.key == 'tool.result'))
-            (
-              role: body.key == 'tool.arguments'
-                  ? ChatContentRole.toolArguments
-                  : ChatContentRole.toolOutput,
-              key: body.key,
-              current: null as CurrentContentRef?,
-              history: body.historyReference,
-            ),
-      ];
-      final hasDeclaredBodies = declaredContents.isNotEmpty;
-      final wait = item.atom?.wait ?? tool.wait;
-      final effectiveTool = wait == null || tool.wait != null
-          ? tool
-          : TimelineToolPresentation(
-              id: tool.id,
-              toolCallId: tool.toolCallId,
-              name: tool.name,
-              presentationContract: tool.presentationContract,
-              statusString: tool.statusString,
-              arguments: tool.arguments,
-              output: tool.output,
-              createdAt: tool.createdAt,
-              completedAt: tool.completedAt,
-              error: tool.error,
-              taskId: tool.taskId,
-              workingDirectory: tool.workingDirectory,
-              exitCode: tool.exitCode,
-              timedOut: tool.timedOut,
-              attachments: tool.attachments,
-              outputArtifacts: tool.outputArtifacts,
-              wait: wait,
-              executionPresent: tool.executionPresent,
-              frozenObservation: tool.frozenObservation,
-            );
-      final adapter = timelineToolItemRegistry.resolveForPresentation(
-        effectiveTool,
-      );
-      final outputReference = declaredContents
-          .where((content) => content.role == ChatContentRole.toolOutput)
-          .firstOrNull;
-      // 只有补丁／文件内容读取输入窗口，查询等纯语义输入已在内联参数中。
-      final contents = declaredContents
-          .where(
-            (content) => switch (content.role) {
-              ChatContentRole.toolArguments =>
-                adapter.bodyPolicy.readsArgumentsWindow,
-              ChatContentRole.toolOutput => adapter.readsOutput(
-                effectiveTool.statusString,
-                output: effectiveTool.output,
+      final adapter = timelineToolItemRegistry.resolveForPresentation(tool);
+      final outputReference = item.body('tool.result')?.feedReference;
+      final feedContents = item.bodies.where(
+        (body) =>
+            body.feedReference != null &&
+            !body.hasInline &&
+            switch (body.key) {
+              'tool.arguments' => adapter.bodyPolicy.readsArgumentsWindow,
+              'tool.result' => adapter.readsOutput(
+                tool.statusString,
+                output: tool.output,
               ),
               _ => false,
             },
-          )
-          .toList();
+      );
       card = TimelineToolItemView(
-        item: effectiveTool,
+        item: tool,
         initiallyExpanded: widget.initiallyExpanded,
-        staticObservation:
-            item.displayRecord?.contentSource is FrozenObservation,
         onExpansionChanged: widget.onExpansionChanged,
         markdownBuilder: widget.bodyBuilder,
         additionalContentBuilder: item.attachments.isEmpty
             ? null
             : (_) => _media(),
-        declaredContentIdentity: hasDeclaredBodies
-            ? (
-                outputReference == null
-                    ? null
-                    : outputReference.current != null
-                    ? currentContentIdentity(outputReference.current!)
-                    : historyBodyIdentity(outputReference.history!),
-                hasDeclaredBodies,
-              )
-            : null,
-        declaredContentBuilder: !hasDeclaredBodies
+        declaredContentIdentity: feedContents.isEmpty
+            ? null
+            : (outputReference, true),
+        declaredContentBuilder: feedContents.isEmpty
             ? null
             : (onOutputRead, acceptance) => [
-                for (final content in contents)
+                for (final body in feedContents)
                   TimelineBodyReadIntent(
                     scrollable: true,
-                    onRead: content.role == ChatContentRole.toolOutput
-                        ? onOutputRead
-                        : null,
+                    onRead: body.key == 'tool.result' ? onOutputRead : null,
                     bodyBuilder: (text) => timelineToolWindowBody(
                       context,
-                      effectiveTool,
+                      tool,
                       text,
-                      input: content.role == ChatContentRole.toolArguments,
+                      input: body.key == 'tool.arguments',
                       markdownBuilder: widget.bodyBuilder,
                       acceptance: acceptance,
                     ),
-                    child: TimelineOwnedBodyConnector(
-                      itemId: item.id,
-                      contentKey: content.key,
-                      label: content.role == ChatContentRole.toolArguments
-                          ? context.l10n.timelineToolArguments
-                          : context.l10n.timelineToolOutput,
-                      currentReference: content.current,
-                      historyReference: content.history,
-                      witness: _contentWitness,
-                    ),
+                    child: _body(body, disclosed: true),
                   ),
               ],
       );
@@ -997,42 +798,6 @@ class _ChatItemViewState extends State<ChatItemView> {
       children: children,
     ),
   );
-  Widget _declaredContent(
-    ChatAtom atom,
-    int index, {
-    Widget Function(Widget)? frameBody,
-  }) {
-    final id = '${item.id}:content-$index';
-    final content = index < item.currentContents.length
-        ? item.currentContents[index]
-        : null;
-    if (content == null) {
-      const missing = Text('内容引用缺失');
-      return frameBody?.call(missing) ?? missing;
-    }
-    final isTextBody =
-        content.role == ChatContentRole.body &&
-        (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input);
-    final range = TimelineOwnedBodyConnector(
-      itemId: item.id,
-      contentKey: content.reference.contentKey,
-      label: '查看内容',
-      currentReference: content.reference,
-      disclosed: isTextBody,
-      showCopy: !isTextBody || _showTextCopy(frameBody),
-      frameBody: frameBody,
-      witness: _contentWitness,
-    );
-    return isTextBody
-        ? TimelineBodyReadIntent(
-            bodyBuilder: (text) =>
-                widget.bodyBuilder?.call(id, text) ??
-                TimelinePlainText(id: id, text: text),
-            child: range,
-          )
-        : range;
-  }
-
   Widget _body(
     ChatBodyPresentation body, {
     bool code = false,
@@ -1045,19 +810,51 @@ class _ChatItemViewState extends State<ChatItemView> {
         ? StudioCodeBlock(text: text, horizontalScroll: false)
         : widget.bodyBuilder?.call(id, text) ??
               TimelinePlainText(id: id, text: text);
-    if (!body.hasInline &&
-        (body.historyReference != null || body.currentReference != null)) {
-      return TimelineOwnedBodyConnector(
+    if (!body.hasInline && body.feedReference != null) {
+      return TimelineFeedBodyConnector(
         itemId: item.id,
-        contentKey: body.key,
+        reference: body.feedReference!,
         label: '${body.key} · ${body.byteLength} 字节',
-        historyReference: body.historyReference,
-        currentReference: body.currentReference,
         disclosed: disclosed,
         showCopy: showCopy,
+        showInlineCopy: item.type == 'text',
         frameBody: frameBody,
-        witness: (text, child) => _contentWitness(text, render(text)),
+        bodyBuilder: render,
+        witness: _contentWitness,
       );
+    }
+    if (item.type == 'text' && showCopy && disclosed && body.hasInline) {
+      try {
+        final text = body.text!;
+        if (text.isNotEmpty) {
+          return TimelineContentRangeView(
+            itemId: item.id,
+            contentKey: body.key,
+            label: body.key,
+            disclosed: true,
+            loading: false,
+            active: widget.isDisplayActive?.call() ?? true,
+            canRead: true,
+            frameBody: frameBody,
+            window: BodyWindow(
+              offset: 0,
+              text: text,
+              totalBytes: body.byteLength,
+              eof: true,
+            ),
+            onExpansionChanged: (_) {},
+            onNext: null,
+            onCopy: () {
+              if (widget.isDisplayActive?.call() == false) return;
+              unawaited(Clipboard.setData(ClipboardData(text: text)));
+            },
+            witness: (text, _) => _contentWitness(text, render(text)),
+          );
+        }
+      } on FormatException catch (error) {
+        final message = Text('${body.key} · ${error.message}');
+        return frameBody?.call(message) ?? message;
+      }
     }
     Widget inline;
     final decoded = body.inlineText;
@@ -1082,26 +879,11 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _contentWitness(String text, Widget child) {
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
-    final onCurrentLayout = widget.onCurrentContentLayout;
-    final onCurrentUnmounted = widget.onCurrentContentUnmounted;
-    final currentItemId = item.displayRecord?.atom.id ?? item.id;
-    if (text.trim().isEmpty ||
-        clock == null ||
-        (onLayout == null && onCurrentLayout == null)) {
-      return child;
-    }
+    if (text.trim().isEmpty || clock == null || onLayout == null) return child;
     return ContentLayoutWitness(
       itemId: item.id,
       monotonicMicros: clock,
-      onContentLayout: (itemId, micros) {
-        onLayout?.call(itemId, micros);
-        if (item.displayRecord?.contentSource is CurrentAtomSource) {
-          onCurrentLayout?.call(currentItemId, micros);
-        }
-      },
-      onContentUnmounted: item.displayRecord?.contentSource is CurrentAtomSource
-          ? (_) => onCurrentUnmounted?.call(currentItemId)
-          : null,
+      onContentLayout: onLayout,
       isDisplayActive: widget.isDisplayActive,
       child: child,
     );

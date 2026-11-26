@@ -775,16 +775,16 @@ pub(super) async fn load_known_index(db: &impl ConnectionTrait) -> Result<KnownI
             let schema: String = row.try_get("", "payload_schema")?;
             let json_str: String = row.try_get("", "payload_json")?;
             if schema == "anywork.accounting/1" {
-                if let Ok(env) =
-                    serde_json::from_str::<super::body::BusinessEnvelope<HistoryAccountingHead>>(
-                        &json_str,
-                    )
+                if let Ok(env) = serde_json::from_str::<
+                    super::body::BusinessEnvelope<HistoryAccountingHead>,
+                >(&json_str)
                 {
                     index.latest_accounting = Some(env.head);
                 }
             } else if schema == "anywork.cost/1"
-                && let Ok(env) =
-                    serde_json::from_str::<super::body::BusinessEnvelope<HistoryCostHead>>(&json_str)
+                && let Ok(env) = serde_json::from_str::<
+                    super::body::BusinessEnvelope<HistoryCostHead>,
+                >(&json_str)
             {
                 index.latest_costs.insert(row_key, env.head);
             }

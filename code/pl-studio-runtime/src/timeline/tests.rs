@@ -1,5 +1,5 @@
 use anyhow::Result;
-use pl_core::thread::{CoreEventSink, CoreLiveEvent};
+use pl_core::thread::{CoreEvent, CoreEventSink, CoreLiveEvent};
 use tokio::time::Duration;
 
 use crate::history::{
@@ -169,6 +169,111 @@ fn make_tool_event(
     Ok(event)
 }
 
+#[test]
+fn wait_and_sleep_fold_to_one_tool_with_original_turn_and_both_deferred_bodies() -> Result<()> {
+    let long_arguments = serde_json::json!({ "detail": "a".repeat(17 * 1024) }).to_string();
+    let long_result = "r".repeat(17 * 1024);
+    let cases = [
+        (
+            "wait",
+            serde_json::json!({
+                "intent": { "kind": "events", "data": { "timeoutMs": 1000, "targets": [] } },
+                "state": "waiting",
+            }),
+            Some("turn-finished"),
+        ),
+        (
+            "sleep",
+            serde_json::json!({
+                "intent": { "kind": "timer", "data": { "durationMs": 1000 } },
+                "state": "waiting",
+            }),
+            None,
+        ),
+    ];
+    for (tool, wait, completed_turn) in cases {
+        let mut called = make_tool_event(
+            "called",
+            "wait-call",
+            tool,
+            HistoryEventKind::ToolCalled,
+            &long_arguments,
+            None,
+            "turn-called",
+            "history",
+        )?;
+        let mut call_payload: EventPayloadEnvelope = serde_json::from_str(&called.payload_json)?;
+        call_payload.data["wait"] = wait.clone();
+        called.payload_json = serde_json::to_string(&call_payload)?;
+        called.seq = 11;
+        let mut completed = make_tool_event(
+            "completed",
+            "wait-call",
+            tool,
+            HistoryEventKind::ToolCompleted,
+            "",
+            Some(&long_result),
+            "payload-turn",
+            "history",
+        )?;
+        let mut result_payload: EventPayloadEnvelope =
+            serde_json::from_str(&completed.payload_json)?;
+        result_payload
+            .bodies
+            .retain(|body| body.key != "tool.arguments");
+        completed.payload_json = serde_json::to_string(&result_payload)?;
+        completed.seq = 15;
+        completed.turn_id = completed_turn.map(str::to_owned);
+
+        let members =
+            super::fold_work_group_members(vec![called.to_record(), completed.to_record()]);
+        let [
+            WorkGroupMember::ToolCall {
+                id,
+                seq,
+                call_id,
+                turn_id,
+                tool_name,
+                status,
+                bodies,
+                wait_json,
+                ..
+            },
+        ] = members.as_slice()
+        else {
+            panic!("expected one completed {tool} call, got {members:?}");
+        };
+        assert_eq!(id, "call:wait-call");
+        assert_eq!(*seq, 15);
+        assert_eq!(call_id, "wait-call");
+        assert_eq!(
+            turn_id.as_deref(),
+            Some(completed_turn.unwrap_or("turn-called"))
+        );
+        assert_eq!(tool_name, tool);
+        assert_eq!(status, "succeeded");
+        assert_eq!(wait_json.as_deref(), Some(wait.to_string().as_str()));
+        let keys_and_owners: Vec<_> = bodies
+            .iter()
+            .map(|body| {
+                (
+                    body.body_key.as_str(),
+                    body.owner_event_id.as_str(),
+                    body.byte_length,
+                )
+            })
+            .collect();
+        assert_eq!(
+            keys_and_owners,
+            [
+                ("tool.arguments", "called", long_arguments.len() as u64),
+                ("tool.result", "completed", long_result.len() as u64),
+            ]
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphism() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -197,6 +302,7 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
 
     // Reset read count check baseline after initial cold open of empty DB.
     let baseline_reads = store.read_query_count();
+    let paused_flush = store.pause_flush().await;
 
     // 1. User input -> Boundary(2) emitted immediately.
     let user_ev = make_text_event(
@@ -262,28 +368,27 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
     let first_work_seq = seqs[0];
     assert_eq!(store.read_query_count(), baseline_reads);
 
-    // 3. TextStreamStarted arrives -> seals pending WorkGroup("work:<first_work_seq>") immediately!
-    bus.emit(pl_core::thread::CoreEvent::Live(CoreLiveEvent::TextStreamStarted {
-        attempt_id: "att-1".into(),
-        item_id: "text-1".into(),
-        generation: 0,
-    }));
+    // 3. TextStreamStarted only changes live status; Work stays pending until Boundary.
+    bus.emit(pl_core::thread::CoreEvent::Live(
+        CoreLiveEvent::TextStreamStarted {
+            attempt_id: "att-1".into(),
+            item_id: "text-1".into(),
+            generation: 0,
+        },
+    ));
 
-    // Wait for LiveStatus(Working -> StreamingText) and Timeline(Append WorkGroup).
+    // The status frame is an ordering barrier: no Timeline patch may precede it.
     loop {
         match tokio::time::timeout(Duration::from_secs(2), feed.next_event()).await? {
-            Some(ConversationEvent::Timeline(TimelinePatch::Append { items })) => {
-                live_items.extend(items);
+            Some(ConversationEvent::LiveStatus(snapshot))
+                if matches!(snapshot.phase, LiveStatusPhase::StreamingText { .. }) =>
+            {
                 break;
             }
             Some(ConversationEvent::LiveStatus(_)) => {}
-            other => panic!("unexpected event before WorkGroup seal: {other:?}"),
+            other => panic!("unexpected event before Boundary: {other:?}"),
         }
     }
-    assert!(matches!(
-        live_items.last().unwrap(),
-        TimelineItem::WorkGroup { id, member_count: 2, .. } if id == &format!("work:{first_work_seq}")
-    ));
 
     // 4. Final AssistantText -> Boundary(2).
     let ans = make_text_event(
@@ -300,6 +405,15 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
     loop {
         match tokio::time::timeout(Duration::from_secs(2), feed.next_event()).await? {
             Some(ConversationEvent::Timeline(TimelinePatch::Append { items })) => {
+                assert_eq!(
+                    items.len(),
+                    2,
+                    "Boundary must publish group and text together"
+                );
+                assert!(
+                    matches!(&items[0], TimelineItem::WorkGroup { id, member_count: 2, .. }
+                    if id == &format!("work:{first_work_seq}"))
+                );
                 live_items.extend(items);
                 break;
             }
@@ -309,6 +423,12 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
     }
 
     // 5. Verify WorkGroup expansion folds `ToolCalled` + `ToolCompleted` into 1 ToolCall member + 1 Reasoning member.
+    assert_eq!(
+        store.durable_head(),
+        0,
+        "Boundary must be visible before any flush"
+    );
+    assert_eq!(store.read_query_count(), baseline_reads);
     let members = match &live_items[1] {
         TimelineItem::WorkGroup {
             after_boundary_seq,
@@ -333,6 +453,7 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
     assert_eq!(store.read_query_count(), baseline_reads + 1);
 
     // 6. Close feed & store, reopen cold from SQLite, and assert 100% isomorphic timeline IDs!
+    drop(paused_flush);
     feed.close().await;
     bus.close().await;
     store.close().await?;
@@ -350,9 +471,10 @@ async fn live_turns_use_zero_sqlite_reads_and_seal_naturally_with_cold_isomorphi
         ConversationEvent::Timeline(TimelinePatch::Reset { items, .. }) => items,
         other => panic!("expected cold Reset, got {other:?}"),
     };
-    let live_ids: Vec<&str> = live_items.iter().map(TimelineItem::id).collect();
-    let cold_ids: Vec<&str> = cold_items.iter().map(TimelineItem::id).collect();
-    assert_eq!(live_ids, cold_ids);
+    assert_eq!(
+        live_items, cold_items,
+        "IDs, ranges and summaries must survive restart"
+    );
 
     cold_feed.close().await;
     reopened.close().await?;
@@ -432,7 +554,10 @@ fn live_status_state_machine_transitions_and_coalescing() {
             manual: false,
         })
         .unwrap();
-    assert!(matches!(snap.phase, LiveStatusPhase::Compacting { manual: false, .. }));
+    assert!(matches!(
+        snap.phase,
+        LiveStatusPhase::Compacting { manual: false, .. }
+    ));
 }
 
 #[tokio::test]
@@ -498,7 +623,49 @@ async fn load_older_preserves_page_seam_work_group_and_seals_bounded_ranges() ->
         "turn-2",
         &db_id,
     )?;
-    bus.admit_and_broadcast(vec![b1, w1, b2, w2, b3]).await?;
+    bus.admit_and_broadcast(vec![b1, w1, b2]).await?;
+    store.flush().await?;
+    let paused_flush = store.pause_flush().await;
+    bus.admit_and_broadcast(vec![w2, b3]).await?;
+    let mut memory_layer = super::timeline_layer::TimelineDataLayer::new();
+    let reader = store.reader();
+    let expected = match memory_layer.load_initial_page(&reader, 64, false).await? {
+        TimelinePatch::Reset { items, .. } => items,
+        other => panic!("expected Reset, got {other:?}"),
+    };
+    assert_eq!(
+        expected.iter().map(TimelineItem::id).collect::<Vec<_>>(),
+        ["msg:1", "work:2", "msg:3", "work:4", "msg:5"]
+    );
+    let mut paged = Vec::new();
+    let mut memory_page = memory_layer.load_initial_page(&reader, 1, false).await?;
+    loop {
+        let (mut items, cursor) = match memory_page {
+            TimelinePatch::Reset {
+                items,
+                older_cursor,
+                ..
+            }
+            | TimelinePatch::PrependOlder {
+                items,
+                older_cursor,
+                ..
+            } => (items, older_cursor),
+            other => panic!("unexpected page {other:?}"),
+        };
+        items.append(&mut paged);
+        paged = items;
+        match cursor {
+            Some(cursor) => memory_page = memory_layer.load_older(&reader, cursor, 1).await?,
+            None => break,
+        }
+    }
+    assert_eq!(
+        paged, expected,
+        "paging across persisted/pending seam must match full page"
+    );
+    reader.close().await;
+    drop(paused_flush);
     bus.close().await;
     store.close().await?;
 
@@ -528,15 +695,52 @@ async fn load_older_preserves_page_seam_work_group_and_seals_bounded_ranges() ->
     assert_eq!(items0.len(), 1);
     assert!(matches!(&items0[0], TimelineItem::AssistantText { text, .. } if text == "third"));
 
+    let mut cold_paged = items0;
     let patch1 = feed.load_older(cursor0, 1).await?;
     match patch1 {
-        TimelinePatch::PrependOlder { items, .. } => {
-            assert_eq!(items.len(), 2, "expected [B2, WorkGroup(w2)], got {items:?}");
-            assert!(matches!(&items[0], TimelineItem::AssistantText { text, .. } if text == "second"));
-            assert!(matches!(&items[1], TimelineItem::WorkGroup { member_count: 1, .. }));
+        TimelinePatch::PrependOlder {
+            mut items,
+            older_cursor,
+            ..
+        } => {
+            assert_eq!(
+                items.len(),
+                2,
+                "expected [B2, WorkGroup(w2)], got {items:?}"
+            );
+            assert!(
+                matches!(&items[0], TimelineItem::AssistantText { text, .. } if text == "second")
+            );
+            assert!(matches!(
+                &items[1],
+                TimelineItem::WorkGroup {
+                    member_count: 1,
+                    ..
+                }
+            ));
+            items.append(&mut cold_paged);
+            cold_paged = items;
+            match feed
+                .load_older(older_cursor.expect("B1 remains"), 1)
+                .await?
+            {
+                TimelinePatch::PrependOlder {
+                    mut items,
+                    has_more_older: false,
+                    ..
+                } => {
+                    items.append(&mut cold_paged);
+                    cold_paged = items;
+                }
+                other => panic!("expected final older page, got {other:?}"),
+            }
         }
         other => panic!("expected PrependOlder, got {other:?}"),
     }
+    assert_eq!(
+        cold_paged, expected,
+        "cold pagination must preserve group IDs and member bounds"
+    );
 
     feed.close().await;
     reopened.close().await?;
@@ -544,7 +748,8 @@ async fn load_older_preserves_page_seam_work_group_and_seals_bounded_ranges() ->
 }
 
 #[tokio::test]
-async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts_coalesced_to_two_feeds() -> Result<()> {
+async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts_coalesced_to_two_feeds()
+-> Result<()> {
     let temp = tempfile::tempdir()?;
     let db_path = temp.path().join("history.sqlite");
     let store = HistoryStore::open(&db_path, "thread-multi", HistoryLimits::default()).await?;
@@ -580,18 +785,22 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
     }
 
     // Check dual-feed coalesced StreamingText delivery.
-    bus.emit(pl_core::thread::CoreEvent::Live(CoreLiveEvent::TextStreamStarted {
-        attempt_id: "att-1".into(),
-        item_id: "item-1".into(),
-        generation: 0,
-    }));
-    bus.emit(pl_core::thread::CoreEvent::Live(CoreLiveEvent::TextStreamDelta {
-        attempt_id: "att-1".into(),
-        item_id: "item-1".into(),
-        generation: 0,
-        text: "abc".into(),
-        replace: false,
-    }));
+    bus.emit(pl_core::thread::CoreEvent::Live(
+        CoreLiveEvent::TextStreamStarted {
+            attempt_id: "att-1".into(),
+            item_id: "item-1".into(),
+            generation: 0,
+        },
+    ));
+    bus.emit(pl_core::thread::CoreEvent::Live(
+        CoreLiveEvent::TextStreamDelta {
+            attempt_id: "att-1".into(),
+            item_id: "item-1".into(),
+            generation: 0,
+            text: "abc".into(),
+            replace: false,
+        },
+    ));
     for f in [&feed1, &feed2] {
         let mut saw_stream = false;
         let mut saw_delta = false;
@@ -602,16 +811,20 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
                 if matches!(snap.phase, LiveStatusPhase::StreamingText { .. }) {
                     saw_stream = true;
                 }
-                if matches!(&snap.phase, LiveStatusPhase::StreamingText { text, .. } if text == "abc") {
+                if matches!(&snap.phase, LiveStatusPhase::StreamingText { text, .. } if text == "abc")
+                {
                     saw_delta = true;
                     break;
                 }
             }
         }
-        assert!(saw_stream && saw_delta, "each feed must receive coalesced StreamingText");
+        assert!(
+            saw_stream && saw_delta,
+            "each feed must receive coalesced StreamingText"
+        );
     }
 
-    // Admit Turn 1 tool -> TextStreamStarted seals WorkGroup -> later Turn 2 tool arrives.
+    // A durable Boundary seals Turn 1; later Turn 2 work must stay outside its range.
     let w_t1 = make_tool_event(
         "w-t1",
         "call-t1",
@@ -623,11 +836,24 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
         &db_id,
     )?;
     bus.admit_and_broadcast(vec![w_t1]).await?;
-    bus.emit(pl_core::thread::CoreEvent::Live(CoreLiveEvent::TextStreamStarted {
-        attempt_id: "att-2".into(),
-        item_id: "item-2".into(),
-        generation: 0,
-    }));
+    bus.emit(pl_core::thread::CoreEvent::Live(
+        CoreLiveEvent::TextStreamStarted {
+            attempt_id: "att-2".into(),
+            item_id: "item-2".into(),
+            generation: 0,
+        },
+    ));
+    bus.admit_and_broadcast(vec![make_text_event(
+        "ans-t1",
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Boundary,
+        HistoryEntityKind::Text,
+        Some(ThreadTextChannel::Final),
+        "turn 1 done",
+        "turn-1",
+        &db_id,
+    )?])
+    .await?;
 
     let wg = loop {
         match tokio::time::timeout(Duration::from_secs(2), feed1.next_event()).await? {
@@ -639,7 +865,7 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
         }
     };
 
-    // Append Turn 2 work item AFTER WorkGroup was sealed (no Boundary between them yet).
+    // Append Turn 2 work after the sealing Boundary.
     let w_t2 = make_tool_event(
         "w-t2",
         "call-t2",
@@ -666,17 +892,19 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
         .load_work_group_members(after_boundary_seq, before_boundary_seq)
         .await?;
     assert_eq!(members.len(), 1);
-    assert!(matches!(&members[0], WorkGroupMember::ToolCall { call_id, .. } if call_id == "call-t1"));
+    assert!(
+        matches!(&members[0], WorkGroupMember::ToolCall { call_id, .. } if call_id == "call-t1")
+    );
 
-    // Emit Turn 1's TextCompleted Boundary before mid-Turn-2 test so Turn 1 and Turn 2 have a real DB Boundary.
+    // Seal Turn 2 before reopening in the middle of the next group.
     let ans1 = make_text_event(
-        "ans-t1",
+        "ans-t2",
         HistoryEventKind::TextCompleted,
         HistoryTimelineRole::Boundary,
         HistoryEntityKind::Text,
         Some(ThreadTextChannel::Final),
-        "turn 1 done",
-        "turn-1",
+        "turn 2 done",
+        "turn-2",
         &db_id,
     )?;
     // Admit another Turn 2 work item + mid-turn cold open scenario after a fresh Boundary:
@@ -695,16 +923,21 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
     let w_t3_seq = seqs_t3[0];
 
     // Mid-turn cold open while `LiveStatusPhase::Working` merges pre-open & post-open work into ONE WorkGroup.
-    bus.emit(pl_core::thread::CoreEvent::Live(CoreLiveEvent::ReasoningDelta {
-        attempt_id: "att-3".into(),
-        item_id: "reason-3".into(),
-        generation: 0,
-        text: "thinking".into(),
-        replace: false,
-    }));
+    bus.emit(pl_core::thread::CoreEvent::Live(
+        CoreLiveEvent::ReasoningDelta {
+            attempt_id: "att-3".into(),
+            item_id: "reason-3".into(),
+            generation: 0,
+            text: "thinking".into(),
+            replace: false,
+        },
+    ));
     // Wait until LiveStatus becomes Working before opening feed3.
     loop {
-        if matches!(bus.live_status().snapshot().phase, LiveStatusPhase::Working { .. }) {
+        if matches!(
+            bus.live_status().snapshot().phase,
+            LiveStatusPhase::Working { .. }
+        ) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -723,11 +956,13 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
     };
     // `w_t3` must NOT have been prematurely sealed into Reset items while Working live!
     assert!(
-        reset3.iter().all(|item| item.id() != format!("work:{w_t3_seq}")),
+        reset3
+            .iter()
+            .all(|item| item.id() != format!("work:{w_t3_seq}")),
         "mid-turn open must keep trailing w_t3 in pending_work: {reset3:?}"
     );
     assert!(w_t2_seq < w_t3_seq);
-    // Drain initial LiveStatus + SessionMeta, then emit another work + TextStreamStarted and expect ONE combined WorkGroup of 2 members!
+    // Pre-open and post-open work must form one group when a Boundary arrives.
     let _ = feed3.next_event().await.unwrap();
     let _ = feed3.next_event().await.unwrap();
     let w_t2_b = make_tool_event(
@@ -741,11 +976,24 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
         &db_id,
     )?;
     bus.admit_and_broadcast(vec![w_t2_b]).await?;
-    bus.emit(pl_core::thread::CoreEvent::Live(CoreLiveEvent::TextStreamStarted {
-        attempt_id: "att-3".into(),
-        item_id: "item-3".into(),
-        generation: 0,
-    }));
+    bus.emit(pl_core::thread::CoreEvent::Live(
+        CoreLiveEvent::TextStreamStarted {
+            attempt_id: "att-3".into(),
+            item_id: "item-3".into(),
+            generation: 0,
+        },
+    ));
+    bus.admit_and_broadcast(vec![make_text_event(
+        "ans-t3",
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Boundary,
+        HistoryEntityKind::Text,
+        Some(ThreadTextChannel::Final),
+        "turn 3 done",
+        "turn-3",
+        &db_id,
+    )?])
+    .await?;
     let sealed_mid = loop {
         match tokio::time::timeout(Duration::from_secs(2), feed3.next_event()).await? {
             Some(ConversationEvent::Timeline(TimelinePatch::Append { mut items })) => {
@@ -756,7 +1004,13 @@ async fn live_sealed_work_group_expands_without_leaking_next_turn_and_broadcasts
         }
     };
     assert!(
-        matches!(sealed_mid, TimelineItem::WorkGroup { member_count: 2, .. }),
+        matches!(
+            sealed_mid,
+            TimelineItem::WorkGroup {
+                member_count: 2,
+                ..
+            }
+        ),
         "expected combined 2-member WorkGroup, got {sealed_mid:?}"
     );
 
@@ -830,7 +1084,12 @@ async fn cold_opened_feed_transitions_seamlessly_when_bus_attaches() -> Result<(
         "turn-new",
         &db_id,
     )?;
-    live_bus.admit_and_broadcast(vec![early_user]).await?;
+    let early_seq = live_bus.admit_and_broadcast(vec![early_user]).await?[0];
+    // A caught-up writer can already have reclaimed the unflushed log. The bus still replays
+    // the original in-memory record without reading its persisted equivalent.
+    store.flush().await?;
+    assert!(store.durable_head() >= early_seq);
+    let reads_before_attach = store.read_query_count();
     bus_tx.send(Some(live_bus.clone()))?;
     live_bus.emit(pl_core::thread::CoreEvent::Live(
         CoreLiveEvent::TextStreamStarted {
@@ -865,8 +1124,40 @@ async fn cold_opened_feed_transitions_seamlessly_when_bus_attaches() -> Result<(
         }
     }
     assert!(saw_new_user && saw_stream);
+    assert_eq!(store.read_query_count(), reads_before_attach);
+
+    bus_tx.send(None)?;
+    let idle_revision = loop {
+        if let Some(ConversationEvent::LiveStatus(snapshot)) =
+            tokio::time::timeout(Duration::from_secs(2), feed.next_event()).await?
+            && snapshot.phase == LiveStatusPhase::Idle
+        {
+            break snapshot.revision;
+        }
+    };
+    let restarted_bus = MetaEventBus::open(
+        test_thread("thread-cold-live"),
+        store.clone(),
+        pl_core::thread::current::RuntimeEpoch::new(),
+    );
+    bus_tx.send(Some(restarted_bus.clone()))?;
+    restarted_bus.emit(CoreEvent::Live(CoreLiveEvent::TextStreamStarted {
+        attempt_id: "att-restarted".into(),
+        item_id: "item-restarted".into(),
+        generation: 0,
+    }));
+    loop {
+        if let Some(ConversationEvent::LiveStatus(snapshot)) =
+            tokio::time::timeout(Duration::from_secs(2), feed.next_event()).await?
+            && matches!(snapshot.phase, LiveStatusPhase::StreamingText { item_id, .. } if item_id == "item-restarted")
+        {
+            assert!(snapshot.revision > idle_revision);
+            break;
+        }
+    }
 
     feed.close().await;
+    restarted_bus.close().await;
     live_bus.close().await;
     store.close().await?;
     Ok(())
@@ -876,7 +1167,8 @@ async fn cold_opened_feed_transitions_seamlessly_when_bus_attaches() -> Result<(
 async fn leading_work_before_first_boundary_is_materialized_with_no_more_older() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let db_path = temp.path().join("history.sqlite");
-    let store = HistoryStore::open(&db_path, "thread-leading-work", HistoryLimits::default()).await?;
+    let store =
+        HistoryStore::open(&db_path, "thread-leading-work", HistoryLimits::default()).await?;
     let db_id = store.database_id().to_owned();
 
     let work = make_tool_event(
@@ -925,7 +1217,138 @@ async fn leading_work_before_first_boundary_is_materialized_with_no_more_older()
 }
 
 #[tokio::test]
-async fn live_work_text_stream_work_boundary_seals_two_disjoint_groups() -> Result<()> {
+async fn idle_and_restarted_tail_waits_for_boundary_with_or_without_prior_boundary() -> Result<()> {
+    for prior_boundary in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let db_path = temp.path().join("history.sqlite");
+        let store = HistoryStore::open(&db_path, "tail", HistoryLimits::default()).await?;
+        let db_id = store.database_id().to_owned();
+        let paused_flush = store.pause_flush().await;
+        if prior_boundary {
+            store
+                .accept_in_memory(&[make_text_event(
+                    "input",
+                    HistoryEventKind::InputAccepted,
+                    HistoryTimelineRole::Boundary,
+                    HistoryEntityKind::Input,
+                    Some(ThreadTextChannel::User),
+                    "begin",
+                    "turn-1",
+                    &db_id,
+                )?])
+                .await?;
+        }
+        let first_work = store
+            .accept_in_memory(&[
+                make_tool_event(
+                    "w1",
+                    "call-1",
+                    "shell",
+                    HistoryEventKind::ToolCompleted,
+                    "{}",
+                    Some("one"),
+                    "turn-1",
+                    &db_id,
+                )?,
+                HistoryEvent::new(
+                    "ended",
+                    HistoryEventKind::TurnEnded,
+                    HistoryTimelineRole::Hidden,
+                    1_000_200,
+                ),
+            ])
+            .await?[0];
+
+        let mut layers = Vec::new();
+        let mut expected_initial = None;
+        for working in [false, true] {
+            let mut layer = super::timeline_layer::TimelineDataLayer::new();
+            let items = match layer.load_initial_page(&store.reader(), 1, working).await? {
+                TimelinePatch::Reset {
+                    items,
+                    has_more_older: false,
+                    older_cursor: None,
+                    ..
+                } => items,
+                other => panic!("unexpected tail page: {other:?}"),
+            };
+            assert_eq!(
+                items.len(),
+                usize::from(prior_boundary),
+                "tail must stay pending"
+            );
+            if let Some(expected) = &expected_initial {
+                assert_eq!(&items, expected, "live status must not change timeline");
+            } else {
+                expected_initial = Some(items);
+            }
+            layers.push(layer);
+        }
+        assert_eq!(store.durable_head(), 0);
+        drop(paused_flush);
+        store.close().await?;
+
+        let reopened = HistoryStore::open(&db_path, "tail", HistoryLimits::default()).await?;
+        let mut cold = super::timeline_layer::TimelineDataLayer::new();
+        match cold.load_initial_page(&reopened.reader(), 1, false).await? {
+            TimelinePatch::Reset { items, .. } => assert_eq!(Some(items), expected_initial),
+            other => panic!("expected cold Reset, got {other:?}"),
+        }
+        layers.push(cold);
+
+        let mut work = make_tool_event(
+            "w2",
+            "call-2",
+            "shell",
+            HistoryEventKind::ToolCompleted,
+            "{}",
+            Some("two"),
+            "turn-2",
+            &db_id,
+        )?;
+        let mut boundary = make_text_event(
+            "text",
+            HistoryEventKind::TextCompleted,
+            HistoryTimelineRole::Boundary,
+            HistoryEntityKind::Text,
+            Some(ThreadTextChannel::Final),
+            "done",
+            "turn-2",
+            &db_id,
+        )?;
+        let seqs = reopened
+            .accept_in_memory(&[work.clone(), boundary.clone()])
+            .await?;
+        work.seq = seqs[0];
+        boundary.seq = seqs[1];
+        let mut expected_append = None;
+        for mut layer in layers {
+            assert!(layer.on_history_record(&work.to_record(), None).is_empty());
+            let appended = layer.on_history_record(&boundary.to_record(), None);
+            match &appended[..] {
+                [ConversationEvent::Timeline(TimelinePatch::Append { items })] => {
+                    assert_eq!(items.len(), 2);
+                    assert!(matches!(&items[0], TimelineItem::WorkGroup {
+                        id, member_count: 2, after_boundary_seq, before_boundary_seq, ..
+                    } if id == &format!("work:{first_work}")
+                        && *after_boundary_seq == prior_boundary.then_some(1)
+                        && *before_boundary_seq == Some(boundary.seq)));
+                }
+                other => panic!("expected group plus Boundary, got {other:?}"),
+            }
+            if let Some(expected) = &expected_append {
+                assert_eq!(&appended, expected);
+            } else {
+                expected_append = Some(appended);
+            }
+        }
+        reopened.close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_work_ignores_status_and_hidden_events_until_boundary() -> Result<()> {
     let mut layer = super::timeline_layer::TimelineDataLayer::new();
 
     let mut work1 = make_tool_event(
@@ -946,20 +1369,24 @@ async fn live_work_text_stream_work_boundary_seals_two_disjoint_groups() -> Resu
         item_id: "txt-1".into(),
         generation: 0,
     });
-    assert_eq!(seal1.len(), 1);
-    let (after1, before1) = match &seal1[0] {
-        ConversationEvent::Timeline(TimelinePatch::Append { items }) => match &items[0] {
-            TimelineItem::WorkGroup {
-                after_boundary_seq,
-                before_boundary_seq,
-                ..
-            } => (*after_boundary_seq, *before_boundary_seq),
-            other => panic!("expected WorkGroup, got {other:?}"),
-        },
-        other => panic!("expected Append, got {other:?}"),
-    };
-    assert_eq!(after1, None);
-    assert_eq!(before1, Some(11));
+    assert!(seal1.is_empty());
+    assert!(
+        layer
+            .on_live_event(&CoreLiveEvent::CompactionStarted {
+                turn_id: Some("turn-1".into()),
+                revision: 1,
+                manual: false,
+            })
+            .is_empty()
+    );
+    let mut ended = HistoryEvent::new(
+        "ended",
+        HistoryEventKind::TurnEnded,
+        HistoryTimelineRole::Hidden,
+        1_000_200,
+    );
+    ended.seq = 11;
+    assert!(layer.on_history_record(&ended.to_record(), None).is_empty());
 
     let mut work2 = make_tool_event(
         "ev-w2",
@@ -992,11 +1419,15 @@ async fn live_work_text_stream_work_boundary_seals_two_disjoint_groups() -> Resu
             assert_eq!(items.len(), 2);
             match &items[0] {
                 TimelineItem::WorkGroup {
+                    id,
+                    member_count,
                     after_boundary_seq,
                     before_boundary_seq,
                     ..
                 } => {
-                    assert_eq!(*after_boundary_seq, Some(10));
+                    assert_eq!(id, "work:10");
+                    assert_eq!(*member_count, 2);
+                    assert_eq!(*after_boundary_seq, None);
                     assert_eq!(*before_boundary_seq, Some(15));
                 }
                 other => panic!("expected WorkGroup, got {other:?}"),
@@ -1010,7 +1441,8 @@ async fn live_work_text_stream_work_boundary_seals_two_disjoint_groups() -> Resu
 }
 
 #[tokio::test]
-async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summary() -> Result<()> {
+async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summary() -> Result<()>
+{
     let layer = LiveStatusDataLayer::new();
 
     // First reasoning delta transitions Idle -> Working immediately.
@@ -1056,8 +1488,9 @@ async fn live_status_coalesces_reasoning_deltas_and_preserves_tool_progress_summ
         task_id: "task-x".into(),
         call_id: "call-x".into(),
         tool_id: "shell".into(),
-        progress: pl_core::model::ToolProgress::default()
-            .applied(&pl_core::model::ToolProgressUpdate::replace("stdout", "running cargo test")),
+        progress: pl_core::model::ToolProgress::default().applied(
+            &pl_core::model::ToolProgressUpdate::replace("stdout", "running cargo test"),
+        ),
     });
     let mut completed = make_tool_event(
         "ev-tx",
@@ -1129,14 +1562,15 @@ async fn meta_bus_translates_child_inbox_message_without_duplicate_event_ids() -
         state,
         output_claim: None,
     });
-    bus.sink().emit(pl_core::thread::CoreEvent::Durable(
-        std::sync::Arc::new(pl_core::thread::CoreCommitEvent {
-            thread_id: "child-1".into(),
-            sequence: 1,
-            export,
-        }),
-    ));
-    bus.wait_admitted_commit(1).await;
+    bus.sink()
+        .emit(pl_core::thread::CoreEvent::Durable(std::sync::Arc::new(
+            pl_core::thread::CoreCommitEvent {
+                thread_id: "child-1".into(),
+                sequence: 1,
+                export,
+            },
+        )));
+    bus.wait_admitted_commit(1).await?;
 
     let reader = store.reader();
     let (_, originals, _) = reader
@@ -1164,6 +1598,125 @@ async fn meta_bus_translates_child_inbox_message_without_duplicate_event_ids() -
     ));
 
     bus.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn meta_bus_broadcasts_only_records_newly_admitted_from_mixed_replays() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("history.sqlite");
+    let store = HistoryStore::open(&path, "mixed-replay", HistoryLimits::default()).await?;
+    let event = |id: &str| {
+        HistoryEvent::new(
+            id,
+            HistoryEventKind::RunStarted,
+            HistoryTimelineRole::Hidden,
+            1,
+        )
+    };
+    store.accept_batch(&[event("seen")]).await?;
+    store.flush().await?;
+    store.close().await?;
+    let store = HistoryStore::open(&path, "mixed-replay", HistoryLimits::default()).await?;
+    let bus = MetaEventBus::open(
+        test_thread("mixed-replay"),
+        store.clone(),
+        pl_core::thread::current::RuntimeEpoch::new(),
+    );
+    let mut rx = bus.subscribe();
+    let reads = store.read_query_count();
+    let mut replay = event("seen");
+    replay.payload_json = r#"{"ignored":true}"#.into();
+    assert_eq!(
+        bus.admit_and_broadcast(vec![event("new-a"), replay, event("new-b")])
+            .await?,
+        [2, 3]
+    );
+    let mut ids = Vec::new();
+    while let Ok(meta) = rx.try_recv() {
+        if let super::meta_bus::ThreadMetaEvent::History { record, .. } = meta {
+            ids.push(record.event_id.clone());
+        }
+    }
+    assert_eq!(ids, ["new-a", "new-b"]);
+    assert_eq!(store.read_query_count(), reads);
+    bus.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn meta_bus_capacity_failure_is_not_acknowledged_and_same_commit_can_retry() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let store = HistoryStore::open(
+        temp.path().join("history.sqlite"),
+        "admit-failure",
+        HistoryLimits {
+            pending_events: 1,
+            pending_bytes: 64 * 1024,
+        },
+    )
+    .await?;
+    let paused = store.pause_flush().await;
+    store
+        .accept_batch(&[HistoryEvent::new(
+            "fill",
+            HistoryEventKind::RunStarted,
+            HistoryTimelineRole::Hidden,
+            1,
+        )])
+        .await?;
+    let bus = MetaEventBus::open(
+        test_thread("admit-failure"),
+        store.clone(),
+        pl_core::thread::current::RuntimeEpoch::new(),
+    );
+    let commit = std::sync::Arc::new(pl_core::thread::CoreCommitEvent {
+        thread_id: "admit-failure".into(),
+        sequence: 1,
+        export: std::sync::Arc::new(pl_core::thread::HistoryExport {
+            effect: std::sync::Arc::new(pl_core::thread::ThreadEffectBatch {
+                thread_id: "admit-failure".into(),
+                sequence: 1,
+                committed_at: 1_000,
+                ..Default::default()
+            }),
+            state: Default::default(),
+            output_claim: None,
+        }),
+    });
+    let mut rx = bus.subscribe();
+    let reads = store.read_query_count();
+    bus.emit_core_event(pl_core::thread::CoreEvent::Durable(commit.clone()));
+    let error = tokio::time::timeout(Duration::from_secs(2), bus.wait_admitted_commit(1))
+        .await?
+        .expect_err("capacity failure must not be acknowledged");
+    assert!(format!("{error:#}").contains("history pending capacity reached"));
+    assert_eq!(store.current_head(), 1);
+    assert!(rx.try_recv().is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), bus.flush_through_commit(1))
+            .await?
+            .is_err()
+    );
+    drop(paused);
+    store.flush().await?;
+    bus.emit_core_event(pl_core::thread::CoreEvent::Durable(commit));
+    let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let super::meta_bus::ThreadMetaEvent::History { record, .. } = rx.recv().await? {
+                break Ok::<_, anyhow::Error>(record);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(admitted.seq, 2);
+    assert_eq!(admitted.kind, HistoryEventKind::RunStarted);
+    bus.wait_admitted_commit(1).await?;
+    assert_eq!(store.read_query_count(), reads);
+    bus.close().await;
+    assert!(bus.wait_admitted_commit(2).await.is_err());
     store.close().await?;
     Ok(())
 }

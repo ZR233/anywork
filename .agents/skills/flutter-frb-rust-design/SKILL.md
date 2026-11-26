@@ -58,8 +58,8 @@ SSH 项目中的 ACP 仍在宿主运行，业务工具经 Host MCP 复用普通�
 按风险读取 rust-code-quality、rust-api-design、rust-concurrency-safety 与 rust-unsafe-safety。
 交付时说明改变的边界、删除的重复职责、保留的协议限制与实际验证范围。
 
-主时间线只接纳 History 页，工作区间（`WorkRange`）由后端原子事件索引切分；由 Flutter 时间线所有者串行应用到 Flyer 的唯一有界窗口，工作组 ViewModel 负责在既定区间内按 `call_id` / `entity_id` 将多条原子事件折叠为最新态单行（并在跨区间完成时按 `call_id` 索引补拉 `tool_called` 参数）；
-每页、工作区间范围与 opaque 游标保留自己的固定 cut，旧页不能覆盖较新的 head。
-Current 只为本 run 提供活动与正文 overlay，不持有或确认历史 tail。
-Plan、交互及正文按各自 Current scope／History reader 管理读取、失效与 cancel/join；
-组件操作失败由新 generation 的 Set 接管。具体合同见设计 25、26。
+Native `ConversationFeed` 交付主时间线补丁、实时状态快照和会话元数据。Rust 用同一事件分类
+处理内存封组与历史重建，在工作组展开时按 `call_id` / `entity_id` 折叠成员。Flutter 时间线
+所有者串行应用补丁到 Flyer 的唯一有界窗口。历史游标绑定原查询，旧页只补入较早的时段。
+大正文和工作组成员按需读取，迟到结果归原会话及展示代次。关闭原句柄时撤销准入并等待清理，
+组件操作失败由新代次的 Reset 接管。具体合同见设计 25、26。

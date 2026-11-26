@@ -1,6 +1,6 @@
 //! Timeline data processing layer: stitches `history.sqlite ∪ Pending` on cold open and paging,
 //! buffers live `Work` (`timeline_role = 1`) events, and seals `WorkGroup("work:<first_seq>")`
-//! strictly on `TextStreamStarted`, `CompactionStarted`, any `Boundary` (`timeline_role = 2`), or `TurnEnded`.
+//! strictly on `Boundary` (`timeline_role = 2`), independently of live status or persistence.
 
 use anyhow::Result;
 use base64::Engine as _;
@@ -12,7 +12,9 @@ use crate::history::{
 };
 
 use super::decoder::{decode_boundary_item, fold_work_group_members, summarize_work_group};
-use super::models::{BodyRef, BodyWindow, ConversationEvent, TimelineItem, TimelinePatch, WorkGroupMember};
+use super::models::{
+    BodyRef, BodyWindow, ConversationEvent, TimelineItem, TimelinePatch, WorkGroupMember,
+};
 
 pub const DEFAULT_TIMELINE_PAGE_ROWS: u32 = 64;
 pub const TIMELINE_DEMAND_BYTES: u32 = 1024 * 1024;
@@ -68,21 +70,18 @@ impl TimelineDataLayer {
     /// Loads the latest page (`history.sqlite ∪ Pending`) anchored at a consistent `cut`
     /// captured AFTER subscribing to `MetaEventBus`, preventing any miss or duplicate frame.
     ///
-    /// When `is_working_live` is true (mid-turn subscription/reopen), trailing `Work` items after
-    /// the newest boundary remain buffered in `pending_work` rather than prematurely sealing a
-    /// partial `WorkGroup`.
+    /// Trailing `Work` after the newest boundary always remains buffered until the next boundary,
+    /// including idle subscriptions and process restarts. Live status does not determine grouping.
     pub async fn load_initial_page(
         &mut self,
         reader: &HistoryReader,
         limit: u32,
-        is_working_live: bool,
+        _is_working_live: bool,
     ) -> Result<TimelinePatch> {
         let (cut, through) = reader.capture_position().await?;
-        let page = reader
-            .timeline_page(Some(cut), None, demand(limit))
-            .await?;
+        let page = reader.timeline_page(Some(cut), None, demand(limit)).await?;
         let (items, oldest_boundary, last_boundary, trailing_work) =
-            materialize_page_items(reader, &page, None, None, true, is_working_live).await?;
+            materialize_page_items(reader, &page, None, None, true).await?;
 
         self.cut = Some(page.cut.clone());
         self.cut_seq = through;
@@ -111,15 +110,8 @@ impl TimelineDataLayer {
         let page = reader
             .timeline_page(self.cut.clone(), Some(cursor), demand(limit))
             .await?;
-        let (items, oldest_boundary, _, _) = materialize_page_items(
-            reader,
-            &page,
-            None,
-            self.oldest_boundary_seq,
-            false,
-            false,
-        )
-        .await?;
+        let (items, oldest_boundary, _, _) =
+            materialize_page_items(reader, &page, None, self.oldest_boundary_seq, false).await?;
         if let Some(oldest) = oldest_boundary {
             self.oldest_boundary_seq = Some(match self.oldest_boundary_seq {
                 Some(prev) => prev.min(oldest),
@@ -137,7 +129,6 @@ impl TimelineDataLayer {
     /// merging `history.sqlite ∪ Pending` at the latest live head and backfilling cross-range
     /// `tool_called` metadata if missing.
     pub async fn load_work_group_members(
-        &self,
         reader: &HistoryReader,
         after_seq: Option<u64>,
         before_seq: Option<u64>,
@@ -179,7 +170,6 @@ impl TimelineDataLayer {
 
     /// Reads one bounded 64 KiB body chunk window (seamlessly merging `Pending` + `history.sqlite`).
     pub async fn read_body_window(
-        &self,
         reader: &HistoryReader,
         body_ref: &BodyRef,
         offset: u64,
@@ -216,53 +206,6 @@ impl TimelineDataLayer {
         })
     }
 
-    /// Catches up any events committed after `self.cut_seq` when a cold `ConversationFeed`
-    /// transitions to live `MetaEventBus` observation. Reads SQLite once on bus attach (never
-    /// during steady-state turns).
-    pub async fn sync_from_reader_after(
-        &mut self,
-        reader: &HistoryReader,
-    ) -> Result<Vec<ConversationEvent>> {
-        let mut out = Vec::new();
-        let (cut, through) = reader.capture_position().await?;
-        if through <= self.cut_seq {
-            self.cut = Some(cut);
-            return Ok(out);
-        }
-        let mut pivot = Some(self.cut_seq);
-        loop {
-            let (_ceil, batch, has_more) = reader
-                .events_window(
-                    crate::history::HistoryEventsQuery::AllEvents,
-                    Some(through),
-                    pivot,
-                    true,
-                    demand(256),
-                )
-                .await?;
-            if batch.is_empty() {
-                break;
-            }
-            for record in &batch {
-                pivot = Some(record.seq);
-                let input_id = if record.kind == HistoryEventKind::InputAccepted {
-                    match &record.source {
-                        Some(crate::ChatSourceId::Input { input_id }) => Some(input_id.as_str()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                out.extend(self.on_history_record(record, input_id));
-            }
-            if !has_more {
-                break;
-            }
-        }
-        self.cut = Some(cut);
-        Ok(out)
-    }
-
     /// Processes a live `HistoryEventRecord` broadcast from `MetaEventBus`.
     /// Buffers `Work` (`1`) in `pending_work` and seals `WorkGroup` only on a grouping separator.
     pub fn on_history_record(
@@ -282,7 +225,7 @@ impl TimelineDataLayer {
             }
             HistoryTimelineRole::Boundary => {
                 let mut appended = Vec::new();
-                if let Some(group) = self.seal_pending(Some(record.seq), false) {
+                if let Some(group) = self.seal_pending(record.seq) {
                     appended.push(group);
                 }
                 let item = decode_boundary_item(record);
@@ -301,47 +244,20 @@ impl TimelineDataLayer {
                     });
                 }
             }
-            HistoryTimelineRole::Hidden => {
-                if record.kind == HistoryEventKind::TurnEnded
-                    && let Some(group) = self.seal_pending(None, false)
-                {
-                    out.push(ConversationEvent::Timeline(TimelinePatch::Append {
-                        items: vec![group],
-                    }));
-                }
-            }
+            HistoryTimelineRole::Hidden => {}
         }
         out
     }
 
-    /// Seals any buffered `pending_work` when `TextStreamStarted` or `CompactionStarted` arrives.
-    pub fn on_live_event(&mut self, live: &CoreLiveEvent) -> Vec<ConversationEvent> {
-        if matches!(
-            live,
-            CoreLiveEvent::TextStreamStarted { .. } | CoreLiveEvent::CompactionStarted { .. }
-        ) && let Some(group) = self.seal_pending(None, false)
-        {
-            return vec![ConversationEvent::Timeline(TimelinePatch::Append {
-                items: vec![group],
-            })];
-        }
+    /// Live events only affect `LiveStatusDataLayer`; timeline grouping follows history roles.
+    pub fn on_live_event(&mut self, _live: &CoreLiveEvent) -> Vec<ConversationEvent> {
         Vec::new()
     }
 
-    fn seal_pending(
-        &mut self,
-        before_boundary_seq: Option<u64>,
-        active: bool,
-    ) -> Option<TimelineItem> {
-        let last_seq = self.pending_work.last()?.seq;
-        let effective_before = before_boundary_seq.or_else(|| Some(last_seq.saturating_add(1)));
+    fn seal_pending(&mut self, before_boundary_seq: u64) -> Option<TimelineItem> {
         let after_seq = self.last_boundary_seq;
         let work = std::mem::take(&mut self.pending_work);
-        if before_boundary_seq.is_none() {
-            // Advance the frontier so any later Work events before the next Boundary form a disjoint range.
-            self.last_boundary_seq = Some(last_seq);
-        }
-        summarize_work_group(&work, after_seq, effective_before, active)
+        summarize_work_group(&work, after_seq, Some(before_boundary_seq), false)
     }
 }
 
@@ -372,8 +288,12 @@ async fn materialize_page_items(
     prior_boundary_seq: Option<u64>,
     next_page_boundary_seq: Option<u64>,
     is_latest_page: bool,
-    is_working_live: bool,
-) -> Result<(Vec<TimelineItem>, Option<u64>, Option<u64>, Vec<HistoryEventRecord>)> {
+) -> Result<(
+    Vec<TimelineItem>,
+    Option<u64>,
+    Option<u64>,
+    Vec<HistoryEventRecord>,
+)> {
     let mut entries_asc: Vec<&HistoryTimelineEntry> = page.entries.iter().collect();
     entries_asc.sort_by_key(|e| e.event.seq);
 
@@ -389,13 +309,12 @@ async fn materialize_page_items(
             )
             .await?;
             if !work.is_empty() {
-                if is_latest_page && is_working_live {
+                if is_latest_page {
                     return Ok((items, None, prior_boundary_seq, work));
                 }
-                let before_seq = next_page_boundary_seq
-                    .or_else(|| work.last().map(|w| w.seq.saturating_add(1)));
-                if let Some(group) =
-                    summarize_work_group(&work, prior_boundary_seq, before_seq, false)
+                if let Some(before_seq) = next_page_boundary_seq
+                    && let Some(group) =
+                        summarize_work_group(&work, prior_boundary_seq, Some(before_seq), false)
                 {
                     items.push(group);
                 }
@@ -418,7 +337,11 @@ async fn materialize_page_items(
         let next_boundary_seq = entries_asc
             .get(idx + 1)
             .map(|next| next.event.seq)
-            .or_else(|| (!is_latest_page).then_some(next_page_boundary_seq).flatten());
+            .or_else(|| {
+                (!is_latest_page)
+                    .then_some(next_page_boundary_seq)
+                    .flatten()
+            });
         if entry.has_folded_after {
             let work = fetch_all_work_range(
                 reader,
@@ -435,18 +358,7 @@ async fn materialize_page_items(
                         items.push(group);
                     }
                 } else if is_latest_page {
-                    if is_working_live {
-                        trailing_work = work;
-                    } else {
-                        let bounded_end = work.last().map(|w| w.seq.saturating_add(1));
-                        if let Some(group) =
-                            summarize_work_group(&work, Some(entry.event.seq), bounded_end, false)
-                        {
-                            // Trailing work after the newest boundary when idle is surfaced
-                            // identically to a sealed group so cold restart matches live layout.
-                            items.push(group);
-                        }
-                    }
+                    trailing_work = work;
                 }
             }
         }

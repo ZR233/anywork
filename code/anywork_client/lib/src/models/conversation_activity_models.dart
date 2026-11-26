@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'chat_models.dart';
+import 'runtime_models.dart';
 import 'collection_equality.dart';
 import 'current_state_field.dart';
 import 'interaction_models.dart';
@@ -287,7 +287,7 @@ bool _sameDetails(
 /// 不读取历史，不发起详情 query，不用较早到达的摘要帧清除正文。
 ConversationActivityView? projectConversationActivity({
   required ThreadActivityView? activity,
-  ThreadBusinessRefs? businessRefs,
+  PlanRuntimeView? plan,
   ThreadStorageStateView? storage,
   PendingInteraction? interaction,
 }) {
@@ -333,8 +333,8 @@ ConversationActivityView? projectConversationActivity({
     backgroundToolCount: activity.tools.background,
     expandable:
         activity.deferred.isNotEmpty ||
-        businessRefs?.plan?.document != null ||
-        businessRefs?.interactions != null,
+        plan?.document != null ||
+        interaction != null,
     wait: wait,
     deferred: activity.deferred,
   );

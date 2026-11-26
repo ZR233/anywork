@@ -228,7 +228,8 @@ class _AcpConversationContentViewState
                     child: const Icon(Icons.keyboard_arrow_down),
                   ),
                 ),
-            chatAnimatedListBuilder: (_, _) => ChatAnimatedListReversed(
+            chatAnimatedListBuilder: (_, _) => ChatAnimatedList(
+              reversed: true,
               itemBuilder: _buildItem,
               handleSafeArea: false,
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,

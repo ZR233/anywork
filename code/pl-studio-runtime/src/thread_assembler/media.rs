@@ -75,7 +75,12 @@ mod tests {
             Ok(())
         }
 
-        fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        fn reserve_operation_output(
+            &self,
+            _: &str,
+            _: &str,
+            max: u64,
+        ) -> Result<u64, ColdStoreError> {
             Ok(max)
         }
 

@@ -168,7 +168,10 @@ async fn resolved_transfer_and_resident_are_distinct_cuts_and_restart_keeps_the_
         .durable
         .store(thread.snapshot().commit_sequence, Ordering::SeqCst);
     assert_eq!(thread.snapshot().interaction_collection_revision, 4);
-    let current = thread.capture_current(CancellationToken::new()).await.unwrap();
+    let current = thread
+        .capture_current(CancellationToken::new())
+        .await
+        .unwrap();
     thread.close().await.unwrap();
     let reopened = ThreadHandle::restore_current(
         serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap(),
@@ -206,10 +209,13 @@ impl ModelSession for Streaming {
 async fn token_observations_terminal_usage_and_durable_ack_keep_the_resource_version() {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let release = CancellationToken::new();
-    let thread = ThreadHandle::start("tokens".into(), DynModelSession::new(Streaming {
-        progress: sender,
-        release: release.clone(),
-    }))
+    let thread = ThreadHandle::start(
+        "tokens".into(),
+        DynModelSession::new(Streaming {
+            progress: sender,
+            release: release.clone(),
+        }),
+    )
     .unwrap();
     let capture = Capture::default();
     thread

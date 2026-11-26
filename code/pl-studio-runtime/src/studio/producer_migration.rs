@@ -1,7 +1,7 @@
 //! Pure producer normalization shared by named history migrations and TOML import.
 use crate::context_preparation::CompactionReceipt;
-use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 use crate::studio::storage::legacy_checkpoint::ThreadCheckpoint;
+use crate::thread_assembler::{APPROVAL_RESPONSE_FORMAT, StoredApprovalDecision};
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, OpaquePayload},

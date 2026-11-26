@@ -4,8 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
-import '../types/chat.dart';
-import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/presentation.dart';
 import '../types/runtime.dart';
@@ -15,145 +13,54 @@ import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `next_reader_id`, `open_current`, `open_history`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CurrentResource`, `HistoryResource`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `close`, `request_close`, `request_close`
+// These functions are ignored because they are not marked as `pub`: `next_event`, `open_conversation`, `query`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ConversationResource`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `request_close`
 
-Future<BridgeHistoryReader> openHistoryReader({
+Future<BridgeConversationFeed> openConversationFeed({
   required String threadId,
-  required int historyProtocolVersion,
-}) => RustLib.instance.api.crateApiStudioHandlersTimelineOpenHistoryReader(
+  required int initialLimit,
+}) => RustLib.instance.api.crateApiStudioHandlersTimelineOpenConversationFeed(
   threadId: threadId,
-  historyProtocolVersion: historyProtocolVersion,
+  initialLimit: initialLimit,
 );
 
-Future<BridgeCurrentReader> openCurrentReader({
-  required String threadId,
-  required int currentProtocolVersion,
-  required BridgeReadDemand demand,
-}) => RustLib.instance.api.crateApiStudioHandlersTimelineOpenCurrentReader(
-  threadId: threadId,
-  currentProtocolVersion: currentProtocolVersion,
-  demand: demand,
-);
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeCurrentBodyWatch>>
-abstract class BridgeCurrentBodyWatch implements RustOpaqueInterface {
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeConversationFeed>>
+abstract class BridgeConversationFeed implements RustOpaqueInterface {
   Future<void> close();
 
-  Future<BridgeContentWindow?> next();
+  BridgeLiveStatusSnapshot liveStatusSnapshot();
 
-  void requestClose();
-}
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeCurrentReader>>
-abstract class BridgeCurrentReader implements RustOpaqueInterface {
-  Future<void> close();
-
-  BridgeCurrentView initialView();
-
-  BridgeOpenCurrentReader metadata();
-
-  Future<BridgeCurrentCollectionPage> pageCollection({
-    required BridgeCurrentCollectionRef reference,
-    String? continuation,
-    required BridgeReadDemand demand,
+  Future<BridgeTimelinePatch> loadOlder({
+    required String cursor,
+    required int limit,
   });
 
-  Future<BridgeContentWindow> readBody({
-    required BridgeCurrentContentRef reference,
-    required BridgeContentRange range,
+  Future<List<BridgeWorkGroupMember>> loadWorkGroupMembers({
+    BigInt? afterSeq,
+    BigInt? beforeSeq,
   });
 
-  void requestClose();
+  /// The first event is the backend's initial Timeline Reset. A single consumer pulls in order.
+  Future<BridgeConversationEvent?> nextEvent();
 
-  Future<BridgeCurrentView> snapshot({required BridgeReadDemand demand});
-
-  String threadId();
-
-  Future<BridgeCurrentWatch> watch({
-    BridgeCurrentRevision? after,
-    required BridgeReadDemand demand,
-  });
-
-  Future<BridgeCurrentBodyWatch> watchBody({
-    required BridgeCurrentContentRef reference,
-    required BridgeContentRange range,
-  });
-}
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeCurrentWatch>>
-abstract class BridgeCurrentWatch implements RustOpaqueInterface {
-  Future<void> close();
-
-  Future<BridgeCurrentFrame?> next();
-
-  void requestClose();
-}
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeHistoryReader>>
-abstract class BridgeHistoryReader implements RustOpaqueInterface {
-  Future<BridgeHistoryAccounting?> accounting({BridgeHistoryCut? cut});
-
-  Future<BridgeHistoryCut> capture();
-
-  Future<void> close();
-
-  Future<BridgeHistoryBusinessPage> costsPage({
-    BridgeHistoryCut? cut,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
-
-  Future<BridgeHistoryEventsPage> eventsPage({
-    required BridgeHistoryEventsQuery query,
-    BridgeHistoryCut? cut,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
-
-  Future<BridgeHistoryBodyPage> listBodies({
-    required String eventId,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
-
-  BridgeOpenHistoryReader metadata();
-
-  Future<BridgeHistoryBodyWindow> readBody({
-    required BridgeHistoryEventBodyRef reference,
+  Future<BridgeBodyWindow> readBodyWindow({
+    required BridgeBodyRef reference,
     required BigInt offset,
     required int maxBytes,
   });
 
-  Future<BridgeHistoryEventRecord> readEvent({
-    required String eventId,
-    required BridgeHistoryDemand demand,
+  Future<BridgeSessionDetailWindow> readSessionDetail({
+    required BridgeSessionDetailKind kind,
+    required BigInt offset,
+    required int maxBytes,
   });
 
   void requestClose();
 
+  Future<BridgeTimelinePatch> resetToLatest({required int limit});
+
+  BridgeSessionMetaSnapshot sessionMetaSnapshot();
+
   String threadId();
-
-  Future<BridgeHistoryTimelinePage> timelinePage({
-    BridgeHistoryCut? cut,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
-
-  Future<BridgeHistoryBusinessPage> turnsPage({
-    BridgeHistoryCut? cut,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
-
-  Future<BridgeHistoryCut> waitChanged({required BridgeHistoryCut after});
-
-  Future<BridgeHistoryWorkRangePage> workRangePage({
-    BigInt? afterSeq,
-    BigInt? beforeSeq,
-    BridgeHistoryCut? cut,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
 }

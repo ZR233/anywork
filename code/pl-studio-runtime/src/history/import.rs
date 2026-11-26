@@ -391,8 +391,7 @@ impl V24HistorySource {
                 "schema 24 checkpoint hash mismatch".into(),
             ));
         }
-        let mut checkpoint: Box<ThreadCheckpoint> =
-            serde_json::from_str(&payload)?;
+        let mut checkpoint: Box<ThreadCheckpoint> = serde_json::from_str(&payload)?;
         let fence = self
             .query_one(
                 "SELECT applied_write_seq FROM history_meta WHERE id=1",

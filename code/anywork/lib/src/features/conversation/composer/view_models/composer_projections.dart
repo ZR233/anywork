@@ -120,7 +120,6 @@ final class ComposerProjections {
       revision: session.revision,
       composer: draft,
       activeInteraction: activePendingInteraction(session.interactions),
-      interactionReadError: session.interactionReadError,
       turn: session.activeTurn,
       execution: session.runtime?.execution,
       continuation: session.runtime?.continuation,

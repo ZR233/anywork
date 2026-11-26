@@ -567,16 +567,17 @@ impl Observation<'_> {
             let input_id = input(phase).input_id;
             let mut remaining = HISTORY_OBSERVATION_BYTES;
             let history = self.session.http()?.open_history(id).await?;
-            let feed = match open_feed(self.session.http()?, id).await {
-                Ok(feed) => feed,
-                Err(error) => {
-                    return match history.close().await {
-                        Ok(()) => Err(error),
-                        Err(close_error) => Err(error
-                            .context(format!("History close also failed: {close_error:#}"))),
-                    };
-                }
-            };
+            let feed =
+                match open_feed(self.session.http()?, id).await {
+                    Ok(feed) => feed,
+                    Err(error) => {
+                        return match history.close().await {
+                            Ok(()) => Err(error),
+                            Err(close_error) => Err(error
+                                .context(format!("History close also failed: {close_error:#}"))),
+                        };
+                    }
+                };
             let observed = async {
                 let mut stream = feed.events().await?;
                 let mut head = loop {

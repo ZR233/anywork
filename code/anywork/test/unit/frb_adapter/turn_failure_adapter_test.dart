@@ -3,8 +3,6 @@ import 'dart:io';
 
 import 'package:anywork/src/domain/models/agent_workspace_view.dart';
 import 'package:anywork/src/rust/api/studio/handlers/timeline.dart';
-import 'package:anywork/src/rust/api/studio/types/chat.dart';
-import 'package:anywork/src/rust/api/studio/types/delegation.dart';
 import 'package:anywork/src/rust/api/studio/types/presentation.dart';
 import 'package:anywork/src/rust/api/studio/types/thread_stream.dart';
 import 'package:anywork/src/rust/frb_generated.dart' show RustLibApi;
@@ -22,78 +20,42 @@ void main() {
     ('cancelled', '18446744073709551615'),
   ]) {
     test(
-      'small and paged Current agree for the $phase product fixture',
+      'Feed preserves recovery values for the $phase product fixture',
       () async {
         final fixture = jsonDecode(
           File('test/fixtures/provider_recovery_notices.json')
               .readAsStringSync(),
         ) as Map<String, Object?>;
         final notice = fixture[phase] as Map<String, Object?>;
-        final frame = BridgeCurrentFrame.projection(
-          revision: BridgeCurrentRevision(
-            ownerId: 'owner',
-            revision: BigInt.two,
-          ),
-          projection: BridgeCurrentProjection(
-            logicalStatus: BridgeThreadStatus.running,
-            executionPresent: true,
-            sources: const [],
-            atoms: [
-              BridgeCurrentAtom(
-                id: 'recovery:$phase',
-                source: const BridgeChatSourceId.foregroundTurn(turnId: 'turn'),
-                kind: BridgeChatAtomKind.text,
-                delivery: BridgeChatDeliveryKind.foreground,
-                lifecycle: const BridgeChatAtomLifecycle.active(
-                  status: BridgeChatActiveStatus.waiting,
-                ),
-                modelRecovery: BridgeModelRecoveryNotice(
-                  phase: BridgeModelRecoveryPhase.values.byName(
-                    notice['phase'] as String,
-                  ),
-                  failureKind: notice['failureKind'] as String,
-                  reason: notice['reason'] as String,
-                  retryCount: notice['retryCount'] as int,
-                  maxRetries: notice['maxRetries'] as int,
-                  effectiveWaitMillis: BigInt.parse(
-                    notice['effectiveWaitMillis'] as String,
-                  ),
-                  failure: _bridgeFailure(
-                    notice['failure'] as Map<String, Object?>,
-                  ),
-                ),
-                contents: const [],
+        final item = await _deliver(
+          BridgeTimelineItem.assistantText(
+            id: 'recovery:$phase',
+            seq: BigInt.two,
+            channel: 'assistant',
+            text: '',
+            isFinalTurnDelivery: false,
+            outcome: 'failed',
+            modelRecovery: BridgeModelRecoveryNotice(
+              phase: BridgeModelRecoveryPhase.values.byName(
+                notice['phase'] as String,
               ),
-            ],
-            previews: const [],
-            collections: const [],
-          ),
-        );
-        final delivered = await _deliver(frame) as ProjectionCurrentFrame;
-        final small = delivered.projection.atoms.single;
-        final paged = decodeCurrentAtomPayload(
-          InlineCurrentPayload(
-            bytes: utf8.encode(
-              jsonEncode({
-                'id': 'recovery:$phase',
-                'source': {'kind': 'foregroundTurn', 'turnId': 'turn'},
-                'kind': 'text',
-                'delivery': 'foreground',
-                'lifecycle': {'kind': 'active', 'status': 'waiting'},
-                'modelRecovery': notice,
-                'contents': const <Object?>[],
-              }),
+              failureKind: notice['failureKind'] as String,
+              reason: notice['reason'] as String,
+              retryCount: notice['retryCount'] as int,
+              maxRetries: notice['maxRetries'] as int,
+              effectiveWaitMillis: BigInt.parse(
+                notice['effectiveWaitMillis'] as String,
+              ),
+              failure: _bridgeFailure(
+                notice['failure'] as Map<String, Object?>,
+              ),
             ),
           ),
-        );
-        expect(small.id, paged.id);
-        expect(small.modelRecovery, paged.modelRecovery);
-        expect(paged.modelRecovery?.effectiveWaitMillis, BigInt.parse(millis));
-        expect(
-          paged.modelRecovery?.failure?.retryAfterMs,
-          BigInt.parse(millis),
-        );
-        expect(small.modelRecovery?.toJson(), notice);
+        ) as TimelineAssistantText;
+        expect(item.id, 'recovery:$phase');
+        expect(item.modelRecovery?.effectiveWaitMillis, BigInt.parse(millis));
+        expect(item.modelRecovery?.failure?.retryAfterMs, BigInt.parse(millis));
+        expect(item.modelRecovery?.toJson(), notice);
       },
     );
   }
@@ -104,7 +66,7 @@ void main() {
     ('waits wider than a signed Dart int', true),
   ]) {
     test(
-      'Current maps a bridge completion to typed Client failure ($label)',
+      'Feed maps a bridge turn outcome to typed Client failure ($label)',
       () async {
         final fixture = jsonDecode(
           File('test/fixtures/provider_failure_retry.json').readAsStringSync(),
@@ -113,61 +75,54 @@ void main() {
         final failure = data['failure'] as Map<String, Object?>;
         final retry = failure['retry'] as Map<String, Object?>;
         final recovery = failure['recovery'] as Map<String, Object?>;
-        final frame = BridgeCurrentFrame.notification(
-          revision: BridgeCurrentRevision(
-            ownerId: 'owner',
-            revision: BigInt.two,
-          ),
-          notification: BridgeThreadNotificationEnvelope(
-            threadId: 'thread',
-            epoch: BigInt.one,
-            baseRevision: BigInt.one,
-            revision: BigInt.two,
-            emittedAt: data['completedAt'] as int,
-            notification: BridgeThreadNotification.turnCompleted(
-              turn: BridgeTurn(
-                id: 'turn',
-                threadId: 'thread',
-                revision: BigInt.two,
-                updatedAt: data['completedAt'] as int,
-                state: BridgeTurnState.failed(
-                  startedAt: data['startedAt'] as int,
-                  completedAt: data['completedAt'] as int,
-                  failure: BridgeTurnFailureDto(
-                    category: failure['category'] as String,
-                    providerKind: failure['providerKind'] as String,
-                    code: failure['code'] as String,
-                    httpStatus: failure['httpStatus'] as int,
-                    message: failure['message'] as String,
-                    retryDisposition: retry['kind'] as String,
-                    retryAfterMs: largeWait
-                        ? maxUnsignedWait
-                        : BigInt.parse(retry['retryAfterMs'] as String),
-                    errorType: failure['errorType'] as String,
-                    requestId: failure['requestId'] as String,
-                    stage: failure['stage'] as String,
-                    recovery: BridgeModelRecoveryInfo(
-                      retryCount: recovery['retryCount'] as int,
-                      maxRetries: recovery['maxRetries'] as int,
-                      effectiveWaitMillis: largeWait
-                          ? maxUnsignedWait - BigInt.one
-                          : BigInt.parse(
-                              recovery['effectiveWaitMillis'] as String,
-                            ),
-                      reason: recovery['reason'] as String,
-                      stopReason: recovery['stopReason'] as String,
-                      error: recovery['error'] as String?,
-                    ),
-                  ),
-                ),
+        final item = await _deliver(
+          BridgeTimelineItem.turnOutcome(
+            id: 'failure',
+            seq: BigInt.two,
+            outcome: 'failed',
+            turnId: 'turn',
+            turnFailure: BridgeTurnFailureDto(
+              category: failure['category'] as String,
+              providerKind: failure['providerKind'] as String,
+              code: failure['code'] as String,
+              httpStatus: failure['httpStatus'] as int,
+              message: failure['message'] as String,
+              retryDisposition: retry['kind'] as String,
+              retryAfterMs: largeWait
+                  ? maxUnsignedWait
+                  : BigInt.parse(retry['retryAfterMs'] as String),
+              errorType: failure['errorType'] as String,
+              requestId: failure['requestId'] as String,
+              stage: failure['stage'] as String,
+              recovery: BridgeModelRecoveryInfo(
+                retryCount: recovery['retryCount'] as int,
+                maxRetries: recovery['maxRetries'] as int,
+                effectiveWaitMillis: largeWait
+                    ? maxUnsignedWait - BigInt.one
+                    : BigInt.parse(recovery['effectiveWaitMillis'] as String),
+                reason: recovery['reason'] as String,
+                stopReason: recovery['stopReason'] as String,
+                error: recovery['error'] as String?,
               ),
             ),
           ),
+        ) as TimelineTurnOutcome;
+        final turn = StudioTurnView(
+          turnId: 'turn',
+          threadId: 'thread',
+          revision: 2,
+          updatedAt: DateTime.fromMillisecondsSinceEpoch(
+            (data['completedAt'] as int) * 1000,
+            isUtc: true,
+          ),
+          state: FailedStudioTurnState(
+            startedAt: data['startedAt'] as int,
+            completedAt: data['completedAt'] as int,
+            failure: item.turnFailure!,
+          ),
         );
-        final delivered = await _deliver(frame) as NotificationCurrentFrame;
-        final update = delivered.notification.update as ThreadTurnUpdate;
         expect(
-          update.turn.failure,
+          item.turnFailure,
           StudioTurnFailureView(
             category: 'provider',
             providerKind: 'rateLimit',
@@ -190,7 +145,7 @@ void main() {
             ),
           ),
         );
-        final driverFailure = _driverFailure(update.turn);
+        final driverFailure = _driverFailure(turn);
         expect(
           driverFailure['retryAfterMs'],
           largeWait ? '18446744073709551615' : '45000',
@@ -200,10 +155,7 @@ void main() {
               as Map<String, Object?>)['effectiveWaitMillis'],
           largeWait ? '18446744073709551614' : '47000',
         );
-        expect(
-          StudioTurnFailureView.fromJson(driverFailure),
-          update.turn.failure,
-        );
+        expect(StudioTurnFailureView.fromJson(driverFailure), item.turnFailure);
       },
     );
   }
@@ -267,121 +219,57 @@ Map<String, Object?> _driverFailure(StudioTurnView turn) {
   return lastTurn['failure'] as Map<String, Object?>;
 }
 
-Future<CurrentFrame> _deliver(BridgeCurrentFrame frame) async {
-  final transport = TestFrbStudioTransport(mockApi: _CurrentApi(frame));
-  const demand = ReadDemand(maxItems: 5, maxBytes: 4096);
-  final reader = await transport.openCurrentReader(
-    'thread',
-    currentProtocolVersion: currentProtocolVersion,
-    demand: demand,
+Future<TimelineItem> _deliver(BridgeTimelineItem item) async {
+  final transport = TestFrbStudioTransport(
+    mockApi: _FeedApi(
+      BridgeConversationEvent.timeline(
+        patch: BridgeTimelinePatch.append(items: [item]),
+      ),
+    ),
   );
-  final watch = await reader.watch(demand: demand);
-  return watch.frames.single;
+  final feed = await transport.openConversationFeed('thread', initialLimit: 5);
+  try {
+    final event = await feed.events.single as ConversationTimeline;
+    return (event.patch as TimelineAppend).items.single;
+  } finally {
+    await feed.close();
+  }
 }
 
-final class _CurrentApi implements RustLibApi {
-  _CurrentApi(this.frame);
-
-  final BridgeCurrentFrame frame;
+final class _FeedApi implements RustLibApi {
+  _FeedApi(this.frame);
+  final BridgeConversationEvent frame;
 
   @override
-  Future<BridgeCurrentReader> crateApiStudioHandlersTimelineOpenCurrentReader({
+  Future<BridgeConversationFeed>
+  crateApiStudioHandlersTimelineOpenConversationFeed({
     required String threadId,
-    required int currentProtocolVersion,
-    required BridgeReadDemand demand,
-  }) async => _Reader(frame);
+    required int initialLimit,
+  }) async => _Feed(frame);
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-final class _Reader implements BridgeCurrentReader {
-  _Reader(this.frame);
-
-  final BridgeCurrentFrame frame;
+final class _Feed implements BridgeConversationFeed {
+  _Feed(this.frame);
+  BridgeConversationEvent? frame;
 
   @override
   String threadId() => 'thread';
 
   @override
-  BridgeOpenCurrentReader metadata() => const BridgeOpenCurrentReader(
-    readerId: 'reader',
-    currentProtocolVersion: currentProtocolVersion,
-    currentOwnerId: 'owner',
-  );
-
-  @override
-  BridgeCurrentView initialView() => BridgeCurrentView(
-    revision: BridgeCurrentRevision(ownerId: 'owner', revision: BigInt.one),
-    state: BridgeThreadSnapshot(
-      schemaVersion: threadSchemaVersion,
-      revision: BigInt.one,
-      thread: const BridgeThread(
-        id: 'thread',
-        workspaceId: 'workspace',
-        title: 'Title',
-        delegationMode: BridgeDelegationMode.profile,
-        delegationPreference: BridgeDelegationPreference.economy,
-        workspaceMode: 'local',
-        workspacePath: '/workspace',
-        rootThreadId: 'thread',
-        role: 'assistant',
-        agentPath: 'root',
-        status: BridgeThreadStatus.running,
-        createdAt: 1000,
-        updatedAt: 1000,
-        archived: false,
-      ),
-      businessRefs: const BridgeThreadBusinessRefs(),
-      interactions: const [],
-      runtimeAvailability: BridgeThreadRuntimeAvailability.active,
-    ),
-    projection: const BridgeCurrentProjection(
-      logicalStatus: BridgeThreadStatus.running,
-      executionPresent: true,
-      sources: [],
-      atoms: [],
-      previews: [],
-      collections: [],
-    ),
-  );
-
-  @override
-  Future<BridgeCurrentWatch> watch({
-    BridgeCurrentRevision? after,
-    required BridgeReadDemand demand,
-  }) async => _Watch(frame);
-
-  @override
-  Future<void> close() async {}
-
-  @override
-  void requestClose() {}
-
-  @override
-  void dispose() {}
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-final class _Watch implements BridgeCurrentWatch {
-  _Watch(this.frame);
-
-  BridgeCurrentFrame? frame;
-
-  @override
-  Future<BridgeCurrentFrame?> next() async {
-    final value = frame;
+  Future<BridgeConversationEvent?> nextEvent() async {
+    final next = frame;
     frame = null;
-    return value;
+    return next;
   }
 
   @override
-  Future<void> close() async {}
+  void requestClose() {}
 
   @override
-  void requestClose() {}
+  Future<void> close() async {}
 
   @override
   void dispose() {}

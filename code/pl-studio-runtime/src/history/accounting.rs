@@ -32,6 +32,7 @@ pub struct HistoryUsageFact {
 pub(crate) struct PreparedHistoryUsage {
     pub(crate) events: Vec<HistoryEvent>,
     pub(crate) accepted_sequence: Option<u64>,
+    pub(crate) usage_revision: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -209,10 +210,14 @@ impl HistoryStore {
         if let Some(sequence) = prepared.accepted_sequence {
             return Ok(sequence);
         }
-        let mut sequences = self.accept_locked(&admission, &prepared.events).await;
+        let mut sequences = self
+            .accept_locked_at_revision(&admission, &prepared.events, prepared.usage_revision)
+            .await;
         if matches!(sequences, Err(HistoryError::Capacity)) {
             self.flush().await?;
-            sequences = self.accept_locked(&admission, &prepared.events).await;
+            sequences = self
+                .accept_locked_at_revision(&admission, &prepared.events, prepared.usage_revision)
+                .await;
         }
         let sequences = sequences?;
         Ok(sequences[0])
@@ -220,7 +225,7 @@ impl HistoryStore {
 
     pub(crate) async fn prepare_usage(
         &self,
-        _admission: &tokio::sync::MutexGuard<'_, ()>,
+        admission: &super::store::HistoryAdmissionGuard<'_>,
         facts: &[HistoryUsageFact],
     ) -> Result<PreparedHistoryUsage> {
         let admitted_head = {
@@ -238,6 +243,7 @@ impl HistoryStore {
             return Ok(PreparedHistoryUsage {
                 events: Vec::new(),
                 accepted_sequence: None,
+                usage_revision: admission.usage_revision(),
             });
         }
         let mut identities = BTreeSet::new();
@@ -262,6 +268,7 @@ impl HistoryStore {
             return Ok(PreparedHistoryUsage {
                 events: Vec::new(),
                 accepted_sequence: Some(sequence),
+                usage_revision: admission.usage_revision(),
             });
         }
 
@@ -357,6 +364,7 @@ impl HistoryStore {
         Ok(PreparedHistoryUsage {
             events: fold.events,
             accepted_sequence: None,
+            usage_revision: admission.usage_revision(),
         })
     }
 

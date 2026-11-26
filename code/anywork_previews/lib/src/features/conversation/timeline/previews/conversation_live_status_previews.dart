@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/models.dart' hide LiveStatusIdle;
+import 'package:anywork_client/models.dart' as feed show LiveStatusIdle;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
@@ -112,31 +113,6 @@ Widget liveStatusGroupPreview({
   );
 }
 
-DisplayBlock _previewOpenWork(
-  String id, {
-  String? summary,
-  int startedAtMillis = 100_000,
-  int memberCount = 1,
-  int unfinishedCount = 1,
-}) => DisplayBlock(
-  id: id,
-  blockOrder: 1,
-  body: WorkDisplayBlock(
-    timing: WorkTiming(startedAtMillis: startedAtMillis),
-    summary: summary,
-    members: DisplayBlockRef(
-      blockId: id,
-      cut: const HistoryCut(''),
-      anchorSeq: 1,
-      headSeq: 1,
-    ),
-    executionPresent: true,
-    memberCount: memberCount,
-    unfinishedCount: unfinishedCount,
-    groupClosed: false,
-  ),
-);
-
 @Preview(name: '趴卧猫 · 尾巴摆动', group: '实时状态栏', size: Size(760, 340))
 Widget conversationRestingCatPreview() => liveStatusPreviewHost(
   Column(
@@ -177,10 +153,11 @@ Widget conversationRestingCatPreview() => liveStatusPreviewHost(
         ],
       ),
       _liveMachineSurface(
-        activity: _threadActivity(
-          ThreadActivityKind.thinking,
-          identity: 'preview-cat-thinking',
-          thinkingSeconds: 17,
+        snapshot: LiveStatusSnapshot(
+          revision: 1,
+          phase: LiveStatusWorking(items: []),
+          attentions: [],
+          suppressedByInteraction: false,
         ),
       ),
     ],
@@ -234,9 +211,11 @@ Widget conversationCompactingZipPreview() => liveStatusPreviewHost(
         ],
       ),
       _liveMachineSurface(
-        activity: _threadActivity(
-          ThreadActivityKind.compacting,
-          identity: 'preview-zip-compacting',
+        snapshot: LiveStatusSnapshot(
+          revision: 1,
+          phase: const LiveStatusCompacting(manual: false),
+          attentions: [],
+          suppressedByInteraction: false,
         ),
       ),
     ],
@@ -267,68 +246,52 @@ Widget _previewScenario(String label, Widget child) => Column(
 );
 
 Widget _liveMachineSurface({
-  ThreadActivityView? activity,
-  ThreadStorageStateView? storage,
-  List<PendingInteraction> interactions = const [],
-  ThreadBusinessRefs? businessRefs,
-  String? activeTurnId = 'preview-turn',
-  CurrentAtomSnapshot? current,
-  DisplayBlock? liveOpenWork,
-  Set<String> renderedCurrentAtomIds = const {},
-  LiveConnectionStatus connectionStatus = LiveConnectionStatus.connected,
-  String? connectionDetail,
-  Object? currentAtomsError,
-  String? previewResponseText,
-  int? previewResponseStartedAt,
+  required LiveStatusSnapshot snapshot,
+  List<LiveStatusAttention> presentationAttentions = const [],
   WidgetBuilder? liveWorkChildBuilder,
   bool liveWorkInitiallyExpanded = false,
   DateTime Function()? now,
 }) {
+  final previewNow = now ?? () => DateTime.fromMillisecondsSinceEpoch(225_000);
   final projected = LiveStatusMachine.project(
-    threadId: 'preview-thread',
-    inputs: LiveStatusInputs(
-      storage: storage,
-      interactions: interactions,
-      businessRefs: businessRefs,
-      activeTurnId: activeTurnId,
-      activity: activity,
-      current: current,
-      liveOpenWork: liveOpenWork,
-      renderedCurrentAtomIds: renderedCurrentAtomIds,
-      hasContentOwner: true,
-      connectionStatus: connectionStatus,
-      connectionDetail: connectionDetail,
-      currentAtomsError: currentAtomsError,
-      previewResponseText: previewResponseText,
-      previewResponseStartedAt: previewResponseStartedAt,
-    ),
+    'preview-thread',
+    snapshot,
+    receivedAt: previewNow(),
   );
+  final presentation = switch (projected.gate) {
+    LiveStatusPresenting(:final presentation) => presentation,
+    _ => null,
+  };
+  final gate = presentationAttentions.isEmpty
+      ? projected.gate
+      : LiveStatusPresenting(
+          presentation: LiveStatusPresentation(
+            primary: presentation?.primary,
+            attentions: [
+              ...?presentation?.attentions,
+              ...presentationAttentions,
+            ],
+          ),
+        );
   return LiveStatusSurfaceView(
-    gate: projected.gate,
+    gate: gate,
     liveWorkChildBuilder: liveWorkChildBuilder,
     liveWorkInitiallyExpanded: liveWorkInitiallyExpanded,
-    now: now,
+    now: previewNow,
   );
 }
 
-ThreadActivityView _threadActivity(
-  ThreadActivityKind kind, {
-  String identity = 'preview',
-  String summary = '',
-  String? thinkingSummary,
-  int? thinkingSeconds,
-  ThreadActivityTools tools = ThreadActivityTools.empty,
-}) => ThreadActivityView(
-  threadId: 'preview-thread',
-  identity: identity,
-  revision: 1,
-  turnId: 'preview-turn',
-  kind: kind,
-  summary: summary,
-  thinkingSummary: thinkingSummary,
-  thinkingSeconds: thinkingSeconds,
-  tools: tools,
-);
+// Storage variants are explicit pure-view fixtures. They do not reconstruct
+// runtime activity or manufacture another feed projection.
+LiveStorageAttention _storageAttention(ThreadStorageStateView storage) =>
+    LiveStorageAttention(
+      activity: const ConversationActivityView(
+        identity: 'preview-storage',
+        kind: ConversationActivityKind.storageBlocked,
+      ),
+      storage: storage,
+      severity: LiveStorageSeverity.fromStorage(storage),
+    );
 
 @Preview(name: '四态顶栏指示器零抖动对比', group: '实时状态栏', size: Size(760, 560))
 Widget conversationFourStatesComparisonPreview() => liveStatusPreviewHost(
@@ -340,49 +303,62 @@ Widget conversationFourStatesComparisonPreview() => liveStatusPreviewHost(
         _previewScenario(
           '工况 1 · 思考中（趴卧摇尾猫）',
           _liveMachineSurface(
-            activity: _threadActivity(
-              ThreadActivityKind.waitingApi,
-              identity: 'preview-four-thinking',
-              thinkingSeconds: 17,
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: LiveStatusWorking(items: []),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
           ),
         ),
         _previewScenario(
           '工况 2 · 前台命令执行（圆形进度 + 命令摘要）',
           _liveMachineSurface(
-            activity: _threadActivity(
-              ThreadActivityKind.runningTool,
-              identity: 'preview-four-exec',
-              tools: ThreadActivityTools(
-                count: 1,
-                active: const [
-                  ThreadActivityToolEntry(
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: LiveStatusWorking(
+                items: [
+                  LiveWorkItem(
+                    id: 'preview-exec-call',
                     callId: 'preview-exec-call',
-                    name: 'exec',
+                    kind: 'tool',
+                    toolName: 'exec',
+                    status: 'running',
                     summary: 'cargo flutter test --no-pub test/ui',
-                    arguments: ThreadActivityArgumentsKind.commandLine,
-                    state: ThreadActivityToolState.running,
-                    startedAt: 100,
+                    startedAtMs: (100) * 1000,
                   ),
                 ],
               ),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
           ),
         ),
         _previewScenario(
           '工况 3 · 流式正文输出（书写笔触）',
           _liveMachineSurface(
-            previewResponseText: '四态顶栏共享同一 32×32 引导槽位与 15px 标题字号，切换零位移。',
-            previewResponseStartedAt: 100,
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: LiveStatusStreamingText(
+                attemptId: 'preview-attempt',
+                itemId: 'preview-response',
+                text: '四态顶栏共享同一 32×32 引导槽位与 15px 标题字号，切换零位移。',
+                startedAtMs: (100) * 1000,
+              ),
+              attentions: [],
+              suppressedByInteraction: false,
+            ),
             now: () => DateTime.fromMillisecondsSinceEpoch(117_000),
           ),
         ),
         _previewScenario(
           '工况 4 · 上下文压缩（拉链图标）',
           _liveMachineSurface(
-            activity: _threadActivity(
-              ThreadActivityKind.compacting,
-              identity: 'preview-four-compacting',
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: const LiveStatusCompacting(manual: false),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
           ),
         ),
@@ -394,10 +370,11 @@ Widget conversationFourStatesComparisonPreview() => liveStatusPreviewHost(
 @Preview(name: '思考中 · 无内容', group: '实时状态栏', size: Size(760, 110))
 Widget conversationLiveStatusWaitingPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.waitingApi,
-      identity: 'preview-waiting',
-      thinkingSeconds: 17,
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(items: []),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
   ),
 );
@@ -405,9 +382,11 @@ Widget conversationLiveStatusWaitingPreview() => liveStatusPreviewHost(
 @Preview(name: '正在压缩上下文', group: '实时状态栏', size: Size(760, 110))
 Widget conversationLiveStatusCompactingPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.compacting,
-      identity: 'preview-compacting',
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: const LiveStatusCompacting(manual: false),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
   ),
 );
@@ -415,24 +394,25 @@ Widget conversationLiveStatusCompactingPreview() => liveStatusPreviewHost(
 @Preview(name: '工作组 · 进行中', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.runningTool,
-      identity: 'preview-exec-work',
-      tools: ThreadActivityTools(
-        count: 1,
-        active: const [
-          ThreadActivityToolEntry(
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(
+        items: [
+          LiveWorkItem(
+            id: 'preview-command',
             callId: 'preview-command',
-            name: 'read_file',
+            kind: 'tool',
+            toolName: 'read_file',
+            status: 'running',
             summary: '读取 design/26-timeline-content.md',
-            arguments: ThreadActivityArgumentsKind.opaque,
-            state: ThreadActivityToolState.running,
-            startedAt: 100,
+            startedAtMs: (100) * 1000,
           ),
         ],
+        startedAtMs: 100_000,
       ),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
-    liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 3),
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
     liveWorkChildBuilder: (_) => const Column(
@@ -478,25 +458,27 @@ Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
 @Preview(name: '重连中 · 独立状态', group: '实时状态栏', size: Size(760, 140))
 Widget conversationLiveStatusReconnectingPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.runningTool,
-      summary: '读取 design/26-timeline-content.md',
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: const LiveStatusReconnecting(
+        attemptId: 'preview-reconnect',
+        message: '正在重新连接',
+        attempt: 1,
+      ),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
-    liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 3),
-    connectionStatus: LiveConnectionStatus.reconnecting,
   ),
 );
 
 @Preview(name: '工作组 · 调用失败后继续思考（折叠单行）', group: '实时状态栏', size: Size(1067, 110))
 Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.thinking,
-      identity: 'preview-failed-call-thinking',
-    ),
-    liveOpenWork: _previewOpenWork(
-      'preview-failed-call-work',
-      startedAtMillis: 154_000,
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(items: [], startedAtMs: 154_000),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
     liveWorkChildBuilder: (_) => const TimelineToolItemView(
@@ -518,14 +500,15 @@ Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
 @Preview(name: '工作组 · 推理详情', group: '实时状态栏', size: Size(760, 260))
 Widget conversationLiveStatusThinkingPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.thinking,
-      identity: 'preview-thinking-work',
-      thinkingSummary: '梳理 **会话共享组件** 与状态机转换条件',
-    ),
-    liveOpenWork: _previewOpenWork(
-      'preview-thinking-only-work',
-      summary: '梳理 **会话共享组件** 与状态机转换条件',
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(
+        items: [],
+        reasoningPreview: '梳理 **会话共享组件** 与状态机转换条件',
+        startedAtMs: 100_000,
+      ),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
@@ -543,8 +526,17 @@ Widget conversationLiveStatusThinkingPreview() => liveStatusPreviewHost(
 @Preview(name: '正文 · 长文与跟随', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusRespondingPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    previewResponseText: liveStatusResponseText,
-    previewResponseStartedAt: 100,
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusStreamingText(
+        attemptId: 'preview-attempt',
+        itemId: 'preview-response',
+        text: liveStatusResponseText,
+        startedAtMs: (100) * 1000,
+      ),
+      attentions: [],
+      suppressedByInteraction: false,
+    ),
     now: () => DateTime.fromMillisecondsSinceEpoch(125_000),
   ),
 );
@@ -552,8 +544,17 @@ Widget conversationLiveStatusRespondingPreview() => liveStatusPreviewHost(
 @Preview(name: '正文 · 短文自然高度', group: '实时状态栏', size: Size(760, 180))
 Widget conversationLiveStatusShortResponsePreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    previewResponseText: '已完成组件布局调整，正在核对各工况。',
-    previewResponseStartedAt: 100,
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusStreamingText(
+        attemptId: 'preview-attempt',
+        itemId: 'preview-response',
+        text: '已完成组件布局调整，正在核对各工况。',
+        startedAtMs: (100) * 1000,
+      ),
+      attentions: [],
+      suppressedByInteraction: false,
+    ),
     now: () => DateTime.fromMillisecondsSinceEpoch(108_000),
   ),
 );
@@ -561,44 +562,24 @@ Widget conversationLiveStatusShortResponsePreview() => liveStatusPreviewHost(
 @Preview(name: '等待成员', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.runningTool,
-      identity: 'preview-wait-work',
-      tools: ThreadActivityTools(
-        count: 1,
-        active: [
-          ThreadActivityToolEntry(
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(
+        items: [
+          LiveWorkItem(
+            id: 'preview-wait-member',
             callId: 'preview-wait-member',
-            name: 'wait',
+            kind: 'tool',
+            toolName: 'wait',
+            status: 'running',
             summary: '等待成员汇报结果',
-            arguments: ThreadActivityArgumentsKind.opaque,
-            state: ThreadActivityToolState.running,
-            wait: ThreadWaitPresentationView(
-              intent: ThreadWaitEventsIntentView(
-                targets: [
-                  ThreadWaitTargetView(
-                    taskId: 'explorer',
-                    toolName: 'delegation',
-                    summary: '梳理组件边界',
-                    status: ThreadWaitTargetStatusView.succeeded,
-                  ),
-                  ThreadWaitTargetView(
-                    taskId: 'reviewer',
-                    toolName: 'delegation',
-                    summary: '复核布局与状态文案',
-                    status: ThreadWaitTargetStatusView.running,
-                  ),
-                ],
-                timeoutMs: 300000,
-              ),
-              state: ThreadWaitStateView.waiting,
-              messagesReady: false,
-            ),
           ),
         ],
+        startedAtMs: 100_000,
       ),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
-    liveOpenWork: _previewOpenWork('preview-wait-group'),
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
     liveWorkChildBuilder: (_) => TimelineWaitDetails(
@@ -631,8 +612,17 @@ Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
 @Preview(name: '宽窗 · 正文', group: '实时状态栏', size: Size(1040, 300))
 Widget conversationLiveStatusWidePreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    previewResponseText: liveStatusResponseText,
-    previewResponseStartedAt: 100,
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusStreamingText(
+        attemptId: 'preview-attempt',
+        itemId: 'preview-response',
+        text: liveStatusResponseText,
+        startedAtMs: (100) * 1000,
+      ),
+      attentions: [],
+      suppressedByInteraction: false,
+    ),
     now: () => DateTime.fromMillisecondsSinceEpoch(125_000),
   ),
 );
@@ -640,9 +630,13 @@ Widget conversationLiveStatusWidePreview() => liveStatusPreviewHost(
 @Preview(name: '停止中', group: '实时状态栏', size: Size(760, 110))
 Widget conversationLiveStatusStoppingPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.stopping,
-      identity: 'preview-stopping',
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(items: []),
+      attentions: [
+        LiveAttention(id: 'preview-stopping', kind: 'stopping', summary: ''),
+      ],
+      suppressedByInteraction: false,
     ),
   ),
 );
@@ -657,54 +651,104 @@ Widget conversationLiveStatusStorageFailurePreview() => liveStatusPreviewHost(
         _previewScenario(
           '工况 1 · 已恢复可继续',
           _liveMachineSurface(
-            storage: const ThreadStorageStateView(
-              fault: ThreadHistoryFault.writeFailed,
-              faultGeneration: 1,
-              execution: ThreadStorageExecution.paused,
-              resumeRequired: true,
-              canResume: true,
-              lastError: '保存暂时失败，当前内容已保留。',
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: const feed.LiveStatusIdle(),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
+            presentationAttentions: [
+              _storageAttention(
+                const ThreadStorageStateView(
+                  fault: ThreadHistoryFault.writeFailed,
+                  faultGeneration: 1,
+                  execution: ThreadStorageExecution.paused,
+                  resumeRequired: true,
+                  canResume: true,
+                  lastError: '保存暂时失败，当前内容已保留。',
+                ),
+              ),
+            ],
           ),
         ),
         _previewScenario(
           '工况 2 · 写入故障',
           _liveMachineSurface(
-            storage: const ThreadStorageStateView(
-              fault: ThreadHistoryFault.writeFailed,
-              faultGeneration: 2,
-              execution: ThreadStorageExecution.paused,
-              resumeRequired: true,
-              canResume: false,
-              lastError: '保存暂时失败，当前内容已保留。',
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: const feed.LiveStatusIdle(),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
+            presentationAttentions: [
+              _storageAttention(
+                const ThreadStorageStateView(
+                  fault: ThreadHistoryFault.writeFailed,
+                  faultGeneration: 2,
+                  execution: ThreadStorageExecution.paused,
+                  resumeRequired: true,
+                  canResume: false,
+                  lastError: '保存暂时失败，当前内容已保留。',
+                ),
+              ),
+            ],
           ),
         ),
         _previewScenario(
           '工况 3 · 存储受限',
           _liveMachineSurface(
-            storage: const ThreadStorageStateView(
-              pressurePaused: true,
-              execution: ThreadStorageExecution.running,
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: const feed.LiveStatusIdle(),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
+            presentationAttentions: [
+              _storageAttention(
+                const ThreadStorageStateView(
+                  pressurePaused: true,
+                  execution: ThreadStorageExecution.running,
+                ),
+              ),
+            ],
           ),
         ),
         _previewScenario(
           '工况 4 · 等待保存恢复',
           _liveMachineSurface(
-            storage: const ThreadStorageStateView(
-              resumeRequired: true,
-              canResume: false,
-              execution: ThreadStorageExecution.paused,
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: const feed.LiveStatusIdle(),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
+            presentationAttentions: [
+              _storageAttention(
+                const ThreadStorageStateView(
+                  resumeRequired: true,
+                  canResume: false,
+                  execution: ThreadStorageExecution.paused,
+                ),
+              ),
+            ],
           ),
         ),
         _previewScenario(
           '工况 5 · 保存已暂停',
           _liveMachineSurface(
-            storage: const ThreadStorageStateView(
-              execution: ThreadStorageExecution.paused,
+            snapshot: LiveStatusSnapshot(
+              revision: 1,
+              phase: const feed.LiveStatusIdle(),
+              attentions: [],
+              suppressedByInteraction: false,
             ),
+            presentationAttentions: [
+              _storageAttention(
+                const ThreadStorageStateView(
+                  execution: ThreadStorageExecution.paused,
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -727,44 +771,90 @@ Widget conversationLiveStatusControlAndConnectionPreview() =>
             _previewScenario(
               '工况 1 · 停止中',
               _liveMachineSurface(
-                activity: _threadActivity(
-                  ThreadActivityKind.stopping,
-                  identity: 'preview-ctrl-stopping',
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusWorking(items: []),
+                  attentions: [
+                    LiveAttention(
+                      id: 'preview-ctrl-stopping',
+                      kind: 'stopping',
+                      summary: '',
+                    ),
+                  ],
+                  suppressedByInteraction: false,
                 ),
               ),
             ),
             _previewScenario(
               '工况 2 · 等待工具授权',
               _liveMachineSurface(
-                activity: _threadActivity(
-                  ThreadActivityKind.awaitingApproval,
-                  identity: 'preview-ctrl-approval',
-                  summary: 'exec: cargo test',
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusWorking(items: []),
+                  attentions: [
+                    LiveAttention(
+                      id: 'preview-ctrl-approval',
+                      kind: 'approval',
+                      summary: 'exec: cargo test',
+                    ),
+                  ],
+                  suppressedByInteraction: false,
                 ),
               ),
             ),
             _previewScenario(
               '工况 3 · 流式输出与停止并发',
               _liveMachineSurface(
-                activity: _threadActivity(
-                  ThreadActivityKind.stopping,
-                  identity: 'preview-ctrl-resp-stopping',
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusStreamingText(
+                    attemptId: 'preview-attempt',
+                    itemId: 'preview-response',
+                    text: '正在终止当前输出并回收在途工具调用。',
+                    startedAtMs: (100) * 1000,
+                  ),
+                  attentions: [
+                    LiveAttention(
+                      id: 'preview-ctrl-resp-stopping',
+                      kind: 'stopping',
+                      summary: '',
+                    ),
+                  ],
+                  suppressedByInteraction: false,
                 ),
-                previewResponseText: '正在终止当前输出并回收在途工具调用。',
-                previewResponseStartedAt: 100,
                 now: () => DateTime.fromMillisecondsSinceEpoch(112_000),
               ),
             ),
             _previewScenario(
               '工况 4 · 实时同步重连中',
               _liveMachineSurface(
-                connectionStatus: LiveConnectionStatus.reconnecting,
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: const LiveStatusReconnecting(
+                    attemptId: 'preview-reconnect',
+                    message: '正在重新连接',
+                    attempt: 1,
+                  ),
+                  attentions: [],
+                  suppressedByInteraction: false,
+                ),
               ),
             ),
             _previewScenario(
               '工况 5 · 实时同步已断开',
               _liveMachineSurface(
-                connectionStatus: LiveConnectionStatus.disconnected,
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: const feed.LiveStatusIdle(),
+                  attentions: [
+                    LiveAttention(
+                      id: 'preview-disconnected',
+                      kind: 'disconnected',
+                      summary: '实时同步连接已断开',
+                    ),
+                  ],
+                  suppressedByInteraction: false,
+                ),
               ),
             ),
           ],
@@ -776,16 +866,21 @@ Widget conversationLiveStatusControlAndConnectionPreview() =>
 Widget conversationLiveStatusStreamingResponsePreview() =>
     liveStatusPreviewHost(
       _liveMachineSurface(
-        activity: _threadActivity(
-          ThreadActivityKind.responding,
-          identity: 'preview-streaming-resp',
+        snapshot: LiveStatusSnapshot(
+          revision: 1,
+          phase: LiveStatusStreamingText(
+            attemptId: 'preview-attempt',
+            itemId: 'preview-response',
+            text:
+                '### 流式输出期间状态栏收敛\n'
+                '- **前序工作组已结算**：流式正文开始即进入主时间线不可变历史。\n'
+                '- **单一核心区**：状态栏只承载正在输出的正文与必要控制提示。\n\n'
+                '当前正在连续生成最终答复内容，状态由状态机统一投影。',
+            startedAtMs: (112) * 1000,
+          ),
+          attentions: [],
+          suppressedByInteraction: false,
         ),
-        previewResponseText:
-            '### 流式输出期间状态栏收敛\n'
-            '- **前序工作组已结算**：流式正文开始即进入主时间线不可变历史。\n'
-            '- **单一核心区**：状态栏只承载正在输出的正文与必要控制提示。\n\n'
-            '当前正在连续生成最终答复内容，状态由状态机统一投影。',
-        previewResponseStartedAt: 112,
         now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
       ),
     );
@@ -801,26 +896,30 @@ Widget conversationLiveStatusDeferredToolsAndDurationsPreview() =>
             _previewScenario(
               '工况 1 · 命令执行与工作组展开（> 60 分钟进位小时 + 错误提示）',
               _liveMachineSurface(
-                activity: _threadActivity(
-                  ThreadActivityKind.runningTool,
-                  identity: 'preview-hourly-work',
-                  tools: ThreadActivityTools(
-                    count: 1,
-                    active: const [
-                      ThreadActivityToolEntry(
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusWorking(
+                    items: [
+                      LiveWorkItem(
+                        id: 'hourly-exec',
                         callId: 'hourly-exec',
-                        name: 'exec',
+                        kind: 'tool',
+                        toolName: 'exec',
+                        status: 'running',
                         summary: 'cargo flutter test --no-pub test/ui',
-                        arguments: ThreadActivityArgumentsKind.commandLine,
-                        state: ThreadActivityToolState.running,
-                        startedAt: 100,
+                        startedAtMs: (100) * 1000,
                       ),
                     ],
+                    startedAtMs: 100_000,
                   ),
-                ),
-                liveOpenWork: _previewOpenWork(
-                  'preview-hourly-group',
-                  memberCount: 2,
+                  attentions: [
+                    LiveAttention(
+                      id: 'preview-read-error',
+                      kind: 'error',
+                      summary: '最近一次集合分页请求超时，请重试',
+                    ),
+                  ],
+                  suppressedByInteraction: false,
                 ),
                 liveWorkInitiallyExpanded: true,
                 liveWorkChildBuilder: (_) => const Column(
@@ -852,7 +951,6 @@ Widget conversationLiveStatusDeferredToolsAndDurationsPreview() =>
                     ),
                   ],
                 ),
-                currentAtomsError: '最近一次集合分页请求超时，请重试',
                 now: () => DateTime.fromMillisecondsSinceEpoch(
                   100_000 + (3600 + 15 * 60 + 8) * 1000,
                 ),
@@ -861,35 +959,37 @@ Widget conversationLiveStatusDeferredToolsAndDurationsPreview() =>
             _previewScenario(
               '工况 2 · 非命令工具运行（保留猫图标 + 工具摘要）',
               _liveMachineSurface(
-                activity: _threadActivity(
-                  ThreadActivityKind.runningTool,
-                  identity: 'preview-non-exec-work',
-                  tools: ThreadActivityTools(
-                    count: 1,
-                    active: const [
-                      ThreadActivityToolEntry(
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusWorking(
+                    items: [
+                      LiveWorkItem(
+                        id: 'write-tool',
                         callId: 'write-tool',
-                        name: 'write_file',
+                        kind: 'tool',
+                        toolName: 'write_file',
+                        status: 'running',
                         summary: '写入 design/19-studio-ui.md',
-                        arguments: ThreadActivityArgumentsKind.opaque,
-                        state: ThreadActivityToolState.running,
-                        startedAt: 100,
+                        startedAtMs: (100) * 1000,
                       ),
                     ],
+                    startedAtMs: 100_000,
                   ),
+                  attentions: [],
+                  suppressedByInteraction: false,
                 ),
-                liveOpenWork: _previewOpenWork('preview-non-exec-group'),
                 now: () => DateTime.fromMillisecondsSinceEpoch(142_000),
               ),
             ),
             _previewScenario(
               '工况 3 · 长时间思考（> 24 小时进位日）',
               _liveMachineSurface(
-                activity: _threadActivity(
-                  ThreadActivityKind.thinking,
-                  identity: 'preview-daily-work',
+                snapshot: LiveStatusSnapshot(
+                  revision: 1,
+                  phase: LiveStatusWorking(items: [], startedAtMs: 100_000),
+                  attentions: [],
+                  suppressedByInteraction: false,
                 ),
-                liveOpenWork: _previewOpenWork('preview-daily-group'),
                 now: () => DateTime.fromMillisecondsSinceEpoch(
                   100_000 + (86400 + 3 * 3600 + 120) * 1000,
                 ),
@@ -903,19 +1003,29 @@ Widget conversationLiveStatusDeferredToolsAndDurationsPreview() =>
 @Preview(name: '窄窗 360px · 160% 缩放与工作组审批', group: '实时状态栏', size: Size(360, 440))
 Widget conversationLiveStatusNarrowMachinePreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.awaitingApproval,
-      identity: 'preview-narrow-approval',
-      summary: 'exec: cargo flutter test --no-pub test/ui',
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(items: [], startedAtMs: 100_000),
+      attentions: [
+        LiveAttention(
+          id: 'preview-narrow-approval',
+          kind: 'approval',
+          summary: 'exec: cargo flutter test --no-pub test/ui',
+        ),
+      ],
+      suppressedByInteraction: false,
     ),
-    liveOpenWork: _previewOpenWork('preview-narrow-work', memberCount: 2),
-    storage: const ThreadStorageStateView(
-      fault: ThreadHistoryFault.writeFailed,
-      faultGeneration: 1,
-      execution: ThreadStorageExecution.paused,
-      resumeRequired: true,
-      canResume: true,
-    ),
+    presentationAttentions: [
+      _storageAttention(
+        const ThreadStorageStateView(
+          fault: ThreadHistoryFault.writeFailed,
+          faultGeneration: 1,
+          execution: ThreadStorageExecution.paused,
+          resumeRequired: true,
+          canResume: true,
+        ),
+      ),
+    ],
     now: () => DateTime.fromMillisecondsSinceEpoch(
       100_000 + (3600 + 15 * 60 + 8) * 1000,
     ),
@@ -945,15 +1055,15 @@ Widget conversationLiveStatusWindowPreview() => liveStatusPreviewHost(
 @Preview(name: '思考成员 · 概要与正文组合', group: '实时状态栏', size: Size(760, 300))
 Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.thinking,
-      identity: 'preview-reasoning-variants',
-      thinkingSummary: '核对运行期选择器锁定规则',
-    ),
-    liveOpenWork: _previewOpenWork(
-      'preview-reasoning-variants-work',
-      summary: '核对运行期选择器锁定规则',
-      memberCount: 3,
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(
+        items: [],
+        reasoningPreview: '核对运行期选择器锁定规则',
+        startedAtMs: 100_000,
+      ),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
@@ -991,24 +1101,25 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
 @Preview(name: '工作组 · 长工具输出', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
   _liveMachineSurface(
-    activity: _threadActivity(
-      ThreadActivityKind.runningTool,
-      identity: 'preview-long-tool-activity',
-      tools: ThreadActivityTools(
-        count: 1,
-        active: const [
-          ThreadActivityToolEntry(
+    snapshot: LiveStatusSnapshot(
+      revision: 1,
+      phase: LiveStatusWorking(
+        items: [
+          LiveWorkItem(
+            id: 'long-tool-output',
             callId: 'long-tool-output',
-            name: 'exec',
+            kind: 'tool',
+            toolName: 'exec',
+            status: 'running',
             summary: 'cargo flutter analyze',
-            arguments: ThreadActivityArgumentsKind.commandLine,
-            state: ThreadActivityToolState.running,
-            startedAt: 100,
+            startedAtMs: (100) * 1000,
           ),
         ],
+        startedAtMs: 100_000,
       ),
+      attentions: [],
+      suppressedByInteraction: false,
     ),
-    liveOpenWork: _previewOpenWork('preview-long-tool-work'),
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
     liveWorkChildBuilder: (_) => TimelineToolItemView(
@@ -1086,11 +1197,15 @@ class _SealedToolWorkGroupPreviewState
           startedAtMillis: 1_735_689_600_000,
           finishedAtMillis: 1_735_689_725_000,
         ),
-        members: const DisplayBlockRef(
-          blockId: 'sealed-tool-preview-group',
-          cut: HistoryCut('preview-cut'),
-          anchorSeq: 2,
-          headSeq: 2,
+        feedGroup: const TimelineWorkGroup(
+          id: 'sealed-tool-preview-group',
+          firstSeq: 2,
+          lastSeq: 2,
+          memberCount: 1,
+          summary: '',
+          status: WorkGroupStatus.completed,
+          startedAtMs: 1_735_689_600_000,
+          finishedAtMs: 1_735_689_725_000,
         ),
         executionPresent: false,
         memberCount: 1,

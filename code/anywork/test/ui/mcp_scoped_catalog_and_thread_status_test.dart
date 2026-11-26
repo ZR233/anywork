@@ -296,7 +296,11 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        (graph..setConversationPageVisible(true)).client.directoryCommands
+        (graph
+              ..timeline.updateReadDemand(20)
+              ..setConversationPageVisible(true))
+            .client
+            .directoryCommands
             .selectThread('thread-main'),
         'select thread and attach original MCP owner',
       );
@@ -312,16 +316,12 @@ void main() {
       );
       transport.seedConversationState(
         'thread-main',
-        ThreadRuntimeUpdate(
-          runtime: graph.client.conversations
-              .existingSession('thread-main')!
-              .state
-              .runtime!
-              .copyWith(
-                activeSkills: const ['skill-a'],
-                activeMcpServers: const ['stale-active-id'],
-                activeLspServers: const [],
-              ),
+        (current) => current.copyWith(
+          runtime: current.runtime.copyWith(
+            activeSkills: const ['skill-a'],
+            activeMcpServers: const ['stale-active-id'],
+            activeLspServers: const [],
+          ),
           todo: null,
           modelRoute: null,
         ),
@@ -430,8 +430,20 @@ void main() {
         find.byKey(StudioDriverKeys.statusLspServer('rust')),
         findsOneWidget,
       );
-      expect(find.text('索引中 12%'), findsOneWidget);
-      expect(find.text('就绪'), findsNWidgets(2));
+      expect(
+        find.descendant(
+          of: find.byKey(StudioDriverKeys.statusLspServer('dart')),
+          matching: find.text('索引中 12%'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(StudioDriverKeys.statusLspServer('rust')),
+          matching: find.text('就绪'),
+        ),
+        findsOneWidget,
+      );
       expect(find.text('/secret/dart.toml'), findsNothing);
 
       transport.emitThreadLsp(

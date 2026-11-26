@@ -49,10 +49,7 @@ use pl_studio_runtime::{
         version = "0.1.0",
         description = "Loopback adapter over the canonical StudioRuntime"
     ),
-    components(schemas(
-        StudioError,
-        pl_studio_runtime::ChatScope
-    ))
+    components(schemas(StudioError, pl_studio_runtime::ChatScope))
 )]
 struct StudioApi;
 
@@ -369,6 +366,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(timeline::feed_older))
         .routes(routes!(timeline::feed_work_group))
         .routes(routes!(timeline::feed_body))
+        .routes(routes!(timeline::feed_detail))
         .routes(routes!(timeline::feed_reset))
         .routes(routes!(timeline::feed_meta))
         .routes(routes!(timeline::close_feed))

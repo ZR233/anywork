@@ -105,11 +105,8 @@ impl StudioRuntime {
                 .observation_slot(&thread.id)
                 .last_turn()
                 .map(|turn| (*turn).clone());
-            let activity = crate::studio::thread_projection::project_activity(
-                &thread.id,
-                &snapshot,
-                None,
-            );
+            let activity =
+                crate::studio::thread_projection::project_activity(&thread.id, &snapshot, None);
             let storage_state = persistence
                 .as_ref()
                 .map(|detail| crate::studio::thread_projection::storage_state(&snapshot, detail));

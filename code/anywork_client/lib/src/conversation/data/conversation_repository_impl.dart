@@ -5,10 +5,8 @@ import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
 import '../../../conversation_ports.dart';
-import '../../../models.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
-import '../domain/conversation_errors.dart';
 import 'conversation_session_impl.dart';
 import 'input_turn_facts.dart';
 
@@ -21,7 +19,7 @@ final class ConversationRepositoryImpl
     required ClientScope scope,
   }) : _scope = scope;
   final ClientScope _scope;
-  final ConversationTransport transport;
+  final ConversationFeedPort transport;
   final ThreadDirectoryStore directory;
   final void Function(String key, int revision) onRevision;
   final Map<String, ConversationSessionImpl> _sessions = {};
@@ -49,56 +47,13 @@ final class ConversationRepositoryImpl
   );
 
   @override
-  Future<HistoryReader> openHistoryReader(String threadId) async {
-    if (_closed) throw StateError('Conversation repository is closed');
-    final reader = await transport.openHistoryReader(
-      threadId,
-      historyProtocolVersion: historyProtocolVersion,
-    );
-    if (reader.threadId != threadId ||
-        reader.metadata.readerId.isEmpty ||
-        reader.metadata.historyProtocolVersion != historyProtocolVersion) {
-      try {
-        reader.requestClose();
-        await reader.close();
-      } finally {
-        throw ProtocolVersionMismatch(
-          received: reader.metadata.historyProtocolVersion,
-          supported: historyProtocolVersion,
-          field: 'historyProtocolVersion',
-        );
-      }
-    }
-    return reader;
-  }
-
-  @override
-  Future<CurrentReader> openCurrentReader(
+  Future<ConversationFeedHandle> openConversationFeed(
     String threadId, {
-    required ReadDemand demand,
-  }) async {
+    int initialLimit = 50,
+  }) {
     if (_closed) throw StateError('Conversation repository is closed');
-    final reader = await transport.openCurrentReader(
-      threadId,
-      currentProtocolVersion: currentProtocolVersion,
-      demand: demand,
-    );
-    if (reader.threadId != threadId ||
-        reader.metadata.readerId.isEmpty ||
-        reader.metadata.currentOwnerId.isEmpty ||
-        reader.metadata.currentProtocolVersion != currentProtocolVersion) {
-      try {
-        reader.requestClose();
-        await reader.close();
-      } finally {
-        throw ProtocolVersionMismatch(
-          received: reader.metadata.currentProtocolVersion,
-          supported: currentProtocolVersion,
-          field: 'currentProtocolVersion',
-        );
-      }
-    }
-    return reader;
+    session(threadId);
+    return _sessions[threadId]!.openFeed(initialLimit: initialLimit);
   }
 
   @override
@@ -122,8 +77,7 @@ final class ConversationRepositoryImpl
     if (_closed) throw StateError('Conversation repository is closed');
     final owner = ConversationSessionImpl(
       threadId,
-      currentTransport: transport,
-      stateDemand: const ReadDemand(maxItems: 128, maxBytes: 256 * 1024),
+      transport: transport,
       directory: directory,
       inputFacts: _inputFacts,
       scope: _scope.child('conversation-session'),

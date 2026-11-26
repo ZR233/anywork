@@ -60,13 +60,13 @@ flowchart TD
 
 ## 26.2 `timeline_role` 作为唯一分组隔断定义（Schema 27 零迁移）
 
-历史写入保持无状态追加，**`history_events.timeline_role` 字段是主时间线直接展示与工作组封口隔断的唯一权威定义**，实时封组与历史冷读分页共享同一规则，零表结构变更、零数据迁移：
+主时间线以历史事件的 `timeline_role` 分类决定展示与封组。实时路径直接使用进入内存日志的事件自带的分类和序号，禁止读取持久化信息或等待 SQLite 提交。冷启动和按需历史查询使用同一分类在历史记录上重建分组。Schema 27 沿用现有字段：
 
 - **`timeline_role = 2`（`Boundary`，直接展示与天然隔断）**：用户输入（`input_accepted`）、助手可见完成正文（`text_completed`）、上下文压缩完成（`compaction_completed`）、计划公开决议（`plan_resolved`）、模型或 SSH 连接状态迁移（`connection_disconnected` / `connection_reconnected`）、轮次异常/中断回执（`turn_receipt_recorded`）以及具备独立展示资格的终态工具（问答回执、媒体展示等）。
 - **`timeline_role = 1`（`Work`，折叠工作项）**：工具生命周期（`tool_called` / `tool_waiting_approval` / `tool_backgrounded` / `tool_cancel_requested` / `tool_completed`）、推理终态（`reasoning_completed`）、子智能体终态（`agent_completed`）与等待/技能/文件过程事件。不直接推送给主时间线。
-- **`timeline_role = 0`（`Hidden`，内部审计与控制）**：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded` 等。不进入主时间线，其中 `turn_ended` 负责在纯工具轮次结束时封尾未封口工作组。
+- **`timeline_role = 0`（`Hidden`，内部审计与控制）**：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded` 等。不进入主时间线，也不触发封组。
 
-工作组稳定身份统一使用组内**第一条工作事件的单调序号 `work:<first_work_seq>`**，边界事件使用 `msg:<seq>`。实时封组入列时是 `work:11`，冷重启后从 `history.sqlite` 读取相邻两条 `Boundary` 之间的首条 `Work` 事件序号依然是 `11`，保证实时与冷历史身份完全同构。
+工作组稳定身份使用组内**第一条工作事件的单调序号 `work:<first_work_seq>`**，边界事件使用 `msg:<seq>`。实时和历史都以接下来的 `Boundary` 封组。最新边界之后尚未封口的工作保留为待封组事件，重开或重启时继续等待下一条边界。分页接缝按同一边界归属分组。
 
 ## 26.3 双状态机与天然封组时序
 
@@ -80,7 +80,7 @@ stateDiagram-v2
     Idle --> Compacting : CompactionStarted (手动压缩)
 
     Working --> Working : ReasoningDelta / ToolCalled / ToolProgress / ToolWaitingApproval / ToolBackgrounded / ToolCompleted (容器内按 call_id 原地更新)
-    Working --> StreamingText : TextStreamStarted / TextStreamDelta (交出工作组容器, 切文本流)
+    Working --> StreamingText : TextStreamStarted / TextStreamDelta (切文本流)
     Working --> Compacting : CompactionStarted
     Working --> Reconnecting : ModelRecoveryState (暂存容器, 切重连倒计时)
     Working --> Idle : TurnEnded / RunIdle
@@ -110,10 +110,7 @@ stateDiagram-v2
     Clean --> Accumulating : Work 事件 (timeline_role = 1) -> 记录 first_seq 并放入 pending_work (不推送)
 
     Accumulating --> Accumulating : 后续 Work 事件 -> 继续折叠进 pending_work (不推送)
-    Accumulating --> Clean : TextStreamStarted -> 封组 Append WorkGroup("work:<first_seq>"), 清空 pending_work
-    Accumulating --> Clean : CompactionStarted -> 封组 Append WorkGroup("work:<first_seq>"), 清空 pending_work
     Accumulating --> Clean : 任意 Boundary 事件 -> 先封组 Append [WorkGroup, Boundary], 清空 pending_work
-    Accumulating --> Clean : TurnEnded -> 先封组 Append [WorkGroup (+ 可选 TurnOutcome)], 清空 pending_work
 ```
 
 ### 26.3.3 未入库与已入库零真空及封组时序图
@@ -140,15 +137,13 @@ sequenceDiagram
 
     Loop->>Bus: Ephemeral: TextStreamStarted
     Bus->>Live: 广播 -> 立即切入 StreamingText
-    Bus->>TL: 广播 -> 天然封组! 发 Append WorkGroup("work:11"), 推进 sealed_through_seq=14
-    TL-->>UI: Flyer 插入 1 行 WorkGroup("work:11")
     Live-->>UI: LiveStatusBar 切换流式正文 (Timeline 保持静止)
 
     Loop->>Bus: Durable: AssistantTextCompleted(seq=15) + TurnEnded(seq=16)
     Bus->>Log: 纯内存分配 seq=15..16 -> 后台批量落盘 SQLite 并回收已提交前缀
-    Bus->>TL: 广播 -> Append AssistantText("msg:15")
+    Bus->>TL: 从内存事件立即识别 seq=15 为 Boundary
     Bus->>Live: 广播 -> 切回 Idle
-    TL-->>UI: Flyer 插入 1 行 AssistantText("msg:15")
+    TL-->>UI: Append WorkGroup("work:11") 和 AssistantText("msg:15")
     Live-->>UI: LiveStatusBar 收起
 ```
 
@@ -175,4 +170,5 @@ Flutter 侧 `TimelineSessionOwner` 与 `TimelineMessageController` 仅维持一�
 - 外层壳体（`StudioShell`、`AgentWorkspacePane`、`SessionHeader`）只通过窄字段 `.select(...)` 订阅低频 `SessionMeta`，严禁把流式 token、`LiveStatus` 或高频用量变化传经包含 `TimelineView` 的父子树；
 - `TimelineView` 缓存稳定的 `Builders` 实例，**禁止在 item 外层包装随消息实例变化的 `ObjectKey(message)`**，所有呈现值保持不可变值相等；
 - 直接使用 `ChatAnimatedList(reversed: true, ...)`（ACP 会话继续沿用其既有 Flyer Chat 反向列表与内容投影）；用户上滑进入历史浏览模式时暂停应用新到的 `Append`，将其暂存在有界缓冲队列（上限 64 条）并点亮“回到最新”提示；回到底缘时若未溢出直接增量 `insertAllMessages` 补齐，溢出才调用 `reset_to_latest`；
+- 时间线滚动条沿用 Flyer Chat 列表从 Flutter 滚动配置获得的桌面滚动条。用户滚动时显示滑块，停止后自动淡出，使用同一个列表滚动控制器。
 - 保留全部内置工具适配器（`timeline/tools/items/` 独立实现 + `tool_item_registry.dart` 集中索引，未知工具回退 `generic@1`，`wait` 与 `sleep` 共用适配器管线）、单条未知/损坏 `payload_json` 原地降级回退、待确认 Plan 摘要卡、交互表单/回执、发送临时回显结算（按 `input_id` 消费 `InputPresented`）、子智能体只读底栏、以及底部 `LiveStatusBar`（直连 `LiveStatusSnapshot`，包括模型重试断连倒计时，零触碰主时间线）。

@@ -13,7 +13,9 @@ impl ThreadHandle {
     }
 
     /// Subscribes to the unified CoreEvent broadcast stream (durable commits + live events).
-    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<super::super::events::CoreEvent> {
+    pub fn subscribe_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<super::super::events::CoreEvent> {
         self.core_events.subscribe()
     }
 
@@ -760,9 +762,9 @@ impl ThreadHandle {
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
         self.user_commands
-            .send(UserCommand::Mailbox(
-                mailbox::MailboxCommand::SubmitInput(submission, reply),
-            ))
+            .send(UserCommand::Mailbox(mailbox::MailboxCommand::SubmitInput(
+                submission, reply,
+            )))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -903,10 +905,9 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         let result = match self
             .events
-            .send(LoopEvent::Mailbox(super::mailbox::MailboxCommand::Register(
-                batch.clone(),
-                reply,
-            )))
+            .send(LoopEvent::Mailbox(
+                super::mailbox::MailboxCommand::Register(batch.clone(), reply),
+            ))
             .await
         {
             Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
