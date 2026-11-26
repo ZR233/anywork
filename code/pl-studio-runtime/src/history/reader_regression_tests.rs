@@ -215,7 +215,7 @@ async fn strict_admission_revalidates_ids_added_while_reading_sqlite() -> Result
         )
         .await?;
         let old = admission_event("old");
-        store.accept_batch(&[old.clone()]).await?;
+        store.accept_batch(std::slice::from_ref(&old)).await?;
         store.flush().await?;
         let paused = store.pause_flush().await;
         let gate = store.pause_strict_validation();
@@ -303,9 +303,10 @@ async fn stale_usage_preparation_cannot_overwrite_a_newer_accounting_head() -> R
         .expect_err("frozen usage must keep its original basis");
     assert!(error.is_usage_preparation_changed());
     assert!(!store.event_exists_in_memory("stale-usage"));
-    let known = store.inner.known.lock().unwrap();
-    assert_eq!(known.latest_accounting.as_ref().unwrap().total_tokens, 30);
-    drop(known);
+    {
+        let known = store.inner.known.lock().unwrap();
+        assert_eq!(known.latest_accounting.as_ref().unwrap().total_tokens, 30);
+    }
     drop(guard);
     drop(paused);
     store.close().await?;
@@ -353,7 +354,7 @@ async fn strict_admission_revalidates_anchor_and_body_collisions_after_sqlite() 
         )
         .await?;
         let old = admission_event("old");
-        store.accept_batch(&[old.clone()]).await?;
+        store.accept_batch(std::slice::from_ref(&old)).await?;
         store.flush().await?;
         let mut candidate = admission_event("candidate");
         if anchor_collision {
