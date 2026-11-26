@@ -519,6 +519,7 @@ pub struct TransitionInput {
     pub target_state_id: String,
     /// Bypass workflow edge and terminal-state rules to jump to any valid state ID in the graph (default: false). Use only when intentionally overriding normal flow.
     #[serde(default)]
+    #[schemars(transform = omit_default_annotation)]
     pub force: bool,
     /// Exactly three keys: reason explains why the selected guard holds; summary describes the phase outcome; evidence is an array of supporting records.
     pub completion: CompletionInput,
@@ -544,7 +545,14 @@ pub struct CompletionInput {
     pub summary: String,
     /// Concrete checks, receipts, or artifacts supporting the declaration.
     #[serde(default)]
+    #[schemars(transform = omit_default_annotation)]
     pub evidence: Vec<String>,
+}
+
+// ACP consumers can omit the entire tool when its schema includes these annotations.
+// Serde still supplies the documented defaults when arguments are absent.
+fn omit_default_annotation(schema: &mut schemars::Schema) {
+    schema.remove("default");
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]

@@ -71,8 +71,9 @@ pub(crate) async fn prepare_open(
                 )
             };
             instructions.push_str(
-                "\nCall tools from the anywork MCP catalog directly by their top-level `anywork_*` \
-                 names. Use `anywork_list_agents`, `anywork_send_message`, `anywork_wait_agent`, \
+                "\nCall tools from the anywork MCP catalog directly by their `anywork_*` \
+                 names, or by the equivalent qualified names displayed by your ACP client. \
+                 Use `anywork_list_agents`, `anywork_send_message`, `anywork_wait_agent`, \
                  `anywork_interrupt_agent`, and `anywork_close_agent` for the member operations \
                  and targets the host allows. Retain the real child and report identities and \
                  use the cursors from `anywork_wait_agent`. A receipt accepting a child or a \
@@ -1014,7 +1015,7 @@ fn attach_workflow_and_plan_tools(
             AcpPlanToolKind::Transition,
             ToolDefinition::json(
                 PlanTransitionTool::<Owner>::NAME,
-                PlanTransitionTool::<Owner>::DESCRIPTION,
+                "Submit a complete Markdown Plan with targetState=awaitingConfirmation and force=false. The host shows the confirmation card and returns the user's decision. Use targetState=drafting to start a revision or withdraw a stale submission. Only the user can approve or request revisions.",
                 input_schema_for::<PlanTransitionArgs>(),
             )?,
         ),
