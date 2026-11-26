@@ -30,12 +30,15 @@ use crate::studio::storage::thread_writer::batch::{
 };
 use crate::studio::thread_projection::{
     PreparedAccounting,
-    live::prepared::{prepared_turns, retained_resources, review_delivery_facts},
+    live::{
+        completion_ready,
+        prepared::{prepared_turns, retained_resources, review_delivery_facts},
+    },
     order, project_effect_items,
 };
 use crate::{
-    ChatAtom, ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, ExecutionItem, ExecutionShape,
-    Thread, ThreadToolState,
+    ChatActiveStatus, ChatAtom, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
+    ChatTerminalOutcome, ExecutionItem, ExecutionShape, Thread, ThreadToolState,
 };
 
 use super::live_status_layer::{LiveStatusDataLayer, STREAMING_TEXT_COALESCE_INTERVAL};
@@ -817,7 +820,7 @@ fn translate_commit(
 
     // 6. Active non-terminal tool stages + terminal execution items.
     for item in &projected.items {
-        if !item.is_terminal() {
+        if !completion_ready(item) {
             if let ExecutionShape::Tool(tool) = item.state() {
                 let call_id = tool.invocation().tool_call_id();
                 let waiting = matches!(tool.state(), ThreadToolState::AwaitingApproval(_))
@@ -846,7 +849,7 @@ fn translate_commit(
                         "cancel_requested" => HistoryEventKind::ToolCancelRequested,
                         _ => HistoryEventKind::ToolCalled,
                     };
-                    let atom_val = atom(&ExecutionItem::new(
+                    let mut atom_val = atom(&ExecutionItem::new(
                         item.id.clone(),
                         crate::studio::thread_projection::ItemStamp {
                             thread_id: std::borrow::Cow::Borrowed(&item.thread_id),
@@ -858,6 +861,13 @@ fn translate_commit(
                         },
                         static_state(item.state()),
                     ));
+                    if waiting {
+                        atom_val.lifecycle = ChatAtomLifecycle::Active {
+                            started: None,
+                            status: ChatActiveStatus::Waiting,
+                        };
+                        atom_val.finished_at = None;
+                    }
                     let role = if crate::studio::thread_projection::work(&atom_val) {
                         HistoryTimelineRole::Work
                     } else {

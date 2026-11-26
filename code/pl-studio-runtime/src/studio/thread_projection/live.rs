@@ -26,7 +26,7 @@ pub(super) fn history_millis(at: i64) -> Result<i64, ProjectionError> {
         .map_err(|error| ProjectionError::History(error.to_string()))
 }
 
-fn completion_ready(item: &ExecutionItem) -> bool {
+pub(crate) fn completion_ready(item: &ExecutionItem) -> bool {
     item.is_terminal()
         && !matches!(
             item.state(),

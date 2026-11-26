@@ -43,7 +43,10 @@ async fn closing_a_thread_waiting_for_input_drains_history_and_saves_current() -
             .await?;
         tokio::time::timeout(support::integration_test_deadline()?, async {
             loop {
-                if feed.session_meta_snapshot().status == ThreadStatus::WaitingInteraction {
+                let meta = feed.session_meta_snapshot();
+                if meta.status == ThreadStatus::WaitingInteraction
+                    && meta.last_turn.is_some_and(|turn| turn.state.is_terminal())
+                {
                     return Ok::<_, anyhow::Error>(());
                 }
                 if feed.next_event().await.is_none() {
