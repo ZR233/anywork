@@ -249,7 +249,6 @@ Map<String, Object?> _driverFailure(StudioTurnView turn) {
         row: row,
         rootRow: row,
         syncState: AgentWorkspaceSyncState.ready,
-        todo: null,
         runtime: chatWorkspace(turn.threadId).runtime,
         turn: null,
         lastTurn: turn,
