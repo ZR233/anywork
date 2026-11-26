@@ -208,6 +208,34 @@ pub struct AcpWorkflowStateSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub plan: Option<crate::plan_tool::AgentSessionPlanRuntimeSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_interaction: Option<AcpPendingInteraction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AcpPendingInteraction {
+    Question {
+        id: String,
+        #[schema(value_type = Vec<Object>)]
+        questions: Vec<crate::UserQuestion>,
+    },
+    PlanConfirmation {
+        id: String,
+    },
+}
+
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AcpHostInteractionAnswer {
+    Question {
+        answers: std::collections::HashMap<String, crate::protocol::UserInputAnswer>,
+    },
+    ApprovePlan,
+    RevisePlan {
+        feedback: String,
+    },
+    Cancel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

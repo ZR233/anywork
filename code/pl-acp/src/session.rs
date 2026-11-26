@@ -18,6 +18,7 @@ use agent_client_protocol::{ByteStreams, Client};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 #[cfg(test)]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use tokio_util::sync::{CancellationToken, DropGuard};
 
 use crate::auth::CleanupBudget;
 #[cfg(test)]
@@ -338,6 +339,17 @@ impl Session {
         Ok(lock(&self.state).snapshot())
     }
 
+    /// Observes the current prompt's lifetime. Cancels on interrupt, replacement,
+    /// prompt completion or driver exit. The returned token cannot cancel the prompt.
+    pub fn active_prompt_lifetime(&self) -> Result<CancellationToken, Error> {
+        let state = lock(&self.state);
+        state.ready()?;
+        let active = state.active.as_ref().filter(|run| !run.cancelling);
+        active
+            .map(|run| run.lifetime.child_token())
+            .ok_or(Error::Stale)
+    }
+
     /// 先注册再读取 snapshot.last_completed，随后等待 changed，避免丢失完成通知。
     /// 仅发布真实 prompt 终态的单调序号；驱动退出时关闭，不消费 Observer。
     pub fn completion_changes(&self) -> watch::Receiver<u64> {
@@ -373,7 +385,11 @@ struct DriverLifetime(Shared);
 
 impl Drop for DriverLifetime {
     fn drop(&mut self) {
-        lock(&self.0).finish_driver();
+        let mut state = lock(&self.0);
+        if let Some(active) = state.active.as_ref() {
+            active.lifetime.cancel();
+        }
+        state.finish_driver();
     }
 }
 
@@ -465,6 +481,8 @@ pub(crate) fn lock(state: &Shared) -> MutexGuard<'_, State> {
 
 struct Active {
     id: RunId,
+    lifetime: CancellationToken,
+    _end_lifetime: DropGuard,
     summary: String,
     truncated: bool,
     cancelling: bool,
@@ -1471,8 +1489,11 @@ fn start_prompt(
             }
         })
     };
+    let lifetime = CancellationToken::new();
     owner.active = Some(Active {
         id,
+        _end_lifetime: lifetime.clone().drop_guard(),
+        lifetime,
         summary: String::new(),
         truncated: false,
         cancelling: false,
@@ -1569,6 +1590,7 @@ fn cancel_owned_run(
         .ok_or(Error::Stale)?;
     if !active.cancelling {
         active.cancelling = true;
+        active.lifetime.cancel();
         owner.cancel_permissions();
         connection.send_notification(CancelNotification::new(session_id))?;
     }
@@ -4886,11 +4908,14 @@ mod tests {
 
     #[test]
     fn active_tool_name_cache_bounds_entries_and_bytes() {
+        let lifetime = CancellationToken::new();
         let mut active = Active {
             id: RunId {
                 instance: 1,
                 sequence: 1,
             },
+            _end_lifetime: lifetime.clone().drop_guard(),
+            lifetime,
             summary: String::new(),
             truncated: false,
             cancelling: false,

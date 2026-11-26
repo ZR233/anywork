@@ -20,6 +20,14 @@ class InteractionPayloadSnapshot {
     required this.questions,
   });
 
+  const InteractionPayloadSnapshot.userInput({
+    required this.questions,
+    this.rawBody = '',
+  }) : summary = rawBody,
+       toolName = '',
+       formattedArguments = '',
+       workingDirectory = '';
+
   final String rawBody;
   final String summary;
   final String toolName;
@@ -30,12 +38,8 @@ class InteractionPayloadSnapshot {
   static InteractionPayloadSnapshot from(PendingInteraction interaction) {
     return switch (interaction.payload) {
       UserInputInteractionPayload(:final questions) =>
-        InteractionPayloadSnapshot(
+        InteractionPayloadSnapshot.userInput(
           rawBody: interaction.body,
-          summary: interaction.body,
-          toolName: '',
-          formattedArguments: '',
-          workingDirectory: '',
           questions: questions,
         ),
       ToolApprovalInteractionPayload(

@@ -152,6 +152,13 @@ final class AcpSessionClient {
     return _port.answerPermission(request);
   }
 
+  Future<void> answerHostInteraction(
+    AcpHostInteractionAnswerRequestView request,
+  ) {
+    _requireOpen();
+    return _port.answerHostInteraction(request);
+  }
+
   Future<AcpListSessionsResponseView> list(AcpListRequestView request) {
     _requireOpen();
     return _port.list(request);

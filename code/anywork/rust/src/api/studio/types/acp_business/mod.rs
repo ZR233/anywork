@@ -5,8 +5,8 @@ pub use content::*;
 pub use notification::*;
 
 use super::{
-    BridgeAcpAuthMethod, BridgeError, BridgePlanRuntimeSnapshot, BridgeWorkflowRun,
-    BridgeWorkflowRuntimeGraphSnapshot,
+    BridgeAcpAuthMethod, BridgeError, BridgePlanRuntimeSnapshot, BridgeUserQuestion,
+    BridgeWorkflowRun, BridgeWorkflowRuntimeGraphSnapshot,
 };
 use std::collections::HashMap;
 
@@ -187,6 +187,34 @@ pub struct BridgeAcpWorkflowStateSnapshot {
     pub run: Option<BridgeWorkflowRun>,
     pub graph: Option<BridgeWorkflowRuntimeGraphSnapshot>,
     pub plan: Option<BridgePlanRuntimeSnapshot>,
+    pub pending_interaction: Option<BridgeAcpPendingInteraction>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeAcpPendingInteraction {
+    Question {
+        id: String,
+        questions: Vec<BridgeUserQuestion>,
+    },
+    PlanConfirmation {
+        id: String,
+    },
+}
+#[derive(Debug, Clone)]
+pub enum BridgeAcpHostInteractionAnswer {
+    Question {
+        answers: HashMap<String, Vec<String>>,
+    },
+    ApprovePlan,
+    RevisePlan {
+        feedback: String,
+    },
+    Cancel,
+}
+#[derive(Debug, Clone)]
+pub struct BridgeAcpHostInteractionAnswerRequest {
+    pub target: BridgeAcpSessionTarget,
+    pub interaction_id: String,
+    pub answer: BridgeAcpHostInteractionAnswer,
 }
 #[derive(Debug, Clone)]
 pub struct BridgeAcpPermissionAnswerRequest {

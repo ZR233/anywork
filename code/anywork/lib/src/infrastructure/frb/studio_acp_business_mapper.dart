@@ -7,6 +7,7 @@ import '../../rust/api/studio/types/acp.dart' as auth;
 import '../../rust/api/studio/types/acp_business.dart' as b;
 import '../../rust/api/studio/types/acp_business/content.dart' as c;
 import '../../rust/api/studio/types/acp_business/notification.dart' as n;
+import 'studio_interaction_converters.dart';
 import 'studio_workflow_converters.dart';
 
 // Only structural translation. No protocol parser, state, replay or Native DTOs.
@@ -538,7 +539,27 @@ AcpWorkflowStateView acpWorkflowStateFromFrb(
   run: v.run == null ? null : workflowRunFromFrb(v.run!),
   graph: v.graph == null ? null : workflowGraphFromFrb(v.graph!),
   plan: v.plan == null ? null : planRuntimeFromFrb(v.plan!),
+  pendingInteraction: switch (v.pendingInteraction) {
+    null => null,
+    b.BridgeAcpPendingInteraction_Question(:final id, :final questions) =>
+      AcpPendingQuestionView(id, questions.map(userQuestionFromFrb)),
+    b.BridgeAcpPendingInteraction_PlanConfirmation(:final id) =>
+      AcpPendingPlanConfirmationView(id),
+  },
 );
+
+b.BridgeAcpHostInteractionAnswer acpHostInteractionAnswerToFrb(
+  AcpHostInteractionAnswerView answer,
+) => switch (answer) {
+  AcpHostQuestionAnswerView(:final answers) =>
+    b.BridgeAcpHostInteractionAnswer.question(answers: answers),
+  AcpHostApprovePlanView() =>
+    const b.BridgeAcpHostInteractionAnswer.approvePlan(),
+  AcpHostRevisePlanView(:final feedback) =>
+    b.BridgeAcpHostInteractionAnswer.revisePlan(feedback: feedback),
+  AcpHostCancelInteractionView() =>
+    const b.BridgeAcpHostInteractionAnswer.cancel(),
+};
 
 AcpBusinessSnapshotView acpSnapshotFromFrb(
   b.BridgeAcpBusinessSnapshot v,

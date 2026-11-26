@@ -119,6 +119,40 @@ pub(crate) fn workflow_state(v: p::AcpWorkflowStateSnapshot) -> BridgeAcpWorkflo
         plan: v
             .plan
             .map(crate::api::studio::convert::thread_stream::plan_runtime_snapshot),
+        pending_interaction: v.pending_interaction.map(|interaction| match interaction {
+            p::AcpPendingInteraction::Question { id, questions } => {
+                BridgeAcpPendingInteraction::Question {
+                    id,
+                    questions: questions
+                        .into_iter()
+                        .map(crate::api::studio::convert::thread_stream::bridge_user_question)
+                        .collect(),
+                }
+            }
+            p::AcpPendingInteraction::PlanConfirmation { id } => {
+                BridgeAcpPendingInteraction::PlanConfirmation { id }
+            }
+        }),
+    }
+}
+
+pub(crate) fn protocol_host_interaction_answer(
+    answer: BridgeAcpHostInteractionAnswer,
+) -> p::AcpHostInteractionAnswer {
+    match answer {
+        BridgeAcpHostInteractionAnswer::Question { answers } => {
+            p::AcpHostInteractionAnswer::Question {
+                answers: answers
+                    .into_iter()
+                    .map(|(id, answers)| (id, p::UserInputAnswer { answers }))
+                    .collect(),
+            }
+        }
+        BridgeAcpHostInteractionAnswer::ApprovePlan => p::AcpHostInteractionAnswer::ApprovePlan,
+        BridgeAcpHostInteractionAnswer::RevisePlan { feedback } => {
+            p::AcpHostInteractionAnswer::RevisePlan { feedback }
+        }
+        BridgeAcpHostInteractionAnswer::Cancel => p::AcpHostInteractionAnswer::Cancel,
     }
 }
 pub(crate) fn failure(v: p::AcpBusinessFailure) -> R<BridgeAcpBusinessFailure> {

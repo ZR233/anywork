@@ -1370,6 +1370,384 @@ as BridgeAcpConfigValueId,
 }
 
 /// @nodoc
+mixin _$BridgeAcpHostInteractionAnswer {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpHostInteractionAnswer);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpHostInteractionAnswer()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAcpHostInteractionAnswerCopyWith<$Res>  {
+$BridgeAcpHostInteractionAnswerCopyWith(BridgeAcpHostInteractionAnswer _, $Res Function(BridgeAcpHostInteractionAnswer) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAcpHostInteractionAnswer].
+extension BridgeAcpHostInteractionAnswerPatterns on BridgeAcpHostInteractionAnswer {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpHostInteractionAnswer_Question value)?  question,TResult Function( BridgeAcpHostInteractionAnswer_ApprovePlan value)?  approvePlan,TResult Function( BridgeAcpHostInteractionAnswer_RevisePlan value)?  revisePlan,TResult Function( BridgeAcpHostInteractionAnswer_Cancel value)?  cancel,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAcpHostInteractionAnswer_Question() when question != null:
+return question(_that);case BridgeAcpHostInteractionAnswer_ApprovePlan() when approvePlan != null:
+return approvePlan(_that);case BridgeAcpHostInteractionAnswer_RevisePlan() when revisePlan != null:
+return revisePlan(_that);case BridgeAcpHostInteractionAnswer_Cancel() when cancel != null:
+return cancel(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpHostInteractionAnswer_Question value)  question,required TResult Function( BridgeAcpHostInteractionAnswer_ApprovePlan value)  approvePlan,required TResult Function( BridgeAcpHostInteractionAnswer_RevisePlan value)  revisePlan,required TResult Function( BridgeAcpHostInteractionAnswer_Cancel value)  cancel,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpHostInteractionAnswer_Question():
+return question(_that);case BridgeAcpHostInteractionAnswer_ApprovePlan():
+return approvePlan(_that);case BridgeAcpHostInteractionAnswer_RevisePlan():
+return revisePlan(_that);case BridgeAcpHostInteractionAnswer_Cancel():
+return cancel(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpHostInteractionAnswer_Question value)?  question,TResult? Function( BridgeAcpHostInteractionAnswer_ApprovePlan value)?  approvePlan,TResult? Function( BridgeAcpHostInteractionAnswer_RevisePlan value)?  revisePlan,TResult? Function( BridgeAcpHostInteractionAnswer_Cancel value)?  cancel,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpHostInteractionAnswer_Question() when question != null:
+return question(_that);case BridgeAcpHostInteractionAnswer_ApprovePlan() when approvePlan != null:
+return approvePlan(_that);case BridgeAcpHostInteractionAnswer_RevisePlan() when revisePlan != null:
+return revisePlan(_that);case BridgeAcpHostInteractionAnswer_Cancel() when cancel != null:
+return cancel(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Map<String, List<String>> answers)?  question,TResult Function()?  approvePlan,TResult Function( String feedback)?  revisePlan,TResult Function()?  cancel,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAcpHostInteractionAnswer_Question() when question != null:
+return question(_that.answers);case BridgeAcpHostInteractionAnswer_ApprovePlan() when approvePlan != null:
+return approvePlan();case BridgeAcpHostInteractionAnswer_RevisePlan() when revisePlan != null:
+return revisePlan(_that.feedback);case BridgeAcpHostInteractionAnswer_Cancel() when cancel != null:
+return cancel();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Map<String, List<String>> answers)  question,required TResult Function()  approvePlan,required TResult Function( String feedback)  revisePlan,required TResult Function()  cancel,}) {final _that = this;
+switch (_that) {
+case BridgeAcpHostInteractionAnswer_Question():
+return question(_that.answers);case BridgeAcpHostInteractionAnswer_ApprovePlan():
+return approvePlan();case BridgeAcpHostInteractionAnswer_RevisePlan():
+return revisePlan(_that.feedback);case BridgeAcpHostInteractionAnswer_Cancel():
+return cancel();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Map<String, List<String>> answers)?  question,TResult? Function()?  approvePlan,TResult? Function( String feedback)?  revisePlan,TResult? Function()?  cancel,}) {final _that = this;
+switch (_that) {
+case BridgeAcpHostInteractionAnswer_Question() when question != null:
+return question(_that.answers);case BridgeAcpHostInteractionAnswer_ApprovePlan() when approvePlan != null:
+return approvePlan();case BridgeAcpHostInteractionAnswer_RevisePlan() when revisePlan != null:
+return revisePlan(_that.feedback);case BridgeAcpHostInteractionAnswer_Cancel() when cancel != null:
+return cancel();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpHostInteractionAnswer_Question extends BridgeAcpHostInteractionAnswer {
+  const BridgeAcpHostInteractionAnswer_Question({required  Map<String, List<String>> answers}): _answers = answers,super._();
+
+
+ final  Map<String, List<String>> _answers;
+ Map<String, List<String>> get answers {
+  if (_answers is EqualUnmodifiableMapView) return _answers;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableMapView(_answers);
+}
+
+
+/// Create a copy of BridgeAcpHostInteractionAnswer
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpHostInteractionAnswer_QuestionCopyWith<BridgeAcpHostInteractionAnswer_Question> get copyWith => _$BridgeAcpHostInteractionAnswer_QuestionCopyWithImpl<BridgeAcpHostInteractionAnswer_Question>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpHostInteractionAnswer_Question&&const DeepCollectionEquality().equals(other.answers, _answers));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_answers));
+}
+
+@override
+String toString() {
+    return 'BridgeAcpHostInteractionAnswer.question(answers: $answers)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpHostInteractionAnswer_QuestionCopyWith<$Res> implements $BridgeAcpHostInteractionAnswerCopyWith<$Res> {
+  factory $BridgeAcpHostInteractionAnswer_QuestionCopyWith(BridgeAcpHostInteractionAnswer_Question value, $Res Function(BridgeAcpHostInteractionAnswer_Question) _then) = _$BridgeAcpHostInteractionAnswer_QuestionCopyWithImpl;
+@useResult
+$Res call({
+ Map<String, List<String>> answers
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpHostInteractionAnswer_QuestionCopyWithImpl<$Res>
+    implements $BridgeAcpHostInteractionAnswer_QuestionCopyWith<$Res> {
+  _$BridgeAcpHostInteractionAnswer_QuestionCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpHostInteractionAnswer_Question _self;
+  final $Res Function(BridgeAcpHostInteractionAnswer_Question) _then;
+
+/// Create a copy of BridgeAcpHostInteractionAnswer
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? answers = null,}) {
+  return _then(BridgeAcpHostInteractionAnswer_Question(
+answers: null == answers ? _self._answers : answers // ignore: cast_nullable_to_non_nullable
+as Map<String, List<String>>,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpHostInteractionAnswer_ApprovePlan extends BridgeAcpHostInteractionAnswer {
+  const BridgeAcpHostInteractionAnswer_ApprovePlan(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpHostInteractionAnswer_ApprovePlan);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpHostInteractionAnswer.approvePlan()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpHostInteractionAnswer_RevisePlan extends BridgeAcpHostInteractionAnswer {
+  const BridgeAcpHostInteractionAnswer_RevisePlan({required this.feedback}): super._();
+
+
+ final  String feedback;
+
+/// Create a copy of BridgeAcpHostInteractionAnswer
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpHostInteractionAnswer_RevisePlanCopyWith<BridgeAcpHostInteractionAnswer_RevisePlan> get copyWith => _$BridgeAcpHostInteractionAnswer_RevisePlanCopyWithImpl<BridgeAcpHostInteractionAnswer_RevisePlan>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpHostInteractionAnswer_RevisePlan&&(identical(other.feedback, feedback) || other.feedback == feedback));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,feedback);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpHostInteractionAnswer.revisePlan(feedback: $feedback)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpHostInteractionAnswer_RevisePlanCopyWith<$Res> implements $BridgeAcpHostInteractionAnswerCopyWith<$Res> {
+  factory $BridgeAcpHostInteractionAnswer_RevisePlanCopyWith(BridgeAcpHostInteractionAnswer_RevisePlan value, $Res Function(BridgeAcpHostInteractionAnswer_RevisePlan) _then) = _$BridgeAcpHostInteractionAnswer_RevisePlanCopyWithImpl;
+@useResult
+$Res call({
+ String feedback
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpHostInteractionAnswer_RevisePlanCopyWithImpl<$Res>
+    implements $BridgeAcpHostInteractionAnswer_RevisePlanCopyWith<$Res> {
+  _$BridgeAcpHostInteractionAnswer_RevisePlanCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpHostInteractionAnswer_RevisePlan _self;
+  final $Res Function(BridgeAcpHostInteractionAnswer_RevisePlan) _then;
+
+/// Create a copy of BridgeAcpHostInteractionAnswer
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? feedback = null,}) {
+  return _then(BridgeAcpHostInteractionAnswer_RevisePlan(
+feedback: null == feedback ? _self.feedback : feedback // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpHostInteractionAnswer_Cancel extends BridgeAcpHostInteractionAnswer {
+  const BridgeAcpHostInteractionAnswer_Cancel(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpHostInteractionAnswer_Cancel);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpHostInteractionAnswer.cancel()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
 mixin _$BridgeAcpJsonNumber {
 
  Object get value;
@@ -2729,6 +3107,346 @@ class _$BridgeAcpOpenIntent_ResumeCopyWithImpl<$Res>
   return _then(BridgeAcpOpenIntent_Resume(
 sessionId: null == sessionId ? _self.sessionId : sessionId // ignore: cast_nullable_to_non_nullable
 as BridgeAcpRemoteSessionId,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$BridgeAcpPendingInteraction {
+
+ String get id;
+/// Create a copy of BridgeAcpPendingInteraction
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpPendingInteractionCopyWith<BridgeAcpPendingInteraction> get copyWith => _$BridgeAcpPendingInteractionCopyWithImpl<BridgeAcpPendingInteraction>(this as BridgeAcpPendingInteraction, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as BridgeAcpPendingInteraction;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpPendingInteraction&&(identical(other.id, _this.id) || other.id == _this.id));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as BridgeAcpPendingInteraction;
+  return Object.hash(runtimeType,_this.id);
+}
+
+@override
+String toString() {
+  final _this = this as BridgeAcpPendingInteraction;
+  return 'BridgeAcpPendingInteraction(id: ${_this.id})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpPendingInteractionCopyWith<$Res>  {
+  factory $BridgeAcpPendingInteractionCopyWith(BridgeAcpPendingInteraction value, $Res Function(BridgeAcpPendingInteraction) _then) = _$BridgeAcpPendingInteractionCopyWithImpl;
+@useResult
+$Res call({
+ String id
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpPendingInteractionCopyWithImpl<$Res>
+    implements $BridgeAcpPendingInteractionCopyWith<$Res> {
+  _$BridgeAcpPendingInteractionCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpPendingInteraction _self;
+  final $Res Function(BridgeAcpPendingInteraction) _then;
+
+/// Create a copy of BridgeAcpPendingInteraction
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,}) {
+  return _then(_self.copyWith(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAcpPendingInteraction].
+extension BridgeAcpPendingInteractionPatterns on BridgeAcpPendingInteraction {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpPendingInteraction_Question value)?  question,TResult Function( BridgeAcpPendingInteraction_PlanConfirmation value)?  planConfirmation,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAcpPendingInteraction_Question() when question != null:
+return question(_that);case BridgeAcpPendingInteraction_PlanConfirmation() when planConfirmation != null:
+return planConfirmation(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpPendingInteraction_Question value)  question,required TResult Function( BridgeAcpPendingInteraction_PlanConfirmation value)  planConfirmation,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpPendingInteraction_Question():
+return question(_that);case BridgeAcpPendingInteraction_PlanConfirmation():
+return planConfirmation(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpPendingInteraction_Question value)?  question,TResult? Function( BridgeAcpPendingInteraction_PlanConfirmation value)?  planConfirmation,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpPendingInteraction_Question() when question != null:
+return question(_that);case BridgeAcpPendingInteraction_PlanConfirmation() when planConfirmation != null:
+return planConfirmation(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String id,  List<BridgeUserQuestion> questions)?  question,TResult Function( String id)?  planConfirmation,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAcpPendingInteraction_Question() when question != null:
+return question(_that.id,_that.questions);case BridgeAcpPendingInteraction_PlanConfirmation() when planConfirmation != null:
+return planConfirmation(_that.id);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String id,  List<BridgeUserQuestion> questions)  question,required TResult Function( String id)  planConfirmation,}) {final _that = this;
+switch (_that) {
+case BridgeAcpPendingInteraction_Question():
+return question(_that.id,_that.questions);case BridgeAcpPendingInteraction_PlanConfirmation():
+return planConfirmation(_that.id);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String id,  List<BridgeUserQuestion> questions)?  question,TResult? Function( String id)?  planConfirmation,}) {final _that = this;
+switch (_that) {
+case BridgeAcpPendingInteraction_Question() when question != null:
+return question(_that.id,_that.questions);case BridgeAcpPendingInteraction_PlanConfirmation() when planConfirmation != null:
+return planConfirmation(_that.id);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpPendingInteraction_Question extends BridgeAcpPendingInteraction {
+  const BridgeAcpPendingInteraction_Question({required this.id, required  List<BridgeUserQuestion> questions}): _questions = questions,super._();
+
+
+@override final  String id;
+ final  List<BridgeUserQuestion> _questions;
+ List<BridgeUserQuestion> get questions {
+  if (_questions is EqualUnmodifiableListView) return _questions;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_questions);
+}
+
+
+/// Create a copy of BridgeAcpPendingInteraction
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpPendingInteraction_QuestionCopyWith<BridgeAcpPendingInteraction_Question> get copyWith => _$BridgeAcpPendingInteraction_QuestionCopyWithImpl<BridgeAcpPendingInteraction_Question>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpPendingInteraction_Question&&(identical(other.id, id) || other.id == id)&&const DeepCollectionEquality().equals(other.questions, _questions));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,id,const DeepCollectionEquality().hash(_questions));
+}
+
+@override
+String toString() {
+    return 'BridgeAcpPendingInteraction.question(id: $id, questions: $questions)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpPendingInteraction_QuestionCopyWith<$Res> implements $BridgeAcpPendingInteractionCopyWith<$Res> {
+  factory $BridgeAcpPendingInteraction_QuestionCopyWith(BridgeAcpPendingInteraction_Question value, $Res Function(BridgeAcpPendingInteraction_Question) _then) = _$BridgeAcpPendingInteraction_QuestionCopyWithImpl;
+@override @useResult
+$Res call({
+ String id, List<BridgeUserQuestion> questions
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpPendingInteraction_QuestionCopyWithImpl<$Res>
+    implements $BridgeAcpPendingInteraction_QuestionCopyWith<$Res> {
+  _$BridgeAcpPendingInteraction_QuestionCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpPendingInteraction_Question _self;
+  final $Res Function(BridgeAcpPendingInteraction_Question) _then;
+
+/// Create a copy of BridgeAcpPendingInteraction
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? questions = null,}) {
+  return _then(BridgeAcpPendingInteraction_Question(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as String,questions: null == questions ? _self._questions : questions // ignore: cast_nullable_to_non_nullable
+as List<BridgeUserQuestion>,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpPendingInteraction_PlanConfirmation extends BridgeAcpPendingInteraction {
+  const BridgeAcpPendingInteraction_PlanConfirmation({required this.id}): super._();
+
+
+@override final  String id;
+
+/// Create a copy of BridgeAcpPendingInteraction
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpPendingInteraction_PlanConfirmationCopyWith<BridgeAcpPendingInteraction_PlanConfirmation> get copyWith => _$BridgeAcpPendingInteraction_PlanConfirmationCopyWithImpl<BridgeAcpPendingInteraction_PlanConfirmation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpPendingInteraction_PlanConfirmation&&(identical(other.id, id) || other.id == id));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,id);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpPendingInteraction.planConfirmation(id: $id)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpPendingInteraction_PlanConfirmationCopyWith<$Res> implements $BridgeAcpPendingInteractionCopyWith<$Res> {
+  factory $BridgeAcpPendingInteraction_PlanConfirmationCopyWith(BridgeAcpPendingInteraction_PlanConfirmation value, $Res Function(BridgeAcpPendingInteraction_PlanConfirmation) _then) = _$BridgeAcpPendingInteraction_PlanConfirmationCopyWithImpl;
+@override @useResult
+$Res call({
+ String id
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpPendingInteraction_PlanConfirmationCopyWithImpl<$Res>
+    implements $BridgeAcpPendingInteraction_PlanConfirmationCopyWith<$Res> {
+  _$BridgeAcpPendingInteraction_PlanConfirmationCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpPendingInteraction_PlanConfirmation _self;
+  final $Res Function(BridgeAcpPendingInteraction_PlanConfirmation) _then;
+
+/// Create a copy of BridgeAcpPendingInteraction
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,}) {
+  return _then(BridgeAcpPendingInteraction_PlanConfirmation(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as String,
   ));
 }
 

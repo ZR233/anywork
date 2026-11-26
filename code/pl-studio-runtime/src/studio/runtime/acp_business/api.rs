@@ -456,6 +456,26 @@ impl StudioRuntime {
             .await
             .map_err(projection::failure)
     }
+
+    pub async fn answer_acp_host_interaction(
+        &self,
+        target: AcpSessionTarget,
+        interaction_id: String,
+        answer: AcpHostInteractionAnswer,
+    ) -> Result<(), AcpBusinessFailure> {
+        let resources = self.business_resources(&target)?;
+        resources
+            .ensure_input_ready()
+            .map_err(projection::failure)?;
+        let owner = resources
+            .workflow_plan
+            .get()
+            .ok_or_else(|| projection::failure(sdk::Error::NotReady))?;
+        owner
+            .answer_interaction(&interaction_id, answer)
+            .await
+            .map_err(|error| projection::preparation(&error.to_string()))
+    }
     pub async fn list_acp_sessions(
         &self,
         target: AcpSessionTarget,
@@ -626,8 +646,8 @@ async fn observe_resident(
             .and_then(|snapshot| projection::info_snapshot(&snapshot)),
         Err(_) => None,
     };
-    let workflow_state = acp.workflow_snapshot();
     let workflow_updates = acp.subscribe_workflow();
+    let workflow_state = acp.workflow_snapshot();
     AcpSessionOpen {
         target: target(session, agent, acp),
         observation: acp.take_observation().await.map(|observer| {

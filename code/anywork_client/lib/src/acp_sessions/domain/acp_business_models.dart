@@ -2,6 +2,7 @@ import 'dart:convert' show utf8;
 
 import '../../models/studio_enums.dart';
 import '../../models/delegation_models.dart';
+import '../../models/interaction_models.dart' show UserQuestionView;
 import '../../models/runtime_models.dart'
     show PlanRuntimeView, WorkflowRunView, WorkflowRuntimeGraphSnapshotView;
 
@@ -471,6 +472,7 @@ final class AcpWorkflowStateView {
     this.run,
     this.graph,
     this.plan,
+    this.pendingInteraction,
   });
 
   final String? modeId;
@@ -478,6 +480,24 @@ final class AcpWorkflowStateView {
   final WorkflowRunView? run;
   final WorkflowRuntimeGraphSnapshotView? graph;
   final PlanRuntimeView? plan;
+  final AcpPendingInteractionView? pendingInteraction;
+}
+
+sealed class AcpPendingInteractionView {
+  const AcpPendingInteractionView(this.id);
+
+  final String id;
+}
+
+final class AcpPendingQuestionView extends AcpPendingInteractionView {
+  AcpPendingQuestionView(super.id, Iterable<UserQuestionView> questions)
+    : questions = List.unmodifiable(questions);
+
+  final List<UserQuestionView> questions;
+}
+
+final class AcpPendingPlanConfirmationView extends AcpPendingInteractionView {
+  const AcpPendingPlanConfirmationView(super.id);
 }
 
 final class AcpCompletedEventView extends AcpSessionEventView {
@@ -651,6 +671,46 @@ final class AcpPermissionAnswerRequestView {
   final AcpSessionTargetView target;
   final AcpPermissionIdView permissionId;
   final AcpPermissionOptionId? optionId;
+}
+
+sealed class AcpHostInteractionAnswerView {
+  const AcpHostInteractionAnswerView();
+}
+
+final class AcpHostQuestionAnswerView extends AcpHostInteractionAnswerView {
+  AcpHostQuestionAnswerView(Map<String, List<String>> answers)
+    : answers = Map.unmodifiable({
+        for (final entry in answers.entries)
+          entry.key: List<String>.unmodifiable(entry.value),
+      });
+
+  final Map<String, List<String>> answers;
+}
+
+final class AcpHostApprovePlanView extends AcpHostInteractionAnswerView {
+  const AcpHostApprovePlanView();
+}
+
+final class AcpHostRevisePlanView extends AcpHostInteractionAnswerView {
+  const AcpHostRevisePlanView(this.feedback);
+
+  final String feedback;
+}
+
+final class AcpHostCancelInteractionView extends AcpHostInteractionAnswerView {
+  const AcpHostCancelInteractionView();
+}
+
+final class AcpHostInteractionAnswerRequestView {
+  const AcpHostInteractionAnswerRequestView({
+    required this.target,
+    required this.interactionId,
+    required this.answer,
+  });
+
+  final AcpSessionTargetView target;
+  final String interactionId;
+  final AcpHostInteractionAnswerView answer;
 }
 
 final class AcpListRequestView {

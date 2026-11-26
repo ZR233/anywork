@@ -131,7 +131,7 @@ pub(crate) fn child_interaction(
     })
 }
 
-fn question(value: UserQuestion) -> BridgeUserQuestion {
+pub(crate) fn question(value: UserQuestion) -> BridgeUserQuestion {
     BridgeUserQuestion {
         id: value.id,
         header: value.header,

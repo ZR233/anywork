@@ -405,6 +405,9 @@ impl AcpResources {
         );
         request.cleanup = self.cleanup.clone();
         let (session, observer, driver) = pl_acp::session::channel(request);
+        if let Some(owner) = self.workflow_plan.get() {
+            owner.bind_session(session.clone())?;
+        }
         self.session
             .set(session)
             .map_err(|_| anyhow::anyhow!("ACP preparation already initialized"))?;

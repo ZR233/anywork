@@ -41,11 +41,8 @@ impl AcpSessionObservation {
     pub(super) fn new(
         observer: Observer,
         completion: AcpSessionCompletion,
-        mut workflow_updates: Option<watch::Receiver<Option<AcpWorkflowStateSnapshot>>>,
+        workflow_updates: Option<watch::Receiver<Option<AcpWorkflowStateSnapshot>>>,
     ) -> Self {
-        if let Some(rx) = workflow_updates.as_mut() {
-            let _ = rx.borrow_and_update();
-        }
         Self {
             observer,
             completion,

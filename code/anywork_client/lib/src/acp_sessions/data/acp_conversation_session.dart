@@ -92,6 +92,7 @@ final class AcpConversationState {
     this.costUpdatedAt,
     this.textPerformanceUpdatedAt,
     this.pendingPermissions = const [],
+    this.hostInteractionAnswerPending = false,
   });
 
   final AcpSessionTargetView? target;
@@ -129,6 +130,12 @@ final class AcpConversationState {
   final DateTime? costUpdatedAt;
   final DateTime? textPerformanceUpdatedAt;
   final List<AcpPermissionEventView> pendingPermissions;
+  final bool hostInteractionAnswerPending;
+
+  AcpPendingInteractionView? get pendingHostInteraction =>
+      ready && !openPending && !disconnected && !observationEnded
+      ? workflowState?.pendingInteraction
+      : null;
 
   bool get usesLegacyModes => configOptions == null && modes != null;
 }
@@ -167,6 +174,7 @@ final class AcpConversationSession {
   bool _configFutureDone = false;
   bool _configEventSeen = false;
   final Set<AcpPermissionIdView> _answering = {};
+  String? _hostInteractionAnswerId;
   final Map<AcpConfigId, AcpSessionConfigValueView> _configIntents = {};
   AcpModeId? _modeIntent;
 
@@ -250,6 +258,7 @@ final class AcpConversationSession {
     costUpdatedAt: _costUpdatedAt,
     textPerformanceUpdatedAt: _textPerformanceUpdatedAt,
     pendingPermissions: _permissions,
+    hostInteractionAnswerPending: _hostInteractionAnswerId != null,
   );
 
   void _publish() {
@@ -292,7 +301,7 @@ final class AcpConversationSession {
               _applyInfoSnapshot(infoSnapshot);
             }
             if (workflowState != null) {
-              _workflowState = workflowState;
+              _acceptWorkflowState(workflowState);
             }
             _accepted.complete();
           case AcpSettledFrameView(:final result):
@@ -429,7 +438,7 @@ final class AcpConversationSession {
           _permissions = const [];
         }
       case AcpWorkflowStateUpdatedEventView(:final state):
-        _workflowState = state;
+        _acceptWorkflowState(state);
       case AcpGapEventView(:final gap):
         _observationGap = gap;
         _loseObservation();
@@ -714,14 +723,22 @@ final class AcpConversationSession {
 
   Future<AcpWorkflowStateView> setThreadMode(String modeId) async {
     final target = _requireTarget();
+    final before = _workflowState;
     final updated = await _client.setThreadMode(
       AcpSetThreadModeRequestView(target: target, modeId: modeId),
     );
-    if (!_disposing) {
-      _workflowState = updated;
+    if (!_disposing && identical(_workflowState, before)) {
+      _acceptWorkflowState(updated);
       _publish();
     }
     return updated;
+  }
+
+  void _acceptWorkflowState(AcpWorkflowStateView next) {
+    if (next.pendingInteraction?.id != _workflowState?.pendingInteraction?.id) {
+      _hostInteractionAnswerId = null;
+    }
+    _workflowState = next;
   }
 
   static bool _isHiddenHostStateChunk(AcpContentChunkView chunk) {
@@ -833,6 +850,39 @@ final class AcpConversationSession {
       rethrow;
     } finally {
       _answering.remove(id);
+    }
+  }
+
+  Future<void> answerHostInteraction(
+    AcpHostInteractionAnswerRequestView request,
+  ) async {
+    final target = _requireTarget();
+    if (request.target != target ||
+        request.interactionId != state.pendingHostInteraction?.id) {
+      throw AcpBusinessFailureView(
+        kind: AcpBusinessFailureKindView.stale,
+        message: 'The ACP host interaction is no longer pending',
+      );
+    }
+    if (_hostInteractionAnswerId == request.interactionId) {
+      throw AcpBusinessFailureView(
+        kind: AcpBusinessFailureKindView.busy,
+        message: 'The ACP host interaction answer is already pending',
+      );
+    }
+
+    _hostInteractionAnswerId = request.interactionId;
+    try {
+      final response = _client.answerHostInteraction(request);
+      _publish();
+      // Successful submission stays disabled until workflow observation retires it.
+      await response;
+    } catch (_) {
+      if (!_disposing && _hostInteractionAnswerId == request.interactionId) {
+        _hostInteractionAnswerId = null;
+        _publish();
+      }
+      rethrow;
     }
   }
 
