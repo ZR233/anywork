@@ -99,7 +99,17 @@ fn execution_error(error: &pl_remote_helper::ExecutionError) -> String {
 /// C-locale Git/OS diagnostics select only a closed vocabulary. Never echo a captured line, path,
 /// config value or credential. These facts explain failure; they never establish path absence.
 fn safe_command_cause(diagnostic: &str) -> &'static str {
-    if diagnostic.contains("Permission denied")
+    if diagnostic
+        .lines()
+        .any(|line| line.ends_with(": No space left on device"))
+    {
+        "project host has no free disk space; free space before retrying"
+    } else if diagnostic
+        .lines()
+        .any(|line| line.ends_with(": Disk quota exceeded"))
+    {
+        "project host disk quota exceeded; free space within the quota before retrying"
+    } else if diagnostic.contains("Permission denied")
         || diagnostic.contains("Operation not permitted")
         || diagnostic.contains("Access is denied")
     {
@@ -128,6 +138,12 @@ fn safe_command_cause(diagnostic: &str) -> &'static str {
         "command or command input could not be opened (does not establish worktree absence)"
     } else if diagnostic.contains("Too many open files") {
         "process file descriptor limit exceeded"
+    } else if diagnostic
+        .lines()
+        .any(|line| line.starts_with("error: unable to write file "))
+    {
+        // Git can report a checkout write failure without its underlying OS error.
+        "Git could not write checkout files; check disk space, quota, and write permissions on the project host"
     } else {
         "unclassified Git/process failure; unsafe free-form details withheld"
     }
@@ -164,7 +180,35 @@ pub(super) fn file_cause(error: &pl_tool::workspace_file::WorkspaceFileError) ->
 
 #[cfg(test)]
 mod tests {
-    use super::git_operation;
+    use super::{WorktreeError, git_operation};
+
+    #[test]
+    fn worktree_checkout_failures_report_actionable_causes_without_echoing_stderr() {
+        for (stderr, cause) in [
+            (
+                "fatal: could not write '/private-checkout/index.lock': No space left on device",
+                "project host has no free disk space; free space before retrying",
+            ),
+            (
+                "fatal: could not write '/private-checkout/index.lock': Disk quota exceeded",
+                "project host disk quota exceeded; free space within the quota before retrying",
+            ),
+            (
+                "error: unable to write file private-checkout/No space left on device\nfatal: Could not reset index file to revision 'HEAD'.",
+                "Git could not write checkout files; check disk space, quota, and write permissions on the project host",
+            ),
+        ] {
+            let error = WorktreeError::GitExited {
+                args: "worktree add --detach /private-checkout/session abc".into(),
+                exit_code: 128,
+                stderr: stderr.into(),
+            };
+            assert_eq!(
+                error.safe_diagnostic(),
+                format!("git worktree add: exited with code 128; {cause}"),
+            );
+        }
+    }
 
     #[test]
     fn classifies_current_rev_parse_and_merge_base_forms() {
