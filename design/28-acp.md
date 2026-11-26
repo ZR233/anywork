@@ -284,7 +284,7 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_models`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
-同一目录按原能力与授权提供可复用的普通对话工具，包括工作区命令、stdin、任务列举/等待/结果读取/取消，以及文件、补丁和 Git。宿主技能发现与读取使用相同的技能目录、来源策略与工具作者，通过 `anywork_` 工具提供，不要求外部代理能直接读取宿主系统技能目录。本地与SSH分别使用实际业务工作区，不从ACP协议cwd猜测执行绑定。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；复用普通会话的路径/符号链接检查、写锁、进程管理和输出归档，不在handler内复制操作算法。
+同一目录按原能力与授权提供可复用的普通对话工具，包括工作区命令、stdin、任务列举/等待/结果读取/取消，以及文件、补丁和 Git。宿主技能发现与读取使用相同的技能目录、来源策略与工具作者，通过 `anywork_` 工具提供，不要求外部代理能直接读取宿主系统技能目录。本地与 SSH 分别使用实际业务工作区，目录列举和搜索由命令完成。工作区工具复用原有的路径和符号链接检查、写锁、进程管理和输出归档。
 
 Host MCP 消费 [09](./09-tool-runtime.md#91-工具身份所有权与历史落盘栅栏) 的同一宿主工具装配入口，自动从注册作者取得声明和调用绑定；MCP handler 不按具体工具名选择参数转换或业务方法。工作区、技能、语言服务、任务及成员协作保留各自的业务上下文和原 owner，传输适配不生成可信 caller、grant 或 Native 轮次。新增满足所需宿主能力的工具只需进入所属家族的公共装配，不再另加 MCP 工具清单或执行分支。
 
@@ -305,6 +305,10 @@ SSH 工具沿普通会话的远程权限评估与物理后端准入：远程分�
 任务受理、执行 future 所有权、取消、等待、结果访问和关闭共享普通会话的必要任务基础。Native 的 TaskRecord、Turn、Current writer、History writer/reader 和 pending marker 仍归 Native owner；ACP 只使用真实实例及调用身份，不伪造 Native 对象、轮次或持久序号，不新增任务数据库，也不承诺跨实例恢复。一次 MCP 请求结束只结束观察；已受理执行由任务 owner 持有，stdin 和结果查询使用真实原回执，不能从文件名或 MCP request ID 合成。长输出与归档失败继续由原捕获/可靠资源责任收束。
 
 宿主指令分别标明 ACP 本机目录与业务执行端、Shell、根目录及执行侧会话文件路径，要求远程操作使用上述 MCP 工具；项目指令也由原业务文件后端读取。工具输入不能选择 caller、SSH 目标或扩大工作区权限。外部代理自带的本机工具不受这些 MCP 权限约束，不能把提示词或前缀声称为沙箱。
+
+本地与 SSH 项目的文本和图片读取都通过 ACP 会话注入的标准 Host MCP。`workspace_files` 开启时，`anywork_read_text_file` 读取最多 256 KiB 的 UTF-8 文本并返回 MCP `text`。`anywork_view_image` 读取 PNG、JPEG、WebP 或 GIF，按共享媒体规则准备图片，在最多 2 MiB 的图片数据内返回含 MIME 类型的 MCP `image`。HTTP 与 stdio 共用同一结果投影。两种读取直接交付当前请求，无需启用命令或轮询任务。读取受会话工作区和权限约束，超限或格式错误直接返回工具错误。
+
+Native 与 ACP 共用受控工作区文件后端和图片准备逻辑。Native 由其媒体所有者交付模型内容并保存历史。ACP 以标准 MCP 内容块交付文件内容，ACP 文件回调维持关闭。
 
 宿主指令由共享项目指令、实际角色、工作区与已提供的协作能力组成，不套用未支持的 Native workflow。对端声明 `sessionCapabilities.systemPrompt` 时，通过正式 `systemPrompt` 的 `append` 模式传入；未声明时，在用户 prompt 内容前附独立的宿主指令文本块，用户原内容与附件保持独立。两种传递方式使用同一内容来源；不使用 `override` 替换 agent 原指令。
 

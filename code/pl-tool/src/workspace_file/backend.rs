@@ -118,6 +118,29 @@ pub struct WorkspaceFileStat {
     pub modified_at: Option<i64>,
 }
 
+pub async fn read_regular_file(
+    backend: &impl WorkspaceFileBackend,
+    path: String,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    let stat = backend
+        .stat(WorkspaceFileStatRequest {
+            path: path.clone(),
+            cwd: None,
+        })
+        .await?;
+    if !stat.is_file {
+        return Err(super::file_error("source is not a regular file"));
+    }
+    backend
+        .read_bytes(WorkspaceFileReadBytesRequest {
+            path,
+            cwd: None,
+            max_bytes: Some(max_bytes),
+        })
+        .await
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceFileReadRequest {
     pub path: String,

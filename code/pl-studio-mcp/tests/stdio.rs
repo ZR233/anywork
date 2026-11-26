@@ -96,6 +96,10 @@ async fn production_stdio_official_client_catalog_results_concurrency_cancel_and
     );
     let success = service.call_tool(call(json!({"answer":42}))).await.unwrap();
     assert_eq!(success.structured_content, Some(json!({"answer":42})));
+    assert_eq!(
+        serde_json::to_value(&success.content).unwrap(),
+        json!([{"type":"text", "text":"{\"answer\":42}"}]),
+    );
     assert_eq!(success.is_error, Some(false));
     let error = service
         .call_tool(call(json!({"error":true})))
@@ -148,6 +152,57 @@ async fn production_stdio_official_client_catalog_results_concurrency_cancel_and
     assert!(!diagnostics.contains(server.capability()));
     server.close().await.unwrap();
     assert_eq!(backend.0.active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn production_stdio_returns_single_native_content_block_over_ipc() {
+    let mut server = IpcServer::bind(Backend::default(), CancellationToken::new())
+        .await
+        .unwrap();
+    let mut child = child(&server);
+    let mut service = tokio::time::timeout(
+        TIMEOUT,
+        ().serve((child.stdout.take().unwrap(), child.stdin.take().unwrap())),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    for (content, is_error, expected) in [
+        (
+            "text",
+            true,
+            json!({"type":"text", "text":"first line\n第二行"}),
+        ),
+        (
+            "image",
+            false,
+            json!({
+                "type":"image",
+                "data":"R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+                "mimeType":"image/gif",
+            }),
+        ),
+    ] {
+        let result = tokio::time::timeout(
+            TIMEOUT,
+            service.call_tool(call(json!({"content":content, "error":is_error}))),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.is_error, Some(is_error), "{content}");
+        assert_eq!(result.structured_content, None, "{content}");
+        assert_eq!(
+            serde_json::to_value(result.content).unwrap(),
+            json!([expected]),
+            "{content}",
+        );
+    }
+
+    service.close().await.unwrap();
+    assert!(reap(&mut child).await.success());
+    server.close().await.unwrap();
 }
 
 #[tokio::test]

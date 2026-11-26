@@ -2,9 +2,7 @@
 use super::ViewImageInput;
 use crate::{
     media::{DomainMediaHost, ToolMediaHost, domain_error, image_limits},
-    workspace_file::{
-        WorkspaceFileBackend, WorkspaceFileReadBytesRequest, WorkspaceFileStatRequest,
-    },
+    workspace_file::{WorkspaceFileBackend, read_regular_file},
 };
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
@@ -58,29 +56,30 @@ impl<B: WorkspaceFileBackend + 'static> pl_tool_media::view_image::ImageReader
     type Error = ToolError;
 
     async fn read(&self, path: String, max_bytes: usize) -> Result<Arc<[u8]>, ToolError> {
-        let stat = self
-            .0
-            .stat(WorkspaceFileStatRequest {
-                path: path.clone(),
-                cwd: None,
-            })
-            .await
-            .map_err(ToolError::new)?;
-        if !stat.is_file {
-            return Err(ToolError::new(std::io::Error::other(
-                "image source is not a regular file",
-            )));
-        }
-        self.0
-            .read_bytes(WorkspaceFileReadBytesRequest {
-                path,
-                cwd: None,
-                max_bytes: Some(max_bytes),
-            })
+        read_regular_file(self.0.as_ref(), path, max_bytes)
             .await
             .map(Into::into)
             .map_err(ToolError::new)
     }
+}
+
+pub async fn prepare_workspace_image(
+    backend: Arc<impl WorkspaceFileBackend + 'static>,
+    input: ViewImageInput,
+    limits: pl_tool_media_support::ImageOutputLimits,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> Result<pl_tool_media_support::NormalizedToolImage, ToolError> {
+    pl_tool_media::view_image::prepare_workspace_image(
+        &AuthorizedImageReader(backend),
+        input.path,
+        pl_tool_media_support::ImageContext {
+            limits: Some(limits),
+            cancellation,
+        },
+    )
+    .await
+    .map(|image| image.normalized)
+    .map_err(|error| domain_error(error.source))
 }
 
 #[derive(Debug)]

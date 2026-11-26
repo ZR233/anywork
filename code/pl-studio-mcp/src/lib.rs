@@ -7,7 +7,9 @@ pub mod ipc;
 
 pub use projection::{JsonInput, ProjectedInput, ProjectionError, ToolProjection};
 pub use service::HostMcpService;
-pub use types::{HostCatalog, HostError, HostInvocation, HostResult, HostTool, HostTools};
+pub use types::{
+    HostCatalog, HostContent, HostError, HostInvocation, HostResult, HostTool, HostTools,
+};
 
 pub const STDIO_ARG: &str = "--stdio";
 pub const IPC_ENDPOINT_ENV: &str = "ANYWORK_HOST_IPC_ENDPOINT";
