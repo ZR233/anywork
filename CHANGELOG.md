@@ -13,6 +13,30 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.53.0](https://github.com/ZR233/anywork/compare/v6.52.0...v6.53.0) (2026-11-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** 移除 `pl-core` 双套 `ColdStore`/checkpoint 路径与 `pl-studio-runtime` 旧双套 `CurrentReader`/`HistoryReader` 读实现；后续 M4–M6 将完成 FRB 单句柄、`anywork_client` 与 Flutter Flyer Chat UI 迁移。
+* **studio:** request_user_input 的普通题始终接受自定义文本。调用方须移除 isOther，options 继续提供可多选的建议。
+* **model:** Adapter 必须注册 error_policy，自定义 WireStreamDecoder 接收 StreamFrameContext、交付完整 ProviderFailure，并在 Usage 事件中明确 terminal。旧错误分类入口、临时 PureError 别名和有损 CompletionFailure 转换已移除；调用方须使用类型化失败与显式领域映射。Studio 产品 JSON 的等待毫秒改为十进制字符串，内部协议数值及 FRB u64 保持原类型；旧持久化载荷通过正式版本迁移升级。 FileUploadService 的单次上传失败改为 FileUploadFailure，必须明确区分 Rejected 与 Unknown，不能从错误的暂时性质推导提交结果。持久辅助模型调用必须交付每次结算并等待所属保存确认。 持久辅助调用通过 ThreadHandle::begin_auxiliary_model_call 取得 ModelSettlementPort，再由 ModelTurnOptions/ModelInvocationContext::with_settlement_port 绑定。独立内存调用使用显式 in_memory 入口；无真实 Turn 的来源使用 None。自定义 HistorySink 实现 read_saved_model_settlement 与 confirm_model_settlement，分别核验已提交原件和等待原 effect 保存；删除旧辅助扩展结算和终态补账入口。 会话费用快照新增必填 hasIncompleteUsage，调用方须分别传递用量不完整、无价格和统计未追平状态。旧统计摘要与保存的模型流仅在正式维护入口转换，普通读取只接受当前契约。
+
+### Bug Fixes
+
+* **ci:** repair Linux Flutter checks ([#599](https://github.com/ZR233/anywork/issues/599)) ([c67af41](https://github.com/ZR233/anywork/commit/c67af41bf722a9e695185de4cf14f194fd206790))
+* **model:** 统一供应商失败恢复与逐次用量保存 ([#593](https://github.com/ZR233/anywork/issues/593)) ([fce5154](https://github.com/ZR233/anywork/commit/fce5154c383151b9e6f659299a807f36b2880584))
+* **studio:** 优化自动选模的成本判断与提示词范围 ([#597](https://github.com/ZR233/anywork/issues/597)) ([9445c81](https://github.com/ZR233/anywork/commit/9445c81dedc77540ea5c42b76f36ae8e578877f2))
+* **studio:** 修复 ACP 工作区文本和图片读取 ([#606](https://github.com/ZR233/anywork/issues/606)) ([8ea8267](https://github.com/ZR233/anywork/commit/8ea8267bba1025d014c7aed799d702d5642b0cd1))
+* **studio:** 修复统计页正常关闭被误报为失败 ([#602](https://github.com/ZR233/anywork/issues/602)) ([505b908](https://github.com/ZR233/anywork/commit/505b9087a4a20fb4e9440605d60ca58a3a8cec43))
+* **studio:** 恢复提问界面的自定义回答 ([#604](https://github.com/ZR233/anywork/issues/604)) ([efebdb2](https://github.com/ZR233/anywork/commit/efebdb23e288a3cd06b7e17f81373cb94c3f2207))
+
+
+### Refactoring
+
+* **studio:** 完成 Flutter 全模块审查与质量清理 ([#596](https://github.com/ZR233/anywork/issues/596)) ([cc0e332](https://github.com/ZR233/anywork/commit/cc0e332f36ae37b4413246ba1d0a658937fd1bff))
+* **studio:** 重构 Native 时间线、串行线程主循环与 Flyer Chat 增量接入 ([#601](https://github.com/ZR233/anywork/issues/601)) ([cfd126d](https://github.com/ZR233/anywork/commit/cfd126daa753659f21f043c6f77100b08db9c331))
+
 ## [6.52.0](https://github.com/ZR233/anywork/compare/v6.51.0...v6.52.0) (2026-11-25)
 
 
