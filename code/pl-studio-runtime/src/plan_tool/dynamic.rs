@@ -88,24 +88,8 @@ pub fn migrate_plan_payload(payload: &OpaquePayload) -> anyhow::Result<Option<Op
         payload.format(),
         payload.version()
     );
-    let state = decode_saved_v1(payload).map_err(|error| anyhow::anyhow!("{error}"))?;
-    Ok(Some(
-        encode_plan_state(&state).map_err(|error| anyhow::anyhow!("{error}"))?,
-    ))
-}
-
-/// Rewrites a saved `studio.plan` extension in place. Missing plans are left absent.
-///
-/// # Errors
-/// Rejects an unsupported plan version or a payload that cannot be converted.
-pub fn migrate_saved_plan(state: &mut pl_core::thread::ThreadSnapshot) -> anyhow::Result<()> {
-    let Some(record) = state.extensions.get_mut(PLAN_EXTENSION) else {
-        return Ok(());
-    };
-    if let Some(current) = migrate_plan_payload(&record.payload)? {
-        record.payload = current;
-    }
-    Ok(())
+    let state = decode_saved_v1(payload)?;
+    Ok(Some(encode_plan_state(&state)?))
 }
 
 fn decode_saved_v1(payload: &OpaquePayload) -> Result<AgentSessionPlanState, ToolError> {
@@ -535,6 +519,9 @@ mod migration_tests {
         )
         .unwrap();
         assert!(decode_plan_state(&saved).is_err());
+        let mislabeled = OpaquePayload::new(FORMAT, PLAN_PAYLOAD_VERSION, saved.content()).unwrap();
+        let rejected = decode_plan_state(&mislabeled).expect_err("current payload requires plan");
+        assert!(rejected.to_string().contains("missing field `plan`"));
         let current = migrate_plan_payload(&saved).unwrap().unwrap();
         assert_eq!(current.version(), PLAN_PAYLOAD_VERSION);
         let state = decode_plan_state(&current).unwrap();
@@ -554,6 +541,17 @@ mod migration_tests {
         let saved = OpaquePayload::new(FORMAT, 1, serde_json::to_string(&state).unwrap()).unwrap();
         let current = migrate_plan_payload(&saved).unwrap().unwrap();
         assert_eq!(decode_plan_state(&current).unwrap(), state);
+    }
+
+    #[test]
+    fn current_empty_plan_round_trips_with_its_required_field() {
+        let state = AgentSessionPlanState::default();
+        let encoded = encode_plan_state(&state).unwrap();
+        let mut body: serde_json::Value = serde_json::from_str(encoded.content()).unwrap();
+        assert!(body["plan"].is_object());
+        body["extra"] = serde_json::json!("ignored extension field");
+        let extended = OpaquePayload::new(FORMAT, PLAN_PAYLOAD_VERSION, body.to_string()).unwrap();
+        assert_eq!(decode_plan_state(&extended).unwrap(), state);
     }
 }
 

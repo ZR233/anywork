@@ -1,5 +1,6 @@
 //! Frozen physical endpoint/path facts; resolution and persistence never hold admission locks.
 use crate::agent::worktree::git_path::workspace_path_text;
+use crate::studio::session_data_error::SessionDataError;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -168,7 +169,8 @@ impl crate::studio::StudioStore {
                 self.database(),
                 owner,
             )
-            .await?
+            .await
+            .map_err(SessionDataError::WorkspaceIdentityStorage)?
             .map(|saved| saved.identity),
         )
     }
@@ -177,10 +179,10 @@ impl crate::studio::StudioStore {
         owner: &str,
         identity: &WorkspaceIdentity,
     ) -> Result<()> {
-        use crate::studio::store::object::{load_object, put_object};
-        if let Some(saved) = load_object::<SavedWorkspaceIdentity>(self.database(), owner).await? {
+        use crate::studio::store::object::put_object;
+        if let Some(saved) = self.workspace_identity(owner).await? {
             ensure!(
-                saved.identity == *identity,
+                saved == *identity,
                 "frozen physical workspace identity changed for {owner}"
             );
             return Ok(());
@@ -194,8 +196,8 @@ impl crate::studio::StudioStore {
             },
             crate::studio::unix_seconds(),
         )
-        .await?;
-        Ok(())
+        .await
+        .map_err(|source| SessionDataError::WorkspaceIdentityStorage(source).into())
     }
 }
 

@@ -170,6 +170,12 @@ fn project_with_mode(
         .map(|record| {
             crate::plan_tool::decode_plan_state(&record.payload)
                 .map(|state| crate::plan_tool::AgentSessionPlanRuntimeSnapshot::from(&state))
+                .map_err(
+                    |source| crate::studio::session_data_error::SessionDataError::Plan {
+                        revision: record.payload.version(),
+                        source: source.into(),
+                    },
+                )
         })
         .transpose()?;
     let active_skills = state

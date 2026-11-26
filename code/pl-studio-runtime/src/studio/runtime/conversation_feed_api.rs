@@ -137,7 +137,8 @@ impl StudioRuntime {
         meta.usage = UsageSummary::default();
 
         if let Some(current) = self.store.load_current_read_only(thread).await? {
-            let paused = current.state.to_paused_snapshot();
+            let mut paused = current.state.to_paused_snapshot();
+            crate::studio::producer_migration::prepare_plan_current(&mut paused.extensions)?;
             let runtime = crate::studio::thread_projection::project_runtime(
                 &thread.id,
                 &paused,

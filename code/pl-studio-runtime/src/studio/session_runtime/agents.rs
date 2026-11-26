@@ -2752,7 +2752,11 @@ mod control_tests {
             let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error.as_ref());
             let mut database_error = false;
             while let Some(cause) = source {
-                database_error |= cause.downcast_ref::<sea_orm::DbErr>().is_some();
+                database_error |= cause.downcast_ref::<sea_orm::DbErr>().is_some_and(|error| {
+                    error
+                        .to_string()
+                        .contains("controlled spawn publication rejection")
+                });
                 source = cause.source();
             }
             assert!(
@@ -2760,7 +2764,9 @@ mod control_tests {
                 "the original typed SQLite error must survive Native delivery: {error:?}"
             );
             assert!(
-                format!("{error}").contains("controlled spawn publication rejection"),
+                error
+                    .to_string()
+                    .contains("conversation preparation record"),
                 "{error:?}"
             );
             assert_eq!(

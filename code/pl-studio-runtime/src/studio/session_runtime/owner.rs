@@ -4,6 +4,7 @@ pub(crate) mod query;
 use super::host_agent_tools::query::{Kind, QueryTool};
 use super::*;
 use crate::AgentSessionPage;
+use crate::studio::thread_factory::is_workspace_preparation_failure;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use pl_agent_tool::{Tool, ToolDefinition};
@@ -18,7 +19,9 @@ use tokio_util::sync::CancellationToken;
 /// The runtime owns the single Recovery registry; the assembler only reports the failure, so an
 /// internal scheduling activation fails exactly like an explicit activation would.
 pub(crate) type WorkspaceRecoveryPublisher = std::sync::Arc<
-    dyn Fn(crate::Thread, anyhow::Error) -> futures::future::BoxFuture<'static, ()> + Send + Sync,
+    dyn for<'a> Fn(&'a crate::Thread, &'a anyhow::Error) -> futures::future::BoxFuture<'a, ()>
+        + Send
+        + Sync,
 >;
 
 #[derive(Clone)]
@@ -212,20 +215,14 @@ impl StudioSessionOwner {
             owner.ensure_agent_admission_open(target)?;
             return Ok(());
         }
-        let activated = owner.activate(activation, self.factory.clone()).await;
-        if let Err(error) = activated {
-            // An internal scheduling activation is the same product fact as an explicit one, so its
-            // failure publishes the member's Recovery diagnosis instead of only returning an error;
-            // a missing workspace is never silently rebuilt on this path.
-            if let Some(publish) = self.workspace_recovery.clone() {
-                let failure = anyhow::Error::from(error);
-                // The publisher only observes the failure; the error itself is returned to the
-                // caller unchanged by message and cause.
-                let reported = anyhow::anyhow!("{failure:#}");
-                publish(record.clone(), reported).await;
-                return Err(failure);
+        if let Err(error) = owner.activate(activation, self.factory.clone()).await {
+            let failure = anyhow::Error::from(error);
+            if is_workspace_preparation_failure(&failure)
+                && let Some(publish) = &self.workspace_recovery
+            {
+                publish(&record, &failure).await;
             }
-            return Err(error.into());
+            return Err(failure);
         }
         self.recovery.ensure_thread_execution_access(&record)?;
         owner.ensure_agent_admission_open(target)?;

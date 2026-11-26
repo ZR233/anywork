@@ -231,7 +231,9 @@ impl StudioThreadFactory {
             CatalogPreparation::Initial => self
                 .open_remote_workspace(project, &root)
                 .await
-                .map_err(|error| resource_error("open child remote workspace", error))?,
+                .map_err(|error| {
+                    super::errors::workspace_error("open child remote workspace", error)
+                })?,
         };
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
@@ -279,11 +281,15 @@ impl StudioThreadFactory {
             .unwrap_or_else(|| self.services.local_executor.clone());
         let execution = pl_tool::command::WorkspaceExecutionBinding::new(
             executor.clone(),
-            root.to_str().ok_or_else(|| {
-                ThreadAssemblyError::Identity("workspace path is not UTF-8".into())
-            })?,
+            root.to_str()
+                .ok_or_else(|| ThreadAssemblyError::Workspace {
+                    thread_id: thread_id.into(),
+                    reason: "workspace path is not UTF-8".into(),
+                })?,
         )
-        .map_err(|error| resource_error("bind Thread execution workspace", error))?;
+        .map_err(|error| {
+            super::errors::workspace_error("bind Thread execution workspace", error)
+        })?;
         super::session_files::prepare_bound_session_files(&workspace, &execution).await?;
         let shell_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", "starting");

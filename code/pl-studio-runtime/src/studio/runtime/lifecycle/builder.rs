@@ -209,8 +209,7 @@ impl StudioRuntime {
         let keep = std::sync::Arc::new(runtime.clone());
         runtime.bots.attach_host(std::sync::Arc::downgrade(&keep));
         runtime.bot_host = Some(keep);
-        // An internal scheduling activation reports its failure through the runtime's single Recovery
-        // registry, exactly like an explicit activation does.
+        // Scheduling and explicit activation share the same workspace Recovery publisher.
         let recovering = std::sync::Arc::downgrade(
             runtime
                 .bot_host
@@ -224,7 +223,7 @@ impl StudioRuntime {
                 Box::pin(async move {
                     if let Some(recovering) = recovering.upgrade() {
                         recovering
-                            .publish_session_workspace_issue(&thread, &error)
+                            .publish_session_workspace_issue(thread, error)
                             .await;
                     }
                 })

@@ -8,6 +8,7 @@ mod bot_workspace;
 mod child_resources;
 mod close_child;
 mod errors;
+pub(in crate::studio) use errors::is_workspace_preparation_failure;
 mod execution_admission;
 mod execution_cleanup;
 mod lsp_binding;

@@ -37,6 +37,8 @@ impl StudioThreadFactory {
             self.services
                 .worktrees
                 .prepare_verified_binding(verified, usage)
+                .map_err(super::errors::WorkspacePreparationFailure)
+                .map_err(Into::into)
         })?;
         let confirmed = self
             .services

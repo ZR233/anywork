@@ -4,6 +4,8 @@ use super::{
     UsagePurpose, UsageTarget, VerifiedBindingWrite, WorkspaceEndpoint, WorkspaceUsageLease,
     WorktreeLeaseOwner, lock_state,
 };
+use crate::studio::session_data_error::SessionDataError;
+use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
 use std::sync::{Arc, Weak};
 
@@ -91,21 +93,32 @@ impl WorktreeLeaseOwner {
             ticket,
             identity,
         } = write;
-        self.writer.flush_through(ticket).await?;
+        self.writer
+            .flush_through(ticket)
+            .await
+            .map_err(SessionDataError::LeasePersistence)?;
         // A real ACK cannot revoke retirement/removal or a newer binding admitted while
         // this waiter yielded. Do not return a usable proof of that stale generation.
+        let binding_changed = |reason: &str| ThreadAssemblyError::Workspace {
+            thread_id: confirmed.owner_thread_id.clone(),
+            reason: reason.into(),
+        };
         let state = lock_state(&self.state);
         ensure!(
             state
                 .entries
                 .get(&confirmed.owner_thread_id)
                 .is_some_and(|entry| entry.lease == confirmed),
-            "verified worktree binding or revision changed while awaiting durability"
+            binding_changed(
+                "verified worktree binding or revision changed while awaiting durability"
+            )
         );
         ensure!(
             !state.workspace.is_retiring(&confirmed.owner_thread_id)
                 && state.workspace.sealing_owners(&identity).next().is_none(),
-            "verified worktree was sealed for retirement or removal while awaiting durability"
+            binding_changed(
+                "verified worktree was sealed for retirement or removal while awaiting durability"
+            )
         );
         Ok(confirmed)
     }

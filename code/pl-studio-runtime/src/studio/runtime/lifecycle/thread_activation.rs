@@ -1,6 +1,7 @@
 //! Product activation follows saved ancestry and shares the single Thread assembler.
 use super::super::StudioRuntime;
 use crate::studio::ThreadRecord;
+use crate::studio::thread_factory::is_workspace_preparation_failure;
 use crate::thread_assembler::ThreadActivation;
 use anyhow::{Context, Result};
 
@@ -100,15 +101,14 @@ impl StudioRuntime {
             if let Err(error) =
                 Box::pin(session.activate(identity, self.thread_factory.clone())).await
             {
-                // `worktree` 会话激活失败必须显式发布该 Thread 的 Recovery，
-                // 不允许静默回落到主工作区。
-                if record.workspace_mode == crate::ThreadWorkspaceMode::Worktree {
-                    let failure = anyhow::Error::from(error);
+                let failure = anyhow::Error::from(error);
+                if record.workspace_mode == crate::ThreadWorkspaceMode::Worktree
+                    && is_workspace_preparation_failure(&failure)
+                {
                     self.publish_session_workspace_issue(&crate::Thread::from(record), &failure)
                         .await;
-                    return Err(failure);
                 }
-                return Err(error.into());
+                return Err(failure);
             }
             tracing::debug!(target: "thread_preparation", thread_id = %activated_id, stage = "assembler", elapsed_ms = assembler_started.elapsed().as_millis() as u64, "completed");
             self.residency.touch(&activated_id);
