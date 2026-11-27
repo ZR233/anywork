@@ -43,6 +43,12 @@ pub struct AgentProfileCatalog {
     directory_error: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum NativeProfileCheck {
+    OnScan,
+    OnDispatch,
+}
+
 impl AgentProfileCatalog {
     /// Startup validates every owned profile before publishing a mixed configuration.
     pub(crate) fn validate_for_startup(
@@ -120,6 +126,7 @@ impl AgentProfileCatalog {
 
     /// Derives the model-visible view from this scan, never a newer configuration read.
     /// Automatic mode needs enabled roles, not the availability of their fixed model routes.
+    /// Deferred Native routes still require execution qualification at dispatch.
     pub(crate) fn executable(&self, mode: crate::DelegationMode) -> Result<Self> {
         let mut catalog = self.enabled_for_dispatch()?;
         catalog.profiles.retain(|profile| {
@@ -153,6 +160,7 @@ impl AgentProfileCatalog {
         profile: AgentProfile,
         config: &StudioConfig,
         acp_definitions: &super::AcpDefinitionsSnapshot,
+        native_check: NativeProfileCheck,
     ) {
         let availability = match &profile.binding {
             AgentBinding::Acp(acp) => acp_definitions
@@ -168,9 +176,15 @@ impl AgentProfileCatalog {
                         Err(PureError::ConfigError("ACP definition is disabled".into()))
                     }
                 }),
-            AgentBinding::Native(_) => {
-                crate::studio::delegation::resolve_current_child_route(config, &profile).map(|_| ())
-            }
+            AgentBinding::Native(_) => match native_check {
+                NativeProfileCheck::OnScan => {
+                    crate::studio::delegation::resolve_current_child_route(config, &profile)
+                        .map(|_| ())
+                }
+                NativeProfileCheck::OnDispatch => {
+                    validate_native_profile_declaration(config, &profile)
+                }
+            },
         };
         if let Err(error) = availability {
             self.unavailable_profiles
@@ -195,7 +209,7 @@ impl AgentProfileCatalog {
         config: &StudioConfig,
         acp: &super::AcpDefinitionsSnapshot,
     ) -> Self {
-        Self::discover_with_disabled(paths, config, acp, false)
+        Self::discover_with_disabled(paths, config, acp, false, NativeProfileCheck::OnScan)
     }
 
     /// 设置页保留被禁用的系统与用户 Profile；执行目录仍只返回启用项。
@@ -204,7 +218,16 @@ impl AgentProfileCatalog {
         config: &StudioConfig,
         acp: &super::AcpDefinitionsSnapshot,
     ) -> Self {
-        Self::discover_with_disabled(paths, config, acp, true)
+        Self::discover_for_settings_with_check(paths, config, acp, NativeProfileCheck::OnScan)
+    }
+
+    pub(super) fn discover_for_settings_with_check(
+        paths: &ConfigPaths,
+        config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
+        native_check: NativeProfileCheck,
+    ) -> Self {
+        Self::discover_with_disabled(paths, config, acp, true, native_check)
     }
 
     fn discover_with_disabled(
@@ -212,8 +235,9 @@ impl AgentProfileCatalog {
         config: &StudioConfig,
         acp: &super::AcpDefinitionsSnapshot,
         include_disabled: bool,
+        native_check: NativeProfileCheck,
     ) -> Self {
-        let mut catalog = system_profiles(config, include_disabled);
+        let mut catalog = system_profiles(config, include_disabled, native_check);
         let agents_dir = paths.agents_dir();
         let entries = match fs::read_dir(&agents_dir) {
             Ok(entries) => entries,
@@ -250,7 +274,7 @@ impl AgentProfileCatalog {
         paths.sort();
         for path in paths {
             match load_user_profile(&path, include_disabled) {
-                Ok(Some(profile)) => catalog.push_profile(profile, config, acp),
+                Ok(Some(profile)) => catalog.push_profile(profile, config, acp, native_check),
                 Ok(None) => {}
                 Err(error) => catalog.diagnostics.push(AgentProfileDiagnostic {
                     path,
@@ -270,6 +294,23 @@ pub fn resolve_profile_route(
     config: &crate::config::StudioConfig,
     profile: &AgentProfile,
 ) -> Result<pl_model::config::ResolvedModelRoute> {
+    let role = AgentRoleId::new(profile.definition.definition_id.clone())?;
+    config
+        .models
+        .resolve_route(role, &native_profile_selector(profile)?)
+}
+
+pub(super) fn validate_native_profile_declaration(
+    config: &StudioConfig,
+    profile: &AgentProfile,
+) -> Result<()> {
+    config
+        .models
+        .route_availability(&native_profile_selector(profile)?)?;
+    Ok(())
+}
+
+fn native_profile_selector(profile: &AgentProfile) -> Result<ModelRouteConfig> {
     let AgentBinding::Native(native) = &profile.binding else {
         return Err(PureError::ConfigError(
             "ACP Profile has no Native model route".into(),
@@ -279,20 +320,11 @@ pub fn resolve_profile_route(
         .route
         .as_ref()
         .ok_or_else(|| PureError::ConfigError("child Native Profile has no model route".into()))?;
-    let role = pl_model::config::AgentRoleId::new(profile.definition.definition_id.clone())?;
-    let mut models = config.models.clone();
-    models.routes.insert(
-        role.clone(),
-        pl_model::config::ModelRouteConfig {
-            account_id: pl_model::config::AccountId::new(route.account_id.clone())?,
-            model_id: route.model_id.clone(),
-            effort: route
-                .effort
-                .as_ref()
-                .map(|effort| pl_model::config::ReasoningEffort::new(effort.clone())),
-        },
-    );
-    models.resolve(&role)
+    Ok(ModelRouteConfig {
+        account_id: AccountId::new(route.account_id.clone())?,
+        model_id: route.model_id.clone(),
+        effort: route.effort.clone().map(ReasoningEffort::new),
+    })
 }
 
 /// 原子创建或保存单个用户 Agent 文件；系统 Profile ID 永远不可写。
@@ -331,7 +363,11 @@ pub fn is_system_profile_id(profile_id: &str) -> Result<bool> {
     Ok(system_profile_ids()?.contains(profile_id))
 }
 
-fn system_profiles(config: &StudioConfig, include_disabled: bool) -> AgentProfileCatalog {
+fn system_profiles(
+    config: &StudioConfig,
+    include_disabled: bool,
+    native_check: NativeProfileCheck,
+) -> AgentProfileCatalog {
     let mut catalog = AgentProfileCatalog::default();
     let definitions = match crate::agent::catalog::definitions() {
         Ok(definitions) => definitions,
@@ -358,9 +394,12 @@ fn system_profiles(config: &StudioConfig, include_disabled: bool) -> AgentProfil
         })
     {
         match system_profile(definition, config) {
-            Ok(profile) => {
-                catalog.push_profile(profile, config, &super::AcpDefinitionsSnapshot::default())
-            }
+            Ok(profile) => catalog.push_profile(
+                profile,
+                config,
+                &super::AcpDefinitionsSnapshot::default(),
+                native_check,
+            ),
             Err(error) => {
                 tracing::warn!(profile_id = %definition.identity.id, %error, "system Agent Profile is unavailable");
                 catalog.diagnostics.push(AgentProfileDiagnostic {

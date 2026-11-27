@@ -178,6 +178,8 @@ pub(super) enum ToolState {
     Interrupted {
         interrupted_at: i64,
         reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<ToolOutputDescriptor>,
     },
     Succeeded {
         completed_at: i64,
@@ -195,6 +197,8 @@ pub(super) enum ToolState {
     Cancelled {
         cancelled_at: i64,
         reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<ToolOutputDescriptor>,
     },
 }
 

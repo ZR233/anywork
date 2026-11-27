@@ -53,8 +53,17 @@ class ApplyPatchToolItem extends StructuredTimelineToolAdapter {
   }) {
     final item = context.item;
     final patchWidget = timelineApplyPatchBody(item.arguments);
-    final outputValues = readsOutput(item.statusString, output: item.output)
-        ? decodeOutput(context.l10n, item.output)
+    final outputValues =
+        readsOutput(
+          item.statusString,
+          output: item.output,
+          toolData: context.controller.toolData,
+        )
+        ? decodeOutputData(
+            context.l10n,
+            item.output,
+            context.controller.toolData,
+          )
         : const <ToolDetailValue>[];
     if (patchWidget == null && outputValues.isEmpty) {
       return null;

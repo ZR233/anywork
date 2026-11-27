@@ -83,6 +83,21 @@ close cleanly without sending a prompt. The existing valid `config.toml` is stil
 required. ACP accounts come from that home's `acp/<id>.toml`; they are not Native
 model accounts. The external agent uses its own existing login, not imported tokens.
 
+ACP startup validates the existing configuration's structure, model catalogs and
+account references, but does not require credentials for unused Native routes or
+start Native online model discovery. Unused API and ChatGPT/OAuth account
+declarations may remain in the copied configuration; ACP does not load or migrate
+their protected credentials. Missing or invalid references still fail startup.
+For an account with online model discovery, a declared model being temporarily
+unavailable (including an authentication-scoped cache no longer matching) does
+not block ACP startup. Missing accounts, unknown models in static catalogs and
+invalid route parameters still fail. Native Profile declarations follow the same
+rule on initial scan and reload; listing a candidate does not certify its credentials.
+Native `anywk exec` retains its credential preflight, and any later Native Thread
+or child selection still resolves the model and validates the selected account
+and required capabilities. ACP authentication errors
+come from the chosen external agent and are not replaced by a Native fallback.
+
 Use `anywk exec-acp` with the same three arguments, `--prompt-file <path>` (or `-`
 for UTF-8 stdin), and repeated `--config <id=value>` from the actual declarations.
 For example, when the server declares those exact IDs:

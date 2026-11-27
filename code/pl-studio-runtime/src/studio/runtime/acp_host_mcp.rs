@@ -996,6 +996,35 @@ fn attach_workflow_and_plan_tools(
 
 impl HostTools for Handler {
     async fn catalog(&self) -> Result<HostCatalog, HostError> {
+        // Observe this owner's declaration set without capturing IPC credentials
+        // or invocation bodies. Catalog reads also occur during tool lookup.
+        if tracing::enabled!(
+            target: "pl_studio_runtime::acp_host_catalog_evidence",
+            tracing::Level::TRACE
+        ) {
+            let declarations: Vec<_> = self
+                .tools
+                .values()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.declaration.tool_id,
+                        "inputSchema": tool.declaration.input_schema,
+                        "outputSchema": tool.declaration.output_schema,
+                    })
+                })
+                .collect();
+            tracing::trace!(
+                target: "pl_studio_runtime::acp_host_catalog_evidence",
+                record_json = %serde_json::json!({
+                    "kind": "acp_host_catalog",
+                    "version": 1,
+                    "pid": std::process::id(),
+                    "callerAgentId": self.caller.as_str(),
+                    "tools": declarations,
+                }),
+                "host_mcp_catalog"
+            );
+        }
         Ok(self
             .tools
             .values()

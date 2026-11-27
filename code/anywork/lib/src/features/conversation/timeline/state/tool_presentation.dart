@@ -1,5 +1,7 @@
 import 'package:anywork_client/models.dart';
 
+import 'tool_data_artifact.dart';
+
 /// A single decoded current-contract tool card, owned by one Message.metadata.
 /// No history ordering, grouping or synthetic timestamps live in this value.
 final class TimelineToolPresentation {
@@ -20,6 +22,8 @@ final class TimelineToolPresentation {
     this.timedOut = false,
     this.attachments = const [],
     this.outputArtifacts = const [],
+    this.toolData = const ToolDataArtifactAbsent(),
+    this.outputArtifactIdentity,
     this.wait,
     this.executionPresent = true,
     this.frozenObservation = false,
@@ -40,6 +44,8 @@ final class TimelineToolPresentation {
   final bool timedOut;
   final List<ThreadAttachmentView> attachments;
   final List<String> outputArtifacts;
+  final ToolDataArtifact toolData;
+  final Object? outputArtifactIdentity;
   final ThreadWaitPresentationView? wait;
   final bool executionPresent;
   final bool frozenObservation;

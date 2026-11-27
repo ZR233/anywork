@@ -100,6 +100,26 @@ pub(in crate::studio) fn project_repaired_tool_call(
                 Some(supplement_output(output, references)?),
             ))
         }
+        ThreadToolState::Cancelled(cancelled) => {
+            let Some(output) = cancelled.output() else {
+                return Err(ProjectionError::DuplicateCall(saved.id.clone()));
+            };
+            ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
+                cancelled.cancelled_at(),
+                cancelled.reason().into(),
+                Some(supplement_output(output, references)?),
+            ))
+        }
+        ThreadToolState::Interrupted(interrupted) => {
+            let Some(output) = interrupted.output() else {
+                return Err(ProjectionError::DuplicateCall(saved.id.clone()));
+            };
+            ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
+                interrupted.interrupted_at(),
+                interrupted.reason().into(),
+                Some(supplement_output(output, references)?),
+            ))
+        }
         _ => return Err(ProjectionError::DuplicateCall(saved.id.clone())),
     };
     Ok(vec![ExecutionItem::new(
@@ -173,11 +193,13 @@ fn project_invocation(
                 ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
                     updated_at,
                     "Tool execution was interrupted; no side effect was replayed.".into(),
+                    None,
                 ))
             }
             TaskStatus::Cancelled => ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
                 updated_at,
                 "Tool execution was cancelled; observed facts remain in the journal.".into(),
+                None,
             )),
             TaskStatus::Succeeded => {
                 // Answer consumption retires the delivery while the terminal Task can remain.
@@ -324,11 +346,9 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
             resources.push(artifact);
         }
     }
-    if delivery.tool_id == "get_tool_task"
-        && let Some(data) = delivery.output.data()
-    {
-        // The task-query page remains inspectable even if foreground delivery
-        // was replaced by a background notice. Its data is author-supplied.
+    if let Some(data) = delivery.output.data() {
+        // Product consumers read the author's value independently of the frozen
+        // model presentation, including explicit null and business failures.
         resources.push(serde_json::json!({"toolData": data}));
     }
     let output = ThreadToolOutput::new(
@@ -352,11 +372,13 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
         ToolOutcome::Cancelled => ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
             at,
             "Tool execution was cancelled; observed facts remain in the journal.".into(),
+            Some(output),
         )),
         ToolOutcome::Interrupted => {
             ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
                 at,
                 "Tool execution was interrupted; no side effect was replayed.".into(),
+                Some(output),
             ))
         }
     })
@@ -445,7 +467,7 @@ mod interaction_current_tests {
 }
 
 #[cfg(test)]
-mod task_query_data_tests {
+mod tool_data_tests {
     use super::*;
     use pl_agent_tool::{ToolData, ToolResult};
     use pl_core::context::ContextContent;
@@ -502,6 +524,166 @@ mod task_query_data_tests {
         };
         assert!(done.output().output_artifacts().is_empty());
         assert_eq!(done.output().result(), text_content(&content));
+    }
+
+    #[test]
+    fn stopped_tool_output_survives_product_bodies_budget_and_repair() -> anyhow::Result<()> {
+        let data = json!({"observed": "partial-value-".repeat(8192)});
+        for outcome in [ToolOutcome::Cancelled, ToolOutcome::Interrupted] {
+            let mut delivery = delivery(
+                ToolData::Value(data.clone()),
+                vec![text("observed before execution stopped")],
+            );
+            delivery.tool_id = "exec_command".into();
+            delivery.outcome = outcome;
+            let state = terminal(&delivery, 42)?;
+            match (&delivery.outcome, &state) {
+                (ToolOutcome::Cancelled, ThreadToolState::Cancelled(_))
+                | (ToolOutcome::Interrupted, ThreadToolState::Interrupted(_)) => {}
+                _ => panic!("projection changed the execution outcome"),
+            }
+            let item = ExecutionItem::new(
+                "stopped-tool".into(),
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Borrowed("thread"),
+                    turn_id: std::borrow::Cow::Borrowed("turn"),
+                    ordinal: 1,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 42,
+                },
+                ExecutionShape::Tool(ThreadToolItem::new(
+                    ThreadToolInvocation::new("call".into(), "exec_command".into(), "{}".into()),
+                    state,
+                )),
+            );
+            let output = item.tool().unwrap().terminal_output().unwrap();
+            assert_eq!(output.result(), "observed before execution stopped");
+            assert_eq!(output.output_artifacts(), &[json!({"toolData": data})]);
+            assert!(
+                super::super::live::memory_budget::item_body_bytes(&item)
+                    >= data["observed"].as_str().unwrap().len() as u64
+            );
+            let draft =
+                crate::studio::runtime::chat_item::completion_draft(&item, 1, "database", None)?;
+            // The product descriptor retains the true state; large values only
+            // live in the existing demand-read body, not the metadata or preview.
+            assert!(draft.metadata.len() < 4096);
+            assert!(draft.payload.len() < 4096);
+            let content = draft
+                .contents
+                .iter()
+                .find(|(key, _)| key.key == "tool.output-artifacts")
+                .map(|(_, value)| value)
+                .unwrap();
+            let bytes = content
+                .data
+                .range(0, usize::try_from(content.descriptor.byte_length)?)?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(bytes.as_bytes())?,
+                json!([{"toolData": data}]),
+            );
+            let repaired = project_repaired_tool_call("thread", &item, &[], 43)?;
+            assert_eq!(repaired[0].state(), item.state());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tool_data_rust_fixture_survives_product_projection() {
+        // Synthetic author results pass through the production projection and
+        // Serialize implementation. Dart consumes the same wire fixtures.
+        let cases = [
+            (
+                "exec_nonzero",
+                "exec_command",
+                true,
+                ToolData::Value(json!({"taskId":"task:command", "exitCode":7,
+                    "stdout":"hello\n", "stderr":"failure\n"})),
+                "[exit 7]\nhello\n[stderr]\nfailure\n",
+            ),
+            (
+                "stdin_terminal",
+                "write_stdin",
+                false,
+                ToolData::Value(json!({"taskId":"task:stdin", "targetTaskId":"task:command",
+                    "status":"succeeded", "inputReceipt":{"acceptedBytes":0,
+                        "outcome":"notSent", "detail":"Target is terminal."}})),
+                "Target is terminal; no input was sent.",
+            ),
+            (
+                "null",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!(null)),
+                " null presentation ",
+            ),
+            (
+                "empty_array",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!([])),
+                "array presentation",
+            ),
+            (
+                "empty_object",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!({})),
+                "object presentation",
+            ),
+            (
+                "text",
+                "ordinary_tool",
+                false,
+                ToolData::Value(json!("{\"only\":\"text\"}")),
+                "text presentation",
+            ),
+            (
+                "absent",
+                "ordinary_tool",
+                false,
+                ToolData::Absent,
+                "{\"pretend\":\"data\"}",
+            ),
+        ];
+        let mut fixtures = Vec::new();
+        for (name, tool_name, failed, data, presentation) in cases {
+            let expected = data.clone();
+            let mut delivery = delivery(data, vec![text(presentation)]);
+            delivery.tool_id = tool_name.into();
+            if failed {
+                delivery.outcome = ToolOutcome::Failed(std::sync::Arc::new(
+                    pl_core::tool::opaque::ToolError::operation(
+                        std::io::Error::other("business operation failed"),
+                        delivery.output.clone(),
+                    ),
+                ));
+            }
+            let state = terminal(&delivery, 42).unwrap();
+            let output = match &state {
+                ThreadToolState::Succeeded(done) if !failed => done.output(),
+                ThreadToolState::Failed(done) if failed => done.output().unwrap(),
+                _ => panic!("projection changed the execution outcome"),
+            };
+            assert_eq!(output.result(), presentation);
+            let expected_artifacts = match expected {
+                ToolData::Absent => Vec::new(),
+                ToolData::Value(value) => vec![json!({"toolData": value})],
+            };
+            assert_eq!(output.output_artifacts(), expected_artifacts);
+            fixtures.push(json!({
+                "name":name, "toolName":tool_name,
+                "outcome":if failed { "failed" } else { "succeeded" },
+                "output":output,
+            }));
+        }
+        let saved: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../anywork/test/fixtures/tool_data_rust.json"
+        )))
+        .unwrap();
+        assert_eq!(fixtures, saved);
     }
 }
 

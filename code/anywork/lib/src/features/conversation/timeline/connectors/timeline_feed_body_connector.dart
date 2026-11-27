@@ -159,7 +159,7 @@ class _TimelineFeedBodyState extends State<TimelineFeedBodyConnector> {
       final value = await content.readBodyWindow(
         reference,
         offset: offset,
-        maxBytes: 64 * 1024,
+        maxBytes: timelineBodyWindowMaxBytes,
       );
       if (!_active || request != _request) return;
       final encoded = value.bytesBase64;
@@ -170,7 +170,7 @@ class _TimelineFeedBodyState extends State<TimelineFeedBodyConnector> {
         throw StateError('Body window did not advance');
       }
       if (value.totalBytes != reference.byteLength ||
-          bytes.length > 64 * 1024 ||
+          bytes.length > timelineBodyWindowMaxBytes ||
           value.offset + bytes.length > value.totalBytes ||
           value.eof != (value.offset + bytes.length == value.totalBytes)) {
         throw StateError('Body window does not match its fixed reference');

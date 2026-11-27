@@ -1,8 +1,11 @@
+import 'dart:convert';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../l10n/app_localizations.dart';
 import '../../../../../../shared/typed_json.dart';
 import '../../../state/lsp_presentation.dart';
+import '../../../state/tool_data_artifact.dart';
 import '../../../state/tool_presentation.dart';
 import '../../../widgets/timeline_lsp_tool_view.dart';
 import '../../support/structured_tool_adapter.dart';
@@ -25,7 +28,7 @@ class LspQueryToolItem extends StructuredTimelineToolAdapter {
 
   @override
   TimelineToolBodyPolicy get bodyPolicy =>
-      const TimelineToolBodyPolicy(readsStructuredOutput: false);
+      const TimelineToolBodyPolicy(readsStructuredOutput: true);
 
   @override
   bool get showsDeclaredPrefixInput => false;
@@ -155,13 +158,17 @@ class LspQueryToolItem extends StructuredTimelineToolAdapter {
   }
 
   @override
-  Widget? buildInlineBody(
+  Widget? buildToolDataBody(
     TimelineToolItemContext context, {
     ToolAcceptanceProjection? acceptance,
   }) {
+    final data = context.controller.toolData;
+    if (data is! ToolDataArtifactPresent) {
+      return super.buildToolDataBody(context, acceptance: acceptance);
+    }
     final presentation = parseTimelineLspQuery(
       context.item.arguments,
-      context.item.output,
+      jsonEncode(data.value),
     );
     return TimelineLspToolView(
       itemId: context.item.id,
@@ -185,14 +192,11 @@ class LspQueryToolItem extends StructuredTimelineToolAdapter {
         acceptance: acceptance,
       );
     }
-    final presentation = parseTimelineLspQuery(
-      context.item.arguments,
+    return super.buildWindowBody(
+      context,
       windowText,
-    );
-    return TimelineLspToolView(
-      itemId: context.item.id,
-      presentation: presentation,
-      markdownBuilder: context.markdownBuilder,
+      isInput: false,
+      acceptance: acceptance,
     );
   }
 }

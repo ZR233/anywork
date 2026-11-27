@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../l10n/app_localizations.dart';
 import '../../../state/lsp_presentation.dart';
+import '../../../state/tool_data_artifact.dart';
 import '../../../state/tool_presentation.dart';
 import '../../../widgets/timeline_lsp_tool_view.dart';
 import '../../support/structured_tool_adapter.dart';
@@ -23,7 +26,7 @@ class LspStatusToolItem extends StructuredTimelineToolAdapter {
 
   @override
   TimelineToolBodyPolicy get bodyPolicy =>
-      const TimelineToolBodyPolicy(readsStructuredOutput: false);
+      const TimelineToolBodyPolicy(readsStructuredOutput: true);
 
   @override
   bool get showsDeclaredPrefixInput => false;
@@ -49,11 +52,15 @@ class LspStatusToolItem extends StructuredTimelineToolAdapter {
       };
 
   @override
-  Widget? buildInlineBody(
+  Widget? buildToolDataBody(
     TimelineToolItemContext context, {
     ToolAcceptanceProjection? acceptance,
   }) {
-    final presentation = parseTimelineLspStatus(context.item.output);
+    final data = context.controller.toolData;
+    if (data is! ToolDataArtifactPresent) {
+      return super.buildToolDataBody(context, acceptance: acceptance);
+    }
+    final presentation = parseTimelineLspStatus(jsonEncode(data.value));
     if (!presentation.hasOutput) return null;
     return TimelineLspToolView(
       itemId: context.item.id,
@@ -77,11 +84,11 @@ class LspStatusToolItem extends StructuredTimelineToolAdapter {
         acceptance: acceptance,
       );
     }
-    final presentation = parseTimelineLspStatus(windowText);
-    return TimelineLspToolView(
-      itemId: context.item.id,
-      presentation: presentation,
-      markdownBuilder: context.markdownBuilder,
+    return super.buildWindowBody(
+      context,
+      windowText,
+      isInput: false,
+      acceptance: acceptance,
     );
   }
 }

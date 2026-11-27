@@ -13,7 +13,7 @@ async fn public_artifact(
     runtime: &pl_studio_runtime::StudioRuntime,
     thread: &str,
     turn: &str,
-) -> Result<serde_json::Value> {
+) -> Result<(serde_json::Value, serde_json::Value)> {
     let demand = HistoryDemand {
         max_rows: 128,
         max_bytes: 256 * 1024,
@@ -57,7 +57,13 @@ async fn public_artifact(
                 .find(|item| item.get("fileDisplay").is_some())
                 .context("file display artifact")?;
             ensure!(artifact.get("payload").is_none());
-            return Ok(artifact.clone());
+            let data = artifacts
+                .as_array()
+                .context("artifact array")?
+                .iter()
+                .find_map(|item| item.get("toolData"))
+                .context("author program value")?;
+            return Ok((artifact.clone(), data.clone()));
         }
         anyhow::bail!("completed public tool original missing")
     }
@@ -146,6 +152,8 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         let thread = started.thread.id;
         let turn = support::completed_prompt(&env.runtime, &thread, "display").await?;
         let live_artifact = public_artifact(&env.runtime, &thread, &turn.id).await?;
+        ensure!(live_artifact.1["caption"] == "selected files");
+        ensure!(live_artifact.1["files"][0]["resource"]["id"] == id);
         let requests = env.root_provider.recorded();
         let catalog = requests[0].body["tools"].as_array().context("catalog")?;
         ensure!(!catalog.iter().any(|tool| {
@@ -179,7 +187,7 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         env.restart().await?;
         ensure!(
             public_artifact(&env.runtime, &thread, &turn.id).await? == live_artifact,
-            "cold History read changed the original display artifact"
+            "cold History read changed the original display artifact or author value"
         );
         ensure!(
             env.runtime
@@ -213,7 +221,8 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
             )
             .await?;
         let archive_turn = support::completed_prompt(&env.runtime, &thread, "again").await?;
-        let archive_artifact = public_artifact(&env.runtime, &thread, &archive_turn.id).await?;
+        let (archive_artifact, _) =
+            public_artifact(&env.runtime, &thread, &archive_turn.id).await?;
         let receipt =
             saved_file_display_receipt(Some(&archive_artifact))?.context("archive file receipt")?;
         ensure!(receipt.caption.is_none());
