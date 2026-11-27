@@ -1,6 +1,6 @@
 ---
 name: studio-delegation
-description: Use when implementing, configuring, or validating Studio subagent delegation modes, model enablement, frozen child routes, or final task evaluations.
+description: 实现、配置或验证 Studio 子智能体分发模式、模型启用、冻结子会话路由或最终任务评价时使用。
 category: guides
 ---
 

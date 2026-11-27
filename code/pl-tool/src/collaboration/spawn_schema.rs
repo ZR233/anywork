@@ -36,17 +36,17 @@ pub(super) fn declaration(
     let input_schema = top_level_schema(&template, branches)?;
     let routing = match mode {
         DelegationMode::Automatic => {
-            "Current Native delegation mode: automatic. Profiles select role and workspace only. modelSelection must identify a currently qualified Native account/model; a Profile route is not an automatic selection."
+            "当前 Native 分发模式为 automatic（自动）。Profile 仅决定角色和工作区；modelSelection 必须指定当前具备派发资格的 Native 账号和模型，不能将 Profile 路由当作自动选模结果。"
         }
         DelegationMode::Profile => {
-            "Current Native delegation mode: profile (fixed). Use the Profile's configured route; modelSelection is forbidden."
+            "当前 Native 分发模式为 profile（固定）。使用 Profile 配置的路由，禁止传入 modelSelection。"
         }
     };
     let mut description = format!(
-        "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters after whitespace normalization) shown in the child list, and message: the task goal, key constraints and either full context or explicit references to accessible handoff files with their purpose and version. Together they must provide complete instructions; no application length limit. Top-level properties list the available parameters; select the matching oneOf branch for the chosen profileId. {routing} ACP targets always use their configured account and forbid modelSelection, writablePaths and structured review. If the selected Native model declares effort candidates, modelSelection.effort must explicitly select one; omit it or use null only when the model has no effort parameter. Omission does not inherit a root/Profile effort or select a model default. writablePaths is optional only for Native directory Profiles: omit it for the whole workspace, or use [] for business read-only access (Thread scratch/artifacts remain writable). reviewTargetAgentId is required only for Native review Profiles and must be the reviewed direct child's agentId; the host adopts its frozen workspace. The host independently validates permissions, current availability and limits. Open-agent capacity covers the root plus every open and preparing child in the tree; when a spawn is rejected for capacity, close finished agents with close_agent before spawning more. Profile workspace modes: {}.",
+        "使用获授权的 Profile 创建具有独立上下文的子智能体。必填 taskSummary 为子会话列表显示的简短任务说明，折叠空白后须为 1–80 个 Unicode 字符；message 提供任务目标、关键约束，以及完整上下文或可访问交接文件的明确引用、用途与版本，二者共同构成完整指令，应用层不限制长度。顶层属性列出可用参数，请按 profileId 选择对应的 oneOf 分支。{routing} ACP 始终使用其配置的账号，禁止 modelSelection、writablePaths 和结构化审查。所选 Native 模型若声明 effort 候选，必须通过 modelSelection.effort 显式选择其中之一；只有模型不支持 effort 时才可省略或传 null。省略不会继承主代理或 Profile 的强度，也不会选择模型默认值。writablePaths 仅对 Native directory Profile 可选：省略表示整个工作区可写，[] 表示业务目录只读，但本 Thread 的 scratch/artifacts 仍可写。reviewTargetAgentId 仅对 Native review Profile 必填，必须为被审查的直接子智能体 agentId，宿主采用该成员的冻结工作区。宿主独立校验权限、当前可用性与限制。容量统计包含主代理以及树中所有未关闭和准备中的子智能体；因容量不足被拒绝时，先用 close_agent 关闭已完成成员，再创建新成员。Profile 工作区模式：{}。",
         serde_json::to_string(&modes)?
     );
-    description.push_str(" ACP targets optionally accept ordered acpConfig entries {id,value} using the service's declared string value IDs or booleans, applied and confirmed before the first message. Omission uses new-session defaults, not the parent's selected model. Native targets reject ACP configuration. A configuration failure keeps the created member with messageAccepted=false; inspect or close it rather than assuming no child was created.");
+    description.push_str(" ACP 可选传入有序 acpConfig 条目 {id,value}，使用服务声明的字符串值 ID 或布尔值，在首条消息前应用并确认。省略时使用新会话默认值，不继承父代理选择的模型。Native 不接受 ACP 配置。配置失败时，已创建的成员会保留且 messageAccepted=false；应检查或关闭该成员，不能假定没有创建子智能体。");
     Ok(Some(
         ToolDefinition::json("spawn_agent", description, input_schema)
             .expect("valid tool definition"),
