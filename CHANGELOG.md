@@ -13,6 +13,15 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.56.0](https://github.com/ZR233/anywork/compare/v6.55.0...v6.56.0) (2026-11-27)
+
+
+### Bug Fixes
+
+* **studio:** 优化主代理职责、沟通与文件交接 ([#619](https://github.com/ZR233/anywork/issues/619)) ([518e55d](https://github.com/ZR233/anywork/commit/518e55df8c72957d019851a81d23dff8d6e93bbc))
+* **studio:** 修复思考摘要叠加并统一工作组成员注册分派组件 ([#620](https://github.com/ZR233/anywork/issues/620)) ([0ba3c60](https://github.com/ZR233/anywork/commit/0ba3c6016bd195524e7bdf8866ed08dae5d0eb6c))
+* **studio:** 移除时间线重复悬浮提示 ([#616](https://github.com/ZR233/anywork/issues/616)) ([e2c9350](https://github.com/ZR233/anywork/commit/e2c93502122b81785f5a7db013927bc80092dee5))
+
 ## [6.55.0](https://github.com/ZR233/anywork/compare/v6.54.0...v6.55.0) (2026-11-26)
 
 
