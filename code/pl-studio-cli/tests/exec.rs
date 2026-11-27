@@ -1176,7 +1176,18 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     }
     assert!(seen_agents >= 2, "expected root + child agents");
     assert!(seen_child_spawn, "expected child spawnToolCallId");
-    assert!(seen_child_input, "expected original parent-to-child input");
+    assert!(
+        seen_child_input,
+        "expected original parent-to-child input; completions={:?}",
+        events
+            .iter()
+            .filter_map(|event| match &event.body {
+                EventBodyV3::Completion { header, atom, .. } =>
+                    Some((&event.thread_id, &header.event.source, &atom.text_channel)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
     assert!(
         seen_spawn_completion,
         "expected the parent spawn observation"

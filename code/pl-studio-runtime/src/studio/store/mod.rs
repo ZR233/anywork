@@ -137,10 +137,15 @@ impl StudioStore {
     pub(crate) async fn prepare_conversation_history(&self, thread_id: &str) -> anyhow::Result<()> {
         let _maintenance = self.history_admission.write().await;
         self.ensure_delete_read_allowed(thread_id).await?;
+        let session = self.registered_session_paths(thread_id)?;
+        // Cold metadata reads Current even when History is already current or absent.
+        // Prepare it under its own writer admission before exposing the read-only feed.
+        self.thread_persistence
+            .upgrade_current_for_recovery(thread_id, session.root().to_path_buf())
+            .await?;
         if self.thread_persistence.shared_history(thread_id).is_some() {
             return Ok(());
         }
-        let session = self.registered_session_paths(thread_id)?;
         if tokio::fs::try_exists(session.history_database()).await? {
             self.upgrade_existing_history(&session, thread_id).await?;
         }
