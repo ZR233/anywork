@@ -95,30 +95,30 @@ pub struct AgentMessage {
     pub message: String,
 }
 
-/// Child creation parameters; Profile interpretation and permissions belong to Studio.
+/// 子智能体创建参数；Profile 的解释与权限由 Studio 管理。
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSpawn {
     pub profile_id: String,
-    /// Ordered session options for ACP targets, applied before the first message.
-    /// Use the service's declared option IDs and string value IDs or booleans.
+    /// ACP 的有序会话选项，在首条消息前应用。
+    /// 使用服务声明的选项 ID，以及字符串值 ID 或布尔值。
     #[serde(default)]
     pub acp_config: Vec<AcpSessionConfig>,
-    /// Required only for Native targets in automatic delegation; ACP always rejects overrides.
+    /// 仅在自动分发的 Native 目标中必填；ACP 始终拒绝路由覆盖。
     #[serde(default)]
     pub model_selection: Option<NewThreadModelRoute>,
-    /// Brief task description shown in the child list; required, nonempty, at most 80 Unicode characters.
+    /// 子会话列表显示的简短任务说明；必填、非空，最多 80 个 Unicode 字符。
     pub task_summary: AgentTaskSummary,
-    /// Full self-contained task: goals, approved contract, facts, interfaces, steps, ownership and verification. No application length limit; include pseudocode when useful.
+    /// 任务目标和关键约束，以及完整上下文或可访问交接文件的引用、用途与版本。二者共同覆盖已批准契约、事实、接口、责任归属和验证要求。应用层不限制长度。
     pub message: String,
-    /// Optional workspace-relative write directories, accepted only by directory Profiles.
+    /// 可选的工作区相对可写目录，仅 directory Profile 接受。
     pub writable_paths: Option<Vec<String>>,
-    /// Pure agentId of the reviewed direct child; required by review Profiles and rejected otherwise. The host adopts that agent's frozen workspace.
+    /// 被审查的直接子智能体 agentId；review Profile 必填，其他 Profile 拒绝。宿主采用该成员的冻结工作区。
     pub review_target_agent_id: Option<String>,
-    /// Optional host-bound feedback to the reviewed executor; accepted only by review Profiles.
+    /// 可选的宿主绑定审查反馈，发给被审执行者；仅 review Profile 接受。
     #[serde(default, deserialize_with = "review_feedback")]
     pub review_feedback: Option<ReviewFeedback>,
-    /// Internal creation metadata, omitted from model-facing arguments.
+    /// 内部创建元数据，不暴露在模型参数中。
     #[serde(default)]
     #[schemars(skip)]
     pub metadata: serde_json::Value,
