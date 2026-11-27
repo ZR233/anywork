@@ -13,6 +13,22 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.57.0](https://github.com/ZR233/anywork/compare/v6.56.0...v6.57.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **agent-runtime:** 移除旧工具 payload 结果信封及正文反解析。Lua 直接消费作者值，命令 stdout/stderr 改为字符串；旧保存结构只在具名迁移边界转换。
+
+### Bug Fixes
+
+* **studio:** 修复子智能体关闭状态机与旧会话迁移 ([#621](https://github.com/ZR233/anywork/issues/621)) ([869d968](https://github.com/ZR233/anywork/commit/869d9689e216d5fb60dcb220dc3ddb586501c47f))
+
+
+### Refactoring
+
+* **agent-runtime:** 统一工具结果与可靠原件契约 ([#622](https://github.com/ZR233/anywork/issues/622)) ([afdf020](https://github.com/ZR233/anywork/commit/afdf0206f71220235597240b079372de7cefc50a))
+
 ## [6.56.0](https://github.com/ZR233/anywork/compare/v6.55.0...v6.56.0) (2026-11-27)
 
 
