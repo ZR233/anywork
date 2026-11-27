@@ -726,7 +726,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       return TimelineActivityRow(
         icon: Icons.info_outline,
         label: context.l10n.timelineRuntimeNotice,
-        tooltip: context.l10n.timelineRuntimeNoticeDetail,
+        semanticsLabel: context.l10n.timelineRuntimeNoticeDetail,
         expandable: false,
       );
     }

@@ -366,7 +366,6 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
           isIssue: summary.isIssue,
           expanded: expanded,
           expandable: expandable,
-          tooltip: summary.tooltip,
           meta: summary.meta,
         );
       case TimelineToolIconData(
@@ -398,7 +397,6 @@ class _TimelineToolItemViewState extends State<TimelineToolItemView> {
           isIssue: rowIsIssue,
           expanded: expanded,
           expandable: expandable,
-          tooltip: summary.tooltip,
           meta: summary.meta,
         );
     }

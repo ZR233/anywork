@@ -103,7 +103,6 @@ class _AcpProcessGroupHeader extends StatelessWidget {
         indicatorStyle: style,
         label: label,
         meta: meta,
-        tooltip: '$label\n$meta',
         active: true,
         emphasized: true,
         header: true,
@@ -123,7 +122,6 @@ class _AcpProcessGroupHeader extends StatelessWidget {
         indicatorStyle: TimelineActivityIndicatorStyle.compactingZip,
         label: label,
         meta: meta,
-        tooltip: '$label\n$meta',
         active: true,
         header: true,
         expandable: true,
@@ -165,7 +163,6 @@ class _AcpProcessGroupHeader extends StatelessWidget {
             )
           : null,
       meta: meta,
-      tooltip: [label, ?meta].join('\n'),
       active: true,
       header: true,
       expandable: true,
@@ -198,7 +195,6 @@ class _AcpProcessGroupHeader extends StatelessWidget {
       header: false,
       expandable: true,
       expanded: expanded,
-      tooltip: summary,
     );
   }
 }

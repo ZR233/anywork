@@ -23,19 +23,15 @@ List<ToolDetailValue> toolTransferInput(AppLocalizations l10n, String text) {
   };
 }
 
-/// Formats compact basename transition for the collapsed row and full multi-line
-/// paths as hover tooltip.
-ToolRowTarget toolTransferRowTarget(
+/// Formats the compact basename transition for the collapsed row.
+String? toolTransferRowTarget(
   TimelineToolPresentation item, {
-  required ToolRowTarget fallback,
+  required String? fallback,
 }) {
   final data = decodeJsonObject(item.arguments);
   final from = toolFirstLine(jsonStringValue(data['from']));
   final to = toolFirstLine(jsonStringValue(data['to']));
   if (from == null && to == null) return fallback;
   final names = [?toolPathBasename(from), ?toolPathBasename(to)].join(' → ');
-  return (
-    label: names.isEmpty ? null : names,
-    tooltip: [?from, if (to != null) '→ $to'].join('\n'),
-  );
+  return names.isEmpty ? null : names;
 }
