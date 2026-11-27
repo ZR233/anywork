@@ -861,3 +861,65 @@ async fn cold_checkpoint_native_send_distinguishes_child_data_and_workspace_fail
     runtime.shutdown_runtime().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn cold_feed_maintenance_upgrades_current_with_already_current_history() -> Result<()> {
+    let saved = ColdConversation::new(ThreadWorkspaceMode::Local).await?;
+    let mut legacy = serde_json::to_value(&saved.current)?;
+    legacy["schemaVersion"] = 1.into();
+    let original = serde_json::to_vec(&legacy)?;
+    tokio::fs::write(&saved.current_path, &original).await?;
+    let request_count = saved.endpoint.recorded().len();
+    let runtime = StudioRuntime::initialize(options(&saved.home)).await?;
+    assert!(
+        runtime
+            .open_conversation_feed(&saved.thread_id, 16)
+            .await
+            .is_err()
+    );
+    assert_eq!(tokio::fs::read(&saved.current_path).await?, original);
+    for _ in 0..2 {
+        let feed = runtime
+            .open_conversation_feed_with_maintenance(&saved.thread_id, 16)
+            .await?;
+        assert!(!feed.session_meta_snapshot().execution_present);
+        let Some(ConversationEvent::Timeline(TimelinePatch::Reset { items, .. })) =
+            feed.next_event().await
+        else {
+            anyhow::bail!("expected saved timeline after Current migration");
+        };
+        assert!(
+            items.iter().any(
+                |item| matches!(item, TimelineItem::UserMessage { text, .. } if text == "hello")
+            )
+        );
+        feed.close().await;
+    }
+    let published = tokio::fs::read(&saved.current_path).await?;
+    let migrated = ThreadCurrent::from_json(&published, &saved.thread_id)?;
+    assert_eq!(
+        migrated.saved_runtime_epoch,
+        saved.current.saved_runtime_epoch
+    );
+    assert_eq!(migrated.state.context, saved.current.state.context);
+    assert_eq!(
+        tokio::fs::read(
+            saved
+                .current_path
+                .parent()
+                .unwrap()
+                .join("migration-backups/current-tool-result-v1/current.original.json")
+        )
+        .await?,
+        original
+    );
+    assert!(
+        runtime
+            .session_of(&saved.thread_id)
+            .and_then(|session| session.observed_thread(&saved.thread_id))
+            .is_none()
+    );
+    assert_eq!(saved.endpoint.recorded().len(), request_count);
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}

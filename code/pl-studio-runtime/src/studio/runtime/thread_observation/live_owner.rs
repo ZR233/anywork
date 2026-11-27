@@ -73,7 +73,6 @@ pub(super) struct LiveOwner {
     thread: crate::Thread,
     pub(super) bus: MetaEventBus,
     slot: Arc<ObservationSlot>,
-    attached_commit_floor: u64,
 }
 
 /// Which path a retained handoff batch came from; a retry never re-decides it.
@@ -148,7 +147,10 @@ impl LiveOwner {
                 Ok(()) | Err(pl_core::thread::ThreadError::Closed) => {}
                 Err(error) => return Err(error.into()),
             }
-            let attached_commit_floor = handle.snapshot().commit_sequence;
+            *state
+                .bus
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bus.clone());
             let usage = snapshot.usage_summary.clone();
             let runtime_epoch = handle.runtime_epoch();
             conversation
@@ -223,7 +225,6 @@ impl LiveOwner {
                 thread,
                 bus: bus.clone(),
                 slot,
-                attached_commit_floor,
             };
             owner.publish_retained()?;
             owner.publish_session_meta(snapshot)?;
@@ -311,16 +312,8 @@ impl LiveOwner {
             "a retained handoff must finish before projecting another effect"
         );
         let started = std::time::Instant::now();
-        if effect.sequence <= self.attached_commit_floor {
-            self.bus
-                .emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
-                    pl_core::thread::CoreCommitEvent {
-                        thread_id: self.thread.id.clone(),
-                        sequence: effect.sequence,
-                        export: Arc::clone(write),
-                    },
-                )));
-        }
+        self.bus
+            .ensure_durable_commit(&self.thread.id, Arc::clone(write));
         let prepared =
             match self
                 .retained
@@ -710,16 +703,8 @@ impl LiveOwner {
         write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
-        if write.effect.sequence <= self.attached_commit_floor {
-            self.bus
-                .emit_core_event(pl_core::thread::CoreEvent::Durable(Arc::new(
-                    pl_core::thread::CoreCommitEvent {
-                        thread_id: self.thread.id.clone(),
-                        sequence: write.effect.sequence,
-                        export: Arc::clone(write),
-                    },
-                )));
-        }
+        self.bus
+            .ensure_durable_commit(&self.thread.id, Arc::clone(write));
         let projected =
             self.retained
                 .projection

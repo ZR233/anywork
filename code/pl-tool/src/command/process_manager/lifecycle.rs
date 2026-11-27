@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::command::ManagedCommand;
 
@@ -41,11 +41,12 @@ pub(super) struct CommandLifecycle {
 }
 
 pub(super) fn spawn_lifecycle_task(
+    tasks: &TaskTracker,
     entry: Arc<CommandProcessEntry>,
     mut child: ManagedCommand,
     lifecycle: CommandLifecycle,
 ) {
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         let separate_capture = child.has_capture_completion();
         let deadline = tokio::time::Instant::now() + lifecycle.timeout;
         let outcome = wait_for_lifecycle_outcome(&mut child, &lifecycle).await;

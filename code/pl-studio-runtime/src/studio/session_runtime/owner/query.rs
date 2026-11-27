@@ -165,9 +165,9 @@ pub(crate) fn directory_snapshot(status: crate::ThreadStatus) -> pl_core::thread
             ThreadStatus::Idle
             | ThreadStatus::Queued
             | ThreadStatus::Running
-            | ThreadStatus::WaitingTool
             | ThreadStatus::WaitingInteraction
             | ThreadStatus::Cancelling
+            | ThreadStatus::CloseFailed
             | ThreadStatus::Faulted => ThreadLifecycle::Open,
         },
         ..Default::default()

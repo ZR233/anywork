@@ -144,3 +144,88 @@ async fn remote_helper_default_stdin_is_eof_and_interactive_input_remains_explic
     helper.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn manager_close_terminates_running_subprocesses_and_blocks_new_starts() -> anyhow::Result<()>
+{
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(ExecutorCommandBackend::local(dir.path())?);
+    let manager = CommandProcessManager::new(backend.clone());
+    let marker = dir.path().join("child.pid");
+    let command = format!(
+        "echo $$ > \"{}\"; while true; do sleep 0.1; done",
+        marker.display()
+    );
+    let started = manager
+        .start(CommandStartRequest {
+            command,
+            interactive: false,
+            cwd: None,
+            allow_workspace_escape: false,
+            timeout: Duration::from_secs(30),
+            yield_time: Duration::from_millis(50),
+            max_output_chars: 4096,
+            session_id: "close-test".into(),
+            tool_id: "exec".into(),
+            call_id: "close-call".into(),
+            cancellation_token: None,
+            output_observer: None,
+        })
+        .await?;
+    let process_id = started
+        .process_id
+        .context("background sleep command must remain running")?;
+    let pid_text = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(text) = tokio::fs::read_to_string(&marker).await
+                && !text.trim().is_empty()
+            {
+                break text;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let pid: u32 = pid_text.trim().parse()?;
+
+    manager.close().await;
+    assert_eq!(
+        manager.lifecycle(),
+        pl_tool::command::ProcessManagerLifecycle::Closed
+    );
+    // Repeat close must be idempotent.
+    manager.close().await;
+    assert!(manager.snapshot(&process_id, 4096).await.is_none());
+
+    #[cfg(unix)]
+    {
+        let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
+        assert!(
+            !proc_dir.exists(),
+            "OS subprocess pid {pid} must be terminated and reaped after manager.close()"
+        );
+    }
+
+    let rejected = manager
+        .run_task(
+            "task-after-close",
+            CommandStartRequest {
+                command: "echo should-not-run".into(),
+                interactive: false,
+                cwd: None,
+                allow_workspace_escape: false,
+                timeout: Duration::from_secs(5),
+                yield_time: Duration::ZERO,
+                max_output_chars: 4096,
+                session_id: "close-test".into(),
+                tool_id: "exec".into(),
+                call_id: "after-close".into(),
+                cancellation_token: None,
+                output_observer: None,
+            },
+        )
+        .await;
+    assert!(rejected.is_err());
+    backend.executor().close().await?;
+    Ok(())
+}

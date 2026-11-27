@@ -48,6 +48,8 @@ pub(in crate::thread) enum UserCommand {
         oneshot::Sender<Result<(), ThreadError>>,
     ),
     PauseExecution(oneshot::Sender<()>),
+    /// Pauses queued work, stops any active execution (including Preparing), and settles once idle.
+    DrainExecution(oneshot::Sender<Result<(), ThreadError>>),
     ResolveInteraction(
         interactions::InteractionResolution,
         oneshot::Sender<Result<interactions::InteractionRecord, ThreadError>>,
@@ -98,6 +100,7 @@ impl UserCommand {
             Self::PauseExecution(reply) => {
                 let _ = reply.send(());
             }
+            Self::DrainExecution(reply) => closed(reply),
             Self::BeginIdleClose(reply) => {
                 let _ = reply.send(false);
             }

@@ -231,6 +231,7 @@ async fn queued_close_restoration_reads_latest_durable_ack_and_never_regresses()
         "the progress publication must wait for the original directory command lock"
     );
     close.execution_closed = true;
+    close.worktree_cleanup = AgentWorktreeCleanup::NotApplicable;
     close.changed()?;
     events.store.save_agent_close(&close).await?;
     assert_eq!(

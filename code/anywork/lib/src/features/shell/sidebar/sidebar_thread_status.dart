@@ -20,7 +20,6 @@ class _ThreadStatusBadge extends StatelessWidget {
     final Widget indicator = switch (status) {
       ThreadStatusView.queued ||
       ThreadStatusView.running ||
-      ThreadStatusView.waitingTool ||
       ThreadStatusView.cancelling ||
       ThreadStatusView.closing => const _ActiveStatusRing(),
       ThreadStatusView.waitingInteraction => Icon(
@@ -28,7 +27,7 @@ class _ThreadStatusBadge extends StatelessWidget {
         size: 16,
         color: context.statusColors.warning,
       ),
-      ThreadStatusView.faulted => Icon(
+      ThreadStatusView.faulted || ThreadStatusView.closeFailed => Icon(
         Icons.error_outline,
         size: 16,
         color: context.colors.error,

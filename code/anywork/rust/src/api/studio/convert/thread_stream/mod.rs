@@ -94,11 +94,11 @@ pub(super) fn bridge_thread_status(status: ThreadStatus) -> BridgeThreadStatus {
         ThreadStatus::Idle => BridgeThreadStatus::Idle,
         ThreadStatus::Queued => BridgeThreadStatus::Queued,
         ThreadStatus::Running => BridgeThreadStatus::Running,
-        ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
         ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
         ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
         ThreadStatus::Closing => BridgeThreadStatus::Closing,
         ThreadStatus::Closed => BridgeThreadStatus::Closed,
+        ThreadStatus::CloseFailed => BridgeThreadStatus::CloseFailed,
         ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
     }
 }

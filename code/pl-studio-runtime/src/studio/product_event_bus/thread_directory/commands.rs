@@ -82,18 +82,18 @@ impl ProductEventBus {
         let _command = self.directory_commands.lock().await;
         // Read inside the publication boundary: a restore waiting on this lock
         // cannot carry an old false past a newer execution-close ACK.
-        let execution_closed = self
+        let close_status = self
             .store
             .agent_close(thread_id)
             .await?
             .context("close progress requires its durable intent")?
-            .execution_closed;
+            .lifecycle_status();
         let catalog = self.store.catalog();
         let agent = catalog
             .agent_by_thread(thread_id)
             .ok_or_else(|| StudioError::not_found("session"))?;
         catalog
-            .project_explicit_close(&agent.agent_id, execution_closed)
+            .project_explicit_close(&agent.agent_id, close_status)
             .await?;
         let recovered_session = catalog.get_session(&agent.session_id);
         let recovered_agent = catalog.agent_by_thread(thread_id);
@@ -126,13 +126,22 @@ impl ProductEventBus {
         };
         let newly_closed = index.explicitly_closed.insert(agent.agent_id.clone());
         let previous_status = agent.native_status();
-        agent.explicitly_closed = true;
-        agent.set_native_status(if execution_closed {
-            ThreadStatus::Closed
+        let had_activity = if matches!(
+            close_status,
+            crate::studio::store::agent_close::AgentCloseStatus::Closed
+                | crate::studio::store::agent_close::AgentCloseStatus::CloseFailed
+        ) {
+            index.native_activity.remove(&agent.agent_id).is_some()
         } else {
-            ThreadStatus::Closing
-        });
-        if !recovered_member && !newly_closed && previous_status == agent.native_status() {
+            false
+        };
+        agent.explicitly_closed = true;
+        agent.set_native_status(close_status.thread_status());
+        if !recovered_member
+            && !newly_closed
+            && !had_activity
+            && previous_status == agent.native_status()
+        {
             return Ok(());
         }
         index.insert_agent(agent.clone());

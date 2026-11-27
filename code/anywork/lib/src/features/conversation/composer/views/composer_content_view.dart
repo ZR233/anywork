@@ -216,6 +216,7 @@ class _ComposerContentViewState extends State<ComposerContentView> {
     final blockedReason = switch (backend.status) {
       ThreadStatusView.closing ||
       ThreadStatusView.closed ||
+      ThreadStatusView.closeFailed ||
       ThreadStatusView.faulted => context.l10n.statusModelSwitchWhileInactive,
       _ => null,
     };

@@ -906,3 +906,74 @@ async fn cancelled_activation_resumes_the_one_already_effective_attach() -> Resu
     prove_report_and_reactivate(&fixture, &saved).await?;
     resources.shutdown().await
 }
+
+#[tokio::test]
+async fn close_saved_child_handles_resident_closed_core_with_explicit_marker_idempotently()
+-> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+    let parent = Fixture::protocol("parent", None);
+    let child = Fixture::protocol("child", Some("parent"));
+    save_cold_thread(&store, &parent).await?;
+    save_cold_thread(&store, &child).await?;
+    let resources = close_factory(&store)?;
+    let current = store
+        .state_for("project-test", "child")?
+        .load_current()
+        .await?
+        .context("child current")?;
+    let current_snapshot = current.state.to_paused_snapshot();
+    resources
+        .factory
+        .begin_child_close(&child, Some(&current_snapshot), false)
+        .await?;
+    let fixture = Fixture::new(store.clone())?;
+    resources.install(&fixture.owner)?;
+    let services = fixture
+        .owner
+        .0
+        .state()
+        .agent_services
+        .clone()
+        .context("real report services")?;
+    let installed = services.install_storage_owner(
+        &fixture.owner,
+        &child,
+        current,
+        EntryPurpose::CloseStorage,
+    )?;
+    fixture.owner.attach_close_storage(&child.id).await?;
+    crate::studio::agent_close::commit(&installed).await?;
+    installed.close().await?;
+    assert_eq!(
+        installed.snapshot().lifecycle,
+        pl_core::thread::ThreadLifecycle::Closed
+    );
+    assert!(
+        crate::studio::agent_close::is_explicitly_closed(&installed.snapshot())?,
+        "resident closed core must carry the explicit close marker"
+    );
+    assert!(
+        !store
+            .agent_close("child")
+            .await?
+            .context("unfinished close record")?
+            .execution_closed
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        fixture.owner.resume_agent_closes(),
+    )
+    .await??;
+    assert!(
+        store
+            .agent_close("child")
+            .await?
+            .context("completed close record")?
+            .execution_closed
+    );
+    assert!(fixture.owner.close_session().await.is_empty());
+    fixture.stop_writers().await?;
+    resources.shutdown().await
+}

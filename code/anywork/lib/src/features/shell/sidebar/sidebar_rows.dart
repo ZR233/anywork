@@ -446,11 +446,11 @@ class SidebarThreadRow extends StatelessWidget {
   Color _statusDotColor(BuildContext context) => switch (row.backend) {
     AcpAgentBackendView() => context.colors.onSurfaceVariant,
     NativeAgentBackendView(:final status) => switch (status) {
-      ThreadStatusView.faulted => context.colors.error,
+      ThreadStatusView.faulted ||
+      ThreadStatusView.closeFailed => context.colors.error,
       ThreadStatusView.waitingInteraction => context.statusColors.warning,
       ThreadStatusView.queued ||
       ThreadStatusView.running ||
-      ThreadStatusView.waitingTool ||
       ThreadStatusView.cancelling ||
       ThreadStatusView.closing => context.statusColors.activeIndicator,
       ThreadStatusView.idle || ThreadStatusView.closed =>

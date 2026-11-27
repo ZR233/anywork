@@ -1,7 +1,7 @@
-//! Catalog TOML 的冻结历史 DTO 与 1→2→3→4→5→6→7→8 类型迁移链。
+//! Catalog TOML 的冻结历史 DTO 与 1→2→3→4→5→6→7→8→9 类型迁移链。
 //!
 //! 历史条目的嵌套 enum / 冻结路由使用本模块的 wire 形状，不借用会演进的
-//! `pl_protocol` 类型。库链输出最新冻结文件 DTO [`CatalogV8`]；owner 再
+//! `pl_protocol` 类型。库链输出最新冻结文件 DTO [`CatalogV9`]；owner 再
 //! `TryFrom` 为运行期 [`super::CatalogDocument`]。V5→V6 把逐 Thread 复合身份
 //! 重组为会话/成员两级记录，缺失根、跨会话 parent 与循环都给出明确诊断。
 
@@ -24,7 +24,7 @@ pub(super) const ENTITY: &str = "catalog";
 pub(super) const SCHEMA_KEY: &str = "schemaVersion";
 
 pub(super) fn current_version() -> Result<u32> {
-    toml_schema::integer_version(CatalogV8::VERSION)
+    toml_schema::integer_version(CatalogV9::VERSION)
         .map_err(|error| toml_schema::chain_error(ENTITY, error))
 }
 
@@ -46,7 +46,8 @@ fn migrator() -> Result<&'static Migrator> {
                 .step::<CatalogV6>()
                 .step::<CatalogV7>()
                 .step::<CatalogV8>()
-                .into::<CatalogV8>(),
+                .step::<CatalogV9>()
+                .into::<CatalogV9>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(MIGRATOR.get_or_init(|| migrator))
@@ -60,12 +61,12 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
         return load_v6_once(path, value, target);
     }
     if source == Some(target) {
-        let current: CatalogV8 =
+        let current: CatalogV9 =
             toml_schema::decode_current_table(path, value, ENTITY, SCHEMA_KEY)?;
         return finish_loaded(path, current, target, target, false);
     }
     let historical = (source == Some(5)).then(|| value.clone());
-    let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV8>(
+    let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV9>(
         path,
         value,
         migrator()?,
@@ -111,13 +112,16 @@ fn load_v6_once(
             ),
         ));
     }
-    let current = MigratesTo::<CatalogV8>::migrate(MigratesTo::<CatalogV7>::migrate(legacy));
+    let current =
+        MigratesTo::<CatalogV9>::migrate(MigratesTo::<CatalogV8>::migrate(
+            MigratesTo::<CatalogV7>::migrate(legacy),
+        ));
     finish_loaded(path, current, 6, target, true)
 }
 
 fn finish_loaded(
     path: &Path,
-    document: CatalogV8,
+    document: CatalogV9,
     source_version: u32,
     target: u32,
     migrated: bool,
@@ -417,10 +421,52 @@ struct CatalogV7 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "8.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV8 {
+struct CatalogV8 {
     revision: u64,
     sessions: Vec<CatalogSessionV8>,
     agents: Vec<CatalogAgentV7>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
+#[versioned(version = "9.0.0")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CatalogV9 {
+    revision: u64,
+    sessions: Vec<CatalogSessionV8>,
+    agents: Vec<CatalogAgentV9>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogAgentV9 {
+    agent_id: String,
+    session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_agent_id: Option<String>,
+    thread_id: String,
+    role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    backend: FrozenBackendV9,
+    explicitly_closed: bool,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum FrozenBackendV9 {
+    Native {
+        config: FrozenNativeConfigV7,
+        status: FrozenThreadStatusV9,
+    },
+    Acp {
+        reference: FrozenAcpReferenceV7,
+    },
+    #[serde(skip)]
+    LegacyAcpWithoutReference {
+        account_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -628,6 +674,20 @@ enum FrozenThreadStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+enum FrozenThreadStatusV9 {
+    Idle,
+    Queued,
+    Running,
+    WaitingInteraction,
+    Cancelling,
+    Closing,
+    Closed,
+    CloseFailed,
+    Faulted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 enum FrozenDelegationMode {
     Profile,
     Automatic,
@@ -686,16 +746,36 @@ impl FrozenWorkspaceMode {
 }
 
 impl FrozenThreadStatus {
+    fn migrate_v9(self) -> FrozenThreadStatusV9 {
+        match self {
+            Self::Idle => FrozenThreadStatusV9::Idle,
+            Self::Queued => FrozenThreadStatusV9::Queued,
+            Self::Running | Self::WaitingTool => FrozenThreadStatusV9::Running,
+            Self::WaitingInteraction => FrozenThreadStatusV9::WaitingInteraction,
+            Self::Cancelling => FrozenThreadStatusV9::Cancelling,
+            Self::Closing => FrozenThreadStatusV9::Closing,
+            Self::Closed => FrozenThreadStatusV9::Closed,
+            Self::Faulted => FrozenThreadStatusV9::Faulted,
+        }
+    }
+
+    #[cfg(test)]
+    fn current(self) -> ThreadStatus {
+        self.migrate_v9().current()
+    }
+}
+
+impl FrozenThreadStatusV9 {
     fn current(self) -> ThreadStatus {
         match self {
             Self::Idle => ThreadStatus::Idle,
             Self::Queued => ThreadStatus::Queued,
             Self::Running => ThreadStatus::Running,
-            Self::WaitingTool => ThreadStatus::WaitingTool,
             Self::WaitingInteraction => ThreadStatus::WaitingInteraction,
             Self::Cancelling => ThreadStatus::Cancelling,
             Self::Closing => ThreadStatus::Closing,
             Self::Closed => ThreadStatus::Closed,
+            Self::CloseFailed => ThreadStatus::CloseFailed,
             Self::Faulted => ThreadStatus::Faulted,
         }
     }
@@ -969,16 +1049,50 @@ impl MigratesTo<CatalogV8> for CatalogV7 {
     }
 }
 
-impl IntoDomain<CatalogV8> for CatalogV8 {
-    fn into_domain(self) -> CatalogV8 {
+impl MigratesTo<CatalogV9> for CatalogV8 {
+    fn migrate(self) -> CatalogV9 {
+        CatalogV9 {
+            revision: self.revision,
+            sessions: self.sessions,
+            agents: self
+                .agents
+                .into_iter()
+                .map(|agent| CatalogAgentV9 {
+                    agent_id: agent.agent_id,
+                    session_id: agent.session_id,
+                    parent_agent_id: agent.parent_agent_id,
+                    thread_id: agent.thread_id,
+                    role: agent.role,
+                    title: agent.title,
+                    backend: match agent.backend {
+                        FrozenBackendV7::Native { config, status } => FrozenBackendV9::Native {
+                            config,
+                            status: status.migrate_v9(),
+                        },
+                        FrozenBackendV7::Acp { reference } => FrozenBackendV9::Acp { reference },
+                        FrozenBackendV7::LegacyAcpWithoutReference { account_id } => {
+                            FrozenBackendV9::LegacyAcpWithoutReference { account_id }
+                        }
+                    },
+                    explicitly_closed: agent.explicitly_closed,
+                    created_at: agent.created_at,
+                    updated_at: agent.updated_at,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl IntoDomain<CatalogV9> for CatalogV9 {
+    fn into_domain(self) -> CatalogV9 {
         self
     }
 }
 
-impl TryFrom<CatalogV8> for CatalogDocument {
+impl TryFrom<CatalogV9> for CatalogDocument {
     type Error = anyhow::Error;
 
-    fn try_from(document: CatalogV8) -> Result<Self> {
+    fn try_from(document: CatalogV9) -> Result<Self> {
         Ok(Self {
             revision: document.revision,
             sessions: document
@@ -1032,10 +1146,10 @@ impl TryFrom<CatalogSessionV8> for SessionDirectoryRecord {
     }
 }
 
-impl TryFrom<CatalogAgentV7> for AgentDirectoryRecord {
+impl TryFrom<CatalogAgentV9> for AgentDirectoryRecord {
     type Error = anyhow::Error;
 
-    fn try_from(agent: CatalogAgentV7) -> Result<Self> {
+    fn try_from(agent: CatalogAgentV9) -> Result<Self> {
         Ok(Self {
             agent_id: agent.agent_id,
             session_id: agent.session_id,
@@ -1044,14 +1158,14 @@ impl TryFrom<CatalogAgentV7> for AgentDirectoryRecord {
             role: agent.role,
             title: agent.title,
             backend: match agent.backend {
-                FrozenBackendV7::Native { config, status } => crate::AgentBackend::Native {
+                FrozenBackendV9::Native { config, status } => crate::AgentBackend::Native {
                     config: crate::NativeAgentConfig {
                         route: config.route.map(FrozenModelRoute::current),
                         system_instructions: None,
                     },
                     status: status.current(),
                 },
-                FrozenBackendV7::Acp { reference } => {
+                FrozenBackendV9::Acp { reference } => {
                     ensure!(
                         !reference.account_id.trim().is_empty()
                             && !reference.acp_session_id.trim().is_empty()
@@ -1066,7 +1180,7 @@ impl TryFrom<CatalogAgentV7> for AgentDirectoryRecord {
                         },
                     }
                 }
-                FrozenBackendV7::LegacyAcpWithoutReference { .. } => anyhow::bail!(
+                FrozenBackendV9::LegacyAcpWithoutReference { .. } => anyhow::bail!(
                     "Studio catalog legacy ACP member has no real remote session reference; original catalog must be retained"
                 ),
             },
@@ -1148,8 +1262,9 @@ mod tests {
             })
         );
 
-        let current = CatalogDocument::try_from(v4.migrate().migrate().migrate().migrate())
-            .expect("construct current");
+        let current =
+            CatalogDocument::try_from(v4.migrate().migrate().migrate().migrate().migrate())
+                .expect("construct current");
         assert_eq!(current.sessions.len(), 1);
         assert_eq!(current.sessions[0].session_id, "thread-a");
         assert_eq!(
@@ -1231,7 +1346,7 @@ mod tests {
     fn directory_validation_checks_shared_parent_chains_and_disconnected_cycles() -> Result<()> {
         let legacy = v6_document();
         let v7 = legacy.migrate();
-        let mut document = CatalogDocument::try_from(v7.migrate())?;
+        let mut document = CatalogDocument::try_from(v7.migrate().migrate())?;
         let second = document.agents[1].clone();
         let mut leaf = second.clone();
         leaf.agent_id = "leaf".into();
@@ -1259,7 +1374,7 @@ mod tests {
     fn v6_to_current_keeps_all_native_directory_facts() {
         let legacy = v6_document();
         let migrated = legacy.clone().migrate();
-        let current = CatalogDocument::try_from(migrated.migrate()).expect("current V8");
+        let current = CatalogDocument::try_from(migrated.migrate().migrate()).expect("current V9");
         validate(&current).expect("valid topology");
         let session = &current.sessions[0];
         assert_eq!(session.session_id, legacy.sessions[0].session_id);
@@ -1349,8 +1464,8 @@ mod tests {
 
     #[test]
     fn acp_reference_validates_without_a_native_thread_projection() {
-        let current =
-            CatalogDocument::try_from(acp_v7_document().migrate()).expect("ACP reference");
+        let current = CatalogDocument::try_from(acp_v7_document().migrate().migrate())
+            .expect("ACP reference");
         validate(&current).expect("valid ACP root");
         assert!(
             crate::studio::records::thread_projection(
@@ -1416,7 +1531,7 @@ mod tests {
     #[test]
     fn native_projection_resolves_real_thread_addresses_and_requires_root_mode() {
         let mut document =
-            CatalogDocument::try_from(v6_document().migrate().migrate()).expect("V8");
+            CatalogDocument::try_from(v6_document().migrate().migrate().migrate()).expect("V9");
         document.sessions[0].session_id = "product-session".into();
         document.sessions[0].root_agent_id = "root-agent".into();
         document.agents[0].agent_id = "root-agent".into();
@@ -1594,7 +1709,7 @@ mod tests {
                 archived: false,
             }],
         };
-        let current: CatalogV8 = current.migrate().migrate().migrate().migrate();
+        let current: CatalogV9 = current.migrate().migrate().migrate().migrate().migrate();
         let encoded = toml_schema::encode(&current, SCHEMA_KEY).expect("current bytes");
         let future = encoded.replacen(
             &format!(
@@ -1633,5 +1748,40 @@ mod tests {
         );
         assert_eq!(loaded.document.sessions[0].last_user_message_at, None);
         assert_eq!(loaded.document.agents[0].frozen_model(), None);
+    }
+
+    #[test]
+    fn v8_migrates_waiting_tool_to_running_and_v9_accepts_close_failed() {
+        let mut v8 = v6_document().migrate().migrate();
+        v8.agents[1].backend = FrozenBackendV7::Native {
+            config: FrozenNativeConfigV7 { route: None },
+            status: FrozenThreadStatus::WaitingTool,
+        };
+        let encoded_v8 = toml_schema::encode(&v8, SCHEMA_KEY).expect("V8 bytes");
+        let loaded = load_document(Path::new("catalog.toml"), &encoded_v8).expect("upgrade V8");
+        assert!(loaded.migrated);
+        assert_eq!(loaded.source_version, 8);
+        assert_eq!(
+            loaded.document.agents[0].native_status(),
+            Some(ThreadStatus::Idle)
+        );
+        assert_eq!(
+            loaded.document.agents[1].native_status(),
+            Some(ThreadStatus::Running)
+        );
+
+        let mut v9 = v8.migrate();
+        v9.agents[1].backend = FrozenBackendV9::Native {
+            config: FrozenNativeConfigV7 { route: None },
+            status: FrozenThreadStatusV9::CloseFailed,
+        };
+        let encoded_v9 = toml_schema::encode(&v9, SCHEMA_KEY).expect("V9 bytes");
+        let loaded_v9 = load_document(Path::new("catalog.toml"), &encoded_v9).expect("load V9");
+        assert!(!loaded_v9.migrated);
+        assert_eq!(loaded_v9.source_version, 9);
+        assert_eq!(
+            loaded_v9.document.agents[1].native_status(),
+            Some(ThreadStatus::CloseFailed)
+        );
     }
 }

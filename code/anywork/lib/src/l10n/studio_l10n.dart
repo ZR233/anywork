@@ -205,11 +205,11 @@ extension StudioLocalizationsX on BuildContext {
       ThreadStatusView.idle => l10n.threadStatusIdle,
       ThreadStatusView.queued => l10n.agentDetailStatusQueued,
       ThreadStatusView.running => l10n.agentDetailStatusRunning,
-      ThreadStatusView.waitingTool => l10n.statusTurnWaitingForApproval,
       ThreadStatusView.waitingInteraction => l10n.statusTurnWaitingForUserInput,
       ThreadStatusView.cancelling => l10n.threadStatusCancelling,
       ThreadStatusView.closing => l10n.agentDetailStatusClosing,
       ThreadStatusView.closed => l10n.threadStatusClosed,
+      ThreadStatusView.closeFailed => l10n.threadStatusCloseFailed,
       ThreadStatusView.faulted => l10n.agentDetailStatusErrored,
     };
   }

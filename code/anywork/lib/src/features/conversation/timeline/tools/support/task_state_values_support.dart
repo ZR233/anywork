@@ -26,6 +26,7 @@ Object? toolTaskStateValues(AppLocalizations l10n, Object? value) =>
               'cancelling' => l10n.timelineToolStateCancelling,
               'closing' => l10n.timelineToolStateClosing,
               'closed' => l10n.timelineToolStateClosed,
+              'closeFailed' => l10n.threadStatusCloseFailed,
               'faulted' => l10n.timelineToolStateFaulted,
               'budgetLimited' => l10n.timelineToolStateBudgetLimited,
               'ready' => l10n.timelineToolStateReady,

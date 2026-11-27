@@ -219,6 +219,12 @@ impl StudioThreadFactory {
             Some(lifetime) => Some(lifetime.gate.lock().await),
             None => None,
         };
+        let commands = scope.with_binding(|binding| {
+            binding.and_then(|binding| binding.commands.as_ref()?.upgrade())
+        });
+        if let Some(commands) = commands {
+            commands.close().await;
+        }
         let lsp_lease =
             scope.with_binding(|binding| binding.and_then(|binding| binding.lsp_lease.clone()));
         let (mcp_result, lsp_result) = tokio::join!(self.shutdown_scope_mcp(scope), async {

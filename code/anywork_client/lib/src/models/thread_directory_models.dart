@@ -6,24 +6,21 @@ enum ThreadStatusView {
   idle,
   queued,
   running,
-  waitingTool,
   waitingInteraction,
   cancelling,
   closing,
   closed,
+  closeFailed,
   faulted;
 
   bool get isActive => switch (this) {
-    queued ||
-    running ||
-    waitingTool ||
-    waitingInteraction ||
-    cancelling => true,
-    idle || closing || closed || faulted => false,
+    queued || running || waitingInteraction || cancelling => true,
+    idle || closing || closed || closeFailed || faulted => false,
   };
 
   /// Explicit final close is permanent; content remains readable independently.
-  bool get blocksNewExecution => this == closing || this == closed;
+  bool get blocksNewExecution =>
+      this == closing || this == closed || this == closeFailed;
 }
 
 enum WorkspaceKind { project, standalone }

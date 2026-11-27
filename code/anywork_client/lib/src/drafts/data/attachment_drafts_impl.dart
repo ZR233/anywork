@@ -675,7 +675,9 @@ final class AttachmentDraftsImpl extends ReadModel<AttachmentDraftBoard>
     // faulted 可能只是模型或工具输入驱动失败，后端续接会重新启用驱动并创建新的
     // 执行轮次；只有类型化存储事实明确阻塞准入时，才沿用存储恢复闸门。
     return switch ((row.backend as NativeAgentBackendView).status) {
-      ThreadStatusView.closing || ThreadStatusView.closed => false,
+      ThreadStatusView.closing ||
+      ThreadStatusView.closed ||
+      ThreadStatusView.closeFailed => false,
       ThreadStatusView.faulted =>
         _dependencies.conversations
                 .session(threadId)

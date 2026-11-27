@@ -150,20 +150,6 @@ impl SessionTable {
         self.state().sessions.values().cloned().collect()
     }
 
-    pub(crate) async fn resume_agent_closes(&self) -> anyhow::Result<()> {
-        let mut failures = Vec::new();
-        for session in self.resident_sessions() {
-            if let Err(error) = session.resume_agent_closes().await {
-                failures.push(format!("{}: {error:#}", session.id().as_str()));
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(failures.join("\n")))
-        }
-    }
-
     fn state(&self) -> std::sync::MutexGuard<'_, TableState> {
         self.0
             .lock()
@@ -343,19 +329,5 @@ mod tests {
             table.push_assignment(observation_assignment()),
             Err(ThreadAssemblyError::Closed)
         ));
-    }
-
-    #[tokio::test]
-    async fn resume_agent_closes_reports_every_resident_session() {
-        let table = SessionTable::new();
-        table.materialize(&session_id("session-a")).unwrap();
-        table.materialize(&session_id("session-b")).unwrap();
-        let error = table
-            .resume_agent_closes()
-            .await
-            .expect_err("sessions have no close services");
-        let text = format!("{error:#}");
-        assert!(text.contains("session-a"), "{text}");
-        assert!(text.contains("session-b"), "{text}");
     }
 }

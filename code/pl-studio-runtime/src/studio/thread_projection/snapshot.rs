@@ -77,8 +77,9 @@ fn storage_fault(fault: StorageFaultKind) -> HistoryFault {
 
 pub(in crate::studio) fn status(state: &ThreadSnapshot) -> ThreadStatus {
     match state.lifecycle {
-        ThreadLifecycle::Closing => ThreadStatus::Closing,
-        ThreadLifecycle::Closed => ThreadStatus::Closed,
+        // Non-explicit kernel lifecycle closing/closed (e.g. host shutdown or runtime eviction)
+        // keeps directory status Idle; explicit close_agent owns Closing / Closed / CloseFailed.
+        ThreadLifecycle::Closing | ThreadLifecycle::Closed => ThreadStatus::Idle,
         ThreadLifecycle::Open => {
             if matches!(
                 state.input_execution,

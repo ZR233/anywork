@@ -280,16 +280,21 @@ impl ThreadDirectoryIndex {
             if agent.explicitly_closed
                 && let StudioAgentActivity::Native {
                     state,
+                    execution,
                     can_stop,
                     awaiting_scheduling,
-                    ..
                 } = &mut activity
             {
-                *state = if agent.native_status() == Some(ThreadStatus::Closed) {
-                    crate::AgentState::Closed(crate::ClosedAgentState::new())
-                } else {
-                    crate::AgentState::Closing(crate::ClosingAgentState::new())
+                *state = match agent.native_status() {
+                    Some(ThreadStatus::Closed) => {
+                        crate::AgentState::Closed(crate::ClosedAgentState::new())
+                    }
+                    Some(ThreadStatus::CloseFailed) => {
+                        crate::AgentState::CloseFailed(crate::CloseFailedAgentState::new())
+                    }
+                    _ => crate::AgentState::Closing(crate::ClosingAgentState::new()),
                 };
+                *execution = None;
                 *can_stop = false;
                 *awaiting_scheduling = false;
             }

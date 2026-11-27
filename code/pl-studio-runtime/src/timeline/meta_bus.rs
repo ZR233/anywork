@@ -240,6 +240,30 @@ impl MetaEventBus {
         let _ = self.inner.tx.send(event);
     }
 
+    /// Ensures the durable commit `export` is submitted to the serial actor at least once,
+    /// without re-running a commit that already succeeded in `processed_commits`.
+    pub fn ensure_durable_commit(&self, thread_id: &str, export: Arc<HistoryExport>) {
+        let sequence = export.effect.sequence;
+        let already_admitted = self
+            .inner
+            .processed_commits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&sequence)
+            .is_some_and(Result::is_ok);
+        if already_admitted {
+            return;
+        }
+        let _ = self
+            .inner
+            .tx
+            .send(CoreEvent::Durable(Arc::new(CoreCommitEvent {
+                thread_id: thread_id.to_owned(),
+                sequence,
+                export,
+            })));
+    }
+
     #[must_use]
     pub fn history(&self) -> &HistoryStore {
         &self.inner.history
@@ -411,20 +435,33 @@ async fn run_serial_actor(
                     }
                     CoreEvent::Durable(commit) => {
                         let commit_seq = commit.export.effect.sequence;
-                        let result = if let Some(error) = admission_failure_through(&inner, commit_seq.saturating_sub(1)) {
-                            Err(error.into())
-                        } else {
-                            handle_durable_commit(&inner, commit).await
-                        };
-                        if let Err(error) = &result {
-                            tracing::error!(thread_id = %inner.history.thread_id(), error = %error,
-                                "MetaEventBus durable commit admission failed");
+                        let already_admitted = inner
+                            .processed_commits
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(&commit_seq)
+                            .is_some_and(Result::is_ok);
+                        if !already_admitted {
+                            let result = if let Some(error) =
+                                admission_failure_through(&inner, commit_seq.saturating_sub(1))
+                            {
+                                Err(error.into())
+                            } else {
+                                handle_durable_commit(&inner, commit).await
+                            };
+                            if let Err(error) = &result {
+                                tracing::error!(thread_id = %inner.history.thread_id(), error = %error,
+                                    "MetaEventBus durable commit admission failed");
+                            }
+                            inner
+                                .processed_commits
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(commit_seq, result.map_err(Arc::new));
+                            inner
+                                .processed_notify
+                                .send_modify(|n| *n = n.wrapping_add(1));
                         }
-                        inner.processed_commits.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(commit_seq, result.map_err(Arc::new));
-                        inner
-                            .processed_notify
-                            .send_modify(|n| *n = n.wrapping_add(1));
                     }
                 }
             }

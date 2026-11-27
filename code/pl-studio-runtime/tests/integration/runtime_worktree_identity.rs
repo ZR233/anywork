@@ -1464,3 +1464,364 @@ async fn worktree_child_can_be_evaluated_after_shorter_followup_turn() -> Result
     evaluated_done.release();
     env.finish(result).await
 }
+
+#[tokio::test]
+async fn dirty_worktree_close_publishes_close_failed_then_force_retry_cleans_worktree_and_keeps_history()
+-> Result<()> {
+    let spawned = ReplyStage::new();
+    let mut env = Environment::new(
+        vec![
+            prompt_step(
+                "dirty-close-root-1",
+                0,
+                support::spawn_reply("dirty-spawn", "dirty-child-init"),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "dirty-spawn",
+                "agentId",
+                1,
+                held_reply(&spawned, "dirty-root-spawned"),
+            ),
+            Step::agent_report(
+                Protocol::ResponsesHttp,
+                "dirty-child-done",
+                2,
+                support::text_reply("ack-dirty-child", "ack-dirty-child"),
+            ),
+        ],
+        vec![prompt_step(
+            "dirty-child-init",
+            0,
+            support::text_reply("dirty-child-done", "dirty-child-done"),
+        )],
+    )
+    .await?;
+
+    let result = async {
+        let root = env
+            .start(ThreadWorkspaceMode::Worktree, "dirty-close-root-1")
+            .await?;
+        reached(&spawned).await?;
+        let receipt = support::receipt(&env.root_provider, "dirty-spawn")?;
+        let child_id = support::child_id(&receipt)?.to_owned();
+        let child_path = support::child_path(&receipt)?.to_owned();
+        spawned.release();
+        support::completed(&env, &root.thread.id, "dirty-close-root-1").await?;
+        completed_turns(&env.runtime, &child_id, 1).await?;
+        completed_turns(&env.runtime, &root.thread.id, 2).await?;
+
+        std::fs::write(child_path.join("untracked-dirty.txt"), "dirty change\n")?;
+        env.root_provider.extend_script(vec![
+            prompt_step(
+                "close-non-force",
+                3,
+                support::tool_reply(
+                    "close_agent",
+                    "close-call-1",
+                    serde_json::json!({ "target": child_id, "force": false }),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "close-call-1",
+                &child_id,
+                4,
+                support::text_reply("non-force-done", "non-force-done"),
+            ),
+        ]);
+        support::submit(&env, &root.thread.id, "close-non-force").await?;
+
+        let non_force_thread = env.runtime.read_thread(&child_id).await?;
+        ensure!(
+            non_force_thread.status == pl_studio_runtime::ThreadStatus::CloseFailed,
+            "expected CloseFailed after dirty close, got {:?}",
+            non_force_thread.status
+        );
+        let dir_after_fail = env
+            .runtime
+            .read_state()
+            .await?
+            .agent_directory
+            .state
+            .value()
+            .cloned()
+            .context("agent directory value")?;
+        let child_dir_fail = dir_after_fail
+            .agents
+            .iter()
+            .find(|entry| entry.agent_id == child_id)
+            .context("child entry in directory")?;
+        ensure!(
+            matches!(
+                &child_dir_fail.activity,
+                pl_studio_runtime::StudioAgentActivity::Native {
+                    state: pl_studio_runtime::AgentState::CloseFailed(_),
+                    execution: None,
+                    can_stop: false,
+                    ..
+                }
+            ),
+            "unexpected CloseFailed directory entry: {:?}",
+            child_dir_fail.activity
+        );
+        ensure!(
+            env.runtime
+                .recovery_issues()
+                .iter()
+                .any(|issue| issue.id == format!("agent-close:{child_id}")),
+            "CloseFailed must publish live agent-close recovery issue"
+        );
+        ensure!(child_path.exists());
+
+        env.root_provider.extend_script(vec![
+            prompt_step(
+                "close-force",
+                5,
+                support::tool_reply(
+                    "close_agent",
+                    "close-call-2",
+                    serde_json::json!({ "target": child_id, "force": true }),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "close-call-2",
+                &child_id,
+                6,
+                support::text_reply("force-done", "force-done"),
+            ),
+        ]);
+        support::submit(&env, &root.thread.id, "close-force").await?;
+
+        let closed_thread = env.runtime.read_thread(&child_id).await?;
+        ensure!(
+            closed_thread.status == pl_studio_runtime::ThreadStatus::Closed,
+            "expected Closed after force retry, got {:?}",
+            closed_thread.status
+        );
+        let dir_after_close = env
+            .runtime
+            .read_state()
+            .await?
+            .agent_directory
+            .state
+            .value()
+            .cloned()
+            .context("agent directory value")?;
+        let child_dir_closed = dir_after_close
+            .agents
+            .iter()
+            .find(|entry| entry.agent_id == child_id)
+            .context("closed child entry in directory")?;
+        ensure!(
+            matches!(
+                &child_dir_closed.activity,
+                pl_studio_runtime::StudioAgentActivity::Native {
+                    state: pl_studio_runtime::AgentState::Closed(_),
+                    execution: None,
+                    can_stop: false,
+                    ..
+                }
+            ),
+            "unexpected Closed directory entry: {:?}",
+            child_dir_closed.activity
+        );
+        ensure!(
+            !env.runtime
+                .recovery_issues()
+                .iter()
+                .any(|issue| issue.id == format!("agent-close:{child_id}")),
+            "Closed must clear live agent-close recovery issue"
+        );
+        ensure!(!child_path.exists(), "worktree directory must be removed");
+        ensure!(
+            !git(&env.repo, &["worktree", "list", "--porcelain"])?.contains(&child_id),
+            "git worktree registration must be removed"
+        );
+        ensure!(
+            !public_history(&env.runtime, &child_id).await?.is_empty(),
+            "read-only child history must remain accessible after Closed"
+        );
+        Ok(())
+    }
+    .await;
+
+    spawned.release();
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn cold_startup_resumes_unfinished_agent_close_without_resident_session() -> Result<()> {
+    let spawned = ReplyStage::new();
+    let mut env = Environment::new(
+        vec![
+            prompt_step(
+                "cold-close-root-1",
+                0,
+                support::spawn_reply("cold-close-spawn", "cold-close-child-init"),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "cold-close-spawn",
+                "agentId",
+                1,
+                held_reply(&spawned, "cold-close-spawned"),
+            ),
+            Step::agent_report(
+                Protocol::ResponsesHttp,
+                "cold-close-child-done",
+                2,
+                support::text_reply("ack-cold-close-child", "ack-cold-close-child"),
+            ),
+        ],
+        vec![prompt_step(
+            "cold-close-child-init",
+            0,
+            support::text_reply("cold-close-child-done", "cold-close-child-done"),
+        )],
+    )
+    .await?;
+
+    let result = async {
+        let root = env
+            .start(ThreadWorkspaceMode::Worktree, "cold-close-root-1")
+            .await?;
+        reached(&spawned).await?;
+        let receipt = support::receipt(&env.root_provider, "cold-close-spawn")?;
+        let child_id = support::child_id(&receipt)?.to_owned();
+        let child_path = support::child_path(&receipt)?.to_owned();
+        spawned.release();
+        support::completed(&env, &root.thread.id, "cold-close-root-1").await?;
+        completed_turns(&env.runtime, &child_id, 1).await?;
+        completed_turns(&env.runtime, &root.thread.id, 2).await?;
+
+        std::fs::write(child_path.join("cold-dirty.txt"), "remove before restart\n")?;
+        env.root_provider.extend_script(vec![
+            prompt_step(
+                "cold-close-attempt",
+                3,
+                support::tool_reply(
+                    "close_agent",
+                    "cold-close-call-1",
+                    serde_json::json!({ "target": child_id, "force": false }),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "cold-close-call-1",
+                &child_id,
+                4,
+                support::text_reply("cold-close-attempt-done", "cold-close-attempt-done"),
+            ),
+        ]);
+        support::submit(&env, &root.thread.id, "cold-close-attempt").await?;
+        ensure!(
+            env.runtime.read_thread(&child_id).await?.status
+                == pl_studio_runtime::ThreadStatus::CloseFailed
+        );
+        ensure!(child_path.exists());
+
+        env.runtime.shutdown_runtime().await?;
+        std::fs::remove_file(child_path.join("cold-dirty.txt"))?;
+        env.runtime = Box::pin(pl_studio_runtime::StudioRuntime::initialize(
+            Environment::options(&env.home),
+        ))
+        .await?;
+        recovery_ready(&env.runtime).await?;
+
+        ensure!(
+            env.runtime.read_thread(&child_id).await?.status
+                == pl_studio_runtime::ThreadStatus::Closed,
+            "cold startup must materialize session and finish pending child close"
+        );
+        ensure!(
+            !env.runtime
+                .recovery_issues()
+                .iter()
+                .any(|issue| issue.id == format!("agent-close:{child_id}"))
+        );
+        ensure!(!child_path.exists());
+        ensure!(!public_history(&env.runtime, &child_id).await?.is_empty());
+        Ok(())
+    }
+    .await;
+
+    spawned.release();
+    env.finish(result).await
+}
+
+#[tokio::test]
+async fn idle_child_and_host_shutdown_preserve_worktree_and_never_publish_close() -> Result<()> {
+    let spawned = ReplyStage::new();
+    let mut env = Environment::new(
+        vec![
+            prompt_step(
+                "idle-preserve-root-1",
+                0,
+                support::spawn_reply("idle-spawn", "idle-child-init"),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "idle-spawn",
+                "agentId",
+                1,
+                held_reply(&spawned, "idle-spawned"),
+            ),
+            Step::agent_report(
+                Protocol::ResponsesHttp,
+                "idle-child-done",
+                2,
+                support::text_reply("ack-idle-child", "ack-idle-child"),
+            ),
+        ],
+        vec![prompt_step(
+            "idle-child-init",
+            0,
+            support::text_reply("idle-child-done", "idle-child-done"),
+        )],
+    )
+    .await?;
+
+    let result = async {
+        let root = env
+            .start(ThreadWorkspaceMode::Worktree, "idle-preserve-root-1")
+            .await?;
+        reached(&spawned).await?;
+        let receipt = support::receipt(&env.root_provider, "idle-spawn")?;
+        let child_id = support::child_id(&receipt)?.to_owned();
+        let child_path = support::child_path(&receipt)?.to_owned();
+        spawned.release();
+        support::completed(&env, &root.thread.id, "idle-preserve-root-1").await?;
+        completed_turns(&env.runtime, &child_id, 1).await?;
+        completed_turns(&env.runtime, &root.thread.id, 2).await?;
+
+        ensure!(
+            env.runtime.read_thread(&child_id).await?.status
+                == pl_studio_runtime::ThreadStatus::Idle
+        );
+        ensure!(child_path.exists());
+
+        env.restart().await?;
+        recovery_ready(&env.runtime).await?;
+
+        ensure!(
+            env.runtime.read_thread(&child_id).await?.status
+                == pl_studio_runtime::ThreadStatus::Idle,
+            "host shutdown Preserve + restart must never transition an Idle child to Closing/Closed"
+        );
+        ensure!(child_path.exists(), "Idle child worktree must be preserved");
+        ensure!(
+            !env.runtime
+                .recovery_issues()
+                .iter()
+                .any(|issue| issue.id == format!("agent-close:{child_id}"))
+        );
+        ensure!(!public_history(&env.runtime, &child_id).await?.is_empty());
+        Ok(())
+    }
+    .await;
+
+    spawned.release();
+    env.finish(result).await
+}

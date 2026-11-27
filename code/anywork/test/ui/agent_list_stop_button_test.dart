@@ -28,6 +28,7 @@ const _scheduledIdle = 'thread-child-scheduled-idle';
 const _cancellingChild = 'thread-child-cancelling';
 const _preparingChild = 'thread-child-preparing';
 const _closingChild = 'thread-child-closing';
+const _closeFailedChild = 'thread-child-close-failed';
 const _execution = AgentExecutionView(
   id: 'child-execution',
   phase: AgentExecutionPhase.running,
@@ -546,6 +547,17 @@ void main() {
         ),
         canStop: true,
       ),
+      _agent(
+        threadId: _closeFailedChild,
+        task: 'Close failed member',
+        state: const CloseFailedStudioAgent(),
+        execution: const AgentExecutionView(
+          id: 'child-execution-close-failed',
+          phase: AgentExecutionPhase.running,
+          turnId: 'child-turn',
+        ),
+        canStop: true,
+      ),
     ];
     graph.client.project.applyAgentDirectory(
       AgentDirectoryState(revision: 5, values: members),
@@ -613,6 +625,14 @@ void main() {
     expect(find.byKey(StudioDriverKeys.agentStop(_closingChild)), findsNothing);
     expect(
       find.byKey(StudioDriverKeys.agentStopNote(_closingChild)),
+      findsNothing,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.agentStop(_closeFailedChild)),
+      findsNothing,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.agentStopNote(_closeFailedChild)),
       findsNothing,
     );
     await _close(tester, graph);

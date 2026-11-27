@@ -50,7 +50,8 @@ pub(super) struct PendingEffect {
 pub(super) struct Owner {
     pub(super) active: Option<super::execution::ActiveRun>,
     pub(super) primary: Option<super::execution::PrimaryWork>,
-    pub(super) closing: Option<super::execution::Closing>,
+    pub(super) lifecycle: super::execution::LifecycleControl,
+    pub(super) drain_waiters: Vec<oneshot::Sender<Result<(), ThreadError>>>,
     pub(super) runtime_epoch: current::RuntimeEpoch,
     pub(super) current_call: Option<current::CurrentModelCall>,
     pub(super) current_capture: Option<crate::model::CurrentCaptureHandle>,
@@ -327,6 +328,7 @@ impl Owner {
                 ));
                 self.publish_snapshot();
             }
+            self.settle_drain_waiters();
         }
     }
 
@@ -410,12 +412,17 @@ impl Owner {
                     continue;
                 }
             }
-            if self.closing.is_none()
+            let should_exit = match &self.lifecycle {
+                super::execution::LifecycleControl::Open => !user_open,
+                super::execution::LifecycleControl::Closing(machine) => {
+                    !user_open && machine.paused_on_error
+                }
+                super::execution::LifecycleControl::Closed => true,
+            };
+            if should_exit
                 && self.primary.is_none()
                 && self.active.is_none()
-                && ((!user_open)
-                    || (self.state.lifecycle == ThreadLifecycle::Closed
-                        && self.final_current.borrow().is_some()))
+                && (!user_open || self.final_current.borrow().is_some())
             {
                 self.handoff_final_current();
                 return;
@@ -550,32 +557,32 @@ impl Owner {
                 let _ = reply.send(self.resume(request, options));
             }
             UserCommand::InterruptTurn { expected, reply } => {
-                let active = self
+                let running_turn = self
                     .state
                     .turns
                     .iter()
                     .rev()
                     .find(|turn| turn.state == TurnState::Running)
                     .map(|turn| turn.turn_id.clone())
-                    .or_else(|| self.stopping_turn.clone());
-                let result = match active {
-                    Some(turn_id) if expected.as_ref().is_some_and(|id| id != &turn_id) => {
-                        Err(ThreadError::InvalidIdentity)
-                    }
-                    Some(turn_id) => {
-                        self.stopping_turn = Some(turn_id.clone());
-                        self.pause_execution();
-                        self.note_execution_phase(ExecutionPhase::Stopping);
-                        let result = self.cancel_turn_tasks(&turn_id);
-                        let interrupted = self.interrupt.interrupt();
-                        self.publish_snapshot();
-                        result.map(|()| interrupted)
-                    }
-                    None => {
-                        self.pause_execution();
-                        self.publish_snapshot();
-                        Ok(false)
-                    }
+                    .or_else(|| self.stopping_turn.clone())
+                    .or_else(|| self.active.as_ref().map(|run| run.input.turn_id.clone()))
+                    .or_else(|| {
+                        self.state
+                            .execution
+                            .as_ref()
+                            .and_then(|execution| execution.turn_id.clone())
+                    });
+                let result = match expected {
+                    Some(expected) => match running_turn {
+                        Some(turn_id) if expected != turn_id => Err(ThreadError::InvalidIdentity),
+                        Some(_) => self.apply_execution_stop(super::execution::StopScope::Turn),
+                        None => {
+                            self.pause_execution();
+                            self.publish_snapshot();
+                            Ok(false)
+                        }
+                    },
+                    None => self.apply_execution_stop(super::execution::StopScope::Turn),
                 };
                 let _ = reply.send(result);
             }
@@ -639,12 +646,16 @@ impl Owner {
                 self.pause_execution();
                 let _ = reply.send(());
             }
+            UserCommand::DrainExecution(reply) => {
+                self.request_drain_execution(reply);
+            }
             UserCommand::CancelTask(id, reply) => {
                 let _ = reply.send(self.cancel_task(&id));
             }
             UserCommand::Flush(reply) => self.start_flush(reply),
             UserCommand::BeginIdleClose(reply) => {
-                let idle = self.active.is_none()
+                let idle = matches!(self.lifecycle, super::execution::LifecycleControl::Open)
+                    && self.active.is_none()
                     && !self
                         .state
                         .turns
@@ -689,15 +700,8 @@ impl Owner {
                             || status.pressure.error.is_some()
                     });
                 let idle = if idle {
-                    self.interrupt.begin_close();
-                    self.state.lifecycle = ThreadLifecycle::Closing;
-                    match self.publish() {
-                        Ok(()) => true,
-                        Err(error) => {
-                            self.driver.fail(Arc::new(error));
-                            false
-                        }
-                    }
+                    self.begin_closing(ClosePurpose::Preserve, None);
+                    true
                 } else {
                     false
                 };
@@ -727,7 +731,6 @@ impl Owner {
                     | LoopEvent::Resources(_, _)
                     | LoopEvent::Retry { .. }
                     | LoopEvent::AttachHistory(_, _)
-                    | LoopEvent::AttachEventSink(_, _)
                     | LoopEvent::Capacity(_, _)
                     | LoopEvent::PatchRuntimeFacts(_, _)
                     | LoopEvent::UpdateFacts(_, _)
@@ -1036,8 +1039,13 @@ impl Owner {
                 let _ = reply.send(result);
             }
             LoopEvent::AttachEventSink(sink, reply) => {
-                self.event_bus.attach_sink(sink);
-                let _ = reply.send(Ok(()));
+                let result = if self.lifecycle.is_closed() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.event_bus.attach_sink(sink);
+                    Ok(())
+                };
+                let _ = reply.send(result);
             }
             LoopEvent::Capacity(capacity, reply) => {
                 let result = if self.state.lifecycle == ThreadLifecycle::Open {
@@ -1129,7 +1137,20 @@ impl Owner {
             }
         } else if let Some(turn_id) = &self.stopping_turn {
             input::InputExecution::Interrupting {
-                turn_id: turn_id.clone(),
+                turn_id: Some(turn_id.clone()),
+            }
+        } else if self
+            .state
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.phase == ExecutionPhase::Stopping)
+        {
+            input::InputExecution::Interrupting {
+                turn_id: self
+                    .state
+                    .execution
+                    .as_ref()
+                    .and_then(|execution| execution.turn_id.clone()),
             }
         } else if let Some(input_id) = self.active.as_ref().and_then(|run| {
             run.primary_input_id
@@ -1997,6 +2018,181 @@ mod close_tests {
             std::time::Duration::from_secs(10),
             pressure_after_close_seal(ClosePurpose::Preserve),
         )
+        .await
+        .unwrap();
+    }
+
+    struct PreparingModel {
+        entered: CancellationToken,
+        release: CancellationToken,
+    }
+
+    impl ModelSession for PreparingModel {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
+            self.entered.cancel();
+            tokio::select! {
+                () = self.release.cancelled() => {}
+                () = request.cancellation.cancelled() => {
+                    return Err(ModelError {
+                        context_recovery: None,
+                        kind: crate::model::ModelFailureKind::Cancelled,
+                        details: None,
+                        usage: Box::default(),
+                        source: None,
+                    });
+                }
+            }
+            Ok(PreparedModelCall::new(async move {
+                Ok(ModelStepOutput {
+                    turn_action: Default::default(),
+                    attempt_id: request.attempt_id,
+                    base_context_revision: request.context.revision,
+                    content: vec![],
+                    tool_calls: vec![],
+                    private_context: None,
+                    usage: Default::default(),
+                })
+            }))
+        }
+
+        async fn close(&mut self) -> Result<(), ModelError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_execution_stops_preparing_turn_before_turn_record_exists() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let entered = CancellationToken::new();
+            let release = CancellationToken::new();
+            let thread = ThreadHandle::start(
+                "drain-preparing".into(),
+                DynModelSession::new(PreparingModel {
+                    entered: entered.clone(),
+                    release: release.clone(),
+                }),
+            )
+            .unwrap();
+            let running = tokio::spawn({
+                let thread = thread.clone();
+                async move {
+                    thread
+                        .run_turn(TurnInput {
+                            turn_id: "prep-turn".into(),
+                            attempt_prefix: "prep".into(),
+                            content: vec![ContextContent::Text { text: "hi".into() }],
+                            max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+                            cancellation: CancellationToken::new(),
+                        })
+                        .await
+                }
+            });
+            entered.cancelled().await;
+            assert!(thread.snapshot().execution.is_some());
+            thread.drain_execution().await.unwrap();
+            assert!(thread.snapshot().execution.is_none());
+            assert!(matches!(
+                running.await.unwrap(),
+                Err(ThreadError::Cancelled)
+            ));
+            thread.close().await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    struct FailModelCloseOnce {
+        attempts: Arc<AtomicUsize>,
+        first_failed: CancellationToken,
+    }
+
+    impl ModelSession for FailModelCloseOnce {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
+            Ok(PreparedModelCall::new(async move {
+                Ok(ModelStepOutput {
+                    turn_action: Default::default(),
+                    attempt_id: request.attempt_id,
+                    base_context_revision: request.context.revision,
+                    content: vec![],
+                    tool_calls: vec![],
+                    private_context: None,
+                    usage: Default::default(),
+                })
+            }))
+        }
+
+        async fn close(&mut self) -> Result<(), ModelError> {
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.first_failed.cancel();
+                return Err(ModelError {
+                    context_recovery: None,
+                    kind: crate::model::ModelFailureKind::Unavailable,
+                    details: None,
+                    usage: Box::default(),
+                    source: None,
+                });
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct TestSink(Arc<tokio::sync::Mutex<Vec<u64>>>);
+    impl crate::thread::CoreEventSink for TestSink {
+        fn emit(&self, event: crate::thread::CoreEvent) {
+            if let crate::thread::CoreEvent::Durable(commit) = event
+                && let Ok(mut seqs) = self.0.try_lock()
+            {
+                seqs.push(commit.sequence);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_close_coalesces_upgrades_to_delete_and_allows_sink_while_closing() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let model_attempts = Arc::new(AtomicUsize::new(0));
+            let first_failed = CancellationToken::new();
+            let thread = ThreadHandle::start(
+                "coalesce-close".into(),
+                DynModelSession::new(FailModelCloseOnce {
+                    attempts: model_attempts.clone(),
+                    first_failed: first_failed.clone(),
+                }),
+            )
+            .unwrap();
+            let c1 = tokio::spawn({
+                let thread = thread.clone();
+                async move { thread.close().await }
+            });
+            first_failed.cancelled().await;
+            assert!(c1.await.unwrap().is_err());
+            assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Closing);
+
+            // AttachEventSink must still be accepted while Closing.
+            let sink = Arc::new(TestSink::default());
+            thread.attach_event_sink(sink).await.unwrap();
+
+            // Retry with concurrent Preserve + Delete upgrade coalesces cleanly.
+            let c2 = tokio::spawn({
+                let thread = thread.clone();
+                async move { thread.close().await }
+            });
+            let c3 = tokio::spawn({
+                let thread = thread.clone();
+                async move { thread.close_for_deletion().await }
+            });
+            c2.await.unwrap().unwrap();
+            c3.await.unwrap().unwrap();
+            assert_eq!(model_attempts.load(Ordering::SeqCst), 2);
+            assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Closed);
+        })
         .await
         .unwrap();
     }

@@ -472,8 +472,6 @@ SessionMetaSnapshot _demoSessionMeta(
         ThreadStatusView.waitingInteraction,
       (_, ThreadActivityKind.stopping) => ThreadStatusView.cancelling,
       (QueuedStudioTurnState(), _) => ThreadStatusView.queued,
-      (RunningStudioTurnState(), ThreadActivityKind.runningTool) =>
-        ThreadStatusView.waitingTool,
       (RunningStudioTurnState(), _) => ThreadStatusView.running,
       _ => thread.status,
     },

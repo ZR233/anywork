@@ -1675,7 +1675,9 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
           true ||
       switch (_agentEntry(threadId)?.activity) {
         NativeStudioAgentActivity(
-          state: ClosingStudioAgent() || ClosedStudioAgent(),
+          state: ClosingStudioAgent() ||
+              ClosedStudioAgent() ||
+              CloseFailedStudioAgent(),
         ) =>
           true,
         AcpStudioAgentActivity(:final explicitlyClosed) => explicitlyClosed,

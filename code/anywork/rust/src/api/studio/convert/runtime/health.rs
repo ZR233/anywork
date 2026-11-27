@@ -66,6 +66,7 @@ fn bridge_agent_state(state: AgentState) -> BridgeAgentState {
         }
         AgentState::Closing(_) => BridgeAgentState::Closing(BridgeClosingAgent {}),
         AgentState::Closed(_) => BridgeAgentState::Closed(BridgeClosedAgent {}),
+        AgentState::CloseFailed(_) => BridgeAgentState::CloseFailed(BridgeCloseFailedAgent {}),
     }
 }
 

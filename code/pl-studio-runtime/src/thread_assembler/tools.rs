@@ -30,6 +30,10 @@ pub(crate) struct WeakCommandProcesses(
     >,
 );
 impl StudioCommandProcesses {
+    pub(crate) async fn close(&self) {
+        self.0.close().await;
+    }
+
     pub(crate) fn downgrade(&self) -> WeakCommandProcesses {
         WeakCommandProcesses(Arc::downgrade(&self.0))
     }

@@ -869,11 +869,11 @@ enum BridgeThreadStatus {
   idle,
   queued,
   running,
-  waitingTool,
   waitingInteraction,
   cancelling,
   closing,
   closed,
+  closeFailed,
   faulted,
 }
 

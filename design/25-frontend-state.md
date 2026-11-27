@@ -328,9 +328,9 @@ Client 提交命令的公开错误契约以 `SubmissionNotSent` 明确表达“�
 
 最终关闭的子会话继续使用原完整历史内容连接和按需读取接口，不引入 `History | Archive` 来源联合或精简归档专用 owner。持久关闭事实控制执行只读，不能把 `Inactive`、空运行时或读取连接结束当作新的执行许可；浏览历史不重新激活模型。迟到页、详情与会话切换仍受原需求代次及读取边界保护。界面组件释放观察不能关闭业务会话，工作树清理结果独立于历史内容和读取 owner，不据此声称历史或附件已删除。
 
-关闭进度由原持久 `AgentCloseRecord.execution_closed` 事实统一投影：永久执行封闭已保存但关闭确认未完成时为 `Closing`，原 Turn、工具、进程、观察、保存与父报告确认齐备并保存完成后才为 `Closed`。原关闭 owner 在开始、完成及启动恢复时向原目录 owner 提交该进度；目录、Agent、State 与一次性快照保持一致。普通 Core owner 的资源 `Closed`、保留式宿主退出及迟到目录更新不能推进或覆盖这项业务终态；无显式永久关闭事实的冷读仍可恢复，不通过激活执行 owner 或删除客户端只读保护获得许可。
+关闭进度由原持久 `AgentCloseRecord::lifecycle_status()`（`AgentCloseStatus::{Closing, CloseFailed, Closed}`）统一投影：存在记录错误或工作树清理处于 `Failed` 时为 `CloseFailed`；否则仅当 `execution_closed` 为真且 `worktree_cleanup` 处于无误终态时为 `Closed`；其余进行中阶段为 `Closing`。协议状态集合已移除 `ThreadStatus::WaitingTool` 并新增 `ThreadStatus::CloseFailed` / `AgentState::CloseFailed`。当状态进入 `Closed` 或 `CloseFailed` 时，目录同时清除遗留 `native_activity` 与 `execution`，避免前端继续显示活跃执行；原关闭 owner 在开始、失败、重试、完成及启动恢复时向原目录 owner 与 `StudioRecoveryRegistry`（`agent-close:{id}`）同步进度。普通 Core owner 的资源 `Closed`、保留式宿主退出（`thread_projection::status` 对非显式内核 `Closing`/`Closed` 统一投影为 `Idle`）及迟到目录更新不能推进或覆盖这项业务终态；无显式永久关闭事实的冷读仍可恢复，不通过激活执行 owner 或删除客户端只读保护获得许可。
 
-关闭进度发布在原目录命令的串行边界内读取当前持久记录，再更新原目录索引及增量保存；不能把锁外读取的旧进度跨异步等待提交，也不在普通查询中追加修补点读。恢复与完成确认交错时，旧恢复调用不得把已确认的 `Closed` 回退成 `Closing`；缺失关闭记录应明确失败，不从 Core 资源状态补造确认。
+关闭进度发布在原目录命令的串行边界内读取当前持久记录，再更新原目录索引及增量保存；不能把锁外读取的旧进度跨异步等待提交，也不在普通查询中追加修补点读。恢复与完成确认交错时，旧恢复调用不得把已确认的 `Closed` 回退成 `Closing`，显式 `force` 重试失败关闭时可重置 `Failed → Pending` 与 `error = None` 并重新发布 `Closing` 后推进；缺失关闭记录应明确失败，不从 Core 资源状态补造确认。
 
 新会话的本地文件、剪贴板图片与远端 URL 准入在意图发生时同步冻结草稿当前解析出的完整模型路由，并通过 `newThread` 准入上下文的必填 `route` 传递；该路由与提交共用同一解析规则，不重新采用工作模式默认模型，也不因暂存或排队期间的选择变化而改变。已有会话继续使用后端保存的会话模型路由。提交时仍按最终冻结的路由重新校验附件，切换模型不会使先前准入结果绕过能力限制。
 

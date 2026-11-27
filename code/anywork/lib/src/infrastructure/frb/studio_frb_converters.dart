@@ -418,12 +418,12 @@ ThreadStatusView _threadStatusFromFrb(frb.BridgeThreadStatus value) {
     frb.BridgeThreadStatus.idle => ThreadStatusView.idle,
     frb.BridgeThreadStatus.queued => ThreadStatusView.queued,
     frb.BridgeThreadStatus.running => ThreadStatusView.running,
-    frb.BridgeThreadStatus.waitingTool => ThreadStatusView.waitingTool,
     frb.BridgeThreadStatus.waitingInteraction =>
       ThreadStatusView.waitingInteraction,
     frb.BridgeThreadStatus.cancelling => ThreadStatusView.cancelling,
     frb.BridgeThreadStatus.closing => ThreadStatusView.closing,
     frb.BridgeThreadStatus.closed => ThreadStatusView.closed,
+    frb.BridgeThreadStatus.closeFailed => ThreadStatusView.closeFailed,
     frb.BridgeThreadStatus.faulted => ThreadStatusView.faulted,
   };
 }
@@ -455,6 +455,7 @@ StudioAgentState _agentStateFromFrb(frb.BridgeAgentState state) {
       WaitingInteractionStudioAgent(field0.turnId, field0.interactionId),
     frb.BridgeAgentState_Closing() => const ClosingStudioAgent(),
     frb.BridgeAgentState_Closed() => const ClosedStudioAgent(),
+    frb.BridgeAgentState_CloseFailed() => const CloseFailedStudioAgent(),
   };
 }
 

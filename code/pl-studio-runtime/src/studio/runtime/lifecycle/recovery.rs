@@ -37,45 +37,64 @@ async fn background_git_output(
 }
 
 impl StudioRuntime {
+    /// Materialize sessions for any durable unfinished explicit-close jobs and resume them even
+    /// when no session was resident yet at startup.
+    pub(in crate::studio::runtime) async fn resume_agent_closes(&self) -> Result<()> {
+        let pending = self.store.agent_closes().await?;
+        let mut session_ids = BTreeSet::new();
+        let mut failures = Vec::new();
+        for record in &pending {
+            if record.execution_closed && record.worktree_cleanup.is_terminal() {
+                continue;
+            }
+            if let Some((identity, _, _)) = self
+                .agent_facility
+                .product_events
+                .agent_execution_identity(&record.agent_id)
+            {
+                session_ids.insert(identity.session_id);
+                continue;
+            }
+            match self.store.catalog().get_agent(&record.agent_id) {
+                Some(agent) => match crate::SessionId::new(agent.session_id) {
+                    Ok(session_id) => {
+                        session_ids.insert(session_id);
+                    }
+                    Err(error) => failures.push(format!("{}: {error:#}", record.agent_id)),
+                },
+                None => failures.push(format!(
+                    "{}: saved close intent has no session identity",
+                    record.agent_id
+                )),
+            }
+        }
+        for session_id in session_ids {
+            match self.sessions.materialize(&session_id) {
+                Ok(session) => {
+                    if let Err(error) = session.resume_agent_closes().await {
+                        failures.push(format!("{}: {error:#}", session_id.as_str()));
+                    }
+                }
+                Err(error) => failures.push(format!("{}: {error:#}", session_id.as_str())),
+            }
+        }
+        for record in self.store.agent_closes().await? {
+            self.thread_factory.sync_agent_close_recovery(&record);
+        }
+        anyhow::ensure!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
     pub(in crate::studio::runtime) async fn append_agent_close_recovery_issues(
         &self,
         issues: &mut Vec<StudioRecoveryIssue>,
     ) -> Result<()> {
         for record in self.store.agent_closes().await? {
-            let residual_registration = matches!(
-                record.worktree_cleanup,
-                pl_tool::collaboration::control::AgentWorktreeCleanup::NotPresent {
-                    registration_present: true,
-                    ..
-                }
-            );
-            if record.execution_closed
-                && record.worktree_cleanup.is_terminal()
-                && record.error.is_none()
-                && !residual_registration
+            if let Some(issue) =
+                crate::studio::store::agent_close::agent_close_recovery_issue(&record)
             {
-                continue;
+                issues.push(issue);
             }
-            issues.push(StudioRecoveryIssue {
-                id: format!("agent-close:{}", record.agent_id),
-                scope: StudioRecoveryIssueScope::Thread,
-                category: StudioRecoveryIssueCategory::Storage,
-                impact: StudioRecoveryImpact::Advisory,
-                action: if residual_registration && record.error.is_none() { StudioRecoveryIssueAction::None } else { StudioRecoveryIssueAction::Retry },
-                workspace_id: Some(record.workspace_id),
-                thread_id: Some(record.agent_id),
-                message: record.error.map_or_else(
-                    || {
-                        if residual_registration {
-                            "Closed child path is absent; its exact Git registration was preserved without pruning".into()
-                        } else {
-                            "Explicit child close has unfinished execution or owned-worktree cleanup".into()
-                        }
-                    },
-                    |error| error.message,
-                ),
-                worktree: None,
-            });
         }
         Ok(())
     }

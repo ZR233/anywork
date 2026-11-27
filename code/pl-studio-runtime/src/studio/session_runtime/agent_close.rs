@@ -260,6 +260,56 @@ impl StudioSessionOwner {
         }
         failures
     }
+}
+
+enum ChildClosePhase {
+    AlreadyExecutionClosed,
+    ResidentOpen(ThreadHandle),
+    ResidentClosing(ThreadHandle),
+    ResidentClosedWithMarker(ThreadHandle),
+    ResidentClosedWithoutMarker(ThreadHandle),
+    ColdRecovery,
+}
+
+impl StudioSessionOwner {
+    async fn recover_cold_child_close(
+        &self,
+        owner: &SessionRuntime,
+        record: &crate::Thread,
+        operation: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<()> {
+        let current =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&self.store, record)
+                .await?
+                .context("cold child has no saved current proving its shutdown state")?;
+        let state = current.state.to_paused_snapshot();
+        self.factory.validate_child_close(record, &state)?;
+        // The paused Core view deliberately reopens lifecycle; the saved Current itself
+        // carries the original producer's completed resource-close observation.
+        if current.state.lifecycle == ThreadLifecycle::Closed
+            && crate::studio::agent_close::is_explicitly_closed(&state)?
+            && owner.observed_thread(&record.id).is_none()
+        {
+            self.factory.project_child_close(record, &state).await?;
+            owner.acknowledge_parent_reports(record).await?;
+            return self.factory.finish_child_execution(record).await;
+        }
+        self.install_storage_owner(owner, record, current, EntryPurpose::CloseStorage)?;
+        owner.attach_close_storage(&record.id).await?;
+        let thread = owner
+            .observed_thread(&record.id)
+            .context("closing child owner is missing")?;
+        crate::studio::agent_close::commit(&thread).await?;
+        owner.freeze_agent_close_disposition(&record.id, WorkspaceRelease::Preserve)?;
+        let projection = self
+            .factory
+            .project_child_close(record, &thread.snapshot())
+            .await;
+        owner.close_with_permit(&record.id, operation).await?;
+        owner.acknowledge_parent_reports(record).await?;
+        projection?;
+        self.factory.finish_child_execution(record).await
+    }
 
     pub(crate) async fn close_saved_child(
         &self,
@@ -305,60 +355,83 @@ impl StudioSessionOwner {
                 .release_report_receiver(&record.id, &incarnation)
                 .await?;
         }
-        if intent.execution_closed {
-            return Ok(());
-        }
-        let resident = owner.observed_thread(&record.id);
-        let needs_storage_owner = match &resident {
-            Some(thread) => {
-                thread.snapshot().lifecycle == ThreadLifecycle::Closed
-                    && !crate::studio::agent_close::is_explicitly_closed(&thread.snapshot())?
+        let phase = if intent.execution_closed {
+            ChildClosePhase::AlreadyExecutionClosed
+        } else {
+            match owner.observed_thread(&record.id) {
+                None => ChildClosePhase::ColdRecovery,
+                Some(thread) => {
+                    let snapshot = thread.snapshot();
+                    match snapshot.lifecycle {
+                        ThreadLifecycle::Open => ChildClosePhase::ResidentOpen(thread),
+                        ThreadLifecycle::Closing => ChildClosePhase::ResidentClosing(thread),
+                        ThreadLifecycle::Closed => {
+                            if crate::studio::agent_close::is_explicitly_closed(&snapshot)? {
+                                ChildClosePhase::ResidentClosedWithMarker(thread)
+                            } else {
+                                ChildClosePhase::ResidentClosedWithoutMarker(thread)
+                            }
+                        }
+                    }
+                }
             }
-            None => true,
         };
-        if needs_storage_owner {
-            if let Some(thread) = resident {
+        match phase {
+            ChildClosePhase::AlreadyExecutionClosed => Ok(()),
+            ChildClosePhase::ResidentOpen(thread) => {
+                owner.attach_close_storage(&record.id).await?;
+                crate::studio::agent_close::commit(&thread).await?;
+                owner.freeze_agent_close_disposition(&record.id, WorkspaceRelease::Preserve)?;
+                let projection = self
+                    .factory
+                    .project_child_close(record, &thread.snapshot())
+                    .await;
+                owner.close_with_permit(&record.id, operation).await?;
+                owner.acknowledge_parent_reports(record).await?;
+                projection?;
+                self.factory.finish_child_execution(record).await
+            }
+            ChildClosePhase::ResidentClosing(thread) => {
+                if crate::studio::agent_close::is_explicitly_closed(&thread.snapshot())? {
+                    owner.attach_close_storage(&record.id).await?;
+                    owner.freeze_agent_close_disposition(&record.id, WorkspaceRelease::Preserve)?;
+                    owner.close_with_permit(&record.id, operation).await?;
+                    owner.acknowledge_parent_reports(record).await?;
+                    self.factory
+                        .project_child_close(record, &thread.snapshot())
+                        .await?;
+                    self.factory.finish_child_execution(record).await
+                } else {
+                    owner.close_with_permit(&record.id, operation).await?;
+                    let operation = owner.agent_operation(&record.id).await;
+                    Box::pin(self.recover_cold_child_close(owner, record, operation)).await
+                }
+            }
+            ChildClosePhase::ResidentClosedWithMarker(thread) => {
+                owner.attach_close_storage(&record.id).await?;
+                owner.freeze_agent_close_disposition(&record.id, WorkspaceRelease::Preserve)?;
+                let projection = self
+                    .factory
+                    .project_child_close(record, &thread.snapshot())
+                    .await;
+                owner.close_with_permit(&record.id, operation).await?;
+                owner.acknowledge_parent_reports(record).await?;
+                projection?;
+                self.factory.finish_child_execution(record).await
+            }
+            ChildClosePhase::ResidentClosedWithoutMarker(thread) => {
                 if owner.close_storage_binding(&record.id)?.is_some() {
                     owner.close_storage_core(&record.id).await?;
                 }
                 thread.flush().await?;
                 owner.drain_observation(&record.id).await?;
                 owner.join_close_storage(&record.id).await?;
+                Box::pin(self.recover_cold_child_close(owner, record, operation)).await
             }
-            let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
-                &self.store,
-                record,
-            )
-            .await?
-            .context("cold child has no saved current proving its shutdown state")?;
-            let state = current.state.to_paused_snapshot();
-            self.factory.validate_child_close(record, &state)?;
-            // The paused Core view deliberately reopens lifecycle; the saved Current itself
-            // carries the original producer's completed resource-close observation.
-            if current.state.lifecycle == ThreadLifecycle::Closed
-                && crate::studio::agent_close::is_explicitly_closed(&state)?
-                && owner.observed_thread(&record.id).is_none()
-            {
-                self.factory.project_child_close(record, &state).await?;
-                owner.acknowledge_parent_reports(record).await?;
-                return self.factory.finish_child_execution(record).await;
+            ChildClosePhase::ColdRecovery => {
+                Box::pin(self.recover_cold_child_close(owner, record, operation)).await
             }
-            self.install_storage_owner(owner, record, current, EntryPurpose::CloseStorage)?;
         }
-        owner.attach_close_storage(&record.id).await?;
-        let thread = owner
-            .observed_thread(&record.id)
-            .context("closing child owner is missing")?;
-        crate::studio::agent_close::commit(&thread).await?;
-        owner.freeze_agent_close_disposition(&record.id, WorkspaceRelease::Preserve)?;
-        let projection = self
-            .factory
-            .project_child_close(record, &thread.snapshot())
-            .await;
-        owner.close_with_permit(&record.id, operation).await?;
-        owner.acknowledge_parent_reports(record).await?;
-        projection?;
-        self.factory.finish_child_execution(record).await
     }
 
     /// The caller holds this identity's operation permit. A normal activation can reserve before
