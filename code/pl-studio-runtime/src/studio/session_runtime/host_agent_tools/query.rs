@@ -171,9 +171,5 @@ impl SessionRuntime {
 }
 
 fn output(value: &impl Serialize) -> Result<ToolOutput> {
-    let text = serde_json::to_string(value)?;
-    Ok(ToolOutput::new(
-        pl_core::context::OpaquePayload::new("pl.studio.agent-query", 1, text.clone())?,
-        vec![pl_core::context::ContextContent::Text { text: text.into() }],
-    ))
+    Ok(ToolOutput::json(serde_json::to_value(value)?))
 }

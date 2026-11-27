@@ -25,6 +25,7 @@ fn message(role: MessageRole, text: &str) -> Message {
 fn lookup_result(item_id: &str, call_id: &str) -> Message {
     Message {
         tool_result: Some(ToolResultRecord {
+            data: None,
             item_id: item_id.into(),
             call_id: call_id.into(),
             name: "lookup".into(),
@@ -394,6 +395,7 @@ fn request_encodes_multimodal_inline_data_and_coalesces_parallel_tool_results() 
                 reasoning_content: None,
                 tool_calls: None,
                 tool_result: Some(ToolResultRecord {
+                    data: None,
                     item_id: id.into(),
                     call_id: id.into(),
                     name: "read_file".into(),
@@ -1202,6 +1204,7 @@ fn tool_media_after_function_response_uses_separate_user_turn() {
             reasoning_content: None,
             tool_calls: None,
             tool_result: Some(ToolResultRecord {
+                data: None,
                 item_id: "call_img_1".into(),
                 call_id: "call_img_1".into(),
                 name: "exec".into(),

@@ -874,6 +874,7 @@ async fn context_compaction_resumes_the_original_retry_budget() {
             expected_revision: 0,
             reason: ContextReplacementReason::Rebuild,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "old-input".into(),
                 turn_id: None,
                 source: ContextSource::User,

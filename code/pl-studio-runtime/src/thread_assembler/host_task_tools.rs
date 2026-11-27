@@ -18,7 +18,9 @@ pub(crate) trait HostTaskSink {
 }
 
 pub(crate) fn list<S: HostTaskSink>(sink: &mut S) -> Result<(), S::Error> {
-    sink.list(prepare_native_tool::<ListTasksTool>()?)
+    sink.list(prepare_native_tool::<ListTasksTool>()?.with_output_schema(
+        pl_agent_tool::typed::output_schema_for::<Vec<pl_tool::task_control::TaskStatusView>>(),
+    )?)
 }
 
 pub(crate) fn controls<S: HostTaskSink>(sink: &mut S) -> Result<(), S::Error> {

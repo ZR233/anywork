@@ -37,6 +37,9 @@ pub fn lsp_query_definition() -> ToolDefinition {
         "Resolve definitions, types, references, symbols, call relationships or diagnostics with workspace language services. Use lsp_capabilities for languages and server IDs. Read the target file or use documentSymbol/workspaceSymbol to locate a symbol before cursor queries; check that results describe the intended declaration, not just an import.",
         pl_agent_tool::typed::input_schema_for::<LspQueryInput>(),
     ).expect("static tool definition")
+    .with_output_schema(schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize().into_generator().into_root_schema_for::<QueryResult>().to_value())
+    .expect("static LSP output schema")
 }
 
 #[derive(Debug, thiserror::Error)]

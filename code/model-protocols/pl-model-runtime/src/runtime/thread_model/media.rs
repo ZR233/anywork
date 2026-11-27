@@ -68,7 +68,7 @@ pub fn attachment_content(
     .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
     let payload = OpaquePayload::new(FORMAT, 1, content)
         .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
-    Ok(ContextContent::Opaque { payload })
+    Ok(ContextContent::Media { payload })
 }
 
 /// Host-owned media identity and modality that a model request consumes as one attachment.
@@ -129,9 +129,7 @@ fn validated_attachments<'a>(
     let mut attachments = BTreeMap::<String, Attachment>::new();
     let mut occurrences = BTreeMap::<String, u64>::new();
     for content in content {
-        if let ContextContent::Opaque { payload } = content
-            && payload.format() == FORMAT
-        {
+        if let ContextContent::Media { payload } = content {
             let attachment = decode(payload)?;
             let count = occurrences
                 .entry(attachment.reference.id().to_owned())

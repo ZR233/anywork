@@ -116,8 +116,11 @@ async fn target_effect_and_resource_assignment_changes_deny_old_calls_but_allow_
             .flat_map(|effect| effect.deliveries.iter())
             .find(|delivery| delivery.tool_id == "read_mcp_resource")
             .expect("the new authorized call must deliver the received resource");
-        let received: serde_json::Value =
-            serde_json::from_str(delivery.output.payload().content())?;
+        let received: serde_json::Value = delivery
+            .output
+            .data()
+            .expect("tool declares result data")
+            .clone();
         assert_eq!(received["contents"][0]["text"], "hello");
         for id in ["a", "b"] {
             let count = requests(root.path(), id)?

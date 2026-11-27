@@ -679,6 +679,20 @@ fn clear_terminal_output(state: &ThreadToolState) -> ThreadToolState {
             failed.failure().clone(),
             failed.output().map(cleared_output),
         )),
+        ThreadToolState::Cancelled(cancelled) => {
+            ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
+                cancelled.cancelled_at(),
+                cancelled.reason().into(),
+                cancelled.output().map(cleared_output),
+            ))
+        }
+        ThreadToolState::Interrupted(interrupted) => {
+            ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
+                interrupted.interrupted_at(),
+                interrupted.reason().into(),
+                interrupted.output().map(cleared_output),
+            ))
+        }
         other => other.clone(),
     }
 }
@@ -966,6 +980,7 @@ mod tests {
                     ThreadToolState::Interrupted(InterruptedThreadTool::new(
                         12,
                         "cancelled".into(),
+                        None,
                     )),
                     ChatTerminalOutcome::Cancelled,
                 ),

@@ -198,6 +198,92 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn tool_result_current_maintenance_respects_registered_writer_and_directory_alias()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = temp.path().join("current-owner");
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let id = "current-owner";
+        let epoch = RuntimeEpoch::new();
+        coordinator
+            .upgrade_current_for_recovery(id, directory.clone())
+            .await?;
+        assert!(!directory.exists());
+
+        let writer = coordinator.current_writer(id, directory.clone()).await?;
+        // An active writer may begin capture while maintenance reads its header. Keep its capture
+        // cancellable and unable to publish so exact source bytes can be asserted independently.
+        writer
+            .activate(
+                None,
+                epoch,
+                CurrentSource::new(
+                    |_, cancel| {
+                        Box::pin(async move {
+                            cancel.cancelled().await;
+                            anyhow::bail!("fixture capture cancelled")
+                        })
+                    },
+                    move |epoch| Box::pin(async move { Ok(ThreadCurrent::new(id.into(), epoch)) }),
+                ),
+            )
+            .await?;
+        let path = directory.join(crate::studio::paths::CURRENT_FILE_NAME);
+        let current = ThreadCurrent::new(id.into(), epoch);
+        let current_bytes = serde_json::to_vec_pretty(&current)?;
+        std::fs::write(&path, &current_bytes)?;
+        coordinator
+            .upgrade_current_for_recovery(id, directory.clone())
+            .await?;
+        assert_eq!(std::fs::read(&path)?, current_bytes);
+        assert!(!directory.join("migration-backups").exists());
+
+        let mut legacy = serde_json::to_value(current)?;
+        legacy["schemaVersion"] = 1.into();
+        let legacy = serde_json::to_vec_pretty(&legacy)?;
+        std::fs::write(&path, &legacy)?;
+        let active = coordinator
+            .upgrade_current_for_recovery(id, directory.clone())
+            .await
+            .unwrap_err();
+        assert!(active.to_string().contains("writer is registered"));
+        let foreign = coordinator
+            .upgrade_current_for_recovery("other", directory.join("."))
+            .await
+            .unwrap_err();
+        assert!(foreign.to_string().contains("another Thread"));
+        assert_eq!(std::fs::read(&path)?, legacy);
+        assert!(!directory.join("migration-backups").exists());
+
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Delete)
+            .await?;
+        assert!(writer.is_joined());
+        let joined = coordinator
+            .upgrade_current_for_recovery(id, directory.clone())
+            .await
+            .unwrap_err();
+        assert!(joined.to_string().contains("writer is registered"));
+        assert_eq!(std::fs::read(&path)?, legacy);
+
+        coordinator.release_current_writer(id, &writer);
+        coordinator
+            .upgrade_current_for_recovery(id, directory.clone())
+            .await?;
+        assert_eq!(
+            std::fs::read(
+                directory.join("migration-backups/current-tool-result-v1/current.original.json")
+            )?,
+            legacy
+        );
+        assert_eq!(
+            ThreadCurrent::from_json(&std::fs::read(path)?, id)?.saved_runtime_epoch,
+            epoch
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_threads_cannot_both_register_and_save_the_same_current_path() -> Result<()>
     {

@@ -15,8 +15,14 @@ use super::super::observation_lifecycle::{
 
 type Observer = Arc<dyn Fn(StudioStartupStage) + Send + Sync>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartupPurpose {
+    Standard,
+    AcpCli,
+}
+
 enum StartupSource {
-    Options(crate::StudioRuntimeOptions),
+    Options(crate::StudioRuntimeOptions, StartupPurpose),
     Lease(crate::StudioInstanceLease),
 }
 
@@ -28,13 +34,29 @@ impl StudioRuntime {
         Self::initialize_with_observer(options, Arc::new(|_| {})).await
     }
 
+    /// Initializes for noninteractive ACP with CLI options and an existing Studio home.
+    /// Native online catalog discovery is deferred and Native credentials are checked on use.
+    pub async fn initialize_acp_cli(
+        options: crate::StudioRuntimeOptions,
+    ) -> Result<Self, StudioStartupError> {
+        Self::initialize_source(
+            StartupSource::Options(options, StartupPurpose::AcpCli),
+            Arc::new(|_| {}),
+        )
+        .await
+    }
+
     /// The observer is nonblocking and must not reenter initialization.
     /// Cancellation requests cleanup; the owned task retains the process lock until cleanup ends.
     pub async fn initialize_with_observer(
         options: crate::StudioRuntimeOptions,
         observer: Observer,
     ) -> Result<Self, StudioStartupError> {
-        Self::initialize_source(StartupSource::Options(options), observer).await
+        Self::initialize_source(
+            StartupSource::Options(options, StartupPurpose::Standard),
+            observer,
+        )
+        .await
     }
 
     /// Initializes with a lease already acquired by the native desktop host, without relocking.
@@ -87,9 +109,16 @@ impl StudioRuntime {
         cancellation: CancellationToken,
     ) -> Result<Self, StudioStartupError> {
         let _timing = crate::startup_timing::Stage::new("initialize_studio");
-        let (resolved, lock) = match source {
-            StartupSource::Lease(lease) => (lease.resolved, lease.lock),
-            StartupSource::Options(options) => {
+        let (resolved, lock, purpose) = match source {
+            StartupSource::Lease(lease) => (lease.resolved, lease.lock, StartupPurpose::Standard),
+            StartupSource::Options(options, purpose) => {
+                if purpose == StartupPurpose::AcpCli && options.host != crate::StudioHostKind::Cli {
+                    return Err(StudioStartupError::new(
+                        "resolve_paths",
+                        StudioStartupErrorKind::Configuration,
+                        anyhow::anyhow!("ACP CLI startup requires CLI host options"),
+                    ));
+                }
                 let resolved = options
                     .resolve()
                     .map_err(|error| environment("resolve_paths", error))?;
@@ -100,7 +129,7 @@ impl StudioRuntime {
                         .await
                         .map_err(|error| internal("acquire_lock", error))?
                         .map_err(|error| environment("acquire_lock", error))?;
-                (Arc::new(resolved), Arc::new(lock))
+                (Arc::new(resolved), Arc::new(lock), purpose)
             }
         };
         let home = resolved.paths.home().to_owned();
@@ -134,8 +163,14 @@ impl StudioRuntime {
             let attempt =
                 match crate::studio::startup::storage_layout::prepare(&resolved.paths).await {
                     Ok(()) => {
-                        Self::prepare_attempt(&resolved, &observer, &cancellation, backup.is_some())
-                            .await
+                        Self::prepare_attempt(
+                            &resolved,
+                            purpose,
+                            &observer,
+                            &cancellation,
+                            backup.is_some(),
+                        )
+                        .await
                     }
                     Err(error) => Err(StudioStartupError::input("prepare_layout", error)),
                 };
@@ -201,6 +236,7 @@ impl StudioRuntime {
 
     async fn prepare_attempt(
         resolved: &ResolvedRuntimeOptions,
+        purpose: StartupPurpose,
         observer: &Observer,
         cancellation: &CancellationToken,
         recovering: bool,
@@ -208,6 +244,9 @@ impl StudioRuntime {
         observer(StudioStartupStage::Preparing);
         let config_store = match resolved.host {
             crate::StudioHostKind::Test => ConfigStore::new(resolved.paths.config_paths()),
+            crate::StudioHostKind::Cli if purpose == StartupPurpose::AcpCli => {
+                ConfigStore::for_acp_cli(resolved.paths.home().to_owned())
+            }
             crate::StudioHostKind::Cli => ConfigStore::for_cli(resolved.paths.home().to_owned()),
             crate::StudioHostKind::Desktop | crate::StudioHostKind::HttpServer => {
                 ConfigStore::for_studio_home(resolved.paths.home().to_owned())
@@ -279,7 +318,7 @@ impl StudioRuntime {
         };
         let allow_remote_acp_check = !matches!(resolved.host, crate::StudioHostKind::Test);
         let prepared = runtime
-            .prepare_global(observer, cancellation, allow_remote_acp_check)
+            .prepare_global(observer, cancellation, allow_remote_acp_check, purpose)
             .await;
         if let Err(error) = prepared {
             observer(StudioStartupStage::ClosingResources);
@@ -294,6 +333,7 @@ impl StudioRuntime {
         observer: &Observer,
         cancellation: &CancellationToken,
         allow_remote_acp_check: bool,
+        purpose: StartupPurpose,
     ) -> Result<(), StudioStartupError> {
         self.runtime_state
             .apply(crate::studio::StudioRuntimeCommand::BeginInitialize {
@@ -398,9 +438,11 @@ impl StudioRuntime {
         self.start_model_refresh()
             .await
             .map_err(|error| observer_start_error("start_model_refresh", error))?;
-        self.start_model_catalog_probes()
-            .await
-            .map_err(|error| internal("start_model_catalogs", error))?;
+        if purpose == StartupPurpose::Standard {
+            self.start_model_catalog_probes()
+                .await
+                .map_err(|error| internal("start_model_catalogs", error))?;
+        }
         self.start_tool_refresh().await;
         self.acp_install
             .start_background_check(allow_remote_acp_check);
@@ -615,6 +657,25 @@ mod observer_start_tests {
     use crate::studio::runtime::observation_lifecycle::{
         ObservationStartError, RuntimeObservationOwner,
     };
+
+    #[tokio::test]
+    async fn acp_cli_rejects_desktop_options_before_preparing_paths() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let options = crate::StudioRuntimeOptions {
+            studio_home: Some(directory.path().join("desktop")),
+            ..crate::StudioRuntimeOptions::desktop()
+        };
+        let error = match StudioRuntime::initialize_acp_cli(options).await {
+            Ok(runtime) => {
+                runtime.shutdown_runtime().await?;
+                anyhow::bail!("ACP CLI accepted desktop host options");
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, StudioStartupErrorKind::Configuration);
+        assert!(std::fs::read_dir(directory.path())?.next().is_none());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn persistence_receivers_are_created_only_after_scope_admission() -> anyhow::Result<()> {

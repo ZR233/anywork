@@ -31,6 +31,18 @@ pub fn definition() -> ToolDefinition {
         input_schema_for::<GitSyncDefaultBranchInput>(),
     )
     .expect("valid Git tool definition")
+    .with_output_schema({
+        let mut failure = crate::command_output_schema();
+        failure["properties"]["observations"] = json!({"type":"array", "items": crate::command_output_schema()});
+        json!({"oneOf": [
+            {"type":"object", "properties": {
+                "clone":{"type":"string"}, "worktree":{"type":"string"},
+                "preservedChanges":{"type":"boolean"}, "forced":{"type":"boolean"}
+            }, "required":["clone","worktree","preservedChanges","forced"], "additionalProperties":false},
+            failure,
+        ]})
+    })
+    .expect("valid Git sync output schema")
 }
 
 #[derive(Debug)]

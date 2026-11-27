@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::studio::unix_seconds;
 use crate::{PureError, Result};
 
+use super::agent_profile::{NativeProfileCheck, validate_native_profile_declaration};
 use super::model_catalog::{self, Observation};
+use super::store::CredentialPolicy;
 use super::{AgentProfilesResource, ConfigStore, McpCatalogResource, StudioConfig};
 use crate::StudioModelCatalogStatus;
 use crate::mode::ThreadModeDocument;
@@ -207,11 +209,22 @@ impl ConfigRuntime {
         let config = effective_runtime_config(&desired, &observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(store.paths())?;
-        // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
+        // canonical Agent Profiles 资源：启动装载一次扫描，之后查询/订阅只读缓存。
         let acp = super::AcpDefinitionsResource::new(store.paths());
         let acp_snapshot = acp.read();
-        let profiles = AgentProfilesResource::new(store.paths(), &config, &acp_snapshot);
-        if store.environment_only {
+        let native_check = match store.credential_policy {
+            CredentialPolicy::Stored | CredentialPolicy::NativeEnvironment => {
+                NativeProfileCheck::OnScan
+            }
+            CredentialPolicy::AcpEnvironment => NativeProfileCheck::OnDispatch,
+        };
+        let profiles = AgentProfilesResource::with_native_check(
+            store.paths(),
+            &config,
+            &acp_snapshot,
+            native_check,
+        );
+        if store.credential_policy == CredentialPolicy::NativeEnvironment {
             for (role, selector) in &config.models.routes {
                 crate::studio::delegation::validate_credential(
                     &config.models.resolve_route(role.clone(), selector)?,
@@ -224,6 +237,8 @@ impl ConfigRuntime {
                         .resolve_route(super::root_agent_route_id(), selector)?,
                 )?;
             }
+        }
+        if store.credential_policy != CredentialPolicy::Stored {
             for profile in profiles
                 .read()
                 .catalog
@@ -232,9 +247,16 @@ impl ConfigRuntime {
                 .filter(|profile| profile.enabled)
             {
                 if matches!(profile.binding, crate::AgentBinding::Native(_)) {
-                    crate::studio::delegation::validate_credential(&super::resolve_profile_route(
-                        &config, profile,
-                    )?)?;
+                    match native_check {
+                        NativeProfileCheck::OnScan => {
+                            crate::studio::delegation::validate_credential(
+                                &super::resolve_profile_route(&config, profile)?,
+                            )?
+                        }
+                        NativeProfileCheck::OnDispatch => {
+                            validate_native_profile_declaration(&config, profile)?;
+                        }
+                    }
                 }
             }
         }
@@ -1100,6 +1122,90 @@ mod tests {
         let store = ConfigStore::new(ConfigPaths::from_config_dir(directory.path()));
         let runtime = ConfigRuntime::initialize(store).expect("default config initializes");
         (directory, runtime)
+    }
+
+    #[test]
+    fn acp_cli_defers_native_profile_qualification_across_reload() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let paths = ConfigPaths::from_config_dir(directory.path());
+        let mut config = StudioConfig::default_config()?;
+        let selector = config.mode_model_route(&ThreadModeId::auto())?.clone();
+        config
+            .models
+            .accounts
+            .get_mut(&selector.account_id)
+            .expect("default account")
+            .bearer_token_env = None;
+        ConfigStore::new(paths.clone()).save(&config)?;
+        let profile = crate::config::UserAgentProfile {
+            enabled: true,
+            display_name: "Native child".into(),
+            description: "Native Profile qualification".into(),
+            when_to_use: "A selected Native task".into(),
+            binding: crate::AgentBinding::Native(crate::NativeAgentConfig {
+                route: Some(crate::NewThreadModelRoute {
+                    account_id: selector.account_id.to_string(),
+                    model_id: selector.model_id,
+                    effort: selector.effort.map(|effort| effort.as_str().to_owned()),
+                }),
+                system_instructions: Some("Complete the assigned task.".into()),
+            }),
+            workspace_mode: crate::AgentWorkspaceMode::Directory,
+        };
+        let save = |id| {
+            crate::config::save_user_agent_profile(
+                &paths,
+                id,
+                &profile,
+                &config,
+                &Default::default(),
+            )
+        };
+        let has_diagnostic = |snapshot: &crate::config::AgentProfilesSnapshot, id: &str| {
+            snapshot.catalog.diagnostics.iter().any(|diagnostic| {
+                diagnostic.path.ends_with(format!("{id}.toml"))
+                    && diagnostic
+                        .message
+                        .contains("model account credential is unavailable")
+            })
+        };
+        save("native-configured")?;
+        let desktop = ConfigRuntime::initialize(ConfigStore::new(paths.clone()))?;
+        assert!(has_diagnostic(
+            &desktop.agent_profiles_snapshot()?,
+            "native-configured"
+        ));
+
+        let acp = ConfigRuntime::initialize(ConfigStore::for_acp_cli(directory.path()))?;
+        let startup = acp.agent_profiles_snapshot()?;
+        assert!(!has_diagnostic(&startup, "native-configured"));
+        save("native-reloaded")?;
+        acp.reload_from_disk(acp.read()?.revision)?;
+        let after = acp.agent_profiles_snapshot()?;
+        assert!(after.revision > startup.revision);
+
+        let visible = acp.agent_profiles()?;
+        for id in ["native-configured", "native-reloaded"] {
+            assert!(!has_diagnostic(&after, id));
+            assert!(
+                visible
+                    .profiles
+                    .iter()
+                    .any(|entry| entry.definition.definition_id == id)
+            );
+            let Err(error) =
+                acp.resolve_delegated_profile(id, crate::DelegationMode::Profile, None)
+            else {
+                anyhow::bail!("dispatch accepted Native Profile `{id}` without a credential");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("model account credential is unavailable"),
+                "{error}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

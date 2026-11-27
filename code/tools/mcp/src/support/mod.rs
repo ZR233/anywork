@@ -1,7 +1,7 @@
 //! Frozen MCP transport capabilities and shared MCP content projection.
 use std::{error::Error, fmt, future::Future, sync::Mutex};
 
-use pl_agent_tool::ToolDefinition;
+use pl_agent_tool::{ToolData, ToolDefinition, ToolResult};
 use pl_tool_media_support::{CancellationToken, ImageOutputLimits};
 use rmcp::model::CallToolResult;
 use serde_json::Value;
@@ -114,6 +114,26 @@ pub struct McpOutput<P> {
     pub protocol: Value,
     pub content: Vec<Content<P>>,
     pub kind: ResultKind,
+}
+
+impl<P> McpOutput<P> {
+    pub fn into_result<C>(
+        mut self,
+        map: impl FnMut(Content<P>) -> Vec<C>,
+    ) -> pl_agent_tool::ToolResult<C> {
+        let content = self.content.into_iter().flat_map(map).collect();
+        match self.kind {
+            ResultKind::Tool => {
+                let data = self
+                    .protocol
+                    .as_object_mut()
+                    .and_then(|record| record.remove("structuredContent"))
+                    .map_or(ToolData::Absent, ToolData::Value);
+                ToolResult::new(data, content).with_details(self.protocol)
+            }
+            ResultKind::Resources => ToolResult::from_data(self.protocol, content),
+        }
+    }
 }
 
 #[derive(Debug)]

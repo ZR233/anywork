@@ -23,7 +23,9 @@ pub use discovery::SkillDiscoverySources;
 pub use filesystem::{FileSystemSkillProvider, SkillDirectorySource};
 
 /// Stable identity of a process-registered Skill provider.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct SkillProviderId(String);
 
@@ -50,7 +52,7 @@ impl SkillProviderId {
 }
 
 /// Independent model and direct-user invocation permissions.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillInvocationPolicy {
     pub model_invocable: bool,
@@ -67,7 +69,7 @@ impl Default for SkillInvocationPolicy {
 }
 
 /// Provider-neutral base used to resolve a Skill's support resources.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum SkillResourceBase {
     Directory { path: PathBuf },
@@ -76,7 +78,7 @@ pub enum SkillResourceBase {
 }
 
 /// Serializable catalog row exposed to prompt, Studio and HTTP projections.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSummary {
     pub name: String,

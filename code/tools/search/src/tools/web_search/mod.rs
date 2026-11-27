@@ -39,6 +39,34 @@ pub struct Output {
     pub preview: String,
 }
 
+#[derive(Serialize, schemars::JsonSchema)]
+struct ProgramResult {
+    output: String,
+    results: Option<Vec<serde_json::Value>>,
+}
+
+pub fn output_schema() -> serde_json::Value {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<ProgramResult>()
+        .to_value()
+}
+
+impl Output {
+    pub fn into_result(self) -> Result<pl_agent_tool::ToolResult<String>, serde_json::Error> {
+        let data = serde_json::to_value(ProgramResult {
+            output: self.response.output,
+            results: self.response.results,
+        })?;
+        let result = pl_agent_tool::ToolResult::from_data(data, vec![self.preview]);
+        Ok(match self.response.encrypted_output {
+            Some(state) => result.with_details(serde_json::json!({"providerState": state})),
+            None => result,
+        })
+    }
+}
+
 pub trait SearchService: Send + Sync + 'static {
     type Error: Error + Send + Sync + 'static;
     fn search(

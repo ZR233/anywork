@@ -391,7 +391,9 @@ impl V24HistorySource {
                 "schema 24 checkpoint hash mismatch".into(),
             ));
         }
-        let mut checkpoint: Box<ThreadCheckpoint> = serde_json::from_str(&payload)?;
+        let (checkpoint, legacy_result) = ThreadCheckpoint::decode_history_upgrade(&payload)
+            .map_err(|error| HistoryError::Storage(error.into()))?;
+        let mut checkpoint = Box::new(checkpoint);
         let fence = self
             .query_one(
                 "SELECT applied_write_seq FROM history_meta WHERE id=1",
@@ -403,7 +405,6 @@ impl V24HistorySource {
         let count = usize::try_from(row.try_get::<i64>("", "context_count")?)
             .map_err(|_| HistoryError::Integrity("negative context count".into()))?;
         if checkpoint.thread_id != thread_id
-            || checkpoint.schema_version != ThreadCheckpoint::SCHEMA_VERSION
             || !checkpoint.state.context.records.is_empty()
             || checkpoint.state_revision != checkpoint.state.commit_sequence
             || db::number(checkpoint.state_revision)? != row.try_get::<i64>("", "revision")?
@@ -437,7 +438,13 @@ impl V24HistorySource {
                     "schema 24 context order or hash mismatch".into(),
                 ));
             }
-            let record: pl_core::context::ContextRecord = serde_json::from_str(&context_payload)?;
+            let record: pl_core::context::ContextRecord = if legacy_result {
+                let mut saved = serde_json::from_str(&context_payload)?;
+                crate::studio::storage::tool_result_upgrade::upgrade_record(&mut saved)?;
+                serde_json::from_value(saved)?
+            } else {
+                serde_json::from_str(&context_payload)?
+            };
             if record.id != row.try_get::<String>("", "record_id")? {
                 return Err(HistoryError::Integrity(
                     "schema 24 context identity mismatch".into(),

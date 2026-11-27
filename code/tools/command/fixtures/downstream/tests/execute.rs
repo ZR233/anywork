@@ -165,8 +165,8 @@ async fn exec_and_stdin_use_one_actual_pipe_and_preserve_domain_output() {
         r#"{"taskId":"original-receipt","chars":"汉字\n","closeStdin":true,"maxOutputChars":7}"#.into(),
         StdinContext { processes: owner.clone(), cancellation: CancellationToken::new() },
     ).await.unwrap();
-    let input_record: serde_json::Value =
-        serde_json::from_str(&input.encode(Some("input-receipt".into())).unwrap()).unwrap();
+    let authored_input = input.result(Some("input-receipt"));
+    let input_record = authored_input.data().unwrap();
     assert_eq!(input_record["taskId"], "input-receipt");
     assert_eq!(input_record["targetTaskId"], "original-receipt");
     let StdinResult::Observed {
@@ -196,10 +196,12 @@ async fn exec_and_stdin_use_one_actual_pipe_and_preserve_domain_output() {
         result.outcome(),
         pl_tool_command::exec::ExecOutcome::Succeeded
     );
-    let text = result
-        .encode::<String>(&[], Some("original-receipt".into()))
+    let authored = result
+        .result::<String>(&[], Some("original-receipt"))
         .unwrap();
-    let record: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let record = &authored.details().unwrap()["command"];
+    assert_eq!(authored.data().unwrap()["stdout"], "汉字\n");
+    assert_eq!(authored.data().unwrap()["stderr"], "err");
     assert_eq!(record["stdout"]["displayedBytes"], 7);
     assert_eq!(record["stderr"]["displayedBytes"], 3);
     assert_eq!(record["requestedBodyBytes"], 100000);
@@ -229,8 +231,7 @@ async fn invalid_exec_never_admits_a_process() {
         let pl_tool_command::exec::ExecError::InvalidInput(error) = error else {
             panic!("input error");
         };
-        let diagnostic: serde_json::Value =
-            serde_json::from_str(&error.diagnostic_json().unwrap()).unwrap();
+        let diagnostic: serde_json::Value = error.diagnostic_data().unwrap();
         assert_eq!(diagnostic["processStarted"], false);
     }
     assert_eq!(owner.0.starts.load(Ordering::SeqCst), 0);
@@ -316,9 +317,10 @@ async fn lsp_tools_execute_validate_resolve_and_retain_full_results() {
         )
         .await
         .unwrap();
-    let (full, preview) = result.encode().unwrap();
+    let output = result.into_result().unwrap();
+    let full = output.data().unwrap()["result"].as_str().unwrap();
     assert!(full.len() > 12 * 1024);
-    assert!(preview.contains("LSP preview omitted"));
+    assert!(output.content()[0].contains("LSP preview omitted"));
     assert!(full.contains("type information"));
     assert_eq!(service.resolutions.load(Ordering::SeqCst), 1);
     assert_eq!(service.queries.load(Ordering::SeqCst), 1);

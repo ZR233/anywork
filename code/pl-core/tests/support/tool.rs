@@ -35,8 +35,8 @@ impl pl_agent_tool::Tool for RecordingTool {
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
         self.log.lock().expect("tool log").push(context.call_id);
-        Ok(ToolOutput::new(
-            input.clone(),
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
             vec![crate::support::text(input.content())],
         ))
     }

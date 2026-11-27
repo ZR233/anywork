@@ -175,6 +175,7 @@ fn changed_fact(
         suffix += 1;
     };
     Some(ContextRecord {
+        tool_data: Default::default(),
         tool_calls: Vec::new(),
         id,
         turn_id: None,

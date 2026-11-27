@@ -72,10 +72,7 @@ async fn independent_bot_tools_use_studio_authorization_and_reject_cross_project
         let output = list
             .execute(OpaquePayload::new("application/json", 1, "{}")?, context())
             .await?;
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(output.payload().content())?,
-            serde_json::json!([])
-        );
+        assert_eq!(output.data(), Some(&serde_json::json!([])));
         let config = fixture.managed.config.lock().await.clone();
         fixture
             .host
@@ -96,7 +93,7 @@ async fn independent_bot_tools_use_studio_authorization_and_reject_cross_project
         let output = list
             .execute(OpaquePayload::new("application/json", 1, "{}")?, context())
             .await?;
-        let bots: serde_json::Value = serde_json::from_str(output.payload().content())?;
+        let bots = output.data().expect("bot list data");
         assert_eq!(bots[0]["id"], config.id);
         assert_eq!(bots[0]["toolsEnabled"], true);
         assert!(bots[0].get("appId").is_none());

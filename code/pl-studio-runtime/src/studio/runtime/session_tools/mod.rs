@@ -2,7 +2,6 @@
 mod content;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionContent, InteractionPurpose,
@@ -12,7 +11,7 @@ use crate::{
 use crate::{ThreadDirectoryFilter, ThreadDirectoryQuery};
 use anyhow::{Context, Result, ensure};
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
-use pl_core::context::{ContextContent, OpaquePayload};
+use pl_core::context::OpaquePayload;
 use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, Registration, ToolError},
@@ -766,11 +765,5 @@ impl StudioRuntime {
 }
 
 fn output(value: &impl Serialize) -> Result<ToolOutput> {
-    let encoded = serde_json::to_string(value)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.studio.session-tool", 1, encoded.clone())?,
-        vec![ContextContent::Text {
-            text: Arc::from(encoded),
-        }],
-    ))
+    Ok(ToolOutput::json(serde_json::to_value(value)?))
 }

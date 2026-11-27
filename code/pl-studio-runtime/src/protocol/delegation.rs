@@ -164,7 +164,7 @@ mod details_validation {
 }
 
 /// 同一目录快照上的批量详情，结果顺序与输入相同。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DelegationModelDetails {
     pub results: Vec<DelegationModelResult>,
@@ -172,7 +172,7 @@ pub struct DelegationModelDetails {
 }
 
 /// 单项失败保留身份和安全的类型化错误，不丢弃同批其他候选。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema, schemars::JsonSchema)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",

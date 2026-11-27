@@ -171,6 +171,7 @@ async fn run_context_repair(change_skill: bool) -> Result<()> {
             expected_revision: 0,
             reason: ContextReplacementReason::Rebuild,
             records: vec![pl_core::context::ContextRecord {
+                tool_data: Default::default(),
                 id: "large-ledger".into(),
                 turn_id: None,
                 source: pl_core::context::ContextSource::User,
@@ -418,6 +419,7 @@ async fn switches_to_a_larger_model_and_reuses_handoff_after_target_failure() ->
     let target_model = ThreadModel::new(pl_model::runtime::from_route(&target_route)?, None);
     let mut preview = before.context.records.to_vec();
     preview.push(pl_core::context::ContextRecord {
+        tool_data: Default::default(),
         id: "target-input".into(),
         turn_id: Some("target-turn".into()),
         source: pl_core::context::ContextSource::User,

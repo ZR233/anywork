@@ -1,4 +1,5 @@
 use super::*;
+use crate::thread_mode_id::ThreadModeId;
 use crate::workflow_tool::{
     WorkflowDefinition, WorkflowRunLifecycle, WorkflowSessionState, WorkflowState,
     WorkflowStateKind, WorkflowTransition, compile_workflow_definition,
@@ -96,9 +97,10 @@ fn non_forced_unknown_target_and_disallowed_transition_return_rich_hints() {
             101,
         )
         .unwrap();
-    assert!(!err_unknown.accepted);
-    assert_eq!(err_unknown.code, "unknownTargetState");
-    let error = err_unknown.error.expect("structured error");
+    let WorkflowMutationResponse::Rejected { code, error, .. } = err_unknown else {
+        panic!("expected a rejection for an unknown target");
+    };
+    assert_eq!(code, "unknownTargetState");
     assert!(error.all_states.iter().any(|s| s.id == "intake"));
     assert!(error.all_states.iter().any(|s| s.id == "review"));
     assert!(error.all_states.iter().any(|s| s.id == "done"));
@@ -122,16 +124,17 @@ fn non_forced_unknown_target_and_disallowed_transition_return_rich_hints() {
             102,
         )
         .unwrap();
-    assert!(!err_disallowed.accepted);
-    assert_eq!(err_disallowed.code, "transitionNotAllowed");
-    assert!(
-        err_disallowed
-            .recovery_action
-            .as_deref()
-            .unwrap_or_default()
-            .contains("force=true")
-    );
-    let error = err_disallowed.error.expect("structured error");
+    let WorkflowMutationResponse::Rejected {
+        code,
+        recovery_action,
+        error,
+        ..
+    } = err_disallowed
+    else {
+        panic!("expected a rejection for a disallowed transition");
+    };
+    assert_eq!(code, "transitionNotAllowed");
+    assert!(recovery_action.contains("force=true"));
     assert_eq!(error.current_state_id.as_deref(), Some("intake"));
     assert_eq!(error.attempted_target_state_id.as_deref(), Some("done"));
     assert!(
@@ -166,8 +169,10 @@ fn forced_transition_jumps_anywhere_including_out_of_final_state() {
             101,
         )
         .unwrap();
-    assert!(jump_final.accepted);
-    assert!(jump_final.forced);
+    assert!(matches!(
+        jump_final,
+        WorkflowMutationResponse::Accepted { forced: true, .. }
+    ));
     assert_eq!(
         machine.state().current_run.as_ref().unwrap().lifecycle,
         WorkflowRunLifecycle::Terminal
@@ -192,8 +197,10 @@ fn forced_transition_jumps_anywhere_including_out_of_final_state() {
             102,
         )
         .unwrap();
-    assert!(jump_back.accepted);
-    assert!(jump_back.forced);
+    assert!(matches!(
+        jump_back,
+        WorkflowMutationResponse::Accepted { forced: true, .. }
+    ));
     let run = machine.state().current_run.as_ref().unwrap();
     assert_eq!(run.current_state_id, "review");
     assert_eq!(run.lifecycle, WorkflowRunLifecycle::Active);

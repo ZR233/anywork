@@ -1,7 +1,10 @@
 //! Producer-owned business output and its separately frozen model-facing projection.
 
 use crate::context::{ContextContent, OpaquePayload};
+use pl_agent_tool::ToolResult;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::Arc;
 
 /// Trusted framework control, separate from arbitrary result content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,13 +18,12 @@ pub enum ToolControl {
 
 /// Complete tool data and the exact content selected for the original model delivery.
 ///
-/// The Thread supplies call identity and the tool-result role. Neither payload strings nor
+/// The Thread supplies call identity and the tool-result role. Neither program values nor
 /// content values grant authority to end a Turn, approve work, or rewrite a system instruction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolOutput {
-    payload: OpaquePayload,
-    context: Vec<ContextContent>,
+    result: Arc<ToolResult<ContextContent>>,
     #[serde(default)]
     control: ToolControl,
     #[serde(default)]
@@ -33,16 +35,35 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
-    /// Freezes both views together; the framework never derives one by parsing the other.
-    pub fn new(payload: OpaquePayload, context: Vec<ContextContent>) -> Self {
+    /// Freezes the author's result alongside independent framework control.
+    pub fn new(result: ToolResult<ContextContent>) -> Self {
         Self {
-            payload,
-            context,
+            result: Arc::new(result),
             control: ToolControl::Continue,
             extension_mutations: Vec::new(),
             revealed_tools: Vec::new(),
             interaction: None,
         }
+    }
+
+    pub fn from_data(value: Value, content: Vec<ContextContent>) -> Self {
+        Self::new(ToolResult::from_data(value, content))
+    }
+
+    /// Provides one compact JSON text block alongside the original program value.
+    pub fn json(value: Value) -> Self {
+        let content = ContextContent::Text {
+            text: value.to_string().into(),
+        };
+        Self::from_data(value, vec![content])
+    }
+
+    /// Preserves text verbatim as both a JSON string value and a model text block.
+    pub fn text(text: String) -> Self {
+        let content = ContextContent::Text {
+            text: text.as_str().into(),
+        };
+        Self::from_data(Value::String(text), vec![content])
     }
 
     /// Requests a host interaction; core assigns its identity and validates registered authority.
@@ -82,10 +103,6 @@ impl ToolOutput {
         &self.extension_mutations
     }
 
-    pub(crate) fn append_framework_context(&mut self, content: ContextContent) {
-        self.context.push(content);
-    }
-
     /// Requests Turn completion; the Thread validates the frozen registration's control permission.
     pub fn ending_turn(mut self) -> Self {
         self.control = ToolControl::EndTurn;
@@ -98,13 +115,25 @@ impl ToolOutput {
         self.control
     }
 
-    /// Returns complete producer-encoded data for storage or an upper-layer decoder.
-    pub fn payload(&self) -> &OpaquePayload {
-        &self.payload
+    pub fn result(&self) -> &ToolResult<ContextContent> {
+        &self.result
+    }
+
+    pub fn data(&self) -> Option<&Value> {
+        self.result.data()
     }
 
     /// Returns the original model projection, including on history replay.
-    pub fn context(&self) -> &[ContextContent] {
-        &self.context
+    pub fn content(&self) -> &[ContextContent] {
+        self.result.content()
+    }
+
+    pub fn details(&self) -> Option<&Value> {
+        self.result.details()
+    }
+
+    pub fn with_details(mut self, details: Value) -> Self {
+        self.result = Arc::new(Arc::unwrap_or_clone(self.result).with_details(details));
+        self
     }
 }

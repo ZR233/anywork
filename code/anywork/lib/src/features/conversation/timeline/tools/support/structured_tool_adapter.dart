@@ -1,9 +1,8 @@
-import 'dart:convert';
-
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../../l10n/app_localizations.dart';
 import '../../../../../shared/typed_json.dart';
+import '../../state/tool_data_artifact.dart';
 import '../../state/tool_presentation.dart';
 import '../../widgets/timeline_activity_clock.dart';
 import '../tool_item_adapter.dart';
@@ -88,25 +87,16 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
   @override
   TimelineToolItemController createController(TimelineToolPresentation item) {
     if (bodyPolicy.requiresAcceptance) {
-      return AcceptanceToolController(item, decoder: decodeAcceptance);
+      return AcceptanceToolController(item, decoder: decodeAcceptanceData);
     }
     return super.createController(item);
   }
 
   @override
-  ToolAcceptanceProjection decodeAcceptance(String text) {
-    if (text.trim().isEmpty || !bodyPolicy.requiresAcceptance) {
-      return const ToolAcceptanceProjection(ToolAcceptance.pending);
-    }
-    try {
-      final result = jsonDecode(text);
-      return result is Map<String, dynamic> || result is List
-          ? acceptanceFromResult(result)
-          : const ToolAcceptanceProjection(ToolAcceptance.pending);
-    } on FormatException {
-      return const ToolAcceptanceProjection(ToolAcceptance.pending);
-    }
-  }
+  ToolAcceptanceProjection decodeAcceptanceData(ToolDataArtifact data) =>
+      !bodyPolicy.requiresAcceptance || data is! ToolDataArtifactPresent
+      ? const ToolAcceptanceProjection(ToolAcceptance.pending)
+      : acceptanceFromResult(data.value);
 
   @override
   List<ToolDetailValue> decodeInput(AppLocalizations l10n, String text) =>
@@ -114,18 +104,45 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
 
   @override
   List<ToolDetailValue> decodeOutput(AppLocalizations l10n, String text) {
-    if (text.trim().isEmpty) return const [];
-    return decodeToolValues(l10n, () {
-      final Object result = bodyPolicy.readsStructuredOutput
-          ? toolStructuredResult(l10n, text)
-          : text;
-      final projection = bodyPolicy.requiresAcceptance
-          ? decodeAcceptance(text)
-          : null;
-      return projection != null && projection.state != ToolAcceptance.pending
-          ? acceptanceDetails(l10n, projection)
-          : output(l10n, result);
-    });
+    return text.isEmpty ? const [] : toolTextResult(l10n, text);
+  }
+
+  @override
+  List<ToolDetailValue> decodeOutputData(
+    AppLocalizations l10n,
+    String text,
+    ToolDataArtifact data,
+  ) {
+    switch (data) {
+      case ToolDataArtifactPresent(:final value):
+        final emptyValue = _emptyJsonValue(value);
+        if (emptyValue != null) {
+          return [
+            ToolDetailText(
+              l10n.timelineToolDetailResult,
+              emptyValue,
+              code: true,
+            ),
+          ];
+        }
+        final projected = decodeToolValues(l10n, () => output(l10n, value));
+        if (projected.isNotEmpty) return projected;
+        return projected;
+      case ToolDataArtifactInvalid(:final message):
+        return [
+          ToolDetailUnavailable(l10n.timelineToolContentMalformed(message)),
+        ];
+      case ToolDataArtifactAbsent() || ToolDataArtifactPending():
+        return const [];
+    }
+  }
+
+  String? _emptyJsonValue(Object? value) {
+    if (value == null) return 'null';
+    if (value is String && value.isEmpty) return '""';
+    if (value is List && value.isEmpty) return '[]';
+    if (value is Map && value.isEmpty) return '{}';
+    return null;
   }
 
   @override
@@ -175,10 +192,13 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
     final item = context.item;
     final l10n = context.l10n;
     final inputValues = decodeInput(l10n, item.arguments);
-    final outputValues = readsOutput(item.statusString, output: item.output)
-        ? acceptance != null && acceptance.state != ToolAcceptance.pending
-              ? acceptanceDetails(l10n, acceptance)
-              : decodeOutput(l10n, item.output)
+    final outputValues =
+        readsOutput(
+          item.statusString,
+          output: item.output,
+          toolData: context.controller.toolData,
+        )
+        ? decodeOutput(l10n, item.output)
         : const <ToolDetailValue>[];
     if (inputValues.isEmpty && outputValues.isEmpty) {
       return null;
@@ -195,6 +215,25 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
   }
 
   @override
+  Widget? buildToolDataBody(
+    TimelineToolItemContext context, {
+    ToolAcceptanceProjection? acceptance,
+  }) {
+    final data = context.controller.toolData;
+    if (data is! ToolDataArtifactPresent && data is! ToolDataArtifactInvalid) {
+      return null;
+    }
+    final values =
+        data is ToolDataArtifactPresent &&
+            bodyPolicy.requiresAcceptance &&
+            acceptance != null &&
+            acceptance.state != ToolAcceptance.accepted
+        ? acceptanceDetails(context.l10n, acceptance)
+        : decodeOutputData(context.l10n, context.item.output, data);
+    return values.isEmpty ? null : TimelineToolSemanticBody(values: values);
+  }
+
+  @override
   Widget buildWindowBody(
     TimelineToolItemContext context,
     String windowText, {
@@ -202,21 +241,6 @@ abstract class StructuredTimelineToolAdapter extends TimelineToolItemAdapter {
     ToolAcceptanceProjection? acceptance,
   }) {
     final l10n = context.l10n;
-    if (!isInput && bodyPolicy.requiresAcceptance) {
-      return TimelineToolSemanticBody(
-        values: acceptanceDetails(
-          l10n,
-          acceptance ?? const ToolAcceptanceProjection(ToolAcceptance.pending),
-        ),
-      );
-    }
-    if (!isInput &&
-        bodyPolicy.readsStructuredOutput &&
-        windowText.trim().isEmpty) {
-      return TimelineToolSemanticBody(
-        values: [ToolDetailUnavailable(l10n.timelineToolStructuredUnavailable)],
-      );
-    }
     return TimelineToolSemanticBody(
       values: isInput
           ? decodeInput(l10n, windowText)

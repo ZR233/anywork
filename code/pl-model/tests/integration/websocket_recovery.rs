@@ -1136,12 +1136,7 @@ impl Tool for RecordingLookup {
             .lock()
             .unwrap()
             .push((context.call_id, input.content().to_owned()));
-        Ok(ToolOutput::new(
-            input.clone(),
-            vec![ContextContent::Text {
-                text: Arc::from(input.content()),
-            }],
-        ))
+        Ok(ToolOutput::text(input.content().to_owned()))
     }
 }
 

@@ -292,8 +292,8 @@ async fn tool_batch_injection_does_not_cancel_running_tool_and_continues_same_tu
                     return Err(ToolError::new(ThreadError::Cancelled));
                 }
             }
-            Ok(ToolOutput::new(
-                OpaquePayload::text("ok"),
+            Ok(ToolOutput::from_data(
+                serde_json::Value::String("ok".into()),
                 vec![text("slow completed cleanly")],
             ))
         }
@@ -383,7 +383,10 @@ async fn wait_tool_wakes_immediately_on_pending_immediate_input() {
                     return Err(ToolError::new(ThreadError::Cancelled));
                 }
             }
-            Ok(ToolOutput::new(input, vec![text("bg done")]))
+            Ok(ToolOutput::from_data(
+                serde_json::Value::String(input.content().to_owned()),
+                vec![text("bg done")],
+            ))
         }
     }
 
@@ -415,7 +418,10 @@ async fn wait_tool_wakes_immediately_on_pending_immediate_input() {
                     return Err(ToolError::new(ThreadError::Cancelled));
                 }
             }
-            Ok(ToolOutput::new(input, vec![text("access done")]))
+            Ok(ToolOutput::from_data(
+                serde_json::Value::String(input.content().to_owned()),
+                vec![text("access done")],
+            ))
         }
     }
 

@@ -55,6 +55,8 @@ impl ThreadBuiltin {
             Self::Note(kind) => {
                 ToolDefinition::json(kind.name(), kind.description(), kind.input_schema())
                     .expect("valid tool definition")
+                    .with_output_schema(kind.output_schema())
+                    .expect("static session note output schema")
             }
         }
     }

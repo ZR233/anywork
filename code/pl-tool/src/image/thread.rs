@@ -5,12 +5,9 @@ use crate::{
     workspace_file::{WorkspaceFileBackend, read_regular_file},
 };
 use pl_agent_tool::typed::TypedTool;
-use pl_core::{
-    context::OpaquePayload,
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, ToolError},
-    },
+use pl_core::tool::{
+    ToolOutput,
+    opaque::{CallContext, ToolError},
 };
 use std::sync::Arc;
 
@@ -27,19 +24,13 @@ pub struct ViewImageReceipt {
 }
 
 pub fn saved_view_image_receipt(
-    payload: &OpaquePayload,
+    details: Option<&serde_json::Value>,
 ) -> Result<Option<ViewImageReceipt>, ToolError> {
-    if payload.format() != VIEW_IMAGE_RECEIPT_FORMAT {
+    let Some(value) = details.and_then(|details| details.get("viewImage")) else {
         return Ok(None);
-    }
-    if payload.version() != VIEW_IMAGE_RECEIPT_VERSION {
-        return Err(ToolError::new(std::io::Error::other(format!(
-            "unsupported {VIEW_IMAGE_RECEIPT_FORMAT} receipt version {}",
-            payload.version(),
-        ))));
-    }
+    };
     let receipt: ViewImageReceipt =
-        serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+        serde_json::from_value(value.clone()).map_err(ToolError::new)?;
     receipt.original.validate().map_err(ToolError::new)?;
     if receipt.model_width == 0 || receipt.model_height == 0 {
         return Err(ToolError::new(std::io::Error::other(
@@ -128,19 +119,20 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadVi
             )
             .await
             .map_err(|error| domain_error(error.source))?;
-        let payload = OpaquePayload::new(
-            VIEW_IMAGE_RECEIPT_FORMAT,
-            VIEW_IMAGE_RECEIPT_VERSION,
-            serde_json::to_string(&ViewImageReceipt {
-                path: output.path,
-                original: output.retained.reference,
-                model_width: output.model_width,
-                model_height: output.model_height,
-            })
-            .map_err(ToolError::new)?,
-        )
-        .map_err(ToolError::new)?;
-        Ok(ToolOutput::new(payload, output.retained.projection))
+        let receipt = ViewImageReceipt {
+            path: output.path,
+            original: output.retained.reference,
+            model_width: output.model_width,
+            model_height: output.model_height,
+        };
+        let data = serde_json::json!({
+            "resource": receipt.original,
+            "modelWidth": receipt.model_width,
+            "modelHeight": receipt.model_height,
+        });
+        let details = serde_json::to_value(receipt).map_err(ToolError::new)?;
+        Ok(ToolOutput::from_data(data, output.retained.projection)
+            .with_details(serde_json::json!({"viewImage": details})))
     }
 }
 
@@ -151,4 +143,9 @@ pub fn thread_view_image_tool_definition() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<ViewImageInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(serde_json::json!({"type":"object","properties": {
+        "resource":crate::media::resource_reference_schema(),
+        "modelWidth":{"type":"integer","minimum":1},"modelHeight":{"type":"integer","minimum":1}
+    },"required":["resource","modelWidth","modelHeight"],"additionalProperties":false}))
+    .expect("static view image schema")
 }

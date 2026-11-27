@@ -43,17 +43,16 @@ impl ExecResult {
 
     /// Shapes the domain record after the host has retained any available
     /// streams. Durable references are opaque serializable values, not product DTOs.
-    pub fn encode<R: Serialize>(
+    pub fn result<R: Serialize>(
         &self,
         resources: &[(CommandCaptureStream, R)],
-        receipt: Option<String>,
-    ) -> Result<String, serde_json::Error> {
+        receipt: Option<&str>,
+    ) -> Result<pl_agent_tool::ToolResult<String>, serde_json::Error> {
         crate::process::output::projection(
             &self.snapshot,
             resources,
             receipt,
             self.requested_body_bytes,
-            None,
         )
     }
 }

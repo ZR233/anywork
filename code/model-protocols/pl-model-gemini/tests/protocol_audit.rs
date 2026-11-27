@@ -73,6 +73,7 @@ fn canonical_history_uses_call_identity_and_refuses_to_rewrite_invalid_arguments
         ]);
         let mut result = message(MessageRole::Tool);
         result.tool_result = Some(ToolResultRecord {
+            data: None,
             item_id: "item-local".into(),
             call_id: "call-upstream".into(),
             name: "lookup".into(),

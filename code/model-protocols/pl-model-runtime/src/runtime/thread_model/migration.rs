@@ -840,7 +840,9 @@ impl FailureProgressV1 {
                 .iter()
                 .filter_map(|content| match content {
                     ContextContent::Text { text } => Some(text.as_ref()),
-                    ContextContent::Resource { .. } | ContextContent::Opaque { .. } => None,
+                    ContextContent::Resource { .. }
+                    | ContextContent::Media { .. }
+                    | ContextContent::Opaque { .. } => None,
                 })
                 .collect::<String>();
             if !text.is_empty() {

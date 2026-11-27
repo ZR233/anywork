@@ -37,7 +37,10 @@ impl pl_agent_tool::Tool for TimedTool {
         self.starts.lock().unwrap().push(Instant::now());
         self.started.send(()).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(ToolOutput::new(input, vec![]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![],
+        ))
     }
 }
 

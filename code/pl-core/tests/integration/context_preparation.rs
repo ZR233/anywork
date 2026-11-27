@@ -178,6 +178,7 @@ impl ContextPreparationHook for CapacityRecovery {
                 source_id: "summary".into(),
             },
             content: vec![text("completed history")],
+            tool_data: Default::default(),
             tool_calls: vec![],
         }];
         records.extend(
@@ -240,6 +241,7 @@ async fn context_overflow_recovers_once_and_consumes_input_once() {
                         source_id: "history".into(),
                     },
                     content: vec![text("oversized committed history")],
+                    tool_data: Default::default(),
                     tool_calls: vec![],
                 }],
             })
@@ -584,6 +586,7 @@ async fn preparation_restores_fact_authority_even_when_the_snapshot_already_exis
                     source_id: "approved-state".into(),
                 },
                 content: vec![text("approved")],
+                tool_data: Default::default(),
                 tool_calls: vec![],
             }],
         })
@@ -1002,6 +1005,7 @@ async fn local_and_service_overflow_share_one_recovery_and_rebuild_is_not_recove
                     } else {
                         "large"
                     })],
+                    tool_data: Default::default(),
                     tool_calls: vec![],
                 }],
             })
@@ -1138,6 +1142,7 @@ async fn capacity_recovery_thread(dispatched: Arc<std::sync::atomic::AtomicUsize
                     source_id: "history".into(),
                 },
                 content: vec![text(&"large committed history ".repeat(30))],
+                tool_data: Default::default(),
                 tool_calls: vec![],
             }],
         })

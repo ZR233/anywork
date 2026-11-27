@@ -11,6 +11,7 @@ use crate::{
     StudioAgentProfileDiagnostic, StudioAgentProfilesData, StudioAgentProfilesStateSnapshot,
 };
 
+use super::agent_profile::NativeProfileCheck;
 use super::fs_util::{RevisionedState, WatchedResource};
 use super::{AgentProfileCatalog, ConfigPaths, StudioConfig};
 
@@ -42,6 +43,7 @@ impl RevisionedState for AgentProfilesSnapshot {
 #[derive(Clone)]
 pub struct AgentProfilesResource {
     resource: WatchedResource<AgentProfilesSnapshot>,
+    native_check: NativeProfileCheck,
 }
 
 impl AgentProfilesResource {
@@ -51,13 +53,24 @@ impl AgentProfilesResource {
         config: &StudioConfig,
         acp: &super::AcpDefinitionsSnapshot,
     ) -> Self {
-        let catalog = AgentProfileCatalog::discover_for_settings(paths, config, acp);
+        Self::with_native_check(paths, config, acp, NativeProfileCheck::OnScan)
+    }
+
+    pub(super) fn with_native_check(
+        paths: &ConfigPaths,
+        config: &StudioConfig,
+        acp: &super::AcpDefinitionsSnapshot,
+        native_check: NativeProfileCheck,
+    ) -> Self {
+        let catalog =
+            AgentProfileCatalog::discover_for_settings_with_check(paths, config, acp, native_check);
         Self {
             resource: WatchedResource::new(AgentProfilesSnapshot {
                 revision: 1,
                 updated_at: unix_seconds(),
                 catalog,
             }),
+            native_check,
         }
     }
 
@@ -78,7 +91,12 @@ impl AgentProfilesResource {
         config: &StudioConfig,
         acp: &super::AcpDefinitionsSnapshot,
     ) {
-        let catalog = AgentProfileCatalog::discover_for_settings(paths, config, acp);
+        let catalog = AgentProfileCatalog::discover_for_settings_with_check(
+            paths,
+            config,
+            acp,
+            self.native_check,
+        );
         self.resource.publish(|state| {
             if state.catalog == catalog {
                 return false;

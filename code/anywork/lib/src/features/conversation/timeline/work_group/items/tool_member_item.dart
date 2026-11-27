@@ -99,7 +99,7 @@ class ToolMemberItem extends WorkGroupMemberAdapter {
     if (argumentBody?.feedReference case final reference?
         when argumentsOverride == null &&
             argumentBody!.hasInline == false &&
-            reference.byteLength <= 64 * 1024) {
+            reference.byteLength <= timelineBodyWindowMaxBytes) {
       return TimelineFeedBodyConnector(
         itemId: item.id,
         reference: reference,
@@ -165,7 +165,9 @@ class ToolMemberItem extends WorkGroupMemberAdapter {
             'tool.result' => adapter.readsOutput(
               tool.statusString,
               output: tool.output,
+              toolData: tool.toolData,
             ),
+            'tool.output-artifacts' => adapter.readsToolData,
             _ => false,
           },
     );
@@ -203,22 +205,36 @@ class ToolMemberItem extends WorkGroupMemberAdapter {
       additionalContentBuilder: additionalBuilder,
       declaredContentIdentity: feedContents.isEmpty
           ? null
-          : (outputReference, true),
+          : (
+              outputReference,
+              item.body('tool.output-artifacts')?.feedReference,
+              true,
+            ),
       declaredContentBuilder: feedContents.isEmpty
           ? null
-          : (onOutputRead, acceptance) => [
+          : (onOutputRead, onToolDataRead, acceptance) => [
               for (final body in feedContents)
                 TimelineBodyReadIntent(
                   scrollable: true,
-                  onRead: body.key == 'tool.result' ? onOutputRead : null,
-                  bodyBuilder: (text) => timelineToolWindowBody(
-                    context.buildContext,
-                    tool,
-                    text,
-                    input: body.key == 'tool.arguments',
-                    markdownBuilder: context.bodyBuilder,
-                    acceptance: acceptance,
-                  ),
+                  onRead: switch (body.key) {
+                    'tool.result' => onOutputRead,
+                    'tool.output-artifacts' => (window) => onToolDataRead(
+                      body.key,
+                      body.byteLength,
+                      window,
+                    ),
+                    _ => null,
+                  },
+                  bodyBuilder: body.key == 'tool.output-artifacts'
+                      ? (_) => const SizedBox.shrink()
+                      : (text) => timelineToolWindowBody(
+                          context.buildContext,
+                          tool,
+                          text,
+                          input: body.key == 'tool.arguments',
+                          markdownBuilder: context.bodyBuilder,
+                          acceptance: acceptance,
+                        ),
                   child: _buildWindowBody(context, item, body),
                 ),
             ],
@@ -305,6 +321,8 @@ TimelineToolPresentation _enrichToolTimestamps(
     timedOut: base.timedOut,
     attachments: base.attachments,
     outputArtifacts: base.outputArtifacts,
+    toolData: base.toolData,
+    outputArtifactIdentity: base.outputArtifactIdentity,
     wait: base.wait,
     executionPresent: base.executionPresent,
     frozenObservation: base.frozenObservation,

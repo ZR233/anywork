@@ -21,6 +21,8 @@ pub fn definition() -> ToolDefinition {
         input_schema_for::<GitEmptyInput>(),
     )
     .expect("valid Git tool definition")
+    .with_output_schema(crate::command_output_schema())
+    .expect("valid Git command schema")
 }
 
 #[derive(Debug)]

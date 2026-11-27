@@ -293,6 +293,7 @@ fn tool_state(state: &ThreadToolState) -> Result<ToolState> {
         ThreadToolState::Interrupted(value) => ToolState::Interrupted {
             interrupted_at: value.interrupted_at(),
             reason: value.reason().to_owned(),
+            output: value.output().map(output),
         },
         ThreadToolState::Succeeded(value) => ToolState::Succeeded {
             completed_at: value.completed_at(),
@@ -310,6 +311,7 @@ fn tool_state(state: &ThreadToolState) -> Result<ToolState> {
         ThreadToolState::Cancelled(value) => ToolState::Cancelled {
             cancelled_at: value.cancelled_at(),
             reason: value.reason().to_owned(),
+            output: value.output().map(output),
         },
     })
 }
@@ -410,7 +412,7 @@ mod tests {
             });
         let tool = ThreadToolItem::new(
             ThreadToolInvocation::new("call".into(), TOOL_PLAN_SUBMIT.into(), "{}".into()),
-            ThreadToolState::Interrupted(InterruptedThreadTool::new(1, "finished".into())),
+            ThreadToolState::Interrupted(InterruptedThreadTool::new(1, "finished".into(), None)),
         )
         .with_user_input(Some(input));
         ExecutionItem::new(

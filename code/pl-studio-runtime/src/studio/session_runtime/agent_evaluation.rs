@@ -285,9 +285,10 @@ mod tests {
             },
             call_id: call_id.into(),
             tool_id: "exec".into(),
-            output: ToolOutput::new(OpaquePayload::text("done"), vec![]),
+            output: ToolOutput::text("done".into()),
             delivered_context: vec![],
             outcome,
+            cancellation_cause: None,
         }
     }
 
@@ -425,9 +426,10 @@ mod tests {
                         target: ToolDeliveryTarget::CallResult,
                         call_id: "call-fg".into(),
                         tool_id: "exec".into(),
-                        output: ToolOutput::new(OpaquePayload::text("done"), vec![]),
+                        output: ToolOutput::text("done".into()),
                         delivered_context: vec![],
                         outcome: ToolOutcome::Succeeded,
+                        cancellation_cause: None,
                     }]),
                     ..Default::default()
                 },

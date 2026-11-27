@@ -73,14 +73,14 @@ impl GitError {
     pub fn observed(&self) -> Option<GitOutput> {
         let mut observations = Vec::new();
         self.collect_observations(&mut observations);
-        let mut payload = observations.last()?.payload().clone();
+        let mut data = observations.last()?.data().clone();
         if matches!(self, Self::AfterCommands { .. }) {
-            payload["observations"] = observations
+            data["observations"] = observations
                 .iter()
-                .map(|output| output.payload().clone())
+                .map(|output| output.data().clone())
                 .collect();
         }
-        Some(GitOutput::new(payload))
+        Some(GitOutput::new(data))
     }
 
     fn collect_observations<'a>(&'a self, observations: &mut Vec<&'a GitOutput>) {

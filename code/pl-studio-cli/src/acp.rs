@@ -205,7 +205,7 @@ pub async fn execute_acp(
         runtime_started: false,
     };
     let runtime = match latch_during(
-        StudioRuntime::initialize(request.runtime),
+        StudioRuntime::initialize_acp_cli(request.runtime),
         signal.as_mut(),
         &mut report.signal,
     )

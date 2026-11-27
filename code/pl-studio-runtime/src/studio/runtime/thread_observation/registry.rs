@@ -577,10 +577,14 @@ impl ThreadObservations {
             .read_thread(parent)
             .await?
             .context("missing parent Thread record")?;
-        services
-            .require_session(parent)?
-            .recover_saved_review_deliveries(&crate::Thread::from(parent_record))
-            .await?;
+        // Session recovery retains its own saved-delivery state. Keep that owner's
+        // future out of the directory coordinator, while awaiting it in this task.
+        Box::pin(
+            services
+                .require_session(parent)?
+                .recover_saved_review_deliveries(&crate::Thread::from(parent_record)),
+        )
+        .await?;
         for member in services.store.read_directory_tree(parent).await? {
             if !member.is_native() || member.parent_thread_id.as_deref() != Some(parent) {
                 continue;
@@ -599,10 +603,12 @@ impl ThreadObservations {
                 .is_some()
             {
                 self.synchronize(Some(&child.id)).await?;
-                services
-                    .require_session(&child.id)?
-                    .recover_saved_review_deliveries(&child)
-                    .await?;
+                Box::pin(
+                    services
+                        .require_session(&child.id)?
+                        .recover_saved_review_deliveries(&child),
+                )
+                .await?;
                 continue;
             }
             // Parent recovery explicitly prepares its cold children's storage before projecting
@@ -631,10 +637,12 @@ impl ThreadObservations {
                 &current.state.to_paused_snapshot(),
             )
             .await?;
-            services
-                .require_session(&child.id)?
-                .recover_saved_review_deliveries(&child)
-                .await?;
+            Box::pin(
+                services
+                    .require_session(&child.id)?
+                    .recover_saved_review_deliveries(&child),
+            )
+            .await?;
         }
         Ok(())
     }

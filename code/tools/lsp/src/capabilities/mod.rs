@@ -14,6 +14,14 @@ pub fn lsp_capabilities_definition() -> ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<LspCapabilitiesInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(
+        schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<Capabilities>()
+            .to_value(),
+    )
+    .expect("static LSP output schema")
 }
 
 #[derive(Debug, thiserror::Error)]

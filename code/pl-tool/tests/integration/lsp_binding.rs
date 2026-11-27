@@ -95,16 +95,21 @@ async fn hosted_lsp_tools_share_registry_and_preserve_path_authorization() -> an
     );
     // Always close the registry before propagating assertions or tool failures.
     let observed: anyhow::Result<()> = async {
+        let declared = queries
+            .definition()
+            .output_schema()
+            .expect("programmatic LSP output schema");
+        anyhow::ensure!(declared["properties"]["result"]["type"] == "string");
         let result = capabilities
             .execute(OpaquePayload::new("application/json", 1, "{}")?, context())
             .await?;
-        let value: serde_json::Value = serde_json::from_str(result.payload().content())?;
+        let value: serde_json::Value = result.data().expect("tool declares result data").clone();
         anyhow::ensure!(value["servers"][0]["ready"] == true, "{value}");
         anyhow::ensure!(value["servers"][0]["languageIds"][0] == "fixture");
         let result = queries
             .execute(query(Path::new("source.fixture")), context())
             .await?;
-        let value: serde_json::Value = serde_json::from_str(result.payload().content())?;
+        let value: serde_json::Value = result.data().expect("tool declares result data").clone();
         anyhow::ensure!(value["operation"] == "hover");
         anyhow::ensure!(value["serverId"] == "fixture");
         anyhow::ensure!(

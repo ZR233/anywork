@@ -25,6 +25,8 @@ impl ThreadSkillKind {
                 pl_tool_skill::tools::skills_list::SkillsList,
             >()
             .expect("static skill definition")
+            .with_output_schema()
+            .expect("static skill listing schema")
             .definition()
             .clone(),
             Self::View => pl_agent_tool::typed::prepare_json::<
@@ -32,7 +34,9 @@ impl ThreadSkillKind {
             >()
             .expect("static skill definition")
             .definition()
-            .clone(),
+            .clone()
+            .with_output_schema(crate::binding::program_schema::<super::SkillViewOutput>())
+            .expect("static skill view schema"),
         }
     }
 }
@@ -137,7 +141,7 @@ impl ThreadSkillTool {
                     .await
                     .map_err(ToolError::new)?;
                 let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
-                text_output("pl.tool.skill-list", &result, encoded)
+                text_output(&result, encoded)
             }
             ThreadSkillKind::View => {
                 let input = decode_json(input.content()).map_err(ToolError::new)?;
@@ -156,15 +160,12 @@ impl ThreadSkillTool {
                             source,
                             output,
                         }) => {
-                            return Err(ToolError::new(source).with_output(text_output(
-                                "pl.tool.skill-view",
-                                &output.viewed,
-                                output.preview,
-                            )?));
+                            return Err(ToolError::new(source)
+                                .with_output(text_output(&output.viewed, output.preview)?));
                         }
                         Err(error) => return Err(ToolError::new(error)),
                     };
-                text_output("pl.tool.skill-view", &result.viewed, result.preview)
+                text_output(&result.viewed, result.preview)
             }
         }
     }
@@ -204,6 +205,8 @@ impl ThreadSkillManageTool {
             pl_tool_skill::tools::skill_manage::SkillManage<super::actions::LocalSkillFiles>,
         >()
         .expect("static skill definition")
+        .with_output_schema()
+        .expect("static skill mutation schema")
         .definition()
         .clone()
     }
@@ -270,16 +273,12 @@ impl ThreadSkillManageTool {
             Ok(result) => result,
             Err(pl_tool_skill::tools::skill_manage::ManageError::Record { source, output }) => {
                 let encoded = serde_json::to_string(&output).map_err(ToolError::new)?;
-                return Err(ToolError::new(source).with_output(text_output(
-                    "pl.tool.skill-mutation",
-                    &output,
-                    encoded,
-                )?));
+                return Err(ToolError::new(source).with_output(text_output(&output, encoded)?));
             }
             Err(error) => return Err(ToolError::new(error)),
         };
         let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
-        text_output("pl.tool.skill-mutation", &result, encoded)
+        text_output(&result, encoded)
     }
 }
 
@@ -300,18 +299,9 @@ impl TypedTool for ThreadSkillManageTool {
         self.execute_mutation(input, context.cancellation).await
     }
 }
-fn text_output(
-    format: &str,
-    value: &impl serde::Serialize,
-    text: String,
-) -> Result<ToolOutput, ToolError> {
-    Ok(ToolOutput::new(
-        OpaquePayload::new(
-            format,
-            1,
-            serde_json::to_string(value).map_err(ToolError::new)?,
-        )
-        .map_err(ToolError::new)?,
+fn text_output(value: &impl serde::Serialize, text: String) -> Result<ToolOutput, ToolError> {
+    Ok(ToolOutput::from_data(
+        serde_json::to_value(value).map_err(ToolError::new)?,
         vec![ContextContent::Text { text: text.into() }],
     ))
 }
@@ -323,19 +313,26 @@ pub fn native_skill_view_effect(
     output: ToolOutput,
     extensions: &std::collections::BTreeMap<String, pl_core::thread::extensions::ExtensionRecord>,
 ) -> Result<ToolOutput, ToolError> {
-    let name = match crate::skill::saved_skill_name(output.payload()) {
+    let name = match crate::skill::saved_skill_name(output.data()) {
         Ok(name) => name,
         Err(error) => return Err(ToolError::new(error).with_output(output)),
     };
-    let payload = output.payload().clone();
     let id = format!(
         "pl.tool.skill-view:{}",
         hex::encode(Sha256::digest(name.to_ascii_lowercase().as_bytes()))
     );
     let previous = extensions.get(&id);
-    if previous.is_some_and(|record| record.payload == payload) {
+    let value = output.data().expect("Skill identity requires result data");
+    if previous.is_some_and(|record| {
+        record.payload.format() == "pl.tool.skill-view"
+            && record.payload.version() == 1
+            && serde_json::from_str::<serde_json::Value>(record.payload.content())
+                .is_ok_and(|saved| &saved == value)
+    }) {
         return Ok(output);
     }
+    let payload =
+        OpaquePayload::new("pl.tool.skill-view", 1, value.to_string()).map_err(ToolError::new)?;
     Ok(
         output.with_extension_mutations(vec![ExtensionMutation::Put {
             id,

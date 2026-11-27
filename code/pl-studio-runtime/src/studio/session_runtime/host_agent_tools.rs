@@ -5,7 +5,7 @@ use std::{marker::PhantomData, sync::Arc};
 use anyhow::Result;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle, typed::decode_json};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::OpaquePayload,
     model::ToolPresentationContract,
     tool::{
         ToolOutput,
@@ -212,7 +212,19 @@ impl QueryKind {
                 pl_agent_tool::typed::input_schema_for::<WaitAgentRequest>(),
             ),
         };
-        Ok(ToolDefinition::json(name, description, schema)?)
+        let output_schema = match self {
+            Self::Profiles => {
+                pl_agent_tool::typed::output_schema_for::<super::owner::Profiles<'static>>()
+            }
+            Self::Models => pl_agent_tool::typed::output_schema_for::<crate::DelegationModelList>(),
+            Self::Model => {
+                pl_agent_tool::typed::output_schema_for::<crate::DelegationModelDetails>()
+            }
+            Self::Report => {
+                pl_agent_tool::typed::output_schema_for::<super::agent_wait::WaitAgentResult>()
+            }
+        };
+        Ok(ToolDefinition::json(name, description, schema)?.with_output_schema(output_schema)?)
     }
 }
 
@@ -283,11 +295,5 @@ impl<C: AgentToolContext> Tool for AgentQuery<C> {
 }
 
 fn output(value: impl serde::Serialize) -> Result<ToolOutput, ToolError> {
-    let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        OpaquePayload::new("pl.studio.agent-query", 1, encoded.clone()).map_err(ToolError::new)?,
-        vec![ContextContent::Text {
-            text: encoded.into(),
-        }],
-    ))
+    crate::tool_json::json_output(&value)
 }

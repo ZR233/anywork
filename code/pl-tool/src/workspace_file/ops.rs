@@ -2,38 +2,24 @@ use crate::tool_error;
 use pl_protocol::Result;
 use serde_json::Value;
 
-use pl_output::OutputTruncation;
-
 use super::backend::*;
 use super::patch::apply_patch_to_backend;
 use super::schema::*;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkspaceFileToolExecution {
-    pub success: bool,
+pub(super) struct WorkspacePatchResult {
     pub failure: Option<pl_patch::PatchFailure>,
-    pub output: String,
+    pub data: Value,
     pub model_output: String,
-    pub exit_code: Option<i32>,
-    pub truncated: OutputTruncation,
 }
 
-impl WorkspaceFileToolExecution {
-    fn json(output: Value) -> Result<Self> {
-        let output = serde_json::to_string(&output).map_err(|error| {
-            tool_error(
-                "workspace_file",
-                format!("failed to encode output: {error}"),
-            )
-        })?;
-        Ok(Self {
-            success: true,
-            failure: None,
-            model_output: pl_output::bounded_text(&output, 64 * 1024, 0).text,
-            output,
-            exit_code: Some(0),
-            truncated: OutputTruncation::empty(),
-        })
+impl WorkspacePatchResult {
+    fn new(data: Value, failure: Option<pl_patch::PatchFailure>) -> Self {
+        Self {
+            failure,
+            model_output: pl_output::bounded_text(&data.to_string(), 64 * 1024, 0).text,
+            data,
+        }
     }
 }
 
@@ -41,7 +27,7 @@ impl WorkspaceFileToolExecution {
 pub(super) async fn execute_workspace_patch_tool<B>(
     backend: &B,
     patch: &str,
-) -> Result<WorkspaceFileToolExecution>
+) -> Result<WorkspacePatchResult>
 where
     B: WorkspaceFileBackend,
 {
@@ -52,11 +38,7 @@ where
             let mut value = serde_json::to_value(&failure)
                 .map_err(|error| tool_error(TOOL_APPLY_PATCH, error))?;
             value["cwd"] = cwd.into();
-            let mut result = WorkspaceFileToolExecution::json(value)?;
-            result.failure = Some(failure);
-            result.success = false;
-            result.exit_code = Some(1);
-            return Ok(result);
+            return Ok(WorkspacePatchResult::new(value, Some(failure)));
         }
     };
     let value = serde_json::to_value(output).map_err(|error| {
@@ -65,5 +47,5 @@ where
             format!("failed to encode apply_patch output: {error}"),
         )
     })?;
-    WorkspaceFileToolExecution::json(value)
+    Ok(WorkspacePatchResult::new(value, None))
 }

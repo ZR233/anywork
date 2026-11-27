@@ -155,7 +155,7 @@ impl ThreadLspTool {
             service,
             cancellation,
         };
-        let (encoded, text) = match self.kind {
+        let result = match self.kind {
             LspToolKind::Status => {
                 let tool = pl_tool_lsp::status::LspStatusTool::new(self.definition.clone());
                 let result = tool
@@ -167,7 +167,7 @@ impl ThreadLspTool {
                         }
                         error => ToolError::new(error),
                     })?;
-                result.encode().map_err(ToolError::new)?
+                result.into_result().map_err(ToolError::new)?
             }
             LspToolKind::Capabilities => {
                 let tool =
@@ -181,7 +181,7 @@ impl ThreadLspTool {
                         }
                         error => ToolError::new(error),
                     })?;
-                result.encode().map_err(ToolError::new)?
+                result.into_result().map_err(ToolError::new)?
             }
             LspToolKind::Query => {
                 let tool = pl_tool_lsp::query::LspQueryTool::new(self.definition.clone());
@@ -195,15 +195,12 @@ impl ThreadLspTool {
                         pl_tool_lsp::query::QueryError::Path(error) => error,
                         error => ToolError::new(error),
                     })?;
-                result.encode().map_err(ToolError::new)?
+                result.into_result().map_err(ToolError::new)?
             }
         };
-        Ok(ToolOutput::new(
-            OpaquePayload::new("pl.tool.lsp", 1, encoded).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        ))
+        Ok(ToolOutput::new(result.map_content(|text| {
+            ContextContent::Text { text: text.into() }
+        })))
     }
 }
 

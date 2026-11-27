@@ -32,7 +32,7 @@ pub struct AgentProfileSnapshot {
 /// 当前可复用 Profile；定义、后端配置和派发资格分别表达，不持有运行资源。
 ///
 /// 历史继续读取 [`AgentProfileSnapshot`]，不以本结构重写已经冻结的 Native 会话。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentProfile {
     pub definition: crate::AgentDefinitionSnapshot,

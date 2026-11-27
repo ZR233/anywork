@@ -172,7 +172,12 @@ impl StudioThreadTools {
         let prepared =
             prepare_registration(definition.name(), &definition, ToolCallPolicy::DirectOnly)?;
         registrations.push(pl_tool::finish_turn::registration(prepared, definition));
-        let todo = prepare_native_tool::<pl_tool::todo::TodoUpdateTool>()?;
+        let todo = prepare_native_tool::<pl_tool::todo::TodoUpdateTool>()?.with_output_schema(
+            pl_tool::todo::todo_update_tool_definition()
+                .output_schema()
+                .cloned()
+                .expect("todo author declares its result"),
+        )?;
         let prepared = prepare_registration(
             pl_tool::todo::TOOL_UPDATE_TODO_LIST,
             todo.definition(),
@@ -199,7 +204,8 @@ impl StudioThreadTools {
         super::host_task_tools::list(&mut super::host_task_tools::NativeTaskTools(
             &mut registrations,
         ))?;
-        let sleep = prepare_native_tool::<pl_tool::session::SleepTool>()?;
+        let sleep = prepare_native_tool::<pl_tool::session::SleepTool>()?
+            .with_output_schema(pl_agent_tool::typed::output_schema_for::<String>())?;
         let prepared_sleep =
             prepare_registration("sleep", sleep.definition(), ToolCallPolicy::DirectOnly)?;
         registrations.push(
@@ -263,7 +269,13 @@ impl StudioThreadTools {
         media: std::sync::Arc<H>,
     ) -> Result<Self, ThreadAssemblyError> {
         let adapter =
-            prepare_native_tool::<pl_tool::image_generation::ThreadImageGenerationTool<H>>()?;
+            prepare_native_tool::<pl_tool::image_generation::ThreadImageGenerationTool<H>>()?
+                .with_output_schema(
+                    pl_tool::image_generation::ThreadImageGenerationTool::<H>::declaration()
+                        .output_schema()
+                        .cloned()
+                        .expect("image generation author declares its result"),
+                )?;
         let declaration = prepare_registration(
             adapter.definition().name(),
             adapter.definition(),
@@ -421,7 +433,13 @@ fn media_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
 ) -> Result<Vec<Registration>, ThreadAssemblyError> {
     let mut tools = Vec::new();
     let view_image =
-        prepare_native_tool::<pl_tool::image::ThreadViewImageTool<B, super::media::MediaHost>>()?;
+        prepare_native_tool::<pl_tool::image::ThreadViewImageTool<B, super::media::MediaHost>>()?
+            .with_output_schema(
+            pl_tool::image::thread_view_image_tool_definition()
+                .output_schema()
+                .cloned()
+                .expect("image author declares its result"),
+        )?;
     let view_registration = prepare_registration(
         "view_image",
         view_image.definition(),
@@ -429,7 +447,13 @@ fn media_tools<B: pl_tool::workspace_file::WorkspaceFileBackend + 'static>(
     )?;
     let show_files = prepare_native_tool::<
         pl_tool::file_display::ThreadShowFilesTool<B, super::media::MediaHost>,
-    >()?;
+    >()?
+    .with_output_schema(
+        pl_tool::file_display::thread_show_files_tool_definition()
+            .output_schema()
+            .cloned()
+            .expect("file display author declares its result"),
+    )?;
     let show_registration = prepare_registration(
         "show_files",
         show_files.definition(),

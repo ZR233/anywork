@@ -7,19 +7,144 @@ use pl_core::thread::{ToolDeliveryTarget, history_sink::HistorySink};
 use sea_orm::{ConnectionTrait, Database};
 
 #[tokio::test]
-async fn completed_tool_payload_remains_queryable_after_current_releases_delivery() -> Result<()> {
-    assert_saved_tool_payload_is_queryable(ToolDeliveryTarget::CallResult).await
+async fn tool_result_current_production_recovery_upgrades_legacy_bytes_once() -> Result<()> {
+    use crate::studio::thread_factory::recovery::load_current_for_recovery;
+    use pl_core::thread::current::{CURRENT_SCHEMA_VERSION, RuntimeEpoch, ThreadCurrent};
+
+    let directory = tempfile::tempdir()?;
+    let store = StudioStore::open(directory.path().join("data/studio.sqlite")).await?;
+    let thread = test_thread("legacy-current-recovery");
+    super::storage_fault_tests::register_test_thread(&store, &thread).await?;
+    let session = store.registered_session_paths(&thread.id)?;
+    let mut legacy =
+        serde_json::to_value(ThreadCurrent::new(thread.id.clone(), RuntimeEpoch::new()))?;
+    legacy["schemaVersion"] = 1.into();
+    legacy["snapshotRevision"] = 19.into();
+    let original = serde_json::to_vec_pretty(&legacy)?;
+    std::fs::create_dir_all(session.root())?;
+    std::fs::write(session.current_file(), &original)?;
+    assert!(
+        store
+            .state_for(&thread.workspace_id, &thread.id)?
+            .load_current()
+            .await
+            .is_err()
+    );
+
+    let recovered = load_current_for_recovery(&store, &thread)
+        .await?
+        .context("missing legacy Current")?;
+    assert_eq!(recovered.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(recovered.snapshot_revision, 19);
+    assert_eq!(
+        std::fs::read(
+            session
+                .root()
+                .join("migration-backups/current-tool-result-v1/current.original.json")
+        )?,
+        original
+    );
+    let published = std::fs::read(session.current_file())?;
+    assert!(load_current_for_recovery(&store, &thread).await?.is_some());
+    assert_eq!(std::fs::read(session.current_file())?, published);
+    assert!(!session.history_database().exists());
+    Ok(())
 }
 
 #[tokio::test]
-async fn background_tool_payload_remains_queryable_after_release() -> Result<()> {
-    assert_saved_tool_payload_is_queryable(ToolDeliveryTarget::Inbox {
-        message_id: "task-result:1".into(),
-    })
+async fn tool_result_remains_queryable_after_current_releases_delivery() -> Result<()> {
+    assert_saved_tool_payload_is_queryable(ToolDeliveryTarget::CallResult, None).await
+}
+
+#[tokio::test]
+async fn tool_result_background_remains_queryable_after_release() -> Result<()> {
+    assert_saved_tool_payload_is_queryable(
+        ToolDeliveryTarget::Inbox {
+            message_id: "task-result:1".into(),
+        },
+        None,
+    )
     .await
 }
 
-async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> Result<()> {
+#[tokio::test]
+async fn tool_result_cancellation_cause_survives_current_and_history_cold_read() -> Result<()> {
+    assert_saved_tool_payload_is_queryable(
+        ToolDeliveryTarget::CallResult,
+        Some("original operation failed before cancellation"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn tool_result_lookup_ends_on_projection_failure_and_writer_close() -> Result<()> {
+    for (id, failure) in [
+        (
+            "receipt-projection-failed",
+            Some("controlled projection failure"),
+        ),
+        ("receipt-writer-stopped", None),
+    ] {
+        let fixture = Fixture::new(id).await?;
+        let channel = &fixture.sink.0.channel;
+        fixture.sink.admit(id, ticket(id, 1))?;
+        let read = fixture.sink.read_saved_tool_task(id, "task:missing");
+        tokio::pin!(read);
+        wait_for_receipt_cut(&fixture.sink, read.as_mut(), 1).await?;
+        if let Some(message) = failure {
+            channel.fail_projection(1, message.to_owned());
+        } else {
+            channel.stop_and_join_for_deletion().await?;
+        }
+        let error = tokio::time::timeout(Duration::from_secs(5), read)
+            .await?
+            .expect_err("lookup must report the durability failure");
+        let diagnostic = error.to_string();
+        if let Some(message) = failure {
+            assert!(diagnostic.contains(message), "{error}");
+            channel.stop_and_join_for_deletion().await?;
+        } else {
+            // The writer can publish its exit before the lookup observes the stop token.
+            assert!(
+                diagnostic.contains("history stopped before becoming durable through 1")
+                    || (diagnostic.contains("history did not become durable through 1")
+                        && diagnostic.contains("history writer unavailable")),
+                "{error}"
+            );
+        }
+        history_store(&fixture.sink.0).await?.close().await?;
+    }
+    Ok(())
+}
+
+async fn wait_for_receipt_cut(
+    sink: &ThreadStorageSink,
+    mut read: std::pin::Pin<&mut impl Future<Output: std::fmt::Debug>>,
+    cut: u64,
+) -> Result<()> {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        std::future::poll_fn(|cx| {
+            use std::task::Poll;
+            if let Poll::Ready(outcome) = read.as_mut().poll(cx) {
+                panic!("lookup settled before its admitted prefix was processed: {outcome:?}");
+            }
+            // Observe the flush request on the lookup's own wakeups, with projection paused.
+            if lock_progress(&sink.0).flush_target == cut {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn assert_saved_tool_payload_is_queryable(
+    target: ToolDeliveryTarget,
+    cancellation_message: Option<&str>,
+) -> Result<()> {
     use pl_core::{
         context::{AgentMessageKind, ContextContent, OpaquePayload},
         model::ModelToolCall,
@@ -28,18 +153,31 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
             inbox::{InboxRecord, ThreadMessage},
             task::{TaskAcknowledgement, TaskRecord, TaskStatus},
         },
-        tool::ToolOutput,
+        tool::{ToolFailureKind, ToolOutput, opaque::ToolError},
     };
 
     let mut fixture = Fixture::new("retained-tool-result").await?;
     let id = fixture.sink.0.thread.id.clone();
-    let expected = serde_json::json!({
+    let data = serde_json::json!({
         "output": "完整原始结果🧭".repeat(2048),
         "modelOutputBytes": 128,
         "error": null,
         "nestedCallIds": [],
-    })
-    .to_string();
+    });
+    let content = vec![ContextContent::Text {
+        text: "short presentation".into(),
+    }];
+    let details = cancellation_message.map(|_| serde_json::json!({"archive": ["author receipt"]}));
+    let cancelled = cancellation_message.is_some();
+    let (status, outcome, delivered_context) = if cancelled {
+        (TaskStatus::Cancelled, ToolOutcome::Cancelled, Vec::new())
+    } else {
+        (
+            TaskStatus::Succeeded,
+            ToolOutcome::Succeeded,
+            content.clone(),
+        )
+    };
     let task = TaskRecord {
         id: "task:original-tool".into(),
         call_id: "original-tool".into(),
@@ -54,8 +192,8 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
             presentation_contract: None,
         }),
         revision: 2,
-        status: TaskStatus::Succeeded,
-        cancel_requested: false,
+        status,
+        cancel_requested: cancelled,
         acknowledgement: matches!(target, ToolDeliveryTarget::Inbox { .. }).then(|| {
             TaskAcknowledgement {
                 record_id: "task-receipt:0".into(),
@@ -64,20 +202,48 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
         }),
         started_sequence: Some(1),
     };
+    let mut output = ToolOutput::from_data(data.clone(), content.clone());
+    if let Some(details) = &details {
+        output = output.with_details(details.clone());
+    }
+    let cancellation_cause = cancellation_message.map(|message| {
+        Arc::new(ToolError::operation(
+            std::io::Error::other(message),
+            output.clone(),
+        ))
+    });
     let delivery = ToolDelivery {
         target,
         call_id: task.call_id.clone(),
         tool_id: task.tool_id.clone(),
-        output: ToolOutput::new(
-            OpaquePayload::new("pl.tool.lua", 1, expected.clone())?,
-            vec![ContextContent::Text {
-                text: "short presentation".into(),
-            }],
-        ),
-        delivered_context: vec![ContextContent::Text {
-            text: "short presentation".into(),
-        }],
-        outcome: ToolOutcome::Succeeded,
+        output,
+        delivered_context: delivered_context.clone(),
+        outcome,
+        cancellation_cause,
+    };
+    let assert_delivery = |saved: &ToolDelivery| -> Result<()> {
+        assert_eq!(saved.call_id, task.call_id);
+        assert_eq!(saved.tool_id, task.tool_id);
+        assert_eq!(saved.output.data(), Some(&data));
+        assert_eq!(saved.output.details(), details.as_ref());
+        assert_eq!(saved.output.content(), content);
+        assert_eq!(saved.delivered_context, delivered_context);
+        match cancellation_message {
+            Some(message) => {
+                assert!(matches!(saved.outcome, ToolOutcome::Cancelled));
+                let cause = saved
+                    .cancellation_cause
+                    .as_deref()
+                    .context("missing cancellation cause")?;
+                assert_eq!(cause.kind(), ToolFailureKind::Operation);
+                assert_eq!(cause.to_string(), message);
+            }
+            None => {
+                assert!(matches!(saved.outcome, ToolOutcome::Succeeded));
+                assert!(saved.cancellation_cause.is_none());
+            }
+        }
+        Ok(())
     };
     let mut write = ticket(&id, 1);
     let export = Arc::make_mut(&mut write);
@@ -89,7 +255,11 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
                 id: message_id.clone(),
                 source_id: task.id.clone(),
                 kind: AgentMessageKind::Report,
-                payload: delivery.output.payload().clone(),
+                payload: OpaquePayload::new(
+                    "pl.core.tool-result-reference",
+                    1,
+                    task.call_id.as_str(),
+                )?,
                 context: delivery.delivered_context.clone(),
             },
         }]);
@@ -97,11 +267,56 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
         effect.inbox = inbox;
     }
     export.state.terminal_tasks = Arc::from([task.clone()]);
-    export.state.deliveries = Arc::from([delivery.clone()]);
+    let deliveries = Arc::from([delivery]);
+    export.state.deliveries = Arc::clone(&deliveries);
     effect.tasks = Arc::from([task.clone()]);
-    effect.deliveries = Arc::from([delivery]);
-    fixture.handoff(&write).await?;
-    fixture.finish(1).await?;
+    effect.deliveries = Arc::clone(&deliveries);
+    let history = history_store(&fixture.sink.0).await?;
+    let channel = Arc::clone(&fixture.sink.0.channel);
+    // Leave the live projection paused after the channel takes ownership of the original.
+    fixture.sink.admit(&id, write)?;
+    let status = channel.subscribe().borrow().clone();
+    assert_eq!(status.admitted_sequence, 1);
+    assert_eq!(status.committed_sequence, 0);
+    assert_eq!(channel.handoff_ticket(), 0);
+    assert!(
+        crate::studio::storage::tool_task::read(&history.reader(), &task.id)
+            .await?
+            .is_none()
+    );
+    assert!(
+        fixture
+            .sink
+            .read_saved_tool_task("foreign-thread", &task.id)
+            .await
+            .is_err()
+    );
+
+    let lookup_sink = fixture.sink.clone();
+    let live = lookup_sink.read_saved_tool_task(&id, &task.id);
+    tokio::pin!(live);
+    // The HistoryReader runs SQLite work in a separate task. Admit the later effect while
+    // the first lookup is pending, before it can request a durability barrier.
+    assert!(futures::poll!(live.as_mut()).is_pending());
+    assert_eq!(lock_progress(&lookup_sink.0).flush_target, 0);
+    fixture.sink.admit(&id, ticket(&id, 2))?;
+    wait_for_receipt_cut(&lookup_sink, live.as_mut(), 1).await?;
+    let original = channel
+        .next_unprojected()
+        .context("missing admitted original")?;
+    fixture.project(&original)?;
+    let live_result = tokio::time::timeout(Duration::from_secs(10), live)
+        .await??
+        .context("admitted original was lost before commit")?;
+    assert_eq!(live_result.task, task);
+    let status = channel.subscribe().borrow().clone();
+    assert_eq!(status.admitted_sequence, 2);
+    assert_eq!(status.committed_sequence, 1);
+    let later = channel.next_unprojected().context("missing later effect")?;
+    fixture.project(&later)?;
+    fixture.finish(2).await?;
+    history.close().await?;
+    drop(history);
 
     let mut current = pl_core::thread::current::ThreadCurrent::new(
         id.clone(),
@@ -109,20 +324,50 @@ async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> R
     );
     current.state.tasks.insert(task.id.clone(), task.clone());
     let paths = fixture.store.registered_session_paths(&id)?;
-    crate::studio::storage::current_file::CurrentFile::new(paths.root().to_owned(), id.clone())
-        .save(current)
-        .await?;
+    let current_file =
+        crate::studio::storage::current_file::CurrentFile::new(paths.root().to_owned(), id.clone());
+    if cancelled {
+        current.state.deliveries = deliveries;
+        current_file.save(current).await?;
+        current = current_file
+            .load()
+            .await?
+            .context("missing persisted Current")?;
+        let [pending] = current.state.deliveries.as_ref() else {
+            panic!("expected one pending Current delivery");
+        };
+        assert_delivery(pending)?;
+        current.state.deliveries = Arc::from([]);
+    }
+    current_file.save(current).await?;
+    assert!(
+        current_file
+            .load()
+            .await?
+            .unwrap()
+            .state
+            .deliveries
+            .is_empty()
+    );
 
-    let history = fixture.store.history(&id).await?;
-    let reader = history.reader();
+    let reader = crate::history::HistoryStore::open_reader(
+        paths.history_database(),
+        &id,
+        crate::history::HistoryLimits::default(),
+    )
+    .await?;
     let saved = crate::studio::storage::tool_task::read(&reader, &task.id)
         .await?
         .context("completed task must be read from its original History fact")?;
-    assert_eq!(saved.task.id, task.id);
-    assert_eq!(saved.task.status, TaskStatus::Succeeded);
-    let result = saved.delivery.context("complete original tool delivery")?;
-    assert_eq!(result.output.payload().format(), "pl.tool.lua");
-    assert_eq!(result.output.payload().content(), expected);
+    assert_eq!(saved.task, task);
+    assert_eq!(
+        crate::studio::storage::tool_task::read(&reader, &task.call_id)
+            .await?
+            .unwrap()
+            .task,
+        task
+    );
+    assert_delivery(&saved.delivery.context("complete original tool delivery")?)?;
     assert!(
         crate::studio::storage::tool_task::read(&reader, "task:unknown")
             .await?
@@ -997,6 +1242,7 @@ async fn cold_current_upgrades_assistant_pairing_before_the_next_loopback_reques
         source: ContextSource::User,
         content: vec![ContextContent::Text { text: text.into() }],
         tool_calls: Vec::new(),
+        tool_data: Default::default(),
     };
     let request = |attempt: &str, turn: &str, context: ContextSnapshot| ModelRequest {
         thread_id: "migration-fixture".into(),
@@ -1063,6 +1309,7 @@ async fn cold_current_upgrades_assistant_pairing_before_the_next_loopback_reques
                     source: ContextSource::Assistant,
                     content,
                     tool_calls: calls.clone(),
+                    tool_data: Default::default(),
                 },
                 ContextRecord {
                     id: "original-result".into(),
@@ -1075,6 +1322,7 @@ async fn cold_current_upgrades_assistant_pairing_before_the_next_loopback_reques
                         text: "original tool result".into(),
                     }],
                     tool_calls: Vec::new(),
+                    tool_data: Default::default(),
                 },
             ]),
         };
@@ -1166,7 +1414,10 @@ async fn cold_current_upgrades_assistant_pairing_before_the_next_loopback_reques
                 .iter()
                 .any(|item| item["type"] == "function_call_output"
                     && item["call_id"] == "call_legacy"
-                    && item["output"] == "original tool result")
+                    && item["output"]
+                        == serde_json::json!([
+                            {"type":"input_text", "text":"original tool result"}
+                        ]))
         );
     }
     store.close().await?;
@@ -1291,6 +1542,7 @@ async fn manual_compaction_settles_over_http_and_sqlite_without_a_turn() -> Resu
                     text: "Committed history for manual compaction".into(),
                 }],
                 tool_calls: Vec::new(),
+                tool_data: Default::default(),
             }],
         })
         .await?;

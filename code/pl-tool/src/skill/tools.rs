@@ -7,14 +7,22 @@ pub use thread::{
 };
 type SkillViewOutput = pl_tool_skill::support::ViewedSkill<SkillSummary, SkillResourceBase>;
 
-/// Reads the identity of a previously loaded Skill from its frozen result.
-///
-/// # Errors
-/// Rejects unsupported formats or malformed saved data without reading current Skill files.
-pub fn saved_skill_name(payload: &pl_core::context::OpaquePayload) -> Result<String, PureError> {
+/// Reads the identity of a previously loaded Skill from its frozen result data.
+pub fn saved_skill_name(data: Option<&serde_json::Value>) -> Result<String, PureError> {
+    data.and_then(|data| data.get("skill"))
+        .and_then(|skill| skill.get("name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| PureError::ConfigError("saved Skill view lacks its identity".into()))
+}
+
+/// Reads the identity from the separately persisted Skill extension.
+pub fn saved_skill_extension_name(
+    payload: &pl_core::context::OpaquePayload,
+) -> Result<String, PureError> {
     if payload.format() != "pl.tool.skill-view" || payload.version() != 1 {
         return Err(PureError::ConfigError(
-            "unsupported saved Skill view".into(),
+            "unsupported saved Skill extension".into(),
         ));
     }
     let view: SkillViewOutput = serde_json::from_str(payload.content())?;
@@ -26,14 +34,14 @@ pub fn saved_skill_name(payload: &pl_core::context::OpaquePayload) -> Result<Str
 /// # Errors
 /// Rejects malformed supported receipts; unrelated formats and support resources return None.
 pub fn saved_skill_activation(
-    payload: &pl_core::context::OpaquePayload,
+    data: Option<&serde_json::Value>,
     turn_id: String,
     cause: crate::skill::SkillActivationCause,
 ) -> Result<Option<crate::skill::SkillActivation>, PureError> {
-    if payload.format() != "pl.tool.skill-view" || payload.version() != 1 {
+    let Some(data) = data else {
         return Ok(None);
-    }
-    let view: SkillViewOutput = serde_json::from_str(payload.content())?;
+    };
+    let view: SkillViewOutput = serde_json::from_value(data.clone())?;
     if !view.success || !is_main_skill_path(&view.file_path) {
         return Ok(None);
     }

@@ -352,22 +352,26 @@ impl AcpWorkflowPlanOwner {
 
     pub(crate) async fn workflow_current_json(&self) -> Result<Value, AcpWorkflowPlanError> {
         let machine = self.workflow_machine()?;
-        Ok(machine.current_snapshot())
+        serde_json::to_value(machine.current_snapshot())
+            .map_err(|error| AcpWorkflowPlanError(error.to_string()))
     }
 
     pub(crate) async fn workflow_next_json(&self) -> Result<Value, AcpWorkflowPlanError> {
         let machine = self.workflow_machine()?;
-        Ok(machine.next_snapshot())
+        serde_json::to_value(machine.next_snapshot())
+            .map_err(|error| AcpWorkflowPlanError(error.to_string()))
     }
 
     pub(crate) async fn workflow_graph_json(&self) -> Result<Value, AcpWorkflowPlanError> {
         let machine = self.workflow_machine()?;
-        Ok(machine.graph_snapshot())
+        serde_json::to_value(machine.graph_snapshot())
+            .map_err(|error| AcpWorkflowPlanError(error.to_string()))
     }
 
     pub(crate) async fn workflow_history_json(&self) -> Result<Value, AcpWorkflowPlanError> {
         let machine = self.workflow_machine()?;
-        Ok(machine.history_snapshot())
+        serde_json::to_value(machine.history_snapshot())
+            .map_err(|error| AcpWorkflowPlanError(error.to_string()))
     }
 
     pub(crate) async fn workflow_transition(

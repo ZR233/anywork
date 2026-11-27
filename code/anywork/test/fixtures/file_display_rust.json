@@ -1,0 +1,47 @@
+[
+  {
+    "fileDisplay": {
+      "caption": "交付文件",
+      "files": [
+        {
+          "filename": "first.md",
+          "modality": "file",
+          "origin": {
+            "kind": "local",
+            "path": "/tmp/.tmpXWftzJ/first.md"
+          },
+          "resource": {
+            "byteLen": 28,
+            "contentDigest": "sha256:2ec3176920105199cc82564d5073897d1f69a4f515f051274d66cad8fcd8bdc1",
+            "id": "sha256:2ec3176920105199cc82564d5073897d1f69a4f515f051274d66cad8fcd8bdc1",
+            "mediaType": "text/markdown"
+          },
+          "status": "ready"
+        },
+        {
+          "filename": "download.tar",
+          "status": "deferred",
+          "target": {
+            "canonicalPath": "/tmp/.tmpXWftzJ/download.tar",
+            "executorInstance": "18da8680cf041a95d024da69332ef1e59b726540c536658eefaeab2bcabd197e:3",
+            "hostWorkspaceAccess": false,
+            "modifiedAt": 1795750669,
+            "size": 360,
+            "workspaceBinding": "pl.workspace:61aadf3c23bb61e991d7d7e6e2d5e41ecc73c31f19827cbbbe1fd52f5a6af5ba",
+            "workspaceRoot": "/tmp/.tmpXWftzJ"
+          }
+        },
+        {
+          "filename": "image.png",
+          "status": "networkImage",
+          "url": "https://example.invalid/image.png"
+        },
+        {
+          "filename": "network-image",
+          "message": "network image URL requires HTTPS, a host and no credentials",
+          "status": "failed"
+        }
+      ]
+    }
+  }
+]

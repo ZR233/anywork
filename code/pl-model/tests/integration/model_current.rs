@@ -24,6 +24,7 @@ fn request(attempt_id: &str, cancellation: CancellationToken) -> ModelRequest {
         context: ContextSnapshot {
             revision: 0,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "input".into(),
                 turn_id: Some("current-turn".into()),
                 source: pl_core::context::ContextSource::User,
@@ -207,6 +208,7 @@ async fn restart_on_new_websocket_session_starts_without_continuation() {
                 attempt: &str,
                 text: &str| {
         history.push(ContextRecord {
+            tool_data: Default::default(),
             id: format!("{}:output", output.attempt_id),
             turn_id: Some("current-turn".into()),
             source: pl_core::context::ContextSource::Assistant,

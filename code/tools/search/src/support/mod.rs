@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{error::Error, future::Future};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchSource {
     pub url: String,

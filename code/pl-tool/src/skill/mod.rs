@@ -39,7 +39,7 @@ pub const USAGE_FILE_NAME: &str = ".usage.json";
 const MAX_SKILL_SCAN_DEPTH: usize = 5;
 const ALLOWED_SUPPORT_DIRS: &[&str] = &["references", "templates", "scripts", "assets"];
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum SkillSourceKind {
     Project,

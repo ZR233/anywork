@@ -1,7 +1,7 @@
 //! Independent immutable History handoff and the existing reliable-output resource boundary.
 //! The sink never receives a checkpoint and cannot acknowledge a Current save.
 
-use super::cold::{ColdStoreError, StorageIdleStatus, StoragePressure};
+use super::cold::{ColdStoreError, DurableToolTask, StorageIdleStatus, StoragePressure};
 use super::{HistoryExport, ThreadEffectBatch, UsageSummary};
 use futures::future::BoxFuture;
 use std::{fmt, sync::Arc};
@@ -33,6 +33,16 @@ pub trait HistorySink: Send + Sync + fmt::Debug + 'static {
     fn idle_status(&self, thread_id: &str) -> StorageIdleStatus;
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>>;
     fn admit(&self, thread_id: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError>;
+    /// Reads a committed terminal tool original belonging to this Thread.
+    /// `id` is either the task identity or the original call identity.
+    fn read_saved_tool_task(
+        &self,
+        _thread_id: &str,
+        _id: &str,
+    ) -> impl Future<Output = Result<Option<DurableToolTask>, ColdStoreError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
     /// Reads only the committed original of an already retired settlement identity.
     fn read_saved_model_settlement(
         &self,
@@ -118,6 +128,14 @@ impl<T: HistorySink> super::cold::ErasedStorage for ErasedHistorySink<T> {
     ) -> Result<(), ColdStoreError> {
         self.0.admit(thread, export)
     }
+    fn read_saved_tool_task<'a>(
+        &'a self,
+        thread: &'a str,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DurableToolTask>, ColdStoreError>> {
+        Box::pin(self.0.read_saved_tool_task(thread, id))
+    }
+
     fn read_saved_model_settlement<'a>(
         &'a self,
         thread: &'a str,

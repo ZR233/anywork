@@ -2135,6 +2135,7 @@ async fn meta_bus_streaming_soft_preemption_keeps_partial_text_and_suppresses_in
         input_estimate: None,
     };
     let partial_record = pl_core::context::ContextRecord {
+        tool_data: Default::default(),
         id: "att-1:partial".into(),
         turn_id: Some("turn-1".into()),
         source: pl_core::context::ContextSource::Assistant,

@@ -677,7 +677,10 @@ impl Owner {
             .collect();
         for id in expired {
             let ToolWaiter { reply, .. } = self.tool_waiters.remove(&id).unwrap();
-            let _ = reply.send(self.acknowledge_task(&id).map(ToolDispatch::Running));
+            let _ = reply.send(
+                self.acknowledge_task(&id)
+                    .map(|task| ToolDispatch::Running(Box::new(task))),
+            );
         }
         Ok(())
     }
@@ -818,16 +821,11 @@ impl Owner {
             };
             // A completion already available after the segment deadline needs no Running receipt.
             if expired && let Some(completion) = (&mut execution).now_or_never() {
-                let result = self.commit_tool_execution(completion);
-                if let Ok(output) = &result
+                let completion = self.commit_tool_execution(completion)?;
+                if let Some(output) = completion.successful_output()
                     && output.control() != crate::tool::ToolControl::Continue
                 {
                     batch.control = Some(output.control());
-                }
-                if let Err(error) = result
-                    && !matches!(error, ThreadError::Tool(_) | ThreadError::Cancelled)
-                {
-                    return Err(error);
                 }
                 batch.next += 1;
                 continue;

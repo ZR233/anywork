@@ -9,6 +9,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/timeline_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/work_group/work_group_member_view.dart';
@@ -1127,7 +1128,12 @@ class _SealedToolWorkGroupPreviewState
                   presentationContract: 'builtin.exec@2',
                   statusString: 'succeeded',
                   arguments: '{"command":"cargo flutter test test/ui"}',
-                  output: r'{"stdout":{"content":"exec 执行完成：测试命令成功退出。"},"stderr":{"content":""},"exitCode":0}',
+                  output: 'exec 执行完成：测试命令成功退出。',
+                  toolData: ToolDataArtifactPresent({
+                    'stdout': 'exec 执行完成：测试命令成功退出。',
+                    'stderr': '',
+                    'exitCode': 0,
+                  }),
                 ),
                 initiallyExpanded: true,
               ),
@@ -1206,7 +1212,7 @@ List<WorkGroupMember> _buildMixedWorkGroupMembers() => [
     status: 'succeeded',
     summary: 'exec',
     arguments: '{"command":"cargo test -p pl-studio-runtime timeline::"}',
-    resultPreview: '{"stdout":{"content":"test result: ok. 42 passed"},"stderr":{"content":""},"exitCode":0}',
+    resultPreview: 'test result: ok. 42 passed',
     payloadJson: '{}',
     bodies: const [],
     startedAtMs: 106_000,
@@ -1244,13 +1250,20 @@ List<WorkGroupMember> _buildMixedWorkGroupMembers() => [
         ),
         TimelinePreviewFixtures.body(
           'tool.result',
-          jsonEncode({
-            'stdout': {'content': 'Analyzing code/anywork...'},
-            'stderr': {
-              'content': '[stderr] error: The named parameter "member" is required (work_group_member_view.dart:18:5)',
+          'Analyzing code/anywork...\n'
+              '[stderr] error: The named parameter "member" is required (work_group_member_view.dart:18:5)',
+        ),
+        TimelinePreviewFixtures.body(
+          'tool.output-artifacts',
+          jsonEncode([
+            {
+              'toolData': {
+                'stdout': 'Analyzing code/anywork...',
+                'stderr': '[stderr] error: The named parameter "member" is required (work_group_member_view.dart:18:5)',
+                'exitCode': 101,
+              },
             },
-            'exitCode': 101,
-          }),
+          ]),
         ),
       ],
     }),

@@ -153,7 +153,7 @@ async fn hover(
                 .await;
             match result {
                 Ok(output) => {
-                    let value: Value = serde_json::from_str(output.payload().content())?;
+                    let value: Value = output.data().expect("tool declares result data").clone();
                     evidence.push(json!({"thread": thread, "project": project,
                         "language": language, "revision": revision, "query": value}));
                     ensure!(value["success"] == true, "{value}");

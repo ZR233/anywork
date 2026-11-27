@@ -2360,7 +2360,7 @@ mod control_tests {
             .execute(input("same"), native_call("native-root"))
             .await
             .unwrap();
-        let receipt: serde_json::Value = serde_json::from_str(receipt.payload().content()).unwrap();
+        let receipt = receipt.data().expect("message receipt data");
         assert_eq!(receipt["sequence"], sequence);
         assert_eq!(receipt["target"], "child-member");
         assert!(
@@ -2775,12 +2775,7 @@ mod control_tests {
                 "the child was already published"
             );
             assert!(owner.0.state().activation.unpublished_children.is_empty());
-            assert_eq!(
-                delivery.output.payload().format(),
-                "pl.studio.agent-control"
-            );
-            let receipt: serde_json::Value =
-                serde_json::from_str(delivery.output.payload().content())?;
+            let receipt = delivery.output.data().expect("agent-control receipt data");
             assert_eq!(receipt["messageAccepted"], false);
             assert!(receipt.get("messageSequence").is_none());
             assert_eq!(

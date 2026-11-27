@@ -767,6 +767,7 @@ pub(in crate::runtime) mod chatgpt_tests {
             });
         let mut output = message(MessageRole::Tool, "edited");
         output.tool_result = Some(crate::completion::ToolResultRecord {
+            data: None,
             item_id: "item-edit".into(),
             call_id: "call-edit".into(),
             name: "edit".into(),
@@ -774,6 +775,7 @@ pub(in crate::runtime) mod chatgpt_tests {
         });
         let mut function_output = message(MessageRole::Tool, "found");
         function_output.tool_result = Some(crate::completion::ToolResultRecord {
+            data: None,
             item_id: "item-lookup".into(),
             call_id: "call-lookup".into(),
             name: "lookup".into(),
@@ -792,9 +794,15 @@ pub(in crate::runtime) mod chatgpt_tests {
         assert_eq!(encoded["input"][3]["call_id"], "call-edit");
         assert_eq!(encoded["input"][4]["call_id"], "call-lookup");
         assert_eq!(encoded["input"][5]["call_id"], "call-edit");
-        assert_eq!(encoded["input"][5]["output"], "edited");
+        assert_eq!(
+            encoded["input"][5]["output"],
+            json!([{"type":"input_text", "text":"edited"}])
+        );
         assert_eq!(encoded["input"][6]["call_id"], "call-lookup");
-        assert_eq!(encoded["input"][6]["output"], "found");
+        assert_eq!(
+            encoded["input"][6]["output"],
+            json!([{"type":"input_text", "text":"found"}])
+        );
         assert!(
             body(
                 &runner,
@@ -1020,6 +1028,8 @@ pub(in crate::runtime) mod chatgpt_tests {
         }
         let mut mixed = crate::completion::tool_definition_to_spec(
             &pl_agent_tool::ToolDefinition::json("mixed", "mixed", json!({"type":"object"}))
+                .unwrap()
+                .with_output_schema(json!({"type":"string"}))
                 .unwrap(),
             crate::completion::ToolCallPolicy::DirectOnly,
         );
@@ -1105,6 +1115,7 @@ pub(in crate::runtime) mod chatgpt_tests {
                 context: ContextSnapshot {
                     revision: 1,
                     records: vec![ContextRecord {
+                        tool_data: Default::default(),
                         id: "u".into(),
                         turn_id: None,
                         source: ContextSource::User,

@@ -8,6 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_feed_p
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_data_artifact.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
@@ -155,9 +156,10 @@ class ExpandedWorkTimelineFixtureState
                 presentationContract: 'builtin.exec@2',
                 statusString: 'succeeded',
                 arguments: jsonEncode({'command': '检查第 $number 项接口'}),
-                output: jsonEncode({
-                  'stdout': {'content': text},
-                  'stderr': {'content': ''},
+                output: text,
+                toolData: ToolDataArtifactPresent({
+                  'stdout': text,
+                  'stderr': '',
                   'exitCode': 0,
                 }),
               ),

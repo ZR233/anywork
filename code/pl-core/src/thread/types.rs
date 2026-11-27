@@ -761,7 +761,13 @@ impl ThreadSnapshot {
             .collect::<std::collections::BTreeSet<_>>();
         let resident_delivery = |delivery: &ToolDelivery| match &delivery.target {
             ToolDeliveryTarget::Inbox { message_id } => undelivered.contains(message_id.as_str()),
-            ToolDeliveryTarget::CallResult | ToolDeliveryTarget::Nested { .. } => false,
+            ToolDeliveryTarget::Nested { .. } => {
+                // A recovered parent no longer has a future to receive the original child's
+                // result. Keep its material with its pending recovery report through admission.
+                undelivered
+                    .contains(current::recovered_nested_report_id(&delivery.call_id).as_str())
+            }
+            ToolDeliveryTarget::CallResult => false,
         };
         // A settled result is committed history: the complete delivery stays in the matching effect
         // batch inside the bounded live [`EffectWindow`], so the snapshot keeps only the results
@@ -1266,7 +1272,7 @@ impl ModelOutputViolation {
 #[derive(Debug, Clone)]
 pub enum ToolDispatch {
     Completed(crate::tool::ToolOutput),
-    Running(task::TaskRecord),
+    Running(Box<task::TaskRecord>),
 }
 
 /// Actual destination of a tool's frozen model projection.
@@ -1285,15 +1291,63 @@ pub enum ToolDeliveryTarget {
 
 /// The complete tool result committed with its original call identity.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(from = "ToolDeliveryWire", into = "ToolDeliveryWire")]
 pub struct ToolDelivery {
-    #[serde(default)]
     pub target: ToolDeliveryTarget,
     pub call_id: String,
     pub tool_id: String,
     pub output: crate::tool::ToolOutput,
     pub delivered_context: Vec<ContextContent>,
     pub outcome: ToolOutcome,
+    /// Failure observed by the owner before cancellation determined the actual terminal state.
+    pub cancellation_cause: Option<Arc<crate::tool::opaque::ToolError>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolDeliveryWire {
+    #[serde(default)]
+    target: ToolDeliveryTarget,
+    call_id: String,
+    tool_id: String,
+    output: crate::tool::ToolOutput,
+    /// An omitted delivery is identical to the author's content; an explicit empty list remains empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivered_context: Option<Vec<ContextContent>>,
+    outcome: ToolOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cancellation_cause: Option<Arc<crate::tool::opaque::ToolError>>,
+}
+
+impl From<ToolDelivery> for ToolDeliveryWire {
+    fn from(delivery: ToolDelivery) -> Self {
+        Self {
+            target: delivery.target,
+            call_id: delivery.call_id,
+            tool_id: delivery.tool_id,
+            delivered_context: (delivery.delivered_context != delivery.output.content())
+                .then_some(delivery.delivered_context),
+            output: delivery.output,
+            outcome: delivery.outcome,
+            cancellation_cause: delivery.cancellation_cause,
+        }
+    }
+}
+
+impl From<ToolDeliveryWire> for ToolDelivery {
+    fn from(wire: ToolDeliveryWire) -> Self {
+        Self {
+            target: wire.target,
+            call_id: wire.call_id,
+            tool_id: wire.tool_id,
+            delivered_context: wire
+                .delivered_context
+                .unwrap_or_else(|| wire.output.content().to_vec()),
+            output: wire.output,
+            outcome: wire.outcome,
+            cancellation_cause: wire.cancellation_cause,
+        }
+    }
 }
 
 /// Execution facts are typed and cannot be forged through result payload content.
@@ -1304,6 +1358,48 @@ pub enum ToolOutcome {
     Cancelled,
     Interrupted,
     Failed(Arc<crate::tool::opaque::ToolError>),
+}
+
+/// One execution's terminal fact after the Thread owner committed its delivery.
+#[derive(Debug)]
+pub struct ToolCompletion {
+    pub(super) outcome: ToolOutcome,
+    pub(super) output: Option<crate::tool::ToolOutput>,
+    pub(super) cancellation_cause: Option<Arc<crate::tool::opaque::ToolError>>,
+}
+
+impl ToolCompletion {
+    pub fn outcome(&self) -> &ToolOutcome {
+        &self.outcome
+    }
+
+    /// The author's output, including any partial result supplied before cancellation or failure.
+    pub fn output(&self) -> Option<&crate::tool::ToolOutput> {
+        self.output.as_ref()
+    }
+
+    /// A typed error observed by the owner, including a source superseded by cancellation.
+    pub fn error(&self) -> Option<&crate::tool::opaque::ToolError> {
+        match &self.outcome {
+            ToolOutcome::Failed(error) => Some(error),
+            _ => self.cancellation_cause.as_deref(),
+        }
+    }
+
+    pub(super) fn successful_output(&self) -> Option<&crate::tool::ToolOutput> {
+        match self.outcome {
+            ToolOutcome::Succeeded => self.output(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn into_result(self) -> Result<crate::tool::ToolOutput, ThreadError> {
+        match self.outcome {
+            ToolOutcome::Succeeded => self.output.ok_or(ThreadError::InvalidOutput),
+            ToolOutcome::Cancelled | ToolOutcome::Interrupted => Err(ThreadError::Cancelled),
+            ToolOutcome::Failed(error) => Err(ThreadError::Tool(error)),
+        }
+    }
 }
 
 /// One step's supplied input. Retry uses a new attempt identity and may omit new content.

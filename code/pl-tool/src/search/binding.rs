@@ -90,6 +90,11 @@ impl WebSearchPlans {
                 match &backend.dialect {
                     id if *id == pl_model_openai::endpoint::SEARCH_DIALECT => {
                         let native = prepare_native_tool::<ThreadWebSearchTool>()
+                            .and_then(|native| {
+                                native.with_output_schema(
+                                    pl_tool_search::tools::web_search::output_schema(),
+                                )
+                            })
                             .map_err(crate::binding::BindingError::from)?;
                         let prepared = prepare_registration(
                             super::TOOL_WEB_SEARCH,
@@ -130,7 +135,10 @@ impl WebSearchPlans {
                             .deepseek_options
                             .enabled
                             .then(|| {
-                                let native = prepare_native_tool::<ThreadDeepSeekWebSearchTool>()?;
+                                let native = prepare_native_tool::<ThreadDeepSeekWebSearchTool>()?
+                                    .with_output_schema(
+                                        pl_tool_search::tools::deepseek_web_search::output_schema(),
+                                    )?;
                                 let prepared = prepare_registration(
                                     super::TOOL_DEEPSEEK_WEB_SEARCH,
                                     native.definition(),
@@ -143,7 +151,10 @@ impl WebSearchPlans {
                             .deepseek_options
                             .fetch_enabled
                             .then(|| {
-                                let native = prepare_native_tool::<ThreadDeepSeekWebFetchTool>()?;
+                                let native = prepare_native_tool::<ThreadDeepSeekWebFetchTool>()?
+                                    .with_output_schema(
+                                    pl_tool_search::tools::deepseek_web_fetch::output_schema(),
+                                )?;
                                 let prepared = prepare_registration(
                                     super::TOOL_DEEPSEEK_WEB_FETCH,
                                     native.definition(),

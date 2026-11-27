@@ -1,9 +1,8 @@
 //! Selected ImagesClient capability and historical generation receipts for Anywork.
-use super::{IMAGE_GENERATION_RECEIPT_FORMAT, IMAGE_GENERATION_RECEIPT_VERSION};
 use crate::media::{DomainMediaHost, ToolMediaHost, domain_error, image_limits};
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::ContextContent,
     tool::{
         ToolOutput,
         opaque::{CallContext, ToolError},
@@ -88,6 +87,10 @@ impl<H: ToolMediaHost> ThreadImageGenerationTool<H> {
             pl_agent_tool::typed::input_schema_for::<ImageGenerationInput>(),
         )
         .expect("static tool definition")
+        .with_output_schema(serde_json::json!({"type":"object","properties": {
+            "resource":crate::media::resource_reference_schema(),"revisedPrompt":{"type":["string","null"]}
+        },"required":["resource","revisedPrompt"],"additionalProperties":false}))
+        .expect("static image generation schema")
     }
 }
 
@@ -116,28 +119,25 @@ impl<H: ToolMediaHost> TypedTool for ThreadImageGenerationTool<H> {
             .execute(input, context)
             .await
             .map_err(generation_error)?;
-        let payload = OpaquePayload::new(
-            IMAGE_GENERATION_RECEIPT_FORMAT,
-            IMAGE_GENERATION_RECEIPT_VERSION,
-            serde_json::to_string(&ImageGenerationReceipt {
-                account_id: self.account_id.clone(),
-                model: self.generator.model.clone(),
-                prompt: output.prompt,
-                transparent_background: output.transparent_background,
-                media_type: output.media_type,
-                original: output.retained.reference,
-                revised_prompt: output.revised_prompt,
-                model_width: output.model_dimensions.map(|dimensions| dimensions.0),
-                model_height: output.model_dimensions.map(|dimensions| dimensions.1),
-            })
-            .map_err(ToolError::new)?,
-        )
-        .map_err(ToolError::new)?;
+        let receipt = ImageGenerationReceipt {
+            account_id: self.account_id.clone(),
+            model: self.generator.model.clone(),
+            prompt: output.prompt,
+            transparent_background: output.transparent_background,
+            media_type: output.media_type,
+            original: output.retained.reference,
+            revised_prompt: output.revised_prompt,
+            model_width: output.model_dimensions.map(|dimensions| dimensions.0),
+            model_height: output.model_dimensions.map(|dimensions| dimensions.1),
+        };
+        let data = serde_json::json!({"resource": receipt.original, "revisedPrompt": receipt.revised_prompt});
+        let details = serde_json::to_value(receipt).map_err(ToolError::new)?;
         let mut context = output.retained.projection;
         context.push(ContextContent::Text {
             text: pl_tool_media::generate_image::ARCHIVED_NOTE.into(),
         });
-        Ok(ToolOutput::new(payload, context))
+        Ok(ToolOutput::from_data(data, context)
+            .with_details(serde_json::json!({"imageGeneration": details})))
     }
 }
 
@@ -147,17 +147,12 @@ fn generation_error(error: pl_tool_media::generate_image::GenerationError) -> To
     let Some(image) = error.observed else {
         return source;
     };
-    let payload = OpaquePayload::new(
-        "pl.tool.image-generation-unarchived",
-        1,
-        serde_json::json!({
-            "mediaType": image.media_type, "data": STANDARD.encode(&image.bytes),
-            "revisedPrompt": image.revised_prompt,
-        })
-        .to_string(),
-    )
-    .expect("static image generation observation format");
-    source.with_output(ToolOutput::new(payload, vec![ContextContent::Text {
+    let details = serde_json::json!({"unarchivedImage": {
+        "mediaType": image.media_type, "data": STANDARD.encode(&image.bytes),
+        "revisedPrompt": image.revised_prompt,
+    }});
+    let result = pl_agent_tool::ToolResult::new(pl_agent_tool::ToolData::Absent, vec![ContextContent::Text {
         text: "Generated image was received but could not be archived; the service was not called again.".into(),
-    }]))
+    }]).with_details(details);
+    source.with_output(ToolOutput::new(result))
 }

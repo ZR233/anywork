@@ -341,7 +341,11 @@ pub(super) async fn read(
     thread_id: &str,
 ) -> Result<Option<Box<ThreadCheckpoint>>> {
     read_with(tx, thread_id, ThreadCheckpoint::SCHEMA_VERSION, |payload| {
-        Ok(serde_json::from_str(payload)?)
+        // This reader belongs to the frozen schema-24 import backend. It is also used by its
+        // historical preparation steps, including databases that already applied CheckpointV5.
+        let (mut checkpoint, legacy) = ThreadCheckpoint::decode_history_upgrade(payload)?;
+        checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION;
+        Ok((Box::new(checkpoint), legacy))
     })
     .await
 }
@@ -359,35 +363,49 @@ pub(super) async fn migrate_envelope(tx: &impl ConnectionTrait, thread_id: &str)
     let checkpoint = read_with(tx, thread_id, ThreadCheckpoint::SCHEMA_VERSION, |payload| {
         let header: Header = serde_json::from_str(payload)?;
         if header.schema_version == ThreadCheckpoint::SCHEMA_VERSION {
-            return Ok(serde_json::from_str(payload)?);
+            return Ok((serde_json::from_str(payload)?, false));
         }
         let current = Box::new(ThreadCheckpoint::decode_legacy(payload)?);
         if header.schema_version >= 4 {
-            // These envelopes differ only in their usage layout. Preserve all other original
-            // fields and opaque producer bytes; no re-aggregation or execution replay occurs.
-            use crate::studio::producer_migration::{RawObject, edit};
-            use serde_json::value::to_raw_value;
-            let mut raw: RawObject = serde_json::from_str(payload)?;
-            raw.insert(
-                "schemaVersion".into(),
-                to_raw_value(&ThreadCheckpoint::SCHEMA_VERSION)?,
-            );
-            edit(&mut raw, "state", |state| {
-                state.insert(
-                    "usageSummary".into(),
-                    to_raw_value(&current.state.usage_summary)?,
-                );
-                Ok(())
-            })?;
+            // Keep the original fields, changing only the versioned framework slots.
+            let mut raw: serde_json::Value = serde_json::from_str(payload)?;
+            super::super::tool_result_upgrade::upgrade_state(&mut raw)?;
+            raw["schemaVersion"] = ThreadCheckpoint::SCHEMA_VERSION.into();
+            raw["state"]["usageSummary"] = serde_json::to_value(&current.state.usage_summary)?;
             retained_envelope = Some(serde_json::to_string(&raw)?);
         }
         upgraded = true;
-        Ok(current)
+        Ok((current, true))
     })
     .await?;
     let Some(mut checkpoint) = checkpoint.filter(|_| upgraded) else {
         return Ok(());
     };
+    for record in checkpoint.state.context.records.iter() {
+        let row = tx
+            .query_one_raw(statement(
+                "SELECT payload FROM current_context WHERE record_id=?",
+                vec![record.id.clone().into()],
+            ))
+            .await?
+            .context("validated context record disappeared during upgrade")?;
+        let saved: String = row.try_get("", "payload")?;
+        let original: serde_json::Value = serde_json::from_str(&saved)?;
+        let mut upgraded = original.clone();
+        super::super::tool_result_upgrade::upgrade_record(&mut upgraded)?;
+        if original != upgraded {
+            let encoded = serde_json::to_string(&upgraded)?;
+            tx.execute_raw(statement(
+                "UPDATE current_context SET payload=?,payload_hash=? WHERE record_id=?",
+                vec![
+                    encoded.clone().into(),
+                    content_hash(encoded.as_bytes()).into(),
+                    record.id.clone().into(),
+                ],
+            ))
+            .await?;
+        }
+    }
     checkpoint.state.context.records = Default::default();
     let payload = match retained_envelope {
         Some(payload) => payload,
@@ -406,11 +424,12 @@ async fn read_with(
     tx: &impl ConnectionTrait,
     thread_id: &str,
     expected_schema: u32,
-    decode: impl FnOnce(&str) -> Result<Box<ThreadCheckpoint>>,
+    decode: impl FnOnce(&str) -> Result<(Box<ThreadCheckpoint>, bool)>,
 ) -> Result<Option<Box<ThreadCheckpoint>>> {
     let Some(ValidatedEnvelope {
         mut checkpoint,
         context_count: count,
+        legacy_result,
     }) = read_envelope_with(tx, thread_id, expected_schema, decode).await?
     else {
         return Ok(None);
@@ -436,7 +455,13 @@ async fn read_with(
                 && content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
             "current context ordering or hash mismatch"
         );
-        let record: ContextRecord = serde_json::from_str(&payload)?;
+        let record: ContextRecord = if legacy_result {
+            let mut saved = serde_json::from_str(&payload)?;
+            super::super::tool_result_upgrade::upgrade_record(&mut saved)?;
+            serde_json::from_value(saved)?
+        } else {
+            serde_json::from_str(&payload)?
+        };
         ensure!(
             record.id == row.try_get::<String>("", "record_id")?,
             "current context identity mismatch"
@@ -450,13 +475,14 @@ async fn read_with(
 struct ValidatedEnvelope {
     checkpoint: Box<ThreadCheckpoint>,
     context_count: usize,
+    legacy_result: bool,
 }
 
 async fn read_envelope_with(
     tx: &impl ConnectionTrait,
     thread_id: &str,
     expected_schema: u32,
-    decode: impl FnOnce(&str) -> Result<Box<ThreadCheckpoint>>,
+    decode: impl FnOnce(&str) -> Result<(Box<ThreadCheckpoint>, bool)>,
 ) -> Result<Option<ValidatedEnvelope>> {
     let Some(row) = tx.query_one_raw(statement(
         "SELECT revision,context_revision,context_count,payload,payload_hash FROM session_checkpoint WHERE id=1", vec![],
@@ -466,7 +492,7 @@ async fn read_envelope_with(
         content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
         "checkpoint content hash mismatch"
     );
-    let checkpoint = decode(&payload)?;
+    let (checkpoint, legacy_result) = decode(&payload)?;
     ensure!(
         checkpoint.thread_id == thread_id
             && checkpoint.schema_version == expected_schema
@@ -482,6 +508,7 @@ async fn read_envelope_with(
     Ok(Some(ValidatedEnvelope {
         checkpoint,
         context_count: usize::try_from(row.try_get::<i64>("", "context_count")?)?,
+        legacy_result,
     }))
 }
 

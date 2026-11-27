@@ -28,6 +28,158 @@ use crate::{
 const THREAD: &str = "attachment-current";
 const MATERIAL: &[u8] = b"complete retained attachment";
 
+#[tokio::test]
+async fn tool_result_current_verifies_command_detail_resources_without_model_resources()
+-> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let resources = FileResourceStore::new(root.join("resources"));
+    let stdout = resources
+        .retain_bytes(Arc::from(MATERIAL), "text/plain")
+        .await?;
+    let stderr_bytes = b"retained stderr";
+    let stderr = resources
+        .retain_bytes(Arc::from(stderr_bytes.as_slice()), "text/plain")
+        .await?;
+    let mut current = current_in(
+        Slot::OriginalToolContext,
+        ContextContent::Text {
+            text: "short preview".into(),
+        },
+        RuntimeEpoch::new(),
+    );
+    let delivery = &mut Arc::make_mut(&mut current.state.deliveries)[0];
+    delivery.output = delivery
+        .output
+        .clone()
+        .with_details(serde_json::json!({"command": {
+            "stdoutResource": stdout, "stderrResource": stderr,
+        }}));
+    let current_file = file(root);
+    current_file.save(current.clone()).await?;
+    let loaded = current_file.load().await?.unwrap();
+    assert_eq!(
+        loaded.state.deliveries[0].output.content(),
+        current.state.deliveries[0].output.content()
+    );
+    let path = asset_path(root, &stderr);
+    std::fs::remove_file(&path)?;
+    let error = current_file.load().await.unwrap_err();
+    assert!(error.to_string().contains(stderr.id()));
+    std::fs::write(path, stderr_bytes)?;
+    assert!(current_file.load().await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_result_current_upgrade_preserves_pending_inbox_body_and_resources() -> Result<()> {
+    use crate::studio::storage::coordinator::ThreadPersistenceCoordinator;
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let coordinator = ThreadPersistenceCoordinator::default();
+    let store = FileResourceStore::new(root.join("resources"));
+    let resource = store
+        .retain_bytes(Arc::from(MATERIAL), "application/octet-stream")
+        .await?;
+    let ContextContent::Media {
+        payload: attachment,
+    } = attachment_content(resource.clone(), AttachmentModality::File)?
+    else {
+        anyhow::bail!("fixture attachment is not Media");
+    };
+    let mut current = serde_json::to_value(ThreadCurrent::new(THREAD.into(), RuntimeEpoch::new()))?;
+    current["schemaVersion"] = 1.into();
+    current["snapshotRevision"] = 7.into();
+    let payload = json!({"format":"test.producer", "version":3, "content":"原件 🧭\n  逐字保留"});
+    let author_content = json!([
+        {"kind":"text", "text":"历史模型正文"}, {"kind":"opaque", "payload": attachment},
+    ]);
+    let mut delivered = author_content.as_array().unwrap().clone();
+    delivered.insert(0, json!({"kind":"text", "text":"旧的后台完成通知"}));
+    current["state"]["deliveries"] = json!([{
+        "target":{"kind":"inbox", "value":{"message_id":"task-result:1"}},
+        "callId":"source-call", "toolId":"source-tool", "outcome":{"kind":"succeeded"},
+        "output":{"payload": payload, "context": author_content}, "deliveredContext": delivered,
+    }]);
+    current["state"]["inboxSequence"] = 1.into();
+    current["state"]["wakeMessagesThrough"] = 1.into();
+    current["state"]["inbox"] = json!([{
+        "sequence":1, "message":{"id":"task-result:1", "sourceId":"task:source-call",
+        "kind":"report", "payload": payload, "context": delivered},
+    }]);
+    let bytes = serde_json::to_vec_pretty(&current)?;
+    let path = root.join(CURRENT_FILE_NAME);
+    std::fs::write(&path, &bytes)?;
+    assert!(file(root).load().await.is_err());
+
+    let asset = asset_path(root, &resource);
+    std::fs::write(&asset, b"corrupt resource")?;
+    assert!(
+        coordinator
+            .upgrade_current_for_recovery(THREAD, root.to_owned())
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path)?, bytes);
+    assert!(
+        coordinator
+            .upgrade_current_for_recovery("foreign-thread", root.to_owned())
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path)?, bytes);
+    std::fs::write(asset, MATERIAL)?;
+    let backup = root.join("migration-backups/current-tool-result-v1/current.original.json");
+    std::fs::create_dir_all(backup.parent().unwrap())?;
+    std::fs::write(&backup, b"different original")?;
+    let backup_error = coordinator
+        .upgrade_current_for_recovery(THREAD, root.to_owned())
+        .await
+        .unwrap_err();
+    assert!(
+        backup_error
+            .to_string()
+            .contains("backup differs from source")
+    );
+    assert_eq!(std::fs::read(&backup)?, b"different original");
+    assert_eq!(std::fs::read(&path)?, bytes);
+    // Resume after a previous attempt published its exact backup but could not replace Current.
+    std::fs::write(&backup, &bytes)?;
+    coordinator
+        .upgrade_current_for_recovery(THREAD, root.to_owned())
+        .await?;
+    assert_eq!(std::fs::read(backup)?, bytes);
+    let mut saved = file(root).load().await?.unwrap();
+    assert_eq!(saved.snapshot_revision, 7);
+    let delivery = &saved.state.deliveries[0];
+    assert_eq!(delivery.output.data(), None);
+    assert_eq!(delivery.output.details().unwrap()["legacyPayload"], payload);
+    assert_eq!(
+        delivery.output.content()[0],
+        ContextContent::Text {
+            text: "历史模型正文".into()
+        }
+    );
+    let ContextContent::Media { payload } = &delivery.output.content()[1] else {
+        anyhow::bail!("old attachment was not preserved")
+    };
+    assert_eq!(decode_attachment(payload)?.unwrap().reference, resource);
+    let notice = &saved.state.inbox[0].message;
+    assert_eq!(notice.payload.format(), "pl.core.tool-result-reference");
+    assert_eq!(notice.payload.content(), "source-call");
+    assert_eq!(notice.context, delivery.delivered_context);
+    let original_notice = notice.clone();
+    saved.reconcile_saved_local_state()?;
+    assert_eq!(saved.state.inbox.len(), 1);
+    assert_eq!(saved.state.inbox[0].message, original_notice);
+    coordinator
+        .upgrade_current_for_recovery(THREAD, root.to_owned())
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Slot {
     Context,
@@ -49,6 +201,7 @@ fn current_in(slot: Slot, content: ContextContent, epoch: RuntimeEpoch) -> Threa
                 source: ContextSource::User,
                 content: vec![content],
                 tool_calls: Vec::new(),
+                tool_data: Default::default(),
             }]
             .into()
         }
@@ -99,9 +252,10 @@ fn current_in(slot: Slot, content: ContextContent, epoch: RuntimeEpoch) -> Threa
                 },
                 call_id: "completed-call".into(),
                 tool_id: "media-tool".into(),
-                output: ToolOutput::new(OpaquePayload::text("complete producer result"), original),
+                output: ToolOutput::from_data("complete producer result".into(), original),
                 delivered_context: delivered,
                 outcome: ToolOutcome::Succeeded,
+                cancellation_cause: None,
             }]
             .into();
         }
@@ -314,8 +468,8 @@ async fn known_attachment_decode_errors_fail_but_unrelated_opaque_stays_transpar
         .retain_bytes(Arc::from(MATERIAL), "application/octet-stream")
         .await?;
     let content = attachment_content(reference, AttachmentModality::File)?;
-    let ContextContent::Opaque { payload } = content else {
-        panic!("the model producer encodes attachments as opaque")
+    let ContextContent::Media { payload } = content else {
+        panic!("the model producer defines explicit media content")
     };
     let file = file(directory.path());
     for broken in [
@@ -324,7 +478,7 @@ async fn known_attachment_decode_errors_fail_but_unrelated_opaque_stays_transpar
     ] {
         file.save(current_in(
             Slot::Context,
-            ContextContent::Opaque { payload: broken },
+            ContextContent::Media { payload: broken },
             RuntimeEpoch::new(),
         ))
         .await?;
@@ -349,11 +503,20 @@ async fn known_attachment_decode_errors_fail_but_unrelated_opaque_stays_transpar
         serde_json::to_value(file.load().await?.unwrap())?,
         serde_json::to_value(expected)?
     );
+    let same_format = ContextContent::Opaque {
+        payload: OpaquePayload::new(payload.format(), payload.version(), "opaque bytes")?,
+    };
+    let expected = current_in(Slot::Context, same_format, RuntimeEpoch::new());
+    file.save(expected.clone()).await?;
+    assert_eq!(
+        file.load().await?.unwrap().state.context,
+        expected.state.context,
+    );
     Ok(())
 }
 
 #[tokio::test(start_paused = true)]
-async fn opaque_attachment_save_failure_preserves_old_current_and_receipt() -> Result<()> {
+async fn media_save_failure_preserves_old_current_and_receipt() -> Result<()> {
     use crate::studio::storage::{
         coordinator::ThreadPersistenceCoordinator, current_writer::CurrentSource, state::StateStore,
     };
@@ -456,7 +619,7 @@ async fn opaque_attachment_save_failure_preserves_old_current_and_receipt() -> R
     );
     assert!(loaded.recovery_contents().into_iter().any(|content| {
         match content {
-            ContextContent::Opaque { payload } => decode_attachment(payload)
+            ContextContent::Media { payload } => decode_attachment(payload)
                 .unwrap()
                 .is_some_and(|attachment| attachment.reference == missing),
             _ => false,

@@ -41,6 +41,7 @@ fn fresh_background_ack_reserves_identity_without_claiming_completion() -> Resul
             text: "accepted".into(),
         }],
         tool_calls: Vec::new(),
+        tool_data: Default::default(),
     };
     let effect = pl_core::thread::ThreadEffectBatch {
         thread_id: "thread".into(),

@@ -82,8 +82,8 @@ impl pl_agent_tool::Tool for RecordingTool {
             .lock()
             .unwrap()
             .push(format!("execute:{}", self.generation));
-        Ok(ToolOutput::new(
-            input.clone(),
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
             vec![support::text(input.content())],
         ))
     }

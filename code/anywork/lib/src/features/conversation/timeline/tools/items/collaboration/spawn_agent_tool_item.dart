@@ -82,7 +82,10 @@ class SpawnAgentToolItem extends StructuredTimelineToolAdapter {
     String? target, {
     ToolAcceptanceProjection? acceptance,
   }) {
-    final resolved = acceptance ?? decodeAcceptance(item.output);
+    if (isTimelineToolStopped(item.statusString)) {
+      return [statusTitle(l10n, item), ?target].join(' · ');
+    }
+    final resolved = acceptance ?? decodeAcceptanceData(item.toolData);
     if (resolved.state == ToolAcceptance.rejected) {
       return [rejectionLabel(l10n), ?target].join(' ');
     }

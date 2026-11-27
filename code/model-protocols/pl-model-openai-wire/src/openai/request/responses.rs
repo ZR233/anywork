@@ -1,9 +1,10 @@
 use crate::completion::{
     AttachmentModality, ContentPart, MessageContent, MessageRole, ResponsesContextItem,
-    ToolCallKind, ToolCallRecord, ToolCallerMode, ToolSpec,
+    ToolCallCaller, ToolCallKind, ToolCallRecord, ToolCallerMode, ToolSpec,
 };
 use pl_protocol::Result;
 use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::completion::{CompletionRequest, ReasoningConfig, ReasoningSummary};
 use crate::model::info::MediaWireFormat;
@@ -15,29 +16,59 @@ use pl_model_wire::completion::request_support::{
     MediaRepresentationPlan, media_file_id, media_url, message_content_text, record_arguments_text,
     record_custom_input, tool_callers_by_result_position, tool_media_content,
 };
-// Provider envelope only: the canonical context remains the producer's original string.
-fn json_object_result_output(output: String) -> String {
-    match serde_json::from_str::<serde_json::Value>(&output) {
-        Ok(serde_json::Value::Object(_)) => output,
-        Ok(value) => serde_json::json!({ "content": value }).to_string(),
-        Err(_) => serde_json::json!({ "content": output }).to_string(),
-    }
-}
+use pl_model_wire::completion::tool_schema::{
+    HOSTED_OUTPUT_SCHEMA_DIALECT, HostedOutputSchemaResources,
+};
 
-// A direct tool result may be text, a bounded preview, or an error; its author
-// schema describes successful output, not necessarily the model-visible value.
-// Hosted programmatic calling needs a schema, so advertise only the object shape
-// that this wire projection can guarantee.
-fn uses_model_output_schema(allowed_callers: &[ToolCallerMode], has_schema: bool) -> bool {
-    has_schema && allowed_callers.contains(&ToolCallerMode::Programmatic)
-}
+const DATA_UNAVAILABLE: &str = "tool_data_unavailable";
 
-fn model_view_output_schema(
+fn hosted_result_schema<'a>(
+    name: &str,
     allowed_callers: &[ToolCallerMode],
-    schema: &Option<serde_json::Value>,
-) -> Option<serde_json::Value> {
-    uses_model_output_schema(allowed_callers, schema.is_some())
-        .then(|| serde_json::json!({"type": "object", "additionalProperties": true}))
+    schema: Option<&'a Value>,
+    resources: &mut HostedOutputSchemaResources<'a>,
+) -> Result<Option<Value>> {
+    if !allowed_callers.contains(&ToolCallerMode::Programmatic) {
+        return Ok(None);
+    }
+    let schema = schema.and_then(Value::as_object).ok_or_else(|| {
+        protocol_error(format!(
+            "programmatic tool {name} requires a declared output schema document"
+        ))
+    })?;
+    let data_schema = resources
+        .embed(name, schema)
+        .map_err(|error| protocol_error(format!("tool {name}: {error}")))?;
+    Ok(Some(json!({
+        "$schema": HOSTED_OUTPUT_SCHEMA_DIALECT,
+        "type": "object",
+        "properties": {
+            "data": data_schema,
+            "error": {
+                "type": "object",
+                "description": "The invocation or its history did not provide a program value.",
+                "properties": {
+                    "code": {"type": "string", "enum": [DATA_UNAVAILABLE]},
+                    "message": {"type": "string"}
+                },
+                "required": ["code", "message"],
+                "additionalProperties": false
+            }
+        },
+        "oneOf": [{"required": ["data"]}, {"required": ["error"]}],
+        "additionalProperties": false
+    })))
+}
+
+fn hosted_result(data: Option<&Value>, content: &MessageContent) -> String {
+    match data {
+        Some(data) => json!({"data": data}),
+        None => json!({"error": {
+            "code": DATA_UNAVAILABLE,
+            "message": message_content_text(content)
+        }}),
+    }
+    .to_string()
 }
 
 /// 回放 provider 原生 Responses 上下文项时的输入投影。
@@ -104,14 +135,9 @@ impl ResponsesRequestBody {
             input.push(ResponsesInputItem::typed(
                 ResponsesTypedInputItem::AdditionalTools {
                     role: ResponsesRole::Developer,
-                    tools: request
-                        .tools
-                        .iter()
-                        .filter(|tool| {
-                            matches!(tool, ToolSpec::Function { .. } | ToolSpec::Custom { .. })
-                        })
-                        .map(ResponsesTool::from)
-                        .collect(),
+                    tools: ResponsesTool::project_all(request.tools.iter().filter(|tool| {
+                        matches!(tool, ToolSpec::Function { .. } | ToolSpec::Custom { .. })
+                    }))?,
                 },
             ));
         }
@@ -186,32 +212,31 @@ impl ResponsesRequestBody {
                         protocol_error("tool result message missing typed tool_result record")
                     })?;
                     let caller = tool_callers.get(&position).cloned();
-                    let output = message_content_text(&msg.content);
-                    let has_output_schema = request.tools.iter().any(|tool| match tool {
-                        ToolSpec::Function {
-                            name,
-                            allowed_callers,
-                            output_schema,
-                            ..
+                    let output = match &caller {
+                        Some(ToolCallCaller::Program { .. }) => {
+                            if msg
+                                .content
+                                .parts
+                                .iter()
+                                .any(|part| matches!(part, ContentPart::Attachment { .. }))
+                            {
+                                return Err(protocol_error(
+                                    "programmatic tool result media requires separate tool media context",
+                                ));
+                            }
+                            ResponsesToolOutput::Text(hosted_result(
+                                record.data.as_ref(),
+                                &msg.content,
+                            ))
                         }
-                        | ToolSpec::Custom {
-                            name,
-                            allowed_callers,
-                            output_schema,
-                            ..
-                        } => {
-                            name == &record.name
-                                && uses_model_output_schema(
-                                    allowed_callers,
-                                    output_schema.is_some(),
-                                )
-                        }
-                        ToolSpec::ProgrammaticToolCalling | ToolSpec::WebSearch { .. } => false,
-                    });
-                    let output = if caller.is_some() || has_output_schema {
-                        json_object_result_output(output)
-                    } else {
-                        output
+                        // Schema declarations constrain string outputs. Content arrays preserve the
+                        // author's ordinary result even when its declaration changes on replay.
+                        None => ResponsesToolOutput::Content(responses_content_for_message(
+                            &msg.content,
+                            MessageRole::Tool,
+                            &request.prepared_content,
+                            &media_plan,
+                        )?),
                     };
                     match record.kind {
                         ToolCallKind::Function => {
@@ -248,12 +273,12 @@ impl ResponsesRequestBody {
             }
         }
 
-        let tools: Vec<_> = request
-            .tools
-            .iter()
-            .filter(|tool| !chatgpt || matches!(tool, ToolSpec::WebSearch { .. }))
-            .map(ResponsesTool::from)
-            .collect();
+        let tools = ResponsesTool::project_all(
+            request
+                .tools
+                .iter()
+                .filter(|tool| !chatgpt || matches!(tool, ToolSpec::WebSearch { .. })),
+        )?;
         let tools = (!tools.is_empty()).then_some(tools);
 
         Ok(Self {
@@ -306,7 +331,7 @@ enum ResponsesTypedInputItem {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: ResponsesToolOutput,
         #[serde(skip_serializing_if = "Option::is_none")]
         caller: Option<crate::completion::ToolCallCaller>,
     },
@@ -321,13 +346,20 @@ enum ResponsesTypedInputItem {
     },
     CustomToolCallOutput {
         call_id: String,
-        output: String,
+        output: ResponsesToolOutput,
         #[serde(skip_serializing_if = "Option::is_none")]
         caller: Option<crate::completion::ToolCallCaller>,
     },
     Compaction {
         encrypted_content: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum ResponsesToolOutput {
+    Text(String),
+    Content(Vec<ResponsesContent>),
 }
 
 impl ResponsesInputItem {
@@ -400,6 +432,8 @@ enum ResponsesContent {
         text: String,
     },
     InputImage {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<&'static str>,
         #[serde(flatten)]
         source: ImageReference,
     },
@@ -467,9 +501,19 @@ enum ResponsesTool {
     },
 }
 
-impl From<&ToolSpec> for ResponsesTool {
-    fn from(tool: &ToolSpec) -> Self {
-        match tool {
+impl ResponsesTool {
+    fn project_all<'a>(tools: impl Iterator<Item = &'a ToolSpec>) -> Result<Vec<Self>> {
+        let mut resources = HostedOutputSchemaResources::default();
+        tools
+            .map(|tool| Self::project(tool, &mut resources))
+            .collect()
+    }
+
+    fn project<'a>(
+        tool: &'a ToolSpec,
+        resources: &mut HostedOutputSchemaResources<'a>,
+    ) -> Result<Self> {
+        Ok(match tool {
             ToolSpec::Function {
                 name,
                 description,
@@ -484,7 +528,12 @@ impl From<&ToolSpec> for ResponsesTool {
                 // attempts strict normalization, which can make these schemas unsatisfiable.
                 strict: false,
                 allowed_callers: allowed_callers.clone(),
-                output_schema: model_view_output_schema(allowed_callers, output_schema),
+                output_schema: hosted_result_schema(
+                    name,
+                    allowed_callers,
+                    output_schema.as_ref(),
+                    resources,
+                )?,
             },
             ToolSpec::Custom {
                 name,
@@ -497,7 +546,12 @@ impl From<&ToolSpec> for ResponsesTool {
                 description: description.clone(),
                 format: ToolFormatBody::from(format),
                 allowed_callers: allowed_callers.clone(),
-                output_schema: model_view_output_schema(allowed_callers, output_schema),
+                output_schema: hosted_result_schema(
+                    name,
+                    allowed_callers,
+                    output_schema.as_ref(),
+                    resources,
+                )?,
             },
             ToolSpec::ProgrammaticToolCalling => Self::ProgrammaticToolCalling,
             ToolSpec::WebSearch { options } => match options {
@@ -518,7 +572,7 @@ impl From<&ToolSpec> for ResponsesTool {
                     search_content_types: search_content_types.clone(),
                 },
             },
-        }
+        })
     }
 }
 
@@ -598,7 +652,10 @@ fn responses_content_for_message(
                             )?,
                         }
                     };
-                    response_content.push(ResponsesContent::InputImage { source });
+                    response_content.push(ResponsesContent::InputImage {
+                        detail: (role == MessageRole::Tool).then_some("auto"),
+                        source,
+                    });
                 }
                 AttachmentModality::File => {
                     if media_plan.wire(*modality)? != MediaWireFormat::ResponsesInputFile {

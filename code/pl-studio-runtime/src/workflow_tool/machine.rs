@@ -1,15 +1,17 @@
 use super::{
-    CompiledWorkflowDefinition, WorkflowAllowedTransition, WorkflowBinding, WorkflowDefinition,
-    WorkflowRunArchive, WorkflowRunLifecycle, WorkflowSessionState, WorkflowState,
-    WorkflowStateBrief, WorkflowTransition, WorkflowTransitionError, WorkflowTransitionRecord,
+    CompiledWorkflowDefinition, WorkflowAllowedTransition, WorkflowBinding, WorkflowSessionState,
+    WorkflowStateBrief, WorkflowTransitionError, WorkflowTransitionRecord,
 };
 use crate::PureError;
-use crate::thread_mode_id::ThreadModeId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::new_run;
+use super::output::{
+    WorkflowCurrentSnapshot, WorkflowGraphSnapshot, WorkflowHistorySnapshot,
+    WorkflowMutationResponse, WorkflowNextSnapshot,
+};
 use super::state::{
     archive_run, commit_operation_receipt, lifecycle_for_state, operation_receipt, trim_history,
     validate_session_state_size,
@@ -24,69 +26,6 @@ pub(super) const MAX_EVIDENCE_ITEM_BYTES: usize = 2 * 1024;
 pub(crate) struct WorkflowOperation {
     pub turn_id: String,
     pub call_id: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WorkflowQuery<'a> {
-    revision: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mode_id: Option<&'a ThreadModeId>,
-    #[serde(flatten)]
-    body: WorkflowQueryBody<'a>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged, rename_all_fields = "camelCase")]
-enum WorkflowQueryBody<'a> {
-    Inactive {
-        current_run: Option<()>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        all_states: Option<Vec<WorkflowStateBrief>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        allowed_transitions: Option<&'a [WorkflowAllowedTransition]>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        transitions: Option<&'a [WorkflowTransition]>,
-    },
-    Current {
-        run_id: &'a str,
-        lineage_id: &'a str,
-        graph_revision: u64,
-        graph_hash: &'a str,
-        lifecycle: WorkflowRunLifecycle,
-        current_state_id: &'a str,
-        current_state: Option<&'a WorkflowState>,
-        allowed_transitions: Vec<WorkflowAllowedTransition>,
-        all_states: Vec<WorkflowStateBrief>,
-        updated_at: i64,
-    },
-    Next {
-        run_id: &'a str,
-        current_state_id: &'a str,
-        transitions: Vec<&'a WorkflowTransition>,
-        allowed_transitions: Vec<WorkflowAllowedTransition>,
-        all_states: Vec<WorkflowStateBrief>,
-    },
-    Graph {
-        graph_revision: u64,
-        graph_hash: &'a str,
-        definition: &'a WorkflowDefinition,
-    },
-    History {
-        run_id: &'a str,
-        history: &'a [WorkflowTransitionRecord],
-        archived_transition_count: u64,
-        archived_transition_digest: &'a str,
-        archived_runs: &'a [WorkflowRunArchive],
-        archived_run_count: u64,
-        archived_run_digest: &'a str,
-    },
-}
-
-impl WorkflowQuery<'_> {
-    fn into_json(self) -> serde_json::Value {
-        serde_json::to_value(self).expect("workflow query contains only serializable product facts")
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -142,119 +81,91 @@ impl WorkflowMachine {
             .collect()
     }
 
-    pub fn current_snapshot(&self) -> serde_json::Value {
+    pub fn current_snapshot(&self) -> WorkflowCurrentSnapshot {
         let state = &self.state;
         let all_states = self.all_states_brief();
-        let (mode_id, body) = match &state.current_run {
-            None => (
-                &self.binding.mode_id,
-                WorkflowQueryBody::Inactive {
-                    current_run: None,
-                    all_states: Some(all_states),
-                    allowed_transitions: Some(&[]),
-                    transitions: None,
-                },
-            ),
-            Some(run) => (
-                &run.mode_id,
-                WorkflowQueryBody::Current {
-                    run_id: &run.run_id,
-                    lineage_id: &run.lineage_id,
-                    graph_revision: run.graph_revision,
-                    graph_hash: &run.graph_hash,
-                    lifecycle: run.lifecycle,
-                    current_state_id: &run.current_state_id,
-                    current_state: self.graph().state(&run.current_state_id),
-                    allowed_transitions: self.allowed_transitions_for_state(&run.current_state_id),
-                    all_states,
-                    updated_at: run.updated_at,
-                },
-            ),
-        };
-        WorkflowQuery {
-            revision: state.revision,
-            mode_id: Some(mode_id),
-            body,
-        }
-        .into_json()
-    }
-
-    pub fn next_snapshot(&self) -> serde_json::Value {
-        let state = &self.state;
-        let all_states = self.all_states_brief();
-        let (mode_id, body) = match &state.current_run {
-            None => (
-                &self.binding.mode_id,
-                WorkflowQueryBody::Inactive {
-                    current_run: None,
-                    all_states: Some(all_states),
-                    allowed_transitions: Some(&[]),
-                    transitions: Some(&[]),
-                },
-            ),
-            Some(run) => (
-                &run.mode_id,
-                WorkflowQueryBody::Next {
-                    run_id: &run.run_id,
-                    current_state_id: &run.current_state_id,
-                    transitions: self.graph().outgoing(&run.current_state_id),
-                    allowed_transitions: self.allowed_transitions_for_state(&run.current_state_id),
-                    all_states,
-                },
-            ),
-        };
-        WorkflowQuery {
-            revision: state.revision,
-            mode_id: Some(mode_id),
-            body,
-        }
-        .into_json()
-    }
-
-    pub fn graph_snapshot(&self) -> serde_json::Value {
-        WorkflowQuery {
-            revision: self.state.revision,
-            mode_id: Some(&self.binding.mode_id),
-            body: WorkflowQueryBody::Graph {
-                graph_revision: self.binding.graph_revision,
-                graph_hash: self.graph().graph_hash(),
-                definition: self.graph().definition(),
+        match &state.current_run {
+            None => WorkflowCurrentSnapshot::Inactive {
+                revision: state.revision,
+                mode_id: self.binding.mode_id.clone(),
+                current_run: (),
+                all_states,
+                allowed_transitions: [],
+            },
+            Some(run) => WorkflowCurrentSnapshot::Run {
+                revision: state.revision,
+                mode_id: run.mode_id.clone(),
+                run_id: run.run_id.clone(),
+                lineage_id: run.lineage_id.clone(),
+                graph_revision: run.graph_revision,
+                graph_hash: run.graph_hash.clone(),
+                lifecycle: run.lifecycle,
+                current_state_id: run.current_state_id.clone(),
+                current_state: self
+                    .graph()
+                    .state(&run.current_state_id)
+                    .cloned()
+                    .map(Box::new),
+                allowed_transitions: self.allowed_transitions_for_state(&run.current_state_id),
+                all_states,
+                updated_at: run.updated_at,
             },
         }
-        .into_json()
     }
 
-    pub fn history_snapshot(&self) -> serde_json::Value {
+    pub fn next_snapshot(&self) -> WorkflowNextSnapshot<'_> {
         let state = &self.state;
-        let (mode_id, body) = match &state.current_run {
-            None => (
-                None,
-                WorkflowQueryBody::Inactive {
-                    current_run: None,
-                    all_states: None,
-                    allowed_transitions: None,
-                    transitions: None,
-                },
-            ),
-            Some(run) => (
-                Some(&run.mode_id),
-                WorkflowQueryBody::History {
-                    run_id: &run.run_id,
-                    history: &run.history_tail,
-                    archived_transition_count: run.archived_transition_count,
-                    archived_transition_digest: &run.archived_transition_digest,
-                    archived_runs: &state.archived_runs,
-                    archived_run_count: state.archived_run_count,
-                    archived_run_digest: &state.archived_run_digest,
-                },
-            ),
-        };
-        WorkflowQuery {
-            revision: state.revision,
-            mode_id,
-            body,
+        let all_states = self.all_states_brief();
+        match &state.current_run {
+            None => WorkflowNextSnapshot::Inactive {
+                revision: state.revision,
+                mode_id: &self.binding.mode_id,
+                current_run: (),
+                all_states,
+                allowed_transitions: [],
+                transitions: [],
+            },
+            Some(run) => WorkflowNextSnapshot::Run {
+                revision: state.revision,
+                mode_id: &run.mode_id,
+                run_id: &run.run_id,
+                current_state_id: &run.current_state_id,
+                transitions: self.graph().outgoing(&run.current_state_id),
+                allowed_transitions: self.allowed_transitions_for_state(&run.current_state_id),
+                all_states,
+            },
         }
-        .into_json()
+    }
+
+    pub fn graph_snapshot(&self) -> WorkflowGraphSnapshot<'_> {
+        WorkflowGraphSnapshot {
+            revision: self.state.revision,
+            mode_id: &self.binding.mode_id,
+            graph_revision: self.binding.graph_revision,
+            graph_hash: self.graph().graph_hash(),
+            definition: self.graph().definition(),
+        }
+    }
+
+    pub fn history_snapshot(&self) -> WorkflowHistorySnapshot<'_> {
+        let state = &self.state;
+        match &state.current_run {
+            None => WorkflowHistorySnapshot::Inactive {
+                revision: state.revision,
+                current_run: (),
+            },
+            Some(run) => WorkflowHistorySnapshot::Run {
+                revision: state.revision,
+                mode_id: &run.mode_id,
+                run_id: &run.run_id,
+                history: &run.history_tail,
+                archived_transition_count: run.archived_transition_count,
+                archived_transition_digest: &run.archived_transition_digest,
+                archived_runs: &state.archived_runs,
+                archived_run_count: state.archived_run_count,
+                archived_run_digest: &state.archived_run_digest,
+            },
+        }
     }
 
     pub fn apply_transition(
@@ -418,14 +329,12 @@ impl WorkflowMachine {
     }
 
     fn accepted(&self, code: &'static str, forced: bool) -> WorkflowMutationResponse {
-        WorkflowMutationResponse {
+        WorkflowMutationResponse::Accepted {
             accepted: true,
             code,
             forced,
             operation_revision: self.state.revision,
             snapshot: self.current_snapshot(),
-            recovery_action: None,
-            error: None,
         }
     }
 
@@ -452,14 +361,14 @@ impl WorkflowMachine {
             .map(|id| self.allowed_transitions_for_state(id))
             .unwrap_or_default();
         let all_states = self.all_states_brief();
-        WorkflowMutationResponse {
+        WorkflowMutationResponse::Rejected {
             accepted: false,
             code,
             forced: false,
             operation_revision: self.state.revision,
             snapshot: self.current_snapshot(),
-            recovery_action: Some(recovery_action.clone()),
-            error: Some(WorkflowTransitionError {
+            recovery_action: recovery_action.clone(),
+            error: Box::new(WorkflowTransitionError {
                 code: code.to_string(),
                 message,
                 current_state_id,
@@ -564,20 +473,6 @@ impl RestartInput {
             expected_state_id: &self.expected_state_id,
         }
     }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkflowMutationResponse {
-    pub(crate) accepted: bool,
-    pub(crate) code: &'static str,
-    pub(crate) forced: bool,
-    pub(crate) operation_revision: u64,
-    pub(crate) snapshot: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) recovery_action: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) error: Option<WorkflowTransitionError>,
 }
 
 struct WorkflowCas<'a> {

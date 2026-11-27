@@ -48,10 +48,28 @@ impl ArchivedToolMedia {
 pub(crate) fn resource_references(
     delivery: &ToolDelivery,
 ) -> Result<Vec<ResourceReference>, ProjectionError> {
-    Ok(archived_media(delivery)?
+    let mut references: Vec<_> = archived_media(delivery)?
         .into_iter()
         .map(|media| media.reference)
-        .collect())
+        .collect();
+    // The original may contain media that was not delivered after cancellation or budget
+    // selection. Retaining it does not make it a model-visible attachment.
+    for content in delivery.output.content() {
+        match content {
+            ContextContent::Resource { reference } => references.push(reference.clone()),
+            ContextContent::Media { payload } => {
+                if let Some(attachment) = pl_model::runtime::decode_attachment(payload)? {
+                    references.push(attachment.reference);
+                }
+            }
+            ContextContent::Text { .. } | ContextContent::Opaque { .. } => {}
+        }
+    }
+    references.extend(
+        pl_tool::exec::saved_command_resources(delivery.output.details())
+            .map_err(ProjectionError::ToolMedia)?,
+    );
+    Ok(references)
 }
 
 /// Wraps a rejected persisted-media fact as a projection failure.
@@ -73,7 +91,7 @@ fn rejected(message: &str) -> ProjectionError {
 /// different reference or modality contradicts the delivered fact and is rejected.
 fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, ProjectionError> {
     if let Some(receipt) =
-        pl_tool::file_display::saved_file_display_receipt(delivery.output.payload())
+        pl_tool::file_display::saved_file_display_receipt(delivery.output.details())
             .map_err(ProjectionError::ToolMedia)?
     {
         // Preserve every selected entry, even when several entries share one resource.
@@ -97,11 +115,11 @@ fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, Pro
             })
             .collect());
     }
-    let receipt = pl_tool::image::saved_view_image_receipt(delivery.output.payload())
+    let receipt = pl_tool::image::saved_view_image_receipt(delivery.output.details())
         .map_err(ProjectionError::ToolMedia)?;
     let mut attachments = Vec::new();
     for content in super::tools::delivery_context(delivery) {
-        let ContextContent::Opaque { payload } = content else {
+        let ContextContent::Media { payload } = content else {
             continue;
         };
         if let Some(attachment) = pl_model::runtime::decode_attachment(payload)? {
@@ -133,7 +151,7 @@ fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, Pro
             filename: filename.clone(),
         })
         .collect();
-    if let Some(card) = pl_tool::image_card::saved_image_card_receipt(delivery.output.payload())
+    if let Some(card) = pl_tool::image_card::saved_image_card_receipt(delivery.output.details())
         .map_err(ProjectionError::ToolMedia)?
     {
         match media
@@ -231,4 +249,53 @@ pub(crate) async fn read_persisted_media(
         .await
         .with_context(|| format!("archived tool media {attachment_id} is unavailable"))?;
     Ok(Some(bytes.to_vec()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_core::{thread::ToolOutcome, tool::ToolOutput};
+    use std::{io::Cursor, sync::Arc};
+
+    #[tokio::test]
+    async fn undelivered_media_is_retained_without_becoming_a_visible_attachment()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = FileResourceStore::new(directory.path().to_path_buf());
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1).write_to(&mut encoded, image::ImageFormat::Png)?;
+        let reference = store
+            .retain_bytes(Arc::from(encoded.into_inner()), "image/png")
+            .await?;
+        let media =
+            pl_model::runtime::attachment_content(reference.clone(), AttachmentModality::Image)?;
+        let delivery = ToolDelivery {
+            target: Default::default(),
+            call_id: "cancelled-media".into(),
+            tool_id: "media-author".into(),
+            output: ToolOutput::new(pl_agent_tool::ToolResult::new(
+                pl_agent_tool::ToolData::Absent,
+                vec![media.clone()],
+            )),
+            delivered_context: vec![],
+            outcome: ToolOutcome::Cancelled,
+            cancellation_cause: None,
+        };
+        assert_eq!(resource_references(&delivery)?, vec![reference]);
+        assert!(delivery_attachments(&delivery)?.is_empty());
+
+        let ContextContent::Media { payload } = media else {
+            unreachable!()
+        };
+        let opaque = ToolDelivery {
+            output: ToolOutput::new(pl_agent_tool::ToolResult::new(
+                pl_agent_tool::ToolData::Absent,
+                vec![ContextContent::Opaque { payload }],
+            )),
+            ..delivery
+        };
+        assert!(resource_references(&opaque)?.is_empty());
+        assert!(delivery_attachments(&opaque)?.is_empty());
+        Ok(())
+    }
 }

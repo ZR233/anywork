@@ -1,7 +1,7 @@
 //! Model-callable task controls over the Thread's restricted task capability.
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
-    thread::{TaskAccess, ThreadError},
+    context::OpaquePayload,
+    thread::{TaskAccess, ThreadError, ToolOutcome},
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, ToolError},
@@ -9,7 +9,7 @@ use pl_core::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 pub use pl_core::thread::task::{TaskRecord, TaskStatus};
 
@@ -79,7 +79,7 @@ pub struct WaitTasksOutput {
 }
 
 /// The exact lightweight result saved as delivered context and used by product projections.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitTasksView {
     pub tasks: Vec<TaskStatusView>,
@@ -93,7 +93,7 @@ pub struct WaitTasksView {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryTaskInput {
     pub task_id: String,
-    /// UTF-8 byte offset into the immutable complete payload; omitted reads status only.
+    /// UTF-8 byte offset into the immutable complete result; omitted reads status only.
     #[serde(default)]
     pub result_cursor: Option<usize>,
 }
@@ -110,18 +110,40 @@ enum ControlError {
     MissingRuntime,
     #[error("wait timeout must be between 1 and 300000 milliseconds")]
     Timeout,
-    #[error("result cursor is outside the payload or splits a UTF-8 character")]
+    #[error("result cursor is outside the result or splits a UTF-8 character")]
     Cursor,
+    #[error(
+        "Original result for terminal task {task_id:?} is unavailable. The task was not re-executed."
+    )]
+    ResultUnavailable { task_id: String },
+    #[error("Saved result identity does not match task {task_id:?}")]
+    ResultIdentity { task_id: String },
 }
 
 /// Task metadata in the model-visible status view, without the complete task's internal links.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStatusView {
     pub task_id: String,
     pub tool_id: String,
+    #[schemars(with = "String")]
     pub status: TaskStatus,
     pub cancel_requested: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct QueryResult {
+    task: TaskStatusView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<ResultPage>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ResultPage {
+    content: String,
+    next_cursor: Option<usize>,
+    total_bytes: usize,
 }
 impl From<&TaskRecord> for TaskStatusView {
     fn from(task: &TaskRecord) -> Self {
@@ -181,7 +203,8 @@ impl pl_agent_tool::Tool for TaskControlTool {
                     user_inputs_ready: payload.user_inputs_ready,
                     timed_out: payload.timed_out,
                 };
-                output("pl.tool.wait", &payload, &view)
+                let details = serde_json::to_value(payload).map_err(ToolError::new)?;
+                Ok(output(&view)?.with_details(details))
             }
             TaskControlKind::Query => {
                 let input: QueryTaskInput =
@@ -196,49 +219,70 @@ impl pl_agent_tool::Tool for TaskControlTool {
                     .await
                     .map_err(ToolError::new)?;
                 let view = serde_json::json!({"taskId":input.task_id,"cancellation":receipt});
-                output("pl.tool.cancel-task", &view, &view)
+                Ok(ToolOutput::json(view))
             }
         }
     }
 }
 
 async fn query(access: &TaskAccess, input: QueryTaskInput) -> Result<ToolOutput, ToolError> {
-    // The owner's task ledgers and effect window are bounded, so a finished task identity may have
-    // left memory entirely. The durable store then answers the identity/status; a missing durable
-    // fact stays a real "unknown task" error instead of reviving the task or faking a terminal.
-    let (task, durable_delivery) = match access.get(&input.task_id) {
-        Ok(task) => (task, None),
-        Err(ThreadError::TaskNotFound { .. }) => match access
-            .durable(&input.task_id)
-            .await
-            .map_err(ToolError::new)?
-        {
-            Some(fact) => (fact.task, Some(fact.delivery)),
-            None => {
-                return Err(ToolError::new(ThreadError::TaskNotFound {
-                    task_id: input.task_id.clone(),
-                }));
-            }
-        },
+    let resident = match access.get(&input.task_id) {
+        Ok(task) => Some(task),
+        Err(ThreadError::TaskNotFound { .. }) => None,
         Err(error) => return Err(ToolError::new(error)),
     };
-    let mut view = serde_json::json!({"task":TaskStatusView::from(&task)});
-    let delivery = if input.result_cursor.is_some() {
-        match durable_delivery {
-            Some(delivery) => delivery,
-            None => read_result(access, &input.task_id).await?,
+    let (task, delivery) = match resident {
+        Some(task) if input.result_cursor.is_none() || task.status == TaskStatus::Running => {
+            (task, None)
         }
-    } else {
-        None
+        resident => {
+            // Current may have relocated the call while History retains the original call ID.
+            // Page the terminal task and delivery from the same committed fact.
+            match access
+                .durable(&input.task_id)
+                .await
+                .map_err(ToolError::new)?
+            {
+                Some(fact) => (fact.task, fact.delivery),
+                None => (
+                    resident.ok_or_else(|| {
+                        ToolError::new(ThreadError::TaskNotFound {
+                            task_id: input.task_id.clone(),
+                        })
+                    })?,
+                    None,
+                ),
+            }
+        }
     };
-    if input.result_cursor.is_some() && task.status != TaskStatus::Running && delivery.is_none() {
-        return Err(ToolError::new(ThreadError::InvalidOutput));
+    if task.id != input.task_id {
+        return Err(ToolError::new(ThreadError::TaskNotFound {
+            task_id: input.task_id,
+        }));
     }
-    if let Some(start) = input.result_cursor
+    if input.result_cursor.is_some() && task.status != TaskStatus::Running && delivery.is_none() {
+        return Err(ToolError::new(ControlError::ResultUnavailable {
+            task_id: input.task_id,
+        }));
+    }
+    let result = if let Some(start) = input.result_cursor
         && let Some(delivery) = delivery
     {
-        let payload = delivery.output.payload();
-        let text = payload.content();
+        if delivery.call_id != task.call_id
+            || delivery.tool_id != task.tool_id
+            || !matches!(
+                (task.status, &delivery.outcome),
+                (TaskStatus::Succeeded, ToolOutcome::Succeeded)
+                    | (TaskStatus::Failed, ToolOutcome::Failed(_))
+                    | (TaskStatus::Cancelled, ToolOutcome::Cancelled)
+                    | (TaskStatus::Interrupted, ToolOutcome::Interrupted)
+            )
+        {
+            return Err(ToolError::new(ControlError::ResultIdentity {
+                task_id: input.task_id,
+            }));
+        }
+        let text = serde_json::to_string(delivery.output.result()).map_err(ToolError::new)?;
         if start > text.len() || !text.is_char_boundary(start) {
             return Err(ToolError::new(ControlError::Cursor));
         }
@@ -246,53 +290,24 @@ async fn query(access: &TaskAccess, input: QueryTaskInput) -> Result<ToolOutput,
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        view["result"] = serde_json::json!({"format":payload.format(),"version":payload.version(),"content":&text[start..end],"nextCursor":(end<text.len()).then_some(end),"totalBytes":text.len()});
-    }
-    output(
-        "pl.tool.task",
-        &serde_json::json!({"task":task,"result":view.get("result")}),
-        &view,
-    )
+        Some(ResultPage {
+            content: text[start..end].to_owned(),
+            next_cursor: (end < text.len()).then_some(end),
+            total_bytes: text.len(),
+        })
+    } else {
+        None
+    };
+    output(&QueryResult {
+        task: TaskStatusView::from(&task),
+        result,
+    })
 }
 
-/// Reads a terminal result, preferring the owner's resident state and falling back to the durable
-/// committed delivery once the owner has released the body.
-async fn read_result(
-    access: &TaskAccess,
-    task_id: &str,
-) -> Result<Option<pl_core::thread::ToolDelivery>, ToolError> {
-    match access.result(task_id) {
-        Ok(delivery) => Ok(delivery),
-        // `InvalidOutput` means the commit already left the bounded live window: the durable calls
-        // store holds the exact committed delivery, so the read is answered there instead of
-        // reporting a missing result or repeating the tool.
-        Err(ThreadError::InvalidOutput | ThreadError::TaskNotFound { .. }) => Ok(access
-            .durable(task_id)
-            .await
-            .map_err(ToolError::new)?
-            .and_then(|fact| fact.delivery)),
-        Err(error) => Err(ToolError::new(error)),
-    }
-}
-
-fn output(
-    format: &str,
-    payload: &impl Serialize,
-    view: &impl Serialize,
-) -> Result<ToolOutput, ToolError> {
-    let payload = OpaquePayload::new(
-        format,
-        1,
-        serde_json::to_string(payload).map_err(ToolError::new)?,
-    )
-    .map_err(ToolError::new)?;
-    let text = serde_json::to_string(view).map_err(ToolError::new)?;
-    Ok(ToolOutput::new(
-        payload,
-        vec![ContextContent::Text {
-            text: Arc::from(text),
-        }],
-    ))
+fn output(view: &impl Serialize) -> Result<ToolOutput, ToolError> {
+    serde_json::to_value(view)
+        .map(ToolOutput::json)
+        .map_err(ToolError::new)
 }
 
 /// Lists this Thread's tasks without consuming messages or task results.
@@ -325,7 +340,7 @@ impl pl_agent_tool::typed::TypedTool for ListTasksTool {
             .ok_or_else(|| ToolError::new(ControlError::MissingRuntime))?;
         let tasks = access.list();
         let view = tasks.iter().map(TaskStatusView::from).collect::<Vec<_>>();
-        output("pl.tool.list-tasks", &tasks, &view)
+        output(&view)
     }
 }
 
@@ -336,6 +351,8 @@ pub fn list_tasks_tool_definition() -> pl_agent_tool::ToolDefinition {
         pl_agent_tool::typed::input_schema_for::<ListTasksInput>(),
     )
     .expect("static tool definition")
+    .with_output_schema(crate::binding::program_schema::<Vec<TaskStatusView>>())
+    .expect("static task list schema")
 }
 
 const LIST_TASKS_TOOL_NAME: &str = "list_tool_tasks";
@@ -344,14 +361,20 @@ const LIST_TASKS_TOOL_DESCRIPTION: &str = "List this Thread active and resident 
 pub fn wait_definition() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json("wait",
                 "Call wait ALONE in a model response. Observe exact receipt taskIds (including sleep timers): {\"taskIds\":[\"task:call-id\"]}. Any selected terminal task OR new Thread message returns first, not all tasks; already-ready events return immediately. Empty taskIds wait only for messages, including child reports: {\"taskIds\":[],\"timeoutMs\":300000}. Returns readiness without consuming results; full background results and child Turn reports arrive in your next model context. Match childId, turn and input identity before accepting child work. Never put agentId or bare callId in taskIds. Timeout or cancelling wait does not cancel the selected tasks.", pl_agent_tool::typed::input_schema_for::<crate::task_control::WaitTasksInput>()).expect("static tool definition")
+        .with_output_schema(crate::binding::program_schema::<WaitTasksView>()).expect("static wait schema")
 }
 
 pub fn query_definition() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json("get_tool_task",
-                "Read this Thread receipt taskId without consuming events. resultCursor=0 starts UTF-8 byte pages of the immutable payload; follow nextCursor. This cursor does not page raw stdout/stderr files. Finished results remain queryable after resident eviction; never rerun commands to recover output.", pl_agent_tool::typed::input_schema_for::<crate::task_control::QueryTaskInput>()).expect("static tool definition")
+                "Read this Thread receipt taskId without consuming events. resultCursor=0 starts UTF-8 byte pages of the original tool result. Check task identity and status, append result.content in cursor order until nextCursor is null, then decode the joined JSON. The program value, when present, is in data.value. This cursor does not page raw stdout/stderr files. Finished results remain queryable after resident eviction; never rerun commands to recover output.", pl_agent_tool::typed::input_schema_for::<crate::task_control::QueryTaskInput>()).expect("static tool definition")
+        .with_output_schema(crate::binding::program_schema::<QueryResult>()).expect("static task query schema")
 }
 
 pub fn cancel_definition() -> pl_agent_tool::ToolDefinition {
     pl_agent_tool::ToolDefinition::json("cancel_tool_task",
                 "Request cancellation of one task. The acknowledgement is not proof of process exit; use wait to observe its terminal result.", pl_agent_tool::typed::input_schema_for::<crate::task_control::CancelTaskInput>()).expect("static tool definition")
+        .with_output_schema(serde_json::json!({"type":"object","properties":{
+            "taskId":{"type":"string"},"cancellation":{"enum":["requested","alreadyRequested","alreadyFinished"]}
+        },"required":["taskId","cancellation"],"additionalProperties":false}))
+        .expect("static cancellation schema")
 }

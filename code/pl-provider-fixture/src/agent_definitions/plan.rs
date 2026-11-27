@@ -277,7 +277,8 @@ pub(super) fn reply(
                     profile_id: String,
                     message_accepted: bool,
                 }
-                let receipt: Receipt = serde_json::from_str(output).context("real spawn result")?;
+                let receipt: Receipt =
+                    serde_json::from_str(&output).context("real spawn result")?;
                 ensure!(
                     receipt.message_accepted
                         && receipt.profile_id == profile

@@ -72,12 +72,13 @@ fn delivery(id: &str, target: ToolDeliveryTarget) -> ToolDelivery {
         target,
         call_id: id.into(),
         tool_id: "tool".into(),
-        output: pl_core::tool::ToolOutput::new(
-            OpaquePayload::text(format!("full payload:{id}")),
+        output: pl_core::tool::ToolOutput::from_data(
+            serde_json::Value::String(format!("full payload:{id}")),
             vec![text(&format!("known:{id}"))],
         ),
         delivered_context: vec![text(&format!("known:{id}"))],
         outcome: ToolOutcome::Succeeded,
+        cancellation_cause: None,
     }
 }
 
@@ -98,7 +99,7 @@ fn task_record(id: &str, order: u64) -> task::TaskRecord {
 }
 
 #[test]
-fn schema_one_is_complete_inline_and_excludes_legacy_fences() {
+fn current_schema_is_complete_inline_and_excludes_legacy_fences() {
     let epoch = RuntimeEpoch::new();
     let full = "长正文".repeat(30_000);
     let progress = ToolProgress::default()
@@ -115,6 +116,7 @@ fn schema_one_is_complete_inline_and_excludes_legacy_fences() {
             turn_id: None,
             source: ContextSource::User,
             content: vec![text(&full)],
+            tool_data: Default::default(),
             tool_calls: vec![],
         }]
         .into(),
@@ -238,10 +240,10 @@ fn schema_one_is_complete_inline_and_excludes_legacy_fences() {
         Err(CurrentError::ThreadIdentity(_))
     ));
     let mut unknown = json.clone();
-    unknown["schemaVersion"] = 2.into();
+    unknown["schemaVersion"] = 3.into();
     assert!(matches!(
         ThreadCurrent::from_json(&serde_json::to_vec(&unknown).unwrap(), "thread"),
-        Err(CurrentError::Schema(2))
+        Err(CurrentError::Schema(3))
     ));
     let mut bad = json;
     bad["state"]["historyFence"] = 10.into();
@@ -287,20 +289,42 @@ fn known_deliveries_win_unknown_pairs_and_nested_results_are_not_redispatched() 
             turn_id: Some("turn".into()),
             source: ContextSource::Assistant,
             content: vec![],
+            tool_data: Default::default(),
             tool_calls: vec![call("known"), call("unknown")],
         }]
         .into(),
     };
-    current.state.deliveries = vec![
-        delivery("known", ToolDeliveryTarget::CallResult),
-        delivery(
-            "nested",
-            ToolDeliveryTarget::Nested {
-                parent_call_id: "unknown".into(),
+    let known = delivery("known", ToolDeliveryTarget::CallResult);
+    let mut nested = delivery(
+        "nested",
+        ToolDeliveryTarget::Nested {
+            parent_call_id: "unknown".into(),
+        },
+    );
+    nested.delivered_context.clear();
+    nested.outcome = ToolOutcome::Cancelled;
+    nested.output = pl_core::tool::ToolOutput::from_data(
+        serde_json::json!("full payload:nested"),
+        vec![
+            text("unselected nested text"),
+            ContextContent::Media {
+                payload: OpaquePayload::text("unselected nested media"),
             },
-        ),
-    ]
-    .into();
+        ],
+    );
+    current.state.deliveries = vec![known, nested].into();
+    let saved = serde_json::to_value(&current).unwrap();
+    assert!(
+        saved["state"]["deliveries"][0]
+            .get("deliveredContext")
+            .is_none()
+    );
+    assert_eq!(
+        saved["state"]["deliveries"][1]["deliveredContext"],
+        serde_json::json!([])
+    );
+    let mut current: ThreadCurrent = serde_json::from_value(saved).unwrap();
+    assert!(current.state.deliveries[1].delivered_context.is_empty());
     current.apply_saved_local_deliveries_once().unwrap();
     current.apply_saved_local_deliveries_once().unwrap();
     current.normalize_unpaired_old_calls_as_unknown().unwrap();
@@ -315,19 +339,31 @@ fn known_deliveries_win_unknown_pairs_and_nested_results_are_not_redispatched() 
         .collect::<Vec<_>>();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].content, vec![text("known:known")]);
+    assert_eq!(
+        results[0].tool_data.as_value(),
+        Some(&serde_json::json!("full payload:known"))
+    );
+    assert!(results[1].tool_data.is_absent());
     assert!(
         matches!(&results[1].content[0], ContextContent::Text { text } if text.contains("结果未知"))
     );
-    assert!(current.state.deliveries.is_empty());
-    assert_eq!(current.state.inbox.len(), 1);
+    assert_eq!(current.state.deliveries.len(), 1);
+    assert_eq!(current.state.deliveries[0].call_id, "nested");
     assert_eq!(
-        current.state.inbox[0].message.payload.content(),
-        "full payload:nested"
+        current.state.deliveries[0].output.data(),
+        Some(&serde_json::json!("full payload:nested"))
     );
+    assert_eq!(current.state.inbox.len(), 1);
+    assert_eq!(current.state.inbox[0].message.payload.content(), "nested");
     assert_eq!(
         current.state.inbox[0].message.context,
-        vec![text("known:nested")]
+        vec![text("Task task:nested for tool tool finished: Cancelled.")]
     );
+    assert!(current.state.deliveries[0].delivered_context.is_empty());
+    assert!(matches!(
+        current.state.deliveries[0].output.content()[1],
+        ContextContent::Media { .. }
+    ));
     let json = serde_json::to_value(&current).unwrap();
     assert!(json["state"].get("attempts").is_none());
     assert!(json["state"].get("turns").is_none());
@@ -346,6 +382,7 @@ fn background_ack_keeps_original_message_identity_and_never_gets_second_tool_res
                 turn_id: None,
                 source: ContextSource::Assistant,
                 content: vec![],
+                tool_data: Default::default(),
                 tool_calls: vec![call("background")],
             },
             ContextRecord {
@@ -356,17 +393,19 @@ fn background_ack_keeps_original_message_identity_and_never_gets_second_tool_res
                     tool_id: "tool".into(),
                 },
                 content: vec![text("running in background")],
+                tool_data: Default::default(),
                 tool_calls: vec![],
             },
         ]
         .into(),
     };
-    let result = delivery(
+    let mut result = delivery(
         "background",
         ToolDeliveryTarget::Inbox {
             message_id: "original-result-message".into(),
         },
     );
+    result.delivered_context.clear();
     current.state.deliveries = vec![result.clone()].into();
     current.apply_saved_local_deliveries_once().unwrap();
     let sequence = current.state.inbox[0].sequence;
@@ -375,6 +414,7 @@ fn background_ack_keeps_original_message_identity_and_never_gets_second_tool_res
     current.normalize_unpaired_old_calls_as_unknown().unwrap();
     assert_eq!(current.state.inbox.len(), 1);
     assert_eq!(current.state.inbox[0].message.id, "original-result-message");
+    assert!(current.state.inbox[0].message.context.is_empty());
     assert_eq!(current.state.inbox[0].sequence, sequence);
     assert_eq!(current.state.context.records.len(), 2);
     current.state.context.validate_complete().unwrap();
@@ -892,8 +932,8 @@ impl pl_agent_tool::Tool for KnownBeforeCommitTool {
         _: Self::Context,
     ) -> Result<Self::Output, Self::Error> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(pl_core::tool::ToolOutput::new(
-            OpaquePayload::text("full result before local commit"),
+        Ok(pl_core::tool::ToolOutput::from_data(
+            serde_json::Value::String("full result before local commit".into()),
             vec![text("known external result")],
         )
         .with_interaction(OpaquePayload::text("complete proposed question")))
@@ -1124,7 +1164,7 @@ impl pl_agent_tool::Tool for PreviewTool {
             finish_parent,
         } = self
         {
-            tasks
+            let child = tasks
                 .call_nested(
                     "child".into(),
                     OpaquePayload::text("child arguments"),
@@ -1132,14 +1172,15 @@ impl pl_agent_tool::Tool for PreviewTool {
                 )
                 .await
                 .map_err(Self::Error::new)?;
+            assert!(matches!(child.outcome(), ToolOutcome::Succeeded));
             child_finished.notify_one();
             finish_parent.notified().await;
         }
         if let Self::Background(finish) = self {
             finish.notified().await;
         }
-        Ok(Self::Output::new(
-            OpaquePayload::text("complete result"),
+        Ok(Self::Output::from_data(
+            serde_json::Value::String("complete result".into()),
             vec![],
         ))
     }
@@ -1232,7 +1273,10 @@ async fn current_releases_completed_tool_previews_with_their_tasks() {
             Some((export, result))
         })
         .expect("the owner's History export contains the completed child");
-    assert_eq!(result.output.payload().content(), "complete result");
+    assert_eq!(
+        result.output.data().and_then(serde_json::Value::as_str),
+        Some("complete result")
+    );
     assert_eq!(
         export.state.tool_progress[&format!("task:{}", result.call_id)].parts()[0].text(),
         "child progress"
@@ -1439,6 +1483,7 @@ async fn restored_current_waits_for_continue_and_uses_current_services() {
         turn_id: None,
         source: ContextSource::User,
         content: vec![text("confirmed input")],
+        tool_data: Default::default(),
         tool_calls: Vec::new(),
     }]
     .into();
@@ -1745,6 +1790,7 @@ impl pl_core::thread::context_preparation::ContextPreparationHook for RecoveryAt
                     source_id: "summary".into(),
                 },
                 content: vec![text("summary")],
+                tool_data: Default::default(),
                 tool_calls: vec![],
             },
         );
@@ -1786,6 +1832,7 @@ async fn current_capacity_recovery_preserves_failed_and_preselected_next_attempt
                         source_id: "history".into(),
                     },
                     content: vec![text(&"older history ".repeat(50))],
+                    tool_data: Default::default(),
                     tool_calls: vec![],
                 }],
             })
@@ -1948,6 +1995,7 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
                 turn_id: None,
                 source: ContextSource::User,
                 content: contents("context"),
+                tool_data: Default::default(),
                 tool_calls: vec![],
             }]
             .into(),
@@ -1977,8 +2025,10 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
         }]
         .into();
         let mut result = delivery("delivery", ToolDeliveryTarget::CallResult);
-        result.output =
-            pl_core::tool::ToolOutput::new(OpaquePayload::text("result"), contents("output"));
+        result.output = pl_core::tool::ToolOutput::from_data(
+            serde_json::Value::String("result".into()),
+            contents("output"),
+        );
         result.delivered_context = contents("delivered");
         current.state.deliveries = vec![result].into();
         current.state.runtime_facts = vec![pl_core::thread::RuntimeFact {

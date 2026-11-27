@@ -85,10 +85,12 @@ pub use serde_json::Value as JsonValue;
 
 mod definition;
 mod handle;
+mod result;
 mod tool;
 
 pub use definition::{DefinitionError, InputFormat, ToolDefinition};
 pub use handle::ToolHandle;
+pub use result::{ToolData, ToolResult};
 pub use tool::Tool;
 
 #[cfg(feature = "typed")]

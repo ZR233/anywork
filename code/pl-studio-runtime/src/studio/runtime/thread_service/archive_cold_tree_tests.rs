@@ -193,6 +193,7 @@ fn saved_state(extensions: BTreeMap<String, ExtensionRecord>) -> ThreadSnapshot 
         context: ContextSnapshot {
             revision: 1,
             records: vec![ContextRecord {
+                tool_data: Default::default(),
                 id: "preserved-user-history".into(),
                 turn_id: None,
                 source: ContextSource::User,

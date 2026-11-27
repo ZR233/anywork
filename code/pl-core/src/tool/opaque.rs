@@ -58,10 +58,21 @@ pub fn interaction_tool_call_id(interaction_id: &str) -> Option<&str> {
 /// Parsing and model-visible declaration projection belong to the producer.
 pub type RuntimeTool = pl_agent_tool::ToolHandle<OpaquePayload, CallContext, ToolOutput, ToolError>;
 
+/// Whether a tool failure carries a program-checkable business outcome.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolFailureKind {
+    #[default]
+    Invocation,
+    Operation,
+}
+
 /// Tool-specific failure retained with its original source.
 #[derive(Debug, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[error("{source}")]
 pub struct ToolError {
+    #[serde(default)]
+    kind: ToolFailureKind,
     // The canonical output is serialized once by ToolDelivery; this copy is an execution lease.
     #[serde(skip)]
     observed_output: Option<Box<ToolOutput>>,
@@ -74,9 +85,26 @@ impl ToolError {
     /// Preserves the producer's typed error at the dynamic tool boundary.
     pub fn new(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
+            kind: ToolFailureKind::Invocation,
             source: Box::new(source),
             observed_output: None,
         }
+    }
+
+    /// Retains a failed business outcome and its program data.
+    pub fn operation(
+        source: impl std::error::Error + Send + Sync + 'static,
+        output: ToolOutput,
+    ) -> Self {
+        Self {
+            kind: ToolFailureKind::Operation,
+            source: Box::new(source),
+            observed_output: Some(Box::new(output)),
+        }
+    }
+
+    pub fn kind(&self) -> ToolFailureKind {
+        self.kind
     }
 
     /// Attaches observed facts without granting any successful control or state transition.

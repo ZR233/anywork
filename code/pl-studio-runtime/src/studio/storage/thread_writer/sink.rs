@@ -1224,6 +1224,57 @@ impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
     fn admit(&self, thread: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
         self.admit_export(thread, export)
     }
+    async fn read_saved_tool_task(
+        &self,
+        thread: &str,
+        id: &str,
+    ) -> Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError> {
+        if thread != self.0.thread.id {
+            return Err(cold_error("tool task belongs to another Thread"));
+        }
+        async fn read(
+            inner: &Inner,
+            id: &str,
+        ) -> Result<Option<pl_core::thread::cold::DurableToolTask>> {
+            let reader = match inner.store.open_history_reader(&inner.thread.id).await {
+                Ok(reader) => reader,
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::StudioError>()
+                        .is_some_and(|error| error.code == crate::StudioErrorCode::NotFound) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            let result = crate::studio::storage::tool_task::read(&reader, id).await;
+            reader.close().await;
+            Ok(result?)
+        }
+        // Admission transfers ownership from Core before the projection prepares the export.
+        // A first miss can race with that fixed prefix reaching SQLite.
+        let (cut, committed) = {
+            let history = self.0.channel.subscribe();
+            let status = history.borrow();
+            (status.admitted_sequence, status.committed_sequence)
+        };
+        let found = read(&self.0, id).await.map_err(|error| ColdStoreError {
+            source: error.into_boxed_dyn_error(),
+        })?;
+        if found.is_some() || cut <= committed {
+            return Ok(found);
+        }
+        self.0
+            .channel
+            .await_admitted_durable(thread, cut)
+            .await
+            .map_err(|error| ColdStoreError {
+                source: error.into_boxed_dyn_error(),
+            })?;
+        read(&self.0, id).await.map_err(|error| ColdStoreError {
+            source: error.into_boxed_dyn_error(),
+        })
+    }
     async fn read_saved_model_settlement(
         &self,
         thread: &str,

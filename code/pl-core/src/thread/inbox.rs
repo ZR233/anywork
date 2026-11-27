@@ -324,6 +324,7 @@ impl Owner {
                         purpose: record.message.kind,
                     },
                     content: record.message.context.clone(),
+                    tool_data: Default::default(),
                     tool_calls: Vec::new(),
                 }
             })

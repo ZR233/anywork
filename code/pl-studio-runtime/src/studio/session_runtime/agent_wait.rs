@@ -21,7 +21,7 @@ pub(crate) struct WaitAgentRequest {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WaitAgentResult {
     pub target: String,

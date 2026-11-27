@@ -1,10 +1,7 @@
 use pl_agent_tool::ToolHandle;
-use pl_core::{
-    context::{ContextContent, OpaquePayload},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, Registration, ToolError},
-    },
+use pl_core::tool::{
+    ToolOutput,
+    opaque::{CallContext, Registration, ToolError},
 };
 use pl_tool::binding::{
     BindingError, ToolCallPolicy, prepare_json_tool, prepare_native_tool, prepare_registration,
@@ -79,11 +76,7 @@ impl FinishText {
             return Err(ToolError::new(EmptyMessage));
         }
         let text = format!("{} [{}]\n{}", self.prefix, context.turn_id, args.message);
-        Ok(ToolOutput::new(
-            OpaquePayload::text(text.clone()),
-            vec![ContextContent::Text { text: text.into() }],
-        )
-        .ending_turn())
+        Ok(ToolOutput::text(text).ending_turn())
     }
 }
 

@@ -611,6 +611,11 @@ impl HistoryChannel {
             sequence <= self.handoff_ticket(),
             "history wait precedes reliable handoff"
         );
+        self.await_admitted_durable(id, sequence).await
+    }
+
+    /// Wait for a fixed prefix already owned by this channel, including unprepared effects.
+    pub(super) async fn await_admitted_durable(&self, id: &str, sequence: u64) -> Result<()> {
         self.request_flush(sequence);
         let mut status = self.subscribe();
         loop {
@@ -625,10 +630,13 @@ impl HistoryChannel {
                     );
                 }
             }
-            status
-                .changed()
-                .await
-                .context("Thread history progress channel closed")?;
+            tokio::select! {
+                biased;
+                changed = status.changed() => changed.context("Thread history progress channel closed")?,
+                () = self.stopping.cancelled() => anyhow::bail!(
+                    "Thread {id} history stopped before becoming durable through {sequence}"
+                ),
+            }
         }
     }
 

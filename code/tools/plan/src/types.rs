@@ -78,7 +78,7 @@ pub enum PlanActor {
 }
 
 /// Versioned Markdown Plan document held by an agent's Plan object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanDocument {
     pub revision: u64,
@@ -88,7 +88,7 @@ pub struct PlanDocument {
 }
 
 /// Declarative transition rule allowed from the current Plan state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanTransitionRule {
     pub target_state: PlanState,
@@ -99,7 +99,7 @@ pub struct PlanTransitionRule {
 }
 
 /// Committed record of one Plan transition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanTransitionRecord {
     pub seq: u64,
@@ -157,7 +157,7 @@ pub struct PlanRecord {
 }
 
 /// Public read projection returned by `plan_current` and mutation outcomes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanSnapshot {
     pub state: PlanState,
@@ -172,7 +172,7 @@ pub struct PlanSnapshot {
 }
 
 /// Structured result returned by `plan_next`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanNextResponse {
     pub revision: u64,
@@ -182,7 +182,7 @@ pub struct PlanNextResponse {
 }
 
 /// Structured result returned by `plan_history`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanHistoryResponse {
     pub revision: u64,
@@ -269,7 +269,7 @@ impl PlanTransitionCommand {
 }
 
 /// Stable machine-readable error codes for rejected Plan transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PlanErrorCode {
     TransitionNotAllowed,
@@ -283,7 +283,7 @@ pub enum PlanErrorCode {
 }
 
 /// Rich structured diagnostic payload returned on rejected transitions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanTransitionError {
     pub code: PlanErrorCode,
@@ -297,7 +297,7 @@ pub struct PlanTransitionError {
 }
 
 /// Unified response returned by `plan_transition`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanTransitionOutcome {
     pub accepted: bool,

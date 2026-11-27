@@ -364,6 +364,7 @@ impl ThreadModel {
                 .collect::<Vec<_>>()
         };
         records.push(ContextRecord {
+            tool_data: Default::default(),
             id: format!("compaction:{}", request.attempt_id),
             turn_id: None,
             source: ContextSource::Runtime {

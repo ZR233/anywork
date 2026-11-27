@@ -267,6 +267,7 @@ fn prepare_mode_application(
         (None, None)
     } else {
         let snapshot = pl_core::context::ContextRecord {
+            tool_data: Default::default(),
             id: format!("instruction:{thread_id}:{}", uuid::Uuid::new_v4()),
             turn_id: None,
             source: pl_core::context::ContextSource::InstructionSnapshot {

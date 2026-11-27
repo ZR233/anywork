@@ -28,7 +28,7 @@ mod capture;
 mod serde_views;
 pub(crate) use capture::{CapturedStream, CurrentRead};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Authorization generation of one live owner, not a cursor into execution history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -295,7 +295,9 @@ pub(in crate::thread) fn pair_known_call_result(
         return Err(CurrentError::InvalidIdentity);
     };
     if let Some(existing) = context.records.iter().find(|existing| matches!(&existing.source, ContextSource::ToolResult { call_id: known, .. } if known == call_id)) {
-        if existing.source != record.source || existing.content != record.content { return Err(CurrentError::RecordConflict(existing.id.clone())); }
+        if existing.source != record.source || existing.content != record.content || existing.tool_data != record.tool_data {
+            return Err(CurrentError::RecordConflict(existing.id.clone()));
+        }
         return Ok(false);
     }
     if context
@@ -623,7 +625,7 @@ impl ThreadCurrent {
         content.extend(self.state.deliveries.iter().flat_map(|delivery| {
             delivery
                 .output
-                .context()
+                .content()
                 .iter()
                 .chain(&delivery.delivered_context)
         }));
@@ -661,10 +663,11 @@ impl ThreadCurrent {
         Ok(())
     }
 
-    /// Known local results are applied before unknown-call pairing. Clearing deliveries and
-    /// installing context/inbox happen in one synchronous replacement of the logical state.
+    /// Known local results are applied before unknown-call pairing. A paired result moves into
+    /// context. A pending inbox report retains its original delivery until the report is consumed.
     pub fn apply_saved_local_deliveries_once(&mut self) -> Result<(), CurrentError> {
         let mut next = self.state.clone();
+        let mut pending_reports = Vec::new();
         for delivery in self.state.deliveries.iter() {
             match &delivery.target {
                 ToolDeliveryTarget::CallResult => {
@@ -689,6 +692,7 @@ impl ThreadCurrent {
                                 tool_id: delivery.tool_id.clone(),
                             },
                             content: delivery.delivered_context.clone(),
+                            tool_data: delivery.output.result().tool_data().clone(),
                             tool_calls: Vec::new(),
                         },
                     )?;
@@ -702,13 +706,22 @@ impl ThreadCurrent {
                             || format!("task:{}", delivery.call_id),
                             |task| task.id.clone(),
                         );
-                    deliver_message(&mut next, message_id, delivery, source)?;
+                    if deliver_message(&mut next, message_id, delivery, source)? {
+                        pending_reports.push(delivery.clone());
+                    }
                 }
                 ToolDeliveryTarget::Nested { parent_call_id } => {
-                    // The old parent's future is not revived. Preserve its exact known child result
-                    // as a runtime report for the fresh request, never as a second parent ToolResult.
-                    let id = format!("current:nested:{}", delivery.call_id);
-                    deliver_message(&mut next, &id, delivery, format!("nested:{parent_call_id}"))?;
+                    // The old parent's future is gone. Report the child's terminal identity and
+                    // leave the original child result available through its separate reference.
+                    let id = recovered_nested_report_id(&delivery.call_id);
+                    if deliver_message(
+                        &mut next,
+                        &id,
+                        delivery,
+                        format!("nested:{parent_call_id}"),
+                    )? {
+                        pending_reports.push(delivery.clone());
+                    }
                 }
             }
             if let Some(task) = next
@@ -719,7 +732,7 @@ impl ThreadCurrent {
                 task.status = task::TaskStatus::from_outcome(&delivery.outcome);
             }
         }
-        next.deliveries = Arc::from([]);
+        next.deliveries = pending_reports.into();
         self.state = next;
         Ok(())
     }
@@ -752,6 +765,7 @@ impl ThreadCurrent {
                         "上次运行的结果未知；恢复未重新执行该操作；继续前须核验实际状态。",
                     ),
                 }],
+                tool_data: Default::default(),
                 tool_calls: Vec::new(),
             })?;
         }
@@ -772,7 +786,7 @@ impl ThreadCurrent {
             {
                 next.append_record(ContextRecord { id: format!("current:background-unknown:{}", task.call_id),
                     turn_id: Some(task.turn_id.clone()), source: ContextSource::Runtime { source_id: task.id.clone() },
-                    content: vec![ContextContent::Text { text: Arc::from("上次运行的后台操作结果未知；恢复未重新执行该操作；继续前须核验实际状态。") }], tool_calls: Vec::new() })?;
+                    content: vec![ContextContent::Text { text: Arc::from("上次运行的后台操作结果未知；恢复未重新执行该操作；继续前须核验实际状态。") }], tool_data: Default::default(), tool_calls: Vec::new() })?;
             }
         }
         next.context.validate_complete()?;
@@ -808,29 +822,39 @@ impl ThreadCurrent {
     }
 }
 
+pub(super) fn recovered_nested_report_id(call_id: &str) -> String {
+    format!("current:nested:{call_id}")
+}
+
+/// Returns whether the corresponding report is still waiting in the inbox.
 fn deliver_message(
     state: &mut ThreadCurrentState,
     id: &str,
     delivery: &ToolDelivery,
     source_id: String,
-) -> Result<(), CurrentError> {
-    let context = if delivery.delivered_context.is_empty() {
-        delivery.output.context().to_vec()
-    } else {
-        delivery.delivered_context.clone()
+) -> Result<bool, CurrentError> {
+    let context = match delivery.target {
+        ToolDeliveryTarget::Nested { .. } => super::background::result_context(
+            &super::tool_execution::tool_output_operation(&delivery.call_id),
+            &delivery.tool_id,
+            task::TaskStatus::from_outcome(&delivery.outcome),
+            Vec::new(),
+        ),
+        _ => delivery.delivered_context.clone(),
     };
     let message = inbox::ThreadMessage {
         id: id.into(),
         source_id,
         kind: crate::context::AgentMessageKind::Report,
-        payload: delivery.output.payload().clone(),
+        payload: super::background::result_message_reference(&delivery.call_id)
+            .map_err(|_| CurrentError::InvalidIdentity)?,
         context,
     };
     if let Some(existing) = state.inbox.iter().find(|record| record.message.id == id) {
         if existing.message != message {
             return Err(CurrentError::RecordConflict(id.into()));
         }
-        return Ok(());
+        return Ok(true);
     }
     if let Some(existing) = state
         .consumed_message_identities
@@ -838,7 +862,7 @@ fn deliver_message(
         .find(|identity| identity.id == id)
     {
         return if existing.digest == message.digest() {
-            Ok(())
+            Ok(false)
         } else {
             Err(CurrentError::RecordConflict(id.into()))
         };
@@ -852,5 +876,5 @@ fn deliver_message(
     state.inbox = records.into();
     state.inbox_sequence = sequence;
     state.wake_messages_through = sequence;
-    Ok(())
+    Ok(true)
 }

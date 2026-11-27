@@ -314,15 +314,10 @@ async fn decode_envelope(
                     .map_err(|error| gap(&format!("malformed display artifacts: {error}")))?;
                 let mut receipt = None;
                 for artifact in artifacts {
-                    if artifact["kind"].as_str() != Some("opaque") {
-                        continue;
-                    }
-                    let payload: pl_core::context::OpaquePayload =
-                        serde_json::from_value(artifact["payload"].clone()).map_err(|error| {
-                            gap(&format!("invalid saved display payload: {error}"))
-                        })?;
-                    if let Some(saved) = pl_tool::file_display::saved_file_display_receipt(&payload)
-                        .map_err(|error| gap(&format!("invalid file display receipt: {error}")))?
+                    if let Some(saved) = pl_tool::file_display::saved_file_display_receipt(Some(
+                        &artifact,
+                    ))
+                    .map_err(|error| gap(&format!("invalid file display receipt: {error}")))?
                         && receipt.replace(saved).is_some()
                     {
                         return Err(gap("file display has multiple saved receipts"));

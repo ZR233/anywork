@@ -22,8 +22,15 @@ pub struct ConfigStore {
     paths: ConfigPaths,
     pub(super) credentials: Arc<dyn CredentialStore>,
     observed: Arc<std::sync::Mutex<Option<super::credential_commit::Baseline>>>,
-    pub(super) environment_only: bool,
+    pub(super) credential_policy: CredentialPolicy,
     require_existing: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CredentialPolicy {
+    Stored,
+    NativeEnvironment,
+    AcpEnvironment,
 }
 
 impl std::fmt::Debug for ConfigStore {
@@ -117,13 +124,25 @@ impl ConfigStore {
 
     /// Production CLI credentials are resolved only through each native account's environment reference.
     pub fn for_cli(studio_home: impl Into<PathBuf>) -> Self {
+        Self::for_environment_cli(studio_home, CredentialPolicy::NativeEnvironment)
+    }
+
+    pub(crate) fn for_acp_cli(studio_home: impl Into<PathBuf>) -> Self {
+        Self::for_environment_cli(studio_home, CredentialPolicy::AcpEnvironment)
+    }
+
+    fn for_environment_cli(studio_home: impl Into<PathBuf>, policy: CredentialPolicy) -> Self {
         let mut store = Self::with_credential_store(
             ConfigPaths::from_config_dir(studio_home),
             Arc::new(MemoryCredentialStore::environment_only()),
         );
-        store.environment_only = true;
+        store.credential_policy = policy;
         store.require_existing = true;
         store
+    }
+
+    pub(super) fn uses_environment_credentials(&self) -> bool {
+        self.credential_policy != CredentialPolicy::Stored
     }
 
     pub(crate) fn require_existing(mut self) -> Self {
@@ -146,7 +165,7 @@ impl ConfigStore {
             paths,
             credentials,
             observed: Arc::new(std::sync::Mutex::new(None)),
-            environment_only: false,
+            credential_policy: CredentialPolicy::Stored,
             require_existing: false,
         }
     }
@@ -380,16 +399,23 @@ impl ConfigStore {
     }
 
     fn hydrate_credentials(&self, config: &mut StudioConfig) -> Result<()> {
-        if self.environment_only {
+        if self.uses_environment_credentials() {
             for account in config.models.accounts.values_mut() {
-                if account.authentication == crate::AccountAuthenticationMethod::ChatGpt {
+                if self.credential_policy == CredentialPolicy::NativeEnvironment
+                    && account.authentication == crate::AccountAuthenticationMethod::ChatGpt
+                {
                     return Err(PureError::ConfigError("CLI requires API accounts with environment credentials; ChatGPT/OAuth is unsupported".into()));
                 }
                 account.bearer_token = None;
                 account.chatgpt_session = None;
                 account.chatgpt_credentials = None;
             }
-            return self.remember_bindings(config);
+            // ACP startup can read OAuth declarations without observing their protected bindings.
+            return if self.credential_policy == CredentialPolicy::AcpEnvironment {
+                Ok(())
+            } else {
+                self.remember_bindings(config)
+            };
         }
         let _locks = self.lock_accounts(config.models.accounts.keys().map(ToString::to_string))?;
         for (account_id, account) in &mut config.models.accounts {
@@ -533,27 +559,34 @@ mod tests {
         let (directory, seed) = isolated_store();
         let config = StudioConfig::default_config().unwrap();
         seed.save(&config).unwrap();
-        let cli = ConfigStore::for_cli(directory.path());
-        std::fs::remove_file(cli.paths.config_file()).unwrap();
-        assert!(matches!(
-            cli.load_for_startup(),
-            Err(super::super::ConfigRuntimeError::RequiredConfiguration { .. })
-        ));
-        assert!(!cli.paths.config_file().exists());
-        assert!(!cli.paths.mcp_dir().exists());
+        let stores = [
+            ConfigStore::for_cli(directory.path()),
+            ConfigStore::for_acp_cli(directory.path()),
+        ];
+        std::fs::remove_file(seed.paths.config_file()).unwrap();
+        for cli in &stores {
+            assert!(matches!(
+                cli.load_for_startup(),
+                Err(super::super::ConfigRuntimeError::RequiredConfiguration { .. })
+            ));
+        }
+        assert!(!seed.paths.config_file().exists());
+        assert!(!seed.paths.mcp_dir().exists());
         std::fs::write(
-            cli.paths.config_file(),
+            seed.paths.config_file(),
             serialize_persisted_config(&config).unwrap(),
         )
         .unwrap();
-        let original = std::fs::read(cli.paths.config_file()).unwrap();
+        let original = std::fs::read(seed.paths.config_file()).unwrap();
         let pending = directory
             .path()
             .join("data/credential-transactions/pending");
         std::fs::create_dir_all(&pending).unwrap();
         std::fs::write(pending.join("journal.json"), b"preserve recovery material").unwrap();
-        assert!(cli.load_for_startup().is_err());
-        assert_eq!(std::fs::read(cli.paths.config_file()).unwrap(), original);
+        for cli in &stores {
+            assert!(cli.load_for_startup().is_err());
+        }
+        assert_eq!(std::fs::read(seed.paths.config_file()).unwrap(), original);
         assert_eq!(
             std::fs::read(pending.join("journal.json")).unwrap(),
             b"preserve recovery material"
@@ -587,6 +620,47 @@ mod tests {
         config.models.accounts.get_mut(&id).unwrap().authentication =
             crate::AccountAuthenticationMethod::ChatGpt;
         assert!(cli.hydrate_credentials(&mut config).is_err());
+    }
+
+    #[test]
+    fn acp_cli_loads_oauth_declarations_without_protected_credentials() -> anyhow::Result<()> {
+        use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
+
+        let directory = tempfile::tempdir()?;
+        let mut config = StudioConfig::default_config()?;
+        let mut oauth = pl_model::config::builtin_account_catalog()?
+            .templates
+            .into_iter()
+            .find(|template| template.id.as_str() == "openai")
+            .expect("built-in OpenAI template")
+            .account;
+        oauth.authentication = AccountAuthenticationMethod::ChatGpt;
+        oauth.bearer_token_env = None;
+        let identity = ChatGptAccountInfo {
+            issuer: "https://auth.openai.com".into(),
+            subject: "fixture-subject".into(),
+            client_id: "fixture-client".into(),
+            email: None,
+            plan_usage_enabled: false,
+            codex: None,
+        };
+        oauth.chatgpt_account = Some(identity.clone());
+        let id = AccountId::new("unused-oauth")?;
+        config.models.accounts.insert(id.clone(), oauth);
+        let store = ConfigStore::for_acp_cli(directory.path());
+        let canonical = serialize_persisted_config(&config)?;
+        std::fs::write(store.paths.config_file(), &canonical)?;
+
+        let loaded = store.load_for_startup()?;
+        let declared = &loaded.models.accounts[&id];
+        assert_eq!(declared.chatgpt_account.as_ref(), Some(&identity));
+        assert!(declared.chatgpt_credentials.is_none());
+        assert!(declared.chatgpt_session.is_none());
+        assert_eq!(
+            std::fs::read_to_string(store.paths.config_file())?,
+            canonical
+        );
+        Ok(())
     }
 
     #[test]

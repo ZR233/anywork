@@ -171,7 +171,9 @@ pub(super) fn text_content(content: &[ContextContent]) -> String {
         .iter()
         .filter_map(|part| match part {
             ContextContent::Text { text } => Some(text.as_ref()),
-            ContextContent::Resource { .. } | ContextContent::Opaque { .. } => None,
+            ContextContent::Resource { .. }
+            | ContextContent::Opaque { .. }
+            | ContextContent::Media { .. } => None,
         })
         .collect()
 }

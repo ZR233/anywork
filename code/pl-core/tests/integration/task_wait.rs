@@ -9,22 +9,28 @@ use crate::support;
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
-use pl_core::context::OpaquePayload;
+use pl_core::context::{ContextContent, ContextSource, OpaquePayload};
 use pl_core::model::{
     DynModelSession, ModelError, ModelRequest, ModelSession, ModelToolCall, PreparedModelCall,
     ToolProgressUpdate,
 };
 use pl_core::thread::{
-    StepInput, TaskAccess, ThreadError, ThreadHandle, ToolDispatch,
+    HistoryExport, StepInput, TaskAccess, ThreadEffectBatch, ThreadError, ThreadHandle,
+    ToolDelivery, ToolDispatch, ToolOutcome, UsageSummary,
+    cold::{ColdStoreError, DurableToolTask, StorageIdleStatus, StoragePressure},
+    history_sink::{HistorySink, HistorySinkHandle},
     inbox::ThreadMessage,
     task::{TaskCancellationReceipt, TaskRecord, TaskStatus},
 };
 use pl_core::tool::{
-    ToolOutput,
+    ToolFailureKind, ToolOutput,
     opaque::{CallContext, Registration, ToolError},
 };
 use pretty_assertions::assert_eq;
@@ -62,7 +68,10 @@ impl pl_agent_tool::Tool for HeldTool {
                 return Err(ToolError::new(ThreadError::Cancelled));
             }
         }
-        Ok(ToolOutput::new(input, vec![text("held finished")]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("held finished")],
+        ))
     }
 }
 
@@ -103,7 +112,9 @@ impl pl_agent_tool::Tool for CleanupHeldTool {
 }
 
 #[derive(Debug)]
-struct FastTool;
+struct FastTool {
+    fail: bool,
+}
 
 impl pl_agent_tool::Tool for FastTool {
     type Input = pl_core::context::OpaquePayload;
@@ -121,7 +132,21 @@ impl pl_agent_tool::Tool for FastTool {
     }
 
     async fn execute(&self, input: OpaquePayload, _: CallContext) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput::new(input, vec![text("fast finished")]))
+        if self.fail {
+            let media = ContextContent::Media {
+                payload: OpaquePayload::text("original media"),
+            };
+            let output = ToolOutput::from_data(serde_json::Value::Null, vec![media])
+                .with_details(serde_json::json!({"diagnostic": "original material"}));
+            return Err(ToolError::operation(
+                std::io::Error::other("operation failed"),
+                output,
+            ));
+        }
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("fast finished")],
+        ))
     }
 }
 
@@ -165,7 +190,10 @@ impl pl_agent_tool::Tool for AccessTool {
                 return Err(ToolError::new(ThreadError::Cancelled));
             }
         }
-        Ok(ToolOutput::new(input, vec![text("waiter finished")]))
+        Ok(ToolOutput::from_data(
+            serde_json::Value::String(input.content().to_owned()),
+            vec![text("waiter finished")],
+        ))
     }
 }
 
@@ -214,6 +242,384 @@ struct Harness {
     held_b: Arc<Notify>,
 }
 
+#[tokio::test(start_paused = true)]
+async fn completed_result_survives_later_publication_and_effect_release() {
+    let harness = Harness::start("task-result-handoff").await;
+    harness.script(&["fast"]);
+    harness.step("producer").await;
+    let original = harness
+        .thread
+        .execute_tool("producer-fast".into(), CancellationToken::new())
+        .await
+        .unwrap();
+    let ToolDispatch::Completed(original) = original else {
+        panic!("fast tool must have completed");
+    };
+    assert_eq!(original.data(), Some(&serde_json::json!("raw fast")));
+
+    let (access, release, caller) = harness.retain_access("reader", false).await;
+    harness
+        .thread
+        .release_history_through(harness.thread.snapshot().commit_sequence)
+        .unwrap();
+    let id = "task:producer-fast";
+    assert_eq!(access.get(id).unwrap().status, TaskStatus::Succeeded);
+    let fact = access.durable(id).await.unwrap().expect("terminal task");
+    let delivery = fact
+        .delivery
+        .expect("published task retains its original delivery");
+    assert_eq!(delivery.call_id, "producer-fast");
+    assert_eq!(delivery.tool_id, "fast");
+    assert_eq!(delivery.output, original);
+    release.notify_one();
+    caller.await.unwrap().unwrap();
+    harness.thread.close().await.unwrap();
+}
+
+/// A read-only stand-in for the host's original store. The bytes come from a real owner commit.
+#[derive(Debug)]
+struct SavedTaskReader {
+    original: Option<(TaskRecord, Vec<u8>)>,
+    gate: Option<Arc<ColdReadGate>>,
+    durable: AtomicU64,
+}
+
+#[derive(Debug, Default)]
+struct ColdReadGate {
+    reads: AtomicUsize,
+    entered: Notify,
+    release: Notify,
+    ready: Option<TaskRecord>,
+    ready_reads: AtomicUsize,
+}
+
+impl HistorySink for SavedTaskReader {
+    fn fold_usage(&self, _: &mut UsageSummary, _: &ThreadEffectBatch) {}
+    fn reserve_observed_item(&self, _: &str, _: &str, _: &str) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+    fn reserve_operation_output(&self, _: &str, _: &str, max: u64) -> Result<u64, ColdStoreError> {
+        Ok(max)
+    }
+    fn charge_operation_output(&self, _: &str, _: &str, _: u64) -> Result<(), ColdStoreError> {
+        Ok(())
+    }
+    fn release_operation_output(&self, _: &str, _: &str) {}
+    fn pressure(&self, _: &str) -> StoragePressure {
+        StoragePressure {
+            durable_sequence: self.durable.load(Ordering::Relaxed),
+            ..Default::default()
+        }
+    }
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: Some(0),
+        }
+    }
+    fn subscribe_pressure(&self, _: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+    fn admit(&self, _: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        self.durable
+            .fetch_max(export.effect.sequence, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn read_saved_tool_task(
+        &self,
+        thread_id: &str,
+        id: &str,
+    ) -> Result<Option<DurableToolTask>, ColdStoreError> {
+        if let Some(gate) = &self.gate {
+            if let Some(task) = &gate.ready
+                && id == task.id
+            {
+                gate.ready_reads.fetch_add(1, Ordering::Relaxed);
+                return Ok(Some(DurableToolTask {
+                    task: task.clone(),
+                    delivery: None,
+                }));
+            }
+            gate.reads.fetch_add(1, Ordering::Relaxed);
+            gate.entered.notify_one();
+            gate.release.notified().await;
+            return Err(ColdStoreError {
+                source: Box::new(std::io::Error::other("test read fault")),
+            });
+        }
+        assert_eq!(thread_id, "test-operation-original");
+        let Some((task, delivery)) = &self.original else {
+            return Ok(None);
+        };
+        if id != task.id && id != task.call_id {
+            return Ok(None);
+        }
+        let delivery = serde_json::from_slice(delivery).map_err(|source| ColdStoreError {
+            source: Box::new(source),
+        })?;
+        Ok(Some(DurableToolTask {
+            task: task.clone(),
+            delivery: Some(delivery),
+        }))
+    }
+}
+
+async fn install_cold_read_gate(
+    thread: &ThreadHandle,
+    ready: Option<TaskRecord>,
+) -> Arc<ColdReadGate> {
+    let gate = Arc::new(ColdReadGate {
+        ready,
+        ..Default::default()
+    });
+    thread
+        .attach_history(HistorySinkHandle::new(SavedTaskReader {
+            original: None,
+            gate: Some(gate.clone()),
+            durable: AtomicU64::new(0),
+        }))
+        .await
+        .unwrap();
+    gate
+}
+
+async fn pending_cold_wait(
+    access: TaskAccess,
+    gate: &ColdReadGate,
+    timeout: Duration,
+) -> tokio::task::JoinHandle<Result<pl_core::thread::TaskWaitSnapshot, ThreadError>> {
+    let waiting = tokio::spawn(async move {
+        access
+            .wait(&["task:archived".into()], timeout, CancellationToken::new())
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), gate.entered.notified())
+        .await
+        .expect("wait reached the blocked history reader");
+    waiting
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_ready_task_does_not_block_on_missing_cold_identity() {
+    let harness = Harness::start("wait-ready-before-cold-read").await;
+    let gate = install_cold_read_gate(&harness.thread, None).await;
+    harness.script(&["fast"]);
+    harness
+        .thread
+        .run_turn(support::turn("done"))
+        .await
+        .unwrap();
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let ids = ["task:archived".into(), "task:done-fast".into()];
+    let observed = tokio::time::timeout(
+        Duration::from_secs(1),
+        access.wait(&ids, Duration::from_secs(60), CancellationToken::new()),
+    )
+    .await
+    .expect("a known ready task wakes independently of history")
+    .unwrap();
+    assert_eq!(observed.tasks.len(), 1);
+    assert_eq!(observed.tasks[0].id, "task:done-fast");
+    assert_eq!(observed.tasks[0].status, TaskStatus::Succeeded);
+    assert!(!observed.timed_out);
+    assert_eq!(gate.reads.load(Ordering::Relaxed), 0);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_cold_ready_task_wakes_when_blocked_lookup_is_first() {
+    any_cold_task_finishes(["task:archived", "task:archived-ready"]).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_cold_ready_task_wakes_when_ready_lookup_is_first() {
+    any_cold_task_finishes(["task:archived-ready", "task:archived"]).await;
+}
+
+async fn any_cold_task_finishes(ids: [&str; 2]) {
+    let harness = Harness::start("wait-competing-cold-reads").await;
+    let ready = TaskRecord {
+        id: "task:archived-ready".into(),
+        parent_call_id: None,
+        invocation: None,
+        call_id: "archived-ready".into(),
+        tool_id: "fast".into(),
+        turn_id: "archived-turn".into(),
+        revision: 2,
+        status: TaskStatus::Succeeded,
+        cancel_requested: false,
+        acknowledgement: None,
+        started_sequence: None,
+    };
+    let gate = install_cold_read_gate(&harness.thread, Some(ready.clone())).await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let observed = access
+        .wait(
+            &ids.map(str::to_owned),
+            Duration::from_secs(3),
+            CancellationToken::new(),
+        )
+        .await;
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+
+    let observed = observed.unwrap();
+    assert!(
+        !observed.timed_out,
+        "the ready archived task must wake wait for {ids:?}"
+    );
+    assert_eq!(observed.tasks, vec![ready]);
+    assert_eq!(gate.ready_reads.load(Ordering::Relaxed), 1);
+    assert!(gate.reads.load(Ordering::Relaxed) <= 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_message_wakes_an_in_flight_cold_read() {
+    let harness = Harness::start("wait-message-during-cold-read").await;
+    let gate = install_cold_read_gate(&harness.thread, None).await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let waiting = pending_cold_wait(access, &gate, Duration::from_secs(60)).await;
+    harness
+        .thread
+        .send_message(report("during-cold-read"))
+        .await
+        .unwrap();
+    let observed = tokio::time::timeout(Duration::from_secs(1), waiting)
+        .await
+        .expect("a committed message wakes independently of history")
+        .unwrap()
+        .unwrap();
+    assert!(observed.messages_ready && !observed.timed_out);
+    assert!(observed.tasks.is_empty());
+    assert_eq!(gate.reads.load(Ordering::Relaxed), 1);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_cold_read_obeys_the_original_deadline() {
+    let harness = Harness::start("wait-deadline-during-cold-read").await;
+    let gate = install_cold_read_gate(&harness.thread, None).await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let waiting = pending_cold_wait(access, &gate, Duration::from_secs(3)).await;
+    tokio::time::advance(Duration::from_secs(3)).await;
+    let observed = tokio::time::timeout(Duration::from_secs(1), waiting)
+        .await
+        .expect("the original deadline wakes independently of history")
+        .unwrap()
+        .unwrap();
+    assert!(observed.timed_out && !observed.messages_ready);
+    assert!(observed.tasks.is_empty());
+    assert_eq!(gate.reads.load(Ordering::Relaxed), 1);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_reports_a_cold_read_failure_without_fabricating_readiness() {
+    let harness = Harness::start("wait-cold-read-failure").await;
+    let gate = install_cold_read_gate(&harness.thread, None).await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let waiting = pending_cold_wait(access, &gate, Duration::from_secs(60)).await;
+    gate.release.notify_one();
+    let error = waiting.await.unwrap().unwrap_err();
+    assert!(
+        matches!(error, ThreadError::Storage(error) if error.source.to_string() == "test read fault")
+    );
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_operation_keeps_author_data_and_can_be_read_by_a_fresh_owner() {
+    let harness = Harness::start("test-operation-original").await;
+    harness.script(&["failure"]);
+    harness.step("producer").await;
+    let error = harness
+        .thread
+        .execute_tool("producer-failure".into(), CancellationToken::new())
+        .await
+        .unwrap_err();
+    let ThreadError::Tool(error) = error else {
+        panic!("unexpected error: {error:?}");
+    };
+    assert_eq!(error.kind(), ToolFailureKind::Operation);
+    assert!(error.source.is::<std::io::Error>());
+    let original = error.observed_output().expect("observed author result");
+    assert_eq!(original.data(), Some(&serde_json::Value::Null));
+    assert!(matches!(original.content(), [ContextContent::Media { .. }]));
+
+    let snapshot = harness.thread.snapshot();
+    let result = snapshot.context.records.iter().find(|record| matches!(
+        &record.source,
+        ContextSource::ToolResult { call_id, tool_id } if call_id == "producer-failure" && tool_id == "failure"
+    )).expect("paired result");
+    assert_eq!(result.tool_data.as_value(), Some(&serde_json::Value::Null));
+    assert_eq!(result.content[0], original.content()[0]);
+    assert!(
+        matches!(&result.content[1], ContextContent::Text { text } if text.contains("operation failed"))
+    );
+
+    let export = harness
+        .thread
+        .history_export_page(0, std::num::NonZeroUsize::new(32).unwrap())
+        .unwrap()
+        .into_iter()
+        .find(|export| {
+            export
+                .effect
+                .deliveries
+                .iter()
+                .any(|delivery| delivery.call_id == "producer-failure")
+        })
+        .expect("terminal fact was exported");
+    let task = export
+        .effect
+        .tasks
+        .iter()
+        .find(|task| task.call_id == "producer-failure")
+        .unwrap()
+        .clone();
+    let saved = &export.effect.deliveries[0];
+    let reader = SavedTaskReader {
+        original: Some((task, serde_json::to_vec(saved).unwrap())),
+        gate: None,
+        durable: AtomicU64::new(0),
+    };
+    harness.thread.close().await.unwrap();
+
+    let harness = Harness::start("test-operation-original").await;
+    harness
+        .thread
+        .attach_history(HistorySinkHandle::new(reader))
+        .await
+        .unwrap();
+    let (access, release, caller) = harness.retain_access("reader", false).await;
+    let id = "task:producer-failure";
+    assert!(matches!(
+        access.get(id),
+        Err(ThreadError::TaskNotFound { .. })
+    ));
+    assert!(access.durable("task:missing").await.unwrap().is_none());
+    let fact = access
+        .durable(id)
+        .await
+        .unwrap()
+        .expect("committed original");
+    assert_eq!(fact.task.status, TaskStatus::Failed);
+    let delivery: ToolDelivery = fact.delivery.expect("committed delivery");
+    assert_eq!(delivery.output, *original);
+    assert_eq!(delivery.delivered_context, saved.delivered_context);
+    assert!(
+        matches!(delivery.outcome, ToolOutcome::Failed(error) if error.kind() == ToolFailureKind::Operation)
+    );
+    release.notify_one();
+    caller.await.unwrap().unwrap();
+    harness.thread.close().await.unwrap();
+}
+
 impl Harness {
     async fn start(name: &str) -> Self {
         let tools = Arc::new(Mutex::new(Vec::new()));
@@ -240,7 +646,14 @@ impl Harness {
                     ))),
                 Registration::prepare("fast".into(), OpaquePayload::text("fast"))
                     .unwrap()
-                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool)),
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool {
+                        fail: false,
+                    })),
+                Registration::prepare("failure".into(), OpaquePayload::text("failure"))
+                    .unwrap()
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool {
+                        fail: true,
+                    })),
             ])
             .await
             .unwrap();
@@ -284,7 +697,7 @@ impl Harness {
         }
         tokio::time::advance(Duration::from_secs(1)).await;
         match execute.await.unwrap() {
-            ToolDispatch::Running(task) => task,
+            ToolDispatch::Running(task) => *task,
             other => panic!("held tool must remain running, got {other:?}"),
         }
     }
@@ -345,7 +758,9 @@ impl Harness {
                     ))),
                 Registration::prepare("fast".into(), OpaquePayload::text("fast"))
                     .unwrap()
-                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool)),
+                    .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool {
+                        fail: false,
+                    })),
                 registration,
             ])
             .await
@@ -857,7 +1272,9 @@ async fn wait_rejects_identity_authorization_and_stale_callers() {
         .register_tools(vec![
             Registration::prepare("fast".into(), OpaquePayload::text("fast"))
                 .unwrap()
-                .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool)),
+                .attach(pl_core::tool::opaque::RuntimeTool::new(FastTool {
+                    fail: false,
+                })),
         ])
         .await
         .unwrap();
