@@ -172,32 +172,38 @@ void main() {
     testWidgets('empty $state thinking keeps outcome and semantic icon', (
       tester,
     ) async {
-      await tester.pumpWidget(
-        _host(
-          ChatItemView(
-            item: TimelinePreviewFixtures.item('empty-thinking', 'thinking', {
-              'outcome': {
-                'kind': state,
-                'data': {'message': '$state-thinking-proof'},
-              },
-            }),
+      final semantics = tester.ensureSemantics();
+      try {
+        await tester.pumpWidget(
+          _host(
+            ChatItemView(
+              item: TimelinePreviewFixtures.item('empty-thinking', 'thinking', {
+                'outcome': {
+                  'kind': state,
+                  'data': {'message': '$state-thinking-proof'},
+                },
+              }),
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<Tooltip>(find.byType(Tooltip)).message,
-        contains('$state-thinking-proof'),
-      );
-      expect(find.byType(ExpansionTile), findsNothing);
-      final row = tester.widget<TimelineActivityRow>(
-        find.byType(TimelineActivityRow),
-      );
-      expect(row.isIssue, state == 'failed');
-      if (state == 'cancelled') {
-        expect(find.byIcon(Icons.stop_circle_outlined), findsOneWidget);
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(Tooltip), findsNothing);
+        expect(
+          find.bySemanticsLabel(RegExp('$state-thinking-proof')),
+          findsOneWidget,
+        );
+        expect(find.byType(ExpansionTile), findsNothing);
+        final row = tester.widget<TimelineActivityRow>(
+          find.byType(TimelineActivityRow),
+        );
+        expect(row.isIssue, state == 'failed');
+        if (state == 'cancelled') {
+          expect(find.byIcon(Icons.stop_circle_outlined), findsOneWidget);
+        }
+        expect(row.expandable, isFalse);
+      } finally {
+        semantics.dispose();
       }
-      expect(row.expandable, isFalse);
     });
   }
 }
